@@ -139,6 +139,9 @@ class NemoModelConfig(ModelConfig):
             tokenizer = instantiate(tokenizer_config)
             hf_args['vocab_size'] = tokenizer.original_vocab_size
             self.model_converter.convert_config(self.nemo_model_config['config'], hf_args)
+            # In transformers ~= 4.52.0, the config for model_type="mixtral" loads with head_dim=None
+            # which causes issues down the way in vLLM in MixtralAttention class. One possible fix is
+            # to delete head_dim from the config if it is None.
             self.hf_config = AutoConfig.for_model(model_type, **hf_args)
             assert "huggingface" in tokenizer_config["_target_"]
             tokenizer_id = tokenizer_config["pretrained_model_name"]
@@ -212,6 +215,7 @@ class NemoModelConfig(ModelConfig):
             'num_attention_heads': 'num_attention_heads',
             'num_key_value_heads': 'num_query_groups',
             # 'hidden_act': 'activation', ## <- vLLM has good defaults for the models, nemo values are wrong
+            'num_local_experts': 'num_moe_experts',
             'max_position_embeddings': ['max_position_embeddings', 'encoder_seq_length'],
             'tie_word_embeddings': 'share_embeddings_and_output_weights',
             'rms_norm_eps': 'layernorm_epsilon',

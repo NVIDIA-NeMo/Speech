@@ -241,7 +241,7 @@ class Quantizer:
 
         quant_cfg = QUANT_CFG_CHOICES[self.quantization_config.algorithm]
         if "awq" in self.quantization_config.algorithm:
-            quant_cfg = copy.deepcopy(getattr(mtq, QUANT_CFG_CHOICES[self.quantization_config.algorithm]))
+            quant_cfg = copy.deepcopy(quant_cfg)
             weight_quantizer = quant_cfg["quant_cfg"]["*weight_quantizer"]
             if isinstance(weight_quantizer, list):
                 weight_quantizer = weight_quantizer[0]

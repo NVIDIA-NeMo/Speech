@@ -14,7 +14,7 @@
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/setup/models/create_hf_model.py \
   --model_name_or_path /home/TestData/nlp/megatron_llama/llama-ci-hf \
   --output_dir /tmp/llama_head64 \
-  --config_updates "{\"hidden_size\": 512, \"num_attention_heads\": 4, \"numx_hidden_layers\": 2, \"num_key_value_heads\": 4, \"intermediate_size\": 1024, \"head_dim\": 128, \"num_hidden_layers\": 2, \"torch_dtype\": \"float16\" }" &&
+  --config_updates "{\"hidden_size\": 512, \"num_attention_heads\": 4, \"num_key_value_heads\": 4, \"intermediate_size\": 1024, \"head_dim\": 128, \"num_hidden_layers\": 2, \"torch_dtype\": \"float16\" }" &&
   coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/test_hf_import.py --hf_model /tmp/llama_head64 --output_path /tmp/nemo2_ckpt &&
   /opt/venv/bin/coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/export/nemo_export.py \
     --min_tps 1 \

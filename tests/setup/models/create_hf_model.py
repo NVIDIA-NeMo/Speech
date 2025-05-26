@@ -99,4 +99,4 @@ if __name__ == "__main__":
         help="Overwrite file if it exists",
     )
     args = parser.parse_args()
-    create_hf_model(args.model_name_or_path, args.output_dir, args.config_updates)
+    create_hf_model(args.model_name_or_path, args.output_dir, args.config_updates, args.overwrite)

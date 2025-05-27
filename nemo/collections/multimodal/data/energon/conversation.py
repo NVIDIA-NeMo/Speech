@@ -51,6 +51,7 @@ class LLaVATemplateConfig(BaseConversationTemplateConfig):
     )
 
 
+@dataclass
 class MLlamaTemplateConfig(BaseConversationTemplateConfig):
     """MLlama specific template configuration which extends the base config"""
 

@@ -256,6 +256,7 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
 @run.cli.factory(target=finetune, name=NAME)
 def finetune_recipe(
     dir: Optional[str] = None,
+    resume_path: str = "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     name: str = "default",
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
@@ -273,6 +274,7 @@ def finetune_recipe(
 
     Args:
         dir (Optional[str]): Directory for saving logs and checkpoints.
+        resume_path (str): Path to the NeMo checkpoint
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
@@ -308,13 +310,18 @@ def finetune_recipe(
     if seq_length is None:
         seq_length = 4096 if packed_sequence else 2048
 
-    recipe = default_finetune_recipe(
-        model(), 'meta-llama/Llama-4-Scout-17B-16E-Instruct', dir, name, num_nodes, num_gpus_per_node, packed_sequence
-    )
+    recipe = default_finetune_recipe(model(), resume_path, dir, name, num_nodes, num_gpus_per_node, packed_sequence)
     if peft_scheme is None or peft_scheme.lower() == 'none':
-        recipe.trainer.strategy.tensor_model_parallel_size = 2
+        recipe.trainer.strategy.sequence_parallel = True
+        recipe.trainer.strategy.tensor_model_parallel_size = 8
+        recipe.trainer.strategy.expert_tensor_model_parallel_size = 8
+        recipe.trainer.strategy.pipeline_model_parallel_size = 4
+
         recipe.optim.config.lr = 5e-6
     elif peft_scheme.lower() in ['lora', 'dora']:
+        recipe.trainer.strategy.sequence_parallel = True
+        recipe.trainer.strategy.tensor_model_parallel_size = 8
+        recipe.trainer.strategy.expert_tensor_model_parallel_size = 8
         recipe.peft = run.Config(PEFT_STR2CLS[peft_scheme.lower()])
         recipe.peft.dim = 8
         recipe.peft.alpha = 16

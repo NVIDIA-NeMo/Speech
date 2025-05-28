@@ -115,7 +115,7 @@ The TensorRT-LLM engine can be conveniently built and run using ``TensorRTLLM`` 
     )
     trt_llm_exporter.forward(["Hi, how are you?", "I am good, thanks, how about you?"])
 
-Alternatively, it can also be built directly using ``trtllm-build`` command, see `TensorRT-LLM documentation <https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/llama#fp8-post-training-quantization>`_:
+Alternatively, it can also be built directly using ``trtllm-build`` command, see `TensorRT-LLM documentation <https://nvidia.github.io/TensorRT-LLM/latest/architecture/checkpoint.html#build-checkpoint-into-tensorrt-engine>`_:
 
 .. code-block:: bash
 
@@ -152,7 +152,7 @@ The example below shows how to perform PTQ and QAT on a Supervised Finetuned Lla
 The script is tested using tensor parallelism of 8 on 8x RTX 6000 Ada 48GB GPUs. Alternatively, a single DGX A100 node with 8x 40GB GPUs can be used for the same purpose.
 For bigger models like Llama2 70B, you may need to use one or more DGX H100 nodes with 8x 80GB GPUs each.
 
-The example is a modified version of the `SFT with Llama 2 playbook <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/llama2sft.html>`_.
+The example is a modified version of the `SFT with Llama 2 playbook <https://docs.nvidia.com/nemo-framework/user-guide/24.07/playbooks/llama2sft.html>`_.
 Please refer to the playbook for more details on setting up a BF16 NeMo model and the ``databricks-dolly-15k`` instruction dataset.
 
 First we will run the SFT example command from the playbook as-is to train a Llama2 7B SFT model for 100 steps.

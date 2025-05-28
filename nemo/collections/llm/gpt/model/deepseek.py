@@ -13,7 +13,7 @@
 # limitations under the License.
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from functools import cached_property, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
@@ -45,6 +45,7 @@ from nemo.utils import logging
 if TYPE_CHECKING:
     from megatron.core.transformer import ModuleSpec
     from transformers import AutoModelForCausalLM
+    from transformers import DeepseekV3Config as HFDeepseekV3Config
 
     from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
@@ -472,6 +473,28 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
             type(hf_model).register_for_auto_class("AutoModelForCausalLM")
             return hf_model
 
+    def _detect_hf_deepseek_version(self, source_config: Dict[str, Any]) -> str:
+        """
+        Detect the HF DeepSeek version based on the source NeMo config.
+
+        Args:
+            source_config (Dict[str, Any]): The source NeMo model config.
+
+        Returns:
+            str: The DeepSeek version in the Hugging Face Hub convention.
+        """
+        if source_config['moe_router_enable_expert_bias']:
+            target_model_name = "deepseek-ai/DeepSeek-V3"
+        elif source_config['q_lora_rank'] is not None:
+            target_model_name = "deepseek-ai/DeepSeek-V2"
+        else:
+            target_model_name = "deepseek-ai/DeepSeek-V2-Lite"
+        logging.info(
+            f"Your model is determined to be {target_model_name} based on the config. If this is not correct, "
+            f"please pass in a local HF checkpoint."
+        )
+        return target_model_name
+
     def ckpt_load(self, path: Path) -> Tuple[Dict, Dict]:
         """
         This function loads the state dict directly from a distributed checkpoint, and modify the state dict
@@ -511,21 +534,12 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
         logging.info("DeepSeek NeMo checkpoint loaded.")
         if target_model_name is None:
             # Before DeepSeek is fully supported by HF, it is necessary to pass in a local HF checkpoint that
-            # is used to initialize the HF model. The following
+            # is used to initialize the HF model.
             logging.warning(
                 "Before DeepSeek is officially supported in HF, you should pass in a local HF "
                 "checkpoint using llm.export_ckpt(..., target_model_name=<local hf path>)"
             )
-            if source_config['moe_router_enable_expert_bias']:
-                target_model_name = "deepseek-ai/DeepSeek-V3"
-            elif source_config['q_lora_rank'] is not None:
-                target_model_name = "deepseek-ai/DeepSeek-V2"
-            else:
-                target_model_name = "deepseek-ai/DeepSeek-V2-Lite"
-            logging.info(
-                f"Your model is determined to be {target_model_name} based on the config. If this is not correct, "
-                f"please pass in a local HF checkpoint."
-            )
+            target_model_name = self._detect_hf_deepseek_version(source_config)
 
         target = self.init(torch_dtype_from_dict_config(source_config), model_name=target_model_name)
         target = self.convert_state(source, target, source_config)
@@ -638,6 +652,60 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
     @property
     def tokenizer(self) -> 'AutoTokenizer':
         return io.load_context(self, subpath="model").tokenizer
+
+    @property
+    def config(self) -> "HFDeepseekV3Config":
+        """Create a HF DeepseekV3Config from the NeMo model config.
+
+        Translates the NeMo configuration parameters to the equivalent HF
+        configuration.
+
+        Currently only supports DeepseekV3Config based on availability
+        in the Transformers library.
+
+        Returns:
+            HFDeepseekV3Config: HF configuration for DeepSeekV3 models
+        """
+        # TODO: Get config for all DeepSeek model variants once available in transformers
+
+        from transformers import DeepseekV3Config as HFDeepseekV3Config
+
+        source: DeepSeekV3Config = io.load_context(str(self)).model.config
+
+        target_model_name = self._detect_hf_deepseek_version(asdict(source))
+        if target_model_name != "deepseek-ai/DeepSeek-V3":
+            raise ValueError(f"Getting config for model other than {target_model_name} is not supported.")
+
+        # Figure out the number of zeros in the prefix of moe_layer_freq array
+        # for the HF first_k_dense_replace parameter and validate the reminder:
+        k = 0
+        while k < len(source.moe_layer_freq) and source.moe_layer_freq[k] == 0:
+            k += 1
+        assert all(x == 1 for x in source.moe_layer_freq[k:])
+
+        return HFDeepseekV3Config(
+            architectures=["DeepseekV3ForCausalLM"],
+            num_hidden_layers=source.num_layers,
+            hidden_size=source.hidden_size,
+            intermediate_size=source.ffn_hidden_size,
+            num_attention_heads=source.num_attention_heads,
+            q_lora_rank=source.q_lora_rank,
+            qk_nope_head_dim=source.qk_head_dim,
+            qk_rope_head_dim=source.qk_pos_emb_head_dim,
+            v_head_dim=source.v_head_dim,
+            kv_lora_rank=source.kv_lora_rank,
+            num_key_value_heads=source.kv_channels,
+            n_routed_experts=source.num_moe_experts,
+            moe_intermediate_size=source.moe_ffn_hidden_size,
+            first_k_dense_replace=k,
+            num_experts_per_tok=source.moe_router_topk,
+            n_group=source.moe_router_num_groups,
+            topk_group=source.moe_router_group_topk,
+            routed_scaling_factor=source.moe_router_topk_scaling_factor,
+            aux_loss_alpha=source.moe_aux_loss_coeff,
+            max_position_embeddings=source.max_position_embeddings,
+            vocab_size=self.tokenizer.vocab_size,
+        )
 
 
 __all__ = [

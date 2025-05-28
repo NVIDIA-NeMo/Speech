@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from contextlib import contextmanager, nullcontext
+from typing import Any
 
 import torch
 
@@ -100,3 +101,19 @@ def monkeypatched(object, name, patch):
     setattr(object, name, patch)
     yield object
     setattr(object, name, pre_patched_value)
+
+
+def maybe_cast_to_type(x: Any, type_: type) -> Any:
+    """Try to cast a value to int, if it fails, return the original value.
+
+    Args:
+        x (Any): The value to be casted.
+        type_ (type): The type to cast to, must be a callable.
+
+    Returns:
+        Any: The casted value or the original value if casting fails.
+    """
+    try:
+        return type_(x)
+    except Exception:
+        return x

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import argparse
+import os
 
 from nemo.collections import llm
 from nemo.collections.llm.modelopt import ExportConfig, QuantizationConfig
@@ -72,7 +73,6 @@ def get_args():
         "--algorithm",
         type=str,
         default="fp8",
-        choices=QUANT_CFG_CHOICES_LIST,
         help="TensorRT-Model-Optimizer quantization algorithm",
     )
     parser.add_argument(
@@ -112,6 +112,12 @@ def get_args():
     )
     parser.add_argument("--legacy_ckpt", help="Load ckpt saved with TE < 1.14", action="store_true")
     args = parser.parse_args()
+
+    if args.algorithm not in QUANT_CFG_CHOICES_LIST and not os.path.isfile(args.algorithm):
+        raise ValueError(
+            f"Quantization algorithm {args.algorithm} is not supported: choose one of {QUANT_CFG_CHOICES_LIST} "
+            "or provide a path to a JSON file with a quantization configuration."
+        )
 
     if args.export_path is None:
         if args.export_format == "trtllm":

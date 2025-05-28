@@ -79,14 +79,6 @@
   "info": "Anchor 'download' not found"
 }
 {
-  "filename": "nlp/quantization.rst",
-  "lineno": 155,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/llama2sft.html",
-  "info": "404 Client Error: Not Found for url: https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/llama2sft.html"
-}
-{
   "filename": "multimodal/mllm/intro.rst",
   "lineno": 4,
   "status": "broken",
@@ -125,14 +117,6 @@
   "code": 0,
   "uri": "https://github.com/NVIDIA/NeMo#installation",
   "info": "Anchor 'installation' not found"
-}
-{
-  "filename": "nlp/quantization.rst",
-  "lineno": 118,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/llama#fp8-post-training-quantization",
-  "info": "Anchor 'fp8-post-training-quantization' not found"
 }
 {
   "filename": "multimodal/text2img/insp2p.rst",

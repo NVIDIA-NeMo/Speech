@@ -166,6 +166,7 @@ def main(args):
             overlap_param_gather=True,
             average_in_collective=True,
         ),
+        ckpt_load_strictness="log_all",
     )
 
     # Checkpoint callback setup

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Tuple, Union
 
 import torch
+import transformers
 from megatron.core.transformer.transformer_config import TransformerConfig
 from transformers import Qwen2VLConfig as HFQwen2VLConfig
 from transformers import Qwen2VLForConditionalGeneration
@@ -186,6 +187,16 @@ class HFQwen2VLImporter(io.ModelConnector["Qwen2VLForConditionalGeneration", Qwe
     @property
     def config(self) -> Qwen2VLConfig:
         # pylint: disable=C0115,C0116
+        from packaging.version import Version
+
+        if Version(transformers.__version__) > Version('4.51.3'):
+            # Todo: need to fix with newest version of transformers
+            raise ValueError(
+                f"Current version of transformers is {transformers.__version__},"
+                f"Please lower the version to be <= 4.51.3"
+            )
+
+        from transformers import Qwen2VLConfig as HFQwen2VLConfig
 
         hf_config = HFQwen2VLConfig.from_pretrained(str(self))
 
@@ -196,23 +207,27 @@ class HFQwen2VLImporter(io.ModelConnector["Qwen2VLForConditionalGeneration", Qwe
                 base //= 2
             return base
 
+        text_config = hf_config
         language_transformer_config = Qwen2Config(
-            num_layers=hf_config.num_hidden_layers,
-            hidden_size=hf_config.hidden_size,
-            ffn_hidden_size=hf_config.intermediate_size,
-            num_attention_heads=hf_config.num_attention_heads,
-            init_method_std=hf_config.initializer_range,
-            layernorm_epsilon=hf_config.rms_norm_eps,
-            num_query_groups=hf_config.num_key_value_heads,
-            rotary_base=hf_config.rope_theta,
+            num_layers=text_config.num_hidden_layers,
+            hidden_size=text_config.hidden_size,
+            ffn_hidden_size=text_config.intermediate_size,
+            num_attention_heads=text_config.num_attention_heads,
+            init_method_std=text_config.initializer_range,
+            layernorm_epsilon=text_config.rms_norm_eps,
+            num_query_groups=text_config.num_key_value_heads,
+            rotary_base=text_config.rope_theta,
             gated_linear_unit=True,
-            make_vocab_size_divisible_by=make_vocab_size_divisible_by(hf_config.vocab_size),
-            share_embeddings_and_output_weights=hf_config.tie_word_embeddings,
-            vocab_size=hf_config.vocab_size,
-            fp16=(dtype_from_hf(hf_config) == torch.float16),
-            bf16=(dtype_from_hf(hf_config) == torch.bfloat16),
-            params_dtype=dtype_from_hf(hf_config),
+            make_vocab_size_divisible_by=make_vocab_size_divisible_by(text_config.vocab_size),
+            share_embeddings_and_output_weights=text_config.tie_word_embeddings,
+            vocab_size=text_config.vocab_size,
+            fp16=(dtype_from_hf(text_config) == torch.float16),
+            bf16=(dtype_from_hf(text_config) == torch.bfloat16),
+            params_dtype=dtype_from_hf(text_config),
         )
+
+        # Use MCore instead of Pytorch
+        vision_config = hf_config.vision_config
 
         # Use MCore instead of Pytorch
         vision_transformer_config = Qwen2VLVisionConfig(
@@ -220,10 +235,10 @@ class HFQwen2VLImporter(io.ModelConnector["Qwen2VLForConditionalGeneration", Qwe
             bf16=(dtype_from_hf(hf_config) == torch.bfloat16),
             params_dtype=dtype_from_hf(hf_config),
         )
-        merge_hidden_size = hf_config.vision_config.embed_dim * (hf_config.vision_config.spatial_merge_size**2)
+        merge_hidden_size = vision_config.embed_dim * (vision_config.spatial_merge_size**2)
         vision_projection_config = MultimodalProjectorConfig(
             input_size=merge_hidden_size,
-            hidden_size=hf_config.vision_config.hidden_size,
+            hidden_size=vision_config.hidden_size,
             ffn_hidden_size=merge_hidden_size,
             projector_type="mcore_mlp",
             fp16=(dtype_from_hf(hf_config) == torch.float16),

@@ -12,14 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import base64
 import dataclasses
-import re
 from enum import Enum, auto
-from io import BytesIO
 from typing import Any, List, Optional, Union
 
-from PIL import Image
 from transformers import AutoTokenizer
 
 
@@ -131,126 +127,6 @@ class Conversation:
     def append_message(self, role, message):
         # pylint: disable=C0115,C0116
         self.messages.append([role, message])
-
-    def process_image(self, image, image_process_mode, return_pil=False, image_format="PNG"):
-        # pylint: disable=C0115,C0116
-        if image_process_mode == "Pad":
-
-            def expand2square(pil_img, background_color=(122, 116, 104)):
-                width, height = pil_img.size
-                if width == height:
-                    return pil_img
-                elif width > height:
-                    result = Image.new(pil_img.mode, (width, width), background_color)
-                    result.paste(pil_img, (0, (width - height) // 2))
-                    return result
-                else:
-                    result = Image.new(pil_img.mode, (height, height), background_color)
-                    result.paste(pil_img, ((height - width) // 2, 0))
-                    return result
-
-            image = expand2square(image)
-        elif image_process_mode in ["Default", "Crop"]:
-            pass
-        elif image_process_mode == "Resize":
-            image = image.resize((336, 336))
-        else:
-            raise ValueError(f"Invalid image_process_mode: {image_process_mode}")
-
-        if type(image) is not Image.Image:
-            image = Image.open(image).convert("RGB")
-
-        max_hw, min_hw = max(image.size), min(image.size)
-        aspect_ratio = max_hw / min_hw
-        max_len, min_len = 1008, 672
-        shortest_edge = int(min(max_len / aspect_ratio, min_len, min_hw))
-        longest_edge = int(shortest_edge * aspect_ratio)
-        W, H = image.size
-        if H > W:
-            H, W = longest_edge, shortest_edge
-        else:
-            H, W = shortest_edge, longest_edge
-        image = image.resize((W, H))
-        if return_pil:
-            return image
-        else:
-            buffered = BytesIO()
-            image.save(buffered, format=image_format)
-            img_b64_str = base64.b64encode(buffered.getvalue()).decode()
-            return img_b64_str
-
-    def get_images(self, return_pil=False, return_path=False):
-        # pylint: disable=C0115,C0116
-        images = []
-        for i, (role, msg) in enumerate(self.messages[self.offset :]):
-            if i % 2 == 0:
-                if type(msg) is tuple:
-                    msg, image, image_process_mode = msg
-                    if type(image) != list:
-                        image = [image]
-                    for img in image:
-                        if not return_path:
-                            img = self.process_image(img, image_process_mode, return_pil=return_pil)
-                        images.append(img)
-        return images
-
-    def to_gradio_chatbot(self):
-        # pylint: disable=C0115,C0116
-        ret = []
-        for i, (role, msg) in enumerate(self.messages[self.offset :]):
-            if i % 2 == 0:
-                if type(msg) is tuple:
-                    msg, image, image_process_mode = msg
-                    if type(image) != list:
-                        image = [image]
-                    if len(image) == 1:
-                        msg = "<image>\n" + msg.replace("<image>", "").strip()
-                    else:
-                        msg = re.sub(r"(<image>)\n(?=<image>)", r"\1 ", msg)
-                    for img in image:
-                        img_b64_str = self.process_image(img, "Default", return_pil=False, image_format="JPEG")
-                        img_str = f'<img src="data:image/jpeg;base64,{img_b64_str}"/>'
-                        msg = msg.replace("<image>", img_str, 1).strip()
-                    if len(msg) > 0:
-                        ret.append([msg, None])
-                else:
-                    ret.append([msg, None])
-            else:
-                ret[-1][-1] = msg
-        return ret
-
-    def copy(self):
-        # pylint: disable=C0115,C0116
-        return Conversation(
-            system=self.system,
-            roles=self.roles,
-            messages=[[x, y] for x, y in self.messages],
-            offset=self.offset,
-            sep_style=self.sep_style,
-            sep=self.sep,
-            sep2=self.sep2,
-            version=self.version,
-        )
-
-    def dict(self):
-        # pylint: disable=C0115,C0116
-        if len(self.get_images()) > 0:
-            return {
-                "system": self.system,
-                "roles": self.roles,
-                "messages": [[x, y[0] if type(y) is tuple else y] for x, y in self.messages],
-                "offset": self.offset,
-                "sep": self.sep,
-                "sep2": self.sep2,
-            }
-        return {
-            "system": self.system,
-            "roles": self.roles,
-            "messages": self.messages,
-            "offset": self.offset,
-            "sep": self.sep,
-            "sep2": self.sep2,
-        }
 
 
 conv_qwen2vl = Conversation(

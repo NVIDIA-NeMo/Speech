@@ -332,6 +332,48 @@ class FluxControlnetForwardWrapper(VisionModule):
         if flux_controlnet_config.load_from_flux_transformer:
             self.flux_controlnet.load_from_flux_transformer(self.flux)
 
+    def forward(
+        self,
+        packed_noisy_model_input,
+        control_image,
+        prompt_embeds,
+        pooled_prompt_embeds,
+        timesteps,
+        latent_image_ids,
+        text_ids,
+        guidance_vec,
+    ):
+        '''
+        Forward pass for the FluxControlnetForwardWrapper model.
+        '''
+        # NOTE: This module is wrapped with Fully Sharded Data Parallel (FSDP).
+        # To ensure that FSDP can accurately capture the forward and backward
+        # processes, it is crucial that the output tensor from this forward
+        # function can be used to construct a complete autograd graph.
+        controlnet_double_block_samples, controlnet_single_block_samples = self.flux_controlnet(
+            img=packed_noisy_model_input,
+            controlnet_cond=control_image,
+            txt=prompt_embeds,
+            y=pooled_prompt_embeds,
+            timesteps=timesteps / 1000,
+            img_ids=latent_image_ids,
+            txt_ids=text_ids,
+            guidance=guidance_vec,
+        )
+        noise_pred = self.flux(
+            img=packed_noisy_model_input,
+            txt=prompt_embeds,
+            y=pooled_prompt_embeds,
+            timesteps=timesteps / 1000,
+            img_ids=latent_image_ids,
+            txt_ids=text_ids,
+            guidance=guidance_vec,
+            controlnet_double_block_samples=controlnet_double_block_samples,
+            controlnet_single_block_samples=controlnet_single_block_samples,
+        )
+
+        return noise_pred
+
 
 class MegatronFluxControlNetModel(MegatronFluxModel):
     """
@@ -394,8 +436,9 @@ class MegatronFluxControlNetModel(MegatronFluxModel):
         '''
         Calling the controlnet forward pass.
         '''
-        # FSDP module -> Bfloat16 module -> ForwardWrapper -> flux controlnet
-        return self.module.module.module.flux_controlnet(*args, **kwargs)
+        # FSDP module -> Bfloat16 module -> ForwardWrapper
+        forward_wrapper = self.module.module.module
+        return forward_wrapper(*args, **kwargs)
 
     def training_step(self, batch, batch_idx=None) -> torch.Tensor:
         '''
@@ -490,26 +533,15 @@ class MegatronFluxControlNetModel(MegatronFluxModel):
             self.autocast_dtype in (torch.half, torch.bfloat16),
             dtype=self.autocast_dtype,
         ):
-            controlnet_double_block_samples, controlnet_single_block_samples = self.forward(
-                img=packed_noisy_model_input,
-                controlnet_cond=control_image,
-                txt=prompt_embeds,
-                y=pooled_prompt_embeds,
-                timesteps=timesteps / 1000,
-                img_ids=latent_image_ids,
-                txt_ids=text_ids,
-                guidance=guidance_vec,
-            )
-            noise_pred = self.module.module.module.flux(
-                img=packed_noisy_model_input,
-                txt=prompt_embeds,
-                y=pooled_prompt_embeds,
-                timesteps=timesteps / 1000,
-                img_ids=latent_image_ids,
-                txt_ids=text_ids,
-                guidance=guidance_vec,
-                controlnet_double_block_samples=controlnet_double_block_samples,
-                controlnet_single_block_samples=controlnet_single_block_samples,
+            noise_pred = self.forward(
+                packed_noisy_model_input=packed_noisy_model_input,
+                control_image=control_image,
+                prompt_embeds=prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+                timesteps=timesteps,
+                latent_image_ids=latent_image_ids,
+                text_ids=text_ids,
+                guidance_vec=guidance_vec,
             )
 
             target = (noise - latents).transpose(0, 1)

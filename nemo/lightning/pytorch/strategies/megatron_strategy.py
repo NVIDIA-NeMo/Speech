@@ -357,6 +357,14 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             raise ValueError(f"Invalid DDP type: {ddp}")
 
         self._fsdp = None
+
+        if fsdp is None and self.ddp_config and self.ddp_config.use_custom_fsdp:
+            logging.warning(
+                "FSDP option is not set but ddp_config.use_custom_fsdp is set to true. "
+                "Setting FSDP option to megatron"
+            )
+            fsdp = 'megatron'
+
         if fsdp == "pytorch":
             raise NotImplementedError("PyTorch FSDP2 is not supported with MegatronParallel.")
         elif fsdp == "megatron":

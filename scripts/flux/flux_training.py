@@ -102,6 +102,7 @@ def flux_training() -> run.Partial:
                     overlap_param_gather=True,
                     overlap_grad_reduce=True,
                 ),
+                fsdp='megatron',
             ),
             plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
             num_sanity_val_steps=0,

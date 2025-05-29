@@ -193,7 +193,7 @@ class HFPhi3Exporter(io.ModelConnector[Phi3Model, "Phi3ForCausalLM"]):
     @property
     def config(self) -> "HFPhi3Config":
         # pylint: disable=C0115,C0116
-        source: Phi3Config = io.load_context(str(self)).model.config
+        source: Phi3Config = io.load_context(str(self), subpath="model.config")
 
         from transformers import Phi3Config as HFPhi3Config
 

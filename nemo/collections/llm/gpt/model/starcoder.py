@@ -327,7 +327,7 @@ class HFStarcoderExporter(io.ModelConnector[StarcoderModel, "GPTBigCodeForCausal
         """
         from transformers import GPTBigCodeConfig as HFStarcoderConfig
 
-        source: StarcoderConfig = io.load_context(str(self)).model.config
+        source: StarcoderConfig = io.load_context(str(self), subpath="model.config")
 
         return HFStarcoderConfig(
             architectures=["GPTBigCodeForCausalLM"],

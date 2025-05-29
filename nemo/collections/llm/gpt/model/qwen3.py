@@ -401,7 +401,7 @@ class HFQwen3Exporter(io.ModelConnector[Qwen3Model, "AutoModelForCausalLM"]):
         from transformers import Qwen3Config as HFQwen3Config
         from transformers import Qwen3MoeConfig as HFQwen3MoeConfig
 
-        source: Qwen3Config = io.load_context(str(self)).model.config
+        source: Qwen3Config = io.load_context(str(self), subpath="model.config")
         is_moe = source.num_moe_experts is not None
         hf_config_cls = (
             partial(

@@ -371,7 +371,7 @@ class HFQwen2Exporter(io.ModelConnector[Qwen2Model, "AutoModelForCausalLM"]):
     def config(self) -> "HFQwen2Config":
         from transformers import Qwen2Config as HFQwen2Config
 
-        source: Qwen2Config = io.load_context(str(self)).model.config
+        source: Qwen2Config = io.load_context(str(self), subpath="model.config")
 
         return HFQwen2Config(
             architectures=["Qwen2ForCausalLM"],

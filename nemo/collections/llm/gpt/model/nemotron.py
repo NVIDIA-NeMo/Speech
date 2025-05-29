@@ -414,7 +414,7 @@ class HFNemotronExporter(io.ModelConnector[NemotronModel, "NemotronForCausalLM"]
         """
         from transformers import NemotronConfig as HFNemotronConfig
 
-        source: NemotronConfig = io.load_context(str(self)).model.config
+        source: NemotronConfig = io.load_context(str(self), subpath="model.config")
 
         return HFNemotronConfig(
             num_hidden_layers=source.num_layers,

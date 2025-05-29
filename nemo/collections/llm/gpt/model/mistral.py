@@ -298,7 +298,7 @@ class HFMistralExporter(io.ModelConnector[MistralModel, "MistralForCausalLM"]):
     @property
     def config(self) -> "MistralConfig":
         """ """
-        source: MistralConfig7B = io.load_context(str(self)).model.config
+        source: MistralConfig7B = io.load_context(str(self), subpath="model.config")
 
         from transformers import MistralConfig as HfMistralConfig
 

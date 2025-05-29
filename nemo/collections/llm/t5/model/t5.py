@@ -694,7 +694,7 @@ class HFT5Exporter(io.ModelConnector[T5Model, "T5ForConditionalGeneration"]):
     @property
     def config(self) -> "HFT5Config":
         """Generate NeMo Config based on HF config"""
-        source: T5Config = io.load_context(str(self)).model.config
+        source: T5Config = io.load_context(str(self), subpath="model.config")
 
         from transformers import T5Config as HFT5Config
 

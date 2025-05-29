@@ -399,7 +399,7 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
         """
         from transformers import Starcoder2Config as HFStarcoder2Config
 
-        source: Starcoder2Config = io.load_context(str(self)).model.config
+        source: Starcoder2Config = io.load_context(str(self), subpath="model.config")
 
         return HFStarcoder2Config(
             architectures=["Starcoder2ForCausalLM"],

@@ -185,7 +185,7 @@ def pretrain_recipe(
 def finetune_recipe(
     dir: Optional[str] = None,
     name: str = "default",
-    num_nodes: int = 2,
+    num_nodes: int = 8,
     num_gpus_per_node: int = 8,
     peft_scheme: Optional[str] = 'lora',
     packed_sequence: bool = False,
@@ -216,7 +216,7 @@ def finetune_recipe(
             $ nemo llm finetune --factory qwen3_235b_a22b
 
         Python API usage:
-            >>> recipe = finetune_recipe(name="qwen3_235b_a22b_finetune", num_nodes=2)
+            >>> recipe = finetune_recipe(name="qwen3_235b_a22b_finetune", num_nodes=8)
             >>> print(recipe)
 
     Note:

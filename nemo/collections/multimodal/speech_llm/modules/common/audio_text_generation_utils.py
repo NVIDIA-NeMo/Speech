@@ -257,7 +257,7 @@ def synced_generate(
     for tokens, lengths, output_logits, full_logits, audio_feat_lens in batch_token_iterator:
         context_length += 1
     context_length += audio_feat_lens.min().item()
-    if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
+    if parallel_state.is_pipeline_last_stage():
         src = parallel_state.get_pipeline_model_parallel_last_rank()
         group = parallel_state.get_embedding_group()
         if compute_logprob:
@@ -268,7 +268,7 @@ def synced_generate(
             torch.distributed.broadcast(full_logits, src, group)
 
     else:
-        if parallel_state.is_pipeline_first_stage(ignore_virtual=True):
+        if parallel_state.is_pipeline_first_stage():
             src = parallel_state.get_pipeline_model_parallel_last_rank()
             group = parallel_state.get_embedding_group()
 
@@ -599,7 +599,7 @@ def sample_sequence_batch(
                 compute_attention_mask,
             )
             output = inference_strategy.forward_step(batch, tensor_shape)
-            if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
+            if parallel_state.is_pipeline_last_stage():
                 if compute_logprob:
                     output = output[0]['logits']
                     output = tensor_parallel.gather_from_tensor_model_parallel_region(output)
@@ -699,7 +699,7 @@ def sample_sequence_batch(
                     yield tokens, lengths, None, None, audio_feat_lens
 
             else:
-                if parallel_state.is_pipeline_first_stage(ignore_virtual=True):
+                if parallel_state.is_pipeline_first_stage():
                     src = parallel_state.get_pipeline_model_parallel_last_rank()
                     group = parallel_state.get_embedding_group()
                     new_tokens = torch.empty_like(tokens[:, context_length])

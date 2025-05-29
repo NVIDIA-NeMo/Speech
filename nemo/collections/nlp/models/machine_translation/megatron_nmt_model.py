@@ -466,7 +466,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
         loss_list = []
         bleu_score_list = []
         for dataloader_idx, output in enumerate(outputs):
-            if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+            if parallel_state.is_pipeline_last_stage():
                 # only the last pipeline parallel stages return loss
                 averaged_loss = torch.stack([x['loss'] for x in output]).mean()
             else:

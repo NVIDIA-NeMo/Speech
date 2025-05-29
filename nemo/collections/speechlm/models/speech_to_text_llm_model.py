@@ -98,7 +98,7 @@ def speech_to_text_llm_data_step(dataloader_iter) -> Dict[str, Any]:
         ]
     )
     # "context", "context_length", "answers", "max_length",
-    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
+    if parallel_state.is_pipeline_first_stage():
         required_keys.update(
             (
                 "audio_signal",
@@ -114,7 +114,7 @@ def speech_to_text_llm_data_step(dataloader_iter) -> Dict[str, Any]:
                 "context_lengths",
             )
         )
-    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+    if parallel_state.is_pipeline_last_stage():
         required_keys.update(("labels", "loss_mask"))
 
     _batch = {
@@ -1050,7 +1050,11 @@ class SpeechToTextLLM(SpeechLanguageModel):
                 continue
             # Expand on_validation_epoch_end from parent class MegatronGPTModel as on_validation_epoch_end doesnt take outputs arg
             loss_vals = [x['loss'].view(-1, 1) for x in output]  # each loss is [1, B]
-            if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+
+            assert (
+                getattr(self.config, "virtual_pipeline_model_parallel_size", None) is None
+            ), "vpp is not supported yet in SpeechToTextLLMModel"
+            if parallel_state.is_pipeline_last_stage():
                 # only the last pipeline parallel stages return loss with their batch size
                 loss = torch.vstack(loss_vals).mean().type(torch.float32).cuda()
             else:

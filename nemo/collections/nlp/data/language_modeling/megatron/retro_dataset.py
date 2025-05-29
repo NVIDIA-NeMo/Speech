@@ -205,7 +205,7 @@ def gpt_train_valid_test_datasets_provider(cfg, train_val_test_num_samples, toke
 
     def is_dataset_built_on_rank():
         return (
-            mpu.is_pipeline_first_stage(ignore_virtual=False) or mpu.is_pipeline_last_stage(ignore_virtual=False)
+            mpu.is_pipeline_first_stage() or mpu.is_pipeline_last_stage()
         ) and mpu.get_tensor_model_parallel_rank() == 0
 
     data_config = MultiSplitGPTDatasetConfig(

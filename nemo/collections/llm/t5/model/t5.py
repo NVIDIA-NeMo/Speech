@@ -86,9 +86,9 @@ def t5_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
     # set up forward arguments for pipeline parallelism
     required_keys = set()
     required_keys.update(["enc_mask", "dec_mask", "enc_dec_mask"])
-    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
+    if parallel_state.is_pipeline_first_stage():
         required_keys.update(("text_enc", "text_dec"))
-    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+    if parallel_state.is_pipeline_last_stage():
         required_keys.update(("labels", "loss_mask"))
 
     output = {key: val if key in required_keys else None for key, val in _batch.items()}
@@ -182,9 +182,13 @@ class T5Config(TransformerConfig, io.IOMixin):
     vocab_size: Optional[int] = None
     tp_comm_overlap_cfg: Optional[Union[str, dict[str, Any]]] = None
 
-    def configure_model(self, tokenizer) -> "MCoreT5Model":
+    def configure_model(self, tokenizer, vp_stage: Optional[int] = None) -> "MCoreT5Model":
         """Setup the T5 Model based on config definition."""
 
+        assert self.virtual_pipeline_model_parallel_size is None and vp_stage is None, (
+            "Virtual pipeline model parallelism is temporarily unsupported in T5 "
+            "due to upstream MCore T5Model API dependency"
+        )
         vp_size = self.virtual_pipeline_model_parallel_size
         if vp_size:
             p_size = self.pipeline_model_parallel_size
@@ -227,8 +231,8 @@ class T5Config(TransformerConfig, io.IOMixin):
             position_embedding_type=self.position_embedding_type,
             rotary_percent=self.rotary_percent,
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-            pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
-            post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
+            pre_process=parallel_state.is_pipeline_first_stage(),
+            post_process=parallel_state.is_pipeline_last_stage(),
         )
 
         return model

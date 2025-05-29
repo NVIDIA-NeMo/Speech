@@ -447,7 +447,10 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
             if len(loss_vals) == 0:
                 logging.warning("validation_epoch_end: outputs is empty")
                 return
-            if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+            assert (
+                self.cfg.get("virtual_pipeline_model_parallel_size", None) is None
+            ), "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
+            if parallel_state.is_pipeline_last_stage():
                 # only the last pipeline parallel stages return loss
                 loss = torch.stack(loss_vals).mean()
             else:

@@ -11,13 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# pylint: skip-file
 
 
 from typing import Dict, Literal, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from diffusers.models.embeddings import Timesteps
 from einops import rearrange, repeat
 from megatron.core import parallel_state, tensor_parallel
@@ -135,6 +136,7 @@ class DiTCrossAttentionModel(VisionModule):
         out_channels: int = 16,
         transformer_decoder_layer_spec=DiTLayerWithAdaLNspec,
         pos_embedder=dit_embeddings.SinCosPosEmb3D,
+        vp_stage: Optional[int] = None,
         **kwargs,
     ):
         super(DiTCrossAttentionModel, self).__init__(config=config)
@@ -154,6 +156,7 @@ class DiTCrossAttentionModel(VisionModule):
         self.pos_emb_cls = 'sincos'
         self.patch_spatial = patch_spatial
         self.patch_temporal = patch_temporal
+        self.vp_stage = vp_stage
 
         # megatron core pipelining currently depends on model type
         # TODO: remove this dependency ?
@@ -166,6 +169,7 @@ class DiTCrossAttentionModel(VisionModule):
             pre_process=self.pre_process,
             post_process=False,
             post_layer_norm=False,
+            vp_stage=vp_stage,
         )
 
         self.t_embedder = torch.nn.Sequential(
@@ -258,8 +262,8 @@ class DiTCrossAttentionModel(VisionModule):
             if (not hasattr(self, "pos_embedder")) or isinstance(self.pos_embedder, dit_embeddings.SinCosPosEmb3D):
                 pos_emb = None
             else:
-                ## if transformer blocks need pos_emb, then pos_embedder should
-                ## be replicated across pp ranks.
+                # if transformer blocks need pos_emb, then pos_embedder should
+                # be replicated across pp ranks.
                 pos_emb = rearrange(self.pos_embedder(pos_ids), "B S D -> S B D").contiguous()
 
         timesteps_B_D = self.t_embedder(timesteps.flatten()).to(torch.bfloat16)  # (b d_text_embedding)
@@ -356,16 +360,14 @@ class DiTCrossAttentionModel(VisionModule):
         Returns: None, acts in-place
         """
         tp_rank = parallel_state.get_tensor_model_parallel_rank()
-        vpp_rank = parallel_state.get_virtual_pipeline_model_parallel_rank()
-        vpp_rank = vpp_rank if vpp_rank else 0
-        vpp_world = parallel_state.get_virtual_pipeline_model_parallel_world_size()
-        vpp_world = vpp_world if vpp_world else 1
+        vp_stage = self.vp_stage if self.vp_stage is not None else 0
+        vp_world = self.config.get("virtual_pipeline_model_parallel_size", 1)
         pp_rank = parallel_state.get_pipeline_model_parallel_rank()
         if embedder_weight_key in sharded_state_dict:
             del sharded_state_dict[embedder_weight_key]
         replica_id = (
             tp_rank,
-            (vpp_rank + pp_rank * vpp_world),
+            (vp_stage + pp_rank * vp_world),
             parallel_state.get_data_parallel_rank(with_context_parallel=True),
         )
 

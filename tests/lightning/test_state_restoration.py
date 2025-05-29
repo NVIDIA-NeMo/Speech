@@ -137,6 +137,7 @@ def make_model_optim(tokenizer, mbs=1, gbs=2, seq_length=2048):
         layernorm_epsilon=1e-5,
         make_vocab_size_divisible_by=128,
         masked_softmax_fusion=False,
+        virtual_pipeline_model_parallel_size=None,
     )
     model = llm.GPTModel(gpt_config, tokenizer=tokenizer)
 

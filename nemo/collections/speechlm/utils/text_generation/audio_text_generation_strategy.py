@@ -76,7 +76,7 @@ class TextGenerationStrategy:
 
         if self.inference_params:
             # if last stage, then (final) output is [b, s, h], otherwise it's [s, b, h]
-            if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
+            if parallel_state.is_pipeline_last_stage():
                 self.inference_params.sequence_len_offset += output_tensor.size(1)
             else:
                 self.inference_params.sequence_len_offset += output_tensor.size(0)

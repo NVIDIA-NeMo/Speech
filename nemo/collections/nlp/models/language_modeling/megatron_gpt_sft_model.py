@@ -721,7 +721,10 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
             # Expand on_validation_epoch_end from parent class MegatronGPTModel as on_validation_epoch_end doesnt take outputs arg
             # loss = super().on_validation_epoch_end([x['loss'] for x in output])
             loss_vals = [x['loss'] for x in output]
-            if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+            assert (
+                self.cfg.get("virtual_pipeline_model_parallel_size", None) is None
+            ), "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
+            if parallel_state.is_pipeline_last_stage():
                 # only the last pipeline parallel stages return loss with their batch size
                 if self.cfg.data.get("validation_drop_last", True):
                     loss = torch.stack(loss_vals).mean()

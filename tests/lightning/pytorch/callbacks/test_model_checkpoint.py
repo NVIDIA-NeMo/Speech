@@ -119,6 +119,7 @@ class ExampleModel(pl.LightningModule, IOMixin):
                 self.bn = torch.nn.BatchNorm1d(32)
                 self.model_type = "test"
                 self.validation_step_outputs = []
+                self.vp_stage = None
 
                 class DummyConfig(ModelParallelConfig):
                     calculate_per_token_loss: bool = False

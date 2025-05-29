@@ -89,10 +89,7 @@ def use_inference_server(cfg, model, trainer):
 
     from nemo.collections.nlp.modules.common.megatron_web_server import get_chatbot_demo, get_demo
 
-    if (
-        parallel_state.is_pipeline_first_stage(ignore_virtual=True)
-        and parallel_state.get_tensor_model_parallel_rank() == 0
-    ):
+    if parallel_state.is_pipeline_first_stage() and parallel_state.get_tensor_model_parallel_rank() == 0:
         if cfg.web_server:
             if cfg.chat:
                 defaults = {

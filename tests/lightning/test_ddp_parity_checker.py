@@ -37,7 +37,7 @@ def make_parser():
 
 def wrap_config(config, trainer):
     class ConfigWrapper(type(config)):
-        def configure_model(self, tokenizer) -> "MCoreGPTModel":
+        def configure_model(self, tokenizer, vp_stage=None) -> "MCoreGPTModel":
             return make_byzantine_model_wrapper(super().configure_model(tokenizer), trainer)
 
     config.__class__ = ConfigWrapper

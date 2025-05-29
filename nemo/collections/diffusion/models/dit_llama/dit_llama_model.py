@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from functools import partial
-from typing import Literal
+from typing import Literal, Optional
 
 from megatron.core.transformer.transformer_config import TransformerConfig
 
@@ -23,6 +23,8 @@ from nemo.collections.diffusion.models.dit_llama.dit_llama_layer_spec import get
 
 
 class DiTLlamaModel(DiTCrossAttentionModel):
+    """DiT-LLaMA model."""
+
     def __init__(
         self,
         config: TransformerConfig,
@@ -38,6 +40,7 @@ class DiTLlamaModel(DiTCrossAttentionModel):
         patch_temporal: int = 1,
         in_channels: int = 16,
         out_channels: int = 16,
+        vp_stage: Optional[int] = None,
         **kwargs,
     ):
         super().__init__(
@@ -58,5 +61,6 @@ class DiTLlamaModel(DiTCrossAttentionModel):
                 get_dit_llama_spec, num_experts=config.num_moe_experts, attn_mask_type=config.attn_mask_type
             ),
             pos_embedder=dit_embeddings.FactorizedLearnable3DEmbedding,
+            vp_stage=vp_stage,
             **kwargs,
         )

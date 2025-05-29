@@ -232,17 +232,22 @@ class HyenaConfig(TransformerConfig, io.IOMixin):
         super().__post_init__()
         self.hyena_no_weight_decay_cond_fn = hyena_no_weight_decay_cond if self.hyena_filter_no_wd else None
 
-    def configure_model(self, tokenizer) -> "MCoreHyenaModel":
+    def configure_model(self, tokenizer, vp_stage: Optional[int] = None) -> "MCoreHyenaModel":
         """
         Configures and returns a Hyena model instance based on the config settings.
 
         Args:
             tokenizer: Tokenizer to use for the model
+            vp_stage: Virtual pipeline stage
 
         Returns:
             MCoreHyenaModel: Configured Hyena model instance
         """
         self.bias_activation_fusion = False if self.remove_activation_post_first_layer else self.bias_activation_fusion
+
+        assert (
+            getattr(self, "virtual_pipeline_model_parallel_size", None) is None and vp_stage is None
+        ), "Virtual pipeline model parallelism is temporarily unsupported in Hyena."
 
         model = MCoreHyenaModel(
             self,
@@ -257,8 +262,8 @@ class HyenaConfig(TransformerConfig, io.IOMixin):
             rotary_percent=self.rotary_percent,
             rotary_base=self.rotary_base,
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-            pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
-            post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
+            pre_process=parallel_state.is_pipeline_first_stage(),
+            post_process=parallel_state.is_pipeline_last_stage(),
             share_embeddings_and_output_weights=True,
             hyena_init_method=self.hyena_init_method,
             hyena_output_layer_init_method=self.hyena_output_layer_init_method,

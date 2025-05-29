@@ -151,7 +151,7 @@ class HyenaStack(MegatronModule):
             self.transformer_config.num_layers // parallel_state.get_pipeline_model_parallel_world_size()
         )
 
-        assert parallel_state.get_virtual_pipeline_model_parallel_world_size() is None, (
+        assert getattr(self.transformer_config, 'virtual_pipeline_model_parallel_size', None) is None, (
             "The Hyena hybrid model does not currently support " "virtual/interleaved pipeline parallelism"
         )
 

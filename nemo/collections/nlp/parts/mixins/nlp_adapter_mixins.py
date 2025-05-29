@@ -115,7 +115,7 @@ class NLPAdapterModelMixin:
         return l
 
     def first_stage_of_pipeline(self):
-        return parallel_state.is_pipeline_first_stage(ignore_virtual=False)
+        return parallel_state.is_pipeline_first_stage()
 
     def _get_all_keys(
         self,
@@ -470,7 +470,7 @@ class NLPAdapterModelMixin:
         # parallel chunks (starting from model_0) but those chunks are empty, skip this function.
         # Checkpoint is loaded in on_load_checkpoint() instead.
         if len(state_dict) == 0 or (
-            parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None
+            self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None
             and "model_0" in state_dict
             and len(state_dict["model_0"]) == 0
         ):
@@ -499,7 +499,7 @@ class NLPAdapterModelMixin:
                 if use_mcore:
                     for index, module in enumerate(self.get_model_module_list()):
                         if (
-                            parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None
+                            self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None
                             and f'model_{index}' in checkpoint['state_dict']
                         ):
                             checkpoint_state_dict = checkpoint['state_dict'][f'model_{index}']
@@ -520,9 +520,7 @@ class NLPAdapterModelMixin:
                 else:
                     if isinstance(self.model, list):
                         for i in range(len(self.model)):
-                            parallel_state.set_virtual_pipeline_model_parallel_rank(i)
                             self.model[i].module.load_state_dict(checkpoint[f'model{i}'], strict=True)
-                        parallel_state.set_virtual_pipeline_model_parallel_rank(0)
         else:
             cfg_peft = self.cfg.get('peft', None)
             if cfg_peft and cfg_peft['peft_scheme'] == 'qlora':

@@ -134,7 +134,7 @@ class Llama4OmniConfig(NevaConfig):
             for attr in MODEL_CONFIG_ATTR:
                 setattr(self, attr, getattr(self.language_transformer_config, attr))
 
-    def configure_model(self, tokenizer) -> "MCoreNevaModel":
+    def configure_model(self, tokenizer, vp_stage: Optional[int] = None) -> "MCoreNevaModel":
         # pylint: disable=C0115,C0116
         self.language_transformer_config.scatter_embedding_sequence_parallel = False
         self.language_transformer_config.tensor_model_parallel_size = self.tensor_model_parallel_size
@@ -160,6 +160,10 @@ class Llama4OmniConfig(NevaConfig):
         # set token_drop setting from config
         self.language_transformer_config.moe_pad_expert_input_to_capacity = self.moe_pad_expert_input_to_capacity
         self.language_transformer_config.moe_expert_capacity_factor = self.moe_expert_capacity_factor
+
+        assert (
+            getattr(self, "virtual_pipeline_model_parallel_size", None) is None and vp_stage is None
+        ), "VP is not supported for Llama4OmniModel"
 
         model = Llama4OmniBaseModel(
             config=self,

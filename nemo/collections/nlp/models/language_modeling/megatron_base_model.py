@@ -1121,7 +1121,7 @@ class MegatronBaseModel(NLPModel):
             )
             if (
                 parallel_state.get_pipeline_model_parallel_world_size() > 1
-                and parallel_state.is_pipeline_last_stage(ignore_virtual=True)
+                and parallel_state.is_pipeline_last_stage()
                 and self.cfg.get('share_embeddings_and_output_weights', True)
             ):
                 word_embeddings_weight = (
@@ -1136,7 +1136,7 @@ class MegatronBaseModel(NLPModel):
             num_parameters_on_device = sum([p.nelement() for p in model.parameters()])
             if (
                 parallel_state.get_pipeline_model_parallel_world_size() > 1
-                and parallel_state.is_pipeline_last_stage(ignore_virtual=True)
+                and parallel_state.is_pipeline_last_stage()
                 and self.cfg.get('share_embeddings_and_output_weights', True)
             ):
                 word_embeddings_weight = (
@@ -1161,7 +1161,7 @@ class MegatronBaseModel(NLPModel):
 
         if parallel_state.get_pipeline_model_parallel_world_size() > 1 and (
             parallel_state.get_pipeline_model_parallel_rank() == self.cfg.get('pipeline_model_parallel_split_rank', 0)
-            or parallel_state.is_pipeline_last_stage(ignore_virtual=True)
+            or parallel_state.is_pipeline_last_stage()
         ):
             # If the current rank is the in the decoder first stage (decoder emb) or last rank (output layer),
             # subtract those weights since it is already accounted for in the encoder first stage.
@@ -1181,7 +1181,7 @@ class MegatronBaseModel(NLPModel):
         if (
             parallel_state.get_pipeline_model_parallel_world_size() > 1
             and parallel_state.is_pipeline_stage_before_split()
-            and not parallel_state.is_pipeline_first_stage(ignore_virtual=True)
+            and not parallel_state.is_pipeline_first_stage()
             and self.cfg.encoder.get("position_embedding_type", "learned_absolute") == "relative"
         ):
             # substract the RPE params on intermediate pipeline stages.

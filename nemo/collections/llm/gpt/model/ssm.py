@@ -212,7 +212,9 @@ class SSMConfig(TransformerConfig, io.IOMixin):
         default_factory=lambda: default_mamba_stack_spec
     )
 
-    def configure_model(self, tokenizer, pre_process=None, post_process=None) -> "MCoreMambaModel":
+    def configure_model(
+        self, tokenizer, pre_process=None, post_process=None, vp_stage: Optional[int] = None
+    ) -> "MCoreMambaModel":
         """
         Configures the model for training or inference.
         """
@@ -220,6 +222,10 @@ class SSMConfig(TransformerConfig, io.IOMixin):
         if not isinstance(mamba_stack_spec, ModuleSpec):
             mamba_stack_spec = mamba_stack_spec()
 
+        assert getattr(self, "virtual_pipeline_model_parallel_size", None) is None and vp_stage is None, (
+            "Virtual pipeline model parallelism is temporarily unsupported in SSM/Mamaba "
+            "models due to upstream MCore MambaModel API dependency"
+        )
         return MCoreMambaModel(
             self,
             mamba_stack_spec=mamba_stack_spec,
@@ -232,8 +238,8 @@ class SSMConfig(TransformerConfig, io.IOMixin):
             rotary_percent=self.rotary_percent,
             rotary_base=self.rotary_base,
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-            pre_process=pre_process or parallel_state.is_pipeline_first_stage(ignore_virtual=False),
-            post_process=post_process or parallel_state.is_pipeline_last_stage(ignore_virtual=False),
+            pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
+            post_process=post_process or parallel_state.is_pipeline_last_stage(),
         )
 
 

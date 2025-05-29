@@ -157,7 +157,7 @@ class DiTConfig(TransformerConfig, io.IOMixin):
     attn_mask_type: AttnMaskType = AttnMaskType.no_mask
 
     @override
-    def configure_model(self, tokenizer=None) -> DiTCrossAttentionModel:
+    def configure_model(self, tokenizer=None, vp_stage: Optional[int] = None) -> DiTCrossAttentionModel:
         """Configure DiT Model from MCore."""
         vp_size = self.virtual_pipeline_model_parallel_size
         if vp_size:
@@ -170,16 +170,21 @@ class DiTConfig(TransformerConfig, io.IOMixin):
             model = DiTLlamaModel
         else:
             model = DiTCrossAttentionModel
+
+        # During fake lightning initialization, pass 0 to bypass the assertion that vp_stage must be
+        # non-None when using virtual pipeline model parallelism
+        vp_stage = vp_stage or 0
         return model(
             self,
             fp16_lm_cross_entropy=self.fp16_lm_cross_entropy,
             parallel_output=self.parallel_output,
-            pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
-            post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
+            pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False, vp_stage=vp_stage),
+            post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False, vp_stage=vp_stage),
             max_img_h=self.max_img_h,
             max_img_w=self.max_img_w,
             max_frames=self.max_frames,
             patch_spatial=self.patch_spatial,
+            vp_stage=vp_stage,
         )
 
     def configure_vae(self):
@@ -321,7 +326,7 @@ class DiTModel(GPTModel):
         return self.module.forward(*args, **kwargs)
 
     def forward_step(self, batch) -> torch.Tensor:
-        if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        if parallel_state.is_pipeline_last_stage(ignore_virtual=False, vp_stage=self.vp_stage):
             output_batch, loss = self.diffusion_pipeline.training_step(batch, 0)
             loss = torch.mean(loss, dim=-1)
             return loss

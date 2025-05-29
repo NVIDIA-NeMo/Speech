@@ -239,13 +239,13 @@ class MegatronBertModel(MegatronBaseModel):
                 )
             else:
                 batch, batch_idx, dataloader_idx = next(dataloader_iter)
-                if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
+                if parallel_state.is_pipeline_first_stage():
                     tokens = batch['text'].cuda(non_blocking=True)
                     types = batch['types'].cuda(non_blocking=True)
                     sentence_order = batch['is_random'].cuda(non_blocking=True)
                     padding_mask = batch['padding_mask'].cuda(non_blocking=True)
                     loss_mask, lm_labels = None, None
-                elif parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+                elif parallel_state.is_pipeline_last_stage():
                     loss_mask = batch['loss_mask'].cuda(non_blocking=True)
                     lm_labels = batch['labels'].cuda(non_blocking=True)
                     sentence_order = batch['is_random'].cuda(non_blocking=True)
@@ -325,7 +325,10 @@ class MegatronBertModel(MegatronBaseModel):
                 lm_labels=lm_labels,
                 checkpoint_activations_all_layers=checkpoint_activations_all_layers,
             )
-        if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        assert (
+            self.cfg.get("virtual_pipeline_model_parallel_size", None) is None
+        ), "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
+        if parallel_state.is_pipeline_last_stage():
             # Return the output tensor of encoder
             # and transpose from [seq_len, batch, hidden] to [batch, seq_len, hidden]
             if torch.is_tensor(output_tensor):
@@ -510,13 +513,12 @@ class MegatronBertModel(MegatronBaseModel):
         # This should only run for models that support pipelined model parallelism
         # (BERT and GPT-2).
         if parallel_state.get_pipeline_model_parallel_world_size() > 1 and (
-            parallel_state.is_pipeline_first_stage(ignore_virtual=True)
-            or parallel_state.is_pipeline_last_stage(ignore_virtual=True)
+            parallel_state.is_pipeline_first_stage() or parallel_state.is_pipeline_last_stage()
         ):
             module_list = self.get_model_module_list()
-            if parallel_state.is_pipeline_first_stage(ignore_virtual=True):
+            if parallel_state.is_pipeline_first_stage():
                 module = module_list[0]
-            elif parallel_state.is_pipeline_last_stage(ignore_virtual=True):
+            elif parallel_state.is_pipeline_last_stage():
                 module = module_list[-1]
 
             share_embeddings = (
@@ -567,7 +569,7 @@ class MegatronBertModel(MegatronBaseModel):
 
     def on_validation_epoch_end(self):
         """Run validation epoch end aggregation."""
-        if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        if parallel_state.is_pipeline_last_stage():
             averaged_loss = torch.stack(self.validation_step_outputs).mean()
         else:
             averaged_loss = torch.tensor(0.0, dtype=torch.float32).cuda()
@@ -832,18 +834,18 @@ class MegatronBertModel(MegatronBaseModel):
                 self.setup_test_data(self.cfg.data)
 
         # when using pipeline model parallel the final stage need to initialize word embeddings
+        assert (
+            self.cfg.get("virtual_pipeline_model_parallel_size", None) is None
+        ), "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
         if parallel_state.get_pipeline_model_parallel_world_size() > 1:
             for index, module in enumerate(self.get_model_module_list()):
-                if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
-                    parallel_state.set_virtual_pipeline_model_parallel_rank(index)
+                if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
                     sync_embeddings = (
                         module.setup_embeddings_and_output_layer
                         if self.mcore_bert
                         else module.sync_initial_word_embeddings
                     )
                     sync_embeddings()
-                    if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
-                        parallel_state.set_virtual_pipeline_model_parallel_rank(0)
 
         if self.cfg.get('transformer_engine', False) or self.cfg.get('mcore_bert', False):
             self.setup_transformer_engine_tp_groups()
@@ -1033,7 +1035,7 @@ class MegatronBertModel(MegatronBaseModel):
             # pipeline parallelism is enabled
             if parallel_state.get_pipeline_model_parallel_world_size() > 1:
                 modules = self.get_model_module_list()
-                if parallel_state.is_pipeline_first_stage(ignore_virtual=True):
+                if parallel_state.is_pipeline_first_stage():
                     module = modules[0]  # only the first virtual rank has the embeddings
                     if self.cfg.get('share_embeddings_and_output_weights', True):
                         param = (
@@ -1043,7 +1045,7 @@ class MegatronBertModel(MegatronBaseModel):
                         )
                         param._disable_greedy_grad_copy = not self.megatron_amp_O2
                         param._disable_overlap_grad_sync = True
-                if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
+                if parallel_state.is_pipeline_last_stage():
                     if len(modules) > 1:
                         module = modules[-1]  # only the last virtual rank has the embeddings
                     else:
@@ -1142,18 +1144,12 @@ class MegatronBertModel(MegatronBaseModel):
             module_prefix = f'{prefix}model.'
             sharded_state_dict = {}
             for index, module in enumerate(self.get_model_module_list()):
-                if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
-                    # virtual pipline rank must be set so that GPTModel returns the correct sharded state dict
-                    parallel_state.set_virtual_pipeline_model_parallel_rank(index)
+                if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
                     module_sharded_state_dict = module.sharded_state_dict(prefix=module_prefix)
                     sharded_state_dict[f'model_{index}'] = module_sharded_state_dict
                 else:
                     module_sharded_state_dict = module.sharded_state_dict(prefix=module_prefix)
                     sharded_state_dict.update(module_sharded_state_dict)
-
-            # reset vp rank
-            if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
-                parallel_state.set_virtual_pipeline_model_parallel_rank(0)
 
             return sharded_state_dict
 
@@ -1166,9 +1162,7 @@ class MegatronBertModel(MegatronBaseModel):
         else:
             if isinstance(self.model, list):
                 for i in range(len(self.model)):
-                    parallel_state.set_virtual_pipeline_model_parallel_rank(i)
                     checkpoint[f'model{i}'] = self.model[i].module.state_dict_for_save_checkpoint()
-                parallel_state.set_virtual_pipeline_model_parallel_rank(0)
 
     def on_load_checkpoint(self, checkpoint) -> None:
         """LightningModule hook:
@@ -1193,7 +1187,7 @@ class MegatronBertModel(MegatronBaseModel):
         if self.mcore_bert:
             if 'state_dict' in checkpoint and checkpoint['state_dict']:
                 for index, module in enumerate(self.get_model_module_list()):
-                    if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
+                    if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
                         checkpoint_state_dict = checkpoint['state_dict'][f'model_{index}']
                     else:
                         checkpoint_state_dict = checkpoint['state_dict']
@@ -1208,9 +1202,7 @@ class MegatronBertModel(MegatronBaseModel):
         else:
             if isinstance(self.model, list):
                 for i in range(len(self.model)):
-                    parallel_state.set_virtual_pipeline_model_parallel_rank(i)
                     load_model_state_dict(self.model[i].module, checkpoint[f'model{i}'])
-                parallel_state.set_virtual_pipeline_model_parallel_rank(0)
 
     def build_transformer_config(self) -> TransformerConfig:
         """Builds the megatron core gpt transformer config for the model.

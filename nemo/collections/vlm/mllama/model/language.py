@@ -94,6 +94,7 @@ class CrossAttentionTextModel(MCoreGPTModel):
         rotary_percent: float = 1.0,
         rotary_base: int = 10000,
         seq_len_interpolation_factor: Optional[float] = None,
+        vp_stage: Optional[int] = None,
     ):
         super().__init__(
             config,
@@ -109,6 +110,7 @@ class CrossAttentionTextModel(MCoreGPTModel):
             rotary_percent,
             rotary_base,
             seq_len_interpolation_factor,
+            vp_stage=vp_stage,
         )
 
         # Overwrite the self.decoder

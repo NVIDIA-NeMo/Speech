@@ -396,14 +396,14 @@ class LossLoggingCallback(pl.Callback):  # noqa: D101
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):  # noqa: D102
         # Assuming the loss is computed internally and stored in pl_module
-        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage():
             if isinstance(outputs, dict):
                 outputs = outputs["loss"]
             loss = outputs
             pl_module.log("train_loss", loss, on_step=True, prog_bar=True, logger=True, rank_zero_only=True)
 
     def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):  # noqa: D102
-        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage():
             if isinstance(outputs, dict):
                 outputs = outputs["loss"]
             loss = outputs
@@ -411,21 +411,21 @@ class LossLoggingCallback(pl.Callback):  # noqa: D101
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):  # noqa: D102
         # Assuming the loss is computed internally and stored in pl_module
-        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage():
             if isinstance(outputs, dict):
                 outputs = outputs["loss"]
             loss = outputs
             self.val_losses.append(loss)
 
     def on_validation_epoch_end(self, trainer, pl_module):  # noqa: D102
-        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage():
             if len(self.val_losses) > 0:
                 avg_val_loss = torch.stack(self.val_losses).mean()
                 pl_module.log("val_loss", avg_val_loss, prog_bar=True, logger=True, rank_zero_only=True)
                 self.val_losses.clear()
 
     def on_test_epoch_end(self, trainer, pl_module):  # noqa: D102
-        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        if torch.distributed.get_rank() == 0 and parallel_state.is_pipeline_last_stage():
             if len(self.test_losses) > 0:
                 avg_test_loss = torch.stack(self.test_losses).mean()
                 pl_module.log("test_loss", avg_test_loss, prog_bar=True, logger=True, rank_zero_only=True)

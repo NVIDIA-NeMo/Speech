@@ -40,7 +40,6 @@ try:
         set_pipeline_model_parallel_world_size,
         set_tensor_model_parallel_rank,
         set_tensor_model_parallel_world_size,
-        set_virtual_pipeline_model_parallel_rank,
     )
 
     HAVE_MEGATRON_CORE = True
@@ -75,16 +74,6 @@ except (ImportError, ModuleNotFoundError):
     MCORE_MB_CALCULATOR = False
 
 
-try:
-    from megatron.core.parallel_state import set_virtual_pipeline_model_parallel_world_size
-
-    HAVE_INTERLEAVED = True
-
-except:
-
-    HAVE_INTERLEAVED = False
-
-
 def initialize_model_parallel_for_nemo(
     world_size,
     global_rank,
@@ -112,9 +101,6 @@ def initialize_model_parallel_for_nemo(
     """
     Initialize the model parallel groups for NeMo.
     """
-
-    if virtual_pipeline_model_parallel_size is not None and not HAVE_INTERLEAVED:
-        raise ValueError("set_virtual_pipeline_model_parallel_world_size is needed in megatron-core for interleaved.")
 
     # updating NeMo globals
     app_state = AppState()
@@ -167,9 +153,6 @@ def initialize_model_parallel_for_nemo(
     )
     set_pipeline_model_parallel_split_rank(app_state.pipeline_model_parallel_split_rank)
     set_pipeline_model_parallel_rank(app_state.pipeline_model_parallel_rank)
-    if HAVE_INTERLEAVED:
-        set_virtual_pipeline_model_parallel_world_size(app_state.virtual_pipeline_model_parallel_size)
-    set_virtual_pipeline_model_parallel_rank(app_state.virtual_pipeline_model_parallel_rank)
 
     tensor_parallel.random.initialize_rng_tracker(use_te_rng_tracker=use_te_rng_tracker)
     if seed is not None:

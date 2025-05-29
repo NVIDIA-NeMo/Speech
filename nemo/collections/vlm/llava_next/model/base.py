@@ -62,9 +62,9 @@ def llava_next_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
             "image_sizes",
         )
     )
-    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
+    if parallel_state.is_pipeline_first_stage():
         required_keys.update(("position_ids", "attention_mask"))
-    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+    if parallel_state.is_pipeline_last_stage():
         required_keys.update(("labels", "loss_mask", "attention_mask"))
 
     packed_seq_params = _batch.get("packed_seq_params", None)
@@ -132,7 +132,7 @@ class LlavaNextConfig(NevaConfig):
     forward_step_fn: Callable = field(default=llava_next_forward_step)
     data_step_fn: Callable = field(default=llava_next_data_step)
 
-    def configure_model(self, tokenizer) -> "MCoreLlavaNextModel":
+    def configure_model(self, tokenizer, vp_stage=None) -> "MCoreLlavaNextModel":
         """
         Configures the LLaVA Next model with the appropriate settings.
 
@@ -162,16 +162,20 @@ class LlavaNextConfig(NevaConfig):
                 self.vision_transformer_config.tensor_model_parallel_size = self.encoder_tensor_model_parallel_size
                 self.vision_projection_config.tensor_model_parallel_size = self.encoder_tensor_model_parallel_size
 
+        # During fake lightning initialization, pass 0 to bypass the assertion that vp_stage must be
+        # non-None when using virtual pipeline model parallelism
+        vp_stage = vp_stage or 0
         model = MCoreLlavaNextModel(
             config=self,
             tokenizer=tokenizer,
-            pre_process=ps.is_pipeline_first_stage(ignore_virtual=False)
+            pre_process=ps.is_pipeline_first_stage(ignore_virtual=False, vp_stage=vp_stage)
             or ps.get_pipeline_model_parallel_rank() == self.encoder_pipeline_model_parallel_size,
-            post_process=ps.is_pipeline_last_stage(ignore_virtual=False),
-            add_encoder=ps.is_pipeline_first_stage(ignore_virtual=False),
-            add_decoder=ps.is_pipeline_last_stage(ignore_virtual=False)
+            post_process=ps.is_pipeline_last_stage(ignore_virtual=False, vp_stage=vp_stage),
+            add_encoder=ps.is_pipeline_first_stage(ignore_virtual=False, vp_stage=vp_stage),
+            add_decoder=ps.is_pipeline_last_stage(ignore_virtual=False, vp_stage=vp_stage)
             or ps.get_pipeline_model_parallel_rank() >= self.encoder_pipeline_model_parallel_size,
             drop_vision_class_token=self.drop_vision_class_token,
+            vp_stage=vp_stage,
         )
 
         return model
@@ -194,6 +198,7 @@ class MCoreLlavaNextModel(MCoreNevaModel):
         add_encoder: bool = True,
         add_decoder: bool = True,
         drop_vision_class_token: bool = False,
+        vp_stage: Optional[int] = None,
     ) -> None:
         """
         Initializes the LLaVA Next model.
@@ -207,6 +212,7 @@ class MCoreLlavaNextModel(MCoreNevaModel):
             add_encoder (bool): Whether to add the encoder module.
             add_decoder (bool): Whether to add the decoder module.
             drop_vision_class_token (bool): Whether to drop the vision class token.
+            vp_stage (Optional[int]): Virtual pipeline stage.
         """
         super().__init__(
             config=config,
@@ -216,6 +222,7 @@ class MCoreLlavaNextModel(MCoreNevaModel):
             add_encoder=add_encoder,
             add_decoder=add_decoder,
             drop_vision_class_token=drop_vision_class_token,
+            vp_stage=vp_stage,
         )
         # extra image_newline learnable parameter for llava_next
         embed_std = 1 / math.sqrt(config.vision_projection_config.hidden_size)

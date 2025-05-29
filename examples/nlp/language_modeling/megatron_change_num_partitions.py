@@ -121,21 +121,6 @@ model config.
 """
 
 
-def set_virtual_parallel_rank_safely(rank: int):
-    AppState().virtual_pipeline_model_parallel_rank = rank
-
-    try:
-        from megatron.core import parallel_state
-
-        parallel_state.set_virtual_pipeline_model_parallel_rank(rank)
-
-        if rank is None:
-            parallel_state.set_virtual_pipeline_model_parallel_world_size(None)
-
-    except (ImportError, ModuleNotFoundError):
-        logging.warning("`megatron-core` not installed, cannot set virtual parallel rank !")
-
-
 #################
 ### Utilities ###
 #################
@@ -884,14 +869,13 @@ def main():
     tgt_pp_size = args.target_pipeline_model_parallel_size
     pipeline_model_parallel_split_rank = args.target_pipeline_model_parallel_split_rank
     vp_size = args.virtual_pipeline_model_parallel_size
+    assert vp_size is None, "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
     if vp_size is None:
         vp_size = 1
 
     convert_vp = vp_size > 1
     if convert_vp:
         from megatron.core import parallel_state
-
-        parallel_state.set_virtual_pipeline_model_parallel_world_size(vp_size)
 
         hparams_filepath = args.hparams_file
         if hparams_filepath is None:
@@ -988,9 +972,6 @@ def main():
     app_state.tensor_model_parallel_rank = 0
     app_state.pipeline_model_parallel_rank = 0
 
-    if vp_size > 1:
-        set_virtual_parallel_rank_safely(0)
-
     # Extract tokenizer artifact from the model to temp directory
     logging.info("Extracting tokenizer artifact from NeMo file...")
     temp_dir = tempfile.mkdtemp()
@@ -1033,8 +1014,6 @@ def main():
                 partitions[vp_idx][pp_idx] = []
 
         for vp_rank in range(vp_size):
-            if vp_size > 1:
-                set_virtual_parallel_rank_safely(vp_rank)
 
             for pp_rank in range(pp_size):
                 app_state.pipeline_model_parallel_rank = pp_rank

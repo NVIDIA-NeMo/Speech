@@ -138,7 +138,7 @@ class HyenaModel(LanguageModule):
         # MLP block, so we replicate this behavior in this implementation if remove_activation_post_first_layer.
         self.remove_activation_post_first_layer = remove_activation_post_first_layer
         if self.remove_activation_post_first_layer:
-            if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
+            if parallel_state.is_pipeline_first_stage():
                 # Skip the first layer of the global model for this activation patch.
                 start_idx = 1
             else:

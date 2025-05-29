@@ -690,8 +690,10 @@ class MegatronCLIPModel(MegatronBaseModel):
         self.mcore_gpt = cfg.get('mcore_gpt', False)
         if cfg.get('fp8', False):
             self.prev_step_training = True
-        if not self.megatron_amp_O2 and self.cfg.get('virtual_pipeline_model_parallel_size', None):
-            raise ValueError('Virtual pipeline model parallel is only supported when using megatron_amp_O2')
+
+        assert (
+            self.cfg.get('virtual_pipeline_model_parallel_size', None) is None
+        ), "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
 
         self.transformer_engine = cfg.get('transformer_engine', False)
         if self.megatron_amp_O2 and not self.transformer_engine:
@@ -1011,9 +1013,7 @@ class MegatronCLIPModel(MegatronBaseModel):
             self.prev_step_training = self.training
 
         # Optimization: Defer the embedding GEMM Wgrads of the last PP stage to pipeline flush waiting time
-        if self.cfg.get('pipeline_model_parallel_size', 1) > 1 and parallel_state.is_pipeline_last_stage(
-            ignore_virtual=True
-        ):
+        if self.cfg.get('pipeline_model_parallel_size', 1) > 1 and parallel_state.is_pipeline_last_stage():
             if (
                 self.cfg.get('defer_embedding_wgrad_compute', False) and self.mcore_gpt
             ):  # Silently ignore the optimization if MCORE is not used
@@ -1186,8 +1186,11 @@ class MegatronCLIPModel(MegatronBaseModel):
                 images = batch["images"].cuda(non_blocking=True)
                 captions = batch["captions"].cuda(non_blocking=True)
             else:
+                assert (
+                    self.cfg.get("virtual_pipeline_model_parallel_size", None) is None
+                ), "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
                 # GPT3 uses only causal mask, which doesn't need attention mask
-                if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
+                if parallel_state.is_pipeline_first_stage():
                     # Fist pipeline stage needs only the tokens and position_ids
                     images = batch["images"].cuda(non_blocking=True)
                     captions = batch["captions"].cuda(non_blocking=True)
@@ -1301,7 +1304,10 @@ class MegatronCLIPModel(MegatronBaseModel):
             self.log('imagenet_top1', imagenet_metric[0], prog_bar=True, rank_zero_only=True, batch_size=1)
             self.log('imagenet_top5', imagenet_metric[1], prog_bar=True, rank_zero_only=True, batch_size=1)
 
-        if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        assert (
+            self.cfg.get("virtual_pipeline_model_parallel_size", None) is None
+        ), "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
+        if parallel_state.is_pipeline_last_stage():
             averaged_metrics = torch.tensor(
                 [torch.stack(self.validation_step_outputs).mean()], dtype=torch.float32, device='cuda'
             )
@@ -1402,13 +1408,6 @@ class MegatronCLIPModel(MegatronBaseModel):
         if self.cfg.data.get("imagenet_val") is not None:
             self.imagenet_val = build_imagenet_validation_dataloader(self.cfg, self.tokenizer)
 
-        # when using pipeline model parallel the final stage need to initialize word embeddings
-        if parallel_state.get_pipeline_model_parallel_world_size() > 1:
-            if isinstance(self.model, list):
-                for i, module in enumerate(self.model):
-                    parallel_state.set_virtual_pipeline_model_parallel_rank(i)
-                parallel_state.set_virtual_pipeline_model_parallel_rank(0)
-
     def setup_training_data(self, cfg):
         if hasattr(self, '_train_ds') and self._train_ds is not None:
             consumed_samples = self.compute_consumed_samples(0)
@@ -1474,9 +1473,7 @@ class MegatronCLIPModel(MegatronBaseModel):
         """
         if isinstance(self.model, list):
             for i in range(len(self.model)):
-                parallel_state.set_virtual_pipeline_model_parallel_rank(i)
                 checkpoint[f'model{i}'] = self.model[i].module.state_dict_for_save_checkpoint()
-            parallel_state.set_virtual_pipeline_model_parallel_rank(0)
 
     def on_load_checkpoint(self, checkpoint) -> None:
         """LightningModule hook:
@@ -1484,9 +1481,7 @@ class MegatronCLIPModel(MegatronBaseModel):
         """
         if isinstance(self.model, list):
             for i in range(len(self.model)):
-                parallel_state.set_virtual_pipeline_model_parallel_rank(i)
                 self.model[i].module.load_state_dict(checkpoint[f'model{i}'], strict=True)
-            parallel_state.set_virtual_pipeline_model_parallel_rank(0)
 
     def parameters(self):
         if isinstance(self.model, list):

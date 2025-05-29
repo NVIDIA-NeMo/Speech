@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# pylint: disable=missing-function-docstring
 
 
 import logging
@@ -306,8 +308,8 @@ def dist_model_to_trt_llm_ckpt(
     pp_last_rank = parallel_state.get_pipeline_model_parallel_last_rank()
     pp_size = parallel_state.get_pipeline_model_parallel_world_size()
     pp_group = parallel_state.get_pipeline_model_parallel_group()
-    pp_is_last = parallel_state.is_pipeline_last_stage(ignore_virtual=True)
-    pp_is_first = parallel_state.is_pipeline_first_stage(ignore_virtual=True)
+    pp_is_last = parallel_state.is_pipeline_last_stage()
+    pp_is_first = parallel_state.is_pipeline_first_stage()
     vp_size = parallel_state.get_virtual_pipeline_model_parallel_world_size()
     if not vp_size:
         vp_size = 1

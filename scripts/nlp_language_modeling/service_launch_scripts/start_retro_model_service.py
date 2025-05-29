@@ -99,10 +99,7 @@ def main(cfg) -> None:
     model.set_inference_config(None, retrieval_service)
 
     # running text generation, use inference server
-    if (
-        parallel_state.is_pipeline_first_stage(ignore_virtual=True)
-        and parallel_state.get_tensor_model_parallel_rank() == 0
-    ):
+    if parallel_state.is_pipeline_first_stage() and parallel_state.get_tensor_model_parallel_rank() == 0:
         server = MegatronServer(model.cuda(), inference_strategy=model.inference_strategy)
         server.run("0.0.0.0", port=cfg.port)
 

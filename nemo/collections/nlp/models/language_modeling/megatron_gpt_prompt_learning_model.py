@@ -463,7 +463,10 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         if not self.validation_step_outputs:
             return
 
-        if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
+        assert (
+            self.cfg.get("virtual_pipeline_model_parallel_size", None) is None
+        ), "Virtual pipeline model parallel size is no longer supported for nemo 1.0"
+        if parallel_state.is_pipeline_last_stage():
             # only the last pipeline parallel stages return loss
             averaged_loss = torch.stack([i['loss'] for i in self.validation_step_outputs]).mean()
         else:

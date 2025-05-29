@@ -45,7 +45,7 @@ def bert_embedding_data_step(dataloder_iter) -> Dict[str, torch.Tensor]:
     required_keys.add("attention_mask")
     required_keys.add("token_type_ids")
 
-    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
+    if parallel_state.is_pipeline_first_stage():
         required_keys.add("input_ids")
 
     _batch = {key: val.cuda(non_blocking=True) if key in required_keys else None for key, val in _batch.items()}

@@ -74,16 +74,16 @@ def build_model(
         parallel_state.get_pipeline_model_parallel_world_size() > 1
         and virtual_pipeline_model_parallel_size is not None
     ):
+        raise ValueError("Virtual pipeline model parallel size is no longer supported for nemo 1.0")
         model = []
-        parallel_state.set_virtual_pipeline_model_parallel_world_size(virtual_pipeline_model_parallel_size)
         for i in range(virtual_pipeline_model_parallel_size):
-            parallel_state.set_virtual_pipeline_model_parallel_rank(i)
             model.append(
                 model_provider_func(
                     *args,
                     **kwargs,
-                    pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
-                    post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
+                    pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False, vp_stage=i),
+                    post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False, vp_stage=i),
+                    vp_stage=i,
                 )
             )
     else:
@@ -91,12 +91,12 @@ def build_model(
             model = model_provider_func(
                 *args,
                 **kwargs,
-                pre_process=parallel_state.is_pipeline_first_stage(ignore_virtual=False),
-                post_process=parallel_state.is_pipeline_last_stage(ignore_virtual=False),
+                pre_process=parallel_state.is_pipeline_first_stage(),
+                post_process=parallel_state.is_pipeline_last_stage(),
             )
         elif model_type == ModelType.encoder_and_decoder:
-            pre_process = parallel_state.is_pipeline_first_stage(ignore_virtual=False)
-            post_process = parallel_state.is_pipeline_last_stage(ignore_virtual=False)
+            pre_process = parallel_state.is_pipeline_first_stage()
+            post_process = parallel_state.is_pipeline_last_stage()
             # `add_encoder` & `add_decoder` logic.
             add_encoder, add_decoder = True, True
             if parallel_state.get_pipeline_model_parallel_world_size() > 1:

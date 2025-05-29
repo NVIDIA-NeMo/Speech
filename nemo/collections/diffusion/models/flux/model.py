@@ -14,6 +14,7 @@
 
 import math
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -21,6 +22,7 @@ from typing import Callable, Optional
 import lightning.pytorch as L
 import numpy as np
 import torch
+from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
 from megatron.core.models.common.vision_module.vision_module import VisionModule
@@ -239,6 +241,36 @@ class Flux(VisionModule):
                 save_converted_model_to=self.config.save_converted_model_to,
             )
 
+    def get_fp8_context(self):
+        # This is first and last 2 for mamba
+        if not self.config.fp8:
+            fp8_context = nullcontext()
+        else:
+            import transformer_engine  # To keep out TE dependency when not training in fp8
+
+            if self.config.fp8 == "e4m3":
+                fp8_format = transformer_engine.common.recipe.Format.E4M3
+            elif self.config.fp8 == "hybrid":
+                fp8_format = transformer_engine.common.recipe.Format.HYBRID
+            else:
+                raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
+
+            fp8_recipe = transformer_engine.common.recipe.DelayedScaling(
+                margin=self.config.fp8_margin,
+                interval=self.config.fp8_interval,
+                fp8_format=fp8_format,
+                amax_compute_algo=self.config.fp8_amax_compute_algo,
+                amax_history_len=self.config.fp8_amax_history_len,
+                override_linear_precision=(False, False, not self.config.fp8_wgrad),
+            )
+            fp8_group = None
+            if parallel_state.model_parallel_is_initialized():
+                fp8_group = parallel_state.get_amax_reduction_group(with_context_parallel=True)
+            fp8_context = transformer_engine.pytorch.fp8_autocast(
+                enabled=True, fp8_recipe=fp8_recipe, fp8_group=fp8_group
+            )
+        return fp8_context
+
     def forward(
         self,
         img: torch.Tensor,
@@ -290,37 +322,39 @@ class Flux(VisionModule):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         rotary_pos_emb = self.pos_embed(ids)
         for id_block, block in enumerate(self.double_blocks):
-            hidden_states, encoder_hidden_states = block(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                rotary_pos_emb=rotary_pos_emb,
-                emb=vec_emb,
-            )
+            with self.get_fp8_context():
+                hidden_states, encoder_hidden_states = block(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    rotary_pos_emb=rotary_pos_emb,
+                    emb=vec_emb,
+                )
 
-            if controlnet_double_block_samples is not None:
-                interval_control = len(self.double_blocks) / len(controlnet_double_block_samples)
-                interval_control = int(np.ceil(interval_control))
-                hidden_states = hidden_states + controlnet_double_block_samples[id_block // interval_control]
+                if controlnet_double_block_samples is not None:
+                    interval_control = len(self.double_blocks) / len(controlnet_double_block_samples)
+                    interval_control = int(np.ceil(interval_control))
+                    hidden_states = hidden_states + controlnet_double_block_samples[id_block // interval_control]
 
         hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=0)
 
         for id_block, block in enumerate(self.single_blocks):
-            hidden_states, _ = block(
-                hidden_states=hidden_states,
-                rotary_pos_emb=rotary_pos_emb,
-                emb=vec_emb,
-            )
-
-            if controlnet_single_block_samples is not None:
-                interval_control = len(self.single_blocks) / len(controlnet_single_block_samples)
-                interval_control = int(np.ceil(interval_control))
-                hidden_states = torch.cat(
-                    [
-                        hidden_states[: encoder_hidden_states.shape[0]],
-                        hidden_states[encoder_hidden_states.shape[0] :]
-                        + controlnet_single_block_samples[id_block // interval_control],
-                    ]
+            with self.get_fp8_context():
+                hidden_states, _ = block(
+                    hidden_states=hidden_states,
+                    rotary_pos_emb=rotary_pos_emb,
+                    emb=vec_emb,
                 )
+
+                if controlnet_single_block_samples is not None:
+                    interval_control = len(self.single_blocks) / len(controlnet_single_block_samples)
+                    interval_control = int(np.ceil(interval_control))
+                    hidden_states = torch.cat(
+                        [
+                            hidden_states[: encoder_hidden_states.shape[0]],
+                            hidden_states[encoder_hidden_states.shape[0] :]
+                            + controlnet_single_block_samples[id_block // interval_control],
+                        ]
+                    )
 
         hidden_states = hidden_states[encoder_hidden_states.shape[0] :, ...]
 

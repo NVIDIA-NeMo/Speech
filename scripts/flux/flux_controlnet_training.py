@@ -178,6 +178,50 @@ def convergence_test() -> run.Partial:
         overlap_param_gather=True,
     )
     recipe.optim.config.lr = 5e-5
+    recipe.data.global_batch_size = 2
+    return recipe
+
+
+@run.cli.factory(target=llm.train)
+def fp8_test() -> run.Partial:
+    '''
+    A convergence recipe with real data loader.
+    Image and text embedding calculated on the fly.
+    '''
+    recipe = flux_controlnet_training()
+    recipe.model.flux_params.t5_params = run.Config(T5Config, version='/ckpts/text_encoder_2')
+    recipe.model.flux_params.clip_params = run.Config(ClipConfig, version='/ckpts/text_encoder')
+    recipe.model.flux_params.vae_config = run.Config(
+        AutoEncoderConfig, ckpt='/ckpts/ae.safetensors', ch_mult=[1, 2, 4, 4], attn_resolutions=[]
+    )
+    recipe.model.flux_params.device = 'cuda'
+    recipe.model.flux_params.flux_config = run.Config(
+        FluxConfig, ckpt_path='/ckpts/nemo_flux_transformer.safetensors', guidance_embed=False
+    )
+    recipe.trainer.devices = 2
+    recipe.data = flux_datamodule('/mingyuanm/dataset/fill50k/fill50k_tarfiles/')
+    recipe.model.flux_controlnet_config.num_single_layers = 0
+    recipe.model.flux_controlnet_config.num_joint_layers = 4
+    recipe.model.flux_controlnet_config.guidance_embed = False
+    recipe.trainer.strategy.ddp = run.Config(
+        DistributedDataParallelConfig,
+        use_custom_fsdp=True,
+        data_parallel_sharding_strategy='optim_grads_params',
+        check_for_nan_in_grad=True,
+        grad_reduce_in_fp32=True,
+        overlap_grad_reduce=True,
+        overlap_param_gather=True,
+    )
+    recipe.optim.config.lr = 5e-5
+    recipe.trainer.plugins = run.Config(
+        nl.MegatronMixedPrecision,
+        precision="bf16-mixed",
+        fp8='hybrid',
+        fp8_margin=0,
+        fp8_amax_history_len=1024,
+        fp8_amax_compute_algo="max",
+        fp8_params=False,
+    )
     return recipe
 
 

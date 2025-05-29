@@ -194,6 +194,45 @@ def full_model_tp2_dp4_mock() -> run.Partial:
 
 
 @run.cli.factory(target=llm.train)
+def fp8_test() -> run.Partial:
+    '''
+    Basic functional test, with mock dataset,
+    text/vae encoders not initialized, ddp strategy,
+    frozen and trainable layers both set to 1
+    '''
+    recipe = flux_training()
+    recipe.trainer.devices = 1
+    recipe.model.flux_params.t5_params = None  # run.Config(T5Config, version='/ckpts/text_encoder_2')
+    recipe.model.flux_params.clip_params = None  # run.Config(ClipConfig, version='/ckpts/text_encoder')
+    recipe.model.flux_params.vae_config = (
+        None  # run.Config(AutoEncoderConfig, ckpt='/ckpts/ae.safetensors', ch_mult=[1,2,4,4], attn_resolutions=[])
+    )
+    recipe.model.flux_params.device = 'cuda'
+    recipe.model.flux_params.flux_config = run.Config(
+        FluxConfig,
+        num_joint_layers=5,
+        num_single_layers=10,
+    )
+    recipe.data.global_batch_size = 8
+    recipe.trainer.strategy.ddp = run.Config(
+        DistributedDataParallelConfig,
+        check_for_nan_in_grad=True,
+        grad_reduce_in_fp32=True,
+    )
+    recipe.trainer.plugins = run.Config(
+        nl.MegatronMixedPrecision,
+        precision="bf16-mixed",
+        fp8='hybrid',
+        fp8_margin=0,
+        fp8_amax_history_len=1024,
+        fp8_amax_compute_algo="max",
+        fp8_params=False,
+    )
+    recipe.trainer.max_steps = 100
+    return recipe
+
+
+@run.cli.factory(target=llm.train)
 def unit_test() -> run.Partial:
     '''
     Basic functional test, with mock dataset,
@@ -214,7 +253,7 @@ def unit_test() -> run.Partial:
         check_for_nan_in_grad=True,
         grad_reduce_in_fp32=True,
     )
-    recipe.trainer.max_steps = 10
+    recipe.trainer.max_steps = 100
     return recipe
 
 

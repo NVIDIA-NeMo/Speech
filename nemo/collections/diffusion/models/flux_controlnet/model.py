@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable
 
 import torch
 import torch.nn as nn
+from megatron.core import parallel_state
 from megatron.core.models.common.vision_module.vision_module import VisionModule
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -214,6 +216,37 @@ class FluxControlNet(VisionModule):
         self.double_blocks.load_state_dict(flux.double_blocks.state_dict(), strict=False)
         self.single_blocks.load_state_dict(flux.single_blocks.state_dict(), strict=False)
 
+    def get_fp8_context(self):
+        "context manager for fp8 recipe"
+        # This is first and last 2 for mamba
+        if not self.config.fp8:
+            fp8_context = nullcontext()
+        else:
+            import transformer_engine  # To keep out TE dependency when not training in fp8
+
+            if self.config.fp8 == "e4m3":
+                fp8_format = transformer_engine.common.recipe.Format.E4M3
+            elif self.config.fp8 == "hybrid":
+                fp8_format = transformer_engine.common.recipe.Format.HYBRID
+            else:
+                raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
+
+            fp8_recipe = transformer_engine.common.recipe.DelayedScaling(
+                margin=self.config.fp8_margin,
+                interval=self.config.fp8_interval,
+                fp8_format=fp8_format,
+                amax_compute_algo=self.config.fp8_amax_compute_algo,
+                amax_history_len=self.config.fp8_amax_history_len,
+                override_linear_precision=(False, False, not self.config.fp8_wgrad),
+            )
+            fp8_group = None
+            if parallel_state.model_parallel_is_initialized():
+                fp8_group = parallel_state.get_amax_reduction_group(with_context_parallel=True)
+            fp8_context = transformer_engine.pytorch.fp8_autocast(
+                enabled=True, fp8_recipe=fp8_recipe, fp8_group=fp8_group
+            )
+        return fp8_context
+
     def forward(
         self,
         img: torch.Tensor,
@@ -269,24 +302,26 @@ class FluxControlNet(VisionModule):
 
         double_block_samples = ()
         for id_block, block in enumerate(self.double_blocks):
-            hidden_states, encoder_hidden_states = block(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                rotary_pos_emb=rotary_pos_emb,
-                emb=vec_emb,
-            )
-            double_block_samples = double_block_samples + (hidden_states,)
+            with self.get_fp8_context():
+                hidden_states, encoder_hidden_states = block(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    rotary_pos_emb=rotary_pos_emb,
+                    emb=vec_emb,
+                )
+                double_block_samples = double_block_samples + (hidden_states,)
 
         hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=0)
 
         single_block_samples = ()
         for id_block, block in enumerate(self.single_blocks):
-            hidden_states, _ = block(
-                hidden_states=hidden_states,
-                rotary_pos_emb=rotary_pos_emb,
-                emb=vec_emb,
-            )
-            single_block_samples = single_block_samples + (hidden_states[encoder_hidden_states.shape[0] :, ...],)
+            with self.get_fp8_context():
+                hidden_states, _ = block(
+                    hidden_states=hidden_states,
+                    rotary_pos_emb=rotary_pos_emb,
+                    emb=vec_emb,
+                )
+                single_block_samples = single_block_samples + (hidden_states[encoder_hidden_states.shape[0] :, ...],)
 
         controlnet_double_block_samples = ()
         for double_block_sample, control_block in zip(double_block_samples, self.controlnet_double_blocks):

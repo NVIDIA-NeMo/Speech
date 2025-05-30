@@ -12,15 +12,74 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
+import json
+
+import einops
+import lhotse
+import lightning.pytorch as pl
+import numpy as np
 import pytest
+import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
 from nemo.collections.audio.models import SchroedingerBridgeAudioToAudioModel
 
 
+@pytest.fixture(params=["nemo_manifest", "lhotse_cuts"])
+def mock_dataset_config(tmp_path, request):
+    num_files = 8
+    num_samples = 16000
+
+    for i in range(num_files):
+        data = np.random.randn(num_samples, 1)
+        sf.write(tmp_path / f"audio_{i}.wav", data, 16000)
+
+    if request.param == "lhotse_cuts":
+        with lhotse.CutSet.open_writer(tmp_path / "cuts.jsonl") as writer:
+            for i in range(num_files):
+                recording = lhotse.Recording.from_file(tmp_path / f"audio_{i}.wav")
+                cut = lhotse.MonoCut(
+                    id=f"audio_{i}",
+                    start=0,
+                    channel=0,
+                    duration=num_samples / 16000,
+                    recording=recording,
+                    custom={"target_recording": recording},
+                )
+                writer.write(cut)
+
+            return {
+                'cuts_path': str(tmp_path / "cuts.jsonl"),
+                'use_lhotse': True,
+                'batch_size': 2,
+                'num_workers': 1,
+            }
+    elif request.param == "nemo_manifest":
+        with (tmp_path / "small_manifest.jsonl").open("w") as f:
+            for i in range(num_files):
+                entry = {
+                    "noisy_filepath": str(tmp_path / f"audio_{i}.wav"),
+                    "clean_filepath": str(tmp_path / f"audio_{i}.wav"),
+                    "duration": num_samples / 16000,
+                    "offset": 0,
+                }
+                f.write(f"{json.dumps(entry)}\n")
+        return {
+            'manifest_filepath': str(tmp_path / "small_manifest.jsonl"),
+            'input_key': 'noisy_filepath',
+            'target_key': 'clean_filepath',
+            'use_lhotse': False,
+            'batch_size': 2,
+            'num_workers': 1,
+        }
+    else:
+        raise NotImplementedError(f"Dataset type {request.param} not implemented")
+
+
 @pytest.fixture()
-def schroedinger_bridge_model_ncsn():
+def schroedinger_bridge_model_ncsn_params():
 
     model = {
         'sample_rate': 16000,
@@ -73,6 +132,14 @@ def schroedinger_bridge_model_ncsn():
         'num_steps': 5,  # num steps for the reverse process
     }
 
+    metrics = {
+        'val': {
+            'sisdr': {
+                '_target_': 'torchmetrics.audio.ScaleInvariantSignalDistortionRatio',
+            },
+        },
+    }
+
     model_config = DictConfig(
         {
             'sample_rate': model['sample_rate'],
@@ -88,17 +155,54 @@ def schroedinger_bridge_model_ncsn():
             'estimator_output': 'data_prediction',
             'noise_schedule': DictConfig(noise_schedule),
             'sampler': DictConfig(sampler),
+            'metrics': metrics,
             'optim': {
-                'optimizer': 'Adam',
+                'name': 'adam',
                 'lr': 0.001,
                 'betas': (0.9, 0.98),
             },
         }
     )
 
-    model = SchroedingerBridgeAudioToAudioModel(cfg=model_config)
+    return model_config
 
+
+@pytest.fixture()
+def schroedinger_bridge_model_ncsn(schroedinger_bridge_model_ncsn_params):
+    with torch.random.fork_rng():
+        torch.random.manual_seed(0)
+        model = SchroedingerBridgeAudioToAudioModel(cfg=schroedinger_bridge_model_ncsn_params)
     return model
+
+
+@pytest.fixture()
+def schroedinger_bridge_model_ncsn_with_trainer_and_mock_dataset(
+    schroedinger_bridge_model_ncsn_params, mock_dataset_config
+):
+    # Add train and validation dataset configs
+    schroedinger_bridge_model_ncsn_params["train_ds"] = {**mock_dataset_config, "shuffle": True}
+    schroedinger_bridge_model_ncsn_params["validation_ds"] = {**mock_dataset_config, "shuffle": False}
+
+    # Trainer config
+    trainer_cfg = {
+        "max_epochs": -1,
+        "max_steps": 8,
+        "logger": False,
+        "use_distributed_sampler": False,
+        "val_check_interval": 2,
+        "limit_train_batches": 4,
+        "accelerator": "cpu",
+        "enable_checkpointing": False,
+    }
+    schroedinger_bridge_model_ncsn_params["trainer"] = trainer_cfg
+
+    trainer = pl.Trainer(**trainer_cfg)
+
+    with torch.random.fork_rng():
+        torch.random.manual_seed(0)
+        model = SchroedingerBridgeAudioToAudioModel(cfg=schroedinger_bridge_model_ncsn_params, trainer=trainer)
+
+    return model, trainer
 
 
 class TestSchroedingerBridgeModelNCSN:
@@ -154,3 +258,34 @@ class TestSchroedingerBridgeModelNCSN:
         # Check that the output and output length are the same for the instance and batch
         assert output_instance.shape == output_batch.shape
         assert output_length_instance.shape == output_length_batch.shape
+
+    def test_training_step(self, schroedinger_bridge_model_ncsn_with_trainer_and_mock_dataset):
+        model, _ = schroedinger_bridge_model_ncsn_with_trainer_and_mock_dataset
+        model = model.train()
+
+        for batch in itertools.islice(model._train_dl, 2):
+            # start boilerplate from SchroedingerBridgeAudioToAudioModel.training_step
+            if isinstance(batch, dict):
+                # lhotse batches are dictionaries
+                input_signal = batch['input_signal']
+                input_length = batch['input_length']
+                target_signal = batch.get('target_signal', input_signal)
+            else:
+                input_signal, input_length, target_signal, _ = batch
+            if input_signal.ndim == 2:
+                input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
+            if target_signal.ndim == 2:
+                target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+            # end boilerplate
+
+            loss, _, _ = model._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+            loss.backward()
+
+    def test_model_training(self, schroedinger_bridge_model_ncsn_with_trainer_and_mock_dataset):
+        """
+        Test that the model can be trained for a few steps. An evaluation step is also expected.
+        """
+        model, trainer = schroedinger_bridge_model_ncsn_with_trainer_and_mock_dataset
+        model = model.train()
+
+        trainer.fit(model)

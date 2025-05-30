@@ -13,7 +13,15 @@
 # limitations under the License.
 
 import importlib
+import itertools
+import json
+
+import einops
+import lhotse
+import lightning.pytorch as pl
+import numpy as np
 import pytest
+import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
@@ -27,8 +35,59 @@ except ModuleNotFoundError:
     HAVE_TORCHAUDIO = False
 
 
+@pytest.fixture(params=["nemo_manifest", "lhotse_cuts"])
+def mock_dataset_config(tmp_path, request):
+    num_files = 8
+    num_samples = 16000
+
+    for i in range(num_files):
+        data = np.random.randn(num_samples, 1)
+        sf.write(tmp_path / f"audio_{i}.wav", data, 16000)
+
+    if request.param == "lhotse_cuts":
+        with lhotse.CutSet.open_writer(tmp_path / "cuts.jsonl") as writer:
+            for i in range(num_files):
+                recording = lhotse.Recording.from_file(tmp_path / f"audio_{i}.wav")
+                cut = lhotse.MonoCut(
+                    id=f"audio_{i}",
+                    start=0,
+                    channel=0,
+                    duration=num_samples / 16000,
+                    recording=recording,
+                    custom={"target_recording": recording},
+                )
+                writer.write(cut)
+
+            return {
+                'cuts_path': str(tmp_path / "cuts.jsonl"),
+                'use_lhotse': True,
+                'batch_size': 2,
+                'num_workers': 1,
+            }
+    elif request.param == "nemo_manifest":
+        with (tmp_path / "small_manifest.jsonl").open("w") as f:
+            for i in range(num_files):
+                entry = {
+                    "noisy_filepath": str(tmp_path / f"audio_{i}.wav"),
+                    "clean_filepath": str(tmp_path / f"audio_{i}.wav"),
+                    "duration": num_samples / 16000,
+                    "offset": 0,
+                }
+                f.write(f"{json.dumps(entry)}\n")
+        return {
+            'manifest_filepath': str(tmp_path / "small_manifest.jsonl"),
+            'input_key': 'noisy_filepath',
+            'target_key': 'clean_filepath',
+            'use_lhotse': False,
+            'batch_size': 2,
+            'num_workers': 1,
+        }
+    else:
+        raise NotImplementedError(f"Dataset type {request.param} not implemented")
+
+
 @pytest.fixture()
-def mask_model_rnn():
+def mask_model_rnn_params():
 
     model = {
         'sample_rate': 16000,
@@ -73,16 +132,50 @@ def mask_model_rnn():
             'mask_processor': DictConfig(mask_processor),
             'loss': DictConfig(loss),
             'optim': {
-                'optimizer': 'Adam',
+                'name': 'adam',
                 'lr': 0.001,
                 'betas': (0.9, 0.98),
             },
         }
     )
 
-    model = EncMaskDecAudioToAudioModel(cfg=model_config)
+    return model_config
 
+
+@pytest.fixture()
+def mask_model_rnn(mask_model_rnn_params):
+    with torch.random.fork_rng():
+        torch.random.manual_seed(0)
+        model = EncMaskDecAudioToAudioModel(cfg=mask_model_rnn_params)
     return model
+
+
+@pytest.fixture()
+def mask_model_rnn_with_trainer_and_mock_dataset(mask_model_rnn_params, mock_dataset_config):
+    # Add train and validation dataset configs
+    mask_model_rnn_params["train_ds"] = {**mock_dataset_config, "shuffle": True}
+    mask_model_rnn_params["validation_ds"] = {**mock_dataset_config, "shuffle": False}
+
+    # Trainer config
+    trainer_cfg = {
+        "max_epochs": -1,
+        "max_steps": 8,
+        "logger": False,
+        "use_distributed_sampler": False,
+        "val_check_interval": 2,
+        "limit_train_batches": 4,
+        "accelerator": "cpu",
+        "enable_checkpointing": False,
+    }
+    mask_model_rnn_params["trainer"] = trainer_cfg
+
+    trainer = pl.Trainer(**trainer_cfg)
+
+    with torch.random.fork_rng():
+        torch.random.manual_seed(0)
+        model = EncMaskDecAudioToAudioModel(cfg=mask_model_rnn_params, trainer=trainer)
+
+    return model, trainer
 
 
 @pytest.fixture()
@@ -230,6 +323,38 @@ class TestMaskModelRNN:
 
         diff = torch.max(torch.abs(output_instance - output_batch))
         assert diff <= abs_tol
+
+    def test_training_step(self, mask_model_rnn_with_trainer_and_mock_dataset):
+        model, _ = mask_model_rnn_with_trainer_and_mock_dataset
+        model = model.train()
+
+        for batch in itertools.islice(model._train_dl, 2):
+            # start boilerplate from EncMaskDecAudioToAudioModel.training_step
+            if isinstance(batch, dict):
+                # lhotse batches are dictionaries
+                input_signal = batch["input_signal"]
+                input_length = batch["input_length"]
+                target_signal = batch.get("target_signal", input_signal)
+            else:
+                input_signal, input_length, target_signal, _ = batch
+
+            if input_signal.ndim == 2:
+                input_signal = einops.rearrange(input_signal, "B T -> B 1 T")
+            if target_signal.ndim == 2:
+                target_signal = einops.rearrange(target_signal, "B T -> B 1 T")
+            # end boilerplate
+
+            output_signal, _ = model.forward(input_signal=input_signal, input_length=input_length)
+            loss = model.loss(estimate=output_signal, target=target_signal, input_length=input_length)
+            loss.backward()
+
+    def test_model_training(self, mask_model_rnn_with_trainer_and_mock_dataset):
+        """
+        Test that the model can be trained for a few steps. An evaluation step is also expected.
+        """
+        model, trainer = mask_model_rnn_with_trainer_and_mock_dataset
+        model = model.train()
+        trainer.fit(model)
 
 
 class TestMaskModelFlexArray:

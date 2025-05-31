@@ -134,7 +134,7 @@ class Gemma3VLConfig(TransformerConfig, io.IOMixin):
             for attr in MODEL_CONFIG_ATTR:
                 setattr(self, attr, getattr(self.language_transformer_config, attr))
 
-    def configure_model(self, tokenizer) -> "MCoreGemma3VLModel":
+    def configure_model(self, tokenizer, vp_stage: Optional[int] = None) -> "MCoreGemma3VLModel":
         """Configure Gemma3 VL model"""
         self.language_transformer_config.is_vision_language = True
         # Disable SP scatter to allow combining language and vision embedding.
@@ -156,6 +156,10 @@ class Gemma3VLConfig(TransformerConfig, io.IOMixin):
             if self.encoder_tensor_model_parallel_size > 0:
                 self.vision_transformer_config.tensor_model_parallel_size = self.encoder_tensor_model_parallel_size
                 self.vision_projection_config.tensor_model_parallel_size = self.encoder_tensor_model_parallel_size
+
+        assert (
+            getattr(self, "virtual_pipeline_model_parallel_size", None) is None and vp_stage is None
+        ), "Virtual pipeline model parallel size is not yet supported for Gemma3VL."
 
         model = MCoreGemma3VLModel(
             config=self,

@@ -13,11 +13,12 @@
 # limitations under the License.
 
 import os
-from functools import lru_cache
+from functools import cached_property, lru_cache
 
 import pytest
 import torch
 from omegaconf import DictConfig, OmegaConf
+
 
 from nemo.collections.asr.parts.mixins import mixins
 from nemo.collections.asr.parts.submodules.ctc_decoding import (
@@ -28,6 +29,7 @@ from nemo.collections.asr.parts.submodules.ctc_decoding import (
 )
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from tests.collections.asr.decoding.test_timestamps import BaseTimestampsTest
 
 
 def char_vocabulary():
@@ -46,55 +48,6 @@ def tmp_tokenizer(test_data_dir):
     asrbpe = _TmpASRBPE()
     asrbpe._setup_tokenizer(cfg)
     return asrbpe.tokenizer
-
-
-def check_char_timestamps(hyp: Hypothesis, decoding: CTCDecoding):
-    assert hyp.timestamp is not None
-    assert isinstance(hyp.timestamp, dict)
-    assert 'timestep' in hyp.timestamp
-    assert 'char' in hyp.timestamp
-    assert 'word' in hyp.timestamp
-    assert 'segment' in hyp.timestamp
-
-    words = hyp.text.split(decoding.word_seperator)
-    words = list(filter(lambda x: x != '', words))
-    assert len(hyp.timestamp['word']) == len(words)
-
-    segments = []
-    segment = []
-
-    for word in words:
-        segment.append(word)
-        if word[-1] in decoding.segment_seperators:
-            segments.append(' '.join(segment))
-            segment = []
-
-    if segment:
-        segments.append(' '.join(segment))
-
-    assert len(hyp.timestamp['segment']) == len(segments)
-
-
-def check_subword_timestamps(hyp: Hypothesis, decoding: CTCBPEDecoding):
-    assert hyp.timestamp is not None
-    assert isinstance(hyp.timestamp, dict)
-    assert 'timestep' in hyp.timestamp
-    assert 'char' in hyp.timestamp
-    assert 'word' in hyp.timestamp
-    assert 'segment' in hyp.timestamp
-
-    chars = list(hyp.text)
-    chars = list(filter(lambda x: x not in ['', ' ', '#'], chars))
-    all_chars = [list(decoding.tokenizer.tokens_to_text(data['char'])) for data in hyp.timestamp['char']]
-    all_chars = [char for subword in all_chars for char in subword]
-    all_chars = list(filter(lambda x: x not in ['', ' ', '#'], all_chars))
-    assert len(chars) == len(all_chars)
-
-    segments_count = sum([hyp.text.count(seperator) for seperator in decoding.segment_seperators])
-    if not hyp.text or hyp.text[-1] not in decoding.segment_seperators:
-        segments_count += 1
-
-    assert len(hyp.timestamp['segment']) == segments_count
 
 
 class TestCTCDecoding:
@@ -165,7 +118,7 @@ class TestCTCDecoding:
 
                 # timestamps check
                 if timestamps:
-                    check_char_timestamps(hyp, decoding)
+                    BaseTimestampsTest.check_char_timestamps(hyp, decoding)
 
     @pytest.mark.unit
     def test_subword_decoding_greedy_forward(self, tmp_tokenizer):
@@ -218,7 +171,7 @@ class TestCTCDecoding:
 
                 # timestamps check
                 if timestamps:
-                    check_subword_timestamps(hyp, decoding)
+                    BaseTimestampsTest.check_subword_timestamps(hyp, decoding)
 
     @pytest.mark.unit
     @pytest.mark.parametrize('alignments', [False, True])
@@ -367,3 +320,36 @@ class TestCTCDecoding:
                 assert torch.all(hyp.y_sequence == batched_hyp.y_sequence)
                 if timestamps:
                     assert hyp.timestamp == batched_hyp.timestamp
+
+
+class TestCTCTimestamps(BaseTimestampsTest):
+    """CTC-specific timestamp tests that inherit from BaseTimestampsTest"""
+
+    @cached_property
+    def decoding_char(self):
+        cfg = CTCDecodingConfig()
+        vocab = char_vocabulary()
+        decoding = CTCDecoding(decoding_cfg=cfg, vocabulary=vocab)
+        return decoding
+
+    @cached_property
+    def decoding_subword_wpe(self):
+        cfg = CTCBPEDecodingConfig(compute_timestamps=True)
+        decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=self.tmp_tokenizer)
+        return decoding
+
+    @cached_property
+    def decoding_subword_bpe(self):
+        cfg = CTCBPEDecodingConfig(compute_timestamps=True)
+        decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=self.bpe_tokenizer)
+        return decoding
+
+    @pytest.mark.unit
+    def test_word_offsets_subword_wpe(self, tmp_tokenizer):
+        self.tmp_tokenizer = tmp_tokenizer
+        super().test_word_offsets_subword_wpe()
+
+    @pytest.mark.unit
+    def test_word_offsets_subword_wpe_other_delimiter(self, tmp_tokenizer):
+        self.tmp_tokenizer = tmp_tokenizer
+        super().test_word_offsets_subword_wpe_other_delimiter()

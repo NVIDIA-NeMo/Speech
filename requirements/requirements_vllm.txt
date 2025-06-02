@@ -11,6 +11,7 @@ ijson
 jieba
 lightning>2.2.1
 matplotlib>=3.3.2
+nvtx
 omegaconf<=2.3
 onnx>=1.7.0
 OpenCC

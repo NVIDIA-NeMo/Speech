@@ -344,8 +344,12 @@ class _AudioTextDALIDataset(Iterator):
 
             elif audio_tar_filepaths is not None and audio_tar_index_filepaths is not None:
                 audio_tar_filepaths = expand_sharded_filepaths(
-                    audio_tar_filepaths, shard_strategy=shard_strategy, world_size=world_size, global_rank=global_rank
+                    audio_tar_filepaths,
+                    shard_strategy=shard_strategy,
+                    world_size=world_size,
+                    global_rank=global_rank,
                 )
+
                 audio_tar_index_filepaths = expand_sharded_filepaths(
                     audio_tar_index_filepaths,
                     shard_strategy=shard_strategy,

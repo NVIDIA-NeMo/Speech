@@ -21,7 +21,6 @@ from typing import Dict, List, Optional
 import librosa
 import soundfile as sf
 import torch.utils.data
-import webdataset as wds
 
 from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
 from nemo.collections.asr.parts.preprocessing.segment import available_formats as valid_sf_formats
@@ -36,6 +35,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 )
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.utils import logging
+from nemo.utils import webdataset as wds
 from nemo.utils.decorators import experimental
 from nemo.utils.distributed import webdataset_split_by_workers
 

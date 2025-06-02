@@ -70,7 +70,7 @@ jobs:
                       response = requests.post(url, headers=headers, json=data)
                   response.raise_for_status()
                   response_json = response.json()
-                  if hasattr(response, "links"):
+                  if hasattr(response, "links") and "actions/runs?status" in endpoint:
                       response_json["next"] = response.links.get("next", {}).get("url")
 
                   return response_json

@@ -297,7 +297,7 @@ class Gemma3VLExporter(io.ModelConnector[Gemma3VLModel, "Gemma3ForConditionalGen
             initializer_range=source_text.init_method_std,
             rms_norm_eps=source_text.layernorm_epsilon,
             num_key_value_heads=source_text.num_query_groups,
-            vocab_size=self.tokenizer.vocab_size,
+            vocab_size=source_text.vocab_size,
             rope_theta=source_text.rotary_base[1],
             rope_local_base_freq=source_text.rotary_base[0],
         )

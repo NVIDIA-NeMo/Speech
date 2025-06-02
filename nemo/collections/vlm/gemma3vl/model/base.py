@@ -63,7 +63,7 @@ def gemma3vl_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
         _batch = batch
 
     required_keys = set()
-    required_keys.update(("input_ids", "position_ids"))
+    required_keys.update(("input_ids", "position_ids", "tokens"))
     if ps.is_pipeline_first_stage():
         required_keys.update(("pixel_values",))
     if ps.is_pipeline_last_stage():
@@ -84,7 +84,7 @@ def gemma3vl_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
 def gemma3vl_forward_step(model, batch) -> torch.Tensor:
     """Gemma3 VL model forward step"""
     forward_args = {
-        "input_ids": batch["input_ids"],
+        "input_ids": batch.get("input_ids", batch["tokens"]),
         "position_ids": batch["position_ids"],
         "pixel_values": batch.get("pixel_values", None),
         "loss_mask": batch.get("loss_mask", None),

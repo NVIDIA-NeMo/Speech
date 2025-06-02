@@ -11,9 +11,15 @@ omit =
     nemo/collections/nlp/*
 
     nemo/collections/asr/*
-    nemo/collections/audio/*
     nemo/collections/speechlm/*
     nemo/collections/tts/*
+
+    # omit from audio
+    nemo/collections/audio/data/data_simulation.py
+    nemo/collections/audio/metrics/squim.py
+    nemo/collections/audio/losses/maxine/*
+    nemo/collections/audio/models/maxine/*
+    nemo/collections/audio/parts/utils/maxine.py
 
     nemo/core/*
     nemo/collections/common/*      

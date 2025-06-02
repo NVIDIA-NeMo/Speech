@@ -32,13 +32,6 @@ from nemo.collections.audio.parts.submodules.multichannel import WPEFilter
 from nemo.collections.audio.parts.utils.audio import convmtx_mc_numpy
 from nemo.utils import logging
 
-try:
-    importlib.import_module('torchaudio')
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
-
 
 class TestSpectrogramToMultichannelFeatures:
     @pytest.mark.unit
@@ -231,7 +224,6 @@ class TestSpectrogramToMultichannelFeatures:
 
 class TestMaskBasedProcessor:
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
     @pytest.mark.parametrize('fft_length', [256])
     @pytest.mark.parametrize('num_channels', [1, 4])
     @pytest.mark.parametrize('num_masks', [1, 2])
@@ -440,7 +432,6 @@ class TestMaskBasedDereverb:
 
 class TestMaskEstimator:
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
     @pytest.mark.parametrize('channel_reduction_position', [0, 1, -1])
     @pytest.mark.parametrize('channel_reduction_type', ['average', 'attention'])
     @pytest.mark.parametrize('channel_block_type', ['transform_average_concatenate', 'transform_attend_concatenate'])

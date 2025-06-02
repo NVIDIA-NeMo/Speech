@@ -27,13 +27,6 @@ from omegaconf import DictConfig
 
 from nemo.collections.audio.models import EncMaskDecAudioToAudioModel
 
-try:
-    importlib.import_module('torchaudio')
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
-
 
 @pytest.fixture(params=["nemo_manifest", "lhotse_cuts"])
 def mock_dataset_config(tmp_path, request):
@@ -255,6 +248,7 @@ def bf_model_flexarray(mask_model_flexarray):
         'filter_type': 'pmwf',
         'filter_beta': 0.0,
         'filter_rank': 'one',
+        'filter_postfilter': 'ban',
         'ref_channel': 'max_snr',
         'ref_hard': 1,
         'ref_hard_use_grad': False,
@@ -422,7 +416,6 @@ class TestBFModelFlexArray:
     """Test beamforming model with channel-flexible mask estimator."""
 
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
     def test_constructor(self, bf_model_flexarray):
         """Test that the model can be constructed from a config dict."""
         model = bf_model_flexarray.train()
@@ -431,7 +424,6 @@ class TestBFModelFlexArray:
         assert isinstance(instance2, EncMaskDecAudioToAudioModel)
 
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
     @pytest.mark.parametrize(
         "batch_size, num_channels, sample_len",
         [

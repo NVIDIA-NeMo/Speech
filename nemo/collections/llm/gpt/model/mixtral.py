@@ -59,7 +59,7 @@ class MixtralConfig(GPTConfig):
     num_moe_experts: int = 8
     moe_aux_loss_coeff: float = 0.01
     moe_router_topk: int = 2
-    moe_router_pre_softmax: bool = True
+    moe_router_pre_softmax: bool = False
     moe_token_dispatcher_type: str = "alltoall"
     moe_router_load_balancing_type: str = 'aux_loss'
 
@@ -233,7 +233,7 @@ class HFMixtralImporter(io.ModelConnector["MixtralForCausalLM", MixtralModel]):
             num_query_groups=config.num_key_value_heads,
             num_moe_experts=config.num_local_experts,
             moe_router_topk=config.num_experts_per_tok,
-            moe_router_pre_softmax=True,
+            moe_router_pre_softmax=False,
             # norm
             normalization='RMSNorm',
             layernorm_epsilon=config.rms_norm_eps,

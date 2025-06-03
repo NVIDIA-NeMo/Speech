@@ -29,7 +29,7 @@ CUDA_DEVICE_MAX_CONNECTIONS=1 CUDA_LAUNCH_BLOCKING=1 TORCH_COMPILE_DISABLE=1 \
     --data-path "$DATA_PATH" \
     --split 99,1,0 --log-interval 10 --save-interval 20000 --eval-interval 1000 --eval-iters 32 \
     --save "$MCORE_OUTPUT_PATH" \
-    --log-num-zeros-in-grad --distributed-timeout-minutes 6000 --moe-router-topk 1 --num-experts 2 \
+    --log-num-zeros-in-grad --distributed-timeout-minutes 6000 --moe-router-topk 2 --num-experts 4 \
     --moe-router-pre-softmax --expert-model-parallel-size 1 --eval-iters=0 --attention-backend unfused
 
 # Run NeMo

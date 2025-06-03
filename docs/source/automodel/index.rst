@@ -16,18 +16,6 @@ For distributed processing, the NeMo AutoModel provides integration with Distrib
 and Fully Sharded Data Parallel (FSDP2), ensuring efficient and scalable training across multiple GPUs and nodes.
 
 
-To access tutorials about NeMo AutoModels, see the "Getting Started" section below.
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Getting Started
-   :name: starthere
-   :titlesonly:
-
-   tutorials/hf_automodel_for_causal_lm_peft
-   tutorials/hf_automodel_for_causal_lm_sft
-
-
 
 For more information, browse the developer documentation for your area of interest in the contents section below or on the left sidebar.
 

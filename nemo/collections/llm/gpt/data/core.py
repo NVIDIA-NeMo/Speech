@@ -880,8 +880,13 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                 # If padding, use the global max seqlen, so that 'pad_cu_seqlens' is the same
                 # across all batches. This is maintly used compatiblity with megatron's implementation
                 # of cudagraphs, which uses the same cudagraphs over all batches.
-                max_seqlen = [max(p["dataset_max_seqlen"] for p in self.pack_metadata)]
-                max_seqlen = torch.IntTensor(max_seqlen * len(cu_seqlens))
+                dataset_max_seqlen = max(p['dataset_max_seqlen'] for p in self.pack_metadata)
+                min_pack_seq_len = min(p['min_packed_seqlen'] for p in self.pack_metadata)
+                padding_gap = max_length - min_pack_seq_len
+
+                # Use the larger of the two values to avoid NAN issues with attention kernel
+                safe_max_seqlen = max(dataset_max_seqlen, padding_gap)
+                max_seqlen = torch.IntTensor([safe_max_seqlen] * len(cu_seqlens))
             else:
                 seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
                 max_seqlen, _ = seqlens.max(dim=1, keepdim=True)

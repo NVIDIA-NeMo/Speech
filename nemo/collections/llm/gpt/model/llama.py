@@ -79,6 +79,7 @@ class LlamaConfig(GPTConfig):
     persist_layer_norm: bool = True
     bias_dropout_fusion: bool = True
     apply_rope_fusion: bool = True
+    use_transformer_engine_op_fuser: Optional[bool] = None
 
 
 @dataclass

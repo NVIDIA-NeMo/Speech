@@ -153,12 +153,15 @@ def transformer_engine_layer_spec(config: "GPTConfig") -> ModuleSpec:
     """
     from megatron.core.models.gpt import gpt_layer_specs
 
-    return gpt_layer_specs.get_gpt_layer_with_transformer_engine_spec(
-        num_experts=config.num_moe_experts,
-        moe_grouped_gemm=config.moe_grouped_gemm,
-        qk_layernorm=config.qk_layernorm,
-        fp8=bool(config.num_moe_experts and (config.fp8 is not None)),
-    )
+    kwargs = {
+        "num_experts": config.num_moe_experts,
+        "moe_grouped_gemm": config.moe_grouped_gemm,
+        "qk_layernorm": config.qk_layernorm,
+        "fp8": bool(config.num_moe_experts and (config.fp8 is not None)),
+    }
+    if getattr(config, "use_transformer_engine_op_fuser", None) is not None:
+        kwargs["use_te_op_fuser"] = config.use_transformer_engine_op_fuser
+    return gpt_layer_specs.get_gpt_layer_with_transformer_engine_spec(**kwargs)
 
 
 def transformer_engine_full_layer_spec(config: "GPTConfig") -> ModuleSpec:

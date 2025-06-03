@@ -113,10 +113,41 @@ def default_data_step(dataloader_iter: Iterator[DataT]) -> DataT:
 
 
 def default_forward_step(model: nn.Module, batch, *args, **kwargs) -> torch.Tensor:
+    """
+    Default implementation of a forward step for use with Megatron-LM.
+
+    This function simply passes the batch through the model along with any additional
+    args and kwargs. It's used as a default when a custom forward_step is not provided.
+
+    Args:
+        model (nn.Module): The PyTorch model to perform the forward pass
+        batch: The input batch of data
+        *args: Additional positional arguments to pass to the model
+        **kwargs: Additional keyword arguments to pass to the model
+
+    Returns:
+        torch.Tensor: The output tensor from the model's forward pass
+    """
     return model(batch, *args, **kwargs)
 
 
 def extract_ddp_funcs(ddp_config, pipeline):
+    """
+    Extracts synchronization functions from DDP config and model pipeline.
+
+    This function extracts the no_sync and grad_sync functions from the model chunks
+    based on the DDP configuration. These functions are used for controlling gradient
+    synchronization in distributed training.
+
+    Args:
+        ddp_config: The distributed data parallel configuration
+        pipeline: The model pipeline containing model chunks
+
+    Returns:
+        Tuple[Optional[Callable], Optional[Callable]]: A tuple containing:
+            - no_sync_func: Function to disable gradient synchronization
+            - grad_sync_func: Function to trigger gradient synchronization
+    """
     no_sync_func, grad_sync_func = None, None
 
     if getattr(ddp_config, "overlap_grad_reduce", False):
@@ -332,6 +363,25 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         num_microbatches: Optional[int] = None,
         **kwargs,
     ) -> STEP_OUTPUT:
+        """
+        Performs a training step with the given data.
+
+        This method executes a complete training step, including forward and backward passes.
+        It delegates to the _step method with forward_only=False to enable gradient computation.
+
+        Args:
+            data (DataT): The input data for the training step
+            data_step (Optional[Callable]): Function to process the data before the forward pass
+            forward_step (Optional[Callable]): Function to perform the forward pass
+            loss_reduction (Optional[MegatronLossReduction]): Function to reduce the loss
+            seq_length (Optional[int]): Sequence length for the model
+            micro_batch_size (Optional[int]): Size of each micro-batch
+            num_microbatches (Optional[int]): Number of micro-batches
+            **kwargs: Additional keyword arguments to pass to the _step method
+
+        Returns:
+            STEP_OUTPUT: The output of the training step, typically containing the loss
+        """
         return self._step(
             "training",
             data,
@@ -357,6 +407,26 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         step_i: Optional[int] = None,
         **kwargs,
     ) -> STEP_OUTPUT:
+        """
+        Performs a validation step with the given data.
+
+        This method executes a validation step, which includes only a forward pass (no gradients).
+        It delegates to the _step method with forward_only=True to disable gradient computation.
+
+        Args:
+            data (DataT): The input data for the validation step
+            data_step (Optional[Callable]): Function to process the data before the forward pass
+            forward_step (Optional[Callable]): Function to perform the forward pass
+            loss_reduction (Optional[MegatronLossReduction]): Function to reduce the loss
+            seq_length (Optional[int]): Sequence length for the model
+            micro_batch_size (Optional[int]): Size of each micro-batch
+            num_microbatches (Optional[int]): Number of micro-batches
+            step_i (Optional[int]): Step index, useful for tracking validation progress
+            **kwargs: Additional keyword arguments to pass to the _step method
+
+        Returns:
+            STEP_OUTPUT: The output of the validation step, typically containing validation metrics
+        """
         return self._step(
             "validation",
             data,
@@ -383,6 +453,26 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         step_i: Optional[int] = None,
         **kwargs,
     ) -> STEP_OUTPUT:
+        """
+        Performs a test step with the given data.
+
+        This method executes a test step, which includes only a forward pass (no gradients).
+        It delegates to the _step method with forward_only=True to disable gradient computation.
+
+        Args:
+            data (DataT): The input data for the test step
+            data_step (Optional[Callable]): Function to process the data before the forward pass
+            forward_step (Optional[Callable]): Function to perform the forward pass
+            loss_reduction (Optional[MegatronLossReduction]): Function to reduce the loss
+            seq_length (Optional[int]): Sequence length for the model
+            micro_batch_size (Optional[int]): Size of each micro-batch
+            num_microbatches (Optional[int]): Number of micro-batches
+            step_i (Optional[int]): Step index, useful for tracking test progress
+            **kwargs: Additional keyword arguments to pass to the _step method
+
+        Returns:
+            STEP_OUTPUT: The output of the test step, typically containing test metrics
+        """
         return self._step(
             "test",
             data,
@@ -409,6 +499,28 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         step_i: Optional[int] = None,
         **kwargs,
     ) -> STEP_OUTPUT:
+        """
+        Performs a prediction step with the given data.
+
+        This method executes a prediction step, which includes only a forward pass (no gradients).
+        It delegates to the _step method with forward_only=True to disable gradient computation.
+        Unlike validation and test steps, predict steps are typically used to generate outputs
+        rather than evaluate the model.
+
+        Args:
+            data (DataT): The input data for the prediction step
+            data_step (Optional[Callable]): Function to process the data before the forward pass
+            forward_step (Optional[Callable]): Function to perform the forward pass
+            loss_reduction (Optional[MegatronLossReduction]): Function to reduce the output
+            seq_length (Optional[int]): Sequence length for the model
+            micro_batch_size (Optional[int]): Size of each micro-batch
+            num_microbatches (Optional[int]): Number of micro-batches
+            step_i (Optional[int]): Step index, useful for tracking prediction progress
+            **kwargs: Additional keyword arguments to pass to the _step method
+
+        Returns:
+            STEP_OUTPUT: The output of the prediction step, typically containing model predictions
+        """
         return self._step(
             "predict",
             data,
@@ -437,6 +549,33 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         step_i: Optional[int] = None,
         **kwargs,
     ) -> STEP_OUTPUT:
+        """
+        Internal method to perform various step types (training, validation, test, predict).
+
+        This is the core method for performing steps in the Megatron model. It handles:
+        1. Finding the appropriate step functions based on the step_type
+        2. Setting up the data, forward, and loss reduction functions
+        3. Calling the forward method with the appropriate configuration
+
+        Args:
+            step_type (str): Type of step ('training', 'validation', 'test', or 'predict')
+            data (DataT): The input data for the step
+            data_step (Optional[Callable]): Function to process the data before the forward pass
+            forward_step (Optional[Callable]): Function to perform the forward pass
+            loss_reduction (Optional[MegatronLossReduction]): Function to reduce the loss
+            seq_length (Optional[int]): Sequence length for the model
+            micro_batch_size (Optional[int]): Size of each micro-batch
+            num_microbatches (Optional[int]): Number of micro-batches
+            forward_only (bool): If True, only perform forward pass (no backward pass)
+            step_i (Optional[int]): Step index for tracking progress
+            **kwargs: Additional keyword arguments to pass to the forward method
+
+        Returns:
+            STEP_OUTPUT: The output of the step
+
+        Raises:
+            AttributeError: If the module doesn't have the required step method
+        """
         if not hasattr(self.module, f"{step_type}_step"):
             raise AttributeError(f"self.module must have a `{step_type}_step` method")
 
@@ -460,20 +599,29 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
     def wrapped_forward_step(
         self, forward_step, loss_reduction, data_step, context
     ) -> Callable[[nn.Module, DataT], Tuple[torch.Tensor, "MegatronCallbackProtocol"]]:
-        """The method wraps the forward step function and returns a callable.
+        """
+        Wraps the forward step function for use with Megatron-LM's pipeline parallelism.
 
-        The output is a forward_step function in the form of:
-        https://github.com/NVIDIA/Megatron-LM/blob/main/pretrain_gpt.py#L129
+        This method creates a wrapper around the forward step function that handles:
+        1. Data processing through the data_step
+        2. Precision conversion for input data
+        3. Forward pass execution
+        4. Loss reduction setup
+        5. Precision conversion for output data
+        6. Event triggering for callback hooks
+
+        The resulting wrapped function matches the signature expected by Megatron-LM's
+        forward-backward function in the pipeline parallel scheduler.
 
         Args:
-            forward_step (Callable): The forward step function to be wrapped.
-            loss_reduction (Callable): The loss reduction function.
-            context (Dict): The context dictionary.
-            data_step (Callable): The data step function.
+            forward_step: The function to perform the forward step
+            loss_reduction: The function to reduce the loss
+            data_step: The function to process the data
+            context: A dictionary containing context information, including the MegatronStep
 
-        Returns
-        -------
-            Callable: The wrapped forward step function.
+        Returns:
+            Callable: The wrapped forward step function with the signature expected by
+                Megatron-LM's pipeline parallelism implementation
         """
         from megatron.core import parallel_state
 
@@ -538,6 +686,22 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         return wrapped_forward_step_func
 
     def init_model_parallel(self):
+        """
+        Initializes model parallelism for the Megatron model.
+
+        This method prepares the model for tensor and pipeline parallelism by:
+        - Moving model modules to the appropriate device (GPU)
+        - Setting tensor model parallel attributes for all parameters
+        - Configuring the input tensor pipeline setup if needed
+        - Logging the number of parameters across parallel ranks
+        - Applying any convert_module_fn if provided
+        - Initializing distributed data parallelism (DDP) if not in testing mode
+
+        The method also handles special cases such as:
+        - Skipping GPU transfer when using FSDP to avoid OOM
+        - Logging detailed parameter counts for trainable vs. non-trainable parameters
+        - Gracefully handling the case when a trainer is not attached
+        """
         from megatron.core import parallel_state
         from megatron.core.tensor_parallel.layers import set_defaults_if_not_set_tensor_model_parallel_attributes
 
@@ -590,10 +754,33 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                 raise e
 
     def apply_convert_module_fn(self):
+        """
+        Applies the convert_module_fn to each module in the pipeline.
+
+        This method iterates through all modules in the pipeline and applies the
+        convert_module_fn to transform each module. This is typically used for
+        precision conversions or other module transformations.
+        """
         for i in range(len(self)):
             self[i] = self.convert_module_fn(self[i])
 
     def init_ddp(self):
+        """
+        Initializes distributed data parallelism for the model.
+
+        This method configures the model for distributed training by wrapping each model
+        chunk with the appropriate distributed wrapper (either DDP or FSDP). It also
+        configures synchronization functions and sets up bucketing options to optimize
+        communication efficiency.
+
+        The method handles various configurations including:
+        - Ensuring proper gradient contexts for parameter initialization
+        - Configuring bucketing for communication optimization
+        - Supporting both standard DDP and fully sharded data parallelism (FSDP)
+        - Setting up appropriate process groups for data parallelism
+
+        Returns early if ddp_config is not a DistributedDataParallelConfig instance.
+        """
         if not isinstance(self.ddp_config, DistributedDataParallelConfig):
             return
 
@@ -687,12 +874,36 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                 model_chunk.__class__.__getattr__ = model_chunk.original_getattr  # type: ignore
 
     def _setup_module(self, function, **kwargs) -> None:
+        """
+        Sets up a function module by calling its setup method with appropriate arguments.
+
+        This helper method checks if the provided function has a setup method, and if so,
+        calls it with the subset of kwargs that match the setup method's parameters.
+
+        Args:
+            function: The function module to set up
+            **kwargs: Keyword arguments that might be passed to the setup method
+        """
         if hasattr(function, "setup"):
             setup_args = inspect.getfullargspec(function.setup).args
             setup_kwargs = {k: v for k, v in kwargs.items() if k in setup_args}
             function.setup(**setup_kwargs)
 
     def _call_module(self, function, *args, **kwargs) -> torch.Tensor:
+        """
+        Sets up and calls a function module.
+
+        This method first sets up the function module using _setup_module, then calls
+        the function with a filtered set of kwargs that match the function's parameters.
+
+        Args:
+            function: The function module to call
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments that might be passed to the function
+
+        Returns:
+            torch.Tensor: The output tensor from the function call
+        """
         self._setup_module(function, **kwargs)
 
         call_args = inspect.getfullargspec(function).args
@@ -703,11 +914,24 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
     def sharded_state_dict(self, prefix: str = "") -> Dict[str, Any]:
         """
-        Creates the sharded state dict which is used by dist_checkpoint to save the sharded tensors to disk.
-        When given the sharded_stated_dict, dist_checkpoint.load will load the tensors corresponding to
-        self.state_dict().
-        The sharded tensor mapping is defined in the GPTModel class from mcore.
+        Creates the sharded state dictionary for distributed checkpointing.
+
+        This method generates a sharded state dictionary that is used by dist_checkpoint
+        to save sharded tensors to disk. When given this sharded_state_dict,
+        dist_checkpoint.load will load the tensors corresponding to self.state_dict().
+
+        The sharded tensor mapping is defined in the GPTModel class from Megatron Core.
+        For virtual pipeline parallel models, it sets the appropriate virtual pipeline
+        rank before getting each module's sharded state dict.
+
+        Args:
+            prefix (str): An optional prefix to add to all parameter names in the state dict
+
+        Returns:
+            Dict[str, Any]: The sharded state dictionary for distributed checkpointing
         """
+        from megatron.core import parallel_state
+
         sharded_state_dict = {}
         for index, module in enumerate(self):
             if self.vp_size is not None:
@@ -720,6 +944,24 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         return sharded_state_dict
 
     def _module_sharded_state_dict(self, module, *args, **kwargs) -> Dict[str, Any]:
+        """
+        Retrieves the sharded state dictionary from a model module.
+
+        This method tries to access the 'sharded_state_dict' method of the module directly.
+        If that doesn't exist, it checks if the module has a 'configure_model' attribute and
+        accesses the module.module's sharded_state_dict with an updated prefix.
+
+        Args:
+            module: The module to get the sharded state dictionary from
+            *args: Additional positional arguments to pass to the sharded_state_dict method
+            **kwargs: Additional keyword arguments to pass to the sharded_state_dict method
+
+        Returns:
+            Dict[str, Any]: The sharded state dictionary
+
+        Raises:
+            ValueError: If the module does not have a sharded_state_dict method or configure_model attribute
+        """
         if hasattr(module, "sharded_state_dict"):
             return module.sharded_state_dict(*args, **kwargs)
         elif hasattr(module, "configure_model"):
@@ -729,18 +971,38 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         raise ValueError("Could not find sharded state dict")
 
     def enable_forward_pre_hook(self):
+        """
+        Enables forward pre-hooks for all model chunks in the Megatron parallel model.
+
+        This method iterates through all model chunks and enables their forward pre-hook
+        functionality. This is typically used to ensure proper parameter synchronization
+        before forward passes in distributed training scenarios.
+        """
         for model in self:
             model_chunk = model.module
             assert isinstance(model_chunk, DDP) or isinstance(model_chunk, FullyShardedDataParallel)
             model_chunk.enable_forward_pre_hook()
 
     def disable_forward_pre_hook(self):
+        """
+        Disables forward pre-hooks for all model chunks in the Megatron parallel model.
+
+        This method iterates through all model chunks and disables their forward pre-hook
+        functionality. This can be used to prevent parameter synchronization when it's not needed.
+        """
         for model in self:
             model_chunk = model.module
             assert isinstance(model_chunk, DDP) or isinstance(model_chunk, FullyShardedDataParallel)
             model_chunk.disable_forward_pre_hook()
 
     def force_param_sync(self):
+        """
+        Forces parameter synchronization for all model chunks in the Megatron parallel model.
+
+        This method iterates through all model chunks and forces them to synchronize their parameters
+        across all distributed processes. This is especially important when using distributed training
+        with overlap_param_gather enabled, to ensure consistency before operations like checkpointing.
+        """
         for model in self:
             model_chunk = model.module
             assert isinstance(model_chunk, DDP) or isinstance(model_chunk, FullyShardedDataParallel)
@@ -748,17 +1010,47 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
     @property
     def pipeline(self) -> Union[ModelT, List[ModelT]]:
-        if len(self) == 1:
-            return self[0]
-        else:
-            return list(self)
+        """
+        Gets the underlying model pipeline.
+
+        Returns:
+            Union[ModelT, List[ModelT]]: The underlying model or list of models that make up the pipeline
+        """
+        return self._pipeline
 
     @property
     def module(self) -> ModelT:
-        return self[0]
+        """
+        Gets the first module of the pipeline.
+
+        This is useful for accessing the top-level LightningModule when there's a single module
+        in the pipeline, which is the common case.
+
+        Returns:
+            ModelT: The first module in the pipeline
+        """
+        return self._pipeline[0]
 
     @override
     def __getattr__(self, item: Any) -> Any:
+        """
+        Custom attribute lookup for MegatronParallel.
+
+        This method implements attribute lookup fallback when an attribute is not found
+        in the MegatronParallel object itself. It first tries to get the attribute from
+        the parent class, and if that fails, it attempts to get it from the first module
+        in the pipeline.
+
+        Args:
+            item (Any): The name of the attribute to look up
+
+        Returns:
+            Any: The requested attribute
+
+        Raises:
+            AttributeError: If the attribute cannot be found in either the parent class
+                or the first module in the pipeline
+        """
         try:
             # First, try to get the attribute from the superclass (nn.ModuleList)
             return super().__getattr__(item)
@@ -840,6 +1132,24 @@ class _ModuleStepFunction:
 
 
 def getattr_proxy(self, item: Any) -> Any:
+    """
+    A proxy function for attribute lookup in wrapped modules.
+
+    This function is used as the __getattr__ method for classes that wrap modules,
+    such as DDP. It first tries to get the attribute from the superclass, and if that
+    fails, it attempts to get it from the wrapped module.
+
+    Args:
+        self: The object instance
+        item (Any): The name of the attribute to look up
+
+    Returns:
+        Any: The requested attribute
+
+    Raises:
+        AttributeError: If the attribute cannot be found in either the superclass
+            or the wrapped module
+    """
     try:
         return super(self.__class__, self).__getattr__(item)
     except AttributeError as e:

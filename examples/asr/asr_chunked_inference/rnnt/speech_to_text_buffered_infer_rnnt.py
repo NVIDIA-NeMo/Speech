@@ -64,7 +64,7 @@ import copy
 import glob
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import lightning.pytorch as pl
@@ -132,7 +132,7 @@ class TranscriptionConfig:
     overwrite_transcripts: bool = True
 
     # Decoding strategy for RNNT models
-    decoding: RNNTDecodingConfig = RNNTDecodingConfig()
+    decoding: RNNTDecodingConfig = field(default_factory=RNNTDecodingConfig)
 
     # Decoding configs
     max_steps_per_timestep: int = 5  #'Maximum number of tokens decoded per acoustic timestep'

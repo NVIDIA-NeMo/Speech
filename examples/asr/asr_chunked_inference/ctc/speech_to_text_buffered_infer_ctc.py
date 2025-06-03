@@ -39,7 +39,7 @@ import copy
 import glob
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import lightning.pytorch as pl
@@ -96,7 +96,7 @@ class TranscriptionConfig:
     )
 
     # Decoding strategy for CTC models
-    decoding: CTCDecodingConfig = CTCDecodingConfig()
+    decoding: CTCDecodingConfig = field(default_factory=CTCDecodingConfig)
 
     # Set `cuda` to int to define CUDA device. If 'None', will look for CUDA
     # device anyway, and do inference on CPU only if CUDA device is not found.

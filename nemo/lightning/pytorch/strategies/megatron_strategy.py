@@ -1063,9 +1063,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
     def load_model_state_dict(self, checkpoint: Mapping[str, Any], strict: bool = True) -> None:
         """loads model state dict"""
-        if self._fsdp is not None:
-            return
-
         assert self.megatron_parallel is not None
 
         strict = strict if self.ckpt_load_strictness is None else self.ckpt_load_strictness

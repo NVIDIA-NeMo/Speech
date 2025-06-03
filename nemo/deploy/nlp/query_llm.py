@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import time
 from abc import ABC
 from typing import List, Optional
@@ -84,7 +85,9 @@ class NemoQueryLLMPyTorch(NemoQueryLLMBase):
         min_length: Optional[int] = None,
         max_length: Optional[int] = None,
         apply_chat_template: bool = False,
+        n_top_logprobs: Optional[int] = None,
         init_timeout: float = 60.0,
+        echo: Optional[bool] = None,
     ):
         """
         Query the Triton server synchronously and return a list of responses.
@@ -133,6 +136,10 @@ class NemoQueryLLMPyTorch(NemoQueryLLMBase):
             inputs["max_length"] = np.full(prompts.shape, max_length, dtype=np.int_)
         if apply_chat_template is not None:
             inputs["apply_chat_template"] = np.full(prompts.shape, apply_chat_template, dtype=np.bool_)
+        if n_top_logprobs is not None:
+            inputs["n_top_logprobs"] = np.full(prompts.shape, n_top_logprobs, dtype=np.int_)
+        if echo is not None:
+            inputs["echo"] = np.full(prompts.shape, echo, dtype=np.bool_)
 
         with ModelClient(self.url, self.model_name, init_timeout_s=init_timeout, inference_timeout_s=600) as client:
             result_dict = client.infer_batch(**inputs)
@@ -141,6 +148,10 @@ class NemoQueryLLMPyTorch(NemoQueryLLMBase):
             log_probs_output = None
             if "log_probs" in result_dict.keys():
                 log_probs_output = result_dict["log_probs"]
+
+            top_log_probs_output = None
+            if "top_logprobs" in result_dict.keys():
+                top_log_probs_output = result_dict["top_logprobs"]
 
             if output_type == np.bytes_:
                 if "sentences" in result_dict.keys():
@@ -156,12 +167,16 @@ class NemoQueryLLMPyTorch(NemoQueryLLMBase):
                     "model": self.model_name,
                     "choices": [{"text": sentences}],
                 }
+
                 if log_probs_output is not None:
                     # logprobs are stored under choices in openai format.
                     openai_response["choices"][0]["logprobs"] = {}
                     openai_response["choices"][0]["logprobs"]["token_logprobs"] = log_probs_output
                     # TODO athitten: get top_n_logprobs from mcore once available
-                    openai_response["choices"][0]["logprobs"]["top_logprobs"] = log_probs_output
+                    if top_log_probs_output is not None:
+                        # we take 1st element because cast_output adds an extra dimension
+                        n_log_probs_output = [json.loads(top_log_prob[0]) for top_log_prob in top_log_probs_output]
+                        openai_response["choices"][0]["logprobs"]["top_logprobs"] = n_log_probs_output
                 return openai_response
             else:
                 return result_dict["sentences"]

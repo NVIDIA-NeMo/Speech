@@ -27,6 +27,7 @@ def get_args():
         description='Test evaluation with NVIDIA Evals Factory on nemo2 model deployed on PyTriton'
     )
     parser.add_argument('--nemo2_ckpt_path', type=str, help="NeMo 2.0 ckpt path")
+    parser.add_argument('--tokenizer_path', type=str, default=None, help="Path to the tokenizer")
     parser.add_argument('--max_batch_size', type=int, help="Max BS for the model for deployment")
     parser.add_argument('--eval_type', type=str, help="Evaluation benchmark to run from NVIDIA Evals Factory")
     parser.add_argument('--limit', type=int, help="Limit evaluation to `limit` num of samples")
@@ -60,9 +61,16 @@ if __name__ == '__main__':
         logging.info("Starting evaluation...")
         api_endpoint = ApiEndpoint(url="http://0.0.0.0:8886/v1/completions/")
         eval_target = EvaluationTarget(api_endpoint=api_endpoint)
-        # Run eval with just 1 sample from gsm8k
-        eval_params = ConfigParams(limit_samples=args.limit)
-        eval_config = EvaluationConfig(type=args.eval_type, params=eval_params)
+        # Run eval with just 1 sample from selected task
+        eval_params = {
+            "limit_samples": args.limit,
+        }
+        if args.tokenizer_path is not None:
+            eval_params["extra"] = {
+                "tokenizer_backend": "huggingface",
+                "tokenizer": args.tokenizer_path,
+            }
+        eval_config = EvaluationConfig(type=args.eval_type, params=ConfigParams(**eval_params))
         evaluate(target_cfg=eval_target, eval_cfg=eval_config)
         logging.info("Evaluation completed.")
         deploy_proc.send_signal(signal.SIGINT)

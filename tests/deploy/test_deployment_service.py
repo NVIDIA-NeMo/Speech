@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nemo.deploy.service.fastapi_interface_to_pytriton import (
+    ChatCompletionRequest,
     CompletionRequest,
     TritonSettings,
     _helper_fun,
@@ -80,19 +81,28 @@ class TestTritonSettings:
 
 
 class TestCompletionRequest:
-    def test_default_values(self):
-        request = CompletionRequest(model="test_model")
+    def test_default_completions_values(self):
+        request = CompletionRequest(model="test_model", prompt="test prompt")
         assert request.model == "test_model"
-        assert request.prompt == "hello"
-        assert request.messages == [{}]
+        assert request.prompt == "test prompt"
         assert request.max_tokens == 512
         assert request.temperature == 1.0
         assert request.top_p == 0.0
         assert request.top_k == 0
         assert request.logprobs is None
+        assert request.echo is False
+
+    def test_default_chat_values(self):
+        request = ChatCompletionRequest(model="test_model", messages=[{"role": "user", "content": "test message"}])
+        assert request.model == "test_model"
+        assert request.messages == [{"role": "user", "content": "test message"}]
+        assert request.max_tokens == 512
+        assert request.temperature == 1.0
+        assert request.top_p == 0.0
+        assert request.top_k == 0
 
     def test_greedy_params(self):
-        request = CompletionRequest(model="test_model", temperature=0.0, top_p=0.0)
+        request = CompletionRequest(model="test_model", prompt="test prompt", temperature=0.0, top_p=0.0)
         assert request.top_k == 1
 
 
@@ -140,6 +150,8 @@ class TestLLMQueryFunctions:
                 compute_logprob=True,
                 max_length=100,
                 apply_chat_template=False,
+                echo=False,
+                n_top_logprobs=0,
             )
             assert result == {"test": "response"}
             mock_nq.query_llm.assert_called_once()
@@ -162,6 +174,8 @@ class TestLLMQueryFunctions:
                     compute_logprob=True,
                     max_length=100,
                     apply_chat_template=False,
+                    echo=False,
+                    n_top_logprobs=0,
                 )
             )
             assert result == mock_result

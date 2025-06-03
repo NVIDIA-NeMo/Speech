@@ -27,7 +27,8 @@ Some of the benchmarks (e.g. GPQA) use a gated dataset. To use them, you must au
 `Hugging Face Hub <https://huggingface.co/docs/huggingface_hub/quick-start#authentication>`__
 before launching the evaluation.
 
-The NVIDIA Evals Factory provides the following predefined configurations for evaluating the completions endpoint:
+The NVIDIA Evals Factory provides several evaluation harnesses with different sets of evaluation benchmarks.
+The `NeMo Framework container <https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo>`__ includes nvidia-lm-eval pre-installed, along with predefined configurations for evaluating the completions endpoint.
 
 - `gsm8k`
 - `mgsm`
@@ -45,6 +46,29 @@ It also provides the following configurations for evaluating the chat endpoint:
 - `mmlu_pro_instruct`
 - `mmlu_redux_instruct`
 - `wikilingua`
+
+
+When specifying the task, you can either use the task name from the list above or prepend it with the harness name. For example:
+
+.. code-block:: python
+
+    task = "mmlu"
+    task = "lm-evaluation-harness.mmlu"
+    task = "lm_evaluation_harness.mmlu"
+
+To enable other evaluation harnesses, you need to install them. For example:
+
+.. code-block:: bash
+
+    pip install nvidia-simple-evals
+
+If multiple harnesses define a task with the same name, you must use the ``<harness>.<task>`` format to avoid ambiguity. For example:
+
+.. code-block:: python
+
+    task = "lm-evaluation-harness.mmlu"
+    task = "simple-evals.mmlu"
+
 
 Run Evaluations without NeMo-Run
 ---------------------------------
@@ -105,7 +129,7 @@ processes are launched as two separate jobs with NeMo-Run. The evaluate method w
 accessible and the model is deployed before starting the evaluations.
 
 .. note::
-    Please make sure to update HF_TOKEN in the nemo-run script's `local_executor env_vars <https://github.com/NVIDIA/NeMo/blob/main/scripts/llm/evaluation.py#L210>`__ with your HF_TOKEN if using local executor or in the `slurm_executor's env_vars <https://github.com/NVIDIA/NeMo/blob/main/scripts/llm/evaluation.py#L177>`__ if using slurm_executor.
+    Please make sure to update HF_TOKEN in the NeMo-Run script's `local_executor env_vars <https://github.com/NVIDIA/NeMo/blob/main/scripts/llm/evaluation.py#L210>`__ with your HF_TOKEN if using local executor or in the `slurm_executor's env_vars <https://github.com/NVIDIA/NeMo/blob/main/scripts/llm/evaluation.py#L177>`__ if using slurm_executor.
 
 Run Locally with NeMo-Run
 #########################

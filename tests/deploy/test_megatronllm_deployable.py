@@ -118,8 +118,8 @@ def test_triton_input_output(deployable):
     inputs = deployable.get_triton_input
     outputs = deployable.get_triton_output
 
-    assert len(inputs) == 9  # Number of input tensors
-    assert len(outputs) == 2  # Number of output tensors
+    assert len(inputs) == 11  # Number of input tensors
+    assert len(outputs) == 3  # Number of output tensors
 
     # Check input tensor names
     input_names = [tensor.name for tensor in inputs]
@@ -132,8 +132,11 @@ def test_triton_input_output(deployable):
     assert "random_seed" in input_names
     assert "compute_logprob" in input_names
     assert "apply_chat_template" in input_names
+    assert "n_top_logprobs" in input_names
+    assert "echo" in input_names
 
     # Check output tensor names
     output_names = [tensor.name for tensor in outputs]
     assert "sentences" in output_names
     assert "log_probs" in output_names
+    assert "top_logprobs" in output_names

@@ -42,7 +42,7 @@ jobs:
           git push -u origin $SOURCE_BRANCH
 
   mcore:
-    uses: NVIDIA-NeMo/NeMo-FW-CI-templates/.github/workflows/_bump_yamlfile.yml@v0.27.1
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_bump_yamlfile.yml@v0.27.1
     needs: [update-branch]
     with:
       source-repository: NVIDIA/Megatron-LM

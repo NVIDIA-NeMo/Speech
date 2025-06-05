@@ -133,6 +133,7 @@ class Llama4OmniConfig(NevaConfig):
         if self.language_transformer_config is not None:
             for attr in MODEL_CONFIG_ATTR:
                 setattr(self, attr, getattr(self.language_transformer_config, attr))
+            setattr(self.language_transformer_config, "use_te_rng_tracker", getattr(self, "use_te_rng_tracker"))
 
     def configure_model(self, tokenizer, vp_stage: Optional[int] = None) -> "MCoreNevaModel":
         # pylint: disable=C0115,C0116

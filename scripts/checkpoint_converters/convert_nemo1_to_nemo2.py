@@ -72,6 +72,7 @@ MODEL_CONFIG_MAPPING = {
     "nemotron4-22b": (llm.NemotronModel, llm.Nemotron3Config22B),
     "nemotron4-15b": (llm.NemotronModel, llm.Nemotron4Config15B),
     "nemotron4-340b": (llm.NemotronModel, llm.Nemotron4Config340B),
+    "nemotronh4b": (llm.MambaModel, llm.NemotronHConfig4B),
     "nemotronh8b": (llm.MambaModel, llm.NemotronHConfig8B),
     "nemotronh47b": (llm.MambaModel, llm.NemotronHConfig47B),
     "nemotronh56b": (llm.MambaModel, llm.NemotronHConfig56B),

@@ -56,4 +56,4 @@ def test_flops_measurement_callback_bert():
 
     tflops_per_sec_per_gpu = callback.eval_tflops_per_sec_per_gpu(train_step_time)
     expected_tflops_per_sec_per_gpu = expected_flops_per_gpu / (1e12 * train_step_time)
-    assert tflops_per_sec_per_gpu == expected_tflops_per_sec_per_gpu
+    assert tflops_per_sec_per_gpu[0] == expected_tflops_per_sec_per_gpu

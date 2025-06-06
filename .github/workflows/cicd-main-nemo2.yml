@@ -203,6 +203,8 @@ jobs:
             runner: self-hosted-azure-gpus-1
           - script: L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124
             runner: self-hosted-azure-gpus-1
+          - script: L2_NeMo_2_Auto_Configurator_callbacks
+            runner: self-hosted-azure-gpus-1
           - script: L2_NeMo_2_Conversion_Test_Baichuan2
             runner: self-hosted-azure
           - script: L2_NeMo_2_Conversion_Test_ChatGLM

@@ -567,7 +567,9 @@ class HFNemotronHImporter(io.ModelConnector["AutoModelForCausalLM", MambaModel])
                 base //= 2
             return base
 
-        if "8B" in source._name_or_path:
+        if "4B" in source._name_or_path:
+            nemotron_h_config = NemotronHConfig4B()
+        elif "8B" in source._name_or_path:
             nemotron_h_config = NemotronHConfig8B()
         elif "47B" in source._name_or_path:
             nemotron_h_config = NemotronHConfig47B()
@@ -685,7 +687,9 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
         source: SSMConfig = io.load_context(str(self), subpath="model.config")
 
         # TODO @ataghibakhsh: Change AutoConfig to NemotronHConfig once merged to HF
-        if type(source) == NemotronHConfig8B:
+        if type(source) == NemotronHConfig4B:
+            hf_config = AutoConfig.from_pretrained("nvidia/Nemotron-H-4B-Base-8K", trust_remote_code=True)
+        elif type(source) == NemotronHConfig8B:
             hf_config = AutoConfig.from_pretrained("nvidia/Nemotron-H-8B-Base-8K", trust_remote_code=True)
         elif type(source) == NemotronHConfig47B:
             hf_config = AutoConfig.from_pretrained("nvidia/Nemotron-H-47B-Base-8K", trust_remote_code=True)
@@ -973,6 +977,21 @@ class NemotronHConfigBase(SSMConfig):
 
 
 @dataclass
+class NemotronHConfig4B(NemotronHConfigBase):
+    """NemotronHConfig4B"""
+
+    hybrid_override_pattern: str = "M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M-"
+    num_layers: int = 52
+    hidden_size: int = 3072
+    mamba_num_heads: int = 112
+    kv_channels: int = 128
+    mamba_state_dim: int = 128
+    ffn_hidden_size: int = 12288
+    num_attention_heads: int = 32
+    use_mamba_mem_eff_path: bool = False
+
+
+@dataclass
 class NemotronHConfig8B(NemotronHConfigBase):
     """NemotronHConfig8B"""
 
@@ -1023,6 +1042,7 @@ __all__ = [
     "NVIDIAMambaConfig8B",
     "NVIDIAMambaHybridConfig8B",
     "NemotronHConfigBase",
+    "NemotronHConfig4B",
     "NemotronHConfig8B",
     "NemotronHConfig47B",
     "NemotronHConfig56B",

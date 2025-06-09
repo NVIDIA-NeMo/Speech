@@ -25,6 +25,10 @@ pre_train,nemotron4,15b,b200,fp8,64,4096,1,1,1,1,1,2,256,,1,0,0,0,
 pre_train,deepseek,v3,b200,bf16,1024,4096,1,16,1,8,1,1,8192,,0,0,0,0,core_attn/mla_up_proj
 pre_train,deepseek,v3,b200,bf16,256,4096,1,16,1,8,1,1,2048,,0,0,0,0,core_attn/mla_up_proj
 pre_train,deepseek,v3,b200,bf16,128,4096,2,16,1,8,1,1,1024,1,0,0,0,0,core_attn
+pre_train,nemotronh,8b,gb200,fp8,8,8192,1,1,1,1,1,2,128,,1,0,0,0,
+pre_train,nemotronh,47b,gb200,fp8,64,8192,2,1,1,1,1,1,192,,1,0,0,0,
+pre_train,nemotronh,56b,gb200,fp8,64,8192,4,1,1,1,1,2,192,,1,0,0,0,
+pre_train,nemotronh,56b,gb200,fp8,256,8192,4,1,1,1,1,2,768,,1,0,0,0,
 sft,llama3,8b,b200,fp8,8,16384,1,1,1,1,1,1,8,,1,0,0,0,
 sft,llama3,70b,b200,bf16,32,4096,2,4,1,1,5,1,32,,1,0,0,0,
 sft,llama3,70b,b200,fp8,32,4096,2,4,1,1,5,1,32,,1,0,0,0,

@@ -35,6 +35,7 @@ from nemo.collections.llm.recipes.precision.mixed_precision import (
 )
 from nemo.lightning.base import DEFAULT_NEMO_CACHE_HOME
 from nemo.lightning.pytorch.callbacks.flops_callback import FLOPsMeasurementCallback
+from nemo.lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 from nemo.utils import logging
 
 DEFAULT_NEMO_HOME = os.getenv('NEMO_HOME', DEFAULT_NEMO_CACHE_HOME)
@@ -459,7 +460,16 @@ def set_exp_logging_configs(
 
     # Misc. for overall faster experiment runtime
     recipe.log.ckpt = None
-    recipe.trainer.enable_checkpointing = False
+
+    # disable checkpointing if no ModelCheckpoint callback is found
+    callbacks = recipe.trainer.callbacks
+    checkpoint_callback_idx = None
+    if callbacks:  # default is None in lightning
+        for idx, callback in enumerate(callbacks):
+            if callback.__fn_or_cls__ == ModelCheckpoint:
+                checkpoint_callback_idx = idx
+                break
+    recipe.trainer.enable_checkpointing = checkpoint_callback_idx is not None
     recipe.trainer.log_every_n_steps = 1
 
     return recipe

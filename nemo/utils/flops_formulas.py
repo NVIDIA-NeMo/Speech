@@ -52,6 +52,12 @@ class FLOPSConfig:
     moe_ffn_hidden_size: Optional[int] = None
     mtp_num_layers: Optional[int] = None
     causal_self_attn: Optional[bool] = None
+    is_hybrid_model: bool = False
+    hybrid_override_pattern: Optional[str] = None
+    mamba_state_dim: Optional[int] = None
+    mamba_head_dim: Optional[int] = None
+    mamba_num_groups: Optional[int] = None
+    mamba_num_heads: Optional[int] = None
 
 
 def gpt3(config: FLOPSConfig):
@@ -388,3 +394,74 @@ def deepseekv3(config: FLOPSConfig):
             per_input_vocab_flops += 6 * config.hs * 2 * config.hs * config.enc_seq_len
 
     return (per_input_attention_flops + per_input_linear_flops + per_input_vocab_flops) * config.gbs
+
+
+def _mlp_layer_flops(config: FLOPSConfig):
+    """Model FLOPs for MLP layer"""
+    return 6 * config.gbs * config.enc_seq_len * config.hs * config.ffn_hs * (2 if config.gated_linear_unit else 1)
+
+
+def _non_mla_attn_layer_flops(config: FLOPSConfig):
+    """Model FLOPs for attention layer"""
+    return (
+        6
+        * config.gbs
+        * config.enc_seq_len
+        * config.hs
+        * (
+            config.hs  # Q
+            + config.query_groups / config.attention_heads * config.hs * 2  # KV
+            + config.enc_seq_len / 2 * 2
+            + config.hs
+        )
+    )
+
+
+def _mamba_layer_flops(config: FLOPSConfig):
+    """Model FLOPs for Mamba layer. We ignore part of the flops of scan because the
+    chunk size is not known from model config."""
+    assert config.mamba_state_dim is not None
+    assert config.mamba_head_dim is not None
+
+    if config.mamba_num_heads:
+        nheads = config.mamba_num_heads
+    else:
+        nheads = 2 * config.hs // config.mamba_head_dim  # default expand is 2
+    d_in = nheads * config.mamba_head_dim
+    return (
+        (
+            6
+            * config.gbs
+            * config.enc_seq_len
+            * config.hs
+            * (2 * d_in + 2 * config.mamba_num_groups * config.mamba_state_dim + nheads)
+        )
+        + (3 * 2 * config.gbs * config.enc_seq_len * d_in * config.mamba_state_dim)
+        + (6 * config.gbs * config.enc_seq_len * d_in * config.hs)
+    )
+
+
+def _hybrid_model_flops(config: FLOPSConfig):
+    """Model FLOPs for hybrid model"""
+    assert config.is_hybrid_model == True
+    assert config.hybrid_override_pattern is not None
+
+    num_attn_layers, num_mamba_layers, num_mlp_layers = 0, 0, 0
+    for c in config.hybrid_override_pattern:
+        if c == 'M':
+            num_mamba_layers += 1
+        elif c == '-':
+            num_mlp_layers += 1
+        elif c == '*':
+            num_attn_layers += 1
+    return (
+        num_attn_layers * _non_mla_attn_layer_flops(config)
+        + num_mamba_layers * _mamba_layer_flops(config)
+        + num_mlp_layers * _mlp_layer_flops(config)
+        + 6 * config.gbs * config.enc_seq_len * config.hs * config.vocab_size
+    )
+
+
+def nemotronh(config: FLOPSConfig):
+    """Model FLOPs for NemotronH"""
+    return _hybrid_model_flops(config)

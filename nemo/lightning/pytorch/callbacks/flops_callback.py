@@ -38,6 +38,7 @@ _model_flops_map = {
     "hyena": hyena,
     "deepseekv3": flops_formulas.deepseekv3,
     "transformer": flops_formulas.transformer,
+    "nemotronh": flops_formulas.nemotronh,
 }
 
 
@@ -108,6 +109,14 @@ class FLOPsMeasurementCallback(Callback):
         config_kwargs["moe_shared_expert_intermediate_size"] = self.model_cfg.moe_shared_expert_intermediate_size
         config_kwargs["moe_ffn_hidden_size"] = self.model_cfg.moe_ffn_hidden_size
         config_kwargs["mtp_num_layers"] = self.model_cfg.mtp_num_layers
+
+        if self.model_cfg.is_hybrid_model:
+            config_kwargs['is_hybrid_model'] = True
+            config_kwargs['hybrid_override_pattern'] = self.model_cfg.hybrid_override_pattern
+            config_kwargs['mamba_state_dim'] = self.model_cfg.mamba_state_dim
+            config_kwargs['mamba_head_dim'] = self.model_cfg.mamba_head_dim
+            config_kwargs['mamba_num_groups'] = self.model_cfg.mamba_num_groups
+            config_kwargs['mamba_num_heads'] = self.model_cfg.mamba_num_heads
 
         self.flops_config = flops_formulas.FLOPSConfig(**config_kwargs)
 

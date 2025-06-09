@@ -95,6 +95,7 @@ def test_chunked_cross_entropy_ignore_index_and_mask():
 
     # Randomly zero out entries in a mask
     mask = torch.randint(0, 2, (seq_len,))  # 0 or 1
+    mask[0] = 1  # make sure at least one entry is 1
     ignore_idx = -100
 
     # First compute the reference loss by manually applying ignore_index

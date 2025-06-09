@@ -78,16 +78,27 @@ def slurm_executor(
         "NEMORUN_HOME": log_dir,
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     }
+
+    # Assuming 4 GPU's per node as GB200, might need to revisit in future!
+    if num_gpus_per_node == 4:
+        env_vars["NCCL_NET_GDR_LEVEL"] = "PHB"  # For NCCL 2.25
+        env_vars["NCCL_NET_GDR_C2C"] = 1  # For NCCL 2.26
+
     if wandb_key is not None:
         env_vars["WANDB_API_KEY"] = wandb_key
     mounts = []
+
     srun_args = custom_srun_args.copy()
     srun_args.extend(
         [
             "--mpi=pmix",
-            "numactl --cpunodebind=$((SLURM_LOCALID/4)) --membind=$((SLURM_LOCALID/4))",  # numactl command should be always at the end of srun_args
         ]
     )
+
+    if num_gpus_per_node == 4:
+        srun_args.append("numactl --cpunodebind=$((SLURM_LOCALID/2)) --membind=$((SLURM_LOCALID/2))")
+    else:
+        srun_args.append("numactl --cpunodebind=$((SLURM_LOCALID/4)) --membind=$((SLURM_LOCALID/4))")
 
     if nemo_home != DEFAULT_NEMO_CACHE_HOME:  # DO NOT change this to 'DEFAULT_NEMO_HOME'/'NEMO_HOME'
         env_vars.update({"NEMO_HOME": nemo_home})

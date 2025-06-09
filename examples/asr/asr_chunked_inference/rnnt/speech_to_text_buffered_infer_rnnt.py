@@ -36,7 +36,6 @@ python speech_to_text_buffered_infer_rnnt.py \
     output_filename="<remove or specify output filename>" \
     total_buffer_in_secs=4.0 \
     chunk_len_in_secs=1.6 \
-    model_stride=4 \
     batch_size=32 \
     clean_groundtruth_text=True \
     langid='en'
@@ -51,7 +50,6 @@ python speech_to_text_buffered_infer_rnnt.py \
     output_filename="<remove or specify output filename>" \
     total_buffer_in_secs=4.0 \
     chunk_len_in_secs=1.6 \
-    model_stride=4 \
     batch_size=32 \
     merge_algo="lcs" \
     lcs_alignment_dir=<OPTIONAL: Some path to store the LCS alignments> 
@@ -118,9 +116,6 @@ class TranscriptionConfig:
     # Chunked configs
     chunk_len_in_secs: float = 1.6  # Chunk length in seconds
     total_buffer_in_secs: float = 4.0  # Length of buffer (chunk + left and right padding) in seconds
-    model_stride: int = (
-        8  # Model downsampling factor, 8 for Citrinet and FastConformer models and 4 for Conformer models.
-    )
 
     # Set `cuda` to int to define CUDA device. If 'None', will look for CUDA
     # device anyway, and do inference on CPU only if CUDA device is not found.
@@ -253,7 +248,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 asr_model.change_decoding_strategy(cfg.decoding, decoder_type='rnnt')
 
     feature_stride = model_cfg.preprocessor['window_stride']
-    model_stride_in_secs = feature_stride * cfg.model_stride
+    model_stride_in_secs = feature_stride * asr_model.encoder.subsampling_factor
     total_buffer = cfg.total_buffer_in_secs
     chunk_len = float(cfg.chunk_len_in_secs)
 

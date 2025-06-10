@@ -147,10 +147,10 @@ def beam_search_eval(
 
     # Override the beam search config with current search candidate configuration
     cfg.decoding.beam_size = beam_width
-    cfg.decoding.beam_alpha = beam_alpha
+    cfg.decoding.ngram_lm_alpha = beam_alpha
     cfg.decoding.beam_beta = beam_beta
     cfg.decoding.return_best_hypothesis = False
-    cfg.decoding.kenlm_path = cfg.kenlm_model_file
+    cfg.decoding.ngram_lm_model = cfg.kenlm_model_file
 
     # Update model's decoding strategy config
     model.cfg.decoding.strategy = cfg.decoding_strategy

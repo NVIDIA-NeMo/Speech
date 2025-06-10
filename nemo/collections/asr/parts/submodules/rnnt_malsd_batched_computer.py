@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.collections.asr.parts.utils.rnnt_batched_beam_utils import (
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INACTIVE_SCORE,
     NON_EXISTENT_LABEL_VALUE,
     BatchedBeamHyps,
@@ -508,7 +508,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 batched_hyps.add_results_no_checks_(hyps_indices, next_labels, next_hyps_prob)
 
             # step 4: recombine hypotheses: sum probabilities of identical hypotheses.
-            batched_hyps.recombine_hyps()
+            batched_hyps.recombine_hyps_()
 
             # step 5: update decoder state + decoder output (+ lm state/scores)
             # step 5.1: mask invalid value labels with blank to avoid errors (refer to step 2.2)
@@ -1008,7 +1008,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             )
 
         # step 4: recombine hypotheses: sum probabilities of identical hypotheses.
-        self.state.batched_hyps.recombine_hyps()
+        self.state.batched_hyps.recombine_hyps_()
 
     def _loop_update_decoder(self):
         """

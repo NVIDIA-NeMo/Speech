@@ -22,6 +22,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 
 from nemo.collections.asr.parts.k2.classes import GraphIntersectDenseConfig
+from nemo.collections.asr.parts.submodules.ctc_batched_beam_decoding import BatchedBeamCTCComputer
 from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET
 from nemo.collections.asr.parts.submodules.wfst_decoder import RivaDecoderConfig, WfstNbestHypothesis
 from nemo.collections.asr.parts.utils import rnnt_utils
@@ -204,7 +205,7 @@ class AbstractBeamCTCInfer(Typing):
 
 
 class BeamCTCInfer(AbstractBeamCTCInfer):
-    """A greedy CTC decoder.
+    """A beam CTC decoder.
 
     Provides a common abstraction for sample level and batch level greedy decoding.
 
@@ -227,9 +228,9 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
         return_best_hypothesis: bool = True,
         preserve_alignments: bool = False,
         compute_timestamps: bool = False,
-        beam_alpha: float = 1.0,
+        ngram_lm_alpha: float = 0.3,
         beam_beta: float = 0.0,
-        kenlm_path: str = None,
+        ngram_lm_model: str = None,
         flashlight_cfg: Optional['FlashlightConfig'] = None,
         pyctcdecode_cfg: Optional['PyCTCDecodeConfig'] = None,
     ):
@@ -260,11 +261,11 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
         # Log the beam search algorithm
         logging.info(f"Beam search algorithm: {search_type}")
 
-        self.beam_alpha = beam_alpha
+        self.ngram_lm_alpha = ngram_lm_alpha
         self.beam_beta = beam_beta
 
         # Default beam search args
-        self.kenlm_path = kenlm_path
+        self.ngram_lm_model = ngram_lm_model
 
         # PyCTCDecode params
         if pyctcdecode_cfg is None:
@@ -349,9 +350,9 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
 
         if self.default_beam_scorer is None:
             # Check for filepath
-            if self.kenlm_path is None or not os.path.exists(self.kenlm_path):
+            if self.ngram_lm_model is None or not os.path.exists(self.ngram_lm_model):
                 raise FileNotFoundError(
-                    f"KenLM binary file not found at : {self.kenlm_path}. "
+                    f"KenLM binary file not found at : {self.ngram_lm_model}. "
                     f"Please set a valid path in the decoding config."
                 )
 
@@ -367,9 +368,9 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
 
             self.default_beam_scorer = BeamSearchDecoderWithLM(
                 vocab=vocab,
-                lm_path=self.kenlm_path,
+                lm_path=self.ngram_lm_model,
                 beam_width=self.beam_size,
-                alpha=self.beam_alpha,
+                alpha=self.ngram_lm_alpha,
                 beta=self.beam_beta,
                 num_cpus=max(1, os.cpu_count()),
                 input_tensor=False,
@@ -451,7 +452,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
 
         if self.pyctcdecode_beam_scorer is None:
             self.pyctcdecode_beam_scorer = pyctcdecode.build_ctcdecoder(
-                labels=self.vocab, kenlm_model_path=self.kenlm_path, alpha=self.beam_alpha, beta=self.beam_beta
+                labels=self.vocab, kenlm_model_path=self.ngram_lm_model, alpha=self.ngram_lm_alpha, beta=self.beam_beta
             )  # type: pyctcdecode.BeamSearchDecoderCTC
 
         x = x.to('cpu').numpy()
@@ -533,9 +534,9 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
 
         if self.flashlight_beam_scorer is None:
             # Check for filepath
-            if self.kenlm_path is None or not os.path.exists(self.kenlm_path):
+            if self.ngram_lm_model is None or not os.path.exists(self.ngram_lm_model):
                 raise FileNotFoundError(
-                    f"KenLM binary file not found at : {self.kenlm_path}. "
+                    f"KenLM binary file not found at : {self.ngram_lm_model}. "
                     "Please set a valid path in the decoding config."
                 )
 
@@ -550,7 +551,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
             from nemo.collections.asr.modules.flashlight_decoder import FlashLightKenLMBeamSearchDecoder
 
             self.flashlight_beam_scorer = FlashLightKenLMBeamSearchDecoder(
-                lm_path=self.kenlm_path,
+                lm_path=self.ngram_lm_model,
                 vocabulary=self.vocab,
                 tokenizer=self.tokenizer,
                 lexicon_path=self.flashlight_cfg.lexicon_path,
@@ -558,7 +559,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
                 beam_size=self.beam_size,
                 beam_size_token=self.flashlight_cfg.beam_size_token,
                 beam_threshold=self.flashlight_cfg.beam_threshold,
-                lm_weight=self.beam_alpha,
+                lm_weight=self.ngram_lm_alpha,
                 word_score=self.beam_beta,
                 unk_weight=self.flashlight_cfg.unk_weight,
                 sil_weight=self.flashlight_cfg.sil_weight,
@@ -877,6 +878,108 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
         return self.k2_decoder.decode(x.to(device=self.device), out_len.to(device=self.device))
 
 
+class BeamBatchedCTCInfer(AbstractBeamCTCInfer):
+    """
+    A batched beam CTC decoder.
+
+    Args:
+        blank_index: int index of the blank token. Can be 0 or len(vocabulary).
+        beam_size: int size of the beam.
+        return_best_hypothesis:  When set to True (default), returns a single Hypothesis.
+            When set to False, returns a NBestHypotheses container, which contains a list of Hypothesis.
+        preserve_alignments: Bool flag which preserves the history of logprobs generated during
+            decoding (sample / batched). When set to true, the Hypothesis will contain
+            the non-null value for `logprobs` in it. Here, `logprobs` is a torch.Tensors.
+        compute_timestamps: A bool flag, which determines whether to compute the character/subword, or
+                word based timestamp mapping the output log-probabilities to discrite intervals of timestamps.
+                The timestamps will be available in the returned Hypothesis.timestep as a dictionary.
+        ngram_lm_alpha: float, the language model weight.
+        beam_beta: float, the word insertion weight.
+        beam_threshold: float, the beam pruning threshold.
+        ngram_lm_model: str, the path to the ngram model.
+        allow_cuda_graphs: bool, whether to allow cuda graphs for the beam search algorithm.
+    """
+
+    def __init__(
+        self,
+        blank_index: int,
+        beam_size: int,
+        return_best_hypothesis: bool = True,
+        preserve_alignments: bool = False,
+        compute_timestamps: bool = False,
+        ngram_lm_alpha: float = 1.0,
+        beam_beta: float = 0.0,
+        beam_threshold: float = 20.0,
+        ngram_lm_model: str = None,
+        allow_cuda_graphs: bool = True,
+    ):
+        super().__init__(blank_id=blank_index, beam_size=beam_size)
+
+        self.return_best_hypothesis = return_best_hypothesis
+        self.preserve_alignments = preserve_alignments
+        self.compute_timestamps = compute_timestamps
+        self.allow_cuda_graphs = allow_cuda_graphs
+
+        if self.compute_timestamps:
+            raise ValueError("`Compute timestamps` is not supported for batched beam search.")
+        if self.preserve_alignments:
+            raise ValueError("`Preserve alignments` is not supported for batched beam search.")
+
+        self.ngram_lm_alpha = ngram_lm_alpha
+        self.beam_beta = beam_beta
+        self.beam_threshold = beam_threshold
+
+        # Default beam search args
+        self.ngram_lm_model = ngram_lm_model
+
+        self.search_algorithm = BatchedBeamCTCComputer(
+            blank_index=blank_index,
+            beam_size=beam_size,
+            return_best_hypothesis=return_best_hypothesis,
+            preserve_alignments=preserve_alignments,
+            compute_timestamps=compute_timestamps,
+            ngram_lm_alpha=ngram_lm_alpha,
+            beam_beta=beam_beta,
+            beam_threshold=beam_threshold,
+            ngram_lm_model=ngram_lm_model,
+            allow_cuda_graphs=allow_cuda_graphs,
+        )
+
+    @typecheck()
+    def forward(
+        self,
+        decoder_output: torch.Tensor,
+        decoder_lengths: torch.Tensor,
+    ) -> Tuple[List[Union[rnnt_utils.Hypothesis, rnnt_utils.NBestHypotheses]]]:
+        """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
+        Output token is generated auto-repressively.
+
+        Args:
+            decoder_output: A tensor of size (batch, timesteps, features).
+            decoder_lengths: list of int representing the length of each sequence
+                output sequence.
+
+        Returns:
+            packed list containing batch number of sentences (Hypotheses).
+        """
+        with torch.no_grad(), torch.inference_mode():
+            if decoder_output.ndim != 3:
+                raise ValueError(
+                    f"`decoder_output` must be a tensor of shape [B, T, V] (log probs, float). "
+                    f"Provided shape = {decoder_output.shape}"
+                )
+
+            batched_beam_hyps = self.search_algorithm(decoder_output, decoder_lengths)
+
+            batch_size = decoder_lengths.shape[0]
+            if self.return_best_hypothesis:
+                hyps = batched_beam_hyps.to_hyps_list(score_norm=False)[:batch_size]
+            else:
+                hyps = batched_beam_hyps.to_nbest_hyps_list(score_norm=False)[:batch_size]
+
+        return (hyps,)
+
+
 @dataclass
 class PyCTCDecodeConfig:
     # These arguments cannot be imported from pyctcdecode (optional dependency)
@@ -906,10 +1009,14 @@ class BeamCTCInferConfig:
     preserve_alignments: bool = False
     compute_timestamps: bool = False
     return_best_hypothesis: bool = True
+    allow_cuda_graphs: bool = True
 
-    beam_alpha: float = 1.0
-    beam_beta: float = 0.0
-    kenlm_path: Optional[str] = None
+    beam_alpha: Optional[float] = None  # Deprecated
+    beam_beta: float = 1.0
+    beam_threshold: float = 20.0
+    kenlm_path: Optional[str] = None  # Deprecated, default should be None
+    ngram_lm_alpha: Optional[float] = 1.0
+    ngram_lm_model: Optional[str] = None
 
     flashlight_cfg: Optional[FlashlightConfig] = field(default_factory=lambda: FlashlightConfig())
     pyctcdecode_cfg: Optional[PyCTCDecodeConfig] = field(default_factory=lambda: PyCTCDecodeConfig())

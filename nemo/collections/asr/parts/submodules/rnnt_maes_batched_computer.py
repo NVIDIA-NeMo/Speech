@@ -18,7 +18,7 @@ import torch
 
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.collections.asr.parts.utils.rnnt_batched_beam_utils import (
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INACTIVE_SCORE,
     NON_EXISTENT_LABEL_VALUE,
     BatchedBeamHyps,

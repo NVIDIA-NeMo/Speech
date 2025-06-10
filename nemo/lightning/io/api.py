@@ -192,12 +192,24 @@ def load_connector_from_trainer_ckpt(path: Path, target: str) -> ModelConnector:
             "hf"
         )
     """
-    model: pl.LightningModule = load_context(path).model
+    model: pl.LightningModule = load_context(path, subpath="model")
 
     if not isinstance(model, ConnectorMixin):
         raise ValueError("Model must be an instance of ConnectorMixin")
 
     return model.exporter(target, path)
+
+
+def _verify_peft_export(path: Path, target: str):
+    if target == "hf" and (path / "weights" / "adapter_metadata.json").exists():
+        raise ValueError(
+            f"Your checkpoint \n`{path}`\ncontains PEFT weights, but your specified export target `hf` should be "
+            f"used for full model checkpoints. "
+            f"\nIf you want to convert NeMo 2 PEFT to Hugging Face PEFT checkpoint, set `target='hf-peft'`. "
+            f"If you want to merge LoRA weights back to the base model and export the merged full model, "
+            f"run `llm.peft.merge_lora` first before exporting. See "
+            f"https://docs.nvidia.com/nemo-framework/user-guide/latest/sft_peft/peft_nemo2.html for more details."
+        )
 
 
 def export_ckpt(
@@ -247,6 +259,7 @@ def export_ckpt(
         nemo_ckpt_path = Path("/path/to/model.ckpt")
         export_path = export_ckpt(nemo_ckpt_path, "hf")
     """
+    _verify_peft_export(path, target)
     exporter: ModelConnector = load_connector(path, target)
     _output_path = output_path or Path(path) / target
 

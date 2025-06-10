@@ -163,7 +163,7 @@ def pretrain_recipe(
             seq_length=seq_length,
             global_batch_size=global_batch_size,
             micro_batch_size=micro_batch_size,
-            tokenizer=run.Config(AutoTokenizer, "Qwen/Qwen3-30B_A3B"),
+            tokenizer=run.Config(AutoTokenizer, "Qwen/Qwen3-30B-A3B"),
         ),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
         optim=distributed_fused_adam_with_cosine_annealing(

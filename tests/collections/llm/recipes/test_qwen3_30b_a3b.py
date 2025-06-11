@@ -62,7 +62,7 @@ class TestQwen3_30B_A3B:
 
         # Check tokenizer configuration
         assert recipe.data.tokenizer.__fn_or_cls__.__name__ == "AutoTokenizer"
-        assert recipe.data.tokenizer.pretrained_model_name == "Qwen/Qwen3-30B_A3B"
+        assert recipe.data.tokenizer.pretrained_model_name == "Qwen/Qwen3-30B-A3B"
 
         # Check recompute configuration
         assert recipe.model.config.recompute_granularity == "full"

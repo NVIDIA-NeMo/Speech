@@ -136,6 +136,7 @@ class HFWrappedEncoder(nn.Module):
 class ASRModuleConfig(ModelParallelConfig, io.IOMixin):
     _target_: Optional[str] = None
     pretrained_model: Optional[str] = "nvidia/canary-1b"
+    hidden_size: Optional[int] = None
     config: Optional[dict] = None
     preprocessor_config: Optional[dict] = None
     spec_augment_config: Optional[dict] = None
@@ -224,6 +225,9 @@ class ASRModuleConfig(ModelParallelConfig, io.IOMixin):
             model, preprocessor = self.configure_hf_auto_model()
         else:
             model, preprocessor = self.configure_nemo_asr_model()
+
+        # add attribute "tensor_parallel_grad_reduce" to the model for TP grad all-reduce
+        model.tensor_parallel_grad_reduce = True
 
         if self.spec_augment_config is not None:
             spec_augment = Serialization.from_config_dict(to_dict_config(self.spec_augment_config))

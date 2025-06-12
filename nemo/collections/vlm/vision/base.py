@@ -64,6 +64,40 @@ def get_image_sequence_length(img_h, img_w, patch_dim, add_class_token, class_to
     return num_patches + (class_token_len if add_class_token else 0)
 
 
+class DownSampleBlock(torch.nn.Module):
+    """Downsample block following the ViLA-VLM paper."""
+
+    # pylint: disable=line-too-long
+    # Implement from https://github.com/NVlabs/VILA/blob/3522eef015e48d73cf83fc2b949cd464dab1ba3c/llava/model/multimodal_projector/base_projector.py#L48
+    # small adjusmtnet with x.transpose(0, 1)
+
+    def forward(self, x):
+        """Downsample the input tensor."""
+        x = x.transpose(0, 1)
+        vit_embeds = x
+        h = w = int(vit_embeds.shape[1] ** 0.5)
+        vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], h, w, -1)
+        vit_embeds = self.flat_square(vit_embeds)
+        vit_embeds = vit_embeds.reshape(vit_embeds.shape[0], -1, vit_embeds.shape[-1])
+        return vit_embeds
+
+    def flat_square(self, x):
+        """Flatten the input tensor and make it square."""
+        n, w, h, c = x.size()
+        if w % 2 == 1:
+            x = torch.concat([x, torch.zeros((n, 1, h, c), dtype=x.dtype).to(x.device)], dim=1).contiguous()
+            n, w, h, c = x.size()
+        if h % 2 == 1:
+            x = torch.concat([x, torch.zeros((n, w, 1, c), dtype=x.dtype).to(x.device)], dim=2).contiguous()
+            n, w, h, c = x.size()
+        x = x.contiguous()
+        x = x.view(n, w, int(h / 2), int(c * 2))
+        x = x.permute(0, 2, 1, 3).contiguous()
+        x = x.view(n, int(h / 2), int(w / 2), int(c * 4))
+        x = x.permute(0, 2, 1, 3).contiguous()
+        return x
+
+
 @dataclass
 class MultimodalProjectorConfig(TransformerConfig, io.IOMixin):
     """
@@ -108,14 +142,30 @@ class MultimodalProjectorConfig(TransformerConfig, io.IOMixin):
                 input_size=self.input_size,
             )
 
+        # if using vila's downsample + mlp projector
+        if self.projector_type == "vila_downsample_mlp":
+            model = torch.nn.Sequential(
+                DownSampleBlock(),
+                torch.nn.LayerNorm(self.input_size * 4, dtype=self.params_dtype),
+                torch.nn.Linear(self.input_size * 4, self.hidden_size, bias=True, dtype=self.params_dtype),
+                torch.nn.GELU(),
+                torch.nn.Linear(self.hidden_size, self.hidden_size, bias=True, dtype=self.params_dtype),
+            )
+            from types import MethodType
+
+            model.set_input_tensor = MethodType(set_input_tensor, model)
+            return model
+
         # e.g. "mlp2x_gelu"
         mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', self.projector_type)
         if mlp_gelu_match:
             mlp_depth = int(mlp_gelu_match.group(1))
-            modules = [torch.nn.Linear(self.input_size, self.ffn_hidden_size, bias=True)]
+            modules = [torch.nn.Linear(self.input_size, self.ffn_hidden_size, bias=True, dtype=self.params_dtype)]
             for _ in range(1, mlp_depth):
                 modules.append(torch.nn.GELU())
-                modules.append(torch.nn.Linear(self.ffn_hidden_size, self.hidden_size, bias=True))
+                modules.append(
+                    torch.nn.Linear(self.ffn_hidden_size, self.hidden_size, bias=True, dtype=self.params_dtype)
+                )
             model = torch.nn.Sequential(*modules)
             from types import MethodType
 
@@ -162,6 +212,10 @@ class HFCLIPVisionConfig(CLIPVisionConfig, io.IOMixin):
             model = CLIPVisionModel(self)
         else:
             model = CLIPVisionModel.from_pretrained(self.pretrained_model_name_or_path)
+
+        # add attribute "tensor_parallel_grad_reduce" to the model for TP grad all-reduce
+        model.tensor_parallel_grad_reduce = True
+
         return model
 
 

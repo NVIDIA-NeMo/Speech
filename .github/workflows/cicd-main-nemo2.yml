@@ -192,6 +192,12 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_LLAVA_NEXT_ENERGON_PACKED_TRAIN
             runner: self-hosted-azure
+          - script: L2_NeMo_2_AVLM_MOCK_TRAINING
+            runner: self-hosted-azure
+          - script: L2_NeMo_2_AVLM_ENERGON_TRAIN
+            runner: self-hosted-azure
+          - script: L2_NeMo_2_AVLM_ENERGON_CP2_TRAIN
+            runner: self-hosted-azure
           - script: L2_NeMo_2_CLIP_PRETRAIN
             runner: self-hosted-azure
             timeout: 20

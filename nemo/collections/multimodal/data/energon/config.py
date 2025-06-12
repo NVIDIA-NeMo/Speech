@@ -37,6 +37,20 @@ class ImageToken(MultiModalToken):
 
 
 @dataclass
+class AudioToken(MultiModalToken):
+    token_str: str = "<audio>"
+    token_id: int = -300
+    media_type: str = "audio"
+
+
+@dataclass
+class VideoToken(MultiModalToken):
+    token_str: str = "<video>"
+    token_id: int = -400
+    media_type: str = "video"
+
+
+@dataclass
 class ImageTextSample:
     """Sample type for template formatted raw image text sample"""
 

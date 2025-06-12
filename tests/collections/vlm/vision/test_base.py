@@ -13,7 +13,10 @@
 # limitations under the License.
 
 import pytest
+import torch
+
 from nemo.collections import vlm
+from nemo.collections.vlm.vision.base import DownSampleBlock
 
 
 def test_siglip_config_error():
@@ -22,3 +25,18 @@ def test_siglip_config_error():
     assert config.class_token_len == 0
     # with pytest.raises(ValueError):
     #     config.configure_model()
+
+
+def test_downsample_block_basic():
+    # Create a square input tensor: (batch, seq_len, embed_dim)
+    # For a 4x4 patch grid, seq_len = 16, embed_dim = 8
+    batch_size = 2
+    seq_len = 16  # 4x4 grid
+    embed_dim = 8
+    x = torch.randn(batch_size, seq_len, embed_dim)
+    block = DownSampleBlock()
+    out = block(x)
+    # Print for debug (optional)
+    print("Output shape:", out.shape)
+    # Assert the actual output shape
+    assert out.shape == (16, 1, 64)

@@ -76,10 +76,7 @@ def slurm_executor(
 
     if num_gpus_per_node == 4:
         PERF_ENV_VARS["NCCL_NET_GDR_LEVEL"] = "PHB"  # For NCCL 2.25
-        PERF_ENV_VARS["NCCL_NET_GDR_C2C"] = 1  # For NCCL 2.26
-        srun_args.append("numactl --cpunodebind=$((SLURM_LOCALID/2)) --membind=$((SLURM_LOCALID/2))")
-    else:
-        srun_args.append("numactl --cpunodebind=$((SLURM_LOCALID/4)) --membind=$((SLURM_LOCALID/4))")
+        PERF_ENV_VARS["NCCL_NET_GDR_C2C"] = "1"  # For NCCL 2.26
 
     if nemo_home != DEFAULT_NEMO_CACHE_HOME:  # DO NOT change this to 'DEFAULT_NEMO_HOME'/'NEMO_HOME'
         PERF_ENV_VARS["NEMO_HOME"] = nemo_home

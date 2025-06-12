@@ -36,7 +36,7 @@ from nemo.collections.llm.gpt.model.llama import (
     LlamaModel,
 )
 from nemo.collections.llm.utils import Config
-from nemo.lightning import OptimizerModule, io
+from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
 from nemo.utils import logging
@@ -302,6 +302,44 @@ class LlamaEmbeddingImporter(HFLlamaImporter):
         )
 
         return output
+
+    def apply(self, output_path: Path) -> Path:
+        """Apply the conversion from HF to NeMo format.
+        Args:
+            output_path: Path where the converted model will be saved
+        Returns:
+            Path: Path to the saved NeMo model
+        """
+        from transformers import AutoModel, AutoModelForCausalLM
+
+        try:
+            source = AutoModelForCausalLM.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+        except:
+            source = AutoModel.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+
+            # Wrap the source in a model for causal LM
+            class ModelWrapper(nn.Module):
+                """Wrap the source in a model so that the key mapping is consistent with LlamaModelImporter"""
+
+                def __init__(self, model, config):
+                    super().__init__()
+                    self.model = model
+                    self.config = config
+
+            source = ModelWrapper(source, source.config)
+
+        target = self.init()
+        trainer = self.nemo_setup(target)
+
+        self.convert_state(source, target)
+        self.nemo_save(output_path, trainer)
+
+        print(f"Converted LlamaEmbedding model to Nemo, model saved to {output_path}.")
+
+        teardown(trainer, target)
+        del trainer, target
+
+        return output_path
 
 
 @io.model_exporter(LlamaEmbeddingModel, "hf")

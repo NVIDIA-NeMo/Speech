@@ -25,6 +25,7 @@ from nemo.collections.common.tokenizers import AutoTokenizer, TokenizerSpec
 from nemo.collections.llm.bert.model.base import BertConfig, BertModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.pytorch.utils import dtype_from_hf
 from nemo.utils import logging
 
 if TYPE_CHECKING:
@@ -247,6 +248,9 @@ class HuggingFaceBertImporter(io.ModelConnector["BertForMaskedLM", BertModel]):
             add_pooler=self.type != 'masked',
             share_embeddings_and_output_weights=True,
             num_tokentypes=2,
+            fp16=(dtype_from_hf(source) == torch.float16),
+            bf16=(dtype_from_hf(source) == torch.bfloat16),
+            params_dtype=dtype_from_hf(source),
         )
         return output
 
@@ -356,7 +360,7 @@ def _import_qkv(ctx: io.TransformCTX, q, k, v):
     k = k.view(*new_q_tensor_shape)
     v = v.view(*new_q_tensor_shape)
 
-    qkv_weights = torch.empty((0, head_size) + old_tensor_shape[1:])
+    qkv_weights = torch.empty((0, head_size) + old_tensor_shape[1:]).to(dtype=q.dtype)
     for i in range(head_num):
         qkv_weights = torch.cat((qkv_weights, q[i : i + 1, :, :]))
         qkv_weights = torch.cat((qkv_weights, k[i : i + 1, :, :]))
@@ -389,7 +393,7 @@ def _import_qkv_bias(ctx: io.TransformCTX, qb, kb, vb):
     bias_k = kb.view(*new_q_tensor_shape_bias)
     bias_v = vb.view(*new_q_tensor_shape_bias)
 
-    qkv_biases = torch.empty((0, head_size))
+    qkv_biases = torch.empty((0, head_size)).to(dtype=qb.dtype)
     for i in range(head_num):
         qkv_biases = torch.cat((qkv_biases, bias_q[i : i + 1]))
         qkv_biases = torch.cat((qkv_biases, bias_k[i : i + 1]))
@@ -413,7 +417,7 @@ def _import_embedding(ctx: io.TransformCTX, embedding):
             embedding.size(1),
             dtype=embedding.dtype,
             device=embedding.device,
-        )
+        ).to(dtype=embedding.dtype)
         # Concatenate the two tensors along rows
         padded_embedding = torch.cat((embedding, zeros_to_add), dim=0)
         return padded_embedding
@@ -465,7 +469,7 @@ def _import_qkv_2(ctx: io.TransformCTX, q, k, v):
     k = k.view(*new_q_tensor_shape)
     v = v.view(*new_q_tensor_shape)
 
-    qkv_weights = torch.empty((0, head_size) + old_tensor_shape[1:])
+    qkv_weights = torch.empty((0, head_size) + old_tensor_shape[1:]).to(dtype=q.dtype)
     for i in range(head_num):
         qkv_weights = torch.cat((qkv_weights, q[i : i + 1, :, :]))
         qkv_weights = torch.cat((qkv_weights, k[i : i + 1, :, :]))
@@ -498,7 +502,7 @@ def _import_qkv_bias_2(ctx: io.TransformCTX, qb, kb, vb):
     bias_k = kb.view(*new_q_tensor_shape_bias)
     bias_v = vb.view(*new_q_tensor_shape_bias)
 
-    qkv_biases = torch.empty((0, head_size))
+    qkv_biases = torch.empty((0, head_size)).to(dtype=qb.dtype)
     for i in range(head_num):
         qkv_biases = torch.cat((qkv_biases, bias_q[i : i + 1]))
         qkv_biases = torch.cat((qkv_biases, bias_k[i : i + 1]))
@@ -522,7 +526,7 @@ def _import_embedding_2(ctx: io.TransformCTX, embedding):
             embedding.size(1),
             dtype=embedding.dtype,
             device=embedding.device,
-        )
+        ).to(dtype=embedding.dtype)
         # Concatenate the two tensors along rows
         padded_embedding = torch.cat((embedding, zeros_to_add), dim=0)
         return padded_embedding

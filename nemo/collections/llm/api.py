@@ -13,6 +13,7 @@
 # limitations under the License.
 import importlib
 import json
+import multiprocessing
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -28,7 +29,12 @@ from typing_extensions import Annotated
 
 import nemo.lightning as nl
 from nemo.collections.llm import GPTModel, HFAutoModelForCausalLM
-from nemo.collections.llm.evaluation.api import EvaluationConfig, EvaluationTarget, MisconfigurationError
+from nemo.collections.llm.evaluation.api import (
+    AdapterConfig,
+    EvaluationConfig,
+    EvaluationTarget,
+    MisconfigurationError,
+)
 from nemo.collections.llm.modelopt import (
     DistillationGPTModel,
     ExportConfig,
@@ -782,6 +788,7 @@ def deploy(
 def evaluate(
     target_cfg: EvaluationTarget,
     eval_cfg: EvaluationConfig = EvaluationConfig(type="gsm8k"),
+    adapter_cfg: AdapterConfig | None = None,
 ) -> dict:
     """
     Evaluates nemo model deployed on PyTriton server using nvidia-lm-eval
@@ -790,6 +797,8 @@ def evaluate(
         target_cfg (EvaluationTarget): target of the evaluation. Providing model_id and
             url in EvaluationTarget.api_endpoint is required to run evaluations.
         eval_cfg (EvaluationConfig): configuration for evaluations. Default type (task): gsm8k.
+        adapter_cfg (AdapterConfig): configuration for adapters, the object between becnhmark and endpoint.
+            Default: None.
     """
     from nemo.collections.llm.evaluation.base import _legacy_evaluate, find_framework, wait_for_fastapi_server
 
@@ -829,11 +838,27 @@ def evaluate(
     if not server_ready:
         raise RuntimeError("Server not ready for evaluation")
 
-    results = evaluate.evaluate_accuracy(
-        target_cfg=target_cfg,
-        eval_cfg=eval_cfg,
-    )
-    results_dict = results.model_dump()
+    # NOTE(agronskiy): START of the adapter hook
+    p: multiprocessing.Process | None = None
+    if adapter_cfg:
+        from nemo.collections.llm.evaluation.adapters.server import create_server_process
+
+        p, adapter_cfg = create_server_process(adapter_cfg)
+        # This will be unhooked below
+        target_cfg.api_endpoint.url = f"http://localhost:{adapter_cfg.local_port}"
+
+    try:
+        results = evaluate.evaluate_accuracy(
+            target_cfg=target_cfg,
+            eval_cfg=eval_cfg,
+        )
+        results_dict = results.model_dump()
+    finally:
+        if adapter_cfg and p is not None and p.is_alive():
+            # TODO(agronskiy): if the url is logged in results_dict, get it back to the adapter.api_url
+            target_cfg.api_endpoint.url = adapter_cfg.api_url
+            p.terminate()
+    # NOTE(agronskiy): END of the adapter hook
 
     logging.info("========== RESULTS ==========")
     logging.info(yaml.dump(results_dict))

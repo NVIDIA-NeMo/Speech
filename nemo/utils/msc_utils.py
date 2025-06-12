@@ -16,7 +16,6 @@
 from pathlib import Path
 from typing import Union
 
-
 try:
     import multistorageclient as msc
 
@@ -25,6 +24,9 @@ except (ImportError, ModuleNotFoundError):
     msc = None
 
     HAVE_MSC = False
+
+
+MSC_PROTOCOL = "msc://"
 
 
 def is_multistorageclient_url(path: Union[str, Path]):
@@ -40,7 +42,7 @@ def is_multistorageclient_url(path: Union[str, Path]):
     if isinstance(path, Path):
         return False
 
-    has_msc_prefix = path and str(path).startswith(msc.types.MSC_PROTOCOL)
+    has_msc_prefix = path and str(path).startswith(MSC_PROTOCOL)
 
     if HAVE_MSC:
         return has_msc_prefix

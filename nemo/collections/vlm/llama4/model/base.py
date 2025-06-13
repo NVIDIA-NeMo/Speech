@@ -162,19 +162,19 @@ class Llama4OmniConfig(NevaConfig):
         self.language_transformer_config.moe_pad_expert_input_to_capacity = self.moe_pad_expert_input_to_capacity
         self.language_transformer_config.moe_expert_capacity_factor = self.moe_expert_capacity_factor
 
-        assert (
-            getattr(self, "virtual_pipeline_model_parallel_size", None) is None and vp_stage is None
-        ), "VP is not supported for Llama4OmniModel"
-
+        # During fake lightning initialization, pass 0 to bypass the assertion that vp_stage must be
+        # non-None when using virtual pipeline model parallelism
+        vp_stage = vp_stage or 0
         model = Llama4OmniBaseModel(
             config=self,
             tokenizer=tokenizer,
-            pre_process=ps.is_pipeline_first_stage(),
-            post_process=ps.is_pipeline_last_stage(),
-            add_encoder=ps.is_pipeline_first_stage(),
-            add_decoder=ps.is_pipeline_last_stage()
+            pre_process=ps.is_pipeline_first_stage(ignore_virtual=False, vp_stage=vp_stage),
+            post_process=ps.is_pipeline_last_stage(ignore_virtual=False, vp_stage=vp_stage),
+            add_encoder=ps.is_pipeline_first_stage(ignore_virtual=False, vp_stage=vp_stage),
+            add_decoder=ps.is_pipeline_last_stage(ignore_virtual=False, vp_stage=vp_stage)
             or ps.get_pipeline_model_parallel_rank() >= self.encoder_pipeline_model_parallel_size,
             drop_vision_class_token=self.drop_vision_class_token,
+            vp_stage=vp_stage,
         )
 
         return model
@@ -327,7 +327,7 @@ class Llama4OmniBaseModel(MCoreNevaModel):
             packed_seq_params=packed_seq_params,
         )
 
-        if labels is None or loss_mask is None:
+        if not ps.is_pipeline_last_stage(ignore_virtual=False, vp_stage=self.vp_stage):
             return output
 
         return output, final_loss_mask.contiguous()

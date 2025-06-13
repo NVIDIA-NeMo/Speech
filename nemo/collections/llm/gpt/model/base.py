@@ -339,11 +339,21 @@ class GPTConfig(TransformerConfig, io.IOMixin):
                 self.num_layers // p_size
             ) % vp_size == 0, "Make sure the number of model chunks is the same across all pipeline stages."
 
+        import inspect
+
         from megatron.core import parallel_state
+
+        # During fake lightning initialization, pass 0 to bypass the assertion that vp_stage must be
+        # non-None when using virtual pipeline model parallelism
+        vp_stage = vp_stage or 0
 
         transformer_layer_spec = self.transformer_layer_spec
         if not isinstance(transformer_layer_spec, ModuleSpec):
-            transformer_layer_spec = transformer_layer_spec(self)
+            # Check if the transformer_layer_spec function accepts vp_stage parameter
+            if 'vp_stage' in inspect.signature(transformer_layer_spec).parameters:
+                transformer_layer_spec = transformer_layer_spec(self, vp_stage=vp_stage)
+            else:
+                transformer_layer_spec = transformer_layer_spec(self)
 
         if self.vocab_size is not None:
             vocab_size = self.vocab_size
@@ -359,16 +369,11 @@ class GPTConfig(TransformerConfig, io.IOMixin):
         if self.init_model_with_meta_device:
             model_init_device_context = partial(torch.device, device='meta')
 
-        import inspect
-
         if 'mtp_block_spec' in inspect.signature(MCoreGPTModel.__init__).parameters:
             kwargs = {"mtp_block_spec": mtp_block_spec(self)}
         else:
             kwargs = {}
         with model_init_device_context():
-            # During fake lightning initialization, pass 0 to bypass the assertion that vp_stage must be
-            # non-None when using virtual pipeline model parallelism
-            vp_stage = vp_stage or 0
             model = MCoreGPTModel(
                 self,
                 transformer_layer_spec=transformer_layer_spec,

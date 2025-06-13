@@ -229,7 +229,8 @@ class MCoreBertModelWrapperWithPostLNSupport(MCoreBert):
 
         # Megatron Core always initializes position embeddings and tokentype_embeddings in fp32
         # We cast the embedding dtype based on the target dtype in config
-        self.embedding.to(self.config.params_dtype)
+        if self.pre_process:
+            self.embedding.to(self.config.params_dtype)
 
         # In Megatron-LM, pooler is added only if add_binary_head=True.
         # We make it independent to support HF variances.

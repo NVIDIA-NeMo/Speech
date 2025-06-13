@@ -678,6 +678,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
         """
         if self.async_save and not override_async:
             # Register checkpoint removal in the last (active) checkpoint removal list
+            if len(self.deferred_ckpts_to_remove) == 0:
+                self.deferred_ckpts_to_remove.append([])
             self.deferred_ckpts_to_remove[-1].append(filepath)
             return
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.

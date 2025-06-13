@@ -18,11 +18,22 @@ from typing import Dict, List
 
 import nemo_run as run
 from nemo_run.config import get_nemorun_home
+from nemo_run.core.execution.launcher import SlurmTemplate
 
 from nemo.lightning.base import DEFAULT_NEMO_CACHE_HOME
 from nemo.utils import logging
 
 DEFAULT_NEMO_HOME = os.getenv('NEMO_HOME', DEFAULT_NEMO_CACHE_HOME)
+
+# NOTE: If you update this template,
+# PLEASE test it by submitting a job to GPU/node/cluster and verifying the sbatch and bash scripts.
+INLINE_TEMPLATE = r"""
+#!/usr/bin/env bash
+set -euo pipefail
+
+# NOTE: DO NOT change the single quotes to double quotes.
+bash -c '{{ pre_cmds }} {{ command }}'
+"""
 
 
 def slurm_executor(
@@ -41,6 +52,7 @@ def slurm_executor(
     nemo_home: str = DEFAULT_NEMO_HOME,
     wandb_key: str = None,
     network: str = None,
+    custom_bash_cmds: List[str] = None,
 ) -> run.SlurmExecutor:
     """
     Slurm cluster definition with appropriate cluster params and NeMo container params needed for pre-training
@@ -56,6 +68,7 @@ def slurm_executor(
         "NEMO_LOG_MEMORY_USAGE": "1",  # Print memory allocation
     }
 
+    custom_bash_cmds = [] if custom_bash_cmds is None else custom_bash_cmds
     err_msgs = []
     mounts = []
     srun_args = custom_srun_args.copy() + ["--mpi=pmix"]
@@ -74,7 +87,7 @@ def slurm_executor(
     if wandb_key is not None:
         PERF_ENV_VARS["WANDB_API_KEY"] = wandb_key
 
-    if num_gpus_per_node == 4:
+    if gpu.lower() == 'gb200':
         PERF_ENV_VARS["NCCL_NET_GDR_LEVEL"] = "PHB"  # For NCCL 2.25
         PERF_ENV_VARS["NCCL_NET_GDR_C2C"] = "1"  # For NCCL 2.26
 
@@ -95,6 +108,15 @@ def slurm_executor(
                 segment = segment_candidate
                 break
 
+    numa_divisor = 2 if gpu.lower() == 'gb200' else 4
+    numa_cmd = f"numactl --cpunodebind=$((SLURM_LOCALID/{numa_divisor})) --membind=$((SLURM_LOCALID/{numa_divisor}))"
+    custom_bash_cmds.append(numa_cmd)
+
+    launcher = SlurmTemplate(
+        template_inline=INLINE_TEMPLATE,
+        template_vars={"pre_cmds": " ; ".join(custom_bash_cmds)},
+    )
+
     executor = run.SlurmExecutor(
         account=account,
         partition=partition,
@@ -111,6 +133,7 @@ def slurm_executor(
         packager=run.GitArchivePackager(),
         segment=segment,
         network=network,
+        launcher=launcher,
     )
 
     return executor

@@ -32,8 +32,8 @@ from nemo.collections.llm.inference import MCoreTokenizerWrappper, generate
 from nemo.collections.llm.modelopt.quantization.quant_cfg_choices import get_quant_cfg_choices
 from nemo.collections.llm.modelopt.quantization.utils import load_quant_cfg
 from nemo.collections.llm.utils import barrier, torch_dtype_from_precision
-from nemo.lightning import io
 from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
+from nemo.lightning.io.api import load_connector_from_trainer_ckpt
 from nemo.lightning.io.pl import TrainerContext, ckpt_to_weights_subdir
 from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
@@ -41,12 +41,15 @@ from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
 
 if TYPE_CHECKING:
+    import lightning.pytorch as pl
+
     from nemo.lightning import Trainer
     from nemo.lightning.megatron_parallel import MegatronParallel
 
-mtq, HAVE_MODELOPT_MTQ = safe_import("modelopt.torch.quantization")
 mte, HAVE_MODELOPT_MTE = safe_import("modelopt.torch.export")
-HAVE_MODELOPT = HAVE_MODELOPT_MTQ and HAVE_MODELOPT_MTE
+mtq, HAVE_MODELOPT_MTQ = safe_import("modelopt.torch.quantization")
+mto, HAVE_MODELOPT_MTO = safe_import("modelopt.torch.opt")
+HAVE_MODELOPT = HAVE_MODELOPT_MTQ and HAVE_MODELOPT_MTE and HAVE_MODELOPT_MTO
 
 QUANT_CFG_CHOICES = get_quant_cfg_choices()
 SUPPORTED_DTYPE = [16, "16", "bf16"]  # Default precision for non-quantized layers
@@ -55,6 +58,8 @@ KV_QUANT_CFG_CHOICES = {
     "fp8": "FP8_KV_CFG",
     "nvfp4": "NVFP4_KV_CFG",
 }
+
+AnyPath = Union[Path, str]
 
 
 @dataclass
@@ -288,7 +293,8 @@ class Quantizer:
 
         If forward_loop is not provided, a forward loop will be created using the calibration dataset.
         """
-        if forward_loop is None:
+        modelopt_cfg = QUANT_CFG_CHOICES[self.quantization_config.algorithm]
+        if forward_loop is None and mtq.config.need_calibration(modelopt_cfg):
             forward_loop = self._get_forward_loop(model)
 
         algorithm = self.quantization_config.algorithm
@@ -420,22 +426,7 @@ class Quantizer:
                 TrainerContext.from_trainer(trainer).io_dump(ckpt_to_context_subdir(export_dir), yaml_attrs=["model"])
                 assert (Path(ckpt_to_weights_subdir(export_dir, False)) / "modelopt_state").exists()
         elif self.export_config.export_format == "hf":
-            unwrapped_model = unwrap_for_modelopt_operations(model)
-            with torch.inference_mode():
-                if is_automodel:
-                    mte.export_hf_checkpoint(
-                        unwrapped_model,
-                        export_dir=export_dir,
-                    )
-                else:
-                    context = io.load_context(model_dir, subpath="model")
-                    exporter = context.exporter("hf", model_dir)
-                    config = exporter.config
-                    with tempfile.TemporaryDirectory() as tmp_dir:
-                        config.save_pretrained(tmp_dir)
-                        mte.export_mcore_gpt_to_hf(
-                            unwrapped_model, pretrained_model_name_or_path=tmp_dir, export_dir=str(export_dir)
-                        )
+            export_hf_checkpoint(model_dir, export_dir, model=model)
         # TRT-LLM
         else:
             inference_tp = self.export_config.inference_tp
@@ -460,6 +451,45 @@ class Quantizer:
         if is_global_rank_zero():
             self._save_tokenizer(model, model_dir, export_dir, export_fmt)
             logging.info(f"Export succeeded, model has been exported to {export_dir}.")
+
+
+def export_hf_checkpoint(
+    model_dir: AnyPath, export_dir: AnyPath, model: Optional["pl.LightningModule"] = None, **kwargs
+) -> Path | None:
+    """Export a GPTModel or HFAutoModelForCausalLM to a HuggingFace checkpoint."""
+
+    if isinstance(model, llm.HFAutoModelForCausalLM):
+        # Special case for NeMo AutoModels.
+        unwrapped_model = unwrap_for_modelopt_operations(model)
+        if not mto.ModeloptStateManager.is_converted(unwrapped_model):
+            return None  # Model was not converted by ModelOpt.
+        with torch.inference_mode():
+            mte.export_hf_checkpoint(unwrapped_model, export_dir=str(export_dir), **kwargs)
+    else:
+        exporter = load_connector_from_trainer_ckpt(model_dir, "hf")
+        if model is None:
+            model, _ = exporter.nemo_load(model_dir)
+        unwrapped_model = unwrap_for_modelopt_operations(model)
+        if not mto.ModeloptStateManager.is_converted(unwrapped_model):
+            return None  # Model was not converted by ModelOpt.
+
+        with torch.inference_mode():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                exporter.config.save_pretrained(tmp_dir)
+                mte.export_mcore_gpt_to_hf(
+                    unwrapped_model, pretrained_model_name_or_path=tmp_dir, export_dir=str(export_dir), **kwargs
+                )
+
+    return Path(export_dir)
+
+
+def unwrap_for_modelopt_operations(model):
+    """Unwraps the model to expose the underlying architecture that Model Optimizer can work with.
+    For HuggingFace models, returns the base model. For MCore models, returns the unwrapped version."""
+
+    if isinstance(model, llm.HFAutoModelForCausalLM):
+        return model.model
+    return unwrap_model(model)
 
 
 def get_calib_data_iter(
@@ -523,15 +553,6 @@ gpt_model_type = [
     (llm.Starcoder2Model, "gpt"),
     (llm.Phi3Model, "phi3"),
 ]
-
-
-def unwrap_for_modelopt_operations(model):
-    """Unwraps the model to expose the underlying architecture that Model Optimizer can work with.
-    For HuggingFace models, returns the base model. For MCore models, returns the unwrapped version."""
-
-    if isinstance(model, llm.HFAutoModelForCausalLM):
-        return model.model
-    return unwrap_model(model)
 
 
 def get_modelopt_decoder_type(model: Union[llm.GPTModel, llm.HFAutoModelForCausalLM]) -> Optional[str]:

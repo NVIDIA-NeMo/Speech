@@ -12,14 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 from functools import cached_property, lru_cache
+from pathlib import Path
 
+import jiwer
 import pytest
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, open_dict
 
-
+from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.mixins import mixins
 from nemo.collections.asr.parts.submodules.ctc_decoding import (
     CTCBPEDecoding,
@@ -27,9 +30,35 @@ from nemo.collections.asr.parts.submodules.ctc_decoding import (
     CTCDecoding,
     CTCDecodingConfig,
 )
+from nemo.collections.asr.parts.submodules.ngram_lm.ngram_lm_batched import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.core.utils.cuda_python_utils import skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported
 from tests.collections.asr.decoding.test_timestamps import BaseTimestampsTest
+
+
+@pytest.fixture(scope="module")
+def audio_file(test_data_dir):
+    return os.path.join(test_data_dir, "asr/test/an4/wav/cen3-mjwl-b.wav")
+
+
+CTC_MODEL = "nvidia/stt_en_conformer_ctc_small"
+
+
+@pytest.fixture(scope="module")
+def kenlm_model_path(tmp_path_factory, test_data_dir):
+    lm_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
+    assert os.path.exists(lm_path), f"LM file not found: {lm_path}"
+    lm_nemo_path = tmp_path_factory.mktemp("lm") / f"{lm_path.name}.nemo"
+    NGramGPULanguageModel.from_file(lm_path, vocab_size=1024).save_to(f"{lm_nemo_path}")
+    return f"{lm_nemo_path}"
+
+
+@pytest.fixture(scope="module")
+def ctc_model():
+    model = ASRModel.from_pretrained(model_name=CTC_MODEL, map_location="cpu")
+    model.eval()
+    return model
 
 
 def char_vocabulary():
@@ -353,3 +382,104 @@ class TestCTCTimestamps(BaseTimestampsTest):
     def test_word_offsets_subword_wpe_other_delimiter(self, tmp_tokenizer):
         self.tmp_tokenizer = tmp_tokenizer
         super().test_word_offsets_subword_wpe_other_delimiter()
+
+
+class TestCTCGreedyDecodingWithNGPU_LM:
+    @pytest.mark.with_downloads
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Test is only GPU-based decoding")
+    def test_ctc_decoding_gpulm(
+        self,
+        audio_file,
+        kenlm_model_path,
+        ctc_model,
+    ):
+        device = torch.device("cuda")
+        model = ctc_model.to(device)
+
+        gt_hyp = model.transcribe([audio_file], num_workers=None)
+
+        decoding_config = copy.deepcopy(model.cfg.decoding)
+        with open_dict(model.decoding.cfg) as cfg:
+            cfg.greedy["ngram_lm_model"] = kenlm_model_path
+            cfg.greedy["ngram_lm_alpha"] = 0.0
+            model.change_decoding_strategy(cfg)
+        lm_hyp = model.transcribe([audio_file], num_workers=None)
+
+        assert gt_hyp[0].text == lm_hyp[0].text
+        assert abs(gt_hyp[0].score - lm_hyp[0].score) <= 1e-3
+
+        with open_dict(model.decoding.cfg) as cfg:
+            cfg.greedy["ngram_lm_model"] = kenlm_model_path
+            cfg.greedy["ngram_lm_alpha"] = 10.0
+        model.change_decoding_strategy(cfg)
+        lm_hyp = model.transcribe([audio_file], num_workers=None)
+        assert gt_hyp[0].text != lm_hyp[0].text
+        assert abs(gt_hyp[0].score - lm_hyp[0].score) > 1e-3
+
+        model.change_decoding_strategy(decoding_config)
+
+
+class TestCTCGreedyDecodingCudaGrpahs:
+    """
+    Tests CudaGraphs implementations from CTC models greedy decoding
+    """
+
+    @pytest.mark.with_downloads
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA decoder can run only on CUDA")
+    @pytest.mark.parametrize("force_mode", ["no_graphs", "no_while_loops", "full_graph"])
+    def test_stated_stateless(self, audio_file, kenlm_model_path, ctc_model, force_mode: str):
+        """
+        Compares pure Pytorch and with three modes of statefull implementations for double floating point precision.
+            1. Pure pytorch, but statefull implementation: no_graphs
+            2. With CudaGrpahs: no_while_loops and full_graph.
+        """
+        if force_mode == "full_graph":
+            skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported()
+
+        device = torch.device("cuda")
+        model = ctc_model.to(device)
+        decoding_config = copy.deepcopy(model.cfg.decoding)
+
+        with open_dict(model.decoding.cfg) as cfg:
+            cfg.greedy["ngram_lm_model"] = kenlm_model_path
+            cfg.greedy["ngram_lm_alpha"] = 0.2
+            cfg.greedy["allow_cuda_graphs"] = False
+
+            model.change_decoding_strategy(cfg)
+
+        actual_hypotheses = model.transcribe([audio_file], num_workers=None)
+        actual_transcripts = [hyp.text for hyp in actual_hypotheses]
+        actual_scores = [hyp.score for hyp in actual_hypotheses]
+        actual_timestamps = [hyp.timestamp for hyp in actual_hypotheses]
+
+        # transcribe with use implementation with cuda graphs
+        model.decoding.cfg["greedy"]["allow_cuda_graphs"] = True
+        model.change_decoding_strategy(model.decoding.cfg)
+        model.decoding.decoding.force_cuda_graphs_mode(mode=force_mode)
+
+        cudagraph_hypotheses = model.transcribe([audio_file], num_workers=None)
+        cudagraph_transcripts = [hyp.text for hyp in cudagraph_hypotheses]
+        cudagraph_scores = [hyp.score for hyp in cudagraph_hypotheses]
+        cudagraph_timestamps = [hyp.timestamp for hyp in cudagraph_hypotheses]
+
+        for batch_idx in range(len(actual_transcripts)):
+            assert len(actual_transcripts[batch_idx]) == len(cudagraph_transcripts[batch_idx])
+            assert cudagraph_scores[batch_idx] == pytest.approx(
+                actual_scores[batch_idx], abs=1e-2
+            ), f"Scores mismatch for batch_idx {batch_idx}"
+            assert (
+                cudagraph_timestamps[batch_idx] == actual_timestamps[batch_idx]
+            ), f"Timestamps mismatch for batch_idx {batch_idx}"
+
+            wer = jiwer.wer(actual_transcripts[batch_idx], cudagraph_transcripts[batch_idx])
+
+            assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
+
+            for actual, fast in zip(actual_transcripts[batch_idx], cudagraph_transcripts[batch_idx]):
+                if actual != fast:
+                    print("Erroneous samples in batch:", batch_idx)
+                    print("Original transcript:", actual)
+                    print("New transcript:", fast)
+
+        model.change_decoding_strategy(decoding_config)

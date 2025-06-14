@@ -13,16 +13,124 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from pathlib import Path
+from typing import List, Optional, Union
 
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodConfig, ConfidenceMethodMixin
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, NeuralType
+from nemo.core.utils.cuda_python_utils import (
+    check_cuda_python_cuda_graphs_conditional_nodes_supported,
+    cu_call,
+    run_nvrtc,
+    with_conditional_node,
+)
 from nemo.utils import logging, logging_mode
+from nemo.utils.enum import PrettyStrEnum
+
+try:
+    from cuda import cudart
+
+    HAVE_CUDA_PYTHON = True
+except ImportError:
+    HAVE_CUDA_PYTHON = False
+
+NEG_INF = float("-inf")
+
+
+class CTCDecoderCudaGraphsState:
+    """
+    State for greedy CTC with NGPU-LM decoding. Used only with CUDA graphs.
+    In initialization phase it is possible to assign values (tensors) to the state.
+    For algorithm code the storage should be reused (prefer copy data instead of assigning tensors).
+    """
+
+    max_time: int  # maximum length of internal storage for time dimension
+    batch_size: int  # (maximum) length of internal storage for batch dimension
+    device: torch.device  # device to store preallocated tensors
+    float_dtype: torch.dtype
+
+    frame_idx: torch.Tensor
+    active_mask: torch.Tensor
+
+    decoder_outputs: torch.Tensor  # decoder output (probs)
+    decoder_lengths: torch.Tensor  # decoder output lengths
+
+    labels: torch.Tensor  # storage for current labels
+    last_labels: torch.Tensor  # storage for previous labels
+    scores: torch.Tensor  # storage for current scores
+
+    batch_indices: torch.Tensor  # indices of elements in batch (constant, range [0, batch_size-1])
+
+    batch_lm_states: Optional[torch.Tensor] = None
+    lm_scores: Optional[torch.Tensor] = None
+    batch_lm_states_candidates: Optional[torch.Tensor] = None
+
+    prediction_labels: torch.Tensor
+    prediction_logprobs: torch.Tensor
+
+    full_graph = None
+
+    def __init__(
+        self,
+        batch_size: int,
+        max_time: int,
+        vocab_dim: int,
+        device: torch.device,
+        float_dtype: torch.dtype,
+    ):
+        """
+
+        Args:
+            batch_size: batch size for encoder output storage
+            max_time: maximum time for encoder output storage
+            vocab_dim: number of vocabulary tokens (including blank)
+            device: device to store tensors
+            float_dtype: default float dtype for tensors (should match projected encoder output)
+        """
+        self.device = device
+        self.float_dtype = float_dtype
+        self.batch_size = batch_size
+        self.max_time = max_time
+
+        self.frame_idx = torch.tensor(
+            0, dtype=torch.long, device=device
+        )  # current frame index for each utterance (used to check if the decoding is finished)
+        self.active_mask = torch.tensor(True, dtype=torch.bool, device=device)
+
+        self.decoder_outputs = torch.zeros(
+            (self.batch_size, self.max_time, vocab_dim),
+            dtype=float_dtype,
+            device=self.device,
+        )
+        self.decoder_lengths = torch.zeros((self.batch_size,), dtype=torch.long, device=self.device)
+
+        self.labels = torch.zeros([self.batch_size], dtype=torch.long, device=self.device)
+        self.last_labels = torch.zeros([self.batch_size], dtype=torch.long, device=self.device)
+        self.scores = torch.zeros([self.batch_size], dtype=float_dtype, device=self.device)
+
+        # indices of elements in batch (constant)
+        self.batch_indices = torch.arange(self.batch_size, dtype=torch.long, device=self.device)
+
+        # LM states
+        self.batch_lm_states = torch.zeros([batch_size], dtype=torch.long, device=device)
+
+        self.predictions_labels = torch.zeros([batch_size, max_time], device=device, dtype=torch.long)
+        self.predictions_logprobs = torch.zeros([batch_size, max_time], device=device, dtype=float_dtype)
+
+    def need_reinit(self, logits: torch.Tensor) -> bool:
+        """Check if need to reinit state: larger batch_size/max_time, or new device"""
+        return (
+            self.batch_size < logits.shape[0]
+            or self.max_time < logits.shape[1]
+            or self.device.index != logits.device.index
+        )
 
 
 def pack_hypotheses(
@@ -337,6 +445,13 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
 
     """
 
+    ngram_lm_batch: Optional[NGramGPULanguageModel]
+
+    class CudaGraphsMode(PrettyStrEnum):
+        FULL_GRAPH = "full_graph"  # Cuda graphs with conditional nodes, fastest implementation
+        NO_WHILE_LOOPS = "no_while_loops"  # Decoding with PyTorch while loops + partial Cuda graphs
+        NO_GRAPHS = "no_graphs"  # d
+
     @property
     def input_types(self):
         """Returns definitions of module input ports."""
@@ -360,6 +475,9 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
         compute_timestamps: bool = False,
         preserve_frame_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
+        ngram_lm_model: Optional[str | Path] = None,
+        ngram_lm_alpha: float = 0.0,
+        allow_cuda_graphs: bool = True,
     ):
         super().__init__()
 
@@ -371,6 +489,18 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
 
         # set confidence calculation method
         self._init_confidence_method(confidence_method_cfg)
+
+        # init ngram lm
+        if ngram_lm_model is not None:
+            self.allow_cuda_graphs = allow_cuda_graphs
+            self.cuda_graphs_mode = None
+            self.maybe_enable_cuda_graphs()
+
+            self.ngram_lm_batch = NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=self.blank_id)
+            self.ngram_lm_alpha = ngram_lm_alpha
+            self.state: CTCDecoderCudaGraphsState | None = None
+        else:
+            self.ngram_lm_batch = None
 
     @typecheck()
     def forward(
@@ -407,6 +537,8 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
         decoder_lengths = decoder_lengths.to(decoder_output.device)
 
         if decoder_output.ndim == 2:
+            if self.ngram_lm_batch is not None:
+                raise NotImplementedError
             hypotheses = self._greedy_decode_labels_batched(decoder_output, decoder_lengths)
         else:
             hypotheses = self._greedy_decode_logprobs_batched(decoder_output, decoder_lengths)
@@ -422,9 +554,22 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
         max_time = x.shape[1]
 
         predictions = x
-        # In CTC greedy decoding, each output maximum likelihood token
-        # is calculated independent of the other tokens.
-        predictions_logprobs, predictions_labels = predictions.max(dim=-1)
+
+        if self.ngram_lm_batch is None:
+            # In CTC greedy decoding, each output maximum likelihood token
+            # is calculated independent of the other tokens.
+            predictions_logprobs, predictions_labels = predictions.max(dim=-1)
+        else:
+            self.ngram_lm_batch.to(x.device)
+            # decoding with NGPU-LM
+            if self.cuda_graphs_mode is not None and x.device.type == "cuda":
+                predictions_labels, predictions_logprobs = self._greedy_decode_logprobs_batched_lm_cuda_graphs(
+                    logits=x, out_len=out_len
+                )
+            else:
+                predictions_labels, predictions_logprobs = self._greedy_decode_logprobs_batched_lm_torch(
+                    logits=x, out_len=out_len
+                )
 
         # Since predictions_logprobs is a padded matrix in the time
         # dimension, we consider invalid timesteps to be "blank".
@@ -515,6 +660,287 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
 
         return hypotheses
 
+    @torch.no_grad()
+    def _greedy_decode_logprobs_batched_lm_torch(self, logits: torch.Tensor, out_len: torch.Tensor):
+        batch_size = logits.shape[0]
+        max_time = logits.shape[1]
+        device = logits.device
+        float_dtype = logits.dtype
+        batch_indices = torch.arange(batch_size, device=device, dtype=torch.long)
+
+        # Step 1: Initialization
+        batch_lm_states = self.ngram_lm_batch.get_init_states(batch_size=batch_size, bos=True)
+        last_labels = torch.full([batch_size], fill_value=self.blank_id, device=device, dtype=torch.long)
+        # resulting labels and logprobs storage
+        predictions_labels = torch.zeros([batch_size, max_time], device=device, dtype=torch.long)
+        predictions_logprobs = torch.zeros([batch_size, max_time], device=device, dtype=float_dtype)
+
+        for i in range(max_time):
+            # Step 2: Get most likely labels for current frame
+            log_probs, labels = logits[:, i].max(dim=-1)
+            log_probs_w_lm = logits[:, i].clone()
+
+            # Step 3: Get LM scores
+            lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(states=batch_lm_states)
+            lm_scores = lm_scores.to(dtype=float_dtype)
+            log_probs_w_lm[:, :-1] += self.ngram_lm_alpha * lm_scores
+
+            # Step 4: Get most likely labels with LM scores. Labels that are blank or repeated are ignored.
+            # Note: no need to mask blank labels log_probs_w_lm[:, -1] = NEG_INF, as argmax is without blanks
+            # Note: for efficiency, use scatter instead of log_probs_w_lm[batch_indices, last_labels] = NEG_INF
+            log_probs_w_lm.scatter_(dim=1, index=last_labels.unsqueeze(-1), value=NEG_INF)
+            log_probs_w_lm, labels_w_lm = log_probs_w_lm[:, :-1].max(dim=-1)
+
+            # Step 5: Update labels if they initially weren't blank or repeated
+            blank_or_repeated = (labels == self.blank_id) | (labels == last_labels)
+            torch.where(blank_or_repeated, labels, labels_w_lm, out=labels)
+            torch.where(blank_or_repeated, log_probs, log_probs_w_lm, out=log_probs_w_lm)
+
+            # Step 6: Update LM states and scores for non-blank and non-repeated labels
+            torch.where(
+                blank_or_repeated,
+                batch_lm_states,
+                batch_lm_states_candidates[batch_indices, labels * ~blank_or_repeated],
+                out=batch_lm_states,
+            )
+
+            predictions_labels[:, i] = labels
+            predictions_logprobs[:, i] = log_probs_w_lm
+            last_labels = labels
+
+        return predictions_labels, predictions_logprobs
+
+    @torch.no_grad()
+    def _before_loop(self):
+        """
+        Initializes the state.
+        """
+        # Step 1: Initialization
+        self.state.batch_lm_states.copy_(
+            self.ngram_lm_batch.get_init_states(batch_size=self.state.batch_size, bos=True)
+        )
+        self.state.last_labels.fill_(self.blank_id)
+        self.state.frame_idx.fill_(0)
+        self.state.active_mask.copy_((self.state.decoder_lengths > 0).any())
+        # resulting labels and logprobs storage
+        self.state.predictions_labels.zero_()
+        self.state.predictions_logprobs.zero_()
+
+    @torch.no_grad()
+    def _inner_loop(self):
+        """
+        Performs a decoding step.
+        """
+        # Step 2: Get most likely labels for current frame
+        logits = self.state.decoder_outputs[:, self.state.frame_idx.unsqueeze(0)].squeeze(1)
+        log_probs, labels = logits.max(dim=-1)
+        log_probs_w_lm = logits.clone()
+
+        # Step 3: Get LM scores
+        lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(states=self.state.batch_lm_states)
+        lm_scores = lm_scores.to(dtype=self.state.float_dtype)
+        log_probs_w_lm[:, :-1] += self.ngram_lm_alpha * lm_scores
+
+        # Step 4: Get most likely labels with LM scores. Labels that are blank or repeated are ignored.
+        # Note: no need to mask blank labels log_probs_w_lm[:, -1] = NEG_INF, as argmax is without blanks
+        # Note: for efficiency, use scatter instead of log_probs_w_lm[batch_indices, last_labels] = NEG_INF
+        log_probs_w_lm.scatter_(dim=1, index=self.state.last_labels.unsqueeze(-1), value=NEG_INF)
+        log_probs_w_lm, labels_w_lm = log_probs_w_lm[:, :-1].max(dim=-1)
+
+        # Step 5: Update labels if they initially weren't blank or repeated
+        blank_or_repeated = (labels == self.blank_id) | (labels == self.state.last_labels)
+        torch.where(blank_or_repeated, labels, labels_w_lm, out=labels)
+        torch.where(blank_or_repeated, log_probs, log_probs_w_lm, out=log_probs_w_lm)
+
+        self.state.predictions_labels[:, self.state.frame_idx.unsqueeze(0)] = labels.unsqueeze(-1)
+        self.state.predictions_logprobs[:, self.state.frame_idx.unsqueeze(0)] = log_probs_w_lm.unsqueeze(-1)
+
+        # Step 6: Update LM states and scores for non-blank and non-repeated labels
+        torch.where(
+            blank_or_repeated,
+            self.state.batch_lm_states,
+            batch_lm_states_candidates[self.state.batch_indices, labels * ~blank_or_repeated],
+            out=self.state.batch_lm_states,
+        )
+
+        self.state.last_labels.copy_(labels)
+        self.state.frame_idx += 1
+        self.state.active_mask.copy_((self.state.decoder_lengths > self.state.frame_idx).any())
+
+    @classmethod
+    def _create_while_loop_kernel(cls):
+        """
+        Creates a kernel that evaluates whether to enter the outer loop body (not all hypotheses are decoded).
+        Condition: while(active_mask_any).
+        """
+        kernel_string = r"""\
+            typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
+
+            extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
+
+            extern "C" __global__
+            void ctc_loop_conditional(cudaGraphConditionalHandle handle, const bool *decoding_active)
+            {
+             cudaGraphSetConditional(handle, *decoding_active);
+            }
+            """
+        return run_nvrtc(kernel_string, b"ctc_loop_conditional", b"while_conditional_ctc.cu")
+
+    def _graph_reinitialize(self, logits, logits_len):
+        batch_size, max_time, vocab_dim = logits.shape
+        self.state = CTCDecoderCudaGraphsState(
+            batch_size=batch_size,
+            max_time=max(max_time, 375),
+            vocab_dim=vocab_dim,
+            device=logits.device,
+            float_dtype=logits.dtype,
+        )
+        if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
+            # compiling full graph
+            stream_for_graph = torch.cuda.Stream(self.state.device)
+            stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
+            self.state.full_graph = torch.cuda.CUDAGraph()
+            with (
+                torch.cuda.stream(stream_for_graph),
+                torch.inference_mode(),
+                torch.cuda.graph(self.state.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            ):
+                self._before_loop()
+
+                capture_status, _, graph, _, _ = cu_call(
+                    cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
+                )
+                assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
+
+                # capture: while decoding_active:
+                (loop_conditional_handle,) = cu_call(cudart.cudaGraphConditionalHandleCreate(graph, 0, 0))
+                loop_kernel = self._create_while_loop_kernel()
+                decoding_active_ptr = np.array([self.state.active_mask.data_ptr()], dtype=np.uint64)
+                loop_args = np.array(
+                    [loop_conditional_handle.getPtr(), decoding_active_ptr.ctypes.data],
+                    dtype=np.uint64,
+                )
+                # loop while there are active utterances
+                with with_conditional_node(
+                    loop_kernel,
+                    loop_args,
+                    loop_conditional_handle,
+                    device=self.state.device,
+                ):
+                    self._inner_loop()
+        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
+            # compiling partial graphs
+            stream_for_graph = torch.cuda.Stream(self.state.device)
+            stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
+            self.state.before_loop_graph = torch.cuda.CUDAGraph()
+            self.state.inner_loop_graph = torch.cuda.CUDAGraph()
+            with (
+                torch.cuda.stream(stream_for_graph),
+                torch.inference_mode(),
+                torch.cuda.graph(
+                    self.state.before_loop_graph,
+                    stream=stream_for_graph,
+                    capture_error_mode="thread_local",
+                ),
+            ):
+                self._before_loop()
+
+            with (
+                torch.cuda.stream(stream_for_graph),
+                torch.inference_mode(),
+                torch.cuda.graph(
+                    self.state.inner_loop_graph,
+                    stream=stream_for_graph,
+                    capture_error_mode="thread_local",
+                ),
+            ):
+                self._inner_loop()
+        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
+            # no graphs needed
+            pass
+        else:
+            raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
+
+    def _greedy_decode_logprobs_batched_lm_cuda_graphs(self, logits: torch.Tensor, out_len: torch.Tensor):
+        current_batch_size = logits.shape[0]
+        current_max_time = logits.shape[1]
+
+        if torch.is_autocast_enabled():
+            logits = logits.to(torch.get_autocast_gpu_dtype())
+
+        # init or reinit graph
+        if self.state is None or self.state.need_reinit(logits):
+            self._graph_reinitialize(logits=logits, logits_len=out_len)
+
+        # copy decoder outputs and lenghts
+        self.state.decoder_outputs[:current_batch_size, :current_max_time, ...].copy_(logits)
+        self.state.decoder_lengths[: logits.shape[0]].copy_(out_len)
+        # set length to zero for elements outside the current batch
+        self.state.decoder_lengths[current_batch_size:].fill_(0)
+
+        if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
+            self.state.full_graph.replay()
+        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
+            self.state.before_loop_graph.replay()
+            for _ in range(current_max_time):
+                self.state.inner_loop_graph.replay()
+        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
+            # this mode is only for testing purposes
+            # manual loop instead of using graphs
+            self._before_loop()
+            for _ in range(current_max_time):
+                self._inner_loop()
+        else:
+            raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
+
+        return (
+            self.state.predictions_labels[:current_batch_size, :current_max_time].clone(),
+            self.state.predictions_logprobs[:current_batch_size, :current_max_time].clone(),
+        )
+
+    def force_cuda_graphs_mode(self, mode: Optional[Union[str, CudaGraphsMode]]):
+        """
+        Method to set graphs mode. Use only for testing purposes.
+        For debugging the algorithm use "no_graphs" mode, since it is impossible to debug CUDA graphs directly.
+        """
+        self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
+        self.state = None
+
+    def maybe_enable_cuda_graphs(self):
+        """Enable CUDA graphs if conditions met"""
+        if self.cuda_graphs_mode is not None:
+            # CUDA graphs are already enabled
+            return
+
+        if not self.allow_cuda_graphs:
+            self.cuda_graphs_mode = None
+        else:
+            # cuda graphs are allowed
+            # check while loops
+            try:
+                check_cuda_python_cuda_graphs_conditional_nodes_supported()
+                self.cuda_graphs_mode = self.CudaGraphsMode.FULL_GRAPH
+            except (ImportError, ModuleNotFoundError, EnvironmentError) as e:
+                logging.warning(
+                    "No conditional node support for Cuda.\n"
+                    "Cuda graphs with while loops are disabled, decoding speed will be slower\n"
+                    f"Reason: {e}"
+                )
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_GRAPHS
+        self.reset_cuda_graphs_state()
+
+    def disable_cuda_graphs(self):
+        """Disable CUDA graphs, can be used to disable graphs temporary, e.g., in training process"""
+        if self.cuda_graphs_mode is None:
+            # nothing to disable
+            return
+        self.cuda_graphs_mode = None
+        self.reset_cuda_graphs_state()
+
+    def reset_cuda_graphs_state(self):
+        """Reset state to release memory (for CUDA graphs implementations)"""
+        self.state = None
+
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
@@ -525,6 +951,10 @@ class GreedyCTCInferConfig:
     compute_timestamps: bool = False
     preserve_frame_confidence: bool = False
     confidence_method_cfg: Optional[ConfidenceMethodConfig] = field(default_factory=lambda: ConfidenceMethodConfig())
+
+    ngram_lm_model: Optional[str] = None
+    ngram_lm_alpha: float = 0.0
+    allow_cuda_graphs: bool = True
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed

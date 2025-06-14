@@ -18,6 +18,7 @@ import lightning.pytorch as pl
 import nemo_run as run
 import torch
 from lightning.pytorch.callbacks.callback import Callback
+from megatron.core.distributed import DistributedDataParallelConfig
 
 from nemo import lightning as nl
 from nemo.collections.llm.gpt.model.qwen3 import (
@@ -136,6 +137,15 @@ def qwen3_trainer(
         ckpt_include_optimizer=True,
         ckpt_async_save=True,
         ckpt_parallel_load=True,
+        ddp=run.Config(
+            DistributedDataParallelConfig,
+            check_for_nan_in_grad=True,
+            grad_reduce_in_fp32=True,
+            overlap_grad_reduce=True,
+            overlap_param_gather=True,
+            average_in_collective=True,  # Not supported for custom FSDP for now, need to be set to False if using FSDP
+            data_parallel_sharding_strategy="optim_grads_params",  # For custom FSDP only
+        ),
     )
 
     precision_plugin = None

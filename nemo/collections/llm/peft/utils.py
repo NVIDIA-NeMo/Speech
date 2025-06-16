@@ -73,7 +73,7 @@ def get_adapter_attributes_from_linear(m: nn.Module):
     Return input_is_parallel, in_features, out_feature attributes based on implementation of the base layer.
     """
     disable_sequence_parallel_comm = not m.config.sequence_parallel
-
+    base_linear_is_parallel = True
     if HAVE_TE and any(isinstance(m, te_column_parallel) for te_column_parallel in TECL):
         input_is_parallel = False
         # m.in_features and m.out_features are divided by tp_size already,
@@ -112,6 +112,7 @@ def get_adapter_attributes_from_linear(m: nn.Module):
         input_is_parallel = False
         in_features = m.in_features
         out_features = m.out_features
+        base_linear_is_parallel = False
     elif isinstance(m, ColumnParallelLinear):
         input_is_parallel = False
         in_features = m.input_size
@@ -123,7 +124,7 @@ def get_adapter_attributes_from_linear(m: nn.Module):
     else:
         raise NotImplementedError(f"Layer type is unrecognized for LoRA: {type(m)}")
 
-    return input_is_parallel, in_features, out_features, disable_sequence_parallel_comm
+    return input_is_parallel, in_features, out_features, disable_sequence_parallel_comm, base_linear_is_parallel
 
 
 def is_expert_linear(fqn):
@@ -262,6 +263,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         is_expert: bool = False,
         disable_sequence_parallel_comm: bool = True,
         dropout_recompute: bool = False,
+        base_linear_is_parallel: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -310,6 +312,10 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         lin_out_gather_output = True if input_is_parallel else False
         if self.use_a2a and input_is_parallel and _sequence_parallel:
             lin_out_gather_output = False
+
+        if not base_linear_is_parallel:
+            lin_out_gather_output = True
+
         self.linear_out = ColumnParallelLinear(
             dim,
             out_features,
@@ -342,6 +348,9 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         model_parallel_config.sequence_parallel = _sequence_parallel
         self.disable_sequence_parallel_comm = disable_sequence_parallel_comm
         if not _sequence_parallel:
+            self.disable_sequence_parallel_comm = True
+
+        if not base_linear_is_parallel:
             self.disable_sequence_parallel_comm = True
 
     def _get_init_fn(self, init_method: str):

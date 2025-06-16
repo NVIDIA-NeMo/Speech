@@ -51,6 +51,7 @@ class LoRALinear(AdapterWrapper):
         # pylint: disable=C0115,C0116
         linear_output, bias, layernorm_output = self.base_linear_forward(x, *args, **kwargs)
         adapter_output = self.adapter(layernorm_output.contiguous())
+        adapter_output = adapter_output.reshape(linear_output.shape)
         return linear_output + adapter_output, bias
 
 

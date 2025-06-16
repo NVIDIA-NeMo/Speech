@@ -172,8 +172,7 @@ def adjust_distillation_model_for_mcore(model: DistillationModel, distill_cfg: D
     # NOTE: If re-placed, above losses need modifcation as `TransformerConfig` has non-pickleable elements.
     existing_state = mto.ModeloptStateManager(model).state_dict()
     assert len(existing_state) == 1 and existing_state[0][0] == "kd_loss", f"{existing_state=}"
-    # mto.ModeloptStateManager.remove_state(model)
-    delattr(model, mto.ModeloptStateManager._state_key)  # Use above method from modelopt 0.27
+    mto.ModeloptStateManager.remove_state(model)
 
     # Hide teacher during `sharded_state_dict` method.
     def _sharded_state_dict(self, *args, **kwargs) -> "ShardedStateDict":

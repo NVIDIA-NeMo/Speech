@@ -63,10 +63,6 @@ Example usage to prune depth by dropping specific model layers (1-indexed):
 import argparse
 import os
 
-# Import modelopt first to avoid circular import causing pruning to fail
-# TODO: This can be removed in modelopt 0.27 once modelopt pruning imports nemo inside a function
-import modelopt.torch.prune  # noqa: F401
-
 from nemo.collections import llm
 from nemo.collections.llm.modelopt.prune import PruningConfig
 from nemo.utils import logging

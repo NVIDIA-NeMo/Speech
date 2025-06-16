@@ -20,7 +20,7 @@ import lightning.pytorch as pl
 import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import _mesh_resources
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM
 
 from nemo.automodel.dist_utils import FirstRankPerNode
 from nemo.automodel.loss import masked_cross_entropy
@@ -189,6 +189,8 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         # create all your layers here
         quantization_config = None
         if self.load_in_4bit:
+            from transformers import BitsAndBytesConfig
+
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
@@ -580,6 +582,8 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         }
 
         if self.load_in_4bit:
+            from transformers import BitsAndBytesConfig
+
             d["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",

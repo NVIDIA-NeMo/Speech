@@ -114,7 +114,8 @@ runs:
           -d \
           --name nemo_container_${{ github.run_id }}_${{ inputs.runner }} ${ARG[@]} \
           --shm-size=64g \
-          --env TRANSFORMERS_OFFLINE=0 \
+          --env TRANSFORMERS_OFFLINE=1 \
+          --env HF_HUB_OFFLINE=1 \
           --env HYDRA_FULL_ERROR=1 \
           --env HF_HOME=/home/TestData/HF_HOME \
           --env RUN_ID=${{ github.run_id }} \

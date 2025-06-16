@@ -462,7 +462,9 @@ class LoRA(PEFT, ModuleMatcher):
                     lora_dtype=self.lora_dtype,
                 )
 
-            input_is_parallel, in_features, out_features, disable_sp_comm = get_adapter_attributes_from_linear(m)
+            input_is_parallel, in_features, out_features, disable_sp_comm, base_linear_is_parallel = (
+                get_adapter_attributes_from_linear(m)
+            )
             logging.info(f"Adding lora to: {full_name}")
             adapter = ParallelLinearAdapter(
                 in_features,
@@ -483,6 +485,7 @@ class LoRA(PEFT, ModuleMatcher):
                 a2a_experimental=self.a2a_experimental,
                 disable_sequence_parallel_comm=disable_sp_comm,
                 dropout_recompute=self.dropout_recompute,
+                base_linear_is_parallel=base_linear_is_parallel,
             )
             return LoRALinear(m, adapter)
         return m

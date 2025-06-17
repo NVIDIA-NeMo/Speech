@@ -293,10 +293,6 @@ class Quantizer:
 
         If forward_loop is not provided, a forward loop will be created using the calibration dataset.
         """
-        modelopt_cfg = QUANT_CFG_CHOICES[self.quantization_config.algorithm]
-        if forward_loop is None and mtq.config.need_calibration(modelopt_cfg):
-            forward_loop = self._get_forward_loop(model)
-
         algorithm = self.quantization_config.algorithm
         if algorithm is None:
             logging.info("Quantization algorithm set to None, returning the non-quantized model")
@@ -308,6 +304,10 @@ class Quantizer:
         decoder_type = self._get_decoder_type(model, optional=True)
         quant_cfg = self._get_quant_cfg(model)
         logging.info(f"Using quant_cfg:\n{pprint.pformat(quant_cfg)}")
+
+        if forward_loop is None and mtq.config.need_calibration(quant_cfg):
+            forward_loop = self._get_forward_loop(model)
+
         unwrapped_model = mtq.quantize(unwrap_for_modelopt_operations(model), quant_cfg, forward_loop)
         if decoder_type == "gpt":
             # We found squared_relu may have an under-calibration problem.

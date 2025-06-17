@@ -20,14 +20,14 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/
             --vocab-file="/home/TestData/nlp/megatron_mamba/nm5_tokenizer/multiMixV8.gpt4o_nc_sd.500000.128k.vocab.json" \
             --dataset-dir="/home/TestData/nlp/megatron_mamba/toy_ssm_dataset/legal_pile_text_document" \
             --seq-length=512 \
-            --hybrid-override-pattern="M-M*" \
-            --num-layers=4 \
+            --hybrid-override-pattern="M-*" \
+            --num-layers=3 \
             --tensor-parallel-size=1 \
             --pipeline-model-parallel-size=1 \
             --context-parallel-size=1 \
             --global-batch-size=8 \
             --micro-batch-size=1 \
-            --model-size="8B" \
+            --model-size="4B" \
             --clip-grad 1 \
             --lr=0.0003 \
             --warmup-steps=0 \

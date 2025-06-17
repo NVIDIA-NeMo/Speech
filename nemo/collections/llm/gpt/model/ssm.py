@@ -687,14 +687,21 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
         source: SSMConfig = io.load_context(str(self), subpath="model.config")
 
         # TODO @ataghibakhsh: Change AutoConfig to NemotronHConfig once merged to HF
+
+        # Check for local model path from environment variable first
+        local_model_path = os.environ.get('HF_LOCAL_MODEL_PATH')
         if type(source) == NemotronHConfig4B:
-            hf_config = AutoConfig.from_pretrained("nvidia/Nemotron-H-4B-Base-8K", trust_remote_code=True)
+            model_path = local_model_path if local_model_path else "nvidia/Nemotron-H-4B-Base-8K"
+            hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         elif type(source) == NemotronHConfig8B:
-            hf_config = AutoConfig.from_pretrained("nvidia/Nemotron-H-8B-Base-8K", trust_remote_code=True)
+            model_path = local_model_path if local_model_path else "nvidia/Nemotron-H-8B-Base-8K"
+            hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         elif type(source) == NemotronHConfig47B:
-            hf_config = AutoConfig.from_pretrained("nvidia/Nemotron-H-47B-Base-8K", trust_remote_code=True)
+            model_path = local_model_path if local_model_path else "nvidia/Nemotron-H-47B-Base-8K"
+            hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         elif type(source) == NemotronHConfig56B:
-            hf_config = AutoConfig.from_pretrained("nvidia/Nemotron-H-56B-Base-8K", trust_remote_code=True)
+            model_path = local_model_path if local_model_path else "nvidia/Nemotron-H-56B-Base-8K"
+            hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         else:
             raise ValueError(f"Unsupported model size: {source}")
 

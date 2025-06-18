@@ -205,6 +205,9 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
             packed list containing batch number of sentences (Hypotheses).
         """
         with torch.inference_mode():
+            self.transformer_decoder.eval()
+            self.log_softmax_module.eval()
+
             topk_hypotheses, beam_scores, best_hypo = self.beam_search(
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_input_mask=encoder_input_mask,
@@ -231,6 +234,9 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 # Pack results into Hypotheses
                 packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores)
                 self.format_hypotheses(packed_result, decoder_input_ids)
+
+        self.transformer_decoder.train()
+        self.log_softmax_module.train()
 
         return (packed_result,)
 

@@ -81,8 +81,9 @@ class MultiBinaryAccuracy(Metric):
         self.add_state("positive_count", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
         self.eps = 1e-6
 
+    @torch.inference_mode()
     def update(
-        self, preds: torch.Tensor, targets: torch.Tensor, signal_lengths: torch.Tensor, cumulative=False
+        self, preds: torch.Tensor, targets: torch.Tensor, signal_lengths: torch.Tensor, cumulative=False, **kwargs
     ) -> torch.Tensor:
         """
         Update the metric with the given predictions, targets, and signal lengths to the metric instance.
@@ -93,31 +94,30 @@ class MultiBinaryAccuracy(Metric):
             signal_lengths (torch.Tensor): Length of each sequence in the batch input.
             cumulative (bool): Whether to accumulate the values over time.
         """
-        with torch.no_grad():
-            preds_list = [preds[k, : signal_lengths[k], :] for k in range(preds.shape[0])]
-            targets_list = [targets[k, : signal_lengths[k], :] for k in range(targets.shape[0])]
-            self.preds = torch.cat(preds_list, dim=0)
-            self.targets = torch.cat(targets_list, dim=0)
+        preds_list = [preds[k, : signal_lengths[k], :] for k in range(preds.shape[0])]
+        targets_list = [targets[k, : signal_lengths[k], :] for k in range(targets.shape[0])]
+        self.preds = torch.cat(preds_list, dim=0)
+        self.targets = torch.cat(targets_list, dim=0)
 
-            self.true = self.preds.round().bool() == self.targets.round().bool()
-            self.false = self.preds.round().bool() != self.targets.round().bool()
-            self.positive = self.preds.round().bool() == 1
-            self.negative = self.preds.round().bool() == 0
+        self.true = self.preds.round().bool() == self.targets.round().bool()
+        self.false = self.preds.round().bool() != self.targets.round().bool()
+        self.positive = self.preds.round().bool() == 1
+        self.negative = self.preds.round().bool() == 0
 
-            if cumulative:
-                self.positive_count += torch.sum(self.preds.round().bool() == True)
-                self.true_positive_count += torch.sum(torch.logical_and(self.true, self.positive))
-                self.false_positive_count += torch.sum(torch.logical_and(self.false, self.positive))
-                self.false_negative_count += torch.sum(torch.logical_and(self.false, self.negative))
-                self.total_correct_counts += torch.sum(self.preds.round().bool() == self.targets.round().bool())
-                self.total_sample_counts += torch.prod(torch.tensor(self.targets.shape))
-            else:
-                self.positive_count = torch.sum(self.preds.round().bool() == True)
-                self.true_positive_count = torch.sum(torch.logical_and(self.true, self.positive))
-                self.false_positive_count = torch.sum(torch.logical_and(self.false, self.positive))
-                self.false_negative_count = torch.sum(torch.logical_and(self.false, self.negative))
-                self.total_correct_counts = torch.sum(self.preds.round().bool() == self.targets.round().bool())
-                self.total_sample_counts = torch.prod(torch.tensor(self.targets.shape))
+        if cumulative:
+            self.positive_count += torch.sum(self.preds.round().bool() == True)
+            self.true_positive_count += torch.sum(torch.logical_and(self.true, self.positive))
+            self.false_positive_count += torch.sum(torch.logical_and(self.false, self.positive))
+            self.false_negative_count += torch.sum(torch.logical_and(self.false, self.negative))
+            self.total_correct_counts += torch.sum(self.preds.round().bool() == self.targets.round().bool())
+            self.total_sample_counts += torch.prod(torch.tensor(self.targets.shape))
+        else:
+            self.positive_count = torch.sum(self.preds.round().bool() == True)
+            self.true_positive_count = torch.sum(torch.logical_and(self.true, self.positive))
+            self.false_positive_count = torch.sum(torch.logical_and(self.false, self.positive))
+            self.false_negative_count = torch.sum(torch.logical_and(self.false, self.negative))
+            self.total_correct_counts = torch.sum(self.preds.round().bool() == self.targets.round().bool())
+            self.total_sample_counts = torch.prod(torch.tensor(self.targets.shape))
 
     def compute(self):
         """

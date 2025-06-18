@@ -42,6 +42,21 @@ model:
   prompt_format: ???   # Options supported: ["canary", "canary2"]
   prompt_defaults: null
 
+  # Sub-config for specifying multiple metrics for multitask modeling.
+  # Each metric allows a custom bool constraint to determine conditions for evaluation. 
+  # See `asr.collections.metrics.multitask` for further details.
+  multitask_metrics_cfg:
+    log_predictions: true
+    metrics:
+      wer:
+        _target_: nemo.collections.asr.metrics.WER
+        constraint: ".source_lang==.target_lang"
+      bleu:
+        _target_: nemo.collections.asr.metrics.BLEU  
+        constraint: ".source_lang!=.target_lang"
+        bleu_tokenizer: 13a
+        check_cuts_for_bleu_tokenizers: false  # For E.Asian languages. If `true`, calculates BLEU with SacreBLEU tokenizer passed by `bleu_tokenizer string' property in `cuts.custom`.
+
   model_defaults:
     asr_enc_hidden: 1024
     lm_enc_hidden: 512

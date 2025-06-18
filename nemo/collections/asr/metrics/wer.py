@@ -255,6 +255,7 @@ class WER(Metric):
         batch_dim_index=0,
         dist_sync_on_step=False,
         sync_on_compute=True,
+        **kwargs,
     ):
         super().__init__(dist_sync_on_step=dist_sync_on_step, sync_on_compute=sync_on_compute)
 
@@ -266,17 +267,17 @@ class WER(Metric):
 
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
-            self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids, targets: self.decoding.rnnt_decoder_predictions_tensor(
+            self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids: self.decoding.rnnt_decoder_predictions_tensor(
                 encoder_output=predictions, encoded_lengths=predictions_lengths
             )
         elif isinstance(self.decoding, AbstractCTCDecoding):
-            self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids, targets: self.decoding.ctc_decoder_predictions_tensor(
+            self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids: self.decoding.ctc_decoder_predictions_tensor(
                 decoder_outputs=predictions,
                 decoder_lengths=predictions_lengths,
                 fold_consecutive=self.fold_consecutive,
             )
         elif isinstance(self.decoding, AbstractMultiTaskDecoding):
-            self.decode = lambda predictions, prediction_lengths, predictions_mask, input_ids, targets: self.decoding.decode_predictions_tensor(
+            self.decode = lambda predictions, prediction_lengths, predictions_mask, input_ids: self.decoding.decode_predictions_tensor(
                 encoder_hidden_states=predictions,
                 encoder_input_mask=predictions_mask,
                 decoder_input_ids=input_ids,
@@ -296,6 +297,7 @@ class WER(Metric):
         targets_lengths: torch.Tensor,
         predictions_mask: Optional[torch.Tensor] = None,
         input_ids: Optional[torch.Tensor] = None,
+        **kwargs,  # To allow easy swapping of metrics without worrying about var alignment.
     ):
         """
         Updates metric state.
@@ -311,6 +313,7 @@ class WER(Metric):
         words = 0
         scores = 0
         references = []
+
         with torch.no_grad():
             tgt_lenths_cpu_tensor = targets_lengths.long().cpu()
             targets_cpu_tensor = targets.long().cpu()
@@ -323,12 +326,16 @@ class WER(Metric):
                 target = targets_cpu_tensor[ind][:tgt_len].numpy().tolist()
                 reference = self.decoding.decode_tokens_to_str(target)
                 references.append(reference)
-            hypotheses = self.decode(predictions, predictions_lengths, predictions_mask, input_ids, targets)
+            hypotheses = (
+                self.decode(predictions, predictions_lengths, predictions_mask, input_ids)
+                if predictions.numel() > 0
+                else []
+            )
 
-        if self.log_prediction:
+        if hypotheses and self.log_prediction:
             logging.info("\n")
-            logging.info(f"reference:{references[0]}")
-            logging.info(f"predicted:{hypotheses[0].text}")
+            logging.info(f"WER reference:{references[0]}")
+            logging.info(f"WER predicted:{hypotheses[0].text}")
 
         for h, r in zip(hypotheses, references):
             if isinstance(h, list):

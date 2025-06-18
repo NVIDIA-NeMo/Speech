@@ -189,6 +189,9 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             packed list containing batch number of sentences (Hypotheses).
         """
         with torch.inference_mode():
+            self.transformer_decoder.eval()
+            self.log_softmax_module.eval()
+
             best_hypo, topk_hypotheses, step_confidence = self.greedy_search(
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_input_mask=encoder_input_mask,
@@ -218,6 +221,8 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                 packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores, step_confidence)
                 self.format_hypotheses(packed_result, decoder_input_ids)
 
+        self.transformer_decoder.train()
+        self.log_softmax_module.train()
         return (packed_result,)
 
     def format_hypotheses(self, packed_result: List[Hypothesis], decoder_input_ids: Union[torch.Tensor, None]) -> None:

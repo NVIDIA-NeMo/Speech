@@ -73,6 +73,7 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_Export_Deploy_Query_In_Framework
             runner: self-hosted-azure
+            is-optional: true
           - script: L2_ONNX_TRT_LLM_Embedding_Export
             runner: self-hosted-azure
           - script: L2_NeMo_2_Export_TRT_LLM

@@ -541,9 +541,4 @@ branch](https://github.com/NVIDIA/NeMo/tree/gh-pages-src#readme).
 
 ## Licenses
 
-- [NeMo GitHub Apache 2.0
-  license](https://github.com/NVIDIA/NeMo?tab=Apache-2.0-1-ov-file#readme)
-- NeMo is licensed under the [NVIDIA AI PRODUCT
-  AGREEMENT](https://www.nvidia.com/en-us/data-center/products/nvidia-ai-enterprise/eula/).
-  By pulling and using the container, you accept the terms and
-  conditions of this license.
+NeMo is licensed under the [Apache License 2.0](https://github.com/NVIDIA/NeMo?tab=Apache-2.0-1-ov-file).

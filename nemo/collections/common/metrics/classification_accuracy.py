@@ -52,7 +52,7 @@ class TopKClassificationAccuracy(Metric):
             tensorboard_log = {'val_loss': val_loss_mean}
             for top_k, score in zip(self._accuracy.top_k, topk_scores):
                 tensorboard_log['val_epoch_top@{}'.format(top_k)] = score
-            
+
             self.val_outputs.clear()  # free memory
             return {'log': tensorboard_log}
 
@@ -184,7 +184,7 @@ class ExactStringPerCategoryMatchMetric(Metric):
                 val = getattr(self, f"{category}_correct")
                 setattr(self, f"{category}_correct", val + 1)
         else:
-            logging.warn(f'{category} is not in the pre-defined list')
+            logging.warning(f'{category} is not in the pre-defined list')
 
     def compute(self):
         results = {}

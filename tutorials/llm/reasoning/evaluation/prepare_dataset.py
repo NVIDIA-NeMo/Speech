@@ -13,58 +13,161 @@
 # limitations under the License.
 
 import argparse
+import csv
+import io
 import json
+import os
 import random
+import tarfile
+import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from datasets import load_dataset
 
 random.seed(42)
 
+subcategories = {
+    "abstract_algebra": ["math"],
+    "anatomy": ["health"],
+    "astronomy": ["physics"],
+    "business_ethics": ["business"],
+    "clinical_knowledge": ["health"],
+    "college_biology": ["biology"],
+    "college_chemistry": ["chemistry"],
+    "college_computer_science": ["computer science"],
+    "college_mathematics": ["math"],
+    "college_medicine": ["health"],
+    "college_physics": ["physics"],
+    "computer_security": ["computer science"],
+    "conceptual_physics": ["physics"],
+    "econometrics": ["economics"],
+    "electrical_engineering": ["engineering"],
+    "elementary_mathematics": ["math"],
+    "formal_logic": ["philosophy"],
+    "global_facts": ["other"],
+    "high_school_biology": ["biology"],
+    "high_school_chemistry": ["chemistry"],
+    "high_school_computer_science": ["computer science"],
+    "high_school_european_history": ["history"],
+    "high_school_geography": ["geography"],
+    "high_school_government_and_politics": ["politics"],
+    "high_school_macroeconomics": ["economics"],
+    "high_school_mathematics": ["math"],
+    "high_school_microeconomics": ["economics"],
+    "high_school_physics": ["physics"],
+    "high_school_psychology": ["psychology"],
+    "high_school_statistics": ["math"],
+    "high_school_us_history": ["history"],
+    "high_school_world_history": ["history"],
+    "human_aging": ["health"],
+    "human_sexuality": ["culture"],
+    "international_law": ["law"],
+    "jurisprudence": ["law"],
+    "logical_fallacies": ["philosophy"],
+    "machine_learning": ["computer science"],
+    "management": ["business"],
+    "marketing": ["business"],
+    "medical_genetics": ["health"],
+    "miscellaneous": ["other"],
+    "moral_disputes": ["philosophy"],
+    "moral_scenarios": ["philosophy"],
+    "nutrition": ["health"],
+    "philosophy": ["philosophy"],
+    "prehistory": ["history"],
+    "professional_accounting": ["other"],
+    "professional_law": ["law"],
+    "professional_medicine": ["health"],
+    "professional_psychology": ["psychology"],
+    "public_relations": ["politics"],
+    "security_studies": ["politics"],
+    "sociology": ["culture"],
+    "us_foreign_policy": ["politics"],
+    "virology": ["health"],
+    "world_religions": ["philosophy"],
+}
 
-def process_mmlu_dataset() -> List[Dict[str, Any]]:
+
+def process_mmlu_dataset(split) -> List[Dict[str, Any]]:
     """Process the MMLU dataset and return a list of formatted entries."""
-    dataset = load_dataset("cais/mmlu", "all")
+    data_url = "https://people.eecs.berkeley.edu/~hendrycks/data.tar"
+    data_dir = Path(__file__).absolute().parent
+    data_file = str(data_dir / f"data.tar")
+    data_dir.mkdir(exist_ok=True)
+    output_file = str(data_dir / f"{split}.jsonl")
+
+    urllib.request.urlretrieve(data_url, data_file)
+    result = {}
+
+    column_names = ["question", "A", "B", "C", "D", "expected_answer"]
+
+    with tarfile.open(data_file, 'r') as tar:
+        # List all members of the tar file
+        members = tar.getmembers()
+
+        # Filter for CSV files in the 'data/test' directory
+        csv_files = [
+            member for member in members if member.name.startswith(f'data/{split}/') and member.name.endswith('.csv')
+        ]
+
+        for csv_file in csv_files:
+            # Extract the file name without the path
+            file_name = os.path.basename(csv_file.name)
+
+            # Read the CSV file content
+            file_content = tar.extractfile(csv_file)
+            if file_content is not None:
+                # Decode bytes to string
+                content_str = io.TextIOWrapper(file_content, encoding='utf-8')
+
+                # Use csv to read the CSV content without a header
+                csv_reader = csv.reader(content_str)
+
+                # Convert CSV data to list of dictionaries with specified column names
+                csv_data = []
+                for row in csv_reader:
+                    if len(row) == len(column_names):
+                        csv_data.append(dict(zip(column_names, row)))
+                    else:
+                        print(f"Warning: Skipping row in {file_name} due to incorrect number of columns")
+
+                # Add to result dictionary
+                result[file_name.rsplit('_', 1)[0]] = csv_data
+
+    # Define the allowed supercategories
+    chosen_subcategories = {"math", "health", "physics", "biology", "chemistry", "computer science", "engineering"}
+
+    # Filter the result dictionary
+    filtered_result = {
+        k: v
+        for k, v in result.items()
+        if any(supercat in chosen_subcategories for supercat in subcategories.get(k, []))
+    }
+
     output_data = []
     skipped = 0
 
-    for split in dataset.keys():
-        for item in dataset[split]:
+    for category, question_list in filtered_result.items():
+        for item in question_list:
             question = item['question']
-            choices = item['choices']
-            answer = item['answer']
+            choice_1 = item['A']
+            choice_2 = item['B']
+            choice_3 = item['C']
+            choice_4 = item['D']
+            answer = item['expected_answer']
 
-            if not question or not choices:
+            if not question or not answer or not choice_1 or not choice_2 or not choice_3 or not choice_4:
                 skipped += 1
                 continue
 
-            # Create a list of (choice, is_correct) tuples
-            answers = []
-            for i, choice in enumerate(choices):
-                is_correct = chr(65 + i) == chr(65 + answer)
-                answers.append((choice, is_correct))
-
-            # Shuffle the answers
-            random.shuffle(answers)
-
-            # Create the choices dictionary
-            choices_dict = {}
-            correct_letter = None
-
-            for i, (answer_text, is_correct) in enumerate(answers):
-                letter = chr(65 + i)
-                choices_dict[f'Choice {i+1}'] = answer_text
-                if is_correct:
-                    correct_letter = letter
-
             entry = {
                 'Question': question,
-                'Choice 1': choices_dict['Choice 1'],
-                'Choice 2': choices_dict['Choice 2'],
-                'Choice 3': choices_dict['Choice 3'],
-                'Choice 4': choices_dict['Choice 4'],
-                'Answer': correct_letter,
-                'Subject': item['subject'],
+                'Choice 1': choice_1,
+                'Choice 2': choice_2,
+                'Choice 3': choice_3,
+                'Choice 4': choice_4,
+                'Answer': answer,
+                'Subject': category,
             }
 
             output_data.append(entry)
@@ -191,13 +294,14 @@ def main():
 
     # Process selected datasets
     if 'mmlu' in args.datasets:
-        mmlu_data, mmlu_skipped = process_mmlu_dataset()
-        write_to_jsonl(mmlu_data, 'mmlu_dataset.jsonl')
-        print(f"Converted {len(mmlu_data)} questions to mmlu_dataset.jsonl")
-        if mmlu_skipped > 0:
-            print(f"Skipped {mmlu_skipped} MMLU entries due to missing data")
-        print("\nMMLU Sample entry:")
-        print(json.dumps(mmlu_data[0], indent=2))
+        for split in ["test", "val"]:
+            mmlu_data, mmlu_skipped = process_mmlu_dataset(split)
+            write_to_jsonl(mmlu_data, f'mmlu_dataset_{split}.jsonl')
+            print(f"Converted {len(mmlu_data)} {split} questions to mmlu_dataset_{split}.jsonl")
+            if mmlu_skipped > 0:
+                print(f"Skipped {mmlu_skipped} MMLU entries due to missing data")
+            print("\nMMLU Sample entry:")
+            print(json.dumps(mmlu_data[0], indent=2))
 
     if 'gpqa' in args.datasets:
         gpqa_data, gpqa_skipped = process_gpqa_dataset()

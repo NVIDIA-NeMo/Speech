@@ -94,7 +94,7 @@ def main():
     # Determine dataset file and output file based on dataset selection
     dataset_files = {
         'gpqa_main': 'gpqa_dataset.jsonl',
-        'mmlu': 'mmlu_dataset.jsonl',
+        'mmlu': 'mmlu_dataset_test.jsonl',
         'gpqa_diamond': 'gpqa_diamond_dataset.jsonl',
     }
 

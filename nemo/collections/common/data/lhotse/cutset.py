@@ -478,6 +478,8 @@ def cut_to_conversation(
     ]
     if hasattr(cut, "context"):
         turns = [TextTurn(value=cut.context, role="user")] + turns
+    if hasattr(cut, "system_prompt"):
+        turns = [TextTurn(value=cut.system_prompt, role="system")] + turns
     return NeMoMultimodalConversation(
         id=cut.id,
         turns=turns,
@@ -489,6 +491,10 @@ def cut_to_conversation(
 @data_type_parser(["lhotse_as_conversation"])
 def read_lhotse_as_conversation(config) -> tuple[CutSet, bool]:
     cuts, is_tarred = read_cutset_from_config(config)
+    # Attach extra tags to every utterance dynamically, if provided.
+    # We need to attach them before cuts are converted to conversations.
+    if (extra_tags := config.get("tags")) is not None:
+        cuts = cuts.map(partial(attach_tags, tags=extra_tags), apply_fn=None)
     cuts = cuts.map(
         partial(
             cut_to_conversation,

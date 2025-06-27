@@ -11,10 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pathlib import Path
+
 import lhotse
 import numpy as np
 import pytest
 import torch
+from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
@@ -485,3 +488,117 @@ def test_multimodal_conversation_duration_filter():
         ],
     )
     assert fltr(conv_s2s_7s) is False
+
+
+@pytest.fixture(scope="session")
+def cutset_path(tmp_path_factory) -> Path:
+    """3 utterances of lengths 1s, 2s, and 3s, with different context/system_prompt, as a Lhotse CutSet."""
+    cuts = CutSet(
+        [
+            dummy_cut(
+                0,
+                duration=1.0,
+                supervisions=[SupervisionSegment("e1", "e1", 0.0, 1.0, text="transcript")],
+                with_data=True,
+            ),
+            dummy_cut(
+                1,
+                duration=2.0,
+                recording_duration=2.0,
+                supervisions=[SupervisionSegment("e2", "e2", 0.0, 2.0, text="context and transcript")],
+                with_data=True,
+            ),
+            dummy_cut(
+                2,
+                duration=3.0,
+                recording_duration=3.0,
+                supervisions=[SupervisionSegment("e3", "e3", 0.0, 2.0, text="system context and transcript")],
+                with_data=True,
+            ),
+        ]
+    )
+    cuts[1].context = "some prompt"
+    cuts[2].context = "other prompt"
+    cuts[2].system_prompt = "system prompt"
+
+    tmp_path = tmp_path_factory.mktemp("data")
+    p = tmp_path / "cuts.jsonl.gz"
+    pa = tmp_path / "audio"
+    cuts.save_audios(pa).drop_in_memory_data().to_file(p)
+    return p
+
+
+def test_cut_to_conversation_conversion(cutset_path, tokenizer):
+    cuts = CutSet.from_file(cutset_path)
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "lhotse_as_conversation",
+                    "cuts_path": cutset_path,
+                    "audio_locator_tag": "[audio]",
+                    "tags": {"test_key": "test_value"},
+                },
+            ],
+            "token_equivalent_duration": 0.08,
+            "prompt_format": "llama3",
+            "force_finite": True,
+            "num_workers": 0,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(
+        config=config, global_rank=0, world_size=1, dataset=Identity(), tokenizer=tokenizer
+    )
+    batches = [batch for batch in dl]
+    assert len(batches) == 1
+
+    # Check the cut that has no 'context' or 'system_prompt'
+    conv = batches[0][0]
+    assert isinstance(conv, NeMoMultimodalConversation)
+    assert conv.id == cuts[0].id
+    assert len(conv.turns) == 2
+    assert isinstance(conv.turns[0], AudioTurn)
+    assert conv.turns[0].role == "user"
+    assert isinstance(conv.turns[1], TextTurn)
+    assert conv.turns[1].role == "assistant"
+    assert conv.turns[1].value == "transcript"
+    assert conv.custom["test_key"] == "test_value"
+    assert conv.turns[0].cut.custom["test_key"] == "test_value"
+
+    # Check the cut that has only 'context' and no 'system_prompt'
+    conv = batches[0][1]
+    assert isinstance(conv, NeMoMultimodalConversation)
+    assert conv.id == cuts[1].id
+    assert len(conv.turns) == 3
+    assert isinstance(conv.turns[0], TextTurn)
+    assert conv.turns[0].role == "user"
+    assert conv.turns[0].value == "some prompt"
+    assert isinstance(conv.turns[1], AudioTurn)
+    assert conv.turns[1].role == "user"
+    assert isinstance(conv.turns[2], TextTurn)
+    assert conv.turns[2].role == "assistant"
+    assert conv.turns[2].value == "context and transcript"
+    assert conv.custom["test_key"] == "test_value"
+    assert conv.turns[1].cut.custom["test_key"] == "test_value"
+
+    # Check the cut that has both 'context' and 'system_prompt'
+    conv = batches[0][2]
+    assert isinstance(conv, NeMoMultimodalConversation)
+    assert conv.id == cuts[2].id
+    assert len(conv.turns) == 4
+    assert isinstance(conv.turns[0], TextTurn)
+    assert conv.turns[0].role == "system"
+    assert conv.turns[0].value == "system prompt"
+    assert isinstance(conv.turns[1], TextTurn)
+    assert conv.turns[1].role == "user"
+    assert conv.turns[1].value == "other prompt"
+    assert isinstance(conv.turns[2], AudioTurn)
+    assert conv.turns[2].role == "user"
+    assert isinstance(conv.turns[3], TextTurn)
+    assert conv.turns[3].role == "assistant"
+    assert conv.turns[3].value == "system context and transcript"
+    assert conv.custom["test_key"] == "test_value"
+    assert conv.turns[2].cut.custom["test_key"] == "test_value"

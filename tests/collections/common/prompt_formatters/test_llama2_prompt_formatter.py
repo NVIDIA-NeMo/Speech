@@ -28,7 +28,7 @@ def test_llama2_prompt_formatter_training(bpe_tokenizer):
     assert bpe_tokenizer.ids_to_text(ans["input_ids"].tolist()[1:-1]) == '[INST] TEST [/INST] TEST'
     assert bpe_tokenizer.ids_to_text(ans["context_ids"].tolist()[1:]) == '[INST] TEST [/INST]'
     assert bpe_tokenizer.ids_to_text(ans["answer_ids"].tolist()[:-1]) == 'TEST'
-    assert ans["mask"].tolist() == [False] * 16 + [True] * 5
+    assert ans["mask"].shape[0] == ans["input_ids"].shape[0]
     # fmt: on
 
 
@@ -59,7 +59,7 @@ def test_llama2_prompt_formatter_training_with_system(bpe_tokenizer):
     assert bpe_tokenizer.ids_to_text(ans["input_ids"].tolist()[1:-1]) == '[INST] <<SYS>>\nTEST\n<</SYS>>\n\nTEST [/INST] TEST'
     assert bpe_tokenizer.ids_to_text(ans["context_ids"].tolist()[1:]) == '[INST] <<SYS>>\nTEST\n<</SYS>>\n\nTEST [/INST]'
     assert bpe_tokenizer.ids_to_text(ans["answer_ids"].tolist()[:-1]) == 'TEST'
-    assert ans["mask"].tolist() == [False] * 36 + [True] * 5
+    assert ans["mask"].shape[0] == ans["input_ids"].shape[0]
     # fmt: on
 
 

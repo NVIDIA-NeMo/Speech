@@ -4,7 +4,7 @@ numba
 numpy>=1.22
 onnx>=1.7.0
 # Align with upstream PyTorch requirements
-protobuf~=4.24.4
+protobuf~=5.29.5
 python-dateutil
 ruamel.yaml
 scikit-learn

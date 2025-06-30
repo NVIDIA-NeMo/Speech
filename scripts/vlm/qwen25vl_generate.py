@@ -13,37 +13,23 @@
 # limitations under the License.
 
 """
-Example:
-  pip install qwen_vl_utils && python scripts/vlm/qwen2vl_generate.py --load_from_hf
+python qwen25vl_generate.py --load_from_hf --osl 50
 """
 
 import argparse
 
-import requests
 import torch
-from PIL import Image
 from qwen_vl_utils import process_vision_info
 from transformers import AutoProcessor
 
 import nemo.lightning as nl
-from nemo.collections.vlm import Qwen2VLConfig2B, Qwen2VLModel
+from nemo.collections.vlm import Qwen2VLModel, Qwen25VLConfig3B, Qwen25VLConfig7B, Qwen25VLConfig32B, Qwen25VLConfig72B
 from nemo.utils import logging
 
 
-def load_image(image_url: str) -> Image.Image:
-    # pylint: disable=C0115,C0116
-    try:
-        response = requests.get(image_url, stream=True)
-        response.raise_for_status()
-        image = Image.open(response.raw)
-        return image
-    except requests.exceptions.RequestException as e:
-        print(f"Error loading image from {image_url}: {e}")
-        return None
-
-
 def main(args) -> None:
-    # pylint: disable=C0115,C0116
+    # pylint: disable=C0115,C0116,C0301
+
     strategy = nl.MegatronStrategy(
         tensor_model_parallel_size=args.tp_size,
         pipeline_model_parallel_size=args.pp_size,
@@ -60,22 +46,26 @@ def main(args) -> None:
     )
 
     # Tokenize the input texts
-    # The default range for the number of visual tokens per image in the model is 4-16384. You can set min_pixels
-    # and max_pixels according to your needs, such as a token count range of 256-1280, to balance speed and memory
-    # usage.
     min_pixels = 16 * 28 * 28
     max_pixels = 64 * 28 * 28
     processor = AutoProcessor.from_pretrained(
-        "Qwen/Qwen2-VL-2B-Instruct", min_pixels=min_pixels, max_pixels=max_pixels
+        f"Qwen/Qwen2.5-VL-{args.model_size}-Instruct", min_pixels=min_pixels, max_pixels=max_pixels
     )
+
     hf_tokenizer = processor.tokenizer
 
     fabric = trainer.to_fabric()
     # Decide whether to import or load the model based on the input arguments
     if args.load_from_hf:
-        model = fabric.import_model("hf://Qwen/Qwen2-VL-2B-Instruct", Qwen2VLModel)
+        model = fabric.import_model(f"hf://Qwen/Qwen2.5-VL-{args.model_size}-Instruct", Qwen2VLModel)
     else:
-        model = Qwen2VLModel(Qwen2VLConfig2B(), model_version="qwen2-vl", tokenizer=hf_tokenizer)
+        model_config = {
+            "3B": Qwen25VLConfig3B,
+            "7B": Qwen25VLConfig7B,
+            "32B": Qwen25VLConfig32B,
+            "72B": Qwen25VLConfig72B,
+        }[args.model_size]()
+        model = Qwen2VLModel(model_config, model_version="qwen25-vl", tokenizer=hf_tokenizer)
         model = fabric.load_model(args.local_model_path, model)
     model = model.module.cuda()
     model.eval()
@@ -94,7 +84,7 @@ def main(args) -> None:
     ]
 
     # Preparation for inference
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    text = processor.apply_chat_template(messages, tokenizer=False, add_generation_prompt=True)
     image_inputs, video_inputs = process_vision_info(messages)
 
     inputs = processor(
@@ -114,6 +104,7 @@ def main(args) -> None:
 
         # Greedy generation loop
         generated_ids = input_ids
+
         for _ in range(args.osl):
             output = model(
                 pixel_values=pixel_values,
@@ -124,6 +115,7 @@ def main(args) -> None:
             )
 
             next_token_ids = torch.argmax(output[:, -1], dim=-1, keepdim=True)
+
             generated_ids = torch.cat([generated_ids, next_token_ids], dim=-1)
 
             input_ids = generated_ids
@@ -133,8 +125,11 @@ def main(args) -> None:
 
         generated_ids[generated_ids < 0] = 0
         generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+
         generated_texts = processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
         )
 
         logging.info("======== GENERATED TEXT OUTPUT ========")
@@ -143,17 +138,15 @@ def main(args) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Qwen2VL Multimodal Inference")
+    parser = argparse.ArgumentParser(description="Qwen2.5VL Multimodal Inference")
     parser.add_argument(
-        "--load_from_hf",
-        action="store_true",
-        help="Flag to indicate whether to load the model from Hugging Face hub.",
+        "--load_from_hf", action="store_true", help="Flag to indicate whether to load the model from Hugging Face hub."
     )
     parser.add_argument(
         "--local_model_path",
         type=str,
         default=None,
-        help="Local path to the model if not loading from Hugging Face.",
+        help="Path to the local model if not loading from Hugging Face.",
     )
     parser.add_argument(
         "--image_url",
@@ -161,6 +154,7 @@ if __name__ == "__main__":
         default="https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg",
         help="URL of the image to use for inference.",
     )
+    parser.add_argument("--model_size", type=str, default="3B", choices=["3B", "7B", "32B", "72B"])
     parser.add_argument('--osl', type=int, default=30, help='output seq length')
     parser.add_argument('--tp_size', type=int, default=1, help='tensor parallel size')
     parser.add_argument('--pp_size', type=int, default=1, help='pipeline parallel size')

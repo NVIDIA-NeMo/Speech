@@ -68,8 +68,20 @@ from nemo.collections.vlm.neva.model.llava import Llava15Config7B, Llava15Config
 # PEFT
 from nemo.collections.vlm.peft import LoRA
 from nemo.collections.vlm.qwen2vl.data import Qwen2VLDataConfig, Qwen2VLMockDataModule, Qwen2VLPreloadedDataModule
-from nemo.collections.vlm.qwen2vl.model.base import Qwen2VLConfig, Qwen2VLModel, Qwen2VLVisionConfig
-from nemo.collections.vlm.qwen2vl.model.qwen2vl import Qwen2VLConfig2B, Qwen2VLConfig7B
+from nemo.collections.vlm.qwen2vl.model.base import (
+    Qwen2VLConfig,
+    Qwen2VLModel,
+    Qwen2VLVisionConfig,
+    Qwen25VLVisionConfig,
+)
+from nemo.collections.vlm.qwen2vl.model.qwen2vl import (
+    Qwen2VLConfig2B,
+    Qwen2VLConfig7B,
+    Qwen25VLConfig3B,
+    Qwen25VLConfig7B,
+    Qwen25VLConfig32B,
+    Qwen25VLConfig72B,
+)
 
 # RECIPES
 from nemo.collections.vlm.recipes import *
@@ -123,6 +135,11 @@ __all__ = [
     "Qwen2VLConfig7B",
     "Qwen2VLVisionConfig",
     "Qwen2VLModel",
+    "Qwen25VLConfig3B",
+    "Qwen25VLConfig7B",
+    "Qwen25VLConfig32B",
+    "Qwen25VLConfig72B",
+    "Qwen25VLVisionConfig",
     "Qwen2VLDataConfig",
     "Gemma3VLConfig",
     "Gemma3VLConfig4B",

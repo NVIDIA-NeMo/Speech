@@ -14,22 +14,51 @@
 
 import lightning.pytorch as pl
 
-from nemo.collections.vlm.qwen2vl.model import Qwen2VLConfig2B, Qwen2VLConfig7B, Qwen2VLConfig72B, Qwen2VLModel
+from nemo.collections.vlm.qwen2vl.model import (
+    Qwen2VLConfig2B,
+    Qwen2VLConfig7B,
+    Qwen2VLConfig72B,
+    Qwen2VLModel,
+    Qwen25VLConfig3B,
+    Qwen25VLConfig7B,
+    Qwen25VLConfig32B,
+    Qwen25VLConfig72B,
+)
 
 
 def qwen2vl_2b() -> pl.LightningModule:
     # pylint: disable=C0115,C0116
-    return Qwen2VLModel(Qwen2VLConfig2B())
+    return Qwen2VLModel(Qwen2VLConfig2B(), model_version="qwen2-vl")
 
 
 def qwen2vl_7b() -> pl.LightningModule:
     # pylint: disable=C0115,C0116
-    return Qwen2VLModel(Qwen2VLConfig7B())
+    return Qwen2VLModel(Qwen2VLConfig7B(), model_version="qwen2-vl")
 
 
 def qwen2vl_72b() -> pl.LightningModule:
     # pylint: disable=C0115,C0116
-    return Qwen2VLModel(Qwen2VLConfig72B())
+    return Qwen2VLModel(Qwen2VLConfig72B(), model_version="qwen2-vl")
 
 
-__all__ = ["qwen2vl_2b", "qwen2vl_7b", "qwen2vl_72b"]
+def qwen25vl_3b() -> pl.LightningModule:
+    # pylint: disable=C0115,C0116
+    return Qwen2VLModel(Qwen25VLConfig3B(), model_version="qwen25-vl")
+
+
+def qwen25vl_7b() -> pl.LightningModule:
+    # pylint: disable=C0115,C0116
+    return Qwen2VLModel(Qwen25VLConfig7B(), model_version="qwen25-vl")
+
+
+def qwen25vl_32b() -> pl.LightningModule:
+    # pylint: disable=C0115,C0116
+    return Qwen2VLModel(Qwen25VLConfig32B(), model_version="qwen25-vl")
+
+
+def qwen25vl_72b() -> pl.LightningModule:
+    # pylint: disable=C0115,C0116
+    return Qwen2VLModel(Qwen25VLConfig72B(), model_version="qwen25-vl")
+
+
+__all__ = ["qwen2vl_2b", "qwen2vl_7b", "qwen2vl_72b", "qwen25vl_3b", "qwen25vl_7b", "qwen25vl_32b", "qwen25vl_72b"]

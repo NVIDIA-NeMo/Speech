@@ -45,7 +45,7 @@ from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import (
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
 
 
-def process_vision(processor, images, videos):
+def process_vision(processor, images, videos, fps=None, model_version="qwen2-vl"):
     # pylint: disable=C0115,C0116
     assert isinstance(processor, Qwen2VLImageProcessor), "processor needs to be Qwen2VLImageProcessor"
     if images is not None:
@@ -58,6 +58,22 @@ def process_vision(processor, images, videos):
     if videos is not None:
         videos_inputs = processor(images=None, videos=videos, return_tensors='pt')
         video_grid_thw = videos_inputs["video_grid_thw"]
+        if model_version == "qwen25-vl":
+            if isinstance(fps, (int, float)):
+                second_per_grid_ts = [processor.temporal_patch_size / fps] * len(video_grid_thw)
+            elif hasattr(fps, "__len__") and len(fps) == len(video_grid_thw):
+                second_per_grid_ts = [processor.temporal_patch_size / tmp for tmp in fps]
+            else:
+                raise ValueError(
+                    f"The length of fps ({len(fps) if hasattr(fps, '__len__') else fps}) must be equal to the length "
+                    f"of video_grid_thw ({len(video_grid_thw)}) or fps should be a single number."
+                )
+            second_per_grid_ts = torch.tensor(
+                second_per_grid_ts,
+                dtype=videos_inputs['pixel_values_videos'].dtype,
+                device=videos_inputs['pixel_values_videos'].device,
+            )
+            videos_inputs.update({"second_per_grid_ts": second_per_grid_ts})
     else:
         videos_inputs = {}
         video_grid_thw = None
@@ -322,6 +338,7 @@ class PreloadedSupervisedDataset(Dataset):
         data_config,
         tokenizer,
         image_processor,
+        model_version,
         sequence_length=None,
     ):
         super().__init__()
@@ -348,6 +365,7 @@ class PreloadedSupervisedDataset(Dataset):
 
         self.image_folder = getattr(data_config, "image_folder", None)
         self.video_folder = getattr(data_config, "video_folder", None) or self.image_folder
+        self.model_version = model_version
 
     def __len__(self):
         return len(self.list_data_dict)
@@ -358,7 +376,7 @@ class PreloadedSupervisedDataset(Dataset):
         conv = copy.deepcopy(supported_conv_templates[self.conv_template])
         chatml = self._apply_prompt_templates(conv, source, use_plain=self.conv_template == "plain")
 
-        vision_tensors = self._process_vision(source, self.image_folder, self.video_folder)
+        vision_tensors = self._process_vision(source, self.image_folder, self.video_folder, self.model_version)
         tokens, labels = self._tokenize_and_label(conv, chatml, vision_tensors)
 
         data_dict = dict(
@@ -416,21 +434,26 @@ class PreloadedSupervisedDataset(Dataset):
         for image in images:
             image_inputs.append(fetch_image({"image": image}))
         video_inputs = []
+        video_sample_fps_list = []
         for video in videos:
-            video_inputs.append(fetch_video({"video": video}))
+            video_input, video_sample_fps = fetch_video({"video": video}, return_video_sample_fps=True)
+            video_sample_fps_list.append(video_sample_fps)
+            video_inputs.append(video_input)
         if len(image_inputs) == 0:
             image_inputs = None
         if len(video_inputs) == 0:
             video_inputs = None
-        return image_inputs, video_inputs
+        return image_inputs, video_inputs, video_sample_fps_list
 
-    def _process_vision(self, source, image_folder, video_folder):
+    def _process_vision(self, source, image_folder, video_folder, model_version):
         # normalize image and video paths
         images, videos = self._normalize_vision_paths(source, image_folder, video_folder)
         # leave the I/O and smart_resize to qwen_vl_utils, which is maintained on github by Qwen Team.
-        image_inputs, video_inputs = self._fetch_vision_content(images, videos)
+        image_inputs, video_inputs, video_sample_fps_list = self._fetch_vision_content(images, videos)
         # call Huggingface processor to get patches and size info, which is maintained by Qwen Team as well.
-        vision_tensors = process_vision(self.image_processor, image_inputs, video_inputs)
+        vision_tensors = process_vision(
+            self.image_processor, image_inputs, video_inputs, video_sample_fps_list, model_version
+        )
         return vision_tensors
 
     def _apply_prompt_templates(self, conv, source, use_plain=False):
@@ -551,16 +574,17 @@ class Qwen2VLDataset(PreloadedSupervisedDataset):
         data_config,
         tokenizer,
         image_processor,
+        model_version,
         sequence_length=None,
     ):
 
         if data_path.endswith(".json"):
-            super().__init__(data_path, data_config, tokenizer, image_processor, sequence_length)
+            super().__init__(data_path, data_config, tokenizer, image_processor, model_version, sequence_length)
         elif data_path.endswith(".jsonl"):
             # FIXME: implement support for more data formats
-            super().__init__(None, data_config, tokenizer, image_processor, sequence_length)
+            super().__init__(None, data_config, tokenizer, image_processor, model_version, sequence_length)
             logging.warning("Loading image inputs from Dataset...")
-            if data_config.media_type == 'image':
+            if data_config.image_folder is not None:
                 image_folder = data_config.image_folder
                 for line in open(data_path, "r"):
                     record = json.loads(line)
@@ -638,8 +662,15 @@ class Qwen2VLDataset(PreloadedSupervisedDataset):
             batch['pixel_values_videos'] = None
         if 'video_grid_thw' in instances[0]:
             batch['video_grid_thw'] = torch.cat([instance['video_grid_thw'] for instance in instances], dim=0)
+            if self.model_version == "qwen25-vl":
+                batch['second_per_grid_ts'] = torch.cat(
+                    [instance['second_per_grid_ts'] for instance in instances], dim=0
+                )
+            else:
+                batch['second_per_grid_ts'] = None
         else:
             batch['video_grid_thw'] = None
+            batch['second_per_grid_ts'] = None
 
         tokenizer = self.tokenizer
 
@@ -681,6 +712,7 @@ class Qwen2VLPreloadedDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
+        model_version,
         paths: str | List[str],
         weights: Optional[List[float]] = None,
         data_config: Optional[Qwen2VLDataConfig] = Qwen2VLDataConfig,
@@ -708,6 +740,7 @@ class Qwen2VLPreloadedDataModule(pl.LightningDataModule):
                 # weights must be None if there is only one dataset
                 weights = None
 
+        self.model_version = model_version
         self.paths = paths
         self.weights = weights
         self.data_config = data_config
@@ -744,10 +777,20 @@ class Qwen2VLPreloadedDataModule(pl.LightningDataModule):
             # TODO:
             # rng = torch.Generator().manual_seed(self.seed)
             self._train_ds = Qwen2VLDataset(
-                self.paths[0], self.data_config, self.tokenizer, self.image_processor, sequence_length=self.seq_length
+                self.paths[0],
+                self.data_config,
+                self.tokenizer,
+                self.image_processor,
+                self.model_version,
+                sequence_length=self.seq_length,
             )
             self._validation_ds = Qwen2VLDataset(
-                self.paths[0], self.data_config, self.tokenizer, self.image_processor, sequence_length=self.seq_length
+                self.paths[0],
+                self.data_config,
+                self.tokenizer,
+                self.image_processor,
+                self.model_version,
+                sequence_length=self.seq_length,
             )
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:

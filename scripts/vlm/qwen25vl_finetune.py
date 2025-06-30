@@ -13,25 +13,14 @@
 # limitations under the License.
 
 """
-Example:
-  # mock dataset:
-  torchrun --nproc_per_node=8 scripts/vlm/qwen2vl_finetune.py \
-  --devices=8 --tp_size=2 --data_type=mock
-
-  # real dataset:
-   torchrun --nproc_per_node=8 /path/to/NeMo/scripts/vlm/qwen2vl_finetune.py  \
-     --data_type=qwen2vl \
-     --data_path=/path/to/datasets/train.json \
-     --image_folder "/path/to/dataset/images" \
-     --video_folder "/path/to/dataset/video" \
-     --num_nodes 1 \
-     --log_dir "/path/to/experiments/qwen2vl_finetune" \
-     --devices=8 \
-     --tp_size 2 --pp_size 1 \
-     --gbs 32 --mbs 1 \
-     --wandb_project=qwen2vl_demo \
-     --name=qwen2vl_finetune \
-     --restore_path "/path/to/experiments/qwen2vl_checkpoint"
+# qwen2.5-3B with mock dataset
+torchrun --nproc_per_node=2 qwen25vl_finetune.py --devices=2 --tp_size=1 --data_type=mock
+# qwen2.5-7B with mock dataset
+torchrun --nproc_per_node=8 qwen25vl_finetune.py --devices=8 --tp_size=4 --data_type=mock --model_size=7B
+# qwen2.5-3B with with real dataset
+torchrun --nproc_per_node=2 /opt/NeMo/scripts/vlm/qwen25vl_finetune.py \
+    --data_type=qwen25vl --data_path=/datasets/sharegpt_test2.json \
+    --gbs=2 --mbs=1 --devices=2 --tp=1 --max_sequence_length=8192
 """
 
 import argparse
@@ -39,20 +28,20 @@ import argparse
 import torch
 from lightning.pytorch.loggers import WandbLogger
 from megatron.core.optimizer import OptimizerConfig
+from transformers import Qwen2Tokenizer
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
 
 from nemo import lightning as nl
 from nemo.collections import llm, vlm
-from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.vlm import Qwen2VLDataConfig
-from nemo.collections.vlm.qwen2vl.data.task_encoder import Qwen2VLTaskEncoder
+from nemo.collections.vlm.qwen2vl.model import Qwen25VLVisionConfig
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils.exp_manager import TimingCallback
 
 
 def main(args):
-    # pylint: disable=C0115,C0116
+    # pylint: disable=C0115,C0116,C0301
 
     # Global and micro batch sizes
     gbs = args.gbs
@@ -60,19 +49,22 @@ def main(args):
     max_steps = args.max_steps
 
     SIZE_INFO_MAP = {
-        "2B": {"hf_model_name": "Qwen/Qwen2-VL-2B-Instruct", "llmconfig_class": llm.Qwen2Config1P5B},
-        "7B": {"hf_model_name": "Qwen/Qwen2-VL-7B-Instruct", "llmconfig_class": llm.Qwen2Config7B},
+        "3B": {"hf_model_name": "Qwen/Qwen2.5-VL-3B-Instruct", "llmconfig_class": llm.Qwen25Config3B},
+        "7B": {"hf_model_name": "Qwen/Qwen2.5-VL-7B-Instruct", "llmconfig_class": llm.Qwen25Config7B},
+        "32B": {"hf_model_name": "Qwen/Qwen2.5-VL-32B-Instruct", "llmconfig_class": llm.Qwen25Config32B},
+        "72B": {"hf_model_name": "Qwen/Qwen2.5-VL-72B-Instruct", "llmconfig_class": llm.Qwen25Config72B},
     }
-    model_size = "2B"
+
+    model_size = args.model_size
     hf_model_name, llm_config_class = (
         SIZE_INFO_MAP[model_size]["hf_model_name"],
         SIZE_INFO_MAP[model_size]["llmconfig_class"],
     )
 
     max_sequence_length = args.max_sequence_length
-    tokenizer = AutoTokenizer(hf_model_name)
-    image_processor = Qwen2VLImageProcessor()
-    if args.data_type == "qwen2vl":
+    tokenizer = Qwen2Tokenizer.from_pretrained(hf_model_name)
+
+    if args.data_type == "qwen25vl":
         # Data configuration
         data_config = Qwen2VLDataConfig(
             image_folder=args.image_folder,
@@ -80,10 +72,11 @@ def main(args):
             conv_template="qwen2vl",
             image_process_mode="square",
         )
+        image_processor = Qwen2VLImageProcessor()
         # Data module setup
         data = vlm.Qwen2VLPreloadedDataModule(
             paths=args.data_path,
-            model_version="qwen2-vl",
+            model_version="qwen25-vl",
             data_config=data_config,
             seq_length=max_sequence_length,
             decoder_seq_length=None,
@@ -93,27 +86,8 @@ def main(args):
             image_processor=image_processor,
             num_workers=1,
         )
-    elif args.data_type == "energon":
-        from nemo.collections.multimodal.data.energon import EnergonMultiModalDataModule
-
-        # Initialize the data module
-        use_packed_sequence = False
-        data = EnergonMultiModalDataModule(
-            path=args.data_path,
-            tokenizer=tokenizer,
-            image_processor=image_processor,
-            seq_length=max_sequence_length,
-            micro_batch_size=mbs,
-            global_batch_size=gbs,
-            num_workers=1,
-            task_encoder=Qwen2VLTaskEncoder(
-                tokenizer=tokenizer,
-                image_processor=image_processor,
-                max_padding_length=int(max_sequence_length * 0.9),
-            ),
-            packing_buffer_size=200 if use_packed_sequence else None,
-        )
     elif args.data_type == "mock":
+        image_processor = Qwen2VLImageProcessor()
         data = vlm.Qwen2VLMockDataModule(
             seq_length=max_sequence_length,
             global_batch_size=gbs,
@@ -123,24 +97,20 @@ def main(args):
             num_workers=1,
         )
     else:
-        raise ValueError(f"Data type {args.data_type} not supported")
+        raise ValueError(f"Data type {args.data_type} is not supported")
 
     # Submodules configurations
-    language_transformer_config = llm_config_class(
-        seq_length=max_sequence_length,
-    )
-
-    vision_transformer_config = vlm.Qwen2VLVisionConfig()
-
+    language_transformer_config = llm_config_class(seq_length=max_sequence_length)
+    vision_transformer_config = Qwen25VLVisionConfig()
     vision_projection_config = vlm.MultimodalProjectorConfig(
         projector_type=args.projector_type,
-        input_size=vision_transformer_config.ffn_hidden_size,
+        input_size=vision_transformer_config.hidden_size * (vision_transformer_config.spatial_merge_size**2),
         hidden_size=language_transformer_config.hidden_size,
-        ffn_hidden_size=vision_transformer_config.ffn_hidden_size,
+        ffn_hidden_size=vision_transformer_config.hidden_size * (vision_transformer_config.spatial_merge_size**2),
     )
 
-    # Qwen2VL model configuration
-    qwen2vl_config = vlm.Qwen2VLConfig(
+    # Qwen25VL model configuration
+    qwen25vl_config = vlm.Qwen2VLConfig(
         language_transformer_config=language_transformer_config,
         vision_transformer_config=vision_transformer_config,
         vision_projection_config=vision_projection_config,
@@ -149,7 +119,7 @@ def main(args):
         freeze_vision_model=True,
     )
 
-    model = vlm.Qwen2VLModel(qwen2vl_config, model_version="qwen2-vl", tokenizer=data.tokenizer)
+    model = vlm.Qwen2VLModel(qwen25vl_config, model_version="qwen25-vl", tokenizer=data.tokenizer)
 
     from megatron.core.distributed import DistributedDataParallelConfig
 
@@ -167,14 +137,12 @@ def main(args):
             overlap_param_gather=True,
             average_in_collective=True,
         ),
-        ckpt_load_strictness="log_all",
     )
 
     # Checkpoint callback setup
     checkpoint_callback = nl.ModelCheckpoint(
         save_last=True,
         monitor="reduced_train_loss",
-        save_optim_on_train_end=False,
         save_top_k=2,
         every_n_train_steps=1000,
         dirpath=args.log_dir,
@@ -252,10 +220,10 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="QWEN2VL Model Training Script")
+    parser = argparse.ArgumentParser(description="QWEN2.5VL Model Training Script")
 
     # Argument parsing
-    parser.add_argument("--data_type", type=str, required=False, default="mock", help="mock | qwen2vl | energon")
+    parser.add_argument("--data_type", type=str, required=False, default="mock", help="mock | qwen25vl")
     parser.add_argument("--data_path", type=str, required=False, default=None, help="Path to the dataset JSON file")
     parser.add_argument("--image_folder", type=str, required=False, default=None, help="Path to the image folder")
     parser.add_argument(
@@ -281,7 +249,7 @@ if __name__ == "__main__":
     parser.add_argument("--pp_size", type=int, required=False, default=1)
     parser.add_argument("--encoder_pp_size", type=int, required=False, default=0)
     parser.add_argument("--projector_type", type=str, required=False, default="mcore_mlp")
-    parser.add_argument("--name", type=str, required=False, default="qwen2vl_finetune")
+    parser.add_argument("--name", type=str, required=False, default="qwen25vl_pretrain")
     parser.add_argument("--peft", type=str, default='none', help="none | lora")
     parser.add_argument("--wandb_project", type=str, required=False, default=None)
     parser.add_argument("--gbs", type=int, required=False, default=64, help="Global batch size")
@@ -291,6 +259,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_sequence_length", type=int, required=False, default=4096, help="Maximum sequence length"
     )
+    parser.add_argument("--model_size", type=str, required=False, default="3B")
 
     args = parser.parse_args()
     main(args)

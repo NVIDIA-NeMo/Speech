@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Tuple
 
 import lightning.pytorch as L
 import torch
@@ -38,7 +38,7 @@ from nemo.collections.llm.gpt.model.qwen2 import Qwen2Config
 from nemo.collections.vlm.layer_specs import get_layer_spec_te
 from nemo.collections.vlm.neva.model.base import MODEL_CONFIG_ATTR, restore_model_weights
 from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import IGNORE_INDEX, IMAGE_TOKEN_INDEX, VIDEO_TOKEN_INDEX
-from nemo.collections.vlm.qwen2vl.model.vision import Qwen2VisionModel
+from nemo.collections.vlm.qwen2vl.model.vision import Qwen2VisionModel, Qwen25VisionModel
 from nemo.collections.vlm.vision import MultimodalProjectorConfig
 from nemo.collections.vlm.vision.base import get_image_sequence_length
 from nemo.lightning import io
@@ -47,7 +47,7 @@ from nemo.lightning.pytorch.optim import MegatronOptimizerModule, OptimizerModul
 from nemo.utils import logging
 
 
-def qwen2vl_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
+def qwen2vl_data_step(dataloader_iter, model_version) -> Dict[str, torch.Tensor]:
     """Qwen2VL Data Step"""
     from megatron.core import parallel_state
 
@@ -61,7 +61,19 @@ def qwen2vl_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
         _batch = batch
 
     required_keys = set()
-    required_keys.update(("input_ids", "pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw"))
+    if model_version == "qwen2-vl":
+        required_keys.update(("input_ids", "pixel_values", "image_grid_thw", "pixel_values_videos", "video_grid_thw"))
+    elif model_version == "qwen25-vl":
+        required_keys.update(
+            (
+                "input_ids",
+                "pixel_values",
+                "image_grid_thw",
+                "pixel_values_videos",
+                "video_grid_thw",
+                "second_per_grid_ts",
+            )
+        )
     if parallel_state.is_pipeline_first_stage():
         required_keys.update(("position_ids",))
     if parallel_state.is_pipeline_last_stage():
@@ -78,7 +90,6 @@ def qwen2vl_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
     }
     # slice batch along sequence dimension for context parallelism
     output = get_batch_on_this_cp_rank(_batch)
-
     return output
 
 
@@ -90,13 +101,12 @@ def qwen2vl_forward_step(model, batch) -> torch.Tensor:
         "image_grid_thw": batch.get("image_grid_thw", None),
         "pixel_values_videos": batch.get("pixel_values_videos", None),
         "video_grid_thw": batch.get("video_grid_thw", None),
+        "second_per_grid_ts": batch.get("second_per_grid_ts", None),
         "loss_mask": batch.get("loss_mask", None),
         "labels": batch.get("labels", None),
     }
-
     if 'cu_seqlens' in batch:
         forward_args['packed_seq_params'] = get_packed_seq_params(batch)
-
     return model(**forward_args)
 
 
@@ -139,6 +149,7 @@ class Qwen2VLVisionConfig(TransformerConfig, io.IOMixin):
     apply_rope_fusion: bool = False
     layernorm_epsilon: float = 1e-6
     transformer_layer_spec: ModuleSpec = None
+    model_version: str = "qwen2-vl"
 
     def configure_model(self) -> "Qwen2VisionModel":
         # pylint: disable=C0115,C0116
@@ -163,11 +174,70 @@ class Qwen2VLVisionConfig(TransformerConfig, io.IOMixin):
 
 
 @dataclass
+class Qwen25VLVisionConfig(TransformerConfig, io.IOMixin):
+    """Qwen2.5VL Vision Model Config"""
+
+    add_class_token: bool = False
+    class_token_len: int = 1
+    patch_dim: int = 14
+    img_h: int = 336
+    img_w: int = 336
+    num_layers: int = 32
+    num_attention_heads: int = 16
+    add_bias_linear: bool = True
+    add_qkv_bias: bool = True
+    embed_dim: int = 1280
+    hidden_size: int = 1280
+    spatial_merge_size: int = 2
+    spatial_patch_size: int = 14
+    temporal_patch_size: int = 2
+    hidden_dropout: float = 0.0
+    attention_dropout: float = 0.0
+    ffn_hidden_size: int = 3420
+    gated_linear_unit: bool = True
+    activation_func: Callable = torch.nn.functional.silu  # Qwen 2.5-VL uses swiGLU as activation function
+    kv_channels: int = 80
+    num_query_groups: int = 16
+    layernorm_zero_centered_gamma: bool = False
+    apply_query_key_layer_scaling: bool = False
+    bias_activation_fusion: bool = False
+    bias_dropout_fusion: bool = False
+    attention_softmax_in_fp32: bool = True
+    normalization: str = 'RMSNorm'  # set the normalization to RMSNorm for Qwen2.5-VL
+    apply_rope_fusion: bool = False
+    layernorm_epsilon: float = 1e-6
+    transformer_layer_spec: ModuleSpec = None
+    fullatt_block_indexes: List[int] = field(default_factory=lambda: [7, 15, 23, 31])
+    model_version: str = "qwen25-vl"
+
+    def configure_model(self) -> "Qwen25VisionModel":
+        # pylint: disable=C0115,C0116
+        transformer_layer_spec = self.transformer_layer_spec
+        if not isinstance(transformer_layer_spec, ModuleSpec):
+            transformer_layer_spec = get_layer_spec_te(is_vit=True)
+
+        model = Qwen25VisionModel(
+            self,
+            transformer_layer_spec,
+            add_class_token=self.add_class_token,
+            class_token_len=self.class_token_len,
+            patch_dim=self.patch_dim,
+            temporal_patch_size=self.temporal_patch_size,
+            spatial_merge_size=self.spatial_merge_size,
+            spatial_patch_size=self.spatial_patch_size,
+            img_h=self.img_h,
+            img_w=self.img_w,
+        )
+
+        return model
+
+
+@dataclass
 class Qwen2VLConfig(TransformerConfig, io.IOMixin):
     """Qwen2VL Model Base Config"""
 
     language_transformer_config: Optional[Qwen2Config] = None
-    vision_transformer_config: Optional[Qwen2VLVisionConfig] = None
+    vision_transformer_config: Optional[Qwen2VLVisionConfig | Qwen25VLVisionConfig] = None
     vision_projection_config: Optional[MultimodalProjectorConfig] = None
 
     drop_vision_class_token: bool = False
@@ -263,6 +333,8 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
         language_transformer_config = config.language_transformer_config
         vision_transformer_config = config.vision_transformer_config
         vision_projection_config = config.vision_projection_config
+        self.model_version = vision_transformer_config.model_version
+        assert self.model_version is not None
 
         self.pre_process = pre_process
         self.post_process = post_process
@@ -328,9 +400,10 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
 
     def get_rope_index(
         self,
-        input_ids: torch.LongTensor,
+        input_ids: Optional[torch.LongTensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
+        second_per_grid_ts: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -339,7 +412,7 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
         Explanation:
             Each embedding sequence contains vision embedding and text embedding or just contains text embedding.
 
-            For pure text embedding sequence, the rotary position embedding has no difference with mordern LLMs.
+            For pure text embedding sequence, the rotary position embedding has no difference with modern LLMs.
             Examples:
                 input_ids: [T T T T T], here T is for text.
                 temporal position_ids: [0, 1, 2, 3, 4]
@@ -347,8 +420,9 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
                 width position_ids: [0, 1, 2, 3, 4]
 
             For vision and text embedding sequence, we calculate 3D rotary position embedding for vision part
-            and 1D rotary position embeddin for text part.
-            Examples:
+            and 1D rotary position embedding for text part.
+            Qwen2-VL and Qwen25-VL has differnt type:
+            Qwen2-VL Examples:
                 Assume we have a video input with 3 temporal patches, 2 height patches and 2 width patches.
                 input_ids: [V V V V V V V V V V V V T T T T T], here V is for vision.
                 vision temporal position_ids: [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
@@ -357,16 +431,40 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
                 text temporal position_ids: [3, 4, 5, 6, 7]
                 text height position_ids: [3, 4, 5, 6, 7]
                 text width position_ids: [3, 4, 5, 6, 7]
+            Qwen25-VL Examples:
+                Temporal (Time): 3 patches, representing different segments of the video in time.
+                Height: 2 patches, dividing each frame vertically.
+                Width: 2 patches, dividing each frame horizontally.
+                We also have some important parameters:
+                fps (Frames Per Second): The video's frame rate, set to 1. This means one frame is processed each
+                    second.
+                tokens_per_second: This is a crucial parameter. It dictates how many "time-steps" or "temporal tokens"
+                    are conceptually packed into a one-second interval of the video. In this case, we have 25 tokens
+                    per second. So each second of the video will be represented with 25 separate time points. It
+                    essentially defines the temporal granularity.
+                temporal_patch_size: The number of frames that compose one temporal patch. Here, it's 2 frames.
+                interval: The step size for the temporal position IDs, calculated as
+                    tokens_per_second * temporal_patch_size / fps. In this case, 25 * 2 / 1 = 50. This means that each
+                    temporal patch will be have a difference of 50 in the temporal position IDs.
+                input_ids: [V V V V V V V V V V V V T T T T T], here V is for vision.
+                vision temporal position_ids: [0, 0, 0, 0, 50, 50, 50, 50, 100, 100, 100, 100]
+                vision height position_ids: [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1]
+                vision width position_ids: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+                text temporal position_ids: [101, 102, 103, 104, 105]
+                text height position_ids: [101, 102, 103, 104, 105]
+                text width position_ids: [101, 102, 103, 104, 105]
                 Here we calculate the text start position_ids as the max vision position_ids plus 1.
 
         Args:
             input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-                Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should
-                you provide it.
+                Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you
+                provide it.
             image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
                 The temporal, height and width of feature shape of each image in LLM.
             video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
                 The temporal, height and width of feature shape of each video in LLM.
+            second_per_grid_ts (`torch.Tensor` of shape `(num_videos)`, *optional*):
+                The time interval (in seconds) for each grid along the temporal dimension in the 3D position IDs.
             attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
                 Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
 
@@ -381,6 +479,9 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
         image_token_id = IMAGE_TOKEN_INDEX
         video_token_id = VIDEO_TOKEN_INDEX
         vision_start_token_id = 151652  # self.config.vision_start_token_id
+        tokens_per_second = 2
+        if second_per_grid_ts is not None:
+            second_per_grid_ts = second_per_grid_ts.cpu()
 
         mrope_position_deltas = []
         if image_grid_thw is not None or video_grid_thw is not None:
@@ -391,8 +492,10 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
                 3, input_ids.shape[0], input_ids.shape[1], dtype=input_ids.dtype, device=input_ids.device
             )
             image_index, video_index = 0, 0
+            attention_mask = attention_mask.to(total_input_ids.device)
             for i, input_ids_item in enumerate(total_input_ids):
                 _input_ids = input_ids_item[attention_mask[i] == 1]
+                image_nums, video_nums = 0, 0
                 vision_start_indices = torch.argwhere(_input_ids == vision_start_token_id).squeeze(1)
                 vision_tokens = _input_ids[vision_start_indices + 1]
                 image_nums = (vision_tokens == image_token_id).sum()
@@ -416,6 +519,7 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
                             image_grid_thw[image_index][1],
                             image_grid_thw[image_index][2],
                         )
+                        second_per_grid_t = 0
                         image_index += 1
                         remain_images -= 1
                         ed = ed_image
@@ -425,6 +529,11 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
                             video_grid_thw[video_index][1],
                             video_grid_thw[video_index][2],
                         )
+                        if self.model_version == "qwen25-vl":
+                            if second_per_grid_ts is not None:
+                                second_per_grid_t = second_per_grid_ts[video_index]
+                            else:
+                                second_per_grid_t = 1.0
                         video_index += 1
                         remain_videos -= 1
                         ed = ed_video
@@ -438,7 +547,14 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
                     st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
                     llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
 
-                    t_index = torch.arange(llm_grid_t).view(-1, 1).expand(-1, llm_grid_h * llm_grid_w).flatten()
+                    if self.model_version == "qwen2-vl":
+                        t_index = torch.arange(llm_grid_t).view(-1, 1).expand(-1, llm_grid_h * llm_grid_w).flatten()
+                    elif self.model_version == "qwen25-vl":
+                        range_tensor = torch.arange(llm_grid_t).view(-1, 1)
+                        expanded_range = range_tensor.expand(-1, llm_grid_h * llm_grid_w)
+                        time_tensor = expanded_range * second_per_grid_t * tokens_per_second
+                        time_tensor_long = time_tensor.long()
+                        t_index = time_tensor_long.flatten()
                     h_index = torch.arange(llm_grid_h).view(1, -1, 1).expand(llm_grid_t, -1, llm_grid_w).flatten()
                     w_index = torch.arange(llm_grid_w).view(1, 1, -1).expand(llm_grid_t, llm_grid_h, -1).flatten()
                     llm_pos_ids_list.append(torch.stack([t_index, h_index, w_index]) + text_len + st_idx)
@@ -488,6 +604,7 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
         runtime_gather_output: Optional[bool] = None,
+        second_per_grid_ts: Optional[torch.FloatTensor] = None,
     ) -> torch.Tensor:
         """Forward function of the Qwen2VL model.
 
@@ -532,12 +649,20 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
         elif self.add_encoder and has_images:
             pixel_values = pixel_values.to(next(self.vision_model.parameters()).dtype)
             image_embeddings = self.vision_model(pixel_values, grid_thw=image_grid_thw)  # [bs, img_seq_len, h_vision]
+            window_index = self.vision_model.window_index if self.model_version == "qwen25-vl" else None
 
             if self._drop_vision_class_token:
                 class_token_len = getattr(self.vision_model, "class_token_len", 1)
                 image_embeddings = image_embeddings[:, class_token_len:, :]
+                if self.model_version == "qwen25-vl":
+                    window_index = [idx - class_token_len for idx in window_index if idx >= class_token_len]
+                else:
+                    window_index = None
 
             image_embeddings = self.vision_projection(image_embeddings)
+            if self.model_version == "qwen25-vl":
+                reverse_indices = torch.argsort(window_index)
+                image_embeddings = image_embeddings[reverse_indices, :]
 
             # TODO: Support batched inference.
             # In inference, the language model KV cache will be updated for image token positions.
@@ -581,7 +706,9 @@ class MCoreQwen2VLModel(MCoreLLaVAModel):
                 position_ids = torch.nn.functional.pad(position_ids, (0, padded_seq_len))
 
         if position_ids is None and input_ids is not None:
-            position_ids, _ = self.get_rope_index(input_ids, image_grid_thw, video_grid_thw, attention_mask)
+            position_ids, _ = self.get_rope_index(
+                input_ids, image_grid_thw, video_grid_thw, second_per_grid_ts, attention_mask
+            )
 
         # Create the language_embeddings (if this is the first language model stage).
         if self.pre_process:
@@ -807,6 +934,7 @@ class Qwen2VLModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin)
     def __init__(
         self,
         config: Qwen2VLConfig,
+        model_version: str,
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
         model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
@@ -820,6 +948,8 @@ class Qwen2VLModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin)
         self.model_transform = model_transform
         self._training_loss_reduction = None
         self._validation_loss_reduction = None
+        self.model_version = model_version
+        assert self.model_version in ["qwen2-vl", "qwen25-vl"], "model_version only supports qwen2-vl and qwen25-vl."
 
     def configure_model(self, vp_stage: Optional[int] = None) -> None:
         # pylint: disable=C0115,C0116
@@ -838,6 +968,7 @@ class Qwen2VLModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin)
         pixel_values_videos: Optional[torch.FloatTensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
+        second_per_grid_ts: Optional[torch.FloatTensor] = None,
     ) -> torch.Tensor:
         # pylint: disable=C0115,C0116
         output_tensor = self.module(
@@ -851,13 +982,14 @@ class Qwen2VLModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin)
             pixel_values_videos=pixel_values_videos,
             image_grid_thw=image_grid_thw,
             video_grid_thw=video_grid_thw,
+            second_per_grid_ts=second_per_grid_ts,
         )
 
         return output_tensor
 
     def data_step(self, dataloader_iter) -> Dict[str, torch.Tensor]:
         # pylint: disable=C0115,C0116
-        return self.config.data_step_fn(dataloader_iter)
+        return self.config.data_step_fn(dataloader_iter, self.model_version)
 
     def forward_step(self, batch) -> torch.Tensor:
         # pylint: disable=C0115,C0116

@@ -113,33 +113,72 @@ You can also specify the files to be transcribed inside a manifest file, and pas
 ``dataset_manifest=<path to manifest specifying audio files to transcribe>`` instead of ``audio_dir``.
 
 
-Incorporate a language model (LM) to improve ASR transcriptions
----------------------------------------------------------------
+Improve ASR transcriptions by incorporating a language model (LM)
+-----------------------------------------------------------------
 
-You can often get a boost to transcription accuracy by using a Language Model to help choose words that are more likely
-to be spoken in a sentence.
+You can often improve transcription accuracy by incorporating a language model to guide the selection of more probable words in context.
+Even a simple n-gram language model can yield a noticeable improvement.
 
-You can get a good improvement in transcription accuracy even using a simple N-gram LM.
+NeMo supports GPU-accelerated language model fusion for all major ASR model types, including CTC, RNN-T, TDT, and AED. 
+Customization is available during both greedy and beam decoding. After :ref:`training <train-ngram-lm>` an n-gram LM, you can apply it using the
+`speech_to_text_eval.py <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/speech_to_text_eval.py>`_ script.
 
-After :ref:`training <train-ngram-lm>` an N-gram LM, you can use it for transcribing audio as follows:
+**To configure the evaluation:**
 
-1. Install the OpenSeq2Seq beam search decoding and KenLM libraries using the `install_beamsearch_decoders script <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`_.
-2. Perform transcription using the `eval_beamsearch_ngram script <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_ctc.py>`_:
+1. Select the pretrained model:
+   Use the `pretrained_name` option or provide a local path using `model_path`.
+
+2. Set up the N-gram language model:
+   Provide the path to the NGPU-LM model with `ngram_lm_model`, and set LM weight with `ngram_lm_alpha`.
+
+3. Choose the decoding strategy:
+
+   - CTC models: `greedy_batch` or `beam_batch`
+   - RNN-T models: `greedy_batch`, `malsd_batch`, or `maes_batch`
+   - TDT models: `greedy_batch` or `malsd_batch`
+   - AED models: `beam` (set `beam_size=1` for greedy decoding)
+
+4. Run the evaluation script.
+
+**Example: CTC Greedy Decoding with NGPU-LM**
 
 .. code-block:: bash
 
-    python eval_beamsearch_ngram.py nemo_model_file=<path to the .nemo file of the model> \
-        input_manifest=<path to the evaluation JSON manifest file \
-        kenlm_model_file=<path to the binary KenLM model> \
-        beam_width=[<list of the beam widths, separated with commas>] \
-        beam_alpha=[<list of the beam alphas, separated with commas>] \
-        beam_beta=[<list of the beam betas, separated with commas>] \
-        preds_output_folder=<optional folder to store the predictions> \
-        probs_cache_file=null \
-        decoding_mode=beamsearch_ngram \
-        decoding_strategy="<Beam library such as beam, pyctcdecode or flashlight>"
+    python examples/asr/speech_to_text_eval.py \
+        pretrained_name=nvidia/parakeet-ctc-1.1b \
+        amp=false \
+        amp_dtype=bfloat16 \
+        matmul_precision=high \
+        compute_dtype=bfloat16 \
+        presort_manifest=true \
+        cuda=0 \
+        batch_size=32 \
+        dataset_manifest=<path to the evaluation JSON manifest file> \
+        ctc_decoding.greedy.ngram_lm_model=<path to the .nemo/.ARPA file of the NGPU-LM model> \
+        ctc_decoding.greedy.ngram_lm_alpha=0.2 \
+        ctc_decoding.greedy.allow_cuda_graphs=True \
+        ctc_decoding.strategy="greedy_batch"
 
-See more information about LM decoding :doc:`here <./asr_language_modeling_and_customization>`.
+**Example: RNN-T Beam Search with NGPU-LM**
+
+.. code-block:: bash
+
+    python examples/asr/speech_to_text_eval.py \
+        pretrained_name=nvidia/parakeet-rnnt-1.1b \
+        amp=false \
+        amp_dtype=bfloat16 \
+        matmul_precision=high \
+        compute_dtype=bfloat16 \
+        presort_manifest=true \
+        cuda=0 \
+        batch_size=16 \
+        dataset_manifest=<path to the evaluation JSON manifest file> \
+        rnnt_decoding.beam.ngram_lm_model=<path to the .nemo/.ARPA file of the NGPU-LM model> \
+        rnnt_decoding.beam.ngram_lm_alpha=0.3 \
+        rnnt_decoding.beam.beam_size=10 \
+        rnnt_decoding.strategy="malsd_batch"
+
+See detailed documentation here: :ref:`asr_language_modeling_and_customization`.
 
 Use real-time transcription
 ---------------------------

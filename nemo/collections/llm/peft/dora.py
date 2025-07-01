@@ -120,7 +120,10 @@ class DoRALinear(AdapterWrapper):
                 self.adapter.dropout(layernorm_output) - layernorm_output
             )[0]
 
-        return mag_norm_scale * (linear_output + adapter_output) + dropout_correction, bias
+        return (
+            mag_norm_scale * (linear_output + adapter_output.reshape(linear_output.shape)) + dropout_correction,
+            bias,
+        )
 
 
 @dataclass

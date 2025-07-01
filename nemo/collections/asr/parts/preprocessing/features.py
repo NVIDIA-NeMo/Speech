@@ -309,6 +309,7 @@ class FilterbankFeatures(nn.Module):
         self.n_fft = n_fft or 2 ** math.ceil(math.log2(self.win_length))
         self.stft_pad_amount = (self.n_fft - self.hop_length) // 2 if exact_pad else None
         self.exact_pad = exact_pad
+        self.sample_rate = sample_rate
 
         if exact_pad:
             logging.info("STFT using exact pad")

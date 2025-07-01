@@ -58,11 +58,9 @@ def model():
         "audio_locator_tag": AUDIO_LOCATOR_TAG,
         "perception": {
             "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
+            "output_dim": 2048,
             "modality_adapter": {
-                "_target_": "nemo.collections.asr.modules.ConformerEncoder",
-                "feat_in": 1024,
-                "feat_out": -1,
-                "n_layers": 1,
+                "_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector",
                 "d_model": 1024,
             },
         },
@@ -151,7 +149,43 @@ def test_salm_generation(model):
         ],
         audios=torch.randn(1, 16000),
         audio_lens=torch.tensor([16000]),
+        max_new_tokens=4,
+    )
+    assert answer.shape == (1, 4)
+    assert answer.dtype == torch.long
+    assert (answer >= 0).all()
+    assert (answer < model.text_vocab_size).all()
+
+
+def test_salm_generation_audios_via_prompt(model, tmp_path):
+    audio_path = tmp_path / "audio.wav"
+    dummy_cut(0, with_data=True).save_audio(audio_path)
+
+    answer = model.generate(
+        prompts=[
+            [{"role": "user", "content": f"Repeat after me: {AUDIO_LOCATOR_TAG}", "audio": [audio_path]}],
+            [
+                {
+                    "role": "user",
+                    "content": f"Repeat after me: {AUDIO_LOCATOR_TAG} and {AUDIO_LOCATOR_TAG}",
+                    "audio": [audio_path, audio_path],
+                }
+            ],
+        ],
         generation_config=GenerationConfig(max_new_tokens=4),
+    )
+    assert answer.shape == (2, 4)
+    assert answer.dtype == torch.long
+    assert (answer >= 0).all()
+    assert (answer < model.text_vocab_size).all()
+
+
+def test_salm_generation_prompts_as_tensor(model):
+    answer = model.generate(
+        prompts=torch.tensor([[1, 2, 3, 4, 5, 6, 7, model.audio_locator_tag_id]]),
+        audios=torch.randn(1, 16000),
+        audio_lens=torch.tensor([16000]),
+        max_new_tokens=4,
     )
     assert answer.shape == (1, 4)
     assert answer.dtype == torch.long

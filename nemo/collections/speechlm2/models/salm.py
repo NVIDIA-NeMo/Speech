@@ -14,9 +14,11 @@
 import warnings
 from collections import defaultdict
 from itertools import repeat
+from pathlib import Path
 from typing import Any, Optional
 
 import torch
+from lhotse import CutSet
 from lhotse.dataset.collation import collate_vectors
 from lightning import LightningModule
 from omegaconf import DictConfig
@@ -102,10 +104,13 @@ class SALM(LightningModule, HFHubMixin):
     @property
     def token_equivalent_duration(self) -> float:
         """
-        Returns the audio duration corresponding to a single frame/token at the output
-        of ``self.percetion``.
+        Returns the audio duration corresponding to a single frame/token at the output of ``self.perception``.
         """
         return self.perception.token_equivalent_duration
+
+    @property
+    def sampling_rate(self) -> int:
+        return self.perception.preprocessor.featurizer.sample_rate
 
     def forward(
         self,
@@ -289,17 +294,60 @@ class SALM(LightningModule, HFHubMixin):
         audios: torch.Tensor = None,
         audio_lens: torch.Tensor = None,
         generation_config: GenerationConfig = None,
+        **generation_kwargs,
     ) -> torch.Tensor:
         """
         Generate LLM answers given text or mixed text+audio prompts.
+
+        Example 1. High-level API using ``prompts`` to provide both text and audio::
+
+            >>> answer_ids = model.generate(
+            ...    prompts=[
+            ...        [
+            ...             {
+            ...                 "role": "user",
+            ...                 "content": f"Transcribe the following: {model.audio_locator_tag}",
+            ...                 "audio": ["path/to/audio.wav"],
+            ...             }
+            ...         ]
+            ...    ],
+            ...    max_new_tokens=128,
+            ... )
+
+        You may also include a ``transformers.GenerationConfig`` object to customize decoding strategy::
+
+            >>> answer_ids = model.generate(..., generation_config=GenerationConfig(do_sample=True, num_beams=5))
+
+        Example 2. Lower-level API, using ``prompts`` for the text part,
+        and pre-loaded ``audio`` and ``audio_lens`` tensors::
+
+            >>> answer_ids = model.generate(
+            ...    prompts=[
+            ...        [{"role": "user", "content": f"Transcribe the following: {model.audio_locator_tag}"}],
+            ...        [{"role": "user", "content": f"Transcribe the following in Polish: {model.audio_locator_tag}"}],
+            ...    ],
+            ...    audios=audios,  # torch.Tensor, float32, of shape (batch, time)
+            ...    audio_lens=audio_lens,  # torch.Tensor, int64, of shape (batch,)
+            ...    max_new_tokens=128,
+            ... )
+
+        Example 3. Lower-level API, using pre-tokenized and pre-formatted ``prompts`` for the text part,
+        and pre-loaded ``audio`` and ``audio_lens`` tensors::
+
+            >>> answer_ids = model.generate(
+            ...    prompts=prompts,  # torch.Tensor, int64, of shape (batch, num_tokens)
+            ...    audios=audios,  # torch.Tensor, float32, of shape (batch, time)
+            ...    audio_lens=audio_lens,  # torch.Tensor, int64, of shape (batch,)
+            ...    max_new_tokens=128,
+            ... )
 
         Inputs:
             prompts: batch of prompts Tensor or as list[dict] each in the following format
                 [
                   # batch example id 0
-                  [{"role": "user"}, "slots": {"message": "Repeat after me, translating to Polish.<audio_locator_tag>"}]
+                  [{"role": "user"}, "slots": {"message": f"Transcribe the following: {model.audio_locator_tag}"}]
                   # batch example id 1
-                  [{"role": "user"}, "slots": {"message": "Repeat after me.<audio_locator_tag>"}]
+                  [{"role": "user"}, "slots": {"message": f"Transcribe the following in Polish: {model.audio_locator_tag}"}]
                 ]
                 "role" is LLM-specific, you can pass multiple turns as well.
                 If ``prompts`` is a Tensor, we assume it was already formatted in the relevant chat template
@@ -309,11 +357,19 @@ class SALM(LightningModule, HFHubMixin):
                 Each prompt can have multiple audios.
             audio_lens: Optional. Length of each audio example.
             generation_config: Optional HuggingFace GenerationConfig object.
+            generation_kwargs: Keyword arguments passed directly to the underlying LLM's ``generate`` method.
         """
         # Encode prompt dicts into int token ids.
         if isinstance(prompts, torch.Tensor):
             tokens = prompts
         else:
+            if (
+                maybe_audio := _resolve_audios_in_prompt(prompts, sampling_rate=self.sampling_rate, device=self.device)
+            ) is not None:
+                assert (
+                    audios is None and audio_lens is None
+                ), "Audios cannot be provided via ``prompts`` and ``audios``/``audio_lens`` arguments simultaneously."
+                audios, audio_lens = maybe_audio
             formatter = PromptFormatter.resolve(self.cfg.prompt_format)(self.tokenizer)
             tokens = collate_vectors(
                 [formatter.encode_dialog(turns=prompt)["input_ids"] for prompt in prompts],
@@ -342,11 +398,18 @@ class SALM(LightningModule, HFHubMixin):
             # Text-only generation.
             attention_mask = tokens != self.text_pad_id
             generation_inputs = {"input_ids": tokens, "attention_mask": attention_mask}
+        if generation_config is None:
+            generation_config = GenerationConfig(
+                bos_token_id=self.text_bos_id,
+                eos_token_id=self.text_eos_id,
+                pad_token_id=self.text_pad_id,
+            )
         # Generate the answers using HF Generate API.
         # Note: we need to put the text embedding layer back to the LLM for processing.
         with move_embedding(self):
             answer_tokens = self.llm.generate(
                 **generation_inputs,
+                **generation_kwargs,
                 generation_config=generation_config,
             )
         return answer_tokens
@@ -603,3 +666,29 @@ def replace_placeholders_and_build_targets(
         attention_masks[i, -seq_len:] = att
 
     return output, new_target_ids, attention_masks
+
+
+def _resolve_audios_in_prompt(
+    prompts: list[list[dict]], sampling_rate: int, device: str | torch.device
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    from lhotse import Recording
+
+    paths = []
+    for conversation in prompts:
+        for turn in conversation:
+            if "audio" in turn:
+                turn_audio = turn["audio"]
+                if isinstance(turn_audio, (str, Path)):
+                    turn_audio = [turn_audio]
+                for p in turn_audio:
+                    assert isinstance(p, (str, Path)), f"Invalid value under prompt key 'audio': {p}"
+                    paths.append(p)
+    if not paths:
+        return None
+    cuts = CutSet([Recording.from_file(p).to_cut() for p in paths])
+    with torch.device("cpu"):  # workaround for a Lhotse issue when default device is CUDA during collation
+        audio, audio_lens = cuts.resample(sampling_rate).load_audio(collate=True)
+    return (
+        torch.as_tensor(audio).to(device, non_blocking=True),
+        torch.as_tensor(audio_lens).to(device, non_blocking=True),
+    )

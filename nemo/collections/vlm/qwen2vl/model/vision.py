@@ -19,7 +19,6 @@ import torch.nn.functional as F
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.enums import Fp8Recipe
-from megatron.core.extensions.transformer_engine import te_checkpoint
 from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.vision_module.vision_module import VisionModule
@@ -31,6 +30,13 @@ from megatron.core.transformer.transformer_block import TransformerBlock, Transf
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import WrappedTensor, deprecate_inference_params, make_viewless_tensor
 from torch import Tensor
+
+try:
+    from megatron.core.extensions.transformer_engine import te_checkpoint
+
+    HAVE_TE = True
+except ImportError:
+    HAVE_TE = False
 
 
 class Qwen25VLVisionTransformerBlock(TransformerBlock):

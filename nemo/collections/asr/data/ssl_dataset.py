@@ -462,19 +462,23 @@ class LhotseAudioNoiseDataset(torch.utils.data.Dataset):
         audios, audio_lens, cuts = self.load_audio(cuts)
         sampled_noises = [sample_noise(self.noise_data, cut.sampling_rate, cut.num_samples) for cut in cuts]
 
-        items = [
-            AudioNoiseItem(
-                sample_id=str(cuts[i].id),
-                audio=audios[i],
-                audio_len=audio_lens[i],
-                noise=sampled_noises[i][0],
-                noise_len=sampled_noises[i][1],
-                noisy_audio=audios[i] + sampled_noises[i][0],
-                noisy_audio_len=audio_lens[i],
-            )
-            for i in range(len(cuts))
-        ]
-        return _audio_noise_collate_fn(items, self.batch_augmentor)
+        sampled_noises, sampled_noises_lens = zip(*sampled_noises)
+        sampled_noises = torch.stack(sampled_noises).float()
+        sampled_noises_lens = torch.tensor(sampled_noises_lens).long()
+
+        output = AudioNoiseBatch(
+            audio=audios,
+            audio_len=audio_lens,
+            noise=sampled_noises,
+            noise_len=sampled_noises_lens,
+            noisy_audio=audios + sampled_noises,
+            noisy_audio_len=audio_lens,
+        )
+
+        if self.batch_augmentor is not None:
+            output = self.batch_augmentor(output)
+
+        return output
 
 
 def get_audio_noise_dataset(

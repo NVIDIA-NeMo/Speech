@@ -62,6 +62,8 @@ def override_recipe_configs(
         ep_size,
         enable_cuda_graphs=enable_cuda_graphs,
         use_mcore_fsdp=use_mcore_fsdp,
+        use_fsdp_double_buffer=args.use_fsdp_double_buffer,
+        use_user_buffer_registration=args.use_user_buffer_registration,
         recompute_layers=recompute_layers,
         activation_offload_layers=activation_offload_layers,
         compute_dtype=args.compute_dtype,

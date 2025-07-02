@@ -301,6 +301,14 @@ def parse_cli_args():
         default=None,
     )
     parser.add_argument(
+        "-fsdp_db",
+        "--use_fsdp_double_buffer",
+        help="Enable FSDP double buffer. Disabled by default",
+        type=bool_arg,
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
         "-ubr",
         "--use_user_buffer_registration",
         help="Enable user buffer registration. Disabled by default",

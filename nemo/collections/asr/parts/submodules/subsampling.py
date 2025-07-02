@@ -66,7 +66,7 @@ class ConvSubsampling(torch.nn.Module):
     Args:
         subsampling (str): The subsampling technique from {"vggnet", "striding", "dw-striding"}
         subsampling_factor (int): The subsampling factor which should be a power of 2
-        subsampling_conv_chunking_factor (int): Input chunking factor which can be -1 (no chunking) 
+        subsampling_conv_chunking_factor (int): Input chunking factor which can be -1 (no chunking)
         1 (auto) or a power of 2. Default is 1
         feat_in (int): size of the input features
         feat_out (int): size of the output features
@@ -374,7 +374,7 @@ class ConvSubsampling(torch.nn.Module):
         else:
             raise ValueError(f"Not valid sub-sampling: {subsampling}!")
 
-        self.conv = torch.nn.Sequential(*layers)
+        self.conv = MaskedConvSequential(*layers)
 
     def get_sampling_frames(self):
         return [1, self.subsampling_factor]
@@ -383,7 +383,7 @@ class ConvSubsampling(torch.nn.Module):
         return [0, self.subsampling_factor + 1]
 
     def forward(self, x, lengths):
-        lengths = calc_length(
+        out_lengths = calc_length(
             lengths,
             all_paddings=self._left_padding + self._right_padding,
             kernel_size=self._kernel_size,
@@ -392,11 +392,8 @@ class ConvSubsampling(torch.nn.Module):
             repeat_num=self._sampling_num,
         )
 
-        # Unsqueeze Channel Axis
-        if self.conv2d_subsampling:
-            x = x.unsqueeze(1)
         # Transpose to Channel First mode
-        else:
+        if not self.conv2d_subsampling:
             x = x.transpose(1, 2)
 
         # split inputs if chunking_factor is set
@@ -405,7 +402,7 @@ class ConvSubsampling(torch.nn.Module):
                 # if subsampling_conv_chunking_factor is 1, we split only if needed
                 # avoiding a bug / feature limiting indexing of tensors to 2**31
                 # see https://github.com/pytorch/pytorch/issues/80020
-                x_ceil = 2 ** 31 / self._conv_channels * self._stride * self._stride
+                x_ceil = 2**31 / self._conv_channels * self._stride * self._stride
                 if torch.numel(x) > x_ceil:
                     need_to_split = True
                 else:
@@ -415,16 +412,18 @@ class ConvSubsampling(torch.nn.Module):
                 need_to_split = True
 
             if need_to_split:
-                x, success = self.conv_split_by_batch(x)
+                x, lengths, success = self.conv_split_by_batch(x, lengths)
                 if not success:  # if unable to split by batch, try by channel
                     if self._subsampling == 'dw_striding':
+                        # TODO: implement lengths inside conv_split_by_channel
                         x = self.conv_split_by_channel(x)
+                        lengths = out_lengths
                     else:
-                        x = self.conv(x)  # try anyway
+                        x, lengths = self.conv(x, lengths)  # try anyway
             else:
-                x = self.conv(x)
+                x, lengths = self.conv(x, lengths)
         else:
-            x = self.conv(x)
+            x, lengths = self.conv(x)
 
         # Flatten Channel and Frequency Axes
         if self.conv2d_subsampling:
@@ -442,8 +441,8 @@ class ConvSubsampling(torch.nn.Module):
             with torch.no_grad():
                 # init conv
                 scale = 1.0 / self._kernel_size
-                dw_max = (self._kernel_size ** 2) ** -0.5
-                pw_max = self._conv_channels ** -0.5
+                dw_max = (self._kernel_size**2) ** -0.5
+                pw_max = self._conv_channels**-0.5
 
                 torch.nn.init.uniform_(self.conv[0].weight, -scale, scale)
                 torch.nn.init.uniform_(self.conv[0].bias, -scale, scale)
@@ -459,11 +458,11 @@ class ConvSubsampling(torch.nn.Module):
                 torch.nn.init.uniform_(self.out.weight, -fc_scale, fc_scale)
                 torch.nn.init.uniform_(self.out.bias, -fc_scale, fc_scale)
 
-    def conv_split_by_batch(self, x):
-        """ Tries to split input by batch, run conv and concat results """
-        b, _, _, _ = x.size()
+    def conv_split_by_batch(self, x, lengths):
+        """Tries to split input by batch, run conv and concat results"""
+        b, *_ = x.size()
         if b == 1:  # can't split if batch size is 1
-            return x, False
+            return x, lengths, False
 
         if self.subsampling_conv_chunking_factor > 1:
             cf = self.subsampling_conv_chunking_factor
@@ -471,20 +470,31 @@ class ConvSubsampling(torch.nn.Module):
         else:
             # avoiding a bug / feature limiting indexing of tensors to 2**31
             # see https://github.com/pytorch/pytorch/issues/80020
-            x_ceil = 2 ** 31 / self._conv_channels * self._stride * self._stride
+            x_ceil = 2**31 / self._conv_channels * self._stride * self._stride
             p = math.ceil(math.log(torch.numel(x) / x_ceil, 2))
-            cf = 2 ** p
+            cf = 2**p
             logging.debug(f'using auto set chunking factor: {cf}')
 
         new_batch_size = b // cf
         if new_batch_size == 0:  # input is too big
-            return x, False
+            return x, lengths, False
 
         logging.debug(f'conv subsampling: using split batch size {new_batch_size}')
-        return torch.cat([self.conv(chunk) for chunk in torch.split(x, new_batch_size, 0)]), True
+
+        ans = [
+            self.conv(chunk, ln)
+            for chunk, ln in zip(
+                torch.split(x, new_batch_size, 0),
+                torch.split(lengths, new_batch_size, 0),
+            )
+        ]
+        return torch.cat([a[0] for a in ans]), torch.cat([a[1] for a in ans]), True
 
     def conv_split_by_channel(self, x):
-        """ For dw convs, tries to split input by time, run conv and concat results """
+        """For dw convs, tries to split input by time, run conv and concat results"""
+
+        # Note: this method doesn't use the convolution masking implemented in MaskedConvolutionSequential
+        x = x.unsqueeze(0)
         x = self.conv[0](x)  # full conv2D
         x = self.conv[1](x)  # activation
 
@@ -497,8 +507,8 @@ class ConvSubsampling(torch.nn.Module):
             else:
                 # avoiding a bug / feature limiting indexing of tensors to 2**31
                 # see https://github.com/pytorch/pytorch/issues/80020
-                p = math.ceil(math.log(torch.numel(x) / 2 ** 31, 2))
-                cf = 2 ** p
+                p = math.ceil(math.log(torch.numel(x) / 2**31, 2))
+                cf = 2**p
                 logging.debug(f'using auto set chunking factor: {cf}')
 
             new_c = int(c // cf)
@@ -520,7 +530,7 @@ class ConvSubsampling(torch.nn.Module):
         return x
 
     def channel_chunked_conv(self, conv, chunk_size, x):
-        """ Performs channel chunked convolution"""
+        """Performs channel chunked convolution"""
 
         ind = 0
         out_chunks = []
@@ -564,7 +574,7 @@ class ConvSubsampling(torch.nn.Module):
 
 
 def calc_length(lengths, all_paddings, kernel_size, stride, ceil_mode, repeat_num=1):
-    """ Calculates the output length of a Tensor passed through a convolution or max pooling layer"""
+    """Calculates the output length of a Tensor passed through a convolution or max pooling layer"""
     add_pad: float = all_paddings - kernel_size
     one: float = 1.0
     for i in range(repeat_num):
@@ -606,7 +616,12 @@ class TimeReductionModule(nn.Module):
         )
 
         self.pw_conv = nn.Conv1d(
-            in_channels=d_model, out_channels=out_dim, kernel_size=1, stride=1, padding=0, groups=1,
+            in_channels=d_model,
+            out_channels=out_dim,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            groups=1,
         )
 
         self.reset_parameters()
@@ -631,8 +646,8 @@ class TimeReductionModule(nn.Module):
         return x, att_mask, pad_mask
 
     def reset_parameters(self):
-        dw_max = self.kernel_size ** -0.5
-        pw_max = self.d_model ** -0.5
+        dw_max = self.kernel_size**-0.5
+        pw_max = self.d_model**-0.5
 
         with torch.no_grad():
             torch.nn.init.uniform_(self.dw_conv.weight, -dw_max, dw_max)
@@ -671,8 +686,8 @@ class SubsamplingReductionModule(nn.Module):
 
     def forward(self, x, lengths):
         """Shapes:
-            - x: [B, T, C]
-            - lengths: [B]
+        - x: [B, T, C]
+        - lengths: [B]
         """
 
         if self.reduction == 'striding':
@@ -691,3 +706,54 @@ class SubsamplingReductionModule(nn.Module):
             x = torch.transpose(x, 1, 2)  # [B, T, C]
 
         return x, lengths
+
+
+def apply_channel_mask(tensor, mask):
+    """Apply mask to tensor with channel dimension."""
+    # tensor: (batch, channels, time, features)
+    # mask: (batch, time, features)
+    batch_size, channels, time, features = tensor.shape
+    expanded_mask = mask.unsqueeze(1).expand(batch_size, channels, time, features)
+    return tensor * expanded_mask
+
+
+def calculate_conv_output_size(input_size: torch.Tensor, kernel_size: int, stride: int, padding: tuple[int, int]):
+    """Calculate exact output size after convolution."""
+    return (input_size + padding[0] + padding[1] - kernel_size) // stride + 1
+
+
+class MaskedConvSequential(nn.Sequential):
+    def forward(self, x, lengths):
+        # Convert input (batch, time, features) to conv format
+        x = x.unsqueeze(1)  # (batch, 1, time, features)
+        current_lengths = lengths.clone().float()
+        mask = self._create_mask(x, current_lengths.long())
+
+        # Process through each layer with mask propagation
+        for i, layer in enumerate(self):
+            # Apply current mask before layer
+            x = apply_channel_mask(x, mask)
+
+            # Apply layer
+            x = layer(x)
+
+            # Update lengths for stride operations with proper padding
+            if hasattr(layer, 'stride') and layer.stride != (1, 1):
+                if hasattr(layer, "_left_padding"):
+                    padding = (layer._left_padding, layer._right_padding)  # CausalConv2D
+                else:
+                    padding = layer.padding
+                current_lengths = calculate_conv_output_size(
+                    current_lengths, layer.kernel_size[0], layer.stride[0], padding
+                )
+                mask = self._create_mask(x, current_lengths.long())
+
+        # Final masking
+        x = apply_channel_mask(x, mask)
+        return x, current_lengths.long()
+
+    def _create_mask(self, tensor, lengths):
+        """Create mask matching tensor dimensions."""
+        batch_size, channels, time, features = tensor.shape
+        time_mask = torch.arange(time, device=tensor.device).expand(batch_size, time) < lengths.unsqueeze(1)
+        return time_mask.unsqueeze(-1).expand(batch_size, time, features).to(tensor.dtype)

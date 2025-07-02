@@ -27,7 +27,14 @@ from nemo.collections.common.parts.preprocessing.collections import (
     EndtoEndDiarizationSpeechLabel,
 )
 from nemo.core.classes import Dataset
-from nemo.core.neural_types import AudioSignal, EncodedRepresentation, LengthsType, NeuralType, ProbsType
+from nemo.core.neural_types import (
+    AudioSignal,
+    EncodedRepresentation,
+    LengthsType,
+    NeuralType,
+    ProbsType,
+    SpectrogramType,
+)
 from nemo.utils import logging
 
 
@@ -1058,6 +1065,7 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
         session_len_sec: float,
         num_spks: int,
         featurizer,
+        fb_featurizer,
         window_stride: float,
         min_subsegment_duration: float = 0.03,
         global_rank: int = 0,
@@ -1073,6 +1081,13 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
             round_digits=round_digits,
         )
         self.featurizer = featurizer
+        self.fb_featurizer = fb_featurizer
+        # STFT and subsampling factor parameters
+        self.n_fft = self.fb_featurizer.n_fft
+        self.hop_length = self.fb_featurizer.hop_length
+        self.stft_pad_amount = self.fb_featurizer.stft_pad_amount
+        self.subsampling_factor = subsampling_factor
+        # Annotation and target length parameters
         self.round_digits = round_digits
         self.feat_per_sec = int(1 / window_stride)
         self.diar_frame_length = round(subsampling_factor * window_stride, round_digits)
@@ -1086,9 +1101,29 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
         self.round_digits = 2
         self.floor_decimal = 10**self.round_digits
         self.device = device
+        self.global_rank = global_rank
 
     def __len__(self):
         return len(self.collection)
+
+    def get_frame_count_from_time_series_length(self, seq_len):
+        """
+        This function is used to get the sequence length of the audio signal. This is required to match
+        the feature frame length with ASR (STT) models. This function is copied from
+        NeMo/nemo/collections/asr/parts/preprocessing/features.py::FilterbankFeatures::get_seq_len.
+
+        Args:
+            seq_len (int):
+                The sequence length of the time-series data.
+
+        Returns:
+            seq_len (int):
+                The sequence length of the feature frames.
+        """
+        pad_amount = self.stft_pad_amount * 2 if self.stft_pad_amount is not None else self.n_fft // 2 * 2
+        seq_len = torch.floor_divide((seq_len + pad_amount - self.n_fft), self.hop_length).to(dtype=torch.long)
+        frame_count = int(np.ceil(seq_len / self.subsampling_factor))
+        return frame_count
 
     def get_uniq_id_with_range(self, sample, deci=3):
         """
@@ -1238,10 +1273,15 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
         )
         audio_signal = audio_signal[: round(self.featurizer.sample_rate * session_len_sec)]
         audio_signal_length = torch.tensor(audio_signal.shape[0]).long()
+
+        # Target length should be following the ASR feature extraction convention: Use self.get_frame_count_from_time_series_length.
         target_len = self.get_segment_timestamps(duration=session_len_sec, sample_rate=self.featurizer.sample_rate)
+        target_len = torch.clamp(target_len, max=self.get_frame_count_from_time_series_length(audio_signal.shape[0]))
+
         targets = self.parse_rttm_for_targets_and_lens(
             rttm_file=sample.rttm_file, offset=offset, duration=session_len_sec, target_len=target_len
         )
+        targets = targets[:target_len, :]
         return audio_signal, audio_signal_length, targets, target_len
 
 
@@ -1357,6 +1397,7 @@ class AudioToSpeechE2ESpkDiarDataset(_AudioToSpeechE2ESpkDiarDataset):
         session_len_sec: float,
         num_spks: int,
         featurizer,
+        fb_featurizer,
         window_stride,
         global_rank: int,
         soft_targets: bool,
@@ -1368,6 +1409,7 @@ class AudioToSpeechE2ESpkDiarDataset(_AudioToSpeechE2ESpkDiarDataset):
             session_len_sec=session_len_sec,
             num_spks=num_spks,
             featurizer=featurizer,
+            fb_featurizer=fb_featurizer,
             window_stride=window_stride,
             global_rank=global_rank,
             soft_targets=soft_targets,

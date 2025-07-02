@@ -34,7 +34,7 @@ from nemo.collections.asr.data.audio_to_diar_label_lhotse import LhotseAudioToSp
 from nemo.collections.asr.metrics.multi_binary_acc import MultiBinaryAccuracy
 from nemo.collections.asr.models.asr_model import ExportableEncDecModel
 from nemo.collections.asr.parts.mixins.diarization import DiarizeConfig, SpkDiarizationMixin
-from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
+from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_ats_targets, get_pil_targets
 from nemo.collections.asr.parts.utils.speaker_utils import generate_diarization_output_lines
@@ -203,6 +203,17 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         featurizer = WaveformFeaturizer(
             sample_rate=config['sample_rate'], int_values=config.get('int_values', False), augmentor=self.augmentor
         )
+        fb_featurizer = FilterbankFeatures(
+            sample_rate=self._cfg.preprocessor.sample_rate,
+            normalize=self._cfg.preprocessor.normalize,
+            n_window_size=int(self._cfg.preprocessor.window_size * config['sample_rate']),
+            n_window_stride=int(self._cfg.preprocessor.window_stride * config['sample_rate']),
+            window=self._cfg.preprocessor.window,
+            nfilt=self._cfg.preprocessor.features,
+            n_fft=self._cfg.preprocessor.n_fft,
+            frame_splicing=self._cfg.preprocessor.frame_splicing,
+            dither=self._cfg.preprocessor.dither,
+        )
 
         if 'manifest_filepath' in config and config['manifest_filepath'] is None:
             logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
@@ -221,6 +232,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             session_len_sec=config.session_len_sec,
             num_spks=config.num_spks,
             featurizer=featurizer,
+            fb_featurizer=fb_featurizer,
             window_stride=self._cfg.preprocessor.window_stride,
             global_rank=global_rank,
             soft_targets=config.soft_targets if 'soft_targets' in config else False,

@@ -87,6 +87,7 @@ def normalize_batch(x, seq_len, normalize_type):
             torch.sum(torch.where(valid_mask.unsqueeze(1), x - x_mean.unsqueeze(2), 0.0) ** 2, axis=2)
             / (x_mean_denominator.unsqueeze(1) - 1.0)
         )
+        x_std = x_std.masked_fill(x_std.isnan(), 0.0)  # edge case: only 1 frame in denominator
         # make sure x_std is not zero
         x_std += CONSTANT
         return (x - x_mean.unsqueeze(2)) / x_std.unsqueeze(2), x_mean, x_std
@@ -304,6 +305,7 @@ class FilterbankFeatures(nn.Module):
             )
         logging.info(f"PADDING: {pad_to}")
 
+        self.sample_rate = sample_rate
         self.win_length = n_window_size
         self.hop_length = n_window_stride
         self.n_fft = n_fft or 2 ** math.ceil(math.log2(self.win_length))
@@ -390,6 +392,7 @@ class FilterbankFeatures(nn.Module):
             center=False if self.exact_pad else True,
             window=self.window.to(dtype=torch.float, device=x.device),
             return_complex=True,
+            pad_mode="constant",
         )
 
     def log_zero_guard_value_fn(self, x):
@@ -410,7 +413,7 @@ class FilterbankFeatures(nn.Module):
     def get_seq_len(self, seq_len):
         # Assuming that center is True is stft_pad_amount = 0
         pad_amount = self.stft_pad_amount * 2 if self.stft_pad_amount is not None else self.n_fft // 2 * 2
-        seq_len = torch.floor_divide((seq_len + pad_amount - self.n_fft), self.hop_length) + 1
+        seq_len = torch.floor_divide((seq_len + pad_amount - self.n_fft), self.hop_length)
         return seq_len.to(dtype=torch.long)
 
     @property
@@ -418,13 +421,14 @@ class FilterbankFeatures(nn.Module):
         return self.fb
 
     def forward(self, x, seq_len, linear_spec=False):
+        seq_len_time = seq_len
         seq_len_unfixed = self.get_seq_len(seq_len)
         # fix for seq_len = 0 for streaming; if size was 0, it is always padded to 1, and normalizer fails
         seq_len = torch.where(seq_len == 0, torch.zeros_like(seq_len_unfixed), seq_len_unfixed)
 
         if self.stft_pad_amount is not None:
             x = torch.nn.functional.pad(
-                x.unsqueeze(1), (self.stft_pad_amount, self.stft_pad_amount), "reflect"
+                x.unsqueeze(1), (self.stft_pad_amount, self.stft_pad_amount), "constant"
             ).squeeze(1)
 
         # dither (only in training mode for eval determinism)
@@ -433,7 +437,9 @@ class FilterbankFeatures(nn.Module):
 
         # do preemphasis
         if self.preemph is not None:
+            timemask = torch.arange(x.shape[1], device=x.device).unsqueeze(0) < seq_len_time.unsqueeze(1)
             x = torch.cat((x[:, 0].unsqueeze(1), x[:, 1:] - self.preemph * x[:, :-1]), dim=1)
+            x = x.masked_fill(~timemask, 0.0)
 
         # disable autocast to get full range of stft values
         with torch.amp.autocast(x.device.type, enabled=False):

@@ -299,6 +299,9 @@ def get_hidden_length_from_sample_length(
     This function computes the number of frames required for a given number of audio samples,
     considering the number of samples per mel frame and the number of mel frames per ASR frame.
 
+    Please refer to the following function for more on feature frame length calculation:
+        NeMo/nemo/collections/asr/parts/preprocessing/features.py::FilterbankFeatures::get_seq_len
+
     Parameters:
         num_samples (int): The total number of audio samples.
         num_sample_per_mel_frame (int, optional): The number of samples per mel frame. Default is 160.
@@ -307,7 +310,7 @@ def get_hidden_length_from_sample_length(
     Returns:
         hidden_length (int): The calculated hidden length in terms of the number of frames.
     """
-    mel_frame_count = math.ceil((num_samples + 1) / num_sample_per_mel_frame)
+    mel_frame_count = math.ceil(num_samples / num_sample_per_mel_frame)
     hidden_length = math.ceil(mel_frame_count / num_mel_frame_per_asr_frame)
     return int(hidden_length)
 

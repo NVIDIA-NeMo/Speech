@@ -312,8 +312,8 @@ class TestGetHiddenLengthFromSampleLength:
         "num_samples, num_sample_per_mel_frame, num_mel_frame_per_asr_frame, expected_hidden_length",
         [
             (160, 160, 8, 1),
-            (1280, 160, 8, 2),
-            (0, 160, 8, 1),
+            (1280, 160, 8, 1),
+            (0, 160, 8, 0),
             (159, 160, 8, 1),
             (129, 100, 5, 1),
             (300, 150, 3, 1),
@@ -329,8 +329,8 @@ class TestGetHiddenLengthFromSampleLength:
 
     def test_default_parameters(self):
         assert get_hidden_length_from_sample_length(160) == 1
-        assert get_hidden_length_from_sample_length(1280) == 2
-        assert get_hidden_length_from_sample_length(0) == 1
+        assert get_hidden_length_from_sample_length(1280) == 1
+        assert get_hidden_length_from_sample_length(0) == 0
         assert get_hidden_length_from_sample_length(159) == 1
 
     def test_edge_cases(self):
@@ -341,9 +341,9 @@ class TestGetHiddenLengthFromSampleLength:
 
     def test_real_life_examples(self):
         # The samples tried when this function was designed.
-        assert get_hidden_length_from_sample_length(160000) == 126
+        assert get_hidden_length_from_sample_length(160000) == 125
         assert get_hidden_length_from_sample_length(159999) == 125
-        assert get_hidden_length_from_sample_length(158720) == 125
+        assert get_hidden_length_from_sample_length(158720) == 124
         assert get_hidden_length_from_sample_length(158719) == 124
 
         assert get_hidden_length_from_sample_length(158880) == 125

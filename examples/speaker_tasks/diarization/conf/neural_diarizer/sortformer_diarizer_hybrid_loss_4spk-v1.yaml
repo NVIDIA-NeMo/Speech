@@ -67,29 +67,6 @@ model:
     window_stride: ${model.preprocessor.window_stride}
     subsampling_factor: ${model.encoder.subsampling_factor}
   
-  test_ds:
-    manifest_filepath: null
-    is_tarred: False
-    tarred_audio_filepaths: null
-    sample_rate: 16000
-    num_spks: ${model.max_num_of_spks}
-    session_len_sec: 90 # Maximum session length in seconds
-    soft_label_thres: 0.5
-    soft_targets: False
-    labels: null
-    batch_size: ${batch_size}
-    shuffle: False
-    seq_eval_mode: True
-    num_workers: ${num_workers}
-    validation_mode: True
-    # lhotse config
-    use_lhotse: False
-    use_bucketing: False
-    drop_last: False
-    pin_memory: True
-    window_stride: ${model.preprocessor.window_stride}
-    subsampling_factor: ${model.encoder.subsampling_factor}
-
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
     normalize: "per_feature"

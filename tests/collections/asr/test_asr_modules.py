@@ -44,7 +44,7 @@ class TestASRModulesBasicTests:
 
         # Ensure that the two functions behave similarily
         for _ in range(10):
-            input_signal, length = instance1.input_example(4, 512, 161)
+            input_signal, length = instance1.input_example(4, 512, 321)
 
             with torch.no_grad():
                 # batch size 1
@@ -87,7 +87,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal, length = instance0.input_example(4, 512, 161)
+        input_signal, length = instance0.input_example(4, 512, 321)
         res0 = instance0(input_signal=input_signal, length=length)
         res = instance1(input_spec=res0[0], length=length)
 
@@ -104,7 +104,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal, length = instance0.input_example(4, 512, 161)
+        input_signal, length = instance0.input_example(4, 512, 321)
         res0 = instance0(input_signal=input_signal, length=length)
         res = instance1(input_spec=res0[0], length=length)
 
@@ -128,7 +128,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal, length = instance0.input_example(8, 512, 161)
+        input_signal, length = instance0.input_example(8, 512, 321)
         res0 = instance0(input_signal=input_signal, length=length)
         res = instance1(input_spec=res0[0], length=length)
 
@@ -162,7 +162,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal, length = instance0.input_example(4, 512, 161)
+        input_signal, length = instance0.input_example(4, 512, 321)
         res0 = instance0(input_signal=input_signal, length=length)
         res, new_length = instance1(input_signal=res0[0], length=length)
 
@@ -191,7 +191,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal, length = instance0.input_example(4, 512, 161)
+        input_signal, length = instance0.input_example(4, 512, 321)
         res0 = instance0(input_signal=input_signal, length=length)
         res = instance1(input_spec=res0[0], length=length)
 

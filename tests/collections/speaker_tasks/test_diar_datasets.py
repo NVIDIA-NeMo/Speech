@@ -20,7 +20,7 @@ import pytest
 import torch.cuda
 
 from nemo.collections.asr.data.audio_to_diar_label import AudioToSpeechE2ESpkDiarDataset
-from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
+from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, WaveformFeaturizer
 from nemo.collections.asr.parts.utils.speaker_utils import get_vad_out_from_rttm_line, read_rttm_lines
 
 
@@ -66,6 +66,12 @@ class TestAudioToSpeechE2ESpkDiarDataset:
 
             f.seek(0)
             featurizer = WaveformFeaturizer(sample_rate=16000, int_values=False, augmentor=None)
+            fb_featurizer = FilterbankFeatures(
+                sample_rate=featurizer.sample_rate,
+                n_window_size=int(0.025 * featurizer.sample_rate),
+                n_window_stride=int(0.01 * featurizer.sample_rate),
+                dither=False,
+            )
 
             dataset = AudioToSpeechE2ESpkDiarDataset(
                 manifest_filepath=f.name,
@@ -77,6 +83,7 @@ class TestAudioToSpeechE2ESpkDiarDataset:
                 global_rank=0,
                 soft_targets=False,
                 device=device,
+                fb_featurizer=fb_featurizer,
             )
             dataloader_instance = torch.utils.data.DataLoader(
                 dataset=dataset,
@@ -84,7 +91,7 @@ class TestAudioToSpeechE2ESpkDiarDataset:
                 collate_fn=dataset.eesd_train_collate_fn,
                 drop_last=False,
                 shuffle=False,
-                num_workers=1,
+                num_workers=0,
                 pin_memory=False,
             )
             assert len(dataloader_instance) == (num_samples / batch_size)  # Check if the number of batches is correct

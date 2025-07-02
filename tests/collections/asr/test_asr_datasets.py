@@ -375,6 +375,9 @@ class TestASRDatasets:
             for og_transcript, shuffled_transcript in zip(sorted(original_transcripts), sorted(shuffled_transcripts)):
                 assert og_transcript == shuffled_transcript
 
+    @pytest.mark.xfail(
+        reason="DALI ASR Dataset's preprocessor is not patched with padding inconsistency fix (PR #13827)"
+    )
     @pytest.mark.skipif(not HAVE_DALI, reason="NVIDIA DALI is not installed or incompatible version")
     @pytest.mark.unit
     def test_dali_char_vs_ref_dataset(self, test_data_dir):

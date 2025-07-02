@@ -27,7 +27,7 @@ class TestFilterbankFeatures:
         test_1 = torch.randn(1, 800)
         test_1_len = torch.tensor([800])
         fb_spec, fb_len = fb_module(test_1, test_1_len)
-        assert fb_spec.shape[2] == fb_len[0], f"{fb_spec.shape} != {fb_len}"
+        assert fb_spec.shape[2] - 1 == fb_len[0], f"{fb_spec.shape} != {fb_len}"
         librosa_spec = librosa.stft(test_1.cpu().detach().numpy().squeeze(), n_fft=512, hop_length=160, win_length=320)
 
         assert librosa_spec.shape[1] == fb_spec.shape[2], f"{librosa_spec.shape} != {fb_spec.shape}"
@@ -46,12 +46,12 @@ class TestFilterbankFeatures:
                 n_window_stride=hop_size,
                 normalize=False,
             )
-            audio_length = np.random.randint(nfft, 2 ** 16)
+            audio_length = np.random.randint(nfft, 2**16)
             test_1 = torch.randn(1, audio_length)
             test_1_len = torch.tensor([audio_length])
             fb_spec, fb_len = fb_module(test_1, test_1_len)
             assert (
-                fb_spec.shape[2] == fb_len[0]
+                fb_spec.shape[2] - 1 == fb_len[0]
             ), f"{fb_spec.shape} != {fb_len}: {nfft}, {window_size}, {hop_size}, {audio_length}"
 
             librosa_spec = librosa.stft(
@@ -78,17 +78,23 @@ class TestFilterbankFeatures:
                 n_window_stride=hop_size,
                 normalize=False,
             )
-            audio_length = np.random.randint(nfft, 2 ** 16)
+            audio_length = np.random.randint(nfft, 2**16)
             test_1 = torch.randn(1, audio_length)
             test_1_len = torch.tensor([audio_length])
             fb_spec, fb_len = fb_module(test_1, test_1_len)
             assert (
-                fb_spec.shape[2] == fb_len[0]
+                fb_spec.shape[2] - 1 == fb_len[0]
             ), f"{fb_spec.shape} != {fb_len}: {nfft}, {window_size}, {hop_size}, {audio_length}"
 
             test_2 = test_1.cpu().detach().numpy().squeeze()
             test_2 = np.pad(test_2, int((nfft - hop_size) // 2), mode="reflect")
-            librosa_spec = librosa.stft(test_2, n_fft=nfft, hop_length=hop_size, win_length=window_size, center=False,)
+            librosa_spec = librosa.stft(
+                test_2,
+                n_fft=nfft,
+                hop_length=hop_size,
+                win_length=window_size,
+                center=False,
+            )
 
             assert (
                 fb_spec.shape[2] == librosa_spec.shape[1]

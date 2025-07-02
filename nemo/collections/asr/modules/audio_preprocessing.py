@@ -242,8 +242,6 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
         stft_conv=False,  # Deprecated arguments; kept for config compatibility
     ):
-        super().__init__(n_window_size, n_window_stride)
-
         self._sample_rate = sample_rate
         if window_size and n_window_size:
             raise ValueError(f"{self} received both window_size and " f"n_window_size. Only one should be specified.")
@@ -255,6 +253,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
             n_window_size = int(window_size * self._sample_rate)
         if window_stride:
             n_window_stride = int(window_stride * self._sample_rate)
+        super().__init__(n_window_size, n_window_stride)
 
         # Given the long and similar argument list, point to the class and instantiate it by reference
         if not use_torchaudio:

@@ -203,7 +203,7 @@ class TestInterCTCLoss:
         # processed signal directly initially to remove the chance of
         # this edge-case
         input_signal = torch.randn(size=(1, 512))
-        input_length = torch.randint(low=161, high=500, size=[1])
+        input_length = torch.randint(low=321, high=500, size=[1])
         target = torch.randint(size=(1, input_length[0]), low=0, high=28)
         target_length = torch.tensor([input_length[0]])
 

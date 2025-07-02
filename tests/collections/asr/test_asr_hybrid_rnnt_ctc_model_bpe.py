@@ -149,7 +149,7 @@ class TestEncDecHybridRNNTCTCBPEModel:
         hybrid_asr_model.compute_eval_loss = False
 
         input_signal = torch.randn(size=(4, 512))
-        length = torch.randint(low=161, high=500, size=[4])
+        length = torch.randint(low=321, high=500, size=[4])
 
         with torch.no_grad():
             # batch size 1

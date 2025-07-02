@@ -822,7 +822,7 @@ class TestASRAdapterMixin:
     def test_asr_model_adapter_loss(self, model):
         original_num_params = model.num_weights
         x = torch.randn(2, 512)
-        x_len = torch.tensor([256, 512], dtype=torch.int32)
+        x_len = torch.tensor([400, 512], dtype=torch.int32)
 
         adapter_cfg = get_adapter_cfg()  # type: adapter_modules.LinearAdapterConfig
         adapter_cfg.adapter_strategy.l2_lambda = 0.01

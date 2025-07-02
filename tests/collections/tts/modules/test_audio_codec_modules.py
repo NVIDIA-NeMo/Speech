@@ -175,8 +175,8 @@ class TestAudioCodecModules:
         len2 = 80
         out_dim = len(mel_bands) * self.out_channels
         lengths = torch.tensor([len1, len2], dtype=torch.int32)
-        out_len_1 = len1 // hop_length
-        out_len_2 = len2 // hop_length
+        out_len_1 = len1 // hop_length - 1
+        out_len_2 = len2 // hop_length - 1
         out_len_max = max_len // hop_length
 
         audio = torch.rand([self.batch_size, max_len])

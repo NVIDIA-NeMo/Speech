@@ -17,7 +17,6 @@ import torch
 from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
 
-from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.speechlm2 import SALM, DataModule, SALMDataset
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager

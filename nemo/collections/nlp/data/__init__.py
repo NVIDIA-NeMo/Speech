@@ -12,34 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.nlp.data.data_utils import *
-from nemo.collections.nlp.data.entity_linking.entity_linking_dataset import EntityLinkingDataset
-from nemo.collections.nlp.data.information_retrieval.information_retrieval_dataset import (
+from nemo.collections.nlp.data.data_utils import *  # noqa: F401
+from nemo.collections.nlp.data.entity_linking.entity_linking_dataset import EntityLinkingDataset  # noqa: F401
+from nemo.collections.nlp.data.information_retrieval.information_retrieval_dataset import (  # noqa: F401
     BertInformationRetrievalDataset,
 )
-from nemo.collections.nlp.data.language_modeling.l2r_lm_dataset import (
+from nemo.collections.nlp.data.language_modeling.l2r_lm_dataset import (  # noqa: F401
     L2RLanguageModelingDataset,
     TarredL2RLanguageModelingDataset,
 )
-from nemo.collections.nlp.data.language_modeling.lm_bert_dataset import (
+from nemo.collections.nlp.data.language_modeling.lm_bert_dataset import (  # noqa: F401
     BertPretrainingDataset,
     BertPretrainingPreprocessedDataloader,
 )
-from nemo.collections.nlp.data.language_modeling.sentence_dataset import SentenceDataset, TarredSentenceDataset
-from nemo.collections.nlp.data.machine_translation.machine_translation_dataset import (
+from nemo.collections.nlp.data.language_modeling.sentence_dataset import (  # noqa: F401
+    SentenceDataset,
+    TarredSentenceDataset,
+)
+from nemo.collections.nlp.data.machine_translation.machine_translation_dataset import (  # noqa: F401
     TarredTranslationDataset,
     TranslationDataset,
 )
-from nemo.collections.nlp.data.question_answering_squad.qa_dataset import SquadDataset
-from nemo.collections.nlp.data.text2sparql.text2sparql_dataset import Text2SparqlDataset
-from nemo.collections.nlp.data.text_normalization.decoder_dataset import TextNormalizationDecoderDataset
-from nemo.collections.nlp.data.text_normalization.tagger_dataset import TextNormalizationTaggerDataset
-from nemo.collections.nlp.data.text_normalization.test_dataset import TextNormalizationTestDataset
-from nemo.collections.nlp.data.token_classification.token_classification_dataset import (
+from nemo.collections.nlp.data.text2sparql.text2sparql_dataset import Text2SparqlDataset  # noqa: F401
+from nemo.collections.nlp.data.text_normalization.decoder_dataset import TextNormalizationDecoderDataset  # noqa: F401
+from nemo.collections.nlp.data.text_normalization.tagger_dataset import TextNormalizationTaggerDataset  # noqa: F401
+from nemo.collections.nlp.data.text_normalization.test_dataset import TextNormalizationTestDataset  # noqa: F401
+from nemo.collections.nlp.data.token_classification.token_classification_dataset import (  # noqa: F401
     BertTokenClassificationDataset,
     BertTokenClassificationInferDataset,
 )
-from nemo.collections.nlp.data.zero_shot_intent_recognition.zero_shot_intent_dataset import (
+from nemo.collections.nlp.data.zero_shot_intent_recognition.zero_shot_intent_dataset import (  # noqa: F401
     ZeroShotIntentDataset,
     ZeroShotIntentInferenceDataset,
 )

@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.nlp.metrics.classification_report import ClassificationReport  # noqa: F401
-from nemo.collections.nlp.metrics.classification_report import MultiLabelClassificationReport  # noqa: F401
-from nemo.collections.nlp.metrics.qa_metrics import QAMetrics  # noqa: F401
+from nemo.collections.nlp.metrics.classification_report import (  # noqa: F401
+    ClassificationReport,
+    MultiLabelClassificationReport,
+)
 from nemo.collections.nlp.metrics.sequence_perplexity import SequencePerplexity  # noqa: F401

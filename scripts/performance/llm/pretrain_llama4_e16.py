@@ -77,7 +77,7 @@ def override_recipe_configs(
         recipe.data.tokenizer = hf_tokenizer('meta-llama/Llama-4-Scout-17B-16E-Instruct')
     else:
         recipe.data.tokenizer = run.Config(
-            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=202048
+            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=200000
         )
         recipe.model.tokenizer = recipe.data.tokenizer
 

@@ -74,10 +74,10 @@ def override_recipe_configs(
 
     # data module configs
     if args.use_hf_tokenizer:
-        recipe.data.tokenizer = hf_tokenizer('meta-llama/Llama-4-Scout-17B-16E-Instruct')
+        recipe.data.tokenizer = hf_tokenizer('meta-llama/Llama-4-Maverick-17B-128E-Instruct')
     else:
         recipe.data.tokenizer = run.Config(
-            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=202048
+            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=200000
         )
         recipe.model.tokenizer = recipe.data.tokenizer
 

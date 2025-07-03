@@ -74,7 +74,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model and copy its parameters into the audio perception module.
-        setup_speech_encoder(self)
+        setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
 
         self.speech_generation = TransformerARSpeechDecoder(
             speech_decoder_parms=OmegaConf.to_container(self.cfg.speech_decoder),

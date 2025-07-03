@@ -42,6 +42,7 @@ class SalmEvalConfig:
     output_manifest: str = "generations.jsonl"
     verbose: bool = True
     device: str = "cuda"
+    dtype: str = "bfloat16"
     extra_eos_tokens: Optional[list[str]] = None
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None
@@ -51,10 +52,7 @@ class SalmEvalConfig:
 def main(cfg: SalmEvalConfig):
     logging.info(f"Hydra config:\n{OmegaConf.to_yaml(cfg)}")
 
-    with torch.device(cfg.device):
-        torch.set_default_dtype(torch.bfloat16)
-        model = SALM.from_pretrained(cfg.pretrained_name).eval().to(torch.bfloat16).to(cfg.device)
-        torch.set_default_dtype(torch.float32)
+    model = SALM.from_pretrained(cfg.pretrained_name).eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
 
     conversations = (
         guess_parse_cutset(cfg.inputs)

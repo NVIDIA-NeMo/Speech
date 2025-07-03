@@ -67,7 +67,7 @@ class SALM(LightningModule, HFHubMixin):
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model and copy its parameters into the audio perception module.
-        setup_speech_encoder(self)
+        setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
 
         self._use_fsdp = False
         self._use_tp = False

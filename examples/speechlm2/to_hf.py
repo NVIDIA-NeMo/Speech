@@ -35,6 +35,9 @@ class HfExportConfig:
     # Path where we should save the HuggingFace Hub compatible checkpoint
     output_dir: str
 
+    # Dtype used for stored parameters
+    dtype: str = "bfloat16"
+
 
 def load_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     if Path(checkpoint_path).is_dir():
@@ -60,6 +63,7 @@ def main(cfg: HfExportConfig):
     cls = import_class_by_path(cfg.class_path)
     model = cls(OmegaConf.to_container(model_cfg, resolve=True))
     load_checkpoint(model, cfg.ckpt_path)
+    model = model.to(getattr(torch, cfg.dtype))
     model.save_pretrained(cfg.output_dir)
 
 

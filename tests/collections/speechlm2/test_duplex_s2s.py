@@ -54,14 +54,49 @@ def model():
         "audio_loss_weight": 1,
         "text_loss_weight": 3,
         "perception": {
-            "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
-            "modality_adapter": {
+            "target": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
+            "output_dim": 2048,
+            "encoder": {
                 "_target_": "nemo.collections.asr.modules.ConformerEncoder",
-                "feat_in": 512,
+                "att_context_size": [-1, -1],
+                "causal_downsampling": False,
+                "conv_context_size": None,
+                "conv_kernel_size": 9,
+                "conv_norm_type": "batch_norm",
+                "d_model": 1024,
+                "dropout": 0.1,
+                "dropout_att": 0.1,
+                "dropout_emb": 0.0,
+                "dropout_pre_encoder": 0.1,
+                "feat_in": 128,
                 "feat_out": -1,
-                "n_layers": 1,
-                "d_model": 512,
-                "subsampling_factor": 1,
+                "ff_expansion_factor": 4,
+                "n_heads": 8,
+                "n_layers": 2,
+                "pos_emb_max_len": 5000,
+                "self_attention_model": "rel_pos",
+                "subsampling": "dw_striding",
+                "subsampling_conv_channels": 256,
+                "subsampling_factor": 8,
+            },
+            "modality_adapter": {
+                "_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector",
+                "d_model": 1024,
+            },
+            "preprocessor": {
+                "_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
+                "dither": 1e-05,
+                "features": 128,
+                "frame_splicing": 1,
+                "log": True,
+                "n_fft": 512,
+                "normalize": "per_feature",
+                "pad_to": 0,
+                "pad_value": 0.0,
+                "sample_rate": 16000,
+                "window": "hann",
+                "window_size": 0.025,
+                "window_stride": 0.01,
             },
         },
         "optimizer": {"_target_": "torch.optim.AdamW"},
@@ -177,13 +212,13 @@ def test_s2s_offline_generation(model):
     assert isinstance(ans["text"][0], str)
 
     gen_text = ans["tokens_text"]
-    assert gen_text.shape == (1, 14)
+    assert gen_text.shape == (1, 13)
     assert gen_text.dtype == torch.long
     assert (gen_text >= 0).all()
     assert (gen_text < model.text_vocab_size).all()
 
     gen_audio_codes = ans["tokens_audio"]
-    assert gen_audio_codes.shape == (1, 14, 8)
+    assert gen_audio_codes.shape == (1, 13, 8)
     assert gen_audio_codes.dtype == torch.long
     assert (gen_audio_codes >= 0).all()
     assert (gen_audio_codes < model.speech_vocab_size).all()

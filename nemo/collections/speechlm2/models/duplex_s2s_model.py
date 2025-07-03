@@ -73,7 +73,7 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
         maybe_install_lora(self)
 
         # Load the pretrained ASR model.
-        setup_speech_encoder(self)
+        setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
 
         self.embed_audio_tokens = torch.nn.ModuleList(
             [

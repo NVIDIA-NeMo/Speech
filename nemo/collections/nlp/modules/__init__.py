@@ -13,21 +13,17 @@
 # limitations under the License.
 
 
-from nemo.collections.nlp.modules.common import (
-    AlbertEncoder,
-    BertEncoder,
-    BertModule,
-    CamembertEncoder,
-    DistilBertEncoder,
-    PromptEncoder,
-    RobertaEncoder,
-    SequenceClassifier,
-    SequenceRegression,
-    SequenceTokenClassifier,
-    get_lm_model,
-    get_pretrained_lm_models_list,
-    get_tokenizer,
-    get_tokenizer_list,
-)
-from nemo.collections.nlp.modules.dialogue_state_tracking.sgd_decoder import SGDDecoder
-from nemo.collections.nlp.modules.dialogue_state_tracking.sgd_encoder import SGDEncoder
+from nemo.collections.nlp.modules.common import AlbertEncoder  # noqa: F401
+from nemo.collections.nlp.modules.common import BertEncoder  # noqa: F401
+from nemo.collections.nlp.modules.common import BertModule  # noqa: F401
+from nemo.collections.nlp.modules.common import CamembertEncoder  # noqa: F401
+from nemo.collections.nlp.modules.common import DistilBertEncoder  # noqa: F401
+from nemo.collections.nlp.modules.common import PromptEncoder  # noqa: F401
+from nemo.collections.nlp.modules.common import RobertaEncoder  # noqa: F401
+from nemo.collections.nlp.modules.common import SequenceClassifier  # noqa: F401
+from nemo.collections.nlp.modules.common import SequenceRegression  # noqa: F401
+from nemo.collections.nlp.modules.common import SequenceTokenClassifier  # noqa: F401
+from nemo.collections.nlp.modules.common import get_lm_model  # noqa: F401
+from nemo.collections.nlp.modules.common import get_pretrained_lm_models_list  # noqa: F401
+from nemo.collections.nlp.modules.common import get_tokenizer  # noqa: F401
+from nemo.collections.nlp.modules.common import get_tokenizer_list  # noqa: F401

@@ -86,13 +86,14 @@ def parse_cli_args():
         default="bf16",
     )
     fp8_recipe_msg = (
-        "FP8 recipe. Options- ds (per-tensor delayed scaling), cs (per-tensor current scaling), mxfp8. Defaults to ds"
+        "FP8 recipe. Options- ds (per-tensor delayed scaling), cs (per-tensor current scaling), "
+        "mxfp8, ss (subchannel scaling). Defaults to ds"
     )
     parser.add_argument(
         "-fr",
         "--fp8_recipe",
         type=str,
-        choices=["ds", "cs", "mxfp8"],
+        choices=["ds", "cs", "mxfp8", "ss"],
         help=fp8_recipe_msg,
         required=False,
         default="ds",
@@ -358,7 +359,8 @@ def parse_cli_args():
         nargs="*",
         const=None,
         type=str,
-        help="List of modules to perform selective activation recompute. Users can provide 0 or any number of arguments. Defaults to None",
+        help="List of modules to perform selective activation recompute. "
+        "Users can provide 0 or any number of arguments. Defaults to None",
         required=False,
         default=None,
     )

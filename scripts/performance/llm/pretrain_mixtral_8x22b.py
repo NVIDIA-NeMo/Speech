@@ -87,11 +87,6 @@ def override_recipe_configs(
         )
         recipe.model.tokenizer = recipe.data.tokenizer
 
-    # to mitigate the incorrect gradient_scaling_factor calculation in megatron.core
-    # under scenario average_in_collective=True and tp_size != etp_size, disabling average_in_collective.
-    if etp_size is not None and etp_size != tp_size:
-        recipe.trainer.strategy.ddp.average_in_collective = False
-
     return recipe
 
 

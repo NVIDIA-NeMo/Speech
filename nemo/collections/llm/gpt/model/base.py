@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import contextlib
+import inspect
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Union
@@ -164,7 +165,7 @@ def transformer_engine_layer_spec(config: "GPTConfig") -> ModuleSpec:
     return gpt_layer_specs.get_gpt_layer_with_transformer_engine_spec(**kwargs)
 
 
-def transformer_engine_full_layer_spec(config: "GPTConfig") -> ModuleSpec:
+def transformer_engine_full_layer_spec(config: "GPTConfig", vp_stage: Optional[int] = None) -> ModuleSpec:
     """Create a full Transformer Engine layer specification with autocast support.
 
     Args:
@@ -177,7 +178,7 @@ def transformer_engine_full_layer_spec(config: "GPTConfig") -> ModuleSpec:
         get_gpt_full_te_layer_autocast_spec,
     )
 
-    return get_gpt_full_te_layer_autocast_spec(transformer_config=config)
+    return get_gpt_full_te_layer_autocast_spec(transformer_config=config, vp_stage=vp_stage)
 
 
 def local_layer_spec(config: "GPTConfig") -> ModuleSpec:
@@ -199,7 +200,7 @@ def local_layer_spec(config: "GPTConfig") -> ModuleSpec:
     )
 
 
-def default_layer_spec(config: "GPTConfig") -> ModuleSpec:
+def default_layer_spec(config: "GPTConfig", vp_stage: Optional[int] = None) -> ModuleSpec:
     """Determine the most appropriate layer specification based on availability.
 
     Uses Transformer Engine specs if available, otherwise falls back to local implementation.
@@ -212,14 +213,14 @@ def default_layer_spec(config: "GPTConfig") -> ModuleSpec:
     """
     if HAVE_TE:
         if config.use_transformer_engine_full_layer_spec:
-            return transformer_engine_full_layer_spec(config)
+            return transformer_engine_full_layer_spec(config, vp_stage=vp_stage)
         else:
             return transformer_engine_layer_spec(config)
     else:
         return local_layer_spec(config)
 
 
-def mtp_block_spec(config: "GPTConfig") -> Optional[ModuleSpec]:
+def mtp_block_spec(config: "GPTConfig", vp_stage: Optional[int] = None) -> Optional[ModuleSpec]:
     """Pass in the MTP block spec if model has MTP layers.
 
     Args:
@@ -232,10 +233,13 @@ def mtp_block_spec(config: "GPTConfig") -> Optional[ModuleSpec]:
         from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
 
         if isinstance(config.transformer_layer_spec, Callable):
-            spec = config.transformer_layer_spec(config)
+            if 'vp_stage' in inspect.signature(config.transformer_layer_spec).parameters:
+                spec = config.transformer_layer_spec(config, vp_stage=vp_stage)
+            else:
+                spec = config.transformer_layer_spec(config)
         else:
             spec = config.transformer_layer_spec
-        return get_gpt_mtp_block_spec(config, spec, use_transformer_engine=HAVE_TE)
+        return get_gpt_mtp_block_spec(config, spec, use_transformer_engine=HAVE_TE, vp_stage=vp_stage)
     else:
         return None
 

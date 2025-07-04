@@ -405,6 +405,9 @@ class PerfEnvPlugin(run.Plugin):
                 assert isinstance(self.nccl_pp_comm_chunksize, int) and self.nccl_pp_comm_chunksize > 1
                 executor.env_vars["NCCL_P2P_NET_CHUNKSIZE"] = str(self.nccl_pp_comm_chunksize)
 
+            # Enable high priority for NCCL communications
+            executor.env_vars["TORCH_NCCL_HIGH_PRIORITY"] = "1"
+
         # Improve perf by steering power to tensor cores, may not work on all systems
         if self.enable_vboost and isinstance(executor, run.SlurmExecutor):
             vboost_cmd = self.get_vboost_srun_cmd(executor.nodes, executor.tunnel.job_dir)

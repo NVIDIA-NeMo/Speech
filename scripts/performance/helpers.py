@@ -24,6 +24,7 @@ from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.recipes.precision.mixed_precision import (
     bf16_with_fp8_current_scaling_mixed,
     bf16_with_fp8_mixed,
+    bf16_with_fp8_subchannel_scaling_mixed,
     bf16_with_mxfp8_mixed,
 )
 from nemo.lightning.pytorch.callbacks.flops_callback import FLOPsMeasurementCallback
@@ -34,6 +35,10 @@ from .utils import get_comm_overlap_callback_idx
 
 
 def get_csv_configs(gpu: str, task: str, model_name: str, model_size: str, args) -> pd.DataFrame:
+    """
+    Get recommended configs tuned for performance from a csv file.
+    User (command line) provided args override the recommended configs.
+    """
     script_dir = str(Path(__file__).parent.absolute())
     recommended_configs_csv = os.path.join(script_dir, "recommended_model_configs", f"model_configs_{gpu}.csv")
     logging.info(f"Using {recommended_configs_csv} for loading default recommended model configs")
@@ -146,6 +151,9 @@ def get_user_configs(gpu: str, task: str, model_name: str, model_size: str, args
 
 
 def set_mcore_fsdp_configs(recipe, comm_overlap_callback_idx: int | None, tp_size: int | None):
+    """
+    Set Mcore FSDP related configs.
+    """
     recipe.model.config.init_model_with_meta_device = True
     recipe.trainer.strategy.fsdp = "megatron"
     recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = "optim_grads_params"
@@ -160,16 +168,14 @@ def set_mcore_fsdp_configs(recipe, comm_overlap_callback_idx: int | None, tp_siz
     ):
         logging.warning("Disabling deferring embedding wgrad compute because it cannot work with FSDP together.")
         recipe.trainer.callbacks[comm_overlap_callback_idx].defer_embedding_wgrad_compute = False
-        if tp_size is not None and tp_size > 1:
-            logging.warning(
-                "Currently, TP overlap performance is poor when FSDP is used because of jitters. A fix is in progress. Disabling TP overlap."
-            )
-            recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap = False
 
     return recipe
 
 
 def set_precision_configs(recipe, compute_dtype: str, fp8_recipe: str | None = None):
+    """
+    Set precision related configs.
+    """
     if compute_dtype is None:
         return recipe
 
@@ -187,8 +193,23 @@ def set_precision_configs(recipe, compute_dtype: str, fp8_recipe: str | None = N
             recipe.trainer.plugins.first_last_layers_bf16 = False
         elif fp8_recipe.lower() == "mxfp8":
             recipe.trainer.plugins = bf16_with_mxfp8_mixed()
+        elif fp8_recipe.lower() == "ss":
+            recipe.trainer.plugins = bf16_with_fp8_subchannel_scaling_mixed()
 
     recipe.trainer.plugins.grad_reduce_in_fp32 = False
+
+    # Enable reuse_grad_buf_for_mxfp8_param_ag for MXFP8 and disable AG overlap
+    # because it is not supported with reuse_grad_buf_for_mxfp8_param_ag
+    if compute_dtype.lower() == "fp8" and fp8_recipe.lower() == "mxfp8":
+        recipe.trainer.strategy.ddp.reuse_grad_buf_for_mxfp8_param_ag = True
+        recipe.optim.config.reuse_grad_buf_for_mxfp8_param_ag = True
+        comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
+        if comm_overlap_callback_idx is not None:
+            recipe.trainer.callbacks[comm_overlap_callback_idx].overlap_param_gather = False
+        logging.warning(
+            "When using MXFP8, to reduce memory usage, we use reuse_grad_buf_for_mxfp8_param_ag. "
+            "Disabling AG overlap because it is not supported with reuse_grad_buf_for_mxfp8_param_ag."
+        )
 
     return recipe
 
@@ -199,7 +220,9 @@ def set_recompute_configs(
     activation_offload_layers: int,
     recompute_modules: Optional[List[str]],
 ):
-    # Recompute configs
+    """
+    Set activation recomputing and offloading related configs.
+    """
     if recompute_layers > 0:
         recipe.model.config.recompute_granularity = "full"
         recipe.model.config.recompute_method = "block"
@@ -225,6 +248,9 @@ def set_recompute_configs(
 
 
 def set_cuda_graph_configs(recipe, enable_cuda_graphs: bool, task: str):
+    """
+    Set CUDA graph related configs.
+    """
     recipe.model.config.enable_cuda_graph = enable_cuda_graphs
     recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graphs
     if (
@@ -252,6 +278,9 @@ def set_perf_optimization_configs(
     use_user_buffer_registration: Optional[bool] = None,
     use_sharp: Optional[bool] = None,
 ):
+    """
+    Set performance optimization related configs.
+    """
     # enable cross entropy fusion with TE kernel
     recipe.model.config.cross_entropy_fusion_impl = "te"
 

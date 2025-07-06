@@ -1,0 +1,24 @@
+diff --git a/cpp/CMakeLists.txt b/cpp/CMakeLists.txt
+index d82bebb73c..b52668a54b 100644
+--- a/cpp/CMakeLists.txt
++++ b/cpp/CMakeLists.txt
+@@ -377,6 +377,7 @@ print(os.path.dirname(torch.__file__),end='');"
+   set(nvtx3_dir ${3RDPARTY_DIR}/NVTX/include)
+   find_package(Torch REQUIRED)
+
++  set(TORCH_CXX_FLAGS "-D_GLIBCXX_USE_CXX11_ABI=1")
+   message(STATUS "TORCH_CXX_FLAGS: ${TORCH_CXX_FLAGS}")
+   add_compile_options(${TORCH_CXX_FLAGS})
+   add_compile_definitions(TORCH_CUDA=1)
+diff --git a/docker/common/install_tensorrt.sh b/docker/common/install_tensorrt.sh
+index 8dda255229..98bdae58f3 100644
+--- a/docker/common/install_tensorrt.sh
++++ b/docker/common/install_tensorrt.sh
+@@ -28,6 +28,7 @@ for i in "$@"; do
+         --CUDNN_VER=?*) CUDNN_VER="${i#*=}";;
+         --NCCL_VER=?*) NCCL_VER="${i#*=}";;
+         --CUBLAS_VER=?*) CUBLAS_VER="${i#*=}";;
++        --NVRTC_VER=?*) NVRTC_VER="${i#*=}";;
+         *) ;;
+     esac
+     shift

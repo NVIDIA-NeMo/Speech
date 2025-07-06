@@ -108,7 +108,7 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
                         inference_params=CommonInferenceParams(
                             temperature=0.1,
                             top_k=1,
-                            top_p=0,
+                            top_p=0.0,
                             num_tokens_to_generate=1,
                             return_log_probs=False,
                         ),
@@ -119,7 +119,7 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
                         input_texts=[prompt],
                         max_output_len=1,
                         top_k=1,
-                        top_p=0,
+                        top_p=0.0,
                         temperature=0.1,
                         task_ids=task_ids,
                         lora_uids=lora_uids,
@@ -145,7 +145,7 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
                         prompts=[prompt],
                         max_length=1,
                         top_k=1,
-                        top_p=0,
+                        top_p=0.0,
                         temperature=0.1,
                     )
                     # Accessing [0][0] of "text" is to get a raw string entry from a NumPy array
@@ -156,7 +156,7 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
                         prompts=[prompt],
                         max_output_len=1,
                         top_k=1,
-                        top_p=0,
+                        top_p=0.0,
                         temperature=0.1,
                         task_id=task_ids,
                     )

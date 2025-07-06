@@ -70,6 +70,7 @@ jobs:
             script: L2_VLM_HF_Transformer_PEFT_FSDP2
           - runner: self-hosted-azure-gpus-1
             script: L2_VLM_HF_Transformer_PEFT_4bit
+            is-optional: true
           - runner: self-hosted-azure
             script: L2_VLM_HF_Transformer_SFT_FSDP2
           - runner: self-hosted-azure

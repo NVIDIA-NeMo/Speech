@@ -96,7 +96,7 @@ jobs:
             runner: self-hosted-azure-gpus-1
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
-    name: ${{ matrix.is_optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
+    name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -109,4 +109,4 @@ jobs:
           script: ${{ matrix.script }}
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ inputs.image-name }}
-          is_optional: ${{ matrix.is_optional || false }}
+          is_optional: ${{ matrix.is-optional || false }}

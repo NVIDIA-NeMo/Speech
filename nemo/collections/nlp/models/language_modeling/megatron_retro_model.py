@@ -89,7 +89,7 @@ try:
 
     HAVE_MEGATRON_CORE = True
 
-except (ImportError, ModuleNotFoundError):
+except (AttributeError, ImportError, ModuleNotFoundError):
 
     TransformerConfig = ApexGuardDefaults
     RetroConfig = ApexGuardDefaults

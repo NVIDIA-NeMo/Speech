@@ -27,7 +27,7 @@ try:
 
     HAVE_MEGATRON_CORE = True
 
-except (ImportError, ModuleNotFoundError) as e:
+except (AttributeError, ImportError, ModuleNotFoundError) as e:
 
     from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 

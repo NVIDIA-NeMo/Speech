@@ -22,7 +22,11 @@ omit =
     nemo/collections/audio/parts/utils/maxine.py
 
     nemo/core/*
-    nemo/collections/common/*      
+    nemo/collections/common/*
+
+    /workspace/config-3.12.py
+    /workspace/config-3.py
+    /workspace/config.py
 
 [paths]
 source =

@@ -305,7 +305,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--top_p",
         type=float,
-        default=0,
+        default=0.0,
         help="""top_p to be used in megatron.core.inference.common_inference_params.CommonInferenceParams""",
     )
     parser.add_argument(

@@ -120,6 +120,7 @@ jobs:
             script: L2_Speech_Batch_Size_OOMptimizer
           - runner: self-hosted-azure
             script: Optional_L2_Speech_Batch_Size_OOMptimizer_Canary
+            is-optional: true
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Speech_to_Text_Transcribe
           - runner: self-hosted-azure

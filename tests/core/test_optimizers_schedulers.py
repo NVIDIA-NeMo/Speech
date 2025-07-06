@@ -323,7 +323,6 @@ class TestOptimizersSchedulers:
             'threshold_mode': 'rel',
             'min_lr': 1e-6,
             'eps': 1e-7,
-            'verbose': True,
             'cooldown': 1,
         }
         basic_sched_config = {

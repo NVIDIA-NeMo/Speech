@@ -108,7 +108,7 @@ def get_args():
     )
     parser.add_argument(
         "--top_k",
-        type=float,
+        type=int,
         default=0,
         help="""top_k to be used in megatron.core.inference.common_inference_params.CommonInferenceParams""",
     )

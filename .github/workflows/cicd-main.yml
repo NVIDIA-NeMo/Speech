@@ -135,7 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: test
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]' 
+      needs.pre-flight.outputs.test_to_run != '[]'
       && needs.pre-flight.outputs.components_to_run != '[]'
       && needs.pre-flight.outputs.is_ci_workload == 'false'
     steps:
@@ -147,10 +147,10 @@ jobs:
     uses: ./.github/workflows/_build_container.yml
     needs: [pre-flight, code-linting, cicd-wait-in-queue]
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]' 
+      needs.pre-flight.outputs.test_to_run != '[]'
       && needs.pre-flight.outputs.components_to_run != '[]'
       && (
-        success() 
+        success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
           && needs.pre-flight.outputs.is_ci_workload == 'true'
@@ -385,8 +385,8 @@ jobs:
 
       - name: Remove label if not cancelled
         if: |
-          steps.result.outputs.code != 'cancelled' 
-          && github.event.label.name == 'Run CICD' 
+          steps.result.outputs.code != 'cancelled'
+          && github.event.label.name == 'Run CICD'
           && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
@@ -395,8 +395,8 @@ jobs:
 
       - name: Pipeline successful, add PR comment
         if: |
-          steps.result.outputs.code == 'success' 
-          && github.event_name == 'pull_request' 
+          steps.result.outputs.code == 'success'
+          && github.event_name == 'pull_request'
           && env.SLACK_WEBHOOK != ''
         uses: peter-evans/create-or-update-comment@v4
         env:
@@ -416,8 +416,8 @@ jobs:
 
       - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"
         if: |
-          steps.result.outputs.code == 'failure' 
-          && github.event.label.name == 'Run CICD' 
+          steps.result.outputs.code == 'failure'
+          && github.event.label.name == 'Run CICD'
           && env.SLACK_WEBHOOK != ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -451,7 +451,7 @@ jobs:
       needs.pre-flight.outputs.test_to_run != '[]'
       && needs.pre-flight.outputs.components_to_run != '[]'
       && (
-        success() 
+        success()
         || needs.Nemo_CICD_Test.result == 'success'
       )
       && !cancelled()

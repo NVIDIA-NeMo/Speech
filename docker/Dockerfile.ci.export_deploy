@@ -32,64 +32,65 @@ apt-get install -y bc
 apt-get clean
 EOF
 
-WORKDIR /tmp/NeMo
+WORKDIR /opt/NeMo
 ARG TRTLLM_REPO
 ARG TRTLLM_TAG
-RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh bash -ex <<"EOF"
+RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/opt/NeMo/install_dep.sh \
+  --mount=type=bind,source=external/patches,target=/opt/NeMo/external/patches bash -ex <<"EOF"
 
-  bash /tmp/NeMo/install_dep.sh --library trt --mode install
+  bash /opt/NeMo/install_dep.sh --library trt --mode install
 EOF
 
 FROM base-image AS trt-llm-wheel
-WORKDIR /tmp/NeMo
+WORKDIR /opt/NeMo
 ARG TRTLLM_REPO
 ARG TRTLLM_TAG
-RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh bash -ex <<"EOF"
+RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/opt/NeMo/install_dep.sh \
+  --mount=type=bind,source=external/patches,target=/opt/NeMo/external/patches bash -ex <<"EOF"
 
-  bash /tmp/NeMo/install_dep.sh --library trtllm --mode build
+  bash /opt/NeMo/install_dep.sh --library trtllm --mode build
 EOF
 
 FROM base-image as te-wheel
-WORKDIR /tmp/NeMo
+WORKDIR /opt/NeMo
 ARG TE_REPO
 ARG TE_TAG
-RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh \
-  --mount=type=bind,source=external/patches,target=/tmp/NeMo/external/patches bash -ex <<"EOF"
+RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/opt/NeMo/install_dep.sh \
+  --mount=type=bind,source=external/patches,target=/opt/NeMo/external/patches bash -ex <<"EOF"
 
-  bash /tmp/NeMo/install_dep.sh --library te --mode build
-  ls -al /tmp/Megatron-LM || true
+  bash /opt/NeMo/install_dep.sh --library te --mode build
+  ls -al /opt/Megatron-LM || true
 EOF
 
 FROM base-image as mcore-wheel
-WORKDIR /tmp/NeMo
+WORKDIR /opt/NeMo
 ARG MLM_REPO
 ARG MLM_TAG
-RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh bash -ex <<"EOF"
+RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/opt/NeMo/install_dep.sh bash -ex <<"EOF"
 
-  bash /tmp/NeMo/install_dep.sh --library mcore --mode build
-  ls -al /tmp/Megatron-LM || true
+  bash /opt/NeMo/install_dep.sh --library mcore --mode build
+  ls -al /opt/Megatron-LM || true
 EOF
 
 FROM base-image
-WORKDIR /tmp/NeMo
+WORKDIR /opt/NeMo
 ENV INSTALL_DIR="/opt"
 RUN \
   --mount=type=bind,from=trt-llm-wheel,source=/opt/wheels/trtllm,target=/opt/wheels/trtllm \
   --mount=type=bind,from=te-wheel,source=/opt/wheels/te,target=/opt/wheels/te \
   --mount=type=bind,from=mcore-wheel,source=/opt/wheels/mcore,target=/opt/wheels/mcore \
-  --mount=type=bind,source=requirements,target=/tmp/NeMo/requirements \
-  --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
-  --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh \
-  --mount=type=bind,source=setup.py,target=/tmp/NeMo/setup.py \
-  --mount=type=bind,source=external/patches,target=/tmp/NeMo/external/patches \
-  --mount=type=bind,source=README.md,target=/tmp/NeMo/README.md \
-  --mount=type=bind,source=nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
-  --mount=type=bind,source=nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py bash -ex <<"EOF"
+  --mount=type=bind,source=requirements,target=/opt/NeMo/requirements \
+  --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=/opt/NeMo/tools/ctc_segmentation/requirements.txt \
+  --mount=type=bind,source=docker/common/install_dep.sh,target=/opt/NeMo/install_dep.sh \
+  --mount=type=bind,source=setup.py,target=/opt/NeMo/setup.py \
+  --mount=type=bind,source=external/patches,target=/opt/NeMo/external/patches \
+  --mount=type=bind,source=README.md,target=/opt/NeMo/README.md \
+  --mount=type=bind,source=nemo/package_info.py,target=/opt/NeMo/nemo/package_info.py \
+  --mount=type=bind,source=nemo/__init__.py,target=/opt/NeMo/nemo/__init__.py bash -ex <<"EOF"
 
-    bash /tmp/NeMo/install_dep.sh --library all --mode install
+    bash /opt/NeMo/install_dep.sh --library all --mode install
     pip install --no-cache-dir ".[deploy,test]"
-    rm -rf $NEMO_DIR || true
-    
+
 EOF
 
 WORKDIR /workspace

@@ -33,10 +33,6 @@ from nemo.collections.nlp.data.machine_translation.machine_translation_dataset i
     TarredTranslationDataset,
     TranslationDataset,
 )
-from nemo.collections.nlp.data.text2sparql.text2sparql_dataset import Text2SparqlDataset  # noqa: F401
-from nemo.collections.nlp.data.text_normalization.decoder_dataset import TextNormalizationDecoderDataset  # noqa: F401
-from nemo.collections.nlp.data.text_normalization.tagger_dataset import TextNormalizationTaggerDataset  # noqa: F401
-from nemo.collections.nlp.data.text_normalization.test_dataset import TextNormalizationTestDataset  # noqa: F401
 from nemo.collections.nlp.data.token_classification.token_classification_dataset import (  # noqa: F401
     BertTokenClassificationDataset,
     BertTokenClassificationInferDataset,

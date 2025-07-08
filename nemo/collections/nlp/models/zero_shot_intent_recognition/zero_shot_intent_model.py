@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: skip-file
+
 import os
 from typing import Dict, List, Optional, Union
 
@@ -26,7 +28,13 @@ from nemo.collections.nlp.data.zero_shot_intent_recognition.zero_shot_intent_dat
     ZeroShotIntentInferenceDataset,
     calc_class_weights_from_dataloader,
 )
-from nemo.collections.nlp.models import TextClassificationModel
+
+try:
+    from nemo.collections.nlp.models import TextClassificationModel
+except ImportError:
+    from abc import ABC
+
+    TextClassificationModel = ABC
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 
@@ -72,7 +80,7 @@ class ZeroShotIntentModel(TextClassificationModel):
     def setup_training_data(self, train_data_config: Optional[DictConfig]):
         if not train_data_config or not train_data_config.file_name:
             logging.info(
-                f"Dataloader config or file_name for the training set is missing, so no data loader for test is created!"
+                "Dataloader config or file_name for the training set is missing, so no data loader for test is created!"
             )
             self._test_dl = None
             return
@@ -91,7 +99,7 @@ class ZeroShotIntentModel(TextClassificationModel):
     def setup_validation_data(self, val_data_config: Optional[DictConfig]):
         if not val_data_config or not val_data_config.file_name:
             logging.info(
-                f"Dataloader config or file_path for the validation data set is missing, so no data loader for test is created!"
+                "Dataloader config or file_path for the validation data set is missing, so no data loader for test is created!"
             )
             self._test_dl = None
             return
@@ -100,7 +108,7 @@ class ZeroShotIntentModel(TextClassificationModel):
     def setup_test_data(self, test_data_config: Optional[DictConfig]):
         if not test_data_config or not test_data_config.file_name:
             logging.info(
-                f"Dataloader config or file_path for the test data set is missing, so no data loader for test is created!"
+                "Dataloader config or file_path for the test data set is missing, so no data loader for test is created!"
             )
             self._test_dl = None
             return

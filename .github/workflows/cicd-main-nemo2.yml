@@ -270,7 +270,6 @@ jobs:
             script: L2_NeMo_2_Diffusion_Taskencoder_Test
           - runner: self-hosted-azure
             script: L2_NeMo_2_Flux_Import_Test
-            is-optional: true
           - runner: self-hosted-azure
             script: L2_NeMo_2_Flux_Inference_Test
           - runner: self-hosted-azure

@@ -163,6 +163,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         init_consumed_samples: (Optional[int]): Number of samples already consumed at initialization.
         init_global_step: (Optional[int]): Starting global training step count, used for resuming training.
         output_log: (Optional[bool]): Whether to print logging/debug output during sampling.
+        mmap_bin_files: (Optional[bool]): Whether to mmap the .bin files or use file pointers.
         object_storage_cache_path: (Optional[str]): Path for caching indices for s3 or msc dataloading.
     """
 
@@ -193,6 +194,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         init_global_step: Optional[int] = 0,
         output_log: Optional[bool] = True,
         dataset_cls: Type[MegatronDataset] = GPTDataset,
+        mmap_bin_files: Optional[bool] = True,
         object_storage_cache_path: Optional[str] = None,
     ) -> None:
         super().__init__()
@@ -206,6 +208,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         validate_dataset_asset_accessibility(paths)
 
         build_kwargs = {}
+        build_kwargs["mmap_bin_files"] = mmap_bin_files
         if isinstance(paths, dict):
             if split is not None:
                 warnings.warn(

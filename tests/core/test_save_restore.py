@@ -23,7 +23,6 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.models import EncDecCTCModel, EncDecCTCModelBPE
-from nemo.collections.nlp.models import PunctuationCapitalizationModel
 from nemo.core.classes import ModelPT
 from nemo.core.connectors import save_restore_connector
 from nemo.utils.app_state import AppState
@@ -386,15 +385,6 @@ class TestSaveRestore:
         # Specifically use ModelPT instead of EncDecCTCModelBPE in order to test target class resolution.
         cn = ModelPT.from_pretrained(model_name="nvidia/stt_en_citrinet_256_ls")
         self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
-
-    @pytest.mark.with_downloads()
-    @pytest.mark.unit
-    def test_PunctuationCapitalization(self):
-        # TODO: Switch to using named configs because here we don't really care about weights
-        pn = PunctuationCapitalizationModel.from_pretrained(model_name='punctuation_en_distilbert')
-        self.__test_restore_elsewhere(
-            model=pn, attr_for_eq_check=set(["punct_classifier.log_softmax", "punct_classifier.log_softmax"])
-        )
 
     @pytest.mark.unit
     def test_mock_save_to_restore_from(self):

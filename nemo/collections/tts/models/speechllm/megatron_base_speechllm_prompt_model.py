@@ -20,7 +20,6 @@ from omegaconf.dictconfig import DictConfig
 from torch import Tensor
 
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
-from nemo.collections.nlp.metrics.prompt_learning_metrics import AccuracyScore, BLEUScore, ROUGEScores
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.modules.common import (
     PromptEncoder,
@@ -31,6 +30,7 @@ from nemo.collections.nlp.modules.common import (
 )
 from nemo.collections.nlp.modules.common.transformer.text_generation import TextGeneration
 from nemo.collections.nlp.parts import utils_funcs
+from nemo.collections.tts.metrics.score_metrics import AccuracyScore, BLEUScore, ROUGEScores
 from nemo.utils import AppState
 
 try:

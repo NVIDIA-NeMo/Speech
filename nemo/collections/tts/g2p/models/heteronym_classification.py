@@ -23,11 +23,11 @@ from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 
 from nemo.collections.common.losses import CrossEntropyLoss
-from nemo.collections.nlp.metrics.classification_report import ClassificationReport
 from nemo.collections.nlp.modules.common import TokenClassifier
 from nemo.collections.nlp.parts.utils_funcs import tensor2list
 from nemo.collections.tts.g2p.data.heteronym_classification import HeteronymClassificationDataset
 from nemo.collections.tts.g2p.utils import get_heteronym_spans, get_wordid_to_phonemes, read_wordids
+from nemo.collections.tts.metrics.classification_report import ClassificationReport
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 
@@ -361,7 +361,7 @@ class HeteronymClassificationModel(NLPModel):
     def setup_training_data(self, train_data_config: Optional[DictConfig]):
         if not train_data_config or train_data_config.dataset.manifest is None:
             logging.info(
-                f"Dataloader config or file_path for the train is missing, so no data loader for train is created!"
+                "Dataloader config or file_path for the train is missing, so no data loader for train is created!"
             )
             self._train_dl = None
             return
@@ -370,7 +370,7 @@ class HeteronymClassificationModel(NLPModel):
     def setup_validation_data(self, val_data_config: Optional[DictConfig]):
         if not val_data_config or val_data_config.dataset.manifest is None:
             logging.info(
-                f"Dataloader config or file_path for the validation is missing, so no data loader for validation is created!"
+                "Dataloader config or file_path for the validation is missing, so no data loader for validation is created!"
             )
             self._validation_dl = None
             return
@@ -379,7 +379,7 @@ class HeteronymClassificationModel(NLPModel):
     def setup_test_data(self, test_data_config: Optional[DictConfig]):
         if not test_data_config or test_data_config.dataset.manifest is None:
             logging.info(
-                f"Dataloader config or file_path for the test is missing, so no data loader for test is created!"
+                "Dataloader config or file_path for the test is missing, so no data loader for test is created!"
             )
             self._test_dl = None
             return

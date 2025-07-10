@@ -11,13 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# pylint: skip-file
+# flake8: noqa
+
 from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf.dictconfig import DictConfig
 
-from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import (
-    TextToTextGLUEDataset,
-    TextToTextXNLIDataset,
-)
+try:
+    from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import (
+        TextToTextGLUEDataset,
+        TextToTextXNLIDataset,
+    )
+except ModuleNotFoundError:
+    from abc import ABC
+
+    TextToTextGLUEDataset = ABC
+    TextToTextXNLIDataset = ABC
 from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.utils import logging
 

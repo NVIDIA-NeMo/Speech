@@ -129,6 +129,7 @@ class ParallelismConfig:
     num_distributed_optimizer_instances: int = 1
     nccl_communicator_config_path: str = None
     use_sharp: bool = False
+    pipeline_model_parallel_layout: Optional[Union[str, List[List[str]]]] = None
 
 
 class MegatronStrategy(DDPStrategy, io.IOMixin):
@@ -218,6 +219,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         nccl_communicator_config_path (Optional[str]): Path to the yaml file of NCCL communicator configurations.
             `min_ctas`, `max_ctas`, and `cga_cluster_size` can be set for each communicator.
         use_sharp (bool): Whether to use SHARP. Defaults to False.
+        pipeline_model_parallel_layout (Optional[Union[str, List[List[str]]]]): The layout of all layers among
+            different PP and VP stages.
         **kwargs: Additional keyword arguments.
 
     Note:
@@ -277,6 +280,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         use_tp_pp_dp_mapping: bool = False,
         num_distributed_optimizer_instances: int = 1,
         nccl_communicator_config_path: Optional[str] = None,
+        pipeline_model_parallel_layout: Optional[Union[str, List[List[str]]]] = None,
         **kwargs,
     ) -> None:
         super().__init__(
@@ -336,6 +340,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.nccl_communicator_config_path = nccl_communicator_config_path
         self.restore_config = restore_config
         self.timers = Timers(megatron_log_level, "minmax")  ## could also set this for optimizer if we want
+        self.pipeline_model_parallel_layout = pipeline_model_parallel_layout
 
         self._ddp = ddp
         if ddp == "megatron":
@@ -1130,6 +1135,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             num_distributed_optimizer_instances=self.num_distributed_optimizer_instances,
             nccl_communicator_config_path=self.nccl_communicator_config_path,
             use_sharp=self.use_sharp,
+            pipeline_model_parallel_layout=self.pipeline_model_parallel_layout,
         )
 
     @contextmanager

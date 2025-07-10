@@ -337,7 +337,14 @@ class GPTConfig(TransformerConfig, io.IOMixin):
         is_pipeline_asymmetric = getattr(self, "account_for_embedding_in_pipeline_split", False) or getattr(
             self, "account_for_loss_in_pipeline_split", False
         )
-        if vp_size and not is_pipeline_asymmetric:
+        is_pipeline_asymmetric |= (
+            getattr(self, "num_layers_in_first_pipeline_stage", None)
+            or getattr(self, "num_layers_in_last_pipeline_stage", None)
+        ) is not None
+        is_flexible_pp_layout = is_pipeline_asymmetric or (
+            getattr(self, "pipeline_model_parallel_layout", None) is not None
+        )
+        if vp_size and not is_flexible_pp_layout:
             p_size = self.pipeline_model_parallel_size
             assert (
                 self.num_layers // p_size
@@ -374,7 +381,7 @@ class GPTConfig(TransformerConfig, io.IOMixin):
             model_init_device_context = partial(torch.device, device='meta')
 
         if 'mtp_block_spec' in inspect.signature(MCoreGPTModel.__init__).parameters:
-            kwargs = {"mtp_block_spec": mtp_block_spec(self)}
+            kwargs = {"mtp_block_spec": mtp_block_spec(self, vp_stage=vp_stage)}
         else:
             kwargs = {}
         with model_init_device_context():

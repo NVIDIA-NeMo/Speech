@@ -20,6 +20,7 @@ from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes.deepseek_v3 import finetune_recipe, model
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+from nemo.lightning.pytorch.callbacks.megatron_enable_experimental_callback import MegatronEnableExperimentalCallback
 from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin, PerfEnvPlugin
 
@@ -64,8 +65,24 @@ def override_recipe_configs(
 
     if not hasattr(recipe.trainer, "callbacks") or recipe.trainer.callbacks is None:
         recipe.trainer.callbacks = []
-    if USE_TOKEN_DROP:
-        recipe.trainer.callbacks.append(run.Config(MegatronTokenDropCallback))
+
+    # Token dispatcher configs. For H100 we use deepEP and for Blackwell,
+    # because deepEP is not supported yet, we use all-to-all dispatcher with
+    # token drop. After deepEP is supported, we can use deepEP dispatcher.
+    if args.gpu.lower() in ['h100']:
+        recipe.model.config.moe_token_dispatcher_type = "flex"
+        recipe.model.config.moe_enable_deepep = True
+        recipe.model.config.moe_shared_expert_overlap = False  # not supported for deepEP
+    else:
+        recipe.model.config.moe_token_dispatcher_type = "alltoall"
+        recipe.model.config.moe_shared_expert_overlap = True
+        if USE_TOKEN_DROP:
+            recipe.trainer.callbacks.append(run.Config(MegatronTokenDropCallback))
+
+    # Performance optimization knobs
+    recipe.model.config.moe_permute_fusion = True
+    recipe.model.config.apply_rope_fusion = True
+    recipe.trainer.callbacks.append(run.Config(MegatronEnableExperimentalCallback))
 
     recipe = set_primary_perf_configs(
         recipe,
@@ -109,7 +126,6 @@ def override_recipe_configs(
     recipe.model.config.recompute_granularity = 'full'
     recipe.model.config.recompute_method = 'uniform'
     recipe.model.config.recompute_num_layers = 1
-    recipe.model.config.moe_permute_fusion = True
 
     recipe.trainer.strategy.account_for_loss_in_pipeline_split = True
     recipe.trainer.strategy.account_for_embedding_in_pipeline_split = False  # embedding is not split

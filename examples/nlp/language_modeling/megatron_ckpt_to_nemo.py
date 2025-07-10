@@ -43,7 +43,13 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import Meg
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
 from nemo.collections.nlp.models.language_modeling.megatron_retrieval_model import MegatronRetrievalModel
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
-from nemo.collections.nlp.models.machine_translation.megatron_nmt_model import MegatronNMTModel
+
+try:
+    from nemo.collections.nlp.models.machine_translation.megatron_nmt_model import MegatronNMTModel
+except ModuleNotFoundError:
+    from abc import ABC
+
+    MegatronNMTModel = ABC
 from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
     NLPDDPStrategy,

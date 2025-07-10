@@ -15,4 +15,3 @@
 from nemo.collections.nlp.models.language_modeling import MegatronGPTPromptLearningModel  # noqa: F401
 from nemo.collections.nlp.models.language_modeling.bert_lm_model import BERTLMModel  # noqa: F401
 from nemo.collections.nlp.models.language_modeling.transformer_lm_model import TransformerLMModel  # noqa: F401
-from nemo.collections.nlp.models.machine_translation import MTEncDecModel  # noqa: F401

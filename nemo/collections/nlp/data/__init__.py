@@ -25,7 +25,3 @@ from nemo.collections.nlp.data.language_modeling.sentence_dataset import (  # no
     SentenceDataset,
     TarredSentenceDataset,
 )
-from nemo.collections.nlp.data.machine_translation.machine_translation_dataset import (  # noqa: F401
-    TarredTranslationDataset,
-    TranslationDataset,
-)

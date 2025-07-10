@@ -28,6 +28,8 @@ ARG REQUIRE_TORCHAUDIO=false
 ARG REQUIRE_K2=false
 # ais cli: not required by default, install only if required
 ARG REQUIRE_AIS_CLI=false
+# check imports: if flag is false, ignore result
+ARG REQUIRE_CHECK_IMPORTS=true
 
 # Ensure apt-get won't prompt for selecting options
 ENV DEBIAN_FRONTEND=noninteractive
@@ -162,11 +164,18 @@ RUN --mount=from=nemo-src,target=/tmp/nemo,rw cd /tmp/nemo && pip install ".[all
 # NB: adjusting LD_LIBRARY_PATH (only here, should not be persistent!) is a temporary hack
 # to avoid failure if CUDA is unavailable (`docker build` does not expose GPUs)
 # The error is raised in NeMo Core, and the main reason is reinstalled Transformer-Engine;
-RUN export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${CUDA_HOME}/compat/lib.real && \
+RUN CHECK_MSG=$(export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${CUDA_HOME}/compat/lib.real && \
   python -c "import nemo.collections.asr as nemo_asr" && \
   python -c "import nemo.collections.nlp as nemo_nlp" && \
   python -c "import nemo.collections.tts as nemo_tts" && \
-  python -c "import nemo_text_processing.text_normalization as text_normalization"
+  python -c "import nemo_text_processing.text_normalization as text_normalization"); CHECK_CODE=$?; \
+  echo ${CHECK_MSG}; \
+  if [ ${CHECK_CODE} -ne 0 ]; then \
+  echo "Import check failed"; \
+  if [ "${REQUIRE_CHECK_IMPORTS}" = true ]; then \
+  exit ${CHECK_CODE}; \
+  else echo "Skipping unsuccessful import check"; fi \
+  else echo "Import check success"; fi
 
 
 # copy scripts/examples/tests into container for end user

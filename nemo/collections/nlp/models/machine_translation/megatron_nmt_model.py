@@ -28,10 +28,17 @@ from omegaconf.dictconfig import DictConfig
 from omegaconf.listconfig import ListConfig
 from sacrebleu import corpus_bleu
 
-from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import (
-    BinarizedMemmapSequenceToSequenceDataset,
-    TextMemmapSequenceToSequenceDataset,
-)
+try:
+    from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import (
+        BinarizedMemmapSequenceToSequenceDataset,
+        TextMemmapSequenceToSequenceDataset,
+    )
+except ModuleNotFoundError:
+    from abc import ABC
+
+    BinarizedMemmapSequenceToSequenceDataset = ABC
+    TextMemmapSequenceToSequenceDataset = ABC
+
 from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils import (
     get_datasets_weights_and_num_samples,
 )

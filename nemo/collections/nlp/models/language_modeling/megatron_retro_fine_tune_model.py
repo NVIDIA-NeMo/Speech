@@ -11,6 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# pylint: skip-file
+# flake8: noqa
+
 import json
 from functools import partial
 
@@ -21,7 +25,14 @@ from omegaconf import DictConfig, ListConfig
 from nemo.collections.common.data import ConcatMapDataset
 from nemo.collections.common.metrics import MetricStringToTorchMetric
 from nemo.collections.common.metrics.classification_accuracy import ExactStringPerCategoryMatchMetric
-from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import SequenceToSequenceDataset
+
+try:
+    from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import SequenceToSequenceDataset
+except ModuleNotFoundError:
+    from abc import ABC
+
+    SequenceToSequenceDataset = ABC
+
 from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils import (
     get_datasets_weights_and_num_samples,
     get_train_valid_test_split_,

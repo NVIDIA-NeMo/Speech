@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.nlp import data, losses, models, modules
+# flake8: noqa
+
+from nemo.collections.nlp import data, models, modules
 from nemo.package_info import __version__
 
 # Set collection version equal to NeMo version.

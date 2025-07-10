@@ -12,16 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: skip-file
+
 """XLM-Style datasets"""
 from typing import Dict, List
 
 import numpy as np
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
-from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import (
-    BinarizedMemmapSequenceToSequenceDataset,
-    TextMemmapSequenceToSequenceDataset,
-)
+
+try:
+    from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import (
+        BinarizedMemmapSequenceToSequenceDataset,
+        TextMemmapSequenceToSequenceDataset,
+    )
+except ModuleNotFoundError:
+    from abc import ABC
+
+    BinarizedMemmapSequenceToSequenceDataset = ABC
+    TextMemmapSequenceToSequenceDataset = ABC
+
 from nemo.collections.nlp.data.language_modeling.megatron.bert_dataset import (
     build_training_sample as build_training_sample_bert,
 )
@@ -77,7 +87,7 @@ class CrossLingualBERTDataset(BinarizedMemmapSequenceToSequenceDataset):
         if len(tgt) > self.max_tgt_seq_length - 1:  # -1 here to account for the <sep> token that gets added.
             tgt = tgt[: self.max_tgt_seq_length]
 
-        np_rng = np.random.RandomState(seed=((self.seed + idx) % 2 ** 32))
+        np_rng = np.random.RandomState(seed=((self.seed + idx) % 2**32))
         # Potentially swap src, tgt with a 50% chance to avoid learning associations based on position in the sequence.
         swap_src_tgt = np_rng.randint(0, 2)
         if swap_src_tgt == 0:

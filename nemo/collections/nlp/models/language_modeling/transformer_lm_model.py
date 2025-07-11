@@ -31,7 +31,7 @@ from nemo.collections.nlp.data import SentenceDataset, TarredSentenceDataset
 
 try:
     from nemo.collections.nlp.metrics import SequencePerplexity
-except ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     from abc import ABC
 
     SequencePerplexity = ABC

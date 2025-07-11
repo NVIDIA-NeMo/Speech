@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,14 @@
 
 """
 Example:
-  python scripts/vlm/avlm_generate.py --load_from_hf
+  python scripts/avlm/avlm_generate.py \
+    --local_model_path ${MODEL_PATH} \
+    --image_path ${IMAGE_PATH} \
+    --audio_path ${AUDIO_PATH} \
+    --top_p 0.9 \
+    --temperature 1.0 \
+    --top_k 40 \
+    --tokens_to_generate 100
 """
 
 import argparse
@@ -168,6 +175,7 @@ def main(args) -> None:
             "img_width": 336,
             "img_height": 336,
             "patch_size": 14,
+            "projection_downsample_factor": None,
         },
     )
     avlm_sample_config.conversation_template_config.system = ''
@@ -185,6 +193,8 @@ def main(args) -> None:
         # manually set vocab size to 32768. Originally the size is 32000, but with TP=8, it is padded to 32768.
         make_vocab_size_divisible_by=32768,
     )
+    language_model_from_pretrained = None
+    # vision config
     vision_transformer_config = vlm.HFCLIPVisionConfig(
         pretrained_model_name_or_path="openai/clip-vit-large-patch14-336"
     )
@@ -195,7 +205,7 @@ def main(args) -> None:
         hidden_size=language_transformer_config.hidden_size,
         ffn_hidden_size=language_transformer_config.hidden_size,
     )
-    # whisper audio encoder  # need update NeMo from Steve's branch
+    # audio config
     audio_transformer_config = ASRModuleConfig(
         _target_="nemo.collections.speechlm.modules.asr_module.ASRModuleConfig",
         use_hf_auto_model=True,
@@ -205,9 +215,10 @@ def main(args) -> None:
         hidden_size=1280,
         target_module="model.encoder",
     )
+    audio_model_from_pretrained = None
     audio_projection_config = vlm.MultimodalProjectorConfig(
         projector_type="mlp2x_gelu",
-        input_size=audio_transformer_config.hidden_size,  # need to set somehow?
+        input_size=audio_transformer_config.hidden_size,
         hidden_size=language_transformer_config.hidden_size,
         ffn_hidden_size=language_transformer_config.hidden_size,
     )
@@ -218,9 +229,9 @@ def main(args) -> None:
         vision_projection_config=vision_projection_config,
         audio_transformer_config=audio_transformer_config,
         audio_projection_config=audio_projection_config,
-        language_model_from_pretrained=None,  ######??? -> need to add this to avlm_pretrain.py???
+        language_model_from_pretrained=language_model_from_pretrained,
         vision_model_from_pretrained=vision_model_from_pretrained,
-        audio_model_from_pretrained=None,
+        audio_model_from_pretrained=audio_model_from_pretrained,
         freeze_language_model=True,
         freeze_vision_model=True,
         freeze_vision_projection=True,
@@ -230,6 +241,7 @@ def main(args) -> None:
     model = avlm.AVLMModel(avlm_config, tokenizer=sample_encoder.tokenizer)
 
     # Load model from local path
+    print("Loading checkpoint from: ", args.local_model_path)
     model = fabric.load_model(args.local_model_path, model)
 
     # Setup model for inference
@@ -283,8 +295,8 @@ if __name__ == "__main__":
         "--image_path",
         type=str,
         # pylint: disable=line-too-long
-        default="http://images.cocodataset.org/val2017/000000039769.jpg",
-        help="URL of the image to use for inference.",
+        default=None,
+        help="Path to the audio to use for inference.",
     )
     parser.add_argument(
         "--audio_path",
@@ -293,7 +305,6 @@ if __name__ == "__main__":
         default=None,
         help="Path to the audio to use for inference.",
     )
-    parser.add_argument("--devices", type=int, required=False, default=1)
     parser.add_argument("--tp_size", type=int, required=False, default=1)
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p sampling parameter")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling")

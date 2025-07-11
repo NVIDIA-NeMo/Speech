@@ -16,19 +16,17 @@ import torch.nn as nn
 
 from nemo.collections.llm import GPTModel
 from nemo.utils import logging
-from nemo.utils.import_utils import UnavailableError, safe_import
+from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
 
 mto, HAVE_MODELOPT = safe_import("modelopt.torch.opt")
 mtsp, _ = safe_import("modelopt.torch.speculative")
 
-try:
-    ALGORITHMS = {
-        "eagle3": mtsp.EAGLE3_DEFAULT_CFG,
-        # more TBD
-    }
-except UnavailableError:
-    ALGORITHMS = {}
+
+ALGORITHMS = {
+    "eagle3": mtsp.EAGLE3_DEFAULT_CFG,
+    # more TBD
+}
 
 
 def apply_speculative_decoding(model: nn.Module, algorithm: str = "eagle3") -> nn.Module:

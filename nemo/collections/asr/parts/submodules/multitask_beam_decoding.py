@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -21,8 +21,10 @@ import torch
 
 from nemo.collections.asr.modules.transformer import (
     BeamSearchSequenceGenerator,
-    BeamSearchSequenceGeneratorWithNGramLM,
+    BeamSearchSequenceGeneratorWithFusionModels,
 )
+from nemo.collections.asr.parts.context_biasing import BoostingTreeModelConfig, GPUBoostingTreeModel
+from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core import Typing, typecheck
@@ -135,6 +137,8 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
         preserve_alignments: bool = False,
         ngram_lm_model: Path | str | None = None,
         ngram_lm_alpha: float = 0.0,
+        boosting_tree: BoostingTreeModelConfig | None = None,
+        boosting_tree_alpha: float = 0.0,
     ):
         super().__init__(
             transformer_decoder=transformer_decoder,
@@ -148,7 +152,26 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
         self.bos = tokenizer.bos
         self.pad = tokenizer.pad
         self.eos = tokenizer.eos
-        if ngram_lm_model is None:
+
+        # load boosting tree model
+        boosting_tree_model = None
+        if boosting_tree is not None and (
+            boosting_tree.model_path or boosting_tree.key_phrases_file or boosting_tree.key_phrases_list
+        ):
+            boosting_tree_model = GPUBoostingTreeModel.from_config(boosting_tree, tokenizer=tokenizer)
+
+        # initialize fusion models (ngram LM, boosting tree)
+        fusion_models, fusion_models_alpha = [], []
+        if ngram_lm_model is not None:
+            fusion_models.append(
+                NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=tokenizer.vocab_size)
+            )
+            fusion_models_alpha.append(ngram_lm_alpha)
+        if boosting_tree_model is not None:
+            fusion_models.append(boosting_tree_model)
+            fusion_models_alpha.append(boosting_tree_alpha)
+
+        if not fusion_models:
             self.beam_search = BeamSearchSequenceGenerator(
                 embedding=transformer_decoder.embedding,
                 decoder=transformer_decoder.decoder,
@@ -162,7 +185,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 max_delta_length=max_generation_delta,
             )
         else:
-            self.beam_search = BeamSearchSequenceGeneratorWithNGramLM(
+            self.beam_search = BeamSearchSequenceGeneratorWithFusionModels(
                 embedding=transformer_decoder.embedding,
                 decoder=transformer_decoder.decoder,
                 log_softmax=log_softmax_module,
@@ -173,8 +196,8 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 eos=self.eos,
                 len_pen=length_penalty,
                 max_delta_length=max_generation_delta,
-                ngram_lm_model=ngram_lm_model,
-                ngram_lm_alpha=ngram_lm_alpha,
+                fusion_models=fusion_models,
+                fusion_models_alpha=fusion_models_alpha,
             )
 
         self.preserve_alignments = preserve_alignments
@@ -286,6 +309,8 @@ class AEDBeamInferConfig:
     max_generation_delta: int = -1  # -1 means up to the max length of the decoder
     return_best_hypothesis: bool = True
     preserve_alignments: bool = False
-    # ngram LM params
+    # fusion models params
     ngram_lm_model: Optional[str] = None
     ngram_lm_alpha: float = 0.0
+    boosting_tree: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
+    boosting_tree_alpha: float = 0.0

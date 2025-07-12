@@ -20,9 +20,10 @@ import torch
 from nemo.collections.asr.modules.transformer.transformer import TransformerDecoderNM
 from nemo.collections.asr.modules.transformer.transformer_generators import (
     BeamSearchSequenceGenerator,
-    BeamSearchSequenceGeneratorWithNGramLM,
+    BeamSearchSequenceGeneratorWithFusionModels,
     GreedySequenceGenerator,
 )
+from nemo.collections.asr.parts.context_biasing import GPUBoostingTreeModel
 from nemo.collections.asr.parts.submodules.multitask_beam_decoding import TransformerAEDBeamInfer
 from nemo.collections.asr.parts.submodules.multitask_greedy_decoding import TransformerAEDGreedyInfer
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
@@ -157,12 +158,20 @@ def test_beam_decoding_beam_scores_true(inputs, nnet):
     assert best_path.shape == (1, 26)
 
 
-def test_beam_decoding_beam_scores_true_with_lm(inputs, nnet, tmp_path):
-    """Test decoding with dummy unigram LM"""
+def test_beam_decoding_beam_scores_true_with_fusion_models(inputs, nnet):
+    """Test decoding with dummy unigram LM and boosting tree"""
+    # load dummy ngpu-lm
     lm = NGramGPULanguageModel.dummy_unigram_lm(vocab_size=8)
-    lm_path = tmp_path / "unigram_lm.nemo"
-    lm.save_to(f"{lm_path}")
-    gen = BeamSearchSequenceGeneratorWithNGramLM(*nnet, ngram_lm_model=lm_path, ngram_lm_alpha=0.2, beam_size=2)
+
+    # load dummy boosting tree
+    boosting_tree = GPUBoostingTreeModel.dummy_boosting_tree(vocab_size=8)
+
+    fusion_models = [lm, boosting_tree]
+    fusion_models_alpha = [0.2, 0.2]
+
+    gen = BeamSearchSequenceGeneratorWithFusionModels(
+        *nnet, fusion_models=fusion_models, fusion_models_alpha=fusion_models_alpha, beam_size=2
+    )
     output = gen(*inputs, return_beam_scores=True)
 
     assert len(output) == 3

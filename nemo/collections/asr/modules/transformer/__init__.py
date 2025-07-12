@@ -24,8 +24,8 @@ from nemo.collections.asr.modules.transformer.transformer_decoders import Transf
 from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
 from nemo.collections.asr.modules.transformer.transformer_generators import (
     BeamSearchSequenceGenerator,
+    BeamSearchSequenceGeneratorWithFusionModels,
     BeamSearchSequenceGeneratorWithLanguageModel,
-    BeamSearchSequenceGeneratorWithNGramLM,
     EnsembleBeamSearchSequenceGenerator,
     GreedySequenceGenerator,
     TopKSequenceGenerator,
@@ -44,7 +44,7 @@ __all__ = [
     "TransformerEncoder",
     "BeamSearchSequenceGenerator",
     "BeamSearchSequenceGeneratorWithLanguageModel",
-    "BeamSearchSequenceGeneratorWithNGramLM",
+    "BeamSearchSequenceGeneratorWithFusionModels",
     "EnsembleBeamSearchSequenceGenerator",
     "GreedySequenceGenerator",
     "TopKSequenceGenerator",

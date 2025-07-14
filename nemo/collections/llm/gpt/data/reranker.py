@@ -301,6 +301,7 @@ class ReRankerDataset(Dataset):
         BOS, EOS, and SEP, are added if specified.
         """
         metadata = {k: v for k, v in example.items()}
+
         question = example[self.question_key]
         pos_doc = example[self.pos_key]
         neg_doc = example[self.neg_key]
@@ -672,7 +673,8 @@ class SpecterReRankerDataModule(CustomReRankerDataModule):
             with output_file.open("w", encoding="utf-8") as f:
                 for o in dataset:
                     f.write(
-                        json.dumps({"query": o["anchor"], "pos_doc": o["positive"], "neg_doc": [o["negative"]]}) + "\n"
+                        json.dumps({"question": o["anchor"], "pos_doc": o["positive"], "neg_doc": [o["negative"]]})
+                        + "\n"
                     )
 
             logging.info(f"{split_name} split saved to {output_file}")

@@ -48,6 +48,8 @@ def override_recipe_configs(
     recompute_layers: int,
     activation_offload_layers: int,
     recompute_modules: Optional[List[str]] = None,
+    use_user_buffer_registration: Optional[bool] = None,
+    use_sharp: Optional[bool] = None,
 ):
     """
     DeepSeek V3 pre-train recipe aimed at achieving best possible performance.
@@ -129,8 +131,8 @@ def override_recipe_configs(
         enable_cuda_graphs=enable_cuda_graphs,
         use_mcore_fsdp=use_mcore_fsdp,
         use_fsdp_double_buffer=args.use_fsdp_double_buffer,
-        use_user_buffer_registration=args.use_user_buffer_registration,
-        use_sharp=args.use_sharp,
+        use_user_buffer_registration=use_user_buffer_registration,
+        use_sharp=use_sharp,
         recompute_layers=recompute_layers,
         activation_offload_layers=activation_offload_layers,
         compute_dtype=args.compute_dtype,
@@ -180,7 +182,10 @@ if __name__ == "__main__":
         recompute_layers,
         activation_offload_layers,
         recompute_modules,
-    ) = kwargs
+        _,  # keep_fsdp_fp8_transpose_cache
+        use_user_buffer_registration,
+        use_sharp,
+    ) = kwargs[:17]
 
     recipe = override_recipe_configs(
         args,
@@ -198,6 +203,8 @@ if __name__ == "__main__":
         recompute_layers,
         activation_offload_layers,
         recompute_modules,
+        use_user_buffer_registration,
+        use_sharp,
     )
 
     exp_config = f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_ep{ep_size}_{mbs}mbs_{gbs}gbs"
@@ -217,7 +224,7 @@ if __name__ == "__main__":
         hf_token=args.hf_token,
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,
-        network='sharp' if args.use_sharp else None,
+        network='sharp' if use_sharp else None,
     )
 
     plugins = [

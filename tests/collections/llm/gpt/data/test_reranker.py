@@ -359,7 +359,7 @@ def test_specter_reranker_datamodule_prepare_data(specter_data_module, temp_data
         lines = f.readlines()
         assert len(lines) > 0
         first_line = json.loads(lines[0])
-        assert "query" in first_line
+        assert "question" in first_line
         assert "pos_doc" in first_line
         assert "neg_doc" in first_line
         assert isinstance(first_line["neg_doc"], list)

@@ -48,6 +48,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import (
     is_prefix,
     select_k_expansions,
 )
+from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, HypothesisType, LengthsType, NeuralType
 from nemo.utils import logging
@@ -1526,7 +1527,7 @@ class BeamRNNTInfer(Typing):
             self.token_offset = DEFAULT_TOKEN_OFFSET
 
 
-class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin):
+class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs):
     @property
     def input_types(self):
         """Returns definitions of module input ports."""
@@ -1635,6 +1636,16 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin):
                 pruning_mode=pruning_mode,
                 allow_cuda_graphs=allow_cuda_graphs,
             )
+
+    def disable_cuda_graphs(self):
+        """Disable CUDA graphs (e.g., for decoding in training)"""
+        if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
+            self._decoding_computer.disable_cuda_graphs()
+
+    def maybe_enable_cuda_graphs(self):
+        """Enable CUDA graphs (if allowed)"""
+        if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
+            self._decoding_computer.maybe_enable_cuda_graphs()
 
     @property
     def output_types(self):

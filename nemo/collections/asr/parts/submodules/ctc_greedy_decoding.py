@@ -23,6 +23,7 @@ from omegaconf import DictConfig, OmegaConf
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodConfig, ConfidenceMethodMixin
+from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, NeuralType
 from nemo.core.utils.cuda_python_utils import (
@@ -389,7 +390,7 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
         return self.forward(*args, **kwargs)
 
 
-class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
+class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs):
     """A vectorized greedy CTC decoder.
 
     This is basically always faster than GreedyCTCInfer, and supports
@@ -500,6 +501,8 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
             self.ngram_lm_alpha = ngram_lm_alpha
             self.state: CTCDecoderCudaGraphsState | None = None
         else:
+            self.allow_cuda_graphs = False
+            self.cuda_graphs_mode = None
             self.ngram_lm_batch = None
 
     @typecheck()

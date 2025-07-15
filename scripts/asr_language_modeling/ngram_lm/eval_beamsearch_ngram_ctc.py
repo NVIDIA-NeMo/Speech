@@ -78,6 +78,7 @@ from nemo.collections.asr.parts.utils.transcribe_utils import PunctuationCapital
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
+
 # fmt: off
 
 
@@ -93,11 +94,10 @@ class EvalBeamSearchNGramConfig:
     input_manifest: str = MISSING  # The manifest file of the evaluation set
     kenlm_model_file: Optional[str] = None  # The path of the KenLM binary model file
     preds_output_folder: Optional[str] = None  # The optional folder where the predictions are stored
-    probs_cache_file: Optional[str] = None  # The cache file for storing the logprobs of the model
+    hyps_cache_file: Optional[str] = None  # The cache file for storing the logprobs of the model
 
     # Parameters for inference
-    acoustic_batch_size: int = 16  # The batch size to calculate log probabilities
-    beam_batch_size: int = 128  # The batch size to be used for beam search decoding
+    batch_size: int = 16  # The batch size
     device: str = "cuda"  # The device to load the model onto to calculate log probabilities
     use_amp: bool = False  # Whether to use AMP if available to calculate log probabilities
 
@@ -123,18 +123,31 @@ class EvalBeamSearchNGramConfig:
 # fmt: on
 
 
+def apply_text_processing(
+    punctuation_capitalization: PunctuationCapitalization, cfg: EvalBeamSearchNGramConfig, text: List[str] | str
+) -> List[str] | str:
+    is_list = isinstance(text, list)
+    text_arr = text if is_list else [text]
+    if cfg.text_processing.do_lowercase:
+        text_arr = punctuation_capitalization.do_lowercase(text_arr)
+    if cfg.text_processing.rm_punctuation:
+        text_arr = punctuation_capitalization.rm_punctuation(text_arr)
+    if cfg.text_processing.separate_punctuation:
+        text_arr = punctuation_capitalization.separate_punctuation(text_arr)
+
+    return text_arr if is_list else text_arr[0]
+
+
 def beam_search_eval(
+    audio_filepaths,
     model: nemo_asr.models.ASRModel,
     cfg: EvalBeamSearchNGramConfig,
-    all_probs: List[torch.Tensor],
     target_transcripts: List[str],
     preds_output_file: str = None,
     lm_path: str = None,
     beam_alpha: float = 1.0,
     beam_beta: float = 0.0,
     beam_width: int = 128,
-    beam_batch_size: int = 128,
-    progress_bar: bool = True,
     punctuation_capitalization: PunctuationCapitalization = None,
 ):
     level = logging.getEffectiveLevel()
@@ -159,80 +172,47 @@ def beam_search_eval(
     # Update model's decoding strategy
     if isinstance(model, EncDecHybridRNNTCTCModel):
         model.change_decoding_strategy(model.cfg.decoding, decoder_type='ctc')
-        decoding = model.ctc_decoding
     else:
         model.change_decoding_strategy(model.cfg.decoding)
-        decoding = model.decoding
     logging.setLevel(level)
+
+    all_hyps = model.transcribe(audio_filepaths, cfg.batch_size)
 
     wer_dist_first = cer_dist_first = 0
     wer_dist_best = cer_dist_best = 0
     words_count = 0
     chars_count = 0
-    sample_idx = 0
     if preds_output_file:
         out_file = open(preds_output_file, 'w', encoding='utf_8', newline='\n')
 
-    if progress_bar:
-        it = tqdm(
-            range(int(np.ceil(len(all_probs) / beam_batch_size))),
-            desc=f"Beam search decoding with width={beam_width}, alpha={beam_alpha}, beta={beam_beta}",
-            ncols=120,
-        )
-    else:
-        it = range(int(np.ceil(len(all_probs) / beam_batch_size)))
-    for batch_idx in it:
-        # disabling type checking
-        probs_batch = all_probs[batch_idx * beam_batch_size : (batch_idx + 1) * beam_batch_size]
-        probs_lens = torch.tensor([prob.shape[0] for prob in probs_batch])
-        with torch.no_grad():
-            packed_batch = torch.zeros(len(probs_batch), max(probs_lens), probs_batch[0].shape[-1], device='cpu')
+    for batch_idx, nbest_hyp in enumerate(all_hyps):
+        target = target_transcripts[batch_idx]
+        target_split_w = target.split()
+        target_split_c = list(target)
+        words_count += len(target_split_w)
+        chars_count += len(target_split_c)
+        wer_dist_min = cer_dist_min = float("inf")
+        for candidate_idx, candidate in enumerate(nbest_hyp):
+            pred_text = apply_text_processing(punctuation_capitalization, cfg, candidate.text)
 
-            for prob_index in range(len(probs_batch)):
-                packed_batch[prob_index, : probs_lens[prob_index], :] = torch.tensor(
-                    probs_batch[prob_index], device=packed_batch.device, dtype=packed_batch.dtype
-                )
+            pred_split_w = pred_text.split()
+            wer_dist = editdistance.eval(target_split_w, pred_split_w)
+            pred_split_c = list(pred_text)
+            cer_dist = editdistance.eval(target_split_c, pred_split_c)
 
-            beams_batch = decoding.ctc_decoder_predictions_tensor(
-                packed_batch,
-                decoder_lengths=probs_lens,
-                return_hypotheses=True,
-            )
+            wer_dist_min = min(wer_dist_min, wer_dist)
+            cer_dist_min = min(cer_dist_min, cer_dist)
 
-        for beams_idx, beams in enumerate(beams_batch):
-            target = target_transcripts[sample_idx + beams_idx]
-            target_split_w = target.split()
-            target_split_c = list(target)
-            words_count += len(target_split_w)
-            chars_count += len(target_split_c)
-            wer_dist_min = cer_dist_min = 10000
-            for candidate_idx, candidate in enumerate(beams):  # type: (int, ctc_beam_decoding.rnnt_utils.Hypothesis)
-                pred_text = candidate.text
-                if cfg.text_processing.do_lowercase:
-                    pred_text = punctuation_capitalization.do_lowercase([pred_text])[0]
-                if cfg.text_processing.rm_punctuation:
-                    pred_text = punctuation_capitalization.rm_punctuation([pred_text])[0]
-                if cfg.text_processing.separate_punctuation:
-                    pred_text = punctuation_capitalization.separate_punctuation([pred_text])[0]
-                pred_split_w = pred_text.split()
-                wer_dist = editdistance.eval(target_split_w, pred_split_w)
-                pred_split_c = list(pred_text)
-                cer_dist = editdistance.eval(target_split_c, pred_split_c)
+            if candidate_idx == 0:
+                # first candidate
+                wer_dist_first += wer_dist
+                cer_dist_first += cer_dist
 
-                wer_dist_min = min(wer_dist_min, wer_dist)
-                cer_dist_min = min(cer_dist_min, cer_dist)
-
-                if candidate_idx == 0:
-                    # first candidate
-                    wer_dist_first += wer_dist
-                    cer_dist_first += cer_dist
-
-                score = candidate.score
-                if preds_output_file:
-                    out_file.write('{}\t{}\n'.format(pred_text, score))
-            wer_dist_best += wer_dist_min
-            cer_dist_best += cer_dist_min
-        sample_idx += len(probs_batch)
+            score = candidate.score
+            if preds_output_file:
+                out_file.write('{}\t{}\n'.format(pred_text, score))
+        wer_dist_best += wer_dist_min
+        cer_dist_best += cer_dist_min
 
     if preds_output_file:
         out_file.close()
@@ -255,6 +235,7 @@ def beam_search_eval(
             wer_dist_best / words_count, cer_dist_best / chars_count
         )
     )
+
     logging.info(f"=================================================================================")
 
     return wer_dist_first / words_count, cer_dist_first / chars_count
@@ -294,23 +275,18 @@ def main(cfg: EvalBeamSearchNGramConfig):
             audio_file_paths.append(str(audio_file.absolute()))
 
     punctuation_capitalization = PunctuationCapitalization(cfg.text_processing.punctuation_marks)
-    if cfg.text_processing.do_lowercase:
-        target_transcripts = punctuation_capitalization.do_lowercase(target_transcripts)
-    if cfg.text_processing.rm_punctuation:
-        target_transcripts = punctuation_capitalization.rm_punctuation(target_transcripts)
-    if cfg.text_processing.separate_punctuation:
-        target_transcripts = punctuation_capitalization.separate_punctuation(target_transcripts)
+    target_transcripts = apply_text_processing(punctuation_capitalization, cfg, target_transcripts)
 
-    if cfg.probs_cache_file and os.path.exists(cfg.probs_cache_file):
-        logging.info(f"Found a pickle file of probabilities at '{cfg.probs_cache_file}'.")
-        logging.info(f"Loading the cached pickle file of probabilities from '{cfg.probs_cache_file}' ...")
-        with open(cfg.probs_cache_file, 'rb') as probs_file:
-            all_probs = pickle.load(probs_file)
+    if cfg.hyps_cache_file and os.path.exists(cfg.hyps_cache_file):
+        logging.info(f"Found a pickle file of hypotheses at '{cfg.hyps_cache_file}'.")
+        logging.info(f"Loading the cached pickle file of hypotheses from '{cfg.hyps_cache_file}' ...")
+        with open(cfg.hyps_cache_file, 'rb') as probs_file:
+            all_hyps = pickle.load(probs_file)
 
-        if len(all_probs) != len(audio_file_paths):
+        if len(all_hyps) != len(audio_file_paths):
             raise ValueError(
-                f"The number of samples in the probabilities file '{cfg.probs_cache_file}' does not "
-                f"match the manifest file. You may need to delete the probabilities cached file."
+                f"The number of samples in the hypotheses file '{cfg.hyps_cache_file}' does not "
+                f"match the manifest file. You may need to delete the hypotheses cached file."
             )
     else:
 
@@ -318,33 +294,20 @@ def main(cfg: EvalBeamSearchNGramConfig):
             with torch.no_grad():
                 if isinstance(asr_model, EncDecHybridRNNTCTCModel):
                     asr_model.cur_decoder = 'ctc'
-                all_logits = asr_model.transcribe(audio_file_paths, batch_size=cfg.acoustic_batch_size, logprobs=True)
+                all_hyps = asr_model.transcribe(audio_file_paths, batch_size=cfg.batch_size)
 
-        all_probs = all_logits
-        if cfg.probs_cache_file:
-            os.makedirs(os.path.split(cfg.probs_cache_file)[0], exist_ok=True)
-            logging.info(f"Writing pickle files of probabilities at '{cfg.probs_cache_file}'...")
-            with open(cfg.probs_cache_file, 'wb') as f_dump:
-                pickle.dump(all_probs, f_dump)
+        if cfg.hyps_cache_file:
+            os.makedirs(os.path.split(cfg.hyps_cache_file)[0], exist_ok=True)
+            logging.info(f"Writing pickle files of hypotheses at '{cfg.hyps_cache_file}'...")
+            with open(cfg.hyps_cache_file, 'wb') as f_dump:
+                pickle.dump(all_hyps, f_dump)
 
     wer_dist_greedy = 0
     cer_dist_greedy = 0
     words_count = 0
     chars_count = 0
-    for batch_idx, probs in enumerate(all_probs):
-        preds = np.argmax(probs, axis=1)
-        preds_tensor = torch.tensor(preds, device='cpu').unsqueeze(0)
-        if isinstance(asr_model, EncDecHybridRNNTCTCModel):
-            pred_text = asr_model.ctc_decoding.ctc_decoder_predictions_tensor(preds_tensor)[0]
-        else:
-            pred_text = asr_model._wer.decoding.ctc_decoder_predictions_tensor(preds_tensor)[0]
-
-        if cfg.text_processing.do_lowercase:
-            pred_text = punctuation_capitalization.do_lowercase([pred_text])[0]
-        if cfg.text_processing.rm_punctuation:
-            pred_text = punctuation_capitalization.rm_punctuation([pred_text])[0]
-        if cfg.text_processing.separate_punctuation:
-            pred_text = punctuation_capitalization.separate_punctuation([pred_text])[0]
+    for batch_idx, hyp in enumerate(all_hyps):
+        pred_text = apply_text_processing(punctuation_capitalization, cfg, hyp.text)
 
         pred_split_w = pred_text.split()
         target_split_w = target_transcripts[batch_idx].split()
@@ -381,7 +344,7 @@ def main(cfg: EvalBeamSearchNGramConfig):
         best_wer_beam_size, best_cer_beam_size = None, None
         best_wer_alpha, best_cer_alpha = None, None
         best_wer_beta, best_cer_beta = None, None
-        best_wer, best_cer = 1e6, 1e6
+        best_wer, best_cer = float("inf"), float("inf")
 
         logging.info(f"==============================Starting the beam search decoding===============================")
         logging.info(f"Grid search size: {len(hp_grid)}")
@@ -400,31 +363,33 @@ def main(cfg: EvalBeamSearchNGramConfig):
                 preds_output_file = None
 
             candidate_wer, candidate_cer = beam_search_eval(
+                audio_file_paths,
                 asr_model,
                 cfg,
-                all_probs=all_probs,
                 target_transcripts=target_transcripts,
                 preds_output_file=preds_output_file,
                 lm_path=lm_path,
                 beam_width=hp["beam_width"],
                 beam_alpha=hp["beam_alpha"],
                 beam_beta=hp["beam_beta"],
-                beam_batch_size=cfg.beam_batch_size,
-                progress_bar=True,
                 punctuation_capitalization=punctuation_capitalization,
             )
 
             if candidate_cer < best_cer:
-                best_cer_beam_size = hp["beam_width"]
-                best_cer_alpha = hp["beam_alpha"]
-                best_cer_beta = hp["beam_beta"]
-                best_cer = candidate_cer
+                best_cer_beam_size, best_cer_alpha, best_cer_beta, best_cer = (
+                    hp["beam_width"],
+                    hp["beam_alpha"],
+                    hp["beam_beta"],
+                    candidate_cer,
+                )
 
             if candidate_wer < best_wer:
-                best_wer_beam_size = hp["beam_width"]
-                best_wer_alpha = hp["beam_alpha"]
-                best_wer_beta = hp["beam_beta"]
-                best_wer = candidate_wer
+                best_wer_beam_size, best_wer_alpha, best_wer_beta, best_wer = (
+                    hp["beam_width"],
+                    hp["beam_alpha"],
+                    hp["beam_beta"],
+                    candidate_wer,
+                )
 
         logging.info(
             f'Best WER Candidate = {best_wer:.2%} :: Beam size = {best_wer_beam_size}, '

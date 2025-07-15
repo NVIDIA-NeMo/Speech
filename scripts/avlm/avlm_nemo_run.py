@@ -46,8 +46,7 @@ def configure_recipe(
             num_nodes=nodes,
             num_gpus_per_node=gpus_per_node,
             freeze_modules=freeze_modules,
-            # DEBUGGING
-            peft_scheme="lora",
+            peft_scheme="none",
         )
     recipe.trainer.max_steps = 20
     recipe.trainer.val_check_interval = 20

@@ -78,7 +78,7 @@ from tensorrt_llm.plugin import PluginConfig
 from transformers import PreTrainedTokenizerBase
 
 from nemo.deploy import ITritonDeployable
-from nemo.export.tarutils import TarPath, unpack_tarball
+from nemo.export.tarutils import TarPath
 from nemo.export.trt_llm.converter.model_converter import determine_quantization_settings, model_to_trtllm_ckpt
 from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import dist_model_to_trt_llm_ckpt, get_layer_prefix
 from nemo.export.trt_llm.converter.utils import init_model_parallel_from_nemo
@@ -326,8 +326,7 @@ class TensorRTLLM(ITritonDeployable):
                 if os.path.isdir(nemo_checkpoint_path):
                     nemo_export_dir = nemo_checkpoint_path
                 else:
-                    unpack_tarball(nemo_checkpoint_path, tmp_dir.name)
-                    nemo_checkpoint_path = tmp_dir.name
+                    raise ValueError("Checkpoint path must be a directory")
 
                 if os.path.exists(os.path.join(nemo_checkpoint_path, TOKENIZER_CONFIG_FILE)):
                     # Instantiate tokenizer for a legacy "Nemo 1" quantized checkpoint from a tokenizer config.

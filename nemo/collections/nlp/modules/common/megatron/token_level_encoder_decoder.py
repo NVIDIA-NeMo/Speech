@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=C0301,C0115,C0116
 import torch
 from omegaconf import DictConfig
 
@@ -248,7 +249,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
                 normalization=encoder_cfg.get('normalization', 'layernorm'),
                 transformer_block_type=encoder_cfg.get('transformer_block_type', 'pre_ln'),
                 headscale=encoder_cfg.get('headscale', False),
-                parent_model_type=ModelType.encoder_and_decoder,
+                parent_model_type=ModelType.encoder_or_decoder,
                 num_self_attention_per_cross_attention=encoder_cfg.get('num_self_attention_per_cross_attention', 1),
                 megatron_legacy=encoder_cfg.get('megatron_legacy', False),
                 normalize_attention_scores=encoder_cfg.get('normalize_attention_scores', True),
@@ -386,7 +387,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
                 normalization=decoder_cfg.get('normalization', 'layernorm'),
                 transformer_block_type=decoder_cfg.get('transformer_block_type', 'pre_ln'),
                 headscale=decoder_cfg.get('headscale', False),
-                parent_model_type=ModelType.encoder_and_decoder,
+                parent_model_type=ModelType.encoder_or_decoder,
                 megatron_legacy=decoder_cfg.get('megatron_legacy', False),
                 normalize_attention_scores=decoder_cfg.get('normalize_attention_scores', True),
                 num_moe_experts=decoder_cfg.get('num_moe_experts', 1),
@@ -455,7 +456,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
             cfg.get("position_embedding_type", "learned_absolute") == "relative"
             and cfg.get("arch", "transformer") == "perceiver"
         ):
-            raise ValueError(f"Perceivers with relative position embeddings are not supported")
+            raise ValueError("Perceivers with relative position embeddings are not supported")
 
     def _validate_config(self):
         encoder_kv_channels = self._validate_kv_channels(self.encoder_cfg)

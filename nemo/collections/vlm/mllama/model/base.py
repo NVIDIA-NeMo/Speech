@@ -383,7 +383,7 @@ class MLlamaBaseModel(MegatronModule):
         if self.add_encoder:
             self.vision_model = vision_model_config.configure_model()
 
-        self.model_type = ModelType.encoder_and_decoder
+        self.model_type = ModelType.encoder_or_decoder
         self.xattn_needed = True
 
         self.patch_size = 14

@@ -172,9 +172,9 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 init_method=encoder_init,
                 scaled_init_method=encoder_scaled_init,
                 pre_process=pre_process,
-                post_process=False
-                if megatron_lm_compatible
-                else post_process,  # megatron lm model has no final layer_norm
+                post_process=(
+                    False if megatron_lm_compatible else post_process
+                ),  # megatron lm model has no final layer_norm
                 init_method_std=init_method_std,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
@@ -196,7 +196,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 normalization=normalization,
                 transformer_block_type=transformer_block_type,
                 headscale=headscale,
-                parent_model_type=ModelType.encoder_and_decoder,
+                parent_model_type=ModelType.encoder_or_decoder,
                 layer_type=enc_layer_types,
                 chunk_size=chunk_size,
                 layer_number_offset=0,
@@ -260,7 +260,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 normalization=normalization,
                 transformer_block_type=transformer_block_type,
                 headscale=headscale,
-                parent_model_type=ModelType.encoder_and_decoder,
+                parent_model_type=ModelType.encoder_or_decoder,
                 layer_type=pre_decoder_layer_types,
                 chunk_size=chunk_size,
                 layer_number_offset=0,
@@ -304,7 +304,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 normalization=normalization,
                 headscale=headscale,
                 transformer_block_type=transformer_block_type,
-                parent_model_type=ModelType.encoder_and_decoder,
+                parent_model_type=ModelType.encoder_or_decoder,
                 layer_type=post_decoder_layer_types,
                 chunk_size=chunk_size,
                 layer_number_offset=pre_decoder_num_layers + 1,

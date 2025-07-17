@@ -105,7 +105,6 @@ def _initialize_distributed_parallel_state(
         parallel_state.initialize_model_parallel(
             tensor_model_parallel_size=tensor_model_parallel_size,
             pipeline_model_parallel_size=pipeline_model_parallel_size,
-            pipeline_model_parallel_split_rank=pipeline_model_parallel_split_rank,
             context_parallel_size=context_parallel_size,
         )
 

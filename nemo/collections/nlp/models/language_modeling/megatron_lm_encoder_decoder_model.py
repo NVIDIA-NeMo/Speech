@@ -124,13 +124,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 model_provider_func=self.model_provider_func,
                 wrap_with_ddp=False,
                 on_cpu=True,
-                model_type=ModelType.encoder_and_decoder,
+                model_type=ModelType.encoder_or_decoder,
             )[0]
         else:
             self.enc_dec_model = build_model(
                 model_provider_func=self.model_provider_func,
                 wrap_with_ddp=False,
-                model_type=ModelType.encoder_and_decoder,
+                model_type=ModelType.encoder_or_decoder,
             )[0]
 
         # We don't need to call it explicitly? Since it is a pytorch lightning hook function
@@ -154,7 +154,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             True if (not self.megatron_amp_O2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
         )
 
-        self.enc_dec_model.model_type = ModelType.encoder_and_decoder
+        self.enc_dec_model.model_type = ModelType.encoder_or_decoder
 
     def setup_optimizer_param_groups(self):
         """ModelPT override. Optimizer will get self._optimizer_param_groups"""

@@ -218,7 +218,6 @@ def convert(local_rank, rank, world_size, args):
     parallel_state.initialize_model_parallel(
         tensor_model_parallel_size=app_state.tensor_model_parallel_size,
         pipeline_model_parallel_size=app_state.pipeline_model_parallel_size,
-        pipeline_model_parallel_split_rank=app_state.pipeline_model_parallel_split_rank,
     )
 
     app_state.pipeline_model_parallel_rank = parallel_state.get_pipeline_model_parallel_rank()

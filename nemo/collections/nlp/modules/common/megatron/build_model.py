@@ -94,29 +94,6 @@ def build_model(
                 pre_process=parallel_state.is_pipeline_first_stage(),
                 post_process=parallel_state.is_pipeline_last_stage(),
             )
-        elif model_type == ModelType.encoder_and_decoder:
-            pre_process = parallel_state.is_pipeline_first_stage()
-            post_process = parallel_state.is_pipeline_last_stage()
-            # `add_encoder` & `add_decoder` logic.
-            add_encoder, add_decoder = True, True
-            if parallel_state.get_pipeline_model_parallel_world_size() > 1:
-                split_rank = parallel_state.get_pipeline_model_parallel_split_rank()
-                if split_rank is None:
-                    raise RuntimeError("Split rank needs to be specified for model with both encoder and decoder.")
-                rank = parallel_state.get_pipeline_model_parallel_rank()
-                world_size = parallel_state.get_pipeline_model_parallel_world_size()
-                pre_process = rank == 0 or rank == split_rank
-                post_process = rank == (split_rank - 1) or rank == (world_size - 1)
-                add_encoder = parallel_state.is_pipeline_stage_before_split()
-                add_decoder = parallel_state.is_pipeline_stage_after_split()
-            model = model_provider_func(
-                *args,
-                **kwargs,
-                pre_process=pre_process,
-                post_process=post_process,
-                add_encoder=add_encoder,
-                add_decoder=add_decoder,
-            )
         else:
             raise ValueError(f"Unrecognized ModelType '{model_type}'")
 

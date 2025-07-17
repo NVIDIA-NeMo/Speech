@@ -201,7 +201,7 @@ class MegatronBaseModel(NLPModel):
             pipeline_model_parallel_size=cfg.get('pipeline_model_parallel_size', 1),
             pipeline_model_parallel_comm_backend=cfg.get('pipeline_model_parallel_comm_backend', None),
             virtual_pipeline_model_parallel_size=vp_size,
-            pipeline_model_parallel_split_rank=cfg.get('pipeline_model_parallel_split_rank', 0),
+            pipeline_model_parallel_split_rank=cfg.get('pipeline_model_parallel_split_rank', None),
             use_tp_pp_dp_mapping=cfg.get('use_tp_pp_dp_mapping', False),
             num_distributed_optimizer_instances=self.cfg.optim.get('num_distributed_optimizer_instances', 1),
             context_parallel_size=cfg.get('context_parallel_size', 1),
@@ -1170,17 +1170,13 @@ class MegatronBaseModel(NLPModel):
             num_parameters_on_device -= num_word_embedding_parameters
 
             # Subtract decoder position embedding params that are shared with encoder.
-            if (
-                parallel_state.is_pipeline_stage_at_split()
-                and self.cfg.encoder.get("position_embedding_type", "learned_absolute") == "learned_absolute"
-            ):
+            if self.cfg.encoder.get("position_embedding_type", "learned_absolute") == "learned_absolute":
                 num_position_embedding_parameters = sum([p.nelement() for p in model.position_embeddings_weight()])
                 num_parameters_on_device -= num_position_embedding_parameters
 
         # Check and remove RPE embeddings from the encoder that are replicated.
         if (
             parallel_state.get_pipeline_model_parallel_world_size() > 1
-            and parallel_state.is_pipeline_stage_before_split()
             and not parallel_state.is_pipeline_first_stage()
             and self.cfg.encoder.get("position_embedding_type", "learned_absolute") == "relative"
         ):
@@ -1191,8 +1187,6 @@ class MegatronBaseModel(NLPModel):
         # Check and remove RPE embeddings from the decoder that are replicated.
         if (
             parallel_state.get_pipeline_model_parallel_world_size() > 1
-            and parallel_state.is_pipeline_stage_after_split()
-            and not parallel_state.is_pipeline_stage_at_split()
             and self.cfg.encoder.get("position_embedding_type", "learned_absolute") == "relative"
         ):
             # substract the RPE params on intermediate pipeline stages.

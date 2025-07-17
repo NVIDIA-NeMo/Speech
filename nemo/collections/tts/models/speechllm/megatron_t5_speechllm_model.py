@@ -171,7 +171,7 @@ class MegatronT5SpeechLMModel(MegatronBaseSpeechLM):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer)
-        self.model_type = ModelType.encoder_and_decoder
+        self.model_type = ModelType.encoder_or_decoder
         speech_codebook_size = cfg.data.get('speech_codebook_size', 1024)
         num_speech_codebooks = cfg.data.get('num_speech_codebooks', 8)
         speech_offset = cfg.data.get('speech_offset', 30000)

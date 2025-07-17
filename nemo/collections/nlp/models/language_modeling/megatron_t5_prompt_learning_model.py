@@ -83,7 +83,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer)
-        self.model_type = ModelType.encoder_and_decoder
+        self.model_type = ModelType.encoder_or_decoder
 
     def first_stage_of_pipeline(self):
         if self.frozen_model.enc_dec_model.pre_process and parallel_state.get_pipeline_model_parallel_rank() == 0:

@@ -36,7 +36,6 @@ try:
         set_expert_model_parallel_rank,
         set_expert_model_parallel_world_size,
         set_pipeline_model_parallel_rank,
-        set_pipeline_model_parallel_split_rank,
         set_pipeline_model_parallel_world_size,
         set_tensor_model_parallel_rank,
         set_tensor_model_parallel_world_size,
@@ -101,6 +100,15 @@ def initialize_model_parallel_for_nemo(
     """
     Initialize the model parallel groups for NeMo.
     """
+    assert (
+        pipeline_model_parallel_split_rank is None or pipeline_model_parallel_split_rank == 0
+    ), "pipeline_model_parallel_split_rank is deprecated."
+    assert encoder_pipeline_model_parallel_size == 0 and (
+        encoder_tensor_model_parallel_size == 0 or encoder_tensor_model_parallel_size == tensor_model_parallel_size
+    ), (
+        "encoder_pipeline_model_parallel_size is temporarily "
+        "unavailable. We are working on a refactoring to add it back."
+    )
 
     # updating NeMo globals
     app_state = AppState()
@@ -151,7 +159,6 @@ def initialize_model_parallel_for_nemo(
     set_pipeline_model_parallel_world_size(
         app_state.pipeline_model_parallel_size + app_state.encoder_pipeline_model_parallel_size
     )
-    set_pipeline_model_parallel_split_rank(app_state.pipeline_model_parallel_split_rank)
     set_pipeline_model_parallel_rank(app_state.pipeline_model_parallel_rank)
 
     tensor_parallel.random.initialize_rng_tracker(use_te_rng_tracker=use_te_rng_tracker)
@@ -281,6 +288,14 @@ def fake_initialize_model_parallel(
     with a total of 16 GPUs, rank 0 to 7 belong to the first box and
     ranks 8 to 15 belong to the second box.
     """
+
+    assert encoder_pipeline_model_parallel_size_ == 0 and (
+        encoder_tensor_model_parallel_size_ == 0 or encoder_tensor_model_parallel_size_ == tensor_model_parallel_size_
+    ), (
+        "encoder_pipeline_model_parallel_size is temporarily "
+        "unavailable. We are working on a refactoring to add it back."
+    )
+    assert pipeline_model_parallel_split_rank_ is None, "pipeline_model_parallel_split_rank is deprecated."
 
     # Get world size and rank. Ensure some consistencies.
     tensor_model_parallel_size = min(tensor_model_parallel_size_, world_size)

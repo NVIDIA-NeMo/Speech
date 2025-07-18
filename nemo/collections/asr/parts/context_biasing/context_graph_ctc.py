@@ -89,14 +89,14 @@ class ContextGraphCTC:
         self.root = ContextState(index=self.num_nodes, is_end=False)
         self.blank_token = blank_id
 
-    def add_to_graph(self, word_items: List[tuple[str, List[List[tuple[str, int]]]]]):
+    def add_to_graph(self, word_items: List[tuple[str, List[List[int]]]]):
         """
         Adding nodes to the context graph based on given word_items.
 
         Args:
             word_items: a list of word items, each word item is a tuple of (word, tokenizations)
                         word: the word to be inserted into the context graph
-                        tokenizations: a list of BPE word tokenizations
+                        tokenizations: a list of possible BPE word tokenizations
                         (each word can have several tokenizations to improve the recognition accuracy)
 
         """

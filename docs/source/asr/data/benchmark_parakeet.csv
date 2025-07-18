@@ -1,7 +1,10 @@
 Model,Language
-`parakeet-ctc-0.6b <https://huggingface.co/nvidia/parakeet-ctc-0.6b>`_,English
-`parakeet-ctc-1.1b <https://huggingface.co/nvidia/parakeet-ctc-1.1b>`_,English
-`parakeet-tdt-1.1b <https://huggingface.co/nvidia/parakeet-tdt-1.1b>`_,English
-`parakeet-tdt_ctc-110m <https://huggingface.co/nvidia/parakeet-tdt_ctc-110m>`_,English
-`parakeet-tdt_ctc-1.1b <https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b>`_,English
+`parakeet-tdt-0.6b-v2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`_,ASRModel
+`parakeet-rnnt-0.6b <https://huggingface.co/nvidia/parakeet-rnnt-0.6b>`_,EncDecRNNTBPEModel
+`parakeet-rnnt-1.1b <https://huggingface.co/nvidia/parakeet-rnnt-1.1b>`_,EncDecRNNTBPEModel
+`parakeet-ctc-0.6b <https://huggingface.co/nvidia/parakeet-ctc-0.6b>`_,EncDecCTCModelBPE
+`parakeet-tdt-1.1b <https://huggingface.co/nvidia/parakeet-tdt-1.1b>`_,EncDecRNNTBPEModel
+`parakeet-tdt_ctc-0.6b-ja <https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja>`_,ASRModel
+`parakeet-ctc-1.1b <https://huggingface.co/nvidia/parakeet-ctc-1.1b>`_,EncDecCTCModelBPE
+`parakeet-tdt_ctc-1.1b <https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b>`_,ASRModel
 `parakeet-tdt_ctc-0.6b-ja <https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja>`_,Japanese

@@ -1,0 +1,3 @@
+Model,Model Base Class
+`stt_ar_fastconformer_hybrid_large_pcd_v1.0 <https://huggingface.co/nvidia/stt_ar_fastconformer_hybrid_large_pcd_v1.0>`_,EncDecHybridRNNTCTCBPEModel
+`stt_ar_fastconformer_hybrid_large_pc_v1.0 <https://huggingface.co/nvidia/stt_ar_fastconformer_hybrid_large_pc_v1.0>`_,EncDecHybridRNNTCTCBPEModel

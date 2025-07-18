@@ -1,0 +1,4 @@
+Model,Model Base Class
+`stt_be_conformer_transducer_large <https://huggingface.co/nvidia/stt_be_conformer_transducer_large>`_,EncDecRNNTBPEModel
+`stt_be_conformer_ctc_large <https://huggingface.co/nvidia/stt_be_conformer_ctc_large>`_,EncDecCTCModelBPE
+`stt_be_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_be_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel

@@ -7,3 +7,5 @@ Model,Model Base Class
 `stt_de_contextnet_1024 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_de_contextnet_1024>`_,EncDecRNNTBPEModel
 `stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
 `stt_multilingual_fastconformer_hybrid_large_pc_blend_eu <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc_blend_eu>`_,EncDecHybridRNNTCTCBPEModel
+`canary-1b-flash <https://huggingface.co/nvidia/canary-1b-flash>`_,EncDecMultiTaskModel
+`canary-180m-flash <https://huggingface.co/nvidia/canary-180m-flash>`_,EncDecMultiTaskModel

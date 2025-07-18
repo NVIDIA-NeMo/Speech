@@ -31,7 +31,18 @@ Model,Model Base Class
 `stt_en_contextnet_256 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_contextnet_256>`_, EncDecRNNTBPEModel
 `stt_en_contextnet_512 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_contextnet_512>`_, EncDecRNNTBPEModel
 `stt_en_contextnet_1024 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_contextnet_1024>`_, EncDecRNNTBPEModel
-`stt_enes_conformer_ctc_large <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_ctc_large>`_,EncDecCTCModelBPE
-`stt_enes_conformer_transducer_large <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_transducer_large>`_,EncDecRNNTBPEModel
-`stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
-`stt_multilingual_fastconformer_hybrid_large_pc_blend_eu <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc_blend_eu>`_,EncDecHybridRNNTCTCBPEModel
+`stt_enes_conformer_ctc_large <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_ctc_large>`_, EncDecCTCModelBPE
+`stt_enes_conformer_transducer_large <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_transducer_large>`_, EncDecRNNTBPEModel
+`stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_, EncDecHybridRNNTCTCBPEModel
+`stt_multilingual_fastconformer_hybrid_large_pc_blend_eu <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc_blend_eu>`_, EncDecHybridRNNTCTCBPEModel
+`slu_conformer_transformer_large_slurp <https://huggingface.co/nvidia/slu_conformer_transformer_large_slurp>`_, SLUIntentSlotBPEModel
+`canary-1b-flash <https://huggingface.co/nvidia/canary-1b-flash>`_, EncDecMultiTaskModel
+`low-frame-rate-speech-codec-22khz <https://huggingface.co/nvidia/low-frame-rate-speech-codec-22khz>`_, EncDecCTCModelBPE
+`stt_en_fastconformer_hybrid_medium_streaming_80ms_pc <https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms_pc>`_, EncDecHybridRNNTCTCBPEModel
+`parakeet-tdt_ctc-0.6b-ja <https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja>`_, ASRModel
+`parakeet-tdt-0.6b-v2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`_, ASRModel
+`canary-180m-flash <https://huggingface.co/nvidia/canary-180m-flash>`_, EncDecMultiTaskModel
+`parakeet-rnnt-1.1b <https://huggingface.co/nvidia/parakeet-rnnt-1.1b>`_, EncDecRNNTBPEModel
+`stt_en_fastconformer_hybrid_medium_streaming_80ms <https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms>`_, EncDecHybridRNNTCTCBPEModel
+`parakeet-rnnt-0.6b <https://huggingface.co/nvidia/parakeet-rnnt-0.6b>`_, EncDecRNNTBPEModel
+`stt_en_fastconformer_tdt_large <https://huggingface.co/nvidia/stt_en_fastconformer_tdt_large>`_, EncDecRNNTModel

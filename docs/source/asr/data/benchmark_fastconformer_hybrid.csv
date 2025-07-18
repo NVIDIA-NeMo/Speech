@@ -1,4 +1,6 @@
 Model,Language
+`stt_ar_fastconformer_hybrid_large_pc_v1.0 <https://huggingface.co/nvidia/stt_ar_fastconformer_hybrid_large_pc_v1.0>`_,Arabic
+`stt_hy_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_hy_fastconformer_hybrid_large_pc>`_,Armenian
 `stt_be_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_be_fastconformer_hybrid_large_pc>`_,Belarusian
 `stt_hr_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_hr_fastconformer_hybrid_large_pc>`_,Croatian
 `stt_nl_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_nl_fastconformer_hybrid_large_pc>`_,Dutch
@@ -8,6 +10,7 @@ Model,Language
 `stt_de_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_de_fastconformer_hybrid_large_pc>`_,German
 `stt_it_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_it_fastconformer_hybrid_large_pc>`_,Italian
 `stt_kk_ru_fastconformer_hybrid_large <https://huggingface.co/nvidia/stt_kk_ru_fastconformer_hybrid_large>`_,"Kazakh, Russian"
+`stt_pt_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_pt_fastconformer_hybrid_large_pc>`_,Portugese
 `stt_fa_fastconformer_hybrid_large <https://huggingface.co/nvidia/stt_fa_fastconformer_hybrid_large>`_,Persian
 `stt_pl_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_pl_fastconformer_hybrid_large_pc>`_,Polish
 `stt_ru_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_ru_fastconformer_hybrid_large_pc>`_,Russian

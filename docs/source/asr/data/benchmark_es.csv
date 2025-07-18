@@ -9,3 +9,6 @@ Model,Model Base Class
 `stt_enes_conformer_transducer_large <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_transducer_large>`_,EncDecRNNTBPEModel
 `stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
 `stt_multilingual_fastconformer_hybrid_large_pc_blend_eu <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc_blend_eu>`_,EncDecHybridRNNTCTCBPEModel
+`stt_es_fastconformer_hybrid_large_pc_nc <https://huggingface.co/nvidia/stt_es_fastconformer_hybrid_large_pc_nc>`_,EncDecHybridRNNTCTCBPEModel
+`canary-1b-flash <https://huggingface.co/nvidia/canary-1b-flash>`_,EncDecMultiTaskModel
+`canary-180m-flash <https://huggingface.co/nvidia/canary-180m-flash>`_,EncDecMultiTaskModel

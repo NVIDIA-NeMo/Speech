@@ -1,2 +1,4 @@
 Model,Language
+`canary-1b-flash <https://huggingface.co/nvidia/canary-1b-flash>`_,"English, French, German, Spanish"
+`canary-180m-flash <https://huggingface.co/nvidia/canary-180m-flash>`_,"English, French, German, Spanish"
 `canary-1b <https://huggingface.co/nvidia/canary-1b>`_ ,"English, French, German, Spanish"

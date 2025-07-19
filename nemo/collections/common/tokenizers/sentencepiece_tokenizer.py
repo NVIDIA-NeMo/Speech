@@ -25,7 +25,7 @@ from nemo.collections.common.tokenizers.chat_template_mixin import ChatTemplateM
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 
-__all__ = ['SentencePieceTokenizer', 'SentencePieceSpeechLLMTTSTokenizer', 'create_spt_model']
+__all__ = ['SentencePieceTokenizer', 'create_spt_model']
 
 
 class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):
@@ -459,18 +459,6 @@ class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):
             for i in range(self.vocab_size - self.original_vocab_size)
         ]
         return main_vocab + special_tokens
-
-
-class SentencePieceSpeechLLMTTSTokenizer(SentencePieceTokenizer):
-    """Extends SentencePieceTokenizer with support for phoneme-based special tokens."""
-
-    def add_phone_tokens_to_special_tokens(self):
-        """Marks tokens starting with 'p{' as special tokens for phoneme-aware models."""
-
-        for i, word in enumerate(self.vocab):
-            if word.startswith("p{"):
-                self.special_token_to_id[word] = i
-                self.id_to_special_token[i] = word
 
 
 def create_spt_model(

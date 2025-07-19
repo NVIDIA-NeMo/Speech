@@ -201,7 +201,7 @@ class AudioText(_Collection):
         logging.info("Dataset loaded with %d files totalling %.2f hours", len(data), total_duration / 3600)
         logging.info("%d files were filtered totalling %.2f hours", num_filtered, duration_filtered / 3600)
         if not all_has_duration:
-            logging.info(f"Not all audios have duration information, the total number of hours is inaccurate.")
+            logging.info("Not all audios have duration information, the total number of hours is inaccurate.")
         super().__init__(data)
 
 
@@ -311,135 +311,6 @@ class VideoText(_Collection):
         logging.info("%d files were filtered totalling %.2f hours", num_filtered, duration_filtered / 3600)
 
         super().__init__(data)
-
-
-class InstructionTuningAudioText(_Collection):
-    """`AudioText` collector from asr structured json files."""
-
-    OUTPUT_TYPE = collections.namedtuple(
-        typename='InstructionTuningText',
-        field_names=(
-            'id context context_type context_duration question '
-            'question_type answer answer_type answer_duration speaker'
-        ),
-    )
-
-    def __init__(
-        self,
-        manifests_files: Union[str, List[str]],
-        min_duration: Optional[float] = None,
-        max_duration: Optional[float] = None,
-        max_seq_length: Optional[float] = None,
-        max_number: Optional[int] = None,
-        do_sort_by_duration: bool = False,
-        index_by_file_id: bool = False,
-        decoder_only_model: bool = False,
-        use_phoneme_tokenizer: bool = False,
-    ):
-        """Parse lists of audio files, durations and transcripts texts.
-        Args:
-            manifests_files: Either single string file or list of such -
-                manifests to yield items from.
-            *args: Args to pass to `AudioText` constructor.
-            **kwargs: Kwargs to pass to `AudioText` constructor.
-        """
-
-        output_type = self.OUTPUT_TYPE
-        self.use_phoneme_tokenizer = use_phoneme_tokenizer
-        data, duration_filtered, num_filtered, total_duration = [], 0.0, 0, 0.0
-        if index_by_file_id:
-            self.mapping = {}
-
-        for item in manifest.item_iter(manifests_files):
-
-            id = item['id']
-            context = item['context']
-            context_duration = item['context_duration']
-            context_type = item['context_type']
-            question = item['question']
-            question_type = item['question_type']
-            speaker = item['speaker']
-            answer = item['answer']
-            answer_duration = item['answer_duration']
-            answer_type = item['answer_type']
-            task = item['task']
-
-            task = 'tts' if task is None else task
-            duration = answer_duration if task == 'tts' else context_duration
-            if min_duration is not None and duration < min_duration:
-                duration_filtered += duration
-                num_filtered += 1
-                continue
-
-            if max_duration is not None and duration > max_duration:
-                duration_filtered += duration
-                num_filtered += 1
-                continue
-
-            # Check segment length
-            approx_context_len = min(self._get_len(context_type, context, context_duration) * 0.3, 400)
-            approx_question_len = self._get_len(question_type, question, None)
-            approx_answer_len = self._get_len(answer_type, answer, answer_duration)
-
-            if (
-                decoder_only_model and approx_context_len + approx_question_len + approx_answer_len >= max_seq_length
-            ) or (approx_context_len + approx_question_len >= max_seq_length or approx_answer_len >= max_seq_length):
-                duration_filtered += duration
-                num_filtered += 1
-                continue
-
-            total_duration += duration
-            data.append(
-                output_type(
-                    id,
-                    context,
-                    context_type,
-                    context_duration,
-                    question,
-                    question_type,
-                    answer,
-                    answer_type,
-                    answer_duration,
-                    speaker,
-                )
-            )
-
-            if index_by_file_id:
-                file_id, _ = os.path.splitext(os.path.basename(context))
-                if ".context" in file_id:
-                    file_id = file_id[:-8]
-                if file_id not in self.mapping:
-                    self.mapping[file_id] = []
-                self.mapping[file_id].append(len(data) - 1)
-
-            # Max number of entities filter.
-            if len(data) == max_number:
-                break
-
-        if do_sort_by_duration:
-            if index_by_file_id:
-                logging.warning("Tried to sort dataset by duration, but cannot since index_by_file_id is set.")
-            else:
-                data.sort(key=lambda entity: entity.duration)
-
-        logging.info("Dataset loaded with %d files totalling %.2f hours", len(data), total_duration / 3600)
-        logging.info("%d files were filtered totalling %.2f hours", num_filtered, duration_filtered / 3600)
-
-        super().__init__(data)
-
-    def _get_len(self, field_type, data, duration_data):
-        if field_type == "SPEECH":
-            return duration_data * 76  # TODO: add explanation for the hardcoded value.
-        elif field_type == "TEXT":
-            if self.use_phoneme_tokenizer:
-                # Approx len is number of characters
-                return len(data)
-            else:
-                return len(data.split(' ')) + 3  # # TODO: add explanation for the hardcoded value.
-        elif field_type == "TOKENS":
-            return len(data) + 3
-        else:
-            raise ValueError(f"Unknown field type {field_type}.")
 
 
 class ASRAudioText(AudioText):
@@ -1551,6 +1422,7 @@ class EndtoEndDiarizationSpeechLabel(EndtoEndDiarizationLabel):
 
         # Audio file handling depending on the types
         if isinstance(item['audio_file'], list):
+            audio_file_list = []
             for single_audio_file in item['audio_file']:
                 audio_file_list.append(get_full_path(audio_file=single_audio_file, manifest_file=manifest_file))
             item['audio_file'] = audio_file_list

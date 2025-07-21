@@ -304,7 +304,7 @@ extra() {
     "llama-index==0.10.43"                                                                     # incompatible with nvidia-pytriton
     "ctc_segmentation==1.7.1 ; (platform_machine == 'x86_64' and platform_system != 'Darwin')" # requires numpy<2.0.0 to be installed before
     "nemo_run"
-    "nvidia-modelopt[torch]==0.29.0 ; platform_system != 'Darwin'"                             # We want a specific version of nvidia-modelopt
+    "nvidia-modelopt[torch]==0.33.0 ; platform_system != 'Darwin'"                             # We want a specific version of nvidia-modelopt
   )
   if [[ "${NVIDIA_PYTORCH_VERSION}" != "" ]]; then
     DEPS+=(

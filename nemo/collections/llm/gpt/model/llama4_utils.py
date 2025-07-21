@@ -121,15 +121,17 @@ def chunkify(x, attention_chunk_size):
     return x
 
 
-def get_llama4_layer_spec(config, vp_stage: Optional[int] = None) -> ModuleSpec:
+def get_llama4_layer_spec(config, vp_stage: Optional[int] = None, gpt_decoder_block_spec=None) -> ModuleSpec:
     """Get llama4 layer spec"""
 
     from megatron.core.transformer.enums import AttnMaskType
     from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 
     # Use decoder_block_spec: set layer_specs as a list of individual layer specs
-    llama4_layer_spec = get_gpt_decoder_block_spec(config, use_transformer_engine=True, vp_stage=vp_stage)
-
+    if gpt_decoder_block_spec is None:
+        llama4_layer_spec = get_gpt_decoder_block_spec(config, use_transformer_engine=True, vp_stage=vp_stage)
+    else:
+        llama4_layer_spec = gpt_decoder_block_spec
     updated_layer_specs = []
     offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
     for idx, layer_spec in enumerate(llama4_layer_spec.layer_specs):

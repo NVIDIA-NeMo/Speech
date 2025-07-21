@@ -36,6 +36,12 @@ from .vlm_inference_controller import VLMTextGenerationController
 
 def _setup_trainer_and_restore_model(path: str, trainer: nl.Trainer, model: pl.LightningModule):
     """Setup trainer and restore model from path"""
+
+    # [ModelOpt]: If modelopt_state exists, overwrite transformer_layer_spec to modelopt spec
+    from nemo.collections.vlm.modelopt import set_modelopt_spec_if_exists_in_ckpt
+
+    set_modelopt_spec_if_exists_in_ckpt(model, path)
+
     fabric = trainer.to_fabric()
     model = fabric.load_model(path, model)
     return model

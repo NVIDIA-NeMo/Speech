@@ -106,7 +106,7 @@ def main(args) -> None:
 
     from transformers import AutoProcessor
 
-    model_id = 'meta-llama/Llama-4-Scout-17B-16E-Instruct'
+    model_id = args.model_id
     processor = AutoProcessor.from_pretrained(model_id)
     llama_tokenizer = AutoTokenizer(model_id)
     hf_tokenizer = llama_tokenizer.tokenizer
@@ -196,7 +196,7 @@ def main(args) -> None:
             if next_token_ids.item() in stop_tokens:
                 break
 
-    generated_texts = hf_tokenizer.decode(list(generated_ids[0]))
+    generated_texts = hf_tokenizer.decode(list(generated_ids[0]), skip_special_tokens=True)
     if torch.distributed.get_rank() == 0:
         print("======== GENERATED TEXT OUTPUT ========")
         print(f"{generated_texts}")
@@ -211,13 +211,19 @@ if __name__ == "__main__":
         help="Flag to indicate whether to load the model from Hugging Face hub.",
     )
     parser.add_argument(
+        "--model_id",
+        type=str,
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        help="Model HuggingFace ID to use.",
+    )
+    parser.add_argument(
         "--local_model_path",
         type=str,
         default="/path/to/nemo_checkpoint",
         help="Local path to the model if not loading from Hugging Face.",
     )
-    parser.add_argument('--tp', default=8)
-    parser.add_argument('--pp', default=1)
+    parser.add_argument('--tp', default=8, type=int)
+    parser.add_argument('--pp', default=1, type=int)
     parser.add_argument('--num_experts', type=int, default=16)
     args = parser.parse_args()
 

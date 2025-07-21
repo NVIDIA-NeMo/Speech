@@ -96,7 +96,7 @@ def prune_gpt_model(
     """
     assert HAVE_MODELOPT, "nvidia-modelopt is required to prune the model."
     if pruning_config.drop_layers:
-        mtp.plugins.megatron.drop_mcore_gpt_layers(model, layers_to_drop=pruning_config.drop_layers)
+        mtp.plugins.drop_mcore_gpt_layers(model, layers_to_drop=pruning_config.drop_layers)
     else:
         assert data_module is not None, "data_module is required to prune the model."
         assert trainer is not None, "trainer is required to prune the model."

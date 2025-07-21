@@ -64,11 +64,14 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
         """
         self.mcore_optimizer.zero_grad(set_to_none)
 
-    def reload_model_params(self):
+    def reload_model_params(self, state_dict=None):
         """
         Reloads model parameters from the optimizer.
         """
-        self.mcore_optimizer.reload_model_params()
+        if state_dict is None:
+            self.mcore_optimizer.reload_model_params()
+        else:
+            self.mcore_optimizer.reload_model_params(state_dict=state_dict)
 
     def state_dict(self):
         """

@@ -17,7 +17,14 @@ from typing import List, Optional, Union
 import torch
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
-from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin, replace_prefix
+
+try:
+    from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin, replace_prefix
+except (ImportError, ModuleNotFoundError):
+    from abc import ABC
+
+    NLPAdapterModelMixin = ABC
+
 from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP, PEFTConfig
 from nemo.utils import logging
 

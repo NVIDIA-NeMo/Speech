@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.nlp.data.data_utils import *  # noqa: F401
 from nemo.collections.nlp.data.language_modeling.l2r_lm_dataset import (  # noqa: F401
     L2RLanguageModelingDataset,
     TarredL2RLanguageModelingDataset,

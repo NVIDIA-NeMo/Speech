@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+# pylint: skip-file
 
-from nemo.collections.nlp.parts.megatron_lr_schedulers import CosineAnnealingExp
 from nemo.collections.nlp.parts.utils_funcs import list2str, tensor2list

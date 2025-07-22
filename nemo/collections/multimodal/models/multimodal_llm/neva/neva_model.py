@@ -65,7 +65,14 @@ from nemo.collections.nlp.modules.common.text_generation_utils import (
     megatron_neva_generate,
 )
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, OutputType, SamplingParam
-from nemo.collections.nlp.parts.mixins.multimodal_adapter_mixins import MultimodalAdapterModelMixin
+
+try:
+    from nemo.collections.nlp.parts.mixins.multimodal_adapter_mixins import MultimodalAdapterModelMixin
+except (ImportError, ModuleNotFoundError):
+    from abc import ABC
+
+    MultimodalAdapterModelMixin = ABC
+
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.collections.vision.data.megatron.data_samplers import MegatronVisionPretrainingRandomSampler
 from nemo.core import adapter_mixins

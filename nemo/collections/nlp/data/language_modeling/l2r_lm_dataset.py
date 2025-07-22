@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+# pylint: skip-file
+
 import io
 import json
 from typing import Optional
@@ -22,7 +25,14 @@ import webdataset as wds
 from torch.utils.data import Dataset, IterableDataset
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
-from nemo.collections.nlp.data.data_utils import dataset_to_ids
+
+try:
+    from nemo.collections.nlp.data.data_utils import dataset_to_ids
+
+    HAVE_NLP = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_NLP = False
+
 from nemo.utils import logging
 from nemo.utils.distributed import webdataset_split_by_workers
 

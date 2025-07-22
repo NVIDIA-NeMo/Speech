@@ -38,7 +38,14 @@ except ModuleNotFoundError:
 from nemo.collections.nlp.data.language_modeling.megatron.t5_sft_dataset import T5SFTDataset
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model, T5Sentinel
 from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_split
-from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
+
+try:
+    from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
+except (ImportError, ModuleNotFoundError):
+    from abc import ABC
+
+    NLPAdapterModelMixin = ABC
+
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
 
@@ -74,7 +81,7 @@ except (ImportError, ModuleNotFoundError):
 __all__ = ['MegatronT5SFTModel']
 
 
-class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
+class MegatronT5SFTModel(MegatronT5Model):
     """T5 Finetuning model in the same format as MegatronGPTSFTModel"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):

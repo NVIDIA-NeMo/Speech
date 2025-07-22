@@ -38,7 +38,14 @@ from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_sampler
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_split
 from nemo.collections.nlp.modules.common.text_generation_utils import generate, get_computeprob_response
-from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
+
+try:
+    from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
+except (ImportError, ModuleNotFoundError):
+    from abc import ABC
+
+    NLPAdapterModelMixin = ABC
+
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
 
@@ -75,7 +82,7 @@ except (ImportError, ModuleNotFoundError):
 __all__ = ["MegatronGPTSFTModel"]
 
 
-class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
+class MegatronGPTSFTModel(MegatronGPTModel):
     """
     Megatron GPT Supervised Fine-Tuning
     """

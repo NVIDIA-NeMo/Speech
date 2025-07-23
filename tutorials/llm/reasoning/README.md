@@ -25,6 +25,7 @@ This playbook enables you to either fine-tune a LoRA adapter, or fine-tune the e
 ## Training
 
 Please checkout the [Reasoning-SFT.ipynb](./Reasoning-SFT.ipynb) Jupyter notebook, which walks you through everything you need to successfully train your own reasoning model.
+The notebook also includes an optional section on exporting your LoRA adapter to the Hugging Face format, enabling easier deployment and sharing after training is complete.
 
 ### Sample loss plots
 

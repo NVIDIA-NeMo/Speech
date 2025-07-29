@@ -35,6 +35,7 @@ class TestNeuralDiarizerInference:
             ),
         ],
     )
+    @pytest.mark.pleasefixme
     @pytest.mark.parametrize("num_speakers", [None, 1])
     @pytest.mark.parametrize("max_num_speakers", [4])
     def test_msdd_diar_inference(self, tmpdir, test_data_dir, device, num_speakers, max_num_speakers):

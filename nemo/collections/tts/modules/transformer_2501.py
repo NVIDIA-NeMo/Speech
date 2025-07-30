@@ -234,7 +234,7 @@ class Attention(torch.nn.Module):
 
         # attn_prior or square mask or vanilla attention
         if attn_prior is not None:
-            eps = torch.finfo(attn_prior.dtype).tiny
+            attn_prob = F.softmax(attn_score, dim=-1)
             attn_prior = attn_prior[:, :T]  # trim for inference
             attn_prior = attn_prior[:, None] + eps
             # Use PyTorch's built-in training flag to branch behavior

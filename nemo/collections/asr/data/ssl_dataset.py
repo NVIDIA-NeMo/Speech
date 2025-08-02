@@ -103,12 +103,8 @@ def _audio_noise_collate_fn(batch: List[AudioNoiseItem], batch_augmentor: Any = 
     noises = [x.noise for x in batch]
     noise_lengths = [x.noise_len for x in batch]
 
-    noisy_audios = [x.noisy_audio for x in batch]
-    noisy_audio_lengths = [x.noisy_audio_len for x in batch]
-
     audio_signal_list = []
     noise_signal_list = []
-    noisy_audio_signal_list = []
     for i, audio in enumerate(audios):
         audio_len = audio.size(0)
         if audio_len < max_audio_len:
@@ -123,31 +119,23 @@ def _audio_noise_collate_fn(batch: List[AudioNoiseItem], batch_augmentor: Any = 
             noise = torch.nn.functional.pad(noise, pad)
         noise_signal_list.append(noise[:max_audio_len])
 
-        noisy_audio = noisy_audios[i]
-        noisy_audio_len = noisy_audio.size(0)
-        if noisy_audio_len < max_audio_len:
-            pad = (0, max_audio_len - noisy_audio_len)
-            noisy_audio = torch.nn.functional.pad(noisy_audio, pad)
-        noisy_audio_signal_list.append(noisy_audio[:max_audio_len])
-
     audio_signal = torch.stack(audio_signal_list).float()
     audio_lengths = torch.stack(audio_lengths).long()
     noise_signal = torch.stack(noise_signal_list).float()
     noise_lengths = torch.stack(noise_lengths).long()
-    noisy_audio_signal = torch.stack(noisy_audio_signal_list).float()
-    noisy_audio_lengths = torch.stack(noisy_audio_lengths).long()
 
     output = AudioNoiseBatch(
         audio=audio_signal,
         audio_len=audio_lengths,
         noise=noise_signal,
         noise_len=noise_lengths,
-        noisy_audio=noisy_audio_signal,
-        noisy_audio_len=noisy_audio_lengths,
     )
 
     if batch_augmentor is not None:
         output = batch_augmentor(output)
+    else:
+        output.noisy_audio = output.audio + output.noise
+        output.noisy_audio_len = output.audio_len
 
     return output
 
@@ -344,8 +332,6 @@ class AudioNoiseDataset(audio_to_text.AudioToCharDataset):
             audio_len=audio_len,
             noise=noise,
             noise_len=noise_len,
-            noisy_audio=audio + noise,
-            noisy_audio_len=audio_len,
         )
         return item
 
@@ -421,8 +407,6 @@ class TarredAudioNoiseDataset(audio_to_text.TarredAudioToCharDataset):
             audio_len=audio_len,
             noise=noise,
             noise_len=noise_len,
-            noisy_audio=audio + noise,
-            noisy_audio_len=audio_len,
         )
         return item
 
@@ -460,23 +444,27 @@ class LhotseAudioNoiseDataset(torch.utils.data.Dataset):
     def __getitem__(self, cuts):
 
         audios, audio_lens, cuts = self.load_audio(cuts)
-        sampled_noises = [sample_noise(self.noise_data, cut.sampling_rate, cut.num_samples) for cut in cuts]
-
-        sampled_noises, sampled_noises_lens = zip(*sampled_noises)
-        sampled_noises = torch.stack(sampled_noises).float()
-        sampled_noises_lens = torch.tensor(sampled_noises_lens).long()
+        if len(self.noise_data) > 0:
+            sampled_noises = [sample_noise(self.noise_data, cut.sampling_rate, cut.num_samples) for cut in cuts]
+            sampled_noises, sampled_noises_lens = zip(*sampled_noises)
+            sampled_noises = torch.stack(sampled_noises).float()
+            sampled_noises_lens = torch.tensor(sampled_noises_lens).long()
+        else:
+            sampled_noises = torch.zeros_like(audios)
+            sampled_noises_lens = audio_lens
 
         output = AudioNoiseBatch(
             audio=audios,
             audio_len=audio_lens,
             noise=sampled_noises,
             noise_len=sampled_noises_lens,
-            noisy_audio=audios + sampled_noises,
-            noisy_audio_len=audio_lens,
         )
 
         if self.batch_augmentor is not None:
             output = self.batch_augmentor(output)
+        else:
+            output.noisy_audio = output.audio + output.noise
+            output.noisy_audio_len = output.audio_len
 
         return output
 

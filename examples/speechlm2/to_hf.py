@@ -59,9 +59,10 @@ def main(cfg: HfExportConfig):
 
     Also supports distributed checkpoints for models trained with FSDP2/TP.
     """
-    model_cfg = OmegaConf.load(cfg.ckpt_config).model
+    model_cfg = OmegaConf.to_container(OmegaConf.load(cfg.ckpt_config).model, resolve=True)
+    model_cfg["torch_dtype"] = cfg.dtype
     cls = import_class_by_path(cfg.class_path)
-    model = cls(OmegaConf.to_container(model_cfg, resolve=True))
+    model = cls(model_cfg)
     load_checkpoint(model, cfg.ckpt_path)
     model = model.to(getattr(torch, cfg.dtype))
     model.save_pretrained(cfg.output_dir)

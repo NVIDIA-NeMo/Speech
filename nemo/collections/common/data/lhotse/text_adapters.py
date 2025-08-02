@@ -14,6 +14,7 @@
 import logging
 import math
 import random
+import tarfile
 from collections import deque
 from dataclasses import dataclass
 from itertools import groupby
@@ -29,7 +30,7 @@ from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_matrices, collate_vectors
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.serialization import load_jsonl
-from lhotse.shar import AudioTarWriter, JsonlShardWriter, TarIterator
+from lhotse.shar import AudioTarWriter, JsonlShardWriter
 from lhotse.utils import Pathlike, is_valid_url
 
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
@@ -38,8 +39,8 @@ from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 
 """
-Formattable: mixin class with data fields for prompt formatter outputs and method for 
-applying prompt formatters to derived data types. 
+Formattable: mixin class with data fields for prompt formatter outputs and method for
+applying prompt formatters to derived data types.
 """
 
 
@@ -379,7 +380,11 @@ class NeMoMultimodalConversation(Formattable, CustomFieldMixin):
         return all(isinstance(t, TextTurn) for t in self.turns)
 
     def to_dict(self):
-        return {"id": self.id, "conversations": [t.to_dict() for t in self.turns]}
+        return {
+            "id": self.id,
+            "conversations": [t.to_dict() for t in self.turns],
+            "custom": self.custom,
+        }
 
     def list_cuts(self) -> list[Cut]:
         return [turn.cut for turn in self.turns if isinstance(turn, AudioTurn)]
@@ -476,6 +481,7 @@ def default_multimodal_conversation_prompt_format_fn(example: NeMoMultimodalConv
         ],
         key=lambda turn: turn["role"],
     )
+    turns = [(k, list(v)) for k, v in turns]
     turns = [
         {"role": role, "slots": {"message": " ".join(t["slots"]["message"] for t in turn_grp)}}
         for role, turn_grp in turns
@@ -511,6 +517,7 @@ class NeMoMultimodalConversationJsonlAdapter:
     token_equivalent_duration: float = None
     shuffle_shards: bool = False
     shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
+    system_prompt: str | None = None
 
     def __post_init__(self):
         self.manifest_filepath = expand_sharded_filepaths(self.manifest_filepath)
@@ -526,6 +533,12 @@ class NeMoMultimodalConversationJsonlAdapter:
         else:
             yield from self._iter_jsonl()
 
+    def _should_skip(self, example: dict) -> bool:
+        custom = example.get("custom")
+        if custom is None:
+            return False
+        return bool(custom.get("_skipme", False))
+
     def _iter_tar(self):
         paths = list(zip(self.manifest_filepath, self.tarred_audio_filepaths))
         if self.shuffle_shards:
@@ -534,6 +547,8 @@ class NeMoMultimodalConversationJsonlAdapter:
         for jsonl_path, tar_path in paths:
             tar = iter(TarIterator(tar_path))
             for data in load_jsonl(jsonl_path):
+                if self._should_skip(data):
+                    continue
                 audio_turns = [t for t in data["conversations"] if t["type"] == "audio"]
                 cuts = []
                 for turn in audio_turns:
@@ -542,34 +557,32 @@ class NeMoMultimodalConversationJsonlAdapter:
                     cut = recording.to_cut()
                     assert (
                         audio_path == turn['value']
-                    ), f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got the following from tar {audio_path=}"
-                    assert (
-                        cut.duration == turn["duration"]
-                    ), f"Mismatch between JSONL and tar. JSONL defines audio duration={turn['duration']} but we got the following from tar {cut.duration=}"
+                    ), f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got the following from tar {audio_path=}.\nBad inputs in: {jsonl_path=} {tar_path=}"
                     cuts.append(cut)
                 cuts = deque(cuts)
+                turns = [
+                    (
+                        TextTurn(
+                            value=turn["value"],
+                            role=turn["from"].lower(),
+                        )
+                        if turn["type"] == "text"
+                        else AudioTurn(
+                            cut=(c := cuts.popleft()),
+                            text=c.supervisions[0].text if c.supervisions else None,
+                            role=turn["from"].lower(),
+                            audio_locator_tag=self.audio_locator_tag,
+                        )
+                    )
+                    for turn in data["conversations"]
+                ]
+                if self.system_prompt is not None and turns[0].role != "system":
+                    turns = [TextTurn(role="system", value=self.system_prompt)] + turns
                 yield NeMoMultimodalConversation(
                     id=data["id"],
-                    turns=[
-                        (
-                            TextTurn(
-                                value=turn["value"],
-                                role=turn[
-                                    "from"
-                                ].lower(),  # prompt formatter role's are typically lowercase: user/assistant
-                            )
-                            if turn["type"] == "text"
-                            else AudioTurn(
-                                cut=(c := cuts.popleft()),
-                                text=c.supervisions[0].text if c.supervisions else None,
-                                role=turn[
-                                    "from"
-                                ].lower(),  # prompt formatter role's are typically lowercase: user/assistant
-                                audio_locator_tag=self.audio_locator_tag,
-                            )
-                        )
-                        for turn in data["conversations"]
-                    ],
+                    turns=turns,
+                    token_equivalent_duration=self.token_equivalent_duration,
+                    custom=data.get("custom"),
                 )
 
     def _iter_jsonl(self):
@@ -579,29 +592,77 @@ class NeMoMultimodalConversationJsonlAdapter:
             random.Random(seed).shuffle(paths)
         for path in paths:
             for data in load_jsonl(path):
+                if self._should_skip(data):
+                    continue
+                turns = [
+                    (
+                        TextTurn(
+                            value=turn["value"],
+                            role=turn["from"].lower(),
+                        )
+                        if turn["type"] == "text"
+                        else AudioTurn(
+                            cut=(cut := Recording.from_file(get_full_path(turn["value"], path)).to_cut()),
+                            text=cut.supervisions[0].text if cut.supervisions else None,
+                            role=turn["from"].lower(),
+                            audio_locator_tag=self.audio_locator_tag,
+                        )
+                    )
+                    for turn in data["conversations"]
+                ]
+                if self.system_prompt is not None and turns[0].role != "system":
+                    turns = [TextTurn(role="system", value=self.system_prompt)] + turns
                 yield NeMoMultimodalConversation(
                     id=data["id"],
-                    turns=[
-                        (
-                            TextTurn(
-                                value=turn["value"],
-                                role=turn[
-                                    "from"
-                                ].lower(),  # prompt formatter role's are typically lowercase: user/assistant
-                            )
-                            if turn["type"] == "text"
-                            else AudioTurn(
-                                cut=Recording.from_file(get_full_path(turn["value"], path)).to_cut(),
-                                role=turn[
-                                    "from"
-                                ].lower(),  # prompt formatter role's are typically lowercase: user/assistant
-                                audio_locator_tag=self.audio_locator_tag,
-                            )
-                        )
-                        for turn in data["conversations"]
-                    ],
+                    turns=turns,
                     token_equivalent_duration=self.token_equivalent_duration,
+                    custom=data.get("custom"),
                 )
+
+
+class TarIterator:
+    """
+    Copy of lhotse.shar.readers.tar.TarIterator, modified to read both Lhotse-Shar style audio tar files
+    and NeMo style audio tar files.
+    """
+
+    def __init__(self, source: Pathlike) -> None:
+        self.source = source
+
+    def __iter__(self):
+        from lhotse.serialization import decode_json_line, deserialize_item, open_best
+        from lhotse.shar.utils import fill_shar_placeholder
+
+        with tarfile.open(fileobj=open_best(self.source, mode="rb"), mode="r|*") as tar:
+            for (data, data_path), (meta, meta_path) in _iterate_tarfile_pairwise(tar):
+                if meta_path is not None and meta_path.suffix == ".json":  # lhotse-shar tar format
+                    if meta is not None:
+                        meta = deserialize_item(decode_json_line(meta.decode("utf-8")))
+                        fill_shar_placeholder(manifest=meta, data=data, tarpath=data_path)
+                    yield meta, data_path
+                else:  # nemo tar format
+                    yield Recording.from_bytes(data, recording_id=data_path.stem), data_path
+                    if meta is not None:  # the second item is also a recording despite the name
+                        yield Recording.from_bytes(meta, recording_id=meta_path.stem), meta_path
+
+
+def _iterate_tarfile_pairwise(
+    tar_file: tarfile.TarFile,
+):
+    from lhotse.shar.readers.tar import parse_tarinfo
+
+    result = []
+    for tarinfo in tar_file:
+        if len(result) == 2:
+            yield tuple(result)
+            result = []
+        result.append(parse_tarinfo(tarinfo, tar_file))
+
+    if len(result) == 2:
+        yield tuple(result)
+
+    if len(result) == 1:
+        yield result[0], (None, None)
 
 
 class NeMoMultimodalConversationTarWriter:

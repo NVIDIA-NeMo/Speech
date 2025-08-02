@@ -119,6 +119,7 @@ data:
     # batch_size: null
     # use_bucketing: true
     # use_multimodal_sampling: true
+    # measure_total_length: true
     # Note: `batch_tokens`, `bucket_duration_bins`, and `max_tokens` all represent tokens as
     #  the sum of input audio frames and output text tokens. Number of audio frames is
     #  calculated using `token_equivalent_duration`.

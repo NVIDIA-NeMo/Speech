@@ -402,7 +402,11 @@ class LazyNeMoTarredIterator:
             tar_path = self.shard_id_to_tar_path[sid]
             try:
                 for data, raw_audio, tar_info in self._iter_sequential(tar_path, shard_manifest, manifest_path):
-                    meta = soundfile.info(BytesIO(raw_audio))
+                    try:
+                        meta = soundfile.info(BytesIO(raw_audio))
+                    except Exception:
+                        logging.warning(f"Skipped corrupted file '{tar_info.path}' in {tar_path=}.")
+                        continue
                     recording = Recording(
                         id=tar_info.path,
                         sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=raw_audio)],

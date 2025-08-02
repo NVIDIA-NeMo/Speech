@@ -17,7 +17,7 @@ import lhotse
 import numpy as np
 import pytest
 import torch
-from lhotse import CutSet, SupervisionSegment
+from lhotse import CutSet, SupervisionSegment, compute_num_samples
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
@@ -602,3 +602,89 @@ def test_cut_to_conversation_conversion(cutset_path, tokenizer):
     assert conv.turns[3].value == "system context and transcript"
     assert conv.custom["test_key"] == "test_value"
     assert conv.turns[2].cut.custom["test_key"] == "test_value"
+
+
+@pytest.fixture(scope="session")
+def s2s_cutset_path(tmp_path_factory) -> Path:
+    """
+    1 session of 60s with 4 turns (2 user, 2 assistant).
+    It ignores the typical presence of 'target_audio' attribute in S2S data, unnecessary for this test.
+    """
+
+    cut = dummy_cut(
+        0,
+        duration=60.0,
+        recording_duration=60.0,
+        supervisions=[
+            SupervisionSegment("ut1", "c1", start=1.5, duration=7.13, text="greetings, assistant", speaker="user"),
+            SupervisionSegment("at1", "c1", start=10.2, duration=8.49, text="welcome, user", speaker="assistant"),
+            SupervisionSegment(
+                "ut2", "c1", start=21.3, duration=15.2, text="lengthy issue description", speaker="user"
+            ),
+            SupervisionSegment("at2", "c1", start=38.1, duration=20.0, text="lengthy response", speaker="assistant"),
+        ],
+        with_data=True,
+    )
+    cuts = CutSet([cut])
+    tmp_path = tmp_path_factory.mktemp("data")
+    p = tmp_path / "cuts.jsonl.gz"
+    pa = tmp_path / "audio"
+    cuts.save_audios(pa).drop_in_memory_data().to_file(p)
+    return p
+
+
+def test_s2s_cut_to_conversation_conversion(s2s_cutset_path, tokenizer):
+    cuts = CutSet.from_file(s2s_cutset_path)
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "s2s_as_conversation",
+                    "cuts_path": s2s_cutset_path,
+                    "audio_locator_tag": "[audio]",
+                    "tags": {"test_key": "test_value"},
+                },
+            ],
+            "token_equivalent_duration": 0.08,
+            "prompt_format": "llama3",
+            "force_finite": True,
+            "num_workers": 0,
+            "batch_size": 1,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(
+        config=config, global_rank=0, world_size=1, dataset=Identity(), tokenizer=tokenizer
+    )
+    batches = [batch for batch in dl]
+    assert len(batches) == 1
+
+    # Check the multimodal conversation has 4 turns, with user audio turns, and assistant text turns
+    conv = batches[0][0]
+    assert isinstance(conv, NeMoMultimodalConversation)
+    assert conv.id == cuts[0].id
+    assert len(conv.turns) == 4
+
+    assert isinstance(conv.turns[0], AudioTurn)
+    assert conv.turns[0].role == "user"
+    assert conv.turns[0].text == "greetings, assistant"
+    audio = conv.turns[0].cut.load_audio()
+    assert audio.shape[1] == compute_num_samples(7.13, conv.turns[0].cut.sampling_rate)
+
+    assert isinstance(conv.turns[1], TextTurn)
+    assert conv.turns[1].role == "assistant"
+    assert conv.turns[1].value == "welcome, user"
+
+    assert isinstance(conv.turns[2], AudioTurn)
+    assert conv.turns[2].role == "user"
+    assert conv.turns[2].text == "lengthy issue description"
+    audio = conv.turns[2].cut.load_audio()
+    assert audio.shape[1] == compute_num_samples(15.2, conv.turns[0].cut.sampling_rate)
+
+    assert isinstance(conv.turns[3], TextTurn)
+    assert conv.turns[3].role == "assistant"
+    assert conv.turns[3].value == "lengthy response"
+
+    assert conv.custom["test_key"] == "test_value"
+    assert conv.turns[0].cut.custom["test_key"] == "test_value"

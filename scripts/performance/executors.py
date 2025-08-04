@@ -71,7 +71,7 @@ def slurm_executor(
     custom_bash_cmds = [] if custom_bash_cmds is None else custom_bash_cmds
     err_msgs = []
     mounts = []
-    srun_args = custom_srun_args.copy() + ["--mpi=pmix", "--no-container-mount-home"]
+    srun_args = custom_srun_args.copy() + ["--mpi=pmix", "--no-container-mount-home", "--container-writable"]
 
     if log_dir != get_nemorun_home():
         err_msgs.append(f"\nRun `export NEMORUN_HOME={log_dir}` in your shell environment and rerun this script.")

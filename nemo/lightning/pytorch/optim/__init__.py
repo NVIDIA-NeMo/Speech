@@ -24,6 +24,7 @@ from nemo.lightning.pytorch.optim.lr_scheduler import (
     SquareRootAnnealingScheduler,
     T5InverseSquareRootAnnealingScheduler,
     WarmupAnnealingScheduler,
+    WarmupHoldAnnealScheduler,
     WarmupHoldPolicyScheduler,
     WarmupPolicyScheduler,
 )
@@ -47,4 +48,5 @@ __all__ = [
     "PolynomialHoldDecayAnnealingScheduler",
     "CosineAnnealingScheduler",
     "PytorchOptimizerModule",
+    "WarmupHoldAnnealScheduler",
 ]

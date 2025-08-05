@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+
 from nemo.core.optim.adafactor import Adafactor
 from nemo.core.optim.adan import Adan
 from nemo.core.optim.lr_scheduler import (
@@ -24,6 +26,8 @@ from nemo.core.optim.lr_scheduler import (
     SquareRootAnnealing,
     T5InverseSquareRootAnnealing,
     WarmupAnnealing,
+    WarmupHoldAnnealLinear,
+    WarmupHoldAnnealOneMinusSquareRoot,
     WarmupHoldPolicy,
     WarmupPolicy,
     prepare_lr_scheduler,

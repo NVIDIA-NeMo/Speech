@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Literal, Optional
 
 from nemo.core.optim.lr_scheduler import (
     InverseSquareRootAnnealing,
@@ -24,6 +24,8 @@ from nemo.core.optim.lr_scheduler import (
     SquareRootAnnealing,
     T5InverseSquareRootAnnealing,
     WarmupAnnealing,
+    WarmupHoldAnnealLinear,
+    WarmupHoldAnnealOneMinusSquareRoot,
     WarmupHoldPolicy,
     WarmupPolicy,
 )
@@ -437,6 +439,8 @@ class PolynomialHoldDecayAnnealingScheduler(LRSchedulerModule):
 
 
 class CosineAnnealingScheduler(LRSchedulerModule):
+    """ """
+
     def __init__(
         self,
         max_steps: int = 10,
@@ -482,5 +486,62 @@ class CosineAnnealingScheduler(LRSchedulerModule):
                 "frequency": self.frequency,
             },
             # Metric to to monitor for schedulers like `ReduceLROnPlateau`
+            "monitor": self.monitor,
+        }
+
+
+class WarmupHoldAnnealScheduler(LRSchedulerModule):
+    """Warmup Hold Annealing Learning Rate Scheduler.
+
+    A learning rate scheduler with warmup, hold, and linear annealing phases.
+    """
+
+    def __init__(
+        self,
+        warmup_ratio: Optional[float] = None,
+        hold_ratio: Optional[float] = None,
+        max_steps: int = 10,
+        decay_schedule: Literal["one_minus_square_root", "linear"] = "linear",
+        min_lr: float = 0.0,
+        interval: str = "step",
+        frequency: int = 1,
+        monitor: str = "val_loss",
+    ):
+        super().__init__()
+        self.warmup_ratio = warmup_ratio
+        self.hold_ratio = hold_ratio
+        self.max_steps = max_steps
+        self.decay_schedule = decay_schedule
+        self.min_lr = min_lr
+        self.interval = interval
+        self.frequency = frequency
+        self.monitor = monitor
+
+    def scheduler(self, model, optimizer):
+        if self.decay_schedule == "one_minus_square_root":
+            lr_scheduler = WarmupHoldAnnealOneMinusSquareRoot(
+                optimizer,
+                warmup_ratio=self.warmup_ratio,
+                hold_ratio=self.hold_ratio,
+                max_steps=self.max_steps,
+                min_lr=self.min_lr,
+            )
+        elif self.decay_schedule == "linear":
+            lr_scheduler = WarmupHoldAnnealLinear(
+                optimizer,
+                warmup_ratio=self.warmup_ratio,
+                hold_ratio=self.hold_ratio,
+                max_steps=self.max_steps,
+                min_lr=self.min_lr,
+            )
+        else:
+            raise ValueError(f"Unknown decay schedule: {self.decay_schedule}")
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }

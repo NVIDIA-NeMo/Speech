@@ -14,6 +14,8 @@
 
 # pylint: disable=C0115,C0116
 # pylint: disable=C0301
+# flake8: noqa
+
 import copy
 import dataclasses
 import inspect
@@ -223,6 +225,49 @@ class WarmupHoldPolicy(WarmupPolicy):
             return [self.min_lr for _ in self.base_lrs]
 
         return self._get_lr(step)
+
+
+class WarmupHoldAnnealOneMinusSquareRoot(WarmupHoldPolicy):
+    """Learning rate scheduler with warmup, hold, and one-minus-square-root annealing phases.
+
+    This scheduler follows a three-phase pattern:
+    1. Warmup phase: LR increases linearly from 0 to base_lr
+    2. Hold phase: LR remains constant at base_lr
+    3. Annealing phase: LR decreases following a one-minus-square-root curve from base_lr to min_lr
+
+    The annealing follows the formula: LR = base_lr * (1 - sqrt((step - hold_steps)/(max_steps - hold_steps)))
+    The min_lr is enforced after the annealing phase. i.e. the learning rate will not decay below min_lr.
+
+    Reference: https://arxiv.org/html/2408.11029
+    """
+
+    def __init__(self, optimizer, *, max_steps, last_epoch=-1, min_lr=0.0, **kwargs):
+        super().__init__(optimizer=optimizer, max_steps=max_steps, **kwargs, last_epoch=last_epoch, min_lr=min_lr)
+
+    def _get_lr(self, step):
+        mult = 1 - ((step - self.hold_steps) / (self.max_steps - self.hold_steps)) ** 0.5  # from 1 to 0
+        out_lr = [max(self.min_lr, initial_lr * mult) for initial_lr in self.base_lrs]
+        return out_lr
+
+
+class WarmupHoldAnnealLinear(WarmupHoldPolicy):
+    """Learning rate scheduler with warmup, hold, and linear annealing phases.
+
+    This scheduler follows a three-phase pattern:
+    1. Warmup phase: LR increases linearly from 0 to base_lr
+    2. Hold phase: LR remains constant at base_lr
+    3. Annealing phase: LR decreases linearly from base_lr to min_lr
+
+    Reference: https://arxiv.org/pdf/2404.06395
+    """
+
+    def __init__(self, optimizer, *, max_steps, last_epoch=-1, min_lr=0.0, **kwargs):
+        super().__init__(optimizer=optimizer, max_steps=max_steps, **kwargs, last_epoch=last_epoch, min_lr=min_lr)
+
+    def _get_lr(self, step):
+        ratio = (step - self.hold_steps) / (self.max_steps - self.hold_steps)  # from 0 to 1
+        out_lr = [initial_lr - (initial_lr - self.min_lr) * ratio for initial_lr in self.base_lrs]
+        return out_lr
 
 
 class WarmupAnnealHoldPolicy(_LRScheduler):
@@ -1002,6 +1047,8 @@ AVAILABLE_SCHEDULERS = {
     'CosineAnnealing': CosineAnnealing,
     'NoamAnnealing': NoamAnnealing,
     'NoamHoldAnnealing': NoamHoldAnnealing,
+    'WarmupHoldAnnealOneMinusSquareRoot': WarmupHoldAnnealOneMinusSquareRoot,
+    'WarmupHoldAnnealLinear': WarmupHoldAnnealLinear,
     'WarmupAnnealing': WarmupAnnealing,
     'InverseSquareRootAnnealing': InverseSquareRootAnnealing,
     'T5InverseSquareRootAnnealing': T5InverseSquareRootAnnealing,

@@ -1,6 +1,0 @@
-_target_: nemo.collections.multimodal.modules.nerf.renderers.nvdiffrast_renderer.NVDiffRastRenderer
-bound: ${model.nerf.bound}
-grid_resolution: 128
-density_thresh: 10.0
-update_interval: 16
-quartet_file: "/results/tets/128_tets.npz"

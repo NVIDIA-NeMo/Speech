@@ -1,8 +1,0 @@
-_target_: nemo.collections.multimodal.modules.nerf.renderers.nerfacc_volume_renderer.NerfaccVolumeBaseRenderer
-grid_resolution: 128
-grid_levels: 3
-bound: ${model.nerf.bound}
-render_step_size: 1.e-3
-near_plane: 0.2
-cone_angle: 0.004
-alpha_thre: 1.e-2

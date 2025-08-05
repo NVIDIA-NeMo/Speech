@@ -1,7 +1,0 @@
-_target_: nemo.collections.multimodal.modules.nerf.renderers.torchngp_volume_renderer.TorchNGPVolumeRenderer
-bound: ${model.nerf.bound}
-update_interval: 16
-grid_resolution: 128
-density_thresh: 10
-max_steps: 1024
-dt_gamma: 0

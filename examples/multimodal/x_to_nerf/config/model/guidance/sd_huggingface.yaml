@@ -1,4 +1,0 @@
-_target_: nemo.collections.multimodal.modules.nerf.guidance.stablediffusion_huggingface_pipeline.StableDiffusion
-precision: ${trainer.precision}
-model_key: stabilityai/stable-diffusion-2-1-base
-t_range: [0.02, 0.98]

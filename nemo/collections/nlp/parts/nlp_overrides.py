@@ -789,15 +789,11 @@ class NLPFSDPStrategy(FSDPStrategy):
         # Use the default FSDP backward-prefetch policy for proper communication overlap.
         kwargs['backward_prefetch'] = BackwardPrefetch.BACKWARD_PRE
 
-        # import here to prevent circular imports
-        from nemo.collections.multimodal.modules.stable_diffusion.attention import BasicTransformerBlock
-
         # Set FSDP wrapping policy: use Transformer layer module as the FSDP sharding granularity.
         self.fsdp_wrap_module = {
             MCoreTransformerLayer,
             AutocastTransformerLayer,
             ParallelTransformerLayer,
-            BasicTransformerBlock,
         }
 
         # if extra wrap modules are provided, use them

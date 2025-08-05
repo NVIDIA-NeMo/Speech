@@ -1,8 +1,0 @@
-lambda_sds: 1.0
-lambda_opacity: 0.0
-lambda_entropy: 0.0
-lambda_orientation: 0.0
-lambda_2d_normal_smooth: 0.0
-lambda_3d_normal_smooth: 0.0
-lambda_mesh_normal: 0.5
-lambda_mesh_laplacian: 0.5

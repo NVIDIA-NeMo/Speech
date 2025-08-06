@@ -127,6 +127,7 @@ class LazyNeMoIterator:
                     recording_id=cut.recording_id,
                     start=0,
                     duration=cut.duration,
+                    channel=cut.channel,
                     text=data.get(self.text_field),
                     language=data.get(self.lang_field),
                 )

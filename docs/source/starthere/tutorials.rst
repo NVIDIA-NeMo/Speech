@@ -152,9 +152,6 @@ Tutorial Overview
    * - ASR
      - ASR Confidence Estimation
      - `ASR Confidence Estimation <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_Confidence_Estimation.ipynb>`_
-   * - ASR
-     - Confidence-based Ensembles
-     - `Confidence-based Ensembles <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Confidence_Ensembles.ipynb>`_
 
 .. list-table:: **Text-to-Speech (TTS) Tutorials**
    :widths: 15 35 50

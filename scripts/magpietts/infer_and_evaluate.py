@@ -322,7 +322,6 @@ def run_inference(
         checkpoint_name = checkpoint_file.split("/")[-1].split(".ckpt")[0]
     elif nemo_file is not None:
         model_cfg = MagpieTTSModel.restore_from(nemo_file, return_config=True)
-        print(model_cfg)
         with open_dict(model_cfg):
             model_cfg, cfg_sample_rate = update_config(
                 model_cfg, codecmodel_path, legacy_codebooks, legacy_text_conditioning
@@ -346,7 +345,7 @@ def run_inference(
         exp_name = f"{os.path.basename(os.path.dirname(os.path.dirname(checkpoint_file)))}__"
     else:
         exp_name = ""
-
+        
     # Build checkpoint name
     checkpoint_name = (
         f"{exp_name}{checkpoint_name}_Temp{temperature}_Topk{topk}_Cfg_{use_cfg}_{cfg_scale}_"

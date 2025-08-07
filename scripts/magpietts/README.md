@@ -18,7 +18,6 @@ python scripts/magpietts/infer_and_evaluate.py \
 --hparams_files ${HPARAM} \
 --codecmodel_path ${CODEC} \
 --out_dir ${OUT_DIR} \
---batch_size 32 \
 --use_cfg \
 --apply_attention_prior
 ```

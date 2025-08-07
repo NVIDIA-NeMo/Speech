@@ -83,6 +83,9 @@ def setup_argument_parser():
     return parser
 
 
+# EVALUATION_DATASETS is the full list of datasets for evaluation of a new model.
+EVALUATION_DATASETS = "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,vctk,libritts_seen,libritts_test_clean"
+
 def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0.90):
     metrics = {}
     for key in metric_keys:
@@ -361,6 +364,7 @@ def run_inference(
         checkpoint_name = checkpoint_file.split("/")[-1].split(".ckpt")[0]
     elif nemo_file is not None:
         model_cfg = MagpieTTSModel.restore_from(nemo_file, return_config=True)
+        print(model_cfg)
         with open_dict(model_cfg):
             model_cfg, cfg_sample_rate = update_config(
                 model_cfg, codecmodel_path, legacy_codebooks, legacy_text_conditioning

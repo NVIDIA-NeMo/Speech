@@ -1,0 +1,11 @@
+# Postprocessing parameters for timestamp outputs from speaker diarization models.
+# This speaker diarization postprocessing scheme is inspired by the postprocessing procedure in the following paper:
+# Medennikov, Ivan, et al. "Target-Speaker Voice Activity Detection: a Novel Approach for Multi-Speaker Diarization in a Dinner Party Scenario." (2020).
+# These parameters were optimized on the development split of DIHARD3 dataset (See https://arxiv.org/pdf/2012.01477).
+parameters: 
+  onset: 0.56  # Onset threshold for detecting the beginning and end of a speech
+  offset: 1.0  # Offset threshold for detecting the end of a speech
+  pad_onset: 0.063  # Adding durations before each speech segment
+  pad_offset: 0.002  # Adding durations after each speech segment
+  min_duration_on: 0.007  # Threshold for small non-speech deletion
+  min_duration_off: 0.151  # Threshold for short speech segment deletion

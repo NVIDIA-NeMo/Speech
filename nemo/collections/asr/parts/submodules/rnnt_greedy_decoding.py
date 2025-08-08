@@ -27,7 +27,6 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
@@ -35,6 +34,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
+from nemo.collections.asr.parts.context_biasing import BoostingTreeModelConfig, GPUBoostingTreeModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.transducer_decoding import (
     GreedyBatchedRNNTLabelLoopingComputer,
@@ -597,8 +597,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             which makes it especially useful for scaling the prediction network.
         use_cuda_graph_decoder: if CUDA graphs should be enabled for decoding
                                 (currently recommended only for inference)
-        ngram_lm_model: optional n-gram language model (LM) file to use for decoding
-        ngram_lm_alpha: LM weight
+        fusion_models: list of fusion models to use for decoding
+        fusion_models_alpha: list of alpha values for fusion models
     """
 
     def __init__(
@@ -612,8 +612,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         confidence_method_cfg: Optional[DictConfig] = None,
         loop_labels: bool = True,
         use_cuda_graph_decoder: bool = True,
-        ngram_lm_model: Optional[str | Path] = None,
-        ngram_lm_alpha: float = 0.0,
+        fusion_models: Optional[List[NGramGPULanguageModel | GPUBoostingTreeModel]] = None,
+        fusion_models_alpha: Optional[List[float]] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -644,18 +644,14 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                     preserve_frame_confidence=preserve_frame_confidence,
                     confidence_method_cfg=confidence_method_cfg,
                     allow_cuda_graphs=self.use_cuda_graph_decoder,
-                    ngram_lm_model=(
-                        NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=self._blank_index)
-                        if ngram_lm_model is not None
-                        else None
-                    ),
-                    ngram_lm_alpha=ngram_lm_alpha,
+                    fusion_models=fusion_models,
+                    fusion_models_alpha=fusion_models_alpha,
                 )
             else:
                 # Frame-Looping algorithm
-                if ngram_lm_model is not None:
+                if fusion_models:
                     raise NotImplementedError(
-                        "N-Gram Language Model fusion is not implemented with frame-looping algorithm"
+                        "N-Gram Language Model and Boosting Tree fusion is not implemented with frame-looping algorithm"
                     )
                 if not self.use_cuda_graph_decoder:
                     self._greedy_decode = self._greedy_decode_blank_as_pad_loop_frames
@@ -685,8 +681,10 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                     else:
                         self._greedy_decode = self._greedy_decode_blank_as_pad_loop_frames
         else:
-            if ngram_lm_model is not None:
-                raise NotImplementedError("N-Gram Language Model fusion is not implemented with `blank_as_pad=False`")
+            if fusion_models:
+                raise NotImplementedError(
+                    "N-Gram Language Model and Boosting Tree fusion is not implemented with `blank_as_pad=False`"
+                )
             self._greedy_decode = self._greedy_decode_masked
 
     def disable_cuda_graphs(self) -> bool:
@@ -2448,6 +2446,8 @@ class GreedyBatchedRNNTInferConfig:
     use_cuda_graph_decoder: bool = True
     ngram_lm_model: Optional[str] = None
     ngram_lm_alpha: float = 0.0
+    boosting_tree: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
+    boosting_tree_alpha: float = 0.0
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed
@@ -2812,8 +2812,8 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         include_duration_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         use_cuda_graph_decoder: bool = True,
-        ngram_lm_model: Optional[str | Path] = None,
-        ngram_lm_alpha: float = 0.0,
+        fusion_models: Optional[List[NGramGPULanguageModel]] = None,
+        fusion_models_alpha: Optional[List[float]] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -2831,6 +2831,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         # Depending on availability of `blank_as_pad` support
         # switch between more efficient batch decoding technique
         self.decoding_computer = None
+
         if self.decoder.blank_as_pad:
             # batched "loop frames" is not implemented for TDT
             self.decoding_computer = GreedyBatchedTDTLabelLoopingComputer(
@@ -2845,17 +2846,13 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 include_duration_confidence=include_duration_confidence,
                 confidence_method_cfg=confidence_method_cfg,
                 allow_cuda_graphs=use_cuda_graph_decoder,
-                ngram_lm_model=(
-                    NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=self._blank_index)
-                    if ngram_lm_model is not None
-                    else None
-                ),
-                ngram_lm_alpha=ngram_lm_alpha,
+                fusion_models=fusion_models,
+                fusion_models_alpha=fusion_models_alpha,
             )
             self._greedy_decode = self._greedy_decode_blank_as_pad_loop_labels
         else:
-            if ngram_lm_model is not None:
-                raise NotImplementedError("N-Gram Language Model fusion is not implemented with `blank_as_pad=False`")
+            if fusion_models is not None:
+                raise NotImplementedError("Fusion models are not implemented with `blank_as_pad=False`")
             self._greedy_decode = self._greedy_decode_masked
 
     @typecheck()

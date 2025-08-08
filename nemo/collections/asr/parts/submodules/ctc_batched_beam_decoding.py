@@ -13,11 +13,12 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import numpy as np
 import torch
 
+from nemo.collections.asr.parts.context_biasing import GPUBoostingTreeModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
@@ -69,10 +70,10 @@ class BacthedBeamCTCState:
 
     batched_hyps: BatchedBeamHyps  # batched hypotheses - decoding result
 
-    # NGramGPULM-related fields
-    ngram_lm_batch: Optional[NGramGPULanguageModel] = None  # N-gram LM for hypotheses
-    batch_lm_states: Optional[torch.Tensor] = None  # LM states for hypotheses
-    batch_lm_states_candidates: Optional[torch.Tensor] = None  # LM states for hypotheses candidates
+    # fusion models related fields
+    fusion_models: Optional[List[NGramGPULanguageModel]] = None
+    fusion_states_list: Optional[List[torch.Tensor]] = None
+    fusion_states_candidates_list: Optional[List[torch.Tensor]] = None
 
     def __init__(
         self,
@@ -169,7 +170,8 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
     full_graph: Optional[torch.cuda.CUDAGraph]
     cuda_graphs_mode: Optional[CudaGraphsMode]
     state: Optional[BacthedBeamCTCState]
-    ngram_lm_batch: Optional[NGramGPULanguageModel]
+    fusion_models: Optional[List[NGramGPULanguageModel]]
+    fusion_models_alpha: Optional[List[float]]
 
     def __init__(
         self,
@@ -178,10 +180,10 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         return_best_hypothesis: bool = True,
         preserve_alignments=False,
         compute_timestamps: bool = False,
-        ngram_lm_alpha: float = 1.0,
+        fusion_models: List[NGramGPULanguageModel] = None,
+        fusion_models_alpha: List[float] = None,
         beam_beta: float = 0.0,
         beam_threshold: float = 20.0,
-        ngram_lm_model: str = None,
         allow_cuda_graphs: bool = True,
     ):
         """
@@ -192,8 +194,8 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
             return_best_hypothesis: whether to return the best hypothesis or N-best hypotheses.
             preserve_alignments: if alignments are needed. Defaults to False.
             compute_timestamps: if timestamps are needed. Defaults to False.
-            ngram_lm_model: path to the NGPU-LM n-gram LM model: .arpa or .nemo formats.
-            ngram_lm_alpha: weight for the n-gram LM scores.
+            fusion_models: list of fusion models.
+            fusion_models_alpha: list of weights for the fusion models.
             beam_beta: word insertion weight.
             beam_threshold: threshold for pruning candidates.
             allow_cuda_graphs: whether to allow CUDA graphs. Defaults to True.
@@ -208,7 +210,6 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         self.allow_cuda_graphs = allow_cuda_graphs
         self.return_best_hypothesis = return_best_hypothesis
 
-        self.ngram_lm_alpha = ngram_lm_alpha
         self.beam_beta = beam_beta
         self.beam_threshold = beam_threshold
 
@@ -221,10 +222,8 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         self.cuda_graphs_mode = None
         self.maybe_enable_cuda_graphs()
 
-        self.ngram_lm_batch = None
-        if ngram_lm_model is not None:
-            assert self._blank_index != 0, "Blank should not be the first token in the vocabulary"
-            self.ngram_lm_batch = NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=self._blank_index)
+        self.fusion_models = fusion_models
+        self.fusion_models_alpha = fusion_models_alpha
 
     def force_cuda_graphs_mode(self, mode: Optional[Union[str, CudaGraphsMode]]):
         """
@@ -303,30 +302,41 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
             model_type='ctc',
         )
 
-        if self.ngram_lm_batch is not None:
-            self.ngram_lm_batch.to(decoder_outputs.device)
-            batch_lm_states = self.ngram_lm_batch.get_init_states(
-                batch_size=curr_batch_size * self.beam_size, bos=True
-            )
+        # init fusion models
+        if self.fusion_models is not None:
+            fusion_states_list = []
+            fusion_states_candidates_list = []
+            for fusion_model in self.fusion_models:
+                fusion_model.to(decoder_outputs.device)
+                fusion_states_list.append(
+                    fusion_model.get_init_states(batch_size=curr_batch_size * self.beam_size, bos=True)
+                )
+                fusion_states_candidates_list.append(None)
 
         for frame_idx in range(curr_max_time):
             active_mask = frame_idx < decoder_output_lengths.unsqueeze(1)
             repeated_mask = batched_beam_hyps.last_label[:, :, None] == vocab[None, None, :]
             repeated_or_blank_mask = repeated_mask | vocab_blank_mask[None, None, :]
 
-            # step 2.1: getting the log probs and updating with LM scores
+            # step 2.1: getting the log probs and updating with fusion scores
             log_probs = decoder_outputs[:, frame_idx, :].unsqueeze(1).repeat(1, self.beam_size, 1)
             log_probs += batched_beam_hyps.scores.unsqueeze(-1)
 
             # step 2.2: updating non-blank and non-repeating token scores with `beam_beta`
             log_probs = torch.where(repeated_or_blank_mask, log_probs, log_probs + self.beam_beta)
 
-            if self.ngram_lm_batch is not None:
-                lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(states=batch_lm_states.view(-1))
-                lm_scores = torch.where(
-                    repeated_mask[..., :-1], 0, lm_scores.view(curr_batch_size, self.beam_size, -1)
-                )
-                log_probs[..., :-1] += self.ngram_lm_alpha * lm_scores.view(curr_batch_size, self.beam_size, -1)
+            if self.fusion_models is not None:
+                for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                    fusion_scores, fusion_states_candidates = fusion_model.advance(
+                        states=fusion_states_list[fusion_idx].view(-1)
+                    )
+                    fusion_scores = torch.where(
+                        repeated_mask[..., :-1], 0, fusion_scores.view(curr_batch_size, self.beam_size, -1)
+                    )
+                    log_probs[..., :-1] += self.fusion_models_alpha[fusion_idx] * fusion_scores.view(
+                        curr_batch_size, self.beam_size, -1
+                    )
+                    fusion_states_candidates_list[fusion_idx] = fusion_states_candidates
 
             # step 2.3: getting `beam_size` best candidates
             next_scores, next_candidates_indices = torch.topk(
@@ -341,44 +351,55 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
             batch_next_scores.masked_fill_(batch_next_scores <= max_next_score - self.beam_threshold, INACTIVE_SCORE)
             next_scores.view(curr_batch_size, self.beam_size, -1)
 
-            # step 2.4: preserving updated lm states
-            if self.ngram_lm_batch is not None:
+            # step 2.4: preserving updated fusion states
+            if self.fusion_models is not None:
                 last_labels = torch.gather(batched_beam_hyps.last_label, dim=-1, index=next_indices)
                 blank_mask = next_labels == self._blank_index
                 repeating_mask = next_labels == last_labels
                 preserve_state_mask = repeating_mask | blank_mask | ~active_mask
 
-                # step 2.4.1: masking blanks and inactive labels to pass to LM, as LM does not support blanks
+                # step 2.4.1: masking blanks and inactive labels to pass to fusion models, as fusion models do not support blanks
                 next_labels_masked = torch.where(blank_mask, 0, next_labels)
 
-                # step 2.4.2: gathering LM states of extended hypotheses
-                # batch_lm_states: [(BxBeam)]
-                # batch_lm_states_candidates: [(BxBeam) x V (without blank)]
-                next_indices_extended = next_indices[:, :, None].expand(
-                    curr_batch_size, self.beam_size, batch_lm_states_candidates.shape[-1]
-                )
-                batch_lm_states_candidates = batch_lm_states_candidates.view(curr_batch_size, self.beam_size, -1)
-                batch_lm_states_candidates = torch.gather(
-                    batch_lm_states_candidates, dim=1, index=next_indices_extended
-                )
-                batch_lm_states_prev = torch.gather(
-                    batch_lm_states.view(curr_batch_size, self.beam_size), dim=1, index=next_indices
-                )
-                batch_lm_states = torch.gather(
-                    batch_lm_states_candidates, dim=-1, index=next_labels_masked.unsqueeze(-1)
-                ).squeeze(-1)
+                # step 2.4.2: gathering fusion states of extended hypotheses
+                # batch_fusion_states: [(BxBeam)]
+                # batch_fusion_states_candidates: [(BxBeam) x V (without blank)]
 
-                batch_lm_states = torch.where(preserve_state_mask, batch_lm_states_prev, batch_lm_states).view(-1)
+                for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                    next_indices_extended = next_indices[:, :, None].expand(
+                        curr_batch_size, self.beam_size, fusion_states_candidates_list[fusion_idx].shape[-1]
+                    )
+                    fusion_states_candidates = fusion_states_candidates_list[fusion_idx].view(
+                        curr_batch_size, self.beam_size, -1
+                    )
+                    fusion_states_candidates = torch.gather(
+                        fusion_states_candidates, dim=1, index=next_indices_extended
+                    )
+                    fusion_states_prev = torch.gather(
+                        fusion_states_list[fusion_idx].view(curr_batch_size, self.beam_size), dim=1, index=next_indices
+                    )
+                    fusion_states = torch.gather(
+                        fusion_states_candidates, dim=-1, index=next_labels_masked.unsqueeze(-1)
+                    ).squeeze(-1)
+
+                    fusion_states_list[fusion_idx] = torch.where(
+                        preserve_state_mask, fusion_states_prev, fusion_states
+                    ).view(-1)
 
             # step 2.5: masking inactive hypotheses, updating + recombining batched beam hypoteses
             next_labels = torch.where(active_mask, next_labels, NON_EXISTENT_LABEL_VALUE)
             batched_beam_hyps.add_results_(next_indices, next_labels, next_scores)
             batched_beam_hyps.recombine_hyps_()
 
-        # step 3: updating LM scores with eos scores
-        if self.ngram_lm_batch is not None:
-            eos_score = self.ngram_lm_batch.get_final(batch_lm_states).view(batched_beam_hyps.scores.shape)
-            batched_beam_hyps.scores += eos_score * self.ngram_lm_alpha
+        # step 3: updating fusoin scores with eos scores
+        if self.fusion_models is not None:
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                # only GPUBoostingTreeModel does not support eos scores for CTC models by default
+                if not isinstance(fusion_model, GPUBoostingTreeModel):
+                    eos_score = fusion_model.get_final(fusion_states_list[fusion_idx]).view(
+                        batched_beam_hyps.scores.shape
+                    )
+                    batched_beam_hyps.scores += eos_score * self.fusion_models_alpha[fusion_idx]
 
         return batched_beam_hyps
 
@@ -482,15 +503,20 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
             blank_index=self._blank_index,
         )
 
-        if self.ngram_lm_batch is not None:
-            device = decoder_outputs.device
-
-            self.ngram_lm_batch.to(device)
-
-            batch_lm_states = self.ngram_lm_batch.get_init_states(
-                batch_size=self.state.batch_size * self.beam_size, bos=True
-            )
-            self.state.batch_lm_states = batch_lm_states.view(self.state.batch_size, self.beam_size)
+        # init fusion models
+        if self.fusion_models is not None:
+            self.state.fusion_states_list = []
+            self.state.fusion_states_candidates_list = []
+            for fusion_model in self.fusion_models:
+                fusion_model.to(decoder_outputs.device)
+                self.state.fusion_states_list.append(
+                    fusion_model.get_init_states(batch_size=batch_size * self.beam_size, bos=True).view(
+                        batch_size, self.beam_size
+                    )
+                )
+                self.state.fusion_states_candidates_list.append(
+                    torch.zeros([batch_size, fusion_model.vocab_size], dtype=torch.long, device=self.state.device)
+                )
 
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
             self._full_graph_compile()
@@ -569,7 +595,7 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
 
     def _before_process_batch(self):
         """
-        Clears state and setups LM.
+        Clears state and setups fusion models.
         """
         # step 1.1: reset state
         self.state.batched_hyps.clear_()
@@ -585,20 +611,22 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         # same as: self.active_mask_any = active_mask.any()
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
 
-        # step 1.2: setup LM
-        if self.ngram_lm_batch is not None:
-            device = self.state.device
-            self.ngram_lm_batch.to(device)
-
-            batch_lm_states = self.ngram_lm_batch.get_init_states(
-                batch_size=self.state.batch_size * self.beam_size, bos=True
-            )
-            self.state.batch_lm_states.copy_(batch_lm_states.view(self.state.batch_size, self.beam_size))
-            self.state.batch_lm_states_candidates = torch.empty(
-                (self.state.batch_size, self.state.beam_size, self.ngram_lm_batch.vocab_size),
-                device=device,
-                dtype=torch.long,
-            )
+        # step 1.2: setup fusion models
+        if self.fusion_models is not None:
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                fusion_model.to(self.state.device)
+                fusion_states = fusion_model.get_init_states(
+                    batch_size=self.state.batch_size * self.beam_size, bos=True
+                )
+                # self.state.fusion_states_list[fusion_idx].copy_(fusion_states.view(self.state.batch_size, self.beam_size))
+                self.state.fusion_states_list[fusion_idx].copy_(
+                    fusion_states.view(self.state.batch_size, self.beam_size)
+                )
+                self.state.fusion_states_candidates_list[fusion_idx] = torch.empty(
+                    (self.state.batch_size, self.state.beam_size, fusion_model.vocab_size),
+                    device=self.state.device,
+                    dtype=torch.long,
+                )
 
     def _process_batch(self):
         """
@@ -607,25 +635,27 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         repeated_mask = self.state.batched_hyps.last_label[:, :, None] == self.state.vocab[None, None, :]
         repeated_or_blank_mask = repeated_mask | self.state.vocab_blank_mask[None, None, :]
 
-        # step 2.1: getting the log probs and updating with LM scores
+        # step 2.1: getting the log probs and updating with fusion scores
         log_probs = self.state.decoder_outputs.index_select(dim=1, index=self.state.curr_frame_idx)
         log_probs += self.state.batched_hyps.scores[:, :, None]
 
         # step 2.2: updating non-blank and non-repeating token scores with `beam_beta`
         log_probs = torch.where(repeated_or_blank_mask, log_probs, log_probs + self.beam_beta)
 
-        if self.ngram_lm_batch is not None:
-            lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(
-                states=self.state.batch_lm_states.view(-1)
-            )
-            lm_scores = torch.where(repeated_mask[..., :-1], 0, lm_scores.view(log_probs.shape[0], self.beam_size, -1))
-
-            self.state.batch_lm_states_candidates.copy_(
-                batch_lm_states_candidates.view(self.state.batch_lm_states_candidates.shape)
-            )
-            log_probs[..., :-1] += self.ngram_lm_alpha * lm_scores.view(
-                self.state.batch_size, self.state.beam_size, -1
-            )
+        if self.fusion_models is not None:
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                fusion_scores, fusion_states_candidates = fusion_model.advance(
+                    states=self.state.fusion_states_list[fusion_idx].view(-1)
+                )
+                fusion_scores = torch.where(
+                    repeated_mask[..., :-1], 0, fusion_scores.view(log_probs.shape[0], self.beam_size, -1)
+                )
+                log_probs[..., :-1] += self.fusion_models_alpha[fusion_idx] * fusion_scores.view(
+                    log_probs.shape[0], self.beam_size, -1
+                )
+                self.state.fusion_states_candidates_list[fusion_idx].copy_(
+                    fusion_states_candidates.view(self.state.batch_size, self.beam_size, -1)
+                )
 
         # step 2.3: getting `beam_size` best candidates
         next_scores, next_candidates_indices = torch.topk(
@@ -640,31 +670,39 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         batch_next_scores.masked_fill_(batch_next_scores <= max_next_score - self.beam_threshold, INACTIVE_SCORE)
         next_scores.view(self.state.batch_size, self.beam_size, -1)
 
-        # step 2.4: preserving updated lm states
-        if self.ngram_lm_batch is not None:
+        # step 2.4: preserving updated fusion states
+        if self.fusion_models is not None:
             last_labels = torch.gather(self.state.batched_hyps.last_label, dim=-1, index=next_indices)
             blank_mask = next_labels == self._blank_index
             repeating_mask = next_labels == last_labels
             preserve_state_mask = repeating_mask | blank_mask | ~self.state.active_mask
 
-            # step 2.4.1: masking blanks and inactive labels to pass to LM, as LM does not support blanks
+            # step 2.4.1: masking blanks and inactive labels to pass to fusion model, as fusion model does not support blanks
             next_labels_masked = torch.where(blank_mask, 0, next_labels)
 
-            # step 2.4.2: gathering LM states of extended hypotheses
-            # batch_lm_states: [(BxBeam)]
-            # batch_lm_states_candidates: [(BxBeam) x V (without blank)]
-            next_indices_extended = next_indices[:, :, None].expand(self.state.batch_lm_states_candidates.shape)
-            batch_lm_states_candidates = torch.gather(
-                self.state.batch_lm_states_candidates, dim=1, index=next_indices_extended
-            )
-            batch_lm_states_prev = torch.gather(self.state.batch_lm_states, dim=1, index=next_indices)
-            batch_lm_states = torch.gather(
-                batch_lm_states_candidates, dim=-1, index=next_labels_masked.unsqueeze(-1)
-            ).squeeze()
+            # step 2.4.2: gathering fusion states of extended hypotheses
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                # fusion_states: [(BxBeam)]
+                # fusion_states_candidates: [(BxBeam) x V (without blank)]
+                next_indices_extended = next_indices[:, :, None].expand(
+                    self.state.fusion_states_candidates_list[fusion_idx].shape
+                )
+                fusion_states_candidates = torch.gather(
+                    self.state.fusion_states_candidates_list[fusion_idx], dim=1, index=next_indices_extended
+                )
+                fusion_states_prev = torch.gather(self.state.fusion_states_list[fusion_idx], dim=1, index=next_indices)
+                fusion_states = torch.gather(
+                    fusion_states_candidates, dim=-1, index=next_labels_masked.unsqueeze(-1)
+                ).squeeze()
 
-            # step 2.4.3: update LM states in State
-            self.state.batch_lm_states_candidates.copy_(batch_lm_states_candidates)
-            torch.where(preserve_state_mask, batch_lm_states_prev, batch_lm_states, out=self.state.batch_lm_states)
+                # step 2.4.3: update fusion states in State
+                self.state.fusion_states_candidates_list[fusion_idx].copy_(fusion_states_candidates)
+                torch.where(
+                    preserve_state_mask,
+                    fusion_states_prev,
+                    fusion_states,
+                    out=self.state.fusion_states_list[fusion_idx],
+                )
 
         # step 2.5: masking inactive hypotheses, updating + recombining batched beam hypoteses
         torch.where(self.state.active_mask, next_labels, self.state.NON_EXISTENT_LABEL, out=next_labels)
@@ -678,14 +716,17 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
 
     def _after_process_batch(self):
         """
-        Finalizes the decoding process by updating the LM scores with the end-of-sequence (eos) scores.
+        Finalizes the decoding process by updating the fusion scores with the end-of-sequence (eos) scores.
         """
-        # step 3: updating LM scores with eos scores
-        if self.ngram_lm_batch is not None:
-            eos_score = self.ngram_lm_batch.get_final(self.state.batch_lm_states).view(
-                self.state.batched_hyps.scores.shape
-            )
-            self.state.batched_hyps.scores += eos_score * self.ngram_lm_alpha
+
+        # step 3: updating fusion scores with eos scores
+        if self.fusion_models is not None:
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                if not isinstance(fusion_model, GPUBoostingTreeModel):
+                    eos_score = fusion_model.get_final(self.state.fusion_states_list[fusion_idx]).view(
+                        self.state.batched_hyps.scores.shape
+                    )
+                    self.state.batched_hyps.scores += eos_score * self.fusion_models_alpha[fusion_idx]
 
     def __call__(
         self,

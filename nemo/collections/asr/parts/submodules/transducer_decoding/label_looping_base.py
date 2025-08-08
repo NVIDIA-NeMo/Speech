@@ -43,8 +43,8 @@ class BatchedLabelLoopingState:
     predictor_outputs: torch.Tensor
     labels: torch.Tensor
     decoded_lengths: torch.Tensor
-    lm_states: Optional[torch.Tensor] = None
-    time_jumps: Optional[torch.Tensor] = None
+    fusion_states_list: list[torch.Tensor] | None = None
+    time_jumps: torch.Tensor | None = None
 
 
 @dataclass
@@ -55,8 +55,8 @@ class LabelLoopingStateItem:
     predictor_output: torch.Tensor
     label: torch.Tensor
     decoded_length: torch.Tensor
-    lm_state: Optional[torch.Tensor] = None
-    time_jump: Optional[torch.Tensor] = None
+    fusion_state_list: list[torch.Tensor] | None = None
+    time_jump: torch.Tensor | None = None
 
 
 class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):

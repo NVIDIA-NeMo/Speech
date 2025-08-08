@@ -58,6 +58,10 @@ class BoostingTreeModelConfig:
     )
     bpe_alpha: float = 0.3  # The alpha parameter for BPE dropout
 
+    @staticmethod
+    def is_empty(cfg: "BoostingTreeModelConfig") -> bool:
+        return cfg.model_path is None and cfg.key_phrases_file is None and cfg.key_phrases_list is None
+
 
 class TBranch(NamedTuple):
     """Structure (tuple) to represent a branch in the boosting tree"""

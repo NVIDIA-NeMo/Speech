@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, List, Optional, Union
 
 import numpy as np
 import torch
@@ -93,15 +92,16 @@ class MALSDState:
 
     batched_hyps: BatchedBeamHyps  # batched hypotheses - decoding result
 
-    # LM-related fields
-    ngram_lm_batch: Optional[NGramGPULanguageModel] = None  # N-gram LM for hypotheses
-    lm_scores: Optional[torch.Tensor] = None  # LM scores for hypotheses
-    batch_lm_states: Optional[torch.Tensor] = None  # LM states for hypotheses
-    batch_lm_states_candidates: Optional[torch.Tensor] = None  # LM states for hypotheses candidates
-    batch_lm_states_prev: Optional[torch.Tensor] = None  # previous LM states for hypotheses
-    init_lm_scores: Optional[torch.Tensor] = None  # initial LM scores for hypotheses
-    init_batch_lm_states: Optional[torch.Tensor] = None  # initial LM states for hypotheses
-    init_batch_lm_states_candidates: Optional[torch.Tensor] = None  # initial LM states for hypotheses candidates
+    # fusion models related fields
+    fusion_models: Optional[List[NGramGPULanguageModel]] = None  # list of fusion models
+    fusion_models_alpha: Optional[List[float]] = None  # list of weights for the fusion models scores
+    fusion_states_list: Optional[List[torch.Tensor]] = None  # list of fusion states
+    fusion_states_candidates_list: Optional[List[torch.Tensor]] = None  # list of fusion states candidates
+    fusion_scores_list: Optional[List[torch.Tensor]] = None  # list of fusion scores
+    fusion_states_prev_list: Optional[List[torch.Tensor]] = None  # list of previous fusion states
+    init_fusion_states_list: Optional[List[torch.Tensor]] = None  # list of initial fusion states
+    init_fusion_states_candidates_list: Optional[List[torch.Tensor]] = None  # list of initial fusion states candidates
+    init_fusion_scores_list: Optional[List[torch.Tensor]] = None  # list of initial fusion scores
 
     def __init__(
         self,
@@ -224,7 +224,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
     full_graph: Optional[torch.cuda.CUDAGraph]
     cuda_graphs_mode: Optional[CudaGraphsMode]
     state: Optional[MALSDState]
-    ngram_lm_batch: Optional[NGramGPULanguageModel]
+    fusion_models: Optional[List[NGramGPULanguageModel]]
 
     def __init__(
         self,
@@ -234,8 +234,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         beam_size: int,
         max_symbols_per_step: Optional[int] = 10,
         preserve_alignments=False,
-        ngram_lm_model: Optional[str | Path] = None,
-        ngram_lm_alpha: float = 0.0,
+        fusion_models: Optional[List[NGramGPULanguageModel]] = None,
+        fusion_models_alpha: Optional[List[float]] = None,
         blank_lm_score_mode: Optional[str | BlankLMScoreMode] = None,
         pruning_mode: Optional[str | PruningMode] = None,
         allow_cuda_graphs: bool = True,
@@ -249,10 +249,10 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             beam_size: beam size
             max_symbols_per_step: max symbols to emit on each step (to avoid infinite looping)
             preserve_alignments: if alignments are needed
-            ngram_lm_model: path to the NGPU-LM n-gram LM model: .arpa or .nemo formats
-            ngram_lm_alpha: weight for the n-gram LM scores
-            blank_lm_score_mode: mode for scoring blank symbol with LM
-            pruning_mode: mode for pruning hypotheses with LM
+            fusion_models: list of fusion models (ngram_lm_model and boosting_tree_model)
+            fusion_models_alpha: list of weights for the fusion models scores
+            blank_lm_score_mode: mode for scoring blank symbol with fusion models
+            pruning_mode: mode for pruning hypotheses with fusion models
             allow_cuda_graphs: whether to allow CUDA graphs
         """
 
@@ -277,12 +277,13 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.cuda_graphs_mode = None
         self.maybe_enable_cuda_graphs()
 
-        if ngram_lm_model is not None:
+        if fusion_models is not None:
             expected_blank_index = self.joint.num_classes_with_blank - self.joint.num_extra_outputs - 1
             if self._blank_index != expected_blank_index:
                 raise ValueError(f"Invalid blank index: expected {expected_blank_index}, got {self._blank_index}")
 
-            self.ngram_lm_batch = NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=self._blank_index)
+            self.fusion_models = fusion_models
+            self.fusion_models_alpha = fusion_models_alpha
 
             self.pruning_mode = PruningMode.EARLY if pruning_mode is None else PruningMode(pruning_mode)
             self.blank_lm_score_mode = (
@@ -291,9 +292,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 else BlankLMScoreMode(blank_lm_score_mode)
             )
         else:
-            self.ngram_lm_batch = None
+            self.fusion_models = None
             self.blank_lm_score_mode = None
-        self.ngram_lm_alpha = ngram_lm_alpha
 
     def force_cuda_graphs_mode(self, mode: Optional[Union[str, CudaGraphsMode]]):
         """
@@ -401,15 +401,25 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         last_timesteps = (encoder_output_length - 1)[:, None].expand_as(batch_beam_indices)
         active_mask = time_indices <= last_timesteps
 
-        # setup N-gram LM if available
-        if self.ngram_lm_batch is not None:
-            self.ngram_lm_batch.to(device)
+        # setup fusion models if available
+        if self.fusion_models is not None:
+            fusion_states_list = []
+            fusion_states_candidates_list = []
+            fusion_scores_list = []
+            for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
+                fusion_model.to(device)
+                fusion_states = fusion_model.get_init_states(batch_size=batch_size * self.beam_size, bos=True)
+                fusion_scores, fusion_states_candidates = fusion_model.advance(
+                    states=fusion_states
+                )  # vocab_size_no_blank
 
-            batch_lm_states = self.ngram_lm_batch.get_init_states(batch_size=batch_size * self.beam_size, bos=True)
-            lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(
-                states=batch_lm_states
-            )  # vocab_size_no_blank
-            lm_scores = lm_scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1) * self.ngram_lm_alpha
+                fusion_scores = (
+                    fusion_scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1)
+                    * self.fusion_models_alpha[fusion_model_idx]
+                )
+                fusion_states_list.append(fusion_states)
+                fusion_states_candidates_list.append(fusion_states_candidates)
+                fusion_scores_list.append(fusion_scores)
 
         decoder_state = self.decoder.initialize_state(
             torch.empty(
@@ -429,7 +439,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.decoder.batch_replace_states_all(state, dst_states=decoder_state)
 
         while active_mask.any():
-            # step 1: get joint output + fuse with LM (if present)
+            # step 1: get joint output + fuse with fusion models (if present)
             logits = (
                 self.joint.joint_after_projection(
                     encoder_output_projected[batch_beam_indices.view(-1), safe_time_indices.view(-1)].unsqueeze(1),
@@ -442,8 +452,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 batch_size, self.beam_size, -1
             )  # [(B x Beam), V]
 
-            if self.ngram_lm_batch is not None:
-                log_probs_top_k, labels_top_k = self.topk_lm(lm_scores, log_probs)
+            if self.fusion_models is not None:
+                log_probs_top_k, labels_top_k = self.topk_fusion_model(fusion_scores_list, log_probs)
             else:
                 log_probs_top_k, labels_top_k = torch.topk(
                     log_probs, self.beam_size, dim=-1, largest=True, sorted=True
@@ -512,14 +522,14 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             # step 4: recombine hypotheses: sum probabilities of identical hypotheses.
             batched_hyps.recombine_hyps_()
 
-            # step 5: update decoder state + decoder output (+ lm state/scores)
+            # step 5: update decoder state + decoder output (+ fusion models state/scores)
             # step 5.1: mask invalid value labels with blank to avoid errors (refer to step 2.2)
             last_labels_wb = torch.where(next_labels >= 0, next_labels, self._blank_index)
             preserve_state = last_labels_wb == self._blank_index
 
             # size: decoder_output [(B x Beam), 1, Dim]
             # size: state tuple, each is of [Layers, (BxBeam), Dim]
-            # step 5.2: update decoder + lm state
+            # step 5.2: update decoder + fusion models state
             # step 5.2.1: storing current decoder output and states of extended hypotheses
             prev_decoder_output = torch.gather(
                 decoder_output.view(batch_size, self.beam_size, 1, -1),
@@ -545,30 +555,37 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 src_states=prev_decoder_state, dst_states=decoder_state, mask=preserve_state.view(-1)
             )
 
-            if self.ngram_lm_batch is not None:
-                # batch_lm_states: size: [(batch_size x beam_size)]
-                # batch_lm_states_candidates: [(batch_size x beam_size) x V (without blank)]
-                batch_lm_states_candidates = torch.gather(
-                    batch_lm_states_candidates.view(batch_size, self.beam_size, -1),
-                    dim=1,
-                    index=hyps_indices[:, :, None].expand(
-                        batch_size, self.beam_size, batch_lm_states_candidates.shape[-1]
-                    ),
-                )
-                batch_lm_states_prev = torch.gather(
-                    batch_lm_states.view(batch_size, self.beam_size), dim=1, index=hyps_indices
-                )
-                last_labels_wb_blank_replaced = torch.where(preserve_state, 0, last_labels_wb)
+            if self.fusion_models is not None:
+                # fusion_states: size: [(batch_size x beam_size)]
+                # fusion_states_candidates: [(batch_size x beam_size) x V (without blank)]
+                for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
+                    fusion_states_candidates = torch.gather(
+                        fusion_states_candidates_list[fusion_model_idx].view(batch_size, self.beam_size, -1),
+                        dim=1,
+                        index=hyps_indices[:, :, None].expand(
+                            batch_size, self.beam_size, fusion_states_candidates_list[fusion_model_idx].shape[-1]
+                        ),
+                    )
+                    fusion_states_prev = torch.gather(
+                        fusion_states_list[fusion_model_idx].view(batch_size, self.beam_size),
+                        dim=1,
+                        index=hyps_indices,
+                    )
+                    last_labels_wb_blank_replaced = torch.where(preserve_state, 0, last_labels_wb)
 
-                batch_lm_states = torch.gather(
-                    batch_lm_states_candidates, dim=-1, index=last_labels_wb_blank_replaced.unsqueeze(-1)
-                ).squeeze(-1)
-                batch_lm_states = torch.where(preserve_state, batch_lm_states_prev, batch_lm_states).view(-1)
+                    fusion_states = torch.gather(
+                        fusion_states_candidates, dim=-1, index=last_labels_wb_blank_replaced.unsqueeze(-1)
+                    ).squeeze(-1)
+                    fusion_states = torch.where(preserve_state, fusion_states_prev, fusion_states).view(-1)
 
-                lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(
-                    states=batch_lm_states
-                )  # vocab_size_no_blank
-                lm_scores = lm_scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1) * self.ngram_lm_alpha
+                    fusion_scores, fusion_states_candidates = fusion_model.advance(states=fusion_states)
+                    fusion_scores = (
+                        fusion_scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1)
+                        * self.fusion_models_alpha[fusion_model_idx]
+                    )
+                    fusion_states_list[fusion_model_idx] = fusion_states
+                    fusion_states_candidates_list[fusion_model_idx] = fusion_states_candidates
+                    fusion_scores_list[fusion_model_idx] = fusion_scores
 
             # step 6: update time indices + active mask
             time_indices = batched_hyps.next_timestamp
@@ -577,14 +594,15 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         return batched_hyps
 
-    def topk_lm(self, lm_scores, log_probs):
+    def topk_fusion_model(self, fusion_scores_list, log_probs, eps=1e-2):
         """
         Computes the top-k log probabilities and corresponding labels for hypotheses,
-        incorporating language model (LM) scores based on the pruning and blank scoring modes.
+        incorporating fusion models scores based on the pruning and blank scoring modes.
 
         Args:
-            lm_scores (torch.Tensor): Language model scores for hypotheses, shape [batch_size, beam_size, vocab_size].
+            fusion_scores_list (List[torch.Tensor]): List of fusion model scores for hypotheses, shape [batch_size, beam_size, vocab_size].
             log_probs (torch.Tensor): Log probabilities from the joint network, shape [batch_size, beam_size, vocab_size].
+            eps (float): Epsilon value for numerical stability. Default is 1e-2 for bf16 precision.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
@@ -592,18 +610,23 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 - labels_top_k: Corresponding top-k labels, shape [batch_size, beam_size, beam_size].
         """
 
+        fusion_scores_sum = sum(fusion_scores_list)
+        fusion_scores_alpha_sum = sum(self.fusion_models_alpha)
+
         match self.pruning_mode, self.blank_lm_score_mode:
             case PruningMode.LATE, BlankLMScoreMode.NO_SCORE:
-                log_probs[..., :-1] += lm_scores
+                log_probs[..., :-1] += fusion_scores_sum
                 log_probs_top_k, labels_top_k = torch.topk(
                     log_probs, self.beam_size, dim=-1, largest=True, sorted=True
                 )
 
             case PruningMode.LATE, BlankLMScoreMode.LM_WEIGHTED_FULL:
                 blank_logprob = log_probs[..., -1]
-                non_blank_logprob = torch.log1p(-torch.clamp(torch.exp(blank_logprob), max=1.0 - 1e-6))
-                log_probs[..., :-1] += non_blank_logprob.unsqueeze(-1) * self.ngram_lm_alpha + lm_scores
-                log_probs[..., -1] *= 1 + self.ngram_lm_alpha
+                non_blank_logprob = torch.log1p(
+                    -torch.clamp(torch.exp(blank_logprob), max=1.0 - eps)
+                )  # 1e-2 is used here instead of 1e-6 to address numerical instability with bf16 precision.
+                log_probs[..., :-1] += non_blank_logprob.unsqueeze(-1) * fusion_scores_alpha_sum + fusion_scores_sum
+                log_probs[..., -1] *= 1 + fusion_scores_alpha_sum
                 log_probs_top_k, labels_top_k = torch.topk(
                     log_probs, self.beam_size, dim=-1, largest=True, sorted=True
                 )
@@ -616,22 +639,22 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 log_probs_top_k = torch.where(
                     labels_top_k == self._blank_index,
                     log_probs_top_k,
-                    log_probs_top_k + torch.gather(lm_scores, dim=-1, index=masked_labels),
+                    log_probs_top_k + torch.gather(fusion_scores_sum, dim=-1, index=masked_labels),
                 )
 
             case PruningMode.EARLY, BlankLMScoreMode.LM_WEIGHTED_FULL:
                 log_probs_top_k, labels_top_k = log_probs.topk(self.beam_size, dim=-1, largest=True, sorted=True)
 
                 blank_logprob = log_probs[..., -1]
-                non_blank_logprob = torch.log1p(-torch.clamp(torch.exp(blank_logprob), max=1.0 - 1e-6))
+                non_blank_logprob = torch.log1p(-torch.clamp(torch.exp(blank_logprob), max=1.0 - eps))
 
                 masked_labels = torch.where(labels_top_k == self._blank_index, 0, labels_top_k)
                 log_probs_top_k = torch.where(
                     labels_top_k == self._blank_index,
-                    log_probs_top_k * (1 + self.ngram_lm_alpha),
+                    log_probs_top_k * (1 + fusion_scores_alpha_sum),
                     log_probs_top_k
-                    + non_blank_logprob.unsqueeze(-1) * self.ngram_lm_alpha
-                    + torch.gather(lm_scores, dim=-1, index=masked_labels),
+                    + non_blank_logprob.unsqueeze(-1) * fusion_scores_alpha_sum
+                    + torch.gather(fusion_scores_sum, dim=-1, index=masked_labels),
                 )
 
             case _:
@@ -777,29 +800,43 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.decoder.batch_replace_states_all(self.state.init_decoder_state, dst_states=self.state.prev_decoder_state)
         self.state.prev_decoder_output = self.state.init_decoder_output.clone()
 
-        if self.ngram_lm_batch is not None:
+        if self.fusion_models is not None:
+
             device = encoder_output_projected.device
 
-            self.ngram_lm_batch.to(device)
+            self.state.init_fusion_states_list = []
+            self.state.init_fusion_states_candidates_list = []
+            self.state.init_fusion_scores_list = []
 
-            self.state.init_batch_lm_states = self.ngram_lm_batch.get_init_states(
-                batch_size=self.state.batch_size * self.beam_size, bos=True
-            ).view(self.state.batch_size, self.beam_size)
-            init_lm_scores, init_batch_lm_states_candidates = self.ngram_lm_batch.advance(
-                states=self.state.init_batch_lm_states.view(-1)
-            )  # vocab_size_no_blank
-            self.state.init_lm_scores = (
-                init_lm_scores.to(dtype=self.state.float_dtype).view(self.state.batch_size, self.beam_size, -1)
-                * self.ngram_lm_alpha
-            )
-            self.state.init_batch_lm_states_candidates = init_batch_lm_states_candidates.view(
-                self.state.batch_size, self.beam_size, -1
-            )
+            self.state.fusion_states_list = []
+            self.state.fusion_states_candidates_list = []
+            self.state.fusion_scores_list = []
+            self.state.fusion_states_prev_list = []
 
-            self.state.batch_lm_states = self.state.init_batch_lm_states.clone()
-            self.state.batch_lm_states_candidates = self.state.init_batch_lm_states_candidates.clone()
-            self.state.lm_scores = self.state.init_lm_scores.clone()
-            self.state.batch_lm_states_prev = self.state.init_batch_lm_states.clone()
+            for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
+                fusion_model.to(device)
+
+                init_fusion_states = fusion_model.get_init_states(
+                    batch_size=self.state.batch_size * self.beam_size, bos=True
+                ).view(self.state.batch_size, self.beam_size)
+                init_fusion_scores, init_fusion_states_candidates = fusion_model.advance(
+                    states=init_fusion_states.view(-1)
+                )
+                self.state.init_fusion_scores_list.append(
+                    init_fusion_scores.to(dtype=self.state.float_dtype).view(self.state.batch_size, self.beam_size, -1)
+                    * self.fusion_models_alpha[fusion_model_idx]
+                )
+                self.state.init_fusion_states_candidates_list.append(
+                    init_fusion_states_candidates.view(self.state.batch_size, self.beam_size, -1)
+                )
+                self.state.init_fusion_states_list.append(init_fusion_states)
+
+                self.state.fusion_states_list.append(init_fusion_states.clone())
+                self.state.fusion_states_candidates_list.append(
+                    self.state.init_fusion_states_candidates_list[fusion_model_idx].clone()
+                )
+                self.state.fusion_scores_list.append(self.state.init_fusion_scores_list[fusion_model_idx].clone())
+                self.state.fusion_states_prev_list.append(init_fusion_states.clone())
 
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
             self._full_graph_compile()
@@ -882,12 +919,15 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         self.state.batched_hyps.clear_()
 
-        # initial state - lm
-        if self.ngram_lm_batch is not None:
-            self.state.batch_lm_states.copy_(self.state.init_batch_lm_states)
-            self.state.batch_lm_states_candidates.copy_(self.state.init_batch_lm_states_candidates)
-            self.state.lm_scores.copy_(self.state.init_lm_scores)
-            self.state.batch_lm_states_prev.copy_(self.state.init_batch_lm_states)
+        # initial state for fusion models
+        if self.fusion_models is not None:
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                self.state.fusion_states_list[fusion_idx].copy_(self.state.init_fusion_states_list[fusion_idx])
+                self.state.fusion_states_candidates_list[fusion_idx].copy_(
+                    self.state.init_fusion_states_candidates_list[fusion_idx]
+                )
+                self.state.fusion_scores_list[fusion_idx].copy_(self.state.init_fusion_scores_list[fusion_idx])
+                self.state.fusion_states_prev_list[fusion_idx].copy_(self.state.init_fusion_states_list[fusion_idx])
 
         # last found labels - initially <SOS> (<blank>) symbol
         self.state.last_labels_wb.fill_(self._SOS)
@@ -920,7 +960,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
     def _loop_body(self):
         """Perform a single iteration of the batched RNN-T decoding loop."""
-        # step 1: get joint output + fuse with LM (if present)
+        # step 1: get joint output + fuse with fusion models (if present)
         logits = self.joint.joint_after_projection(
             self.state.encoder_output_projected[
                 self.state.batch_indices.view(-1), self.state.safe_time_indices.view(-1)
@@ -931,8 +971,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             self.state.batch_size, self.beam_size, -1
         )  # [(B x Beam), V]
 
-        if self.ngram_lm_batch is not None:
-            log_probs_top_k, labels_top_k = self.topk_lm(self.state.lm_scores, log_probs)
+        if self.fusion_models is not None:
+            log_probs_top_k, labels_top_k = self.topk_fusion_model(self.state.fusion_scores_list, log_probs)
         else:
             log_probs_top_k, labels_top_k = torch.topk(log_probs, self.beam_size, dim=-1, largest=True, sorted=True)
 
@@ -1014,11 +1054,11 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
     def _loop_update_decoder(self):
         """
-        Updates the decoder state, decoder output, and optionally the language model (LM) state
+        Updates the decoder state, decoder output, and optionally the fusion models state
         for the next iteration of the decoding loop in a batched RNNT (Recurrent Neural Network Transducer) setup.
         """
 
-        # step 5: update decoder state + decoder output (+ lm state/scores)
+        # step 5: update decoder state + decoder output (+ fusion models state/scores)
         # step 5.1: mask invalid value labels with blank to avoid errors (refer to step 2.2)
         torch.where(
             self.state.next_labels >= 0, self.state.next_labels, self.state.BLANK_TENSOR, out=self.state.last_labels_wb
@@ -1027,7 +1067,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         # size: decoder_output [(B x Beam), 1, Dim]
         # size: state tuple, each is of [Layers, (BxBeam), Dim]
-        # step 5.2: update decoder + lm state
+        # step 5.2: update decoder + fusion models state
         # step 5.2.1: storing current decoder output and states of extended hypotheses
         torch.gather(
             self.state.decoder_output.view(self.state.batch_size, self.beam_size, 1, -1),
@@ -1067,48 +1107,52 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             other_src_states=decoder_state,
         )
 
-        if self.ngram_lm_batch is not None:
-            # batch_lm_states: size: [(batch_size x beam_size)]
-            # batch_lm_states_candidates: [(batch_size x beam_size) x V (without blank)]
-            self.state.batch_lm_states_candidates.copy_(
-                torch.gather(
-                    self.state.batch_lm_states_candidates,
-                    dim=1,
-                    index=self.state.next_idx[:, :, None].expand(
-                        self.state.batch_size, self.beam_size, self.state.batch_lm_states_candidates.shape[-1]
-                    ),
+        if self.fusion_models is not None:
+            # fusion_states: size: [(batch_size x beam_size)]
+            # fusion_states_candidates: [(batch_size x beam_size) x V (without blank)]
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                self.state.fusion_states_candidates_list[fusion_idx].copy_(
+                    torch.gather(
+                        self.state.fusion_states_candidates_list[fusion_idx],
+                        dim=1,
+                        index=self.state.next_idx[:, :, None].expand(
+                            self.state.batch_size,
+                            self.beam_size,
+                            self.state.fusion_states_candidates_list[fusion_idx].shape[-1],
+                        ),
+                    )
                 )
-            )
-            torch.gather(
-                self.state.batch_lm_states, dim=1, index=self.state.next_idx, out=self.state.batch_lm_states_prev
-            )
-            last_labels_wb_blank_replaced = torch.where(preserve_state, 0, self.state.last_labels_wb)
+                torch.gather(
+                    self.state.fusion_states_list[fusion_idx],
+                    dim=1,
+                    index=self.state.next_idx,
+                    out=self.state.fusion_states_prev_list[fusion_idx],
+                )
+                last_labels_wb_blank_replaced = torch.where(preserve_state, 0, self.state.last_labels_wb)
 
-            torch.gather(
-                self.state.batch_lm_states_candidates,
-                dim=-1,
-                index=last_labels_wb_blank_replaced.unsqueeze(-1),
-                out=self.state.batch_lm_states.unsqueeze(-1),
-            )
-            torch.where(
-                preserve_state,
-                self.state.batch_lm_states_prev,
-                self.state.batch_lm_states,
-                out=self.state.batch_lm_states,
-            )
-
-            lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(
-                states=self.state.batch_lm_states.view(-1)
-            )  # vocab_size_no_blank
-            lm_scores = (
-                lm_scores.to(dtype=self.state.float_dtype).view(self.state.batch_size, self.beam_size, -1)
-                * self.ngram_lm_alpha
-            )
-
-            self.state.batch_lm_states_candidates.copy_(
-                batch_lm_states_candidates.view(self.state.batch_size, self.state.beam_size, -1)
-            )
-            self.state.lm_scores.copy_(lm_scores)
+                torch.gather(
+                    self.state.fusion_states_candidates_list[fusion_idx],
+                    dim=-1,
+                    index=last_labels_wb_blank_replaced.unsqueeze(-1),
+                    out=self.state.fusion_states_list[fusion_idx].unsqueeze(-1),
+                )
+                torch.where(
+                    preserve_state,
+                    self.state.fusion_states_prev_list[fusion_idx],
+                    self.state.fusion_states_list[fusion_idx],
+                    out=self.state.fusion_states_list[fusion_idx],
+                )
+                fusion_scores, fusion_states_candidates = fusion_model.advance(
+                    states=self.state.fusion_states_list[fusion_idx].view(-1)
+                )
+                fusion_scores = (
+                    fusion_scores.to(dtype=self.state.float_dtype).view(self.state.batch_size, self.beam_size, -1)
+                    * self.fusion_models_alpha[fusion_idx]
+                )
+                self.state.fusion_states_candidates_list[fusion_idx].copy_(
+                    fusion_states_candidates.view(self.state.batch_size, self.state.beam_size, -1)
+                )
+                self.state.fusion_scores_list[fusion_idx].copy_(fusion_scores)
 
         # step 6: update time indices + active mask
         self.state.time_indices.copy_(self.state.batched_hyps.next_timestamp)

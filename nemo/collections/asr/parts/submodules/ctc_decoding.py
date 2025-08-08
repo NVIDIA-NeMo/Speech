@@ -192,6 +192,13 @@ class AbstractCTCDecoding(ConfidenceMixin):
                         of calculation of beam search, so that users may update / change the decoding strategy
                         to point to the correct file.
 
+                    boosting_tree:
+                        BoostingTreeModelConfig, config for the boosting tree model
+
+                    boosting_tree_alpha:
+                        float, the strength of the boosting tree model on the final score of a token.
+                        final_score = acoustic_score + boosting_tree_alpha * boosting_tree_score + beam_beta * seq_length.
+
         blank_id:
             The id of the RNNT blank token.
         supported_punctuation:
@@ -299,7 +306,10 @@ class AbstractCTCDecoding(ConfidenceMixin):
                 confidence_method_cfg=self.confidence_method_cfg,
                 ngram_lm_model=self.cfg.greedy.get("ngram_lm_model", None),
                 ngram_lm_alpha=self.cfg.greedy.get("ngram_lm_alpha", 0.0),
+                boosting_tree=self.cfg.greedy.get("boosting_tree", None),
+                boosting_tree_alpha=self.cfg.greedy.get("boosting_tree_alpha", 0.0),
                 allow_cuda_graphs=self.cfg.greedy.get("allow_cuda_graphs", True),
+                tokenizer=getattr(self, 'tokenizer', None),
             )
 
         elif self.cfg.strategy == 'beam':
@@ -375,6 +385,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
             self.decoding.override_fold_consecutive_value = False
 
         elif self.cfg.strategy == 'beam_batch':
+
             self.decoding = ctc_beam_decoding.BeamBatchedCTCInfer(
                 blank_index=blank_id,
                 beam_size=self.cfg.beam.get('beam_size', 1),
@@ -385,7 +396,10 @@ class AbstractCTCDecoding(ConfidenceMixin):
                 beam_beta=self.cfg.beam.get('beam_beta', 0.0),
                 beam_threshold=self.cfg.beam.get('beam_threshold', 20.0),
                 ngram_lm_model=self.cfg.beam.get('ngram_lm_model', None),
+                boosting_tree=self.cfg.beam.get("boosting_tree", None),
+                boosting_tree_alpha=self.cfg.beam.get("boosting_tree_alpha", 0.0),
                 allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
+                tokenizer=getattr(self, 'tokenizer', None),
             )
 
             self.decoding.override_fold_consecutive_value = False
@@ -1386,6 +1400,13 @@ class CTCBPEDecoding(AbstractCTCDecoding):
                         If the path is invalid (file is not found at path), will raise a deferred error at the moment
                         of calculation of beam search, so that users may update / change the decoding strategy
                         to point to the correct file.
+
+                    boosting_tree:
+                        BoostingTreeModelConfig, config for the boosting tree model
+
+                    boosting_tree_alpha:
+                        float, the strength of the boosting tree model on the final score of a token.
+                        final_score = acoustic_score + boosting_tree_alpha * boosting_tree_score + beam_beta * seq_length.
 
         tokenizer: NeMo tokenizer object, which inherits from TokenizerSpec.
     """

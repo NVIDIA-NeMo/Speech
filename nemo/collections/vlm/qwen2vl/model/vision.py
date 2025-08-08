@@ -21,6 +21,7 @@ from megatron.core.config_logger import has_config_logger_enabled, log_config_to
 from megatron.core.enums import Fp8Recipe
 from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.inference.contexts import BaseInferenceContext
+from megatron.core.jit import jit_fuser
 from megatron.core.models.common.vision_module.vision_module import VisionModule
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.process_groups_config import ModelCommProcessGroups
@@ -112,7 +113,6 @@ class Qwen25VLVisionTransformerBlock(TransformerBlock):
             Union[Tensor, Tuple[Tensor, Tensor]]: The output hidden states tensor of shape
             [s, b, h], and optionally the updated context tensor if cross-attention is used.
         """
-
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
         # Delete the obsolete reference to the initial input tensor if necessary
@@ -324,6 +324,7 @@ class VisionRotaryEmbedding(torch.nn.Module):
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
+    @jit_fuser
     def forward(self, seqlen: int) -> torch.Tensor:
         # pylint: disable=C0115,C0116
         seq = torch.arange(seqlen, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
@@ -585,6 +586,7 @@ class Qwen25VisionModel(VisionModule):
         """
         self.decoder.set_input_tensor(input_tensor)
 
+    @jit_fuser
     def rot_pos_emb(self, grid_thw):
         # pylint: disable=C0115,C0116
         pos_ids = []
@@ -615,6 +617,7 @@ class Qwen25VisionModel(VisionModule):
         rotary_pos_emb = rotary_pos_emb_full[pos_ids].flatten(1)
         return rotary_pos_emb
 
+    @jit_fuser
     def get_packed_seq_params(
         self,
         grid_thw: Optional[torch.Tensor],
@@ -642,6 +645,7 @@ class Qwen25VisionModel(VisionModule):
             qkv_format='thd',
         )
 
+    @jit_fuser
     def get_window_index(self, grid_thw):
         # pylint: disable=C0115,C0116
         window_index: list = []

@@ -19,3 +19,12 @@ try:
     __all__ = ["io"]
 except (ImportError, ModuleNotFoundError):
     pass
+
+import warnings
+
+warnings.warn(
+    "The 'nemo.export' is deprecated and will be removed in NeMo FW 25.09 container release. "
+    "For evaluation functionality, please use the new Eval repository: https://github.com/NVIDIA-NeMo/Export-Deploy",
+    DeprecationWarning,
+    stacklevel=2,
+)

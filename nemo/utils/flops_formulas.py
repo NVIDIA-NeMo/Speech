@@ -62,18 +62,19 @@ class FLOPSConfig:
 
 def gpt3(config: FLOPSConfig):
     """Model FLOPs for GPT3 family"""
-
     vocab_size = LLM_VOCAB_SIZE_MAP["gpt3"]
+    causal_self_attn = True
 
     return (
         24 * config.gbs * config.enc_seq_len * config.hs * config.hs
-        + 4 * config.gbs * config.enc_seq_len * config.enc_seq_len * config.hs
+        + 4 * config.gbs * config.enc_seq_len * config.enc_seq_len * config.hs * (0.5 if causal_self_attn else 1)
     ) * (3 * config.layers) + (6 * config.gbs * config.enc_seq_len * config.hs * vocab_size)
 
 
 def llama2(config: FLOPSConfig):
     """Model FLOPs for llama2 family"""
     vocab_size = LLM_VOCAB_SIZE_MAP["llama2"]
+    causal_self_attn = True
 
     return (
         config.gbs
@@ -85,7 +86,7 @@ def llama2(config: FLOPSConfig):
             12
             + (12 * config.query_groups / config.attention_heads)
             + (18 * config.ffn_hs / config.hs)
-            + (12 * config.enc_seq_len / config.hs)
+            + (12 * config.enc_seq_len / config.hs) * (0.5 if causal_self_attn else 1)
             + (6 * vocab_size / (config.layers * config.hs))
         )
     )
@@ -94,6 +95,7 @@ def llama2(config: FLOPSConfig):
 def llama3(config: FLOPSConfig):
     """Model FLOPs for llama3 family"""
     vocab_size = LLM_VOCAB_SIZE_MAP["llama3"]
+    causal_self_attn = True
 
     return (
         config.gbs
@@ -105,7 +107,7 @@ def llama3(config: FLOPSConfig):
             12
             + (12 * config.query_groups / config.attention_heads)
             + (18 * config.ffn_hs / config.hs)
-            + (12 * config.enc_seq_len / config.hs)
+            + (12 * config.enc_seq_len / config.hs) * (0.5 if causal_self_attn else 1)
             + (6 * vocab_size / (config.layers * config.hs))
         )
     )
@@ -114,6 +116,7 @@ def llama3(config: FLOPSConfig):
 def nemotron(config: FLOPSConfig):
     """Model FLOPs for nemotron family"""
     vocab_size = LLM_VOCAB_SIZE_MAP["nemotron"]
+    causal_self_attn = True
 
     return (
         config.gbs
@@ -125,7 +128,7 @@ def nemotron(config: FLOPSConfig):
             12
             + (12 * config.query_groups / config.attention_heads)
             + (12 * config.ffn_hs / config.hs)
-            + (12 * config.enc_seq_len / config.hs)
+            + (12 * config.enc_seq_len / config.hs) * (0.5 if causal_self_attn else 1)
             + (6 * vocab_size / (config.layers * config.hs))
         )
     )
@@ -134,6 +137,7 @@ def nemotron(config: FLOPSConfig):
 def mixtral(config: FLOPSConfig):
     """Model FLOPs for mixtral family"""
     vocab_size = LLM_VOCAB_SIZE_MAP["mixtral"]
+    causal_self_attn = True
 
     return (
         config.gbs
@@ -145,7 +149,7 @@ def mixtral(config: FLOPSConfig):
             12
             + (12 * config.query_groups / config.attention_heads)
             + (18 * config.moe_router_topk * config.ffn_hs / config.hs)
-            + (12 * config.enc_seq_len / config.hs)
+            + (12 * config.enc_seq_len / config.hs) * (0.5 if causal_self_attn else 1)
             + (6 * vocab_size / (config.layers * config.hs))
         )
     )

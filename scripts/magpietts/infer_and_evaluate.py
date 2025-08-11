@@ -70,9 +70,11 @@ def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_tex
     model_cfg.legacy_text_conditioning = legacy_text_conditioning
     if "t5_encoder" in model_cfg:
         model_cfg.encoder = model_cfg.t5_encoder
+        model_cfg.encoder.is_training = False # For inference this is necessary to toggle how attention prior is applied
         del model_cfg.t5_encoder
     if "t5_decoder" in model_cfg:
         model_cfg.decoder = model_cfg.t5_decoder
+        model_cfg.decoder.is_training = False # For inference this is necessary to toggle how attention prior is applied
         del model_cfg.t5_decoder
     if hasattr(model_cfg, 'decoder') and hasattr(model_cfg.decoder, 'prior_eps'):
         # Added to prevent crash after removing arg from transformer_2501.py in https://github.com/blisc/NeMo/pull/56

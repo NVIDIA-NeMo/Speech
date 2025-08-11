@@ -15,6 +15,7 @@ from typing import Callable, Optional
 
 import lightning.pytorch as pl
 import nemo_run as run
+import torch
 
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
@@ -127,6 +128,13 @@ def pretrain_recipe(
 
     # DeepEP
     deepep_callback = run.Config(DeepEPCallback)
+
+    # BF16 optimizer
+    recipe.optim.config.use_precision_aware_optimizer = True
+    recipe.optim.config.main_params_dtype = torch.float32
+    recipe.optim.config.main_grads_dtype = torch.bfloat16
+    recipe.optim.config.exp_avg_dtype = torch.bfloat16
+    recipe.optim.config.exp_avg_sq_dtype = torch.bfloat16
 
     garbage_collection_callback = run.Config(
         GarbageCollectionCallback,

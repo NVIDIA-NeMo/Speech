@@ -1,5 +1,5 @@
 {
-  "ngc-pytorch": "nvcr.io/nvidia/pytorch:25.05-py3",
+  "ngc-pytorch": "nvcr.io/nvidia/pytorch:25.06-py3",
   "vcs-dependencies": {
     "apex": {
       "repo": "https://github.com/NVIDIA/Apex",
@@ -7,7 +7,7 @@
     },
     "transformer_engine": {
       "repo": "https://github.com/NVIDIA/TransformerEngine",
-      "ref": "f05f12c974b37c5bd8dfca3d2d294be53b66abfa"
+      "ref": "b97c2bf7b93be265fd4d60f600718920297049ef"
     },
     "megatron-lm": {
       "repo": "https://github.com/NVIDIA/Megatron-LM",

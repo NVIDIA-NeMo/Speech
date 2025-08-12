@@ -19,11 +19,17 @@ import nemo_run as run
 from nemo.collections.llm.recipes.qwen3_30b_a3b import pretrain_recipe
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
-from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin, PerfEnvPlugin
+from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
 from ..argument_parser import parse_cli_args
 from ..executors import slurm_executor
-from ..helpers import args_sanity_check, get_user_configs, set_exp_logging_configs, set_primary_perf_configs
+from ..helpers import (
+    args_sanity_check,
+    build_perf_env_plugin,
+    get_user_configs,
+    set_exp_logging_configs,
+    set_primary_perf_configs,
+)
 from ..utils import dump_config_diff_from_base_recipe
 
 
@@ -129,13 +135,7 @@ if __name__ == "__main__":
     if args.gpu.lower() in ['b200', 'gb200'] and "PYTORCH_CUDA_ALLOC_CONF" in executor.env_vars:
         del executor.env_vars["PYTORCH_CUDA_ALLOC_CONF"]
 
-    plugins = [
-        PerfEnvPlugin(
-            enable_vboost=True,
-            nccl_pp_comm_chunksize=2097152 if pp_size > 1 else None,
-            gpu_sm100_or_newer=(args.gpu.lower() in ['b200', 'gb200']),
-        ),
-    ]
+    plugins = [build_perf_env_plugin(args, pp_size=pp_size)]
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=5, end_step=6, gen_shape=True))
     if args.enable_memory_profile:

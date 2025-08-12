@@ -483,3 +483,32 @@ def args_sanity_check(args: dict) -> None:
         assert args.wandb_key is not None, "wandb logger needs \"wandb_key\""
         assert args.wandb_prj_name is not None, "wandb logger needs \"wandb_prj_name\""
         assert args.wandb_job_name is not None, "wandb logger needs \"wandb_job_name\""
+
+
+def build_perf_env_plugin(args, pp_size: int | None = None, user_buffer_registration: Optional[bool] = None):
+    """
+    Create a PerfEnvPlugin with consistent defaults across scripts.
+
+    - enable_vboost only when gpu is h100
+    - set nccl_pp_comm_chunksize when pipeline parallelism is used
+    - set gpu_sm100_or_newer when gpu is in ['b200', 'gb200']
+
+    Args:
+        args: Parsed CLI args that include `gpu`.
+        pp_size: Pipeline parallel size to decide comm chunk size.
+        user_buffer_registration: Optional flag to enable user buffer registration.
+    """
+    from nemo.lightning.run.plugins import PerfEnvPlugin
+
+    gpu_str = getattr(args, "gpu", "").lower()
+    enable_vboost = args.enable_vboost
+    gpu_sm100_or_newer = gpu_str in ["b200", "gb200"]
+    nccl_pp_comm_chunksize = 2097152 if (pp_size is not None and pp_size > 1) else None
+    user_buf = bool(user_buffer_registration) if user_buffer_registration is not None else False
+
+    return PerfEnvPlugin(
+        enable_vboost=enable_vboost,
+        nccl_pp_comm_chunksize=nccl_pp_comm_chunksize,
+        gpu_sm100_or_newer=gpu_sm100_or_newer,
+        user_buffer_registration=user_buf,
+    )

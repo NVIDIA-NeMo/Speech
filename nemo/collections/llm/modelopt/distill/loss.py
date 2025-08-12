@@ -238,7 +238,11 @@ class LogitsKLLoss(BaseLoss):
 
 
 class MFTLoss(BaseLoss):
-    """Calculates the Minifinetuning loss between two logits tensors and with the presence of labels without reducing the sequence dim. This function implements the distillation loss found in the paper: https://arxiv.org/abs/2506.15702."""
+    """
+    Calculates the Minifinetuning loss between two logits tensors and with the presence of labels
+    without reducing the sequence dim. This function implements the distillation loss found in the
+    paper: https://arxiv.org/abs/2506.15702.
+    """
 
     def __init__(
         self, model_config: "TransformerConfig", threshold: float, temperature: float = 1.0, reverse: bool = False
@@ -247,7 +251,8 @@ class MFTLoss(BaseLoss):
 
         Args:
             model_config: MCore transformer config.
-            threshold: Threshold for the MFT loss, used to determine the correction factor for the teacher probability given the ground truth labels.
+            threshold: Threshold for the MFT loss, used to determine the correction factor
+                for the teacher probability given the ground truth labels.
             temperature: Divide tensors by this value prior to calculating loss.
             reverse: Whether to reverse the loss as KLD(teacher, student) instead of KLD(student, teacher)
         """
@@ -266,8 +271,8 @@ class MFTLoss(BaseLoss):
         """Prepare the corrected distributions for MFT loss.
 
         Args:
-            logits: The logits from the teacher model, shape (batch, channels) # e.g. (batch_size * seq_len, vocab_size)
-                in case of LMs
+            logits: The logits from the teacher model, shape (batch, channels)
+                # e.g. (batch_size * seq_len, vocab_size) in case of LMs
             labels: The ground truth labels, shape (batch) # e.g. (batch_size * seq_len) in case of LMs
             threshold: The threshold value for the MFT correction.
             apply_threshold_to_all: If True, apply the threshold correction to all tokens,

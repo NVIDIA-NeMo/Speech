@@ -105,24 +105,28 @@ def hyena_config() -> HyenaConfig:
     return config
 
 
-@pytest.fixture(params=[pytest.param("hyena_short_conv", id="short"), pytest.param("hyena_medium_conv", id="medium")])
+@pytest.fixture(
+    params=[
+        pytest.param("hyena_short_conv", id="short"),
+        pytest.param("hyena_medium_conv", id="medium"),
+        pytest.param("hyena", id="long"),
+    ]
+)
 def operator_type(request):
     """Parametrized operator type fixture"""
     return request.param
 
 
-class B2BConv1d(torch.nn.Module):
-    def __init__(
-        self, hyena_config, hyena_test_config, seq_len, use_b2b_causal_conv1d=False, operator_type="hyena_medium_conv"
-    ):
+class MixerModuleWrapper(torch.nn.Module):
+    def __init__(self, hyena_config, hyena_test_config, seq_len, use_cuhyena=False, operator_type="hyena_medium_conv"):
         super().__init__()
 
         # Create necessary submodules - use the mixer submodules like in the regular mixer fixture
         submodules = hyena_stack_spec_no_te.submodules.hyena_layer.submodules.mixer.submodules
 
         # Set the b2b parameter in the config
-        hyena_test_config.use_b2b_causal_conv1d = use_b2b_causal_conv1d
-        self.use_b2b_causal_conv1d = use_b2b_causal_conv1d
+        hyena_test_config.use_cuhyena = use_cuhyena
+        self.use_cuhyena = use_cuhyena
         self.operator_type = operator_type
 
         print("Creating HyenaMixer...")
@@ -136,9 +140,9 @@ class B2BConv1d(torch.nn.Module):
         )
 
     def forward(self, x, _use_cp=False):
-        if self.use_b2b_causal_conv1d:
+        if self.use_cuhyena and self.operator_type != "hyena":
             z = self.mixer.b2b_kernel(x, _use_cp=_use_cp)
-        else:
+        else:  # long `hyena` operator internally sets use_cuhyena from config
             features = self.mixer.hyena_proj_conv(x, _use_cp=_use_cp)
             x1, x2, v = rearrange(
                 features, "b (g dg p) l -> b (g dg) p l", p=3, g=self.mixer.num_groups_per_tp_rank
@@ -152,8 +156,8 @@ def mixer(test_config: HyenaTestConfig, hyena_config: HyenaConfig, operator_type
     """Create a HyenaMixer instance for testing with PyTorch implementation"""
     with init_distributed_parallel_state(world_size=1):
         # Create the mixer
-        mixer = B2BConv1d(
-            hyena_config, test_config, seq_len=512, use_b2b_causal_conv1d=False, operator_type=operator_type
+        mixer = MixerModuleWrapper(
+            hyena_config, test_config, seq_len=512, use_cuhyena=False, operator_type=operator_type
         )
         yield mixer
 
@@ -163,17 +167,30 @@ def mixer_kernel(test_config: HyenaTestConfig, hyena_config: HyenaConfig, operat
     """Create a HyenaMixer instance for testing with CUDA kernel implementation"""
     with init_distributed_parallel_state(world_size=1):
         # Create the mixer
-        mixer_kernel = B2BConv1d(
-            hyena_config, test_config, seq_len=512, use_b2b_causal_conv1d=True, operator_type=operator_type
+        mixer_kernel = MixerModuleWrapper(
+            hyena_config, test_config, seq_len=512, use_cuhyena=True, operator_type=operator_type
         )
         yield mixer_kernel
 
 
 @pytest.mark.skipif(importlib.util.find_spec("cuhyena") is None, reason="cuhyena is not installed")
-def test_b2b_causal_conv1d(mixer: B2BConv1d, mixer_kernel: B2BConv1d, config_type, operator_type):
+def test_cuhyena_kernel(mixer: MixerModuleWrapper, mixer_kernel: MixerModuleWrapper, config_type, operator_type):
     # Skip bf16 with short convolution due to numerical instability
     if mixer.mixer.transformer_config.params_dtype == torch.bfloat16 and operator_type == "hyena_short_conv":
         pytest.skip("bf16 with short convolution is skipped due to numerical instability")
+
+    # Copy filter parameters to ensure identical initialization
+    if operator_type == "hyena":
+        mixer.mixer.mixer.filter.gamma.data.copy_(mixer_kernel.mixer.mixer.filter.gamma.data)  # type: ignore
+        mixer.mixer.mixer.filter.R.data.copy_(mixer_kernel.mixer.mixer.filter.R.data)  # type: ignore
+        mixer.mixer.mixer.filter.p.data.copy_(mixer_kernel.mixer.mixer.filter.p.data)  # type: ignore
+    elif operator_type == "hyena_medium_conv":
+        mixer.mixer.mixer.filter.h.data.copy_(mixer_kernel.mixer.mixer.filter.h.data)  # type: ignore
+
+    # Compare parameters to ensure identical initialization
+    for (name1, param1), (name2, param2) in zip(mixer.named_parameters(), mixer_kernel.named_parameters()):
+        assert name1 == name2, f"Parameter name mismatch {name1} != {name2}"
+        assert torch.equal(param1, param2), f"Parameter mismatch for {name1}"
 
     with init_distributed_parallel_state(world_size=1):
         batch_size = 2

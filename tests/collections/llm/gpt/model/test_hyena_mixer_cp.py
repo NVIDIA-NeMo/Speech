@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Usage:
-torchrun --nproc_per_node=2 tests/collections/llm/gpt/model/test_hyena_mixer_cp.py
+"""Example Usage:
+torchrun --nproc_per_node=2 tests/collections/llm/gpt/model/test_hyena_mixer_cp.py --operator_type hyena_short_conv [--use_cuhyena]
 """
 
 import argparse
@@ -166,18 +166,19 @@ def zigzag_gather_from_group_ranks(data, group, seq_dim=0):
     return reconstructed_data
 
 
-class B2BConv1d(torch.nn.Module):
-    def __init__(self, seq_len, use_b2b_causal_conv1d=False):
+class MixerModuleWrapper(torch.nn.Module):
+    def __init__(self, seq_len, operator_type="hyena_short_conv", use_cuhyena=False):
         super().__init__()
 
-        self.use_b2b_causal_conv1d = use_b2b_causal_conv1d
+        self.use_cuhyena = use_cuhyena
+        self.operator_type = operator_type
 
         # Create necessary submodules - use the mixer submodules like in the regular mixer fixture
         submodules = hyena_stack_spec_no_te.submodules.hyena_layer.submodules.mixer.submodules
 
         # Set the b2b parameter in the config
         hyena_config = HyenaConfig(num_groups_hyena=4096, num_groups_hyena_short=256, num_groups_hyena_medium=256)
-        hyena_test_config = HyenaTestConfig(params_dtype=torch.float32, use_b2b_causal_conv1d=use_b2b_causal_conv1d)
+        hyena_test_config = HyenaTestConfig(params_dtype=torch.float32, use_cuhyena=use_cuhyena)
 
         logging.info("Creating HyenaMixer...")
         self.mixer = HyenaMixer(
@@ -186,12 +187,12 @@ class B2BConv1d(torch.nn.Module):
             max_sequence_length=seq_len,
             submodules=submodules,
             layer_number=1,
-            operator_type="hyena_short_conv",
+            operator_type=operator_type,
         )
 
     def forward(self, x, _use_cp=True):
-        if self.use_b2b_causal_conv1d:
-            logging.info(f"Using b2b_causal_conv1d: {self.use_b2b_causal_conv1d}")
+        if self.use_cuhyena and self.operator_type != "hyena":
+            logging.info(f"Using cuHyena: {self.use_cuhyena}")
             z = self.mixer.b2b_kernel(x, _use_cp=_use_cp)
         else:
             logging.info("Using PyTorch implementation")
@@ -207,10 +208,17 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Test hyena mixer with context parallelism")
     parser.add_argument(
-        "--use_b2b_causal_conv1d",
+        "--use_cuhyena",
         action="store_true",
         default=False,
-        help="Whether to use b2b causal conv1d implementation",
+        help="Whether to use cuHyena implementation",
+    )
+    parser.add_argument(
+        "--operator_type",
+        type=str,
+        default="hyena_short_conv",
+        choices=["hyena_short_conv", "hyena_medium_conv", "hyena"],
+        help="Operator type. Options: hyena_short_conv, hyena_medium_conv, hyena",
     )
     parser.add_argument(
         "--tensor_model_parallel_size",
@@ -261,18 +269,22 @@ if __name__ == "__main__":
 
         # Model initialization
         batch_size = 2
-        seq_len = 512
-        b2b_conv1d = B2BConv1d(seq_len=seq_len, use_b2b_causal_conv1d=args.use_b2b_causal_conv1d)
+        seq_len = 1024  # Increased from 512 to provide more space for overlapping patches
+        mixer_module_wrapper = MixerModuleWrapper(
+            seq_len=seq_len,
+            operator_type=args.operator_type,
+            use_cuhyena=args.use_cuhyena,
+        )
 
-        ddp_b2b_conv1d = DDP(
-            b2b_conv1d,
+        ddp_mixer_module_wrapper = DDP(
+            mixer_module_wrapper,
             process_group=parallel_state.get_data_parallel_group(with_context_parallel=True),
             find_unused_parameters=True,
         )
 
         input_features = torch.rand(
-            (batch_size, b2b_conv1d.mixer.hidden_size * 3, seq_len),
-            dtype=b2b_conv1d.mixer.transformer_config.params_dtype,
+            (batch_size, mixer_module_wrapper.mixer.hidden_size * 3, seq_len),
+            dtype=mixer_module_wrapper.mixer.transformer_config.params_dtype,
             device=torch.cuda.current_device(),
         )
 
@@ -281,15 +293,15 @@ if __name__ == "__main__":
         dist.broadcast(input_features, min(dist.get_process_group_ranks(cp_group)), group=cp_group)
 
         logging.info("Running without context parallel")
-        output_features = ddp_b2b_conv1d(input_features, _use_cp=False)
+        output_features = ddp_mixer_module_wrapper(input_features, _use_cp=False)
 
         if dist.get_rank() == 0:
             try:
                 assert output_features.shape == (
                     batch_size,
-                    b2b_conv1d.mixer.hidden_size,
+                    mixer_module_wrapper.mixer.hidden_size,
                     seq_len,
-                ), f"output_features.shape: {output_features.shape}, batch_size: {batch_size}, b2b_conv1d.mixer.hidden_size: {b2b_conv1d.mixer.hidden_size}, seq_len: {seq_len}"
+                ), f"output_features.shape: {output_features.shape}, batch_size: {batch_size}, mixer_module_wrapper.mixer.hidden_size: {mixer_module_wrapper.mixer.hidden_size}, seq_len: {seq_len}"
                 logging.info(f"Output features shape: {output_features.shape}")
             except AssertionError as e:
                 logging.error(f"Assertion error for output features shape: {e}")
@@ -301,25 +313,25 @@ if __name__ == "__main__":
 
         # Store the gradients for later comparison.
         grads_without_cp = []
-        for n, p in ddp_b2b_conv1d.named_parameters():
+        for n, p in ddp_mixer_module_wrapper.named_parameters():
             if p.grad is not None:
                 grads_without_cp.append((n, p.grad.clone()))
 
-        ddp_b2b_conv1d.zero_grad()
+        ddp_mixer_module_wrapper.zero_grad()
         dist.barrier()
 
         logging.info("Running with context parallel")
         # Split the input features across the context parallel group
         input_features_cp = zigzag_split_across_group_ranks(input_features, group=cp_group, seq_dim=2)
 
-        output_features_cp = ddp_b2b_conv1d(input_features_cp, _use_cp=True)
+        output_features_cp = ddp_mixer_module_wrapper(input_features_cp, _use_cp=True)
         if dist.get_rank() == 0:
             try:
                 assert output_features_cp.shape == (
                     batch_size,
-                    b2b_conv1d.mixer.hidden_size,
+                    mixer_module_wrapper.mixer.hidden_size,
                     seq_len // parallel_state.get_context_parallel_world_size(),
-                ), f"output_features_cp.shape: {output_features_cp.shape}, batch_size: {batch_size}, b2b_conv1d.mixer.hidden_size: {b2b_conv1d.mixer.hidden_size}, seq_len: {seq_len}"
+                ), f"output_features_cp.shape: {output_features_cp.shape}, batch_size: {batch_size}, mixer_module_wrapper.mixer.hidden_size: {mixer_module_wrapper.mixer.hidden_size}, seq_len: {seq_len}"
                 logging.info(f"Output features CP shape: {output_features_cp.shape}")
             except AssertionError as e:
                 logging.error(f"Assertion error for output features CP shape: {e}")
@@ -332,9 +344,9 @@ if __name__ == "__main__":
                 # Verify shapes are correct
                 assert output_features_cp_gathered.shape == (
                     batch_size,
-                    b2b_conv1d.mixer.hidden_size,
+                    mixer_module_wrapper.mixer.hidden_size,
                     seq_len,
-                ), f"output_features_cp_gathered.shape: {output_features_cp_gathered.shape}, batch_size: {batch_size}, b2b_conv1d.mixer.hidden_size: {b2b_conv1d.mixer.hidden_size}, seq_len: {seq_len}"
+                ), f"output_features_cp_gathered.shape: {output_features_cp_gathered.shape}, batch_size: {batch_size}, mixer_module_wrapper.mixer.hidden_size: {mixer_module_wrapper.mixer.hidden_size}, seq_len: {seq_len}"
                 logging.info(f"Output features CP gathered shape: {output_features_cp_gathered.shape}")
             except AssertionError as e:
                 logging.error(f"Assertion error for output features CP gathered shape: {e}")
@@ -346,11 +358,11 @@ if __name__ == "__main__":
 
         # Store the gradients for later comparison.
         grads_with_cp = []
-        for n, p in ddp_b2b_conv1d.named_parameters():
+        for n, p in ddp_mixer_module_wrapper.named_parameters():
             if p.grad is not None:
                 grads_with_cp.append((n, p.grad.clone()))
 
-        ddp_b2b_conv1d.zero_grad()
+        ddp_mixer_module_wrapper.zero_grad()
         dist.barrier()
 
         # Only perform comparison on rank 0

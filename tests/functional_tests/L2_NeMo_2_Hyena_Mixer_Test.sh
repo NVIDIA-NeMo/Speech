@@ -28,7 +28,7 @@ mkdir -p $LOG_DIR
 export CUDA_VISIBLE_DEVICES=0,1
 
 # Run the test with torchrun via coverage
-echo "Running Hyena Mixer CP test with torchrun..."
+echo "Running SE Hyena Mixer CP test with torchrun..."
 coverage run -a \
     --data-file=/workspace/.coverage \
     --source=/workspace/nemo \
@@ -36,13 +36,36 @@ coverage run -a \
     --nproc_per_node=2 \
     tests/collections/llm/gpt/model/test_hyena_mixer_cp.py \
     --context_parallel_size=2 \
+    --operator_type=hyena_short_conv \
+    --log_dir=$LOG_DIR
+
+echo "Running MR Hyena Mixer CP test with torchrun..."
+coverage run -a \
+    --data-file=/workspace/.coverage \
+    --source=/workspace/nemo \
+    -m torch.distributed.run \
+    --nproc_per_node=2 \
+    tests/collections/llm/gpt/model/test_hyena_mixer_cp.py \
+    --context_parallel_size=2 \
+    --operator_type=hyena_medium_conv \
+    --log_dir=$LOG_DIR
+
+echo "Running LI Hyena Mixer CP test with torchrun..."
+coverage run -a \
+    --data-file=/workspace/.coverage \
+    --source=/workspace/nemo \
+    -m torch.distributed.run \
+    --nproc_per_node=2 \
+    tests/collections/llm/gpt/model/test_hyena_mixer_cp.py \
+    --context_parallel_size=2 \
+    --operator_type=hyena \
     --log_dir=$LOG_DIR
 
 # Check exit status
 STATUS=$?
 if [ $STATUS -eq 0 ]; then
-    echo "Hyena Mixer CP test completed successfully"
+    echo "Hyena Mixer CP tests completed successfully"
 else
-    echo "Hyena Mixer CP test failed with status $STATUS"
+    echo "Hyena Mixer CP tests failed with status $STATUS"
     exit $STATUS
 fi

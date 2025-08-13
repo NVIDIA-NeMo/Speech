@@ -14,9 +14,11 @@
 
 from unittest.mock import ANY, MagicMock, patch
 
+import pytest
 import torch
 from torch import nn
 
+from nemo.core.optim import MainParamsOptimizerWrapper
 from nemo.lightning import MegatronStrategy, _strategy_lib  # , DataConfig
 
 
@@ -28,6 +30,62 @@ class Identity(nn.Identity):
 class WithCopy(nn.Identity):
     def copy(self):
         return WithCopy()
+
+
+class Optimizer:
+    def state_dict(self):
+        return {
+            "param_groups": [{"params": torch.nn.Parameter(torch.randn(3, 3, device='cuda', dtype=torch.float32))}],
+            "state": {0: {}, 1: {}},
+        }
+
+    def load_state_dict(self, state_dict):
+        return self.state_dict()
+
+    @property
+    def param_groups(self):
+        params = torch.nn.Parameter(torch.randn(3, 3, device='cuda', dtype=torch.float32))
+        params.requires_grad = True
+
+        return [{'params': [params], 'is_expert': True}]
+
+
+class OptimizerWrapper(MainParamsOptimizerWrapper):
+    def __init_(self, optimizer):
+        super().__init__(optimizer)
+
+
+class DummyOptimizer:
+    def __init__(self):
+        self._custom_amp_unscale_grads = True
+        self.step_called = False
+
+    def unscale_grads(self, *args):
+        print("Dummy unscale_grads called with:", args)
+
+    def step(self, *args, **kwargs):
+        print("Dummy optimizer step called.")
+        self.step_called = True
+        return "step_result"
+
+
+class Model:
+    def __init__(self, prefix="", metadata=None):
+        self.prefix = prefix
+        self.metadta = metadata
+
+    def sharded_state_dict(self, prefix="", metadata=None):
+        return dict(test="test")
+
+
+def make_optimizer_state():
+    found_inf_values = {"cuda:0": 0.0}  # Default: no infs found
+
+    return {
+        "found_inf_per_device": {
+            device: torch.tensor(val, dtype=torch.float32, device="cuda") for device, val in found_inf_values.items()
+        }
+    }
 
 
 def test_set_model_parallel_attributes() -> None:
@@ -187,6 +245,39 @@ def test_init_model_parallel_with_tp_pp_dp(mock_mpu, *args):
         nccl_communicator_config_path=None,
         create_gloo_process_groups=True,
     )
+
+
+@pytest.mark.run_only_on('GPU')
+def test_optimizer_sharded_state_dict():
+    model = Model()
+    optimizer = Optimizer()
+    optimizer = OptimizerWrapper(optimizer)
+    optimizer_state_dict = _strategy_lib.optimizer_sharded_state_dict(model, optimizer, sharding_type="test")
+
+    assert optimizer_state_dict['fp32_from_fp16_params'] == [[]]
+
+
+@pytest.mark.run_only_on('GPU')
+@patch('torch.distributed.is_initialized', return_value=True)
+@patch('megatron.core.parallel_state')
+def test_grad_scaler(mock_mpu, *args):
+    scaler = _strategy_lib.GradScaler()
+    optimizer = DummyOptimizer()
+
+    scaler._unscale_grads_(optimizer)
+
+    optimizer_state = make_optimizer_state()
+    scaler._maybe_opt_step(optimizer, optimizer_state)
+
+    state_dict = scaler.state_dict()
+    assert type(state_dict) is dict
+
+    scaler.load_state_dict(state_dict)
+
+    try:
+        scaler.update()
+    except AssertionError:
+        pass
 
 
 # TODO @chcui uncomment after fabric API is merged

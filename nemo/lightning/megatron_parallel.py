@@ -701,20 +701,30 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
         return output_tensor
 
-    def sharded_state_dict(self, prefix: str = "") -> Dict[str, Any]:
+    def sharded_state_dict(self, prefix: str = "", metadata: Optional[dict] = None) -> Dict[str, Any]:
         """
         Creates the sharded state dict which is used by dist_checkpoint to save the sharded tensors to disk.
         When given the sharded_stated_dict, dist_checkpoint.load will load the tensors corresponding to
         self.state_dict().
         The sharded tensor mapping is defined in the GPTModel class from mcore.
         """
+        from nemo.utils import logging
+
+        if metadata is None:
+            metadata = self.trainer.strategy.sharded_state_dict_metadata
+            logging.debug(
+                f'No sharded_state_dict metadata passed for the model,'
+                f' using metadata for checkpoint save: {metadata}'
+            )
+        else:
+            logging.debug(f'Using passed sharded_state_dict metadata in the model: {metadata}')
         sharded_state_dict = {}
         for index, module in enumerate(self):
             if self.vp_size is not None:
-                module_sharded_state_dict = self._module_sharded_state_dict(module)
+                module_sharded_state_dict = self._module_sharded_state_dict(module, metadata=metadata)
                 sharded_state_dict[f"model_{index}"] = module_sharded_state_dict
             else:
-                module_sharded_state_dict = self._module_sharded_state_dict(module)
+                module_sharded_state_dict = self._module_sharded_state_dict(module, metadata=metadata)
                 sharded_state_dict.update(module_sharded_state_dict)
 
         return sharded_state_dict

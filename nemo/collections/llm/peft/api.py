@@ -164,11 +164,15 @@ def _setup_trainer_and_restore_model_and_adapter(
     model.trainer = trainer
 
     lora(model)
+    weights_dir = ckpt_to_weights_subdir(lora_checkpoint_path, is_saving=False)
+    sharded_sd_metadata = trainer.strategy.unwrapped_checkpoint_io.load_content_metadata(weights_dir)
     adapter_sharded_state_dict = {
-        k: v for k, v in trainer.strategy.megatron_parallel.sharded_state_dict().items() if ".adapter." in k
+        k: v
+        for k, v in trainer.strategy.megatron_parallel.sharded_state_dict(metadata=sharded_sd_metadata).items()
+        if ".adapter." in k
     }
     adapter_state = trainer.strategy.checkpoint_io.load_checkpoint(
-        ckpt_to_weights_subdir(lora_checkpoint_path, is_saving=False), sharded_state_dict=adapter_sharded_state_dict
+        weights_dir, sharded_state_dict=adapter_sharded_state_dict
     )
     trainer.strategy.load_model_state_dict(adapter_state, strict=False)
 
@@ -176,7 +180,11 @@ def _setup_trainer_and_restore_model_and_adapter(
 def _save_merged_weight(output_path: str, merged_weights: dict, model: pl.LightningModule, trainer: Trainer):
     weight_path = ckpt_to_weights_subdir(output_path, is_saving=True)
     Path(weight_path).mkdir(parents=True, exist_ok=True)
-    dist_checkpointing.save(merged_weights, str(ckpt_to_weights_subdir(output_path, is_saving=True)))
+    dist_checkpointing.save(
+        merged_weights,
+        str(ckpt_to_weights_subdir(output_path, is_saving=True)),
+        content_metadata=trainer.strategy.sharded_state_dict_metadata,
+    )
     if hasattr(model.tokenizer, "save_pretrained"):
         model.tokenizer.save_pretrained("/tmp/nemo_tokenizer")
         model.tokenizer = AutoTokenizer("/tmp/nemo_tokenizer")

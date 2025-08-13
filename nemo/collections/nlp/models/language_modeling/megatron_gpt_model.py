@@ -2048,7 +2048,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self.state_dict().
         The sharded tensor mapping is defined in the GPTModel class from mcore.
         """
-
         if self.mcore_gpt:
             module_prefix = f'{prefix}model.'
             sharded_state_dict = {}

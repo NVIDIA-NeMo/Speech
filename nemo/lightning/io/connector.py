@@ -275,11 +275,17 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
 
             model.trainer = _trainer
             model = model.model_transform(model)
+            load_path = ckpt_to_weights_subdir(path, is_saving=False)
+            sharded_sd_metadata = _trainer.strategy.unwrapped_checkpoint_io.load_content_metadata(load_path)
             adapter_sharded_state_dict = {
-                k: v for k, v in _trainer.strategy.megatron_parallel.sharded_state_dict().items() if ".adapter." in k
+                k: v
+                for k, v in _trainer.strategy.megatron_parallel.sharded_state_dict(
+                    metadata=sharded_sd_metadata
+                ).items()
+                if ".adapter." in k
             }
             adapter_state = _trainer.strategy.checkpoint_io.load_checkpoint(
-                ckpt_to_weights_subdir(path, is_saving=False), sharded_state_dict=adapter_sharded_state_dict
+                load_path, sharded_state_dict=adapter_sharded_state_dict
             )
             _trainer.strategy.load_model_state_dict(adapter_state, strict=False)
         else:

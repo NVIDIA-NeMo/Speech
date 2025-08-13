@@ -110,7 +110,12 @@ class AsyncFinalizableCheckpointIO(_WrappingCheckpointIO):
         super().__init__(checkpoint_io)
         self.async_calls_queue = AsyncCallsQueue()
 
-    def save_checkpoint(self, checkpoint: Dict[str, Any], path: _PATH, storage_options: Optional[Any] = None) -> None:
+    def save_checkpoint(
+        self,
+        checkpoint: Dict[str, Any],
+        path: _PATH,
+        storage_options: Optional[Any] = None,
+    ) -> None:
         """Executes async request returned from the underlying checkpoint_io asynchronously.
 
         Requires the underlying checkpoint_io.save_checkpoint to return an AsyncRequest.

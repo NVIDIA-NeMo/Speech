@@ -145,7 +145,8 @@ def teacher_provider(
     # TODO(aanoosheh): Replace spec with modelopt one
     model = config.configure_model(tokenizer)
 
-    sharded_state_dict = {"state_dict": model.sharded_state_dict(prefix="module.")}
+    sharded_sd_metadata = trainer.strategy.unwrapped_checkpoint_io.load_content_metadata(ckpt_path)
+    sharded_state_dict = {"state_dict": model.sharded_state_dict(prefix="module.", metadata=sharded_sd_metadata)}
     strict = trainer.strategy.ckpt_load_strictness
     checkpoint = trainer.strategy.checkpoint_io.load_checkpoint(ckpt_path, sharded_state_dict, strict=strict)
     state_dict = {k.replace("module.", ""): v for k, v in checkpoint["state_dict"].items()}

@@ -130,7 +130,11 @@ def save_pruned_model(trainer: nl.Trainer, save_path: str) -> None:
     # TODO: trainer.save_checkpoint(save_path) doesnt seem to save metadata.json or .metadata files!
     weight_path = ckpt_to_weights_subdir(save_path, is_saving=True)
     weight_path.mkdir(parents=True, exist_ok=True)
-    dist_checkpointing.save(trainer.strategy.megatron_parallel.sharded_state_dict(), weight_path)
+    dist_checkpointing.save(
+        trainer.strategy.megatron_parallel.sharded_state_dict(),
+        weight_path,
+        content_metadata=trainer.strategy.sharded_state_dict_metadata,
+    )
 
     if is_global_rank_zero():
         TrainerContext.from_trainer(trainer).io_dump(ckpt_to_context_subdir(save_path), yaml_attrs=["model"])

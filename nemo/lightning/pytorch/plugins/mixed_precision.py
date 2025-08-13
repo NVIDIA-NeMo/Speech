@@ -86,6 +86,7 @@ class DtypeConfig:
     hysteresis: float = (None,)
     num_layers_at_start_in_bf16: int = 0
     num_layers_at_end_in_bf16: int = 0
+    reuse_grad_buf_for_mxfp8_param_ag: bool = False
 
 
 class MegatronMixedPrecision(Precision):
@@ -122,6 +123,7 @@ class MegatronMixedPrecision(Precision):
         fp16_hysteresis: int = 2,
         num_layers_at_start_in_bf16: int = 0,
         num_layers_at_end_in_bf16: int = 0,
+        reuse_grad_buf_for_mxfp8_param_ag: bool = False,
     ) -> None:
         if fp8_params is not None:
             logging.warning(
@@ -161,6 +163,7 @@ class MegatronMixedPrecision(Precision):
             fp8_param_gather=fp8_param_gather,
             num_layers_at_start_in_bf16=num_layers_at_start_in_bf16,
             num_layers_at_end_in_bf16=num_layers_at_end_in_bf16,
+            reuse_grad_buf_for_mxfp8_param_ag=reuse_grad_buf_for_mxfp8_param_ag,
             # fp16 loss scale
             loss_scale=fp16_loss_scale,
             initial_loss_scale=fp16_initial_loss_scale,

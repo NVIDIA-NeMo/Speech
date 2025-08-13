@@ -148,7 +148,6 @@ class Attention(torch.nn.Module):
         p_dropout: float,
         is_causal: bool = True,
         d_head: Optional[int] = None,
-        is_training: bool = True,
     ):
         """
         Base Attention parent class. Users should not be instantiating this class, but rather use SelfAttention or
@@ -173,7 +172,6 @@ class Attention(torch.nn.Module):
         self.o_net = torch.nn.Linear(n_heads * self.d_head, d_model, bias=False)
         self.dropout = torch.nn.Dropout(p_dropout)
         self.use_cache = False
-        self.is_training = is_training
         self.cache = self._init_cache()
 
     @abstractmethod
@@ -309,7 +307,6 @@ class SelfAttention(Attention):
         p_dropout: float,
         is_causal: bool = True,
         max_length_causal_mask: int = 4096,
-        is_training: bool = True,
     ):
         """
         Implements SelfAttention. See parent class for forward implementation.
@@ -326,7 +323,6 @@ class SelfAttention(Attention):
             d_model=d_model,
             p_dropout=p_dropout,
             is_causal=is_causal,
-            is_training=is_training,
         )
         if is_causal:
             if max_length_causal_mask is None or max_length_causal_mask < 0:
@@ -379,7 +375,6 @@ class CrossAttention(Attention):
         p_dropout: float,
         make_prior_window_strict: bool = False,
         d_head: Optional[int] = None,
-        is_training: bool = True,
     ):
         """
         Implements CrossAttention. See parent class for forward implementation. Must be non-causal.
@@ -398,7 +393,6 @@ class CrossAttention(Attention):
             p_dropout=p_dropout,
             is_causal=False,
             d_head=d_head,
-            is_training=is_training,
         )
         self.q_net = torch.nn.Linear(d_model, n_heads * self.d_head, bias=False)
         self.kv_net = torch.nn.Linear(d_memory, 2 * n_heads * self.d_head, bias=False)
@@ -451,7 +445,6 @@ class TransformerLayer(torch.nn.Module):
         max_length_causal_mask: int = 4096,
         conv_non_linearity: Callable = torch.nn.GELU(approximate="tanh"),
         make_prior_window_strict: bool = False,
-        is_training: bool = True,
     ):
         """
         One layer of the Transformer.
@@ -481,7 +474,6 @@ class TransformerLayer(torch.nn.Module):
             p_dropout=p_dropout,
             max_length_causal_mask=max_length_causal_mask,
             is_causal=is_causal,
-            is_training=is_training,
         )
 
         if self.has_xattn:
@@ -493,7 +485,6 @@ class TransformerLayer(torch.nn.Module):
                 p_dropout=p_dropout,
                 make_prior_window_strict=make_prior_window_strict,
                 d_head=xa_d_head,
-                is_training=is_training,
             )
 
             self.norm_xattn_memory = torch.nn.Identity()
@@ -602,7 +593,6 @@ class Transformer(torch.nn.Module):
         use_learnable_pos_emb: bool = False,
         conv_non_linearity: Callable = torch.nn.GELU(approximate="tanh"),
         make_prior_window_strict: bool = False,
-        is_training: bool = True,
     ):
         """
         Initializes a stack of transformer layers. Can be used for both encoder and decoder.
@@ -662,7 +652,6 @@ class Transformer(torch.nn.Module):
                     max_length_causal_mask=max_length_causal_mask,
                     conv_non_linearity=conv_non_linearity,
                     make_prior_window_strict=make_prior_window_strict,
-                    is_training=is_training,
                 )
             )
 

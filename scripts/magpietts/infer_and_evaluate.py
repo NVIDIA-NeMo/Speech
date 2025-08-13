@@ -112,11 +112,9 @@ def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_tex
     model_cfg.legacy_text_conditioning = legacy_text_conditioning
     if "t5_encoder" in model_cfg:
         model_cfg.encoder = model_cfg.t5_encoder
-        model_cfg.encoder.is_training = False # For inference this is necessary to toggle how attention prior is applied
         del model_cfg.t5_encoder
     if "t5_decoder" in model_cfg:
         model_cfg.decoder = model_cfg.t5_decoder
-        model_cfg.decoder.is_training = False # For inference this is necessary to toggle how attention prior is applied
         del model_cfg.t5_decoder
     if hasattr(model_cfg, 'decoder') and hasattr(model_cfg.decoder, 'prior_eps'):
         # Added to prevent crash after removing arg from transformer_2501.py in https://github.com/blisc/NeMo/pull/56
@@ -219,7 +217,6 @@ def create_violin_plots(metrics: List[dict], metric_keys: List[str], output_png:
 def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], output_png: str):
     """
     Create box plots comparing multiple datasets for each metric in a single figure.
-
     Args:
         dataset_metrics: Dictionary where keys are dataset names and values are lists of metric dictionaries
         metric_keys: List of metric names to plot
@@ -247,7 +244,6 @@ def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], 
         all_data = []
         positions = []
         dataset_labels = []
-
         for dataset_idx, dataset in enumerate(datasets):
             df = pd.DataFrame(dataset_metrics[dataset])
             if metric in df.columns:
@@ -272,7 +268,6 @@ def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], 
             for i, patch in enumerate(bp['boxes']):
                 patch.set_facecolor(colors[i])
                 patch.set_alpha(0.7)
-
             # Add mean labels for each dataset
             for i, (data, pos) in enumerate(zip(all_data, positions)):
                 mean = data.mean()

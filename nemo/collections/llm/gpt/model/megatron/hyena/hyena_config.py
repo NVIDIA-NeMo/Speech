@@ -129,7 +129,7 @@ class HyenaConfig:
     Use a custom causal conv layer for the hyena short conv layer.
     """
 
-    use_b2b_causal_conv1d: bool = False
+    use_cuhyena: bool = False
     """
     Use a back-to-back causal convolution CUDA kernel for the hyena short conv layers for improved performance.
     """

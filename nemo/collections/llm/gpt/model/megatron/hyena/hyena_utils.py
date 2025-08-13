@@ -39,7 +39,6 @@ from torch.autograd.function import Function
 
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_config import HyenaConfig
 
-
 try:
     from einops import rearrange
 except ImportError:
@@ -56,11 +55,26 @@ except ImportError:
 
 try:
     from cuhyena.b2b_causal_conv1d import b2b_causal_conv1d
+    from cuhyena.causal_conv1d import causal_conv1d
+    from cuhyena.fft_causal_conv1d import fft_causal_conv1d
+    from cuhyena.fft_causal_conv1d import short_fft_is_available as is_fused_supported
 except ImportError:
+
+    def causal_conv1d(*args, **kwargs):
+        """Not imported: causal_conv1d. An error will be raised if this is called."""
+        raise ImportError("cuhyena not installed. causal_conv1d is not available.")
 
     def b2b_causal_conv1d(*args, **kwargs):
         """Not imported: b2b_causal_conv1d. An error will be raised if this is called."""
-        raise ImportError("b2b_causal_conv1d is required by the Hyena model but cannot be imported")
+        raise ImportError("cuhyena not installed. b2b_causal_conv1d is not available.")
+
+    def fft_causal_conv1d(*args, **kwargs):
+        """Not imported: fft_causal_conv1d. An error will be raised if this is called."""
+        raise ImportError("cuhyena not installed. fft_causal_conv1d is not available.")
+
+    def is_fused_supported(*args, **kwargs):
+        """Not imported: is_fused_supported. An error will be raised if this is called."""
+        raise ImportError("cuhyena not installed. is_fused_supported is not available.")
 
 
 def _get_zigzag_indices(N, device=None):
@@ -430,13 +444,13 @@ def hyena_no_weight_decay_cond(name, param):
     return no_wd
 
 
-def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=False):
+def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=False, use_cuhyena=False):
     """Apply a 1D convolution to the input sequence u using the filter k and the shortcut D."""
     seqlen = u.shape[-1]
     fft_size = 2 * seqlen
 
-    # check if k is less than seqlen
-    if k.shape[-1] < seqlen:
+    # check if k is less than seqlen -- cuHyena input does not need padding
+    if not use_cuhyena and k.shape[-1] < seqlen:
         # Pad the filter k to the length of the input sequence u
         k = torch.nn.functional.pad(k, (0, seqlen - k.shape[-1]))
 
@@ -462,17 +476,22 @@ def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=Fal
 
     # causal
     else:
-        k_f = torch.fft.rfft(k, n=fft_size) / fft_size
-        if k_rev is not None:
-            k_rev_f = torch.fft.rfft(k_rev, n=fft_size) / fft_size
-            k_f = k_f + k_rev_f.conj()
+        if use_cuhyena:
+            if not is_fused_supported(k.shape[-1]):  # TODO: Remove this check after full cuHyena support
+                raise ValueError("cuHyena FFT causal convolution is not supported for this filter length.")
+            y = fft_causal_conv1d(u, k.squeeze(0))
+        else:
+            k_f = torch.fft.rfft(k, n=fft_size) / fft_size
+            if k_rev is not None:
+                k_rev_f = torch.fft.rfft(k_rev, n=fft_size) / fft_size
+                k_f = k_f + k_rev_f.conj()
 
-        u_f = torch.fft.rfft(u.to(dtype=k.dtype), n=fft_size)
+            u_f = torch.fft.rfft(u.to(dtype=k.dtype), n=fft_size)
 
-        if len(u.shape) > 3:
-            k_f = k_f.unsqueeze(1)
+            if len(u.shape) > 3:
+                k_f = k_f.unsqueeze(1)
 
-        y = torch.fft.irfft(u_f * k_f, n=fft_size, norm="forward")[..., :seqlen]
+            y = torch.fft.irfft(u_f * k_f, n=fft_size, norm="forward")[..., :seqlen]
 
     out = y + u * D.unsqueeze(-1)
     if gelu:
@@ -507,9 +526,9 @@ class ImplicitModalFilter(nn.Module):
             gamma = gamma.cuda().log()
             self.gamma = nn.Parameter(gamma)
 
-            R = 1e-1 * torch.randn(d_model, order, dtype=torch.float32) / math.sqrt(order)
+            R = 1e-1 * torch.randn(d_model, order, dtype=torch.float32, device=self.t.device) / math.sqrt(order)
             self.R = nn.Parameter(R)
-            self.p = nn.Parameter(-torch.ones(d_model, order, dtype=torch.float32))
+            self.p = nn.Parameter(-torch.ones(d_model, order, dtype=torch.float32, device=self.t.device))
             setattr(self.gamma, 'tensor_model_parallel', True)
             setattr(self.R, 'tensor_model_parallel', True)
             setattr(self.p, 'tensor_model_parallel', True)
@@ -606,15 +625,15 @@ class ExplicitSingleDecayFilter(nn.Module):
             h[:, :1] = 1.0
         self.num_decay_repeats = num_decay_repeats
         self.h = nn.Parameter(h)
-        t = torch.linspace(0, 1, L_cache, device=torch.cuda.current_device())[None]
+        t = torch.linspace(0, 1, L_cache, device=self.h.device)[None]
         self.log_r_min = log_r_min
         self.log_r_max = log_r_max
         self.model_parallel_rank = get_tensor_model_parallel_rank()
         self.model_parallel_size = get_tensor_model_parallel_world_size()
         global_d_model = d_model * self.model_parallel_size // self.num_decay_repeats
-        decay_domain = torch.logspace(log_r_min, log_r_max, global_d_model, device=torch.cuda.current_device())[
-            :, None
-        ].repeat(self.num_decay_repeats, 1)
+        decay_domain = torch.logspace(log_r_min, log_r_max, global_d_model, device=self.h.device)[:, None].repeat(
+            self.num_decay_repeats, 1
+        )
         decay_domain = decay_domain[self.model_parallel_rank * d_model : (self.model_parallel_rank + 1) * d_model, :]
         decay = torch.exp(-decay_domain * t)
         self.register_buffer("decay", decay)
@@ -742,6 +761,8 @@ class ParallelHyenaOperator(nn.Module):
         self.bidirectional = hyena_config.bidirectional
         self.use_hyena_filter = hyena_config.use_hyena_filter
         self.zigzag = zigzag
+
+        self.use_cuhyena = transformer_config.use_cuhyena
 
         self.model_parallel_size = get_tensor_model_parallel_world_size()
         self.model_parallel_rank = get_tensor_model_parallel_rank()
@@ -949,11 +970,18 @@ class ParallelHyenaOperator(nn.Module):
         conv_bias = self.conv_bias
         local_size = None
 
+        # Initialize z split for non-inference cases
+        z = x2 * v
+
         if cp_group is not None and len(torch.distributed.get_process_group_ranks(cp_group)) > 1:
 
-            x1, x2, v = [
-                AllToAllSingleFunction.apply(tensor, cp_group, "split_to_full", True) for tensor in [x1, x2, v]
-            ]
+            if inference_context is not None:  # reconstruct ALL tensors from split to full
+                x1, x2, v = [
+                    AllToAllSingleFunction.apply(tensor, cp_group, "split_to_full", True) for tensor in [x1, x2, v]
+                ]
+            else:  # only reconstruct z (post gating) for non-inference case
+                z = AllToAllSingleFunction.apply(z, cp_group, "split_to_full", True)
+
             # the tensors are now split across channels, but have full length.
             # [ B, H // num_ranks, L]
 
@@ -972,13 +1000,12 @@ class ParallelHyenaOperator(nn.Module):
 
         h = h.repeat_interleave(self.group_dim, dim=-2)
 
-        if inference_context is not None:
+        if inference_context is not None:  # Needs full length x1 x2 v
             if self.operator_type == "hyena_medium_conv":
                 return self.forward_medium(x1=x1, x2=x2, v=v, h=h, bias=conv_bias, inference_context=inference_context)
             elif self.operator_type == "hyena":
                 return self.forward_long(x1=x1, x2=x2, v=v, h=h, bias=conv_bias, inference_context=inference_context)
-        else:
-            z = x2 * v
+        else:  # Needs full length z (post gating)
             # with torch.autocast("cuda"):
             z = fftconv_func(
                 u=z.to(torch.float32),
@@ -987,13 +1014,15 @@ class ParallelHyenaOperator(nn.Module):
                 dropout_mask=None,
                 gelu=False,
                 bidirectional=self.bidirectional,
+                use_cuhyena=self.use_cuhyena,
             )
             z = z.to(v.dtype)
-            z = x1 * z
 
             if cp_group is not None and len(torch.distributed.get_process_group_ranks(cp_group)) > 1:
                 z = AllToAllSingleFunction.apply(z, cp_group, "full_to_split", True)
                 # [ B, H, L // num_ranks]
+
+            z = x1 * z
             return z  # [B, (G, DG), L]
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
@@ -1039,7 +1068,7 @@ class ParallelShortHyenaOperator(nn.Module):
 
         world_size: int = get_tensor_model_parallel_world_size() if not local_init else 1
         # assert, if using fast_conv_mixer, then the hyena_short_conv_len must be 3
-        if use_fast_causal_conv:
+        if use_fast_causal_conv and not transformer_config.use_cuhyena:
             assert hyena_config.hyena_short_conv_len <= 4, "fast_conv_mixer requires hyena_short_conv_len <= 4"
 
         kernel_size = hyena_config.hyena_short_conv_len
@@ -1154,14 +1183,18 @@ class ParallelCausalDepthwiseConv1d(nn.Module):
         self.use_conv_bias = bias
         self.use_fast_causal_conv = use_fast_causal_conv
         self.num_groups = num_groups
+        self.transformer_config = transformer_config
+        self.use_cuhyena = transformer_config.use_cuhyena
 
         if self.num_groups is None:
             self.num_groups = self.d_model
 
         self.group_dim = self.d_model // self.num_groups
 
-        if self.use_fast_causal_conv:
+        if self.use_fast_causal_conv and not self.use_cuhyena:
             assert causal_conv1d_fn is not None, "custom causal conv not installed"
+            weight_shape = [self.num_groups, kernel_size]
+        elif self.use_fast_causal_conv and self.use_cuhyena:  # hyena_proj_conv of LI layer when cuhyena is enabled
             weight_shape = [self.num_groups, kernel_size]
         # use torch
         else:
@@ -1205,6 +1238,9 @@ class ParallelCausalDepthwiseConv1d(nn.Module):
         weight = self.short_conv_weight
         pad_size = self.kernel_size - 1
 
+        # maybe handle num_groups
+        weight = weight.repeat_interleave(self.group_dim, dim=0)
+
         if _use_cp and get_context_parallel_world_size() > 1:
 
             cp_group = get_context_parallel_group()
@@ -1224,12 +1260,18 @@ class ParallelCausalDepthwiseConv1d(nn.Module):
         else:
             x = F.pad(x, (pad_size, 0))
 
-        # maybe handle num_groups
-        weight = weight.repeat_interleave(self.group_dim, dim=0)
-
-        if self.use_fast_causal_conv:
-            y = causal_conv1d_fn(x, weight, bias=None, activation=None)[..., pad_size:]
-        else:
+        # cuHyena causal_conv1d is only applied to the projection conv of Hyena LI layer
+        # Projection conv is fused with SE/MR layers (B2BCausalConv1dModule)
+        # cuHyena handles padding in the kernel, so we don't need to pad (when CP=1)
+        # for cp > 1 padding == overlapping regions for conv
+        if self.use_fast_causal_conv:  # hyena_proj_conv case
+            if self.use_cuhyena and _use_cp:  # hyena_proj_conv of LI layer when cuhyena is enabled
+                y = causal_conv1d(x, weight)[..., pad_size:]
+            elif self.use_cuhyena and not _use_cp:  # hyena_proj_conv of LI layer when cuhyena is enabled
+                y = causal_conv1d(x[..., pad_size:], weight)  # drop padding handling for cuhyena with no CP
+            else:
+                y = causal_conv1d_fn(x, weight, bias=None, activation=None)[..., pad_size:]
+        else:  # hyena_short_conv case
 
             y = F.conv1d(
                 x,
@@ -1385,12 +1427,9 @@ class B2BCausalConv1dModule(nn.Module):
             result = result[..., self.effective_pad_size :]  # Remove padding from output
             result = rearrange(result, "(nc b) h s -> b h (nc s)", nc=2)
         else:
-            # Add proper causal padding for the non-CP case
-            x = torch.nn.functional.pad(x, (self.effective_pad_size, 0))
-
-            # Call the CUDA kernel and remove the padding from result
+            # Call the CUDA kernel
+            # Padding is not required and is handled in the CUDA kernel when CP=1 (padding=0)
             result = self.b2b_causal_conv1d_fn(x, proj_weight, mixer_weight, bias)
-            result = result[..., self.effective_pad_size :]  # Remove padding from output
         return result
 
 

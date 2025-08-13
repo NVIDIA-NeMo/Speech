@@ -302,7 +302,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
             if type(prediction) != list:
                 prediction = prediction.tolist()
 
-            hypothesis = self.decode_tokens_to_str(prediction)
+            hypothesis = self.decode_ids_to_str(prediction)
 
             if self.compute_hypothesis_token_set:
                 hypotheses_list[ind].tokens = self.decode_ids_to_tokens(prediction)
@@ -518,7 +518,20 @@ class MultiTaskDecoding(AbstractMultiTaskDecoding):
         if isinstance(self.decoding, AEDBeamInfer):
             self.decoding.set_decoding_type('subword')
 
-    def decode_tokens_to_str(self, tokens: List[int]) -> str:
+    def decode_tokens_to_str(self, tokens: List[str], lang: str) -> str:
+        """
+        Implemented by subclass in order to decoder a token str into a string.
+
+        Args:
+            tokens: List of str representing the tokens.
+
+        Returns:
+            A decoded string.
+        """
+        hypothesis = self.tokenizer.tokens_to_text(tokens, lang)
+        return hypothesis
+
+    def decode_ids_to_str(self, tokens: List[int]) -> str:
         """
         Implemented by subclass in order to decoder a token list into a string.
 

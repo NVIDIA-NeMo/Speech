@@ -14,10 +14,9 @@
 
 import copy
 import re
-import unicodedata
-from abc import abstractmethod
+from abc import abstractmethod, abstractproperty
 from dataclasses import dataclass, field, is_dataclass
-from typing import Callable, Dict, List, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Union
 
 import numpy as np
 import torch
@@ -29,9 +28,11 @@ from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig, ConfidenceMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BlankLMScoreMode, PruningMode
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
+from nemo.collections.asr.parts.utils.timestamp_utils import get_segment_offsets, get_words_offsets
+from nemo.collections.asr.parts.utils.tokenizer_utils import define_spe_tokenizer_type, extract_punctuation_from_vocab
 from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
-from nemo.utils import logging, logging_mode
+from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
 
 try:
@@ -688,6 +689,13 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # Update the joint fused batch size or disable it entirely if needed.
         self.update_joint_fused_batch_size()
 
+    @abstractproperty
+    def tokenizer_type(self):
+        """
+        Implemented by subclass in order to get tokenizer type information for timestamps extraction.
+        """
+        raise NotImplementedError()
+
     def rnnt_decoder_predictions_tensor(
         self,
         encoder_output: torch.Tensor,
@@ -895,19 +903,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         return hypotheses_list
 
     @abstractmethod
-    def get_words_offsets(
-        self,
-        char_offsets: List[Dict[str, Union[str, float]]],
-        encoded_char_offsets: List[Dict[str, Union[str, float]]],
-        word_delimiter_char: str,
-        supported_punctuation: Optional[Set],
-    ) -> List[Dict[str, Union[str, float]]]:
-        """
-        Implemented by subclass in order to get the words offsets.
-        """
-        raise NotImplementedError()
-
-    @abstractmethod
     def decode_tokens_to_str(self, tokens: List[int]) -> str:
         """
         Implemented by subclass in order to decoder a token id list into a string.
@@ -962,11 +957,17 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         """
         raise NotImplementedError()
 
+    def decode_ids_to_str(self, tokens: List[int]) -> str:
+        """
+        Decodes a list of tokens ids to a string.
+        """
+        return self.decode_tokens_to_str(self.decode_ids_to_tokens(tokens))
+
     def decode_tokens_to_str_with_strip_punctuation(self, tokens: List[int]) -> str:
         """
         Decodes a list of tokens to a string and removes a space before supported punctuation marks.
         """
-        text = self.decode_tokens_to_str(tokens)
+        text = self.decode_ids_to_str(tokens)
         if self.supported_punctuation:
             text = self.space_before_punct_pattern.sub(r'\2', text)
         return text
@@ -1052,11 +1053,14 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         # Correctly process the token ids to chars/subwords.
         for i, offsets in enumerate(char_offsets):
-            decoded_chars = []
+            chars_text = []
+            chars_tokens = []
             for char in offsets['char']:
                 if char != self.blank_id:  # ignore the RNNT Blank token
-                    decoded_chars.append(self.decode_tokens_to_str([int(char)]))
-            char_offsets[i]["char"] = decoded_chars
+                    chars_tokens.append(self.decode_ids_to_tokens([int(char)])[0])
+                    chars_text.append(self.decode_ids_to_str([int(char)]))
+            char_offsets[i]["char"] = chars_text
+            encoded_char_offsets[i]["char"] = chars_tokens
 
         encoded_char_offsets, char_offsets = self._refine_timestamps(
             encoded_char_offsets, char_offsets, self.supported_punctuation
@@ -1078,16 +1082,18 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # retrieve word offsets from character offsets
         word_offsets = None
         if timestamp_type in ['word', 'segment', 'all']:
-            word_offsets = self.get_words_offsets(
+            word_offsets = get_words_offsets(
                 char_offsets=char_offsets,
                 encoded_char_offsets=encoded_char_offsets,
                 word_delimiter_char=self.word_seperator,
                 supported_punctuation=self.supported_punctuation,
+                tokenizer_type=self.tokenizer_type,
+                decode_tokens_to_str=self.decode_tokens_to_str,
             )
 
         segment_offsets = None
         if timestamp_type in ['segment', 'all']:
-            segment_offsets = self._get_segment_offsets(
+            segment_offsets = get_segment_offsets(
                 word_offsets,
                 segment_delimiter_tokens=self.segment_seperators,
                 supported_punctuation=self.supported_punctuation,
@@ -1225,92 +1231,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 encoded_char_offsets[i]['end_offset'] = offset['end_offset'] = offset['start_offset']
 
         return encoded_char_offsets, char_offsets
-
-    @staticmethod
-    def _get_segment_offsets(
-        offsets: List[Dict[str, Union[str, float]]],
-        segment_delimiter_tokens: List[str],
-        supported_punctuation: Optional[Set] = None,
-        segment_gap_threshold: Optional[int] = None,
-    ) -> List[Dict[str, Union[str, float]]]:
-        """
-        Utility method which constructs segment time stamps out of word time stamps.
-
-        Args:
-            offsets: A list of dictionaries, each containing "word", "start_offset" and "end_offset".
-            segments_delimiter_tokens: List containing tokens representing the seperator(s) between segments.
-            supported_punctuation: Set containing punctuation marks in the vocabulary.
-            segment_gap_threshold: Number of frames between 2 consecutive words necessary to form segments out of plain
-            text.
-        Returns:
-            A list of dictionaries containing the segment offsets. Each item contains "segment", "start_offset" and
-            "end_offset".
-        """
-        if (
-            supported_punctuation
-            and not set(segment_delimiter_tokens).intersection(supported_punctuation)
-            and not segment_gap_threshold
-        ):
-            logging.warning(
-                f"Specified segment seperators are not in supported punctuation {supported_punctuation}. "
-                "If the seperators are not punctuation marks, ignore this warning. "
-                "Otherwise, specify 'segment_gap_threshold' parameter in decoding config to form segments.",
-                mode=logging_mode.ONCE,
-            )
-
-        segment_offsets = []
-        segment_words = []
-        previous_word_index = 0
-
-        # For every offset word
-        for i, offset in enumerate(offsets):
-
-            word = offset['word']
-            if segment_gap_threshold and segment_words:
-                gap_between_words = offset['start_offset'] - offsets[i - 1]['end_offset']
-                if gap_between_words >= segment_gap_threshold:
-                    segment_offsets.append(
-                        {
-                            "segment": ' '.join(segment_words),
-                            "start_offset": offsets[previous_word_index]["start_offset"],
-                            "end_offset": offsets[i - 1]["end_offset"],
-                        }
-                    )
-
-                    segment_words = [word]
-                    previous_word_index = i
-                    continue
-
-            # check if the word ends with any delimeter token or the word itself is a delimeter
-            elif word and (word[-1] in segment_delimiter_tokens or word in segment_delimiter_tokens):
-                segment_words.append(word)
-                if segment_words:
-                    segment_offsets.append(
-                        {
-                            "segment": ' '.join(segment_words),
-                            "start_offset": offsets[previous_word_index]["start_offset"],
-                            "end_offset": offset["end_offset"],
-                        }
-                    )
-
-                segment_words = []
-                previous_word_index = i + 1
-                continue
-
-            segment_words.append(word)
-
-        if segment_words:
-            start_offset = offsets[previous_word_index]["start_offset"]
-            segment_offsets.append(
-                {
-                    "segment": ' '.join(segment_words),
-                    "start_offset": start_offset,
-                    "end_offset": offsets[-1]["end_offset"],
-                }
-            )
-        segment_words.clear()
-
-        return segment_offsets
 
     @staticmethod
     def _load_kenlm_model(ngram_lm_model: str):
@@ -1503,9 +1423,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
     ):
         # we need to ensure blank is the last token in the vocab for the case of RNNT and Multi-blank RNNT.
         blank_id = len(vocabulary) + joint.num_extra_outputs
-        supported_punctuation = {
-            char for token in vocabulary for char in token if unicodedata.category(char).startswith('P')
-        }
+        supported_punctuation = extract_punctuation_from_vocab(vocabulary)
 
         if hasattr(decoding_cfg, 'model_type') and decoding_cfg.model_type == 'tdt':
             blank_id = len(vocabulary)
@@ -1525,6 +1443,10 @@ class RNNTDecoding(AbstractRNNTDecoding):
         ):
             self.decoding.set_decoding_type('char')
 
+    @property
+    def tokenizer_type(self):
+        return "char"
+
     def _aggregate_token_confidence(self, hypothesis: Hypothesis) -> List[float]:
         """
         Implemented by subclass in order to aggregate token confidence to a word-level confidence.
@@ -1537,7 +1459,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
         """
         return self._aggregate_token_confidence_chars(hypothesis.words, hypothesis.token_confidence)
 
-    def decode_tokens_to_str(self, tokens: List[int]) -> str:
+    def decode_tokens_to_str(self, tokens: List[str]) -> str:
         """
         Implemented by subclass in order to decoder a token list into a string.
 
@@ -1547,7 +1469,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
         Returns:
             A decoded string.
         """
-        hypothesis = ''.join(self.decode_ids_to_tokens(tokens))
+        hypothesis = ''.join(tokens)
         return hypothesis
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
@@ -1589,96 +1511,6 @@ class RNNTDecoding(AbstractRNNTDecoding):
         """
         lang_list = self.tokenizer.ids_to_text_and_langs(tokens)
         return lang_list
-
-    @staticmethod
-    def get_words_offsets(
-        char_offsets: List[
-            Dict[
-                str,
-                Union[
-                    str,
-                    float,
-                ],
-            ]
-        ],
-        encoded_char_offsets: List[Dict[str, Union[str, float]]],
-        word_delimiter_char: str = " ",
-        supported_punctuation: Optional[Set] = None,
-    ) -> List[Dict[str, Union[str, float]]]:
-        """
-        Utility method which constructs word time stamps out of character time stamps.
-
-        References:
-            This code is a port of the Hugging Face code for word time stamp construction.
-
-        Args:
-            char_offsets: A list of dictionaries, each containing "char", "start_offset" and "end_offset",
-                        where "char" is decoded with the tokenizer.
-            encoded_char_offsets: A list of dictionaries, each containing "char", "start_offset" and "end_offset",
-                        where "char" is the original id/ids from the hypotheses (not decoded with the tokenizer).
-                        As we are working with char-based models here, we are using the `char_offsets` to get the word offsets.
-                        `encoded_char_offsets` is passed for keeping the consistency with `AbstractRNNTDecoding`'s abstract method.
-            word_delimiter_char: Character token that represents the word delimiter. By default, " ".
-            supported_punctuation: Set containing punctuation marks in the vocabulary.
-
-        Returns:
-            A list of dictionaries containing the word offsets. Each item contains "word", "start_offset" and
-            "end_offset".
-        """
-
-        word_offsets = []
-
-        last_state = "DELIMITER"
-        word = ""
-        start_offset = 0
-        end_offset = 0
-        for offset in char_offsets:
-            for char in offset['char']:
-                state = "DELIMITER" if char == word_delimiter_char else "WORD"
-
-                curr_punctuation = supported_punctuation and char.strip() in supported_punctuation
-
-                # If current character is a punctuation,
-                # we add it to the last formed word after removing uts last space (if it exists)
-                # If there is already a word being formed, we add the punctuation to it by removing existent space at the end of the word.
-
-                # This is for being consistent with the final hypothesis text,
-                # For which we are removing a space before a punctuation.
-                if curr_punctuation and state != "DELIMITER":
-                    if word:
-                        word = word[:-1] if word[-1] == ' ' else word
-                        word += char
-                    else:
-                        last_built_word = word_offsets[-1]
-                        last_built_word['end_offset'] = offset['end_offset']
-                        if last_built_word['word'][-1] == ' ':
-                            last_built_word['word'] = last_built_word['word'][:-1]
-                        last_built_word['word'] += char
-
-                    continue
-
-                if state == last_state and state != "DELIMITER":
-                    # If we are in the same state as before, we simply repeat what we've done before
-                    end_offset = offset["end_offset"]
-                    word += char
-                else:
-                    # Switching state
-                    if state == "DELIMITER" and word:
-                        # Finishing a word
-                        word_offsets.append({"word": word, "start_offset": start_offset, "end_offset": end_offset})
-                        word = ""
-                    else:
-                        # Starting a new word
-                        start_offset = offset["start_offset"]
-                        end_offset = offset["end_offset"]
-                        word = char
-
-                last_state = state
-
-        if last_state == "WORD":
-            word_offsets.append({"word": word, "start_offset": start_offset, "end_offset": end_offset})
-
-        return word_offsets
 
 
 class RNNTBPEDecoding(AbstractRNNTDecoding):
@@ -1875,16 +1707,13 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         if hasattr(tokenizer, 'supported_punctuation'):
             supported_punctuation = tokenizer.supported_punctuation
         else:
-            supported_punctuation = {
-                char for token in tokenizer.vocab for char in token if unicodedata.category(char).startswith('P')
-            }
+            supported_punctuation = extract_punctuation_from_vocab(tokenizer.vocab)
 
         # multi-blank RNNTs
         if hasattr(decoding_cfg, 'model_type') and decoding_cfg.model_type == 'multiblank':
             blank_id = tokenizer.tokenizer.vocab_size + joint.num_extra_outputs
 
         self.tokenizer = tokenizer
-        self.tokenizer_type = self.define_tokenizer_type(tokenizer.vocab)
 
         super(RNNTBPEDecoding, self).__init__(
             decoding_cfg=decoding_cfg,
@@ -1899,26 +1728,9 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         ):
             self.decoding.set_decoding_type('subword')
 
-    @staticmethod
-    def define_tokenizer_type(vocabulary: List[str]) -> str:
-        """
-        Define the tokenizer type based on the vocabulary.
-        """
-        if any(token.startswith("##") for token in vocabulary):
-            return "wpe"
-        return "bpe"
-
-    @staticmethod
-    def define_word_start_condition(tokenizer_type: str, word_delimiter_char: str) -> Callable[[str, str], bool]:
-        """
-        Define the word start condition based on the tokenizer type and word delimiter character.
-        """
-        if word_delimiter_char == " ":
-            if tokenizer_type == "wpe":
-                return lambda token, token_text: token_text and not token_text.startswith("##")
-            return lambda token, token_text: token != token_text
-        else:
-            return lambda token, token_text: token_text == word_delimiter_char
+    @property
+    def tokenizer_type(self):
+        return define_spe_tokenizer_type(self.tokenizer.vocab)
 
     def _aggregate_token_confidence(self, hypothesis: Hypothesis) -> List[float]:
         """
@@ -1936,17 +1748,17 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
             hypothesis.words, hypothesis.token_confidence, hypothesis.y_sequence
         )
 
-    def decode_tokens_to_str(self, tokens: List[int]) -> str:
+    def decode_tokens_to_str(self, tokens: List[str]) -> str:
         """
         Implemented by subclass in order to decoder a token list into a string.
 
         Args:
-            tokens: List of int representing the token ids.
+            tokens: List of str representing the tokens.
 
         Returns:
             A decoded string.
         """
-        hypothesis = self.tokenizer.ids_to_text(tokens)
+        hypothesis = self.tokenizer.tokens_to_text(tokens)
         return hypothesis
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
@@ -2023,131 +1835,6 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
                 )
 
         return hypotheses
-
-    def get_words_offsets(
-        self,
-        char_offsets: List[Dict[str, Union[str, float]]],
-        encoded_char_offsets: List[Dict[str, Union[str, float]]],
-        word_delimiter_char: str = " ",
-        supported_punctuation: Optional[Set] = None,
-    ) -> List[Dict[str, Union[str, float]]]:
-        """
-        Utility method which constructs word time stamps out of sub-word time stamps.
-
-        **Note**: Only supports Sentencepiece based tokenizers !
-
-        Args:
-            char_offsets: A list of dictionaries, each containing "char", "start_offset" and "end_offset",
-                        where "char" is decoded with the tokenizer.
-            encoded_char_offsets: A list of dictionaries, each containing "char", "start_offset" and "end_offset",
-                        where "char" is the original id/ids from the hypotheses (not decoded with the tokenizer).
-                        This is needed for subword tokenization models.
-            word_delimiter_char: Character token that represents the word delimiter. By default, " ".
-            supported_punctuation: Set containing punctuation marks in the vocabulary.
-
-        Returns:
-            A list of dictionaries containing the word offsets. Each item contains "word", "start_offset" and
-            "end_offset".
-        """
-        char_offsets = encoded_char_offsets.copy()
-        word_offsets = []
-        previous_token_index = 0
-
-        # Built tokens should be list here as when dealing with wpe tokenizer,
-        # ids should be decoded together to ensure tokens starting with ## are not split
-        built_tokens = []
-
-        condition_for_word_start = self.define_word_start_condition(self.tokenizer_type, word_delimiter_char)
-
-        # For every collapsed sub-word token
-        for i, offset in enumerate(char_offsets):
-
-            for char in offset['char']:
-                if char == self.blank_id:
-                    continue
-
-                char = int(char)
-                # Compute the sub-word text representation, and the decoded text (stripped of sub-word markers).
-                token = self.decode_ids_to_tokens([char])[0]
-                token_text = self.decode_tokens_to_str([char]).strip()
-
-                curr_punctuation = supported_punctuation and token_text in supported_punctuation
-
-                # It is a sub-word token, or contains an identifier at the beginning such as _ or ## that was stripped
-                # after forcing partial text conversion of the token.
-                # AND it is not a supported punctuation mark, which needs to be added to the built word regardless of its identifier.
-                if condition_for_word_start(token, token_text) and not curr_punctuation:
-                    # If there are any partially or fully built sub-word token ids, construct to text.
-                    # Note: This is "old" subword, that occurs *after* current sub-word has started.
-                    if built_tokens:
-                        built_word = self.decode_tokens_to_str(built_tokens)
-                        if built_word:
-                            word_offsets.append(
-                                {
-                                    "word": built_word,
-                                    "start_offset": char_offsets[previous_token_index]["start_offset"],
-                                    "end_offset": char_offsets[i - 1]["end_offset"],
-                                }
-                            )
-
-                    # Prepare new built_tokens
-                    built_tokens.clear()
-
-                    if token_text != word_delimiter_char:
-                        built_tokens.append(char)
-                        previous_token_index = i
-
-                # If the token is a punctuation mark and there is no built word, then the previous word is complete
-                # and lacks the punctuation mark. We need to add the punctuation mark to the previous formed word.
-                elif curr_punctuation and not built_tokens:
-                    last_built_word = word_offsets[-1]
-                    last_built_word['end_offset'] = offset['end_offset']
-                    if last_built_word['word'][-1] == ' ':
-                        last_built_word['word'] = last_built_word['word'][:-1]
-                    last_built_word['word'] += token_text
-                else:
-                    # If the token does not contain any sub-word start mark, then the sub-word has not completed yet
-                    # Append to current built word.
-                    # If this token is the first in the built_tokens, we should save its index as the previous token index
-                    # because it will be used to calculate the start offset of the word.
-                    if not built_tokens:
-                        previous_token_index = i
-                    built_tokens.append(char)
-
-        # Inject the start offset of the first token to word offsets
-        # This is because we always skip the delay the injection of the first sub-word due to the loop
-        # condition and check whether built token is ready or not.
-        # Therefore without this forced injection, the start_offset appears as off by 1.
-        if len(word_offsets) == 0:
-            # alaptev: sometimes word_offsets can be empty
-            if built_tokens:
-                built_word = self.decode_tokens_to_str(built_tokens)
-                if built_word:
-                    word_offsets.append(
-                        {
-                            "word": built_word,
-                            "start_offset": char_offsets[0]["start_offset"],
-                            "end_offset": char_offsets[-1]["end_offset"],
-                        }
-                    )
-        else:
-            word_offsets[0]["start_offset"] = char_offsets[0]["start_offset"]
-
-            # If there are any remaining tokens left, inject them all into the final word offset.
-            # Note: The start offset of this token is the start time of the first token inside build_token.
-            # Note: The end offset of this token is the end time of the last token inside build_token
-            if built_tokens:
-                built_word = self.decode_tokens_to_str(built_tokens)
-                if built_word:
-                    word_offsets.append(
-                        {
-                            "word": built_word,
-                            "start_offset": char_offsets[previous_token_index]["start_offset"],
-                            "end_offset": char_offsets[-1]["end_offset"],
-                        }
-                    )
-
-        return word_offsets
 
 
 @dataclass

@@ -17,7 +17,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, Optional
-
 import librosa
 import numpy as np
 import torch
@@ -31,6 +30,7 @@ from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.collections.asr.parts.preprocessing.segment import get_samples
 from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.collections.asr.parts.utils.timestamp_utils import get_forced_aligned_timestamps_with_external_model
 from nemo.core.classes import IterableDataset
 from nemo.core.neural_types import LengthsType, MelSpectrogramType, NeuralType
 
@@ -743,7 +743,7 @@ class FrameBatchASR:
         self.unmerged = []
 
         if self.decoder is None:
-            self.blank_id = len(asr_model.tokenizer.vocabulary)
+            self.blank_id = len(asr_model.tokenizer.vocab)
         elif hasattr(asr_model.decoder, "vocabulary"):
             self.blank_id = len(asr_model.decoder.vocabulary)
         else:
@@ -1714,6 +1714,16 @@ class CacheAwareStreamingAudioBuffer:
 
 class FrameBatchMultiTaskAED(FrameBatchASR):
     def __init__(self, asr_model, frame_len=4, total_buffer=4, batch_size=4):
+
+        self.timestamps_asr_model = asr_model.timestamps_asr_model
+        if self.timestamps_asr_model is not None:
+            self.timestamps_frame_asr = FrameBatchASR(
+                asr_model=self.timestamps_asr_model,
+                frame_len=frame_len,
+                total_buffer=total_buffer,
+                batch_size=batch_size,
+            )
+
         super().__init__(asr_model, frame_len, total_buffer, batch_size, pad_to_buffer_len=False)
         self.window_stride = asr_model._cfg.preprocessor.window_stride
         self.subsampling_factor = asr_model._cfg.encoder.subsampling_factor
@@ -1726,6 +1736,19 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         self.chunk_offsets = [
             0,
         ]
+
+        if self.timestamps_asr_model is not None:
+            self.timestamps_frame_asr.reset()
+
+    @torch.no_grad()
+    def infer_logits(self, keep_logits=False, timestamps=False):
+        frame_buffers = self.frame_bufferer.get_buffers_batch()
+
+        while len(frame_buffers) > 0:
+            self.frame_buffers += frame_buffers[:]
+            self.data_layer.set_signal(frame_buffers[:])
+            self._get_batch_preds(keep_logits=keep_logits, timestamps=timestamps)
+            frame_buffers = self.frame_bufferer.get_buffers_batch()
 
     def get_input_tokens(self, sample: dict):
         if self.asr_model.prompt_format == "canary":
@@ -1754,6 +1777,9 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         # fill optional slots
         for k, v in default_slot_values.items():
             sample[k] = sample.get(k, v)
+            if k == 'timestamp' and self.timestamps_asr_model is not None:
+                sample[k] = "<|notimestamp|>"
+
         tokens = self.asr_model.prompt.encode_dialog(
             turns=[
                 {
@@ -1769,16 +1795,33 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         return torch.tensor(tokens, dtype=torch.long, device=self.asr_model.device).unsqueeze(0)  # [1, T]
 
     def read_audio_file(self, audio_filepath: str, delay, model_stride_in_secs, meta_data):
+        timestamps = meta_data.get('timestamp', False) == "yes"
         self.input_tokens = self.get_input_tokens(meta_data)
         samples = get_samples(audio_filepath)
-        samples = np.pad(samples, (0, int(delay * model_stride_in_secs * self.asr_model._cfg.sample_rate)))
+        padded_samples = np.pad(samples, (0, int(delay * model_stride_in_secs * self.asr_model._cfg.sample_rate)))
+
         frame_reader = AudioFeatureIterator(
-            samples, self.frame_len, self.raw_preprocessor, self.asr_model.device, pad_to_frame_len=False
+            padded_samples, self.frame_len, self.raw_preprocessor, self.asr_model.device, pad_to_frame_len=False
         )
         self.set_frame_reader(frame_reader)
+        if timestamps and self.timestamps_asr_model is not None:
+            ts_model_feature_stride = self.timestamps_asr_model._cfg.preprocessor['window_stride']
+            ts_model_stride_in_secs = ts_model_feature_stride * self.timestamps_asr_model.encoder.subsampling_factor
+
+            ts_model_padded_samples = np.pad(
+                samples, (0, int(delay * ts_model_stride_in_secs * self.timestamps_asr_model._cfg.sample_rate))
+            )
+
+            ts_model_frame_reader = AudioFeatureIterator(
+                ts_model_padded_samples,
+                self.frame_len,
+                self.timestamps_frame_asr.raw_preprocessor,
+                self.timestamps_frame_asr.asr_model.device,
+            )
+            self.timestamps_frame_asr.set_frame_reader(ts_model_frame_reader)
 
     @torch.no_grad()
-    def _get_batch_preds(self, keep_logits=False):
+    def _get_batch_preds(self, keep_logits=False, timestamps=False):
         device = self.asr_model.device
         for batch in iter(self.data_loader):
             feat_signal, feat_signal_len = batch
@@ -1798,20 +1841,39 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
                 prompted_transcript=None,
                 prompted_transcript_lens=None,
             )
-            predictions = self.asr_model.predict_step(batch_input, has_processed_signal=True)
+            predictions = self.asr_model.predict_step(batch_input, has_processed_signal=True, timestamps=timestamps)
+
             self.all_preds.extend(predictions)
             del predictions
 
     def transcribe(
-        self, tokens_per_chunk: Optional[int] = None, delay: Optional[int] = None, keep_logits: bool = False
+        self,
+        tokens_per_chunk: Optional[int] = None,
+        delay: Optional[int] = None,
+        keep_logits: bool = False,
+        timestamps: bool = False,
     ):
         """
         unsued params are for keeping the same signature as the parent class
         """
-        self.infer_logits(keep_logits)
+        self.infer_logits(keep_logits=keep_logits, timestamps=timestamps)
+        if timestamps and self.timestamps_asr_model is not None:
+            self.timestamps_frame_asr.infer_logits(keep_logits=True)
+            timestamps_model_hypotheses = [
+                rnnt_utils.Hypothesis(y_sequence=logits, score=0.0) for logits in self.timestamps_frame_asr.all_logits
+            ]
+            self.all_preds = get_forced_aligned_timestamps_with_external_model(
+                audio=timestamps_model_hypotheses,
+                external_ctc_model=self.timestamps_asr_model,
+                main_model_predictions=self.all_preds,
+                batch_size=self.batch_size,
+                timestamp_type=['word', 'segment'],
+                viterbi_device=self.timestamps_frame_asr.asr_model.device,
+                has_hypotheses=True,
+            )
 
         # join hypotheses
-        hypothesis = self._join_hypotheses(self.all_preds)
+        hypothesis = self._join_hypotheses(self.all_preds, timestamps=timestamps)
 
         if not keep_logits:
             return hypothesis
@@ -1819,7 +1881,7 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         print("keep_logits=True is not supported for MultiTaskAEDFrameBatchInfer. Returning empty logits.")
         return hypothesis, []
 
-    def _join_hypotheses(self, hypotheses):
+    def _join_hypotheses(self, hypotheses, timestamps=False):
         if len(hypotheses) == 1:
             return hypotheses[0]
 
@@ -1827,17 +1889,20 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         merged_hypthesis = rnnt_utils.Hypothesis(
             score=0.0,
             y_sequence=torch.tensor([]),
-            timestamp={
-                'char': [],
-                'word': [],
-                'segment': [],
-            },
         )
 
         # join
         merged_hypthesis = self._join_text(merged_hypthesis, hypotheses)
+
         merged_hypthesis = self._join_y_sequence(merged_hypthesis, hypotheses)
-        merged_hypthesis = self._join_timestamp(merged_hypthesis, hypotheses)
+
+        if timestamps:
+            merged_hypthesis.timestamp = {
+                'char': [],
+                'word': [],
+                'segment': [],
+            }
+            merged_hypthesis = self._join_timestamp(merged_hypthesis, hypotheses)
 
         return merged_hypthesis
 

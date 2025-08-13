@@ -324,7 +324,7 @@ class WER(Metric):
             for ind in range(targets_cpu_tensor.shape[0]):
                 tgt_len = tgt_lenths_cpu_tensor[ind].item()
                 target = targets_cpu_tensor[ind][:tgt_len].numpy().tolist()
-                reference = self.decoding.decode_tokens_to_str(target)
+                reference = self.decoding.decode_ids_to_str(target)
                 references.append(reference)
             hypotheses = (
                 self.decode(predictions, predictions_lengths, predictions_mask, input_ids)

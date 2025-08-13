@@ -319,6 +319,10 @@ class TestEncDecMultiTaskModel:
 
             assert len(new_model.tokenizer.tokenizer.get_vocab()) == 32 + 128 + 128
 
+    @pytest.mark.unit
+    def test_restore_with_timestamps_asr_model(self, canary_1b_v2):
+        assert canary_1b_v2.timestamps_asr_model is not None
+
     # @pytest.mark.with_downloads()
     # @pytest.mark.unit
     # def test_save_restore_artifact_change_vocab(self, asr_model, test_data_dir):
@@ -561,6 +565,7 @@ class TestEncDecMultiTaskModel:
         )
 
         audio_file = "/home/TestData/asr/longform/earnings22/sample_4469669.wav"
+
         meta = {
             'audio_filepath': audio_file,
             'duration': 100000,
@@ -573,7 +578,7 @@ class TestEncDecMultiTaskModel:
         }
         model_stride_in_secs = 0.01 * 8  # feature_stride in sec * model_stride
         model.read_audio_file(audio_file, delay=0.0, model_stride_in_secs=model_stride_in_secs, meta_data=meta)
-        outputs = model.transcribe()
+        outputs = model.transcribe(timestamps=True)
 
         # check hypothesis object
         assert isinstance(outputs, Hypothesis)
@@ -893,3 +898,53 @@ def test_aed_timestamp_processing():
     # Verify no timestamps were extracted
     assert processed[0].timestamp['word'] == []
     assert processed[0].timestamp['segment'] == []
+
+
+@pytest.mark.unit
+def test_aed_forced_aligned_timestamps(canary_1b_v2):
+
+    audio_file = "/home/TestData/asr/canary/dev-other-wav/8173-294714-0040.wav"
+    audio_batch = [audio_file, audio_file]
+
+    # Testing with batch_size=2 to avoid dynamic_chunking and test pure timestamps extraction
+    # Dynamic chunking with timestamps are tested in other tests
+
+    hypotheses = canary_1b_v2.transcribe(audio_batch, timestamps=False, batch_size=2)
+    assert len(hypotheses) == 2
+    assert hypotheses[0].timestamp == []
+    assert hypotheses[1].timestamp == []
+
+    ts_hypotheses = canary_1b_v2.transcribe(audio_batch, timestamps=True, batch_size=2)
+    assert len(ts_hypotheses) == 2
+
+    assert "word" in ts_hypotheses[0].timestamp
+    assert "segment" in ts_hypotheses[0].timestamp
+    assert "char" not in ts_hypotheses[0].timestamp
+
+    assert ts_hypotheses[0].text == hypotheses[0].text
+
+    assert len(ts_hypotheses[0].timestamp['word']) == len(ts_hypotheses[0].text.split())
+
+    segment_count = 0
+    segment_separators = ['.', '?', '!', '...']
+    for sep in segment_separators:
+        if sep in ts_hypotheses[0].text:
+            segment_count += 1
+    if ts_hypotheses[0].text.strip()[-1] not in segment_separators:
+        segment_count += 1
+
+    assert len(ts_hypotheses[0].timestamp['segment']) == segment_count
+    assert [word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']] == ts_hypotheses[0].text.split()
+    assert " ".join([word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']]) == " ".join(
+        [segment_offset['segment'] for segment_offset in ts_hypotheses[0].timestamp['segment']]
+    )
+
+    assert ts_hypotheses[0].timestamp['segment'][0]['start'] == ts_hypotheses[0].timestamp['word'][0]['start']
+    assert ts_hypotheses[0].timestamp['segment'][-1]['end'] == ts_hypotheses[0].timestamp['word'][-1]['end']
+    assert (
+        ts_hypotheses[0].timestamp['segment'][0]['start_offset']
+        == ts_hypotheses[0].timestamp['word'][0]['start_offset']
+    )
+    assert (
+        ts_hypotheses[0].timestamp['segment'][-1]['end_offset'] == ts_hypotheses[0].timestamp['word'][-1]['end_offset']
+    )

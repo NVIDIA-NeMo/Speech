@@ -222,7 +222,7 @@ def get_buffered_pred_feat_multitaskAED(
             }
             asr.reset()
             asr.read_audio_file(audio_file, delay, model_stride_in_secs, meta_data=meta)
-            hyp = asr.transcribe()
+            hyp = asr.transcribe(timestamps=timestamps)
             hyps.append(hyp)
     else:
         with open(manifest, "r", encoding='utf_8') as fin:
@@ -233,16 +233,15 @@ def get_buffered_pred_feat_multitaskAED(
                 if not line:
                     continue
                 sample = json.loads(line)
-                if (
-                    timestamps
-                ):  # user convenience so that they don't need to make another manifest with timestamp field or modify the existing one
+                if timestamps:
+                    # user convenience so that they don't need to make another manifest with timestamp field or modify the existing one
                     sample['timestamp'] = 'yes'
                 if 'text' in sample:
                     refs.append(sample['text'])
                 audio_file = get_full_path(audio_file=sample['audio_filepath'], manifest_file=manifest)
                 # do not support partial audio
                 asr.read_audio_file(audio_file, delay, model_stride_in_secs, meta_data=sample)
-                hyp = asr.transcribe()
+                hyp = asr.transcribe(timestamps=timestamps)
                 hyps.append(hyp)
 
     wrapped_hyps = wrap_transcription(hyps)

@@ -948,3 +948,53 @@ def test_aed_forced_aligned_timestamps(canary_1b_v2):
     assert (
         ts_hypotheses[0].timestamp['segment'][-1]['end_offset'] == ts_hypotheses[0].timestamp['word'][-1]['end_offset']
     )
+
+
+@pytest.mark.unit
+def test_aed_parallel_chunking(canary_1b_v2):
+
+    audio_file = "/home/TestData/asr/longform/earnings22/sample_4469669.wav"
+    # Testing on long audio file to check chunking and timestamps extraction
+
+    hypotheses = canary_1b_v2.transcribe(audio_file, timestamps=False)
+    assert len(hypotheses) == 1
+    assert hypotheses[0].timestamp == []
+
+    ts_hypotheses = canary_1b_v2.transcribe(audio_file, timestamps=True)
+    assert len(ts_hypotheses) == 1
+
+    assert ts_hypotheses[0].text == hypotheses[0].text
+    assert "char" not in ts_hypotheses[0].timestamp
+    assert 'word' in ts_hypotheses[0].timestamp and 'segment' in ts_hypotheses[0].timestamp
+    assert len(ts_hypotheses[0].timestamp['word']) > 0
+    assert len(ts_hypotheses[0].timestamp['segment']) > 0
+    assert len(ts_hypotheses[0].timestamp['word']) == len(ts_hypotheses[0].text.split())
+
+    # Monotonicity and validity of word offsets and times
+    words = ts_hypotheses[0].timestamp['word']
+    starts = [w['start'] for w in words]
+    ends = [w['end'] for w in words]
+    start_offsets = [w['start_offset'] for w in words]
+    end_offsets = [w['end_offset'] for w in words]
+    assert all(s <= e for s, e in zip(starts, ends))
+    assert all(so <= eo for so, eo in zip(start_offsets, end_offsets))
+    assert all(x <= y for x, y in zip(starts, starts[1:]))
+    assert all(x <= y for x, y in zip(ends, ends[1:]))
+    assert all(x <= y for x, y in zip(start_offsets, start_offsets[1:]))
+    assert all(x <= y for x, y in zip(end_offsets, end_offsets[1:]))
+
+    # Check that the number of words and segments are consistent
+    assert [word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']] == ts_hypotheses[0].text.split()
+    assert " ".join([word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']]) == " ".join(
+        [segment_offset['segment'] for segment_offset in ts_hypotheses[0].timestamp['segment']]
+    )
+
+    assert ts_hypotheses[0].timestamp['segment'][0]['start'] == ts_hypotheses[0].timestamp['word'][0]['start']
+    assert ts_hypotheses[0].timestamp['segment'][-1]['end'] == ts_hypotheses[0].timestamp['word'][-1]['end']
+    assert (
+        ts_hypotheses[0].timestamp['segment'][0]['start_offset']
+        == ts_hypotheses[0].timestamp['word'][0]['start_offset']
+    )
+    assert (
+        ts_hypotheses[0].timestamp['segment'][-1]['end_offset'] == ts_hypotheses[0].timestamp['word'][-1]['end_offset']
+    )

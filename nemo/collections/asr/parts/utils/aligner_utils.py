@@ -329,7 +329,6 @@ def get_utt_obj(
                     word_tokens = word_tokens[:-1]
                     word_token_ids = word_token_ids[:-1]
                     word_tokens_cased = word_tokens_cased[:-1]
-
                 else:
                     word_tokens = model.tokenizer.text_to_tokens(word)
                     word_token_ids = model.tokenizer.text_to_ids(word)

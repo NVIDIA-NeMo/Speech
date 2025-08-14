@@ -17,7 +17,7 @@ This script chunks long audios into non-overlapping segments of `chunk_len_in_se
 seconds and performs inference on each 
 segment individually. The results are then concatenated to form the final output.
 
-Below is an example of how to run this script with the Canary-1b model.
+Below is an example of how to run this script with the Canary-1b-v2 model.
 It's recommended to use manifest input, otherwise the model will perform English ASR 
 with punctuations and capitalizations. 
 An example manifest line:
@@ -25,9 +25,8 @@ An example manifest line:
     "audio_filepath": "/path/to/audio.wav",  # path to the audio file
     "duration": 10000.0,  # duration of the audio
     "taskname": "asr",  # use "s2t_translation" for AST
-    "source_lang": "en",  # Set `source_lang`==`target_lang` for ASR, choices=['en','de','es','fr']
-    "target_lang": "de",  # choices=['en','de','es','fr']
-    "pnc": "yes",  # whether to have PnC output, choices=['yes', 'no'] 
+    "source_lang": "en",  # Set `source_lang`==`target_lang` for ASR. Currently supported for 25 EU languages.
+    "target_lang": "de",  # See https://huggingface.co/nvidia/canary-1b-v2
 }
 
 Example Usage:
@@ -41,8 +40,12 @@ python speech_to_text_aed_chunked_infer.py \
     batch_size=16 \
     decoding.beam.beam_size=1
 
-To return word and segment level timestamps, add `timestamps=True` to the above command, 
-and set `chunk_len_in_secs=10.0` for best results.
+To return word and segment level timestamps, add `timestamps=True` to the above command.
+
+Note: Canary-1b-v2 supports long‑form inference via the `.transcribe()` method.
+It will use dynamic chunking with overlapping windows for better performance.
+This behavior is enabled automatically for long‑form inference when transcribing a single 
+audio file or when batch_size is set to 1.
     
 """
 

@@ -31,6 +31,7 @@ from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.collections.asr.parts.preprocessing.segment import get_samples
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.timestamp_utils import get_forced_aligned_timestamps_with_external_model
+from nemo.collections.common.tokenizers.canary_tokenizer import CanaryBPETokenizer
 from nemo.core.classes import IterableDataset
 from nemo.core.neural_types import LengthsType, MelSpectrogramType, NeuralType
 
@@ -292,39 +293,62 @@ def longest_common_subsequence_merge(X, Y, filepath=None):
     return result_idx, LCSuff
 
 
-def lcs_alignment_merge_buffer(buffer, data, delay, model, max_steps_per_timestep: int = 5, filepath: str = None):
+def lcs_alignment_merge_buffer(
+    buffer,
+    data,
+    delay,
+    model,
+    max_steps_per_timestep: int = 5,
+    filepath: str = None,
+    min_lcs_length: int = 1,
+    parallel_chunking: bool = False,
+):
     """
     Merges the new text from the current frame with the previous text contained in the buffer.
 
     The alignment is based on a Longest Common Subsequence algorithm, with some additional heuristics leveraging
-    the notion that the chunk size is >= the context window. In case this assumptio is violated, the results of the
+    the notion that the chunk size is >= the context window. In case this assumption is violated, the results of the
     merge will be incorrect (or at least obtain worse WER overall).
+
+    If the LCS found is shorter than min_lcs_length, no deduplication is performed.
+
+    Args:
+        buffer: The existing buffer of tokens
+        data: New data to merge with buffer
+        delay: Number of delay timesteps
+        model: The ASR model
+        max_steps_per_timestep: Maximum steps per timestep
+        filepath: Optional filepath for debugging
+        min_lcs_length: Minimum LCS length for deduplication
+        parallel_chunking: If True, remove the LCS from the buffer as well, then concatenate with data; if False, make changes only to the data
     """
-    # If delay timesteps is 0, that means no future context was used. Simply concatenate the buffer with new data.
-    if delay < 1:
+    if delay < 1 or len(buffer) == 0:
         buffer += data
         return buffer
 
-    # If buffer is empty, simply concatenate the buffer and data.
-    if len(buffer) == 0:
-        buffer += data
-        return buffer
-
-    # Prepare a subset of the buffer that will be LCS Merged with new data
     search_size = int(delay * max_steps_per_timestep)
     buffer_slice = buffer[-search_size:]
 
-    # Perform LCS Merge
     lcs_idx, lcs_alignment = longest_common_subsequence_merge(buffer_slice, data, filepath=filepath)
+    i_rel, j_rel, length = lcs_idx
 
-    # Slice off new data
-    # i, j, slice_len = lcs_idx
-    slice_idx = lcs_idx[1] + lcs_idx[-1]  # slice = j + slice_len
-    data = data[slice_idx:]
+    if length < min_lcs_length:
+        return buffer + data
 
-    # Concat data to buffer
-    buffer += data
-    return buffer
+    if parallel_chunking:
+        base = len(buffer) - len(buffer_slice)
+        i_abs_start = base + i_rel
+        i_abs_end = i_abs_start + length  # end position (exclusive) in `buffer`
+        j_after = j_rel + length  # first index after LCS in `data`
+
+        merged = buffer[:i_abs_end] + data[j_after:]
+        return merged
+    else:
+        # Slice off new data based on LCS and concatenate
+        slice_idx = j_rel + length
+        data = data[slice_idx:]
+        buffer += data
+        return buffer
 
 
 def inplace_buffer_merge(buffer, data, timesteps, model):
@@ -743,7 +767,10 @@ class FrameBatchASR:
         self.unmerged = []
 
         if self.decoder is None:
-            self.blank_id = len(asr_model.tokenizer.vocab)
+            if isinstance(asr_model.tokenizer, CanaryBPETokenizer):
+                self.blank_id = asr_model.tokenizer.vocab_size
+            else:
+                self.blank_id = len(asr_model.tokenizer.vocabulary)
         elif hasattr(asr_model.decoder, "vocabulary"):
             self.blank_id = len(asr_model.decoder.vocabulary)
         else:

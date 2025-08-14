@@ -198,7 +198,7 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
         total_len = waveform.shape[0]
         if chunk_size is None:
             chunk_size = self._find_optimal_chunk_size(total_len, overlap_sec=overlap_sec)
-        if chunk_size <= total_len:
+        if chunk_size >= total_len:
             return [waveform], [total_len]
         overlap_size = int(overlap_sec * sample_rate)
         step_size = chunk_size - overlap_size

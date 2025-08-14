@@ -982,6 +982,16 @@ def test_aed_parallel_chunking(canary_1b_v2):
     assert all(x <= y for x, y in zip(ends, ends[1:]))
     assert all(x <= y for x, y in zip(start_offsets, start_offsets[1:]))
     assert all(x <= y for x, y in zip(end_offsets, end_offsets[1:]))
+    # Check if the transcription is correct
+    assert ts_hypotheses[0].text[-25:] == 'multiple customer orders.'
+    assert ts_hypotheses[0].timestamp['word'][-1] == {
+        'word': 'orders.',
+        'start_offset': 7477,
+        'end_offset': 7481,
+        'start': 598.16,
+        'end': 598.48,
+    }
+    assert ts_hypotheses[0].text == hypotheses[0].text
 
     # Check that the number of words and segments are consistent
     assert [word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']] == ts_hypotheses[0].text.split()

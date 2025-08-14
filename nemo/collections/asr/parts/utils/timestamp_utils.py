@@ -110,7 +110,6 @@ def get_words_offsets(
     # Built tokens should be list here as when dealing with wpe tokenizer,
     # ids should be decoded together to ensure tokens starting with ## are not split
     built_tokens = []
-
     condition_for_word_start = define_word_start_condition()
 
     # For every collapsed sub-word token
@@ -130,10 +129,10 @@ def get_words_offsets(
             next_non_delimeter_token = (
                 next_non_delimeter_token if next_non_delimeter_token != word_delimiter_char else None
             )
-
         # It is a sub-word token, or contains an identifier at the beginning such as _ or ## that was stripped
         # after forcing partial text conversion of the token.
         # AND it is not a supported punctuation mark, which needs to be added to the built word regardless of its identifier.
+
         if condition_for_word_start(char_token, char_text, next_non_delimeter_token) and not curr_punctuation:
             # If there are any partially or fully built sub-word token ids, construct to text.
             # Note: This is "old" subword, that occurs *after* current sub-word has started.

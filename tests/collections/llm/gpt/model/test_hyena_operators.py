@@ -228,8 +228,8 @@ class TestParallelShortHyenaOperator:
         # Create a config with hyena_short_conv_len > 4
         hyena_config.hyena_short_conv_len = 5
 
-        # Ensure transformer_config.use_cuhyena is False
-        test_config.use_cuhyena = False
+        # Ensure transformer_config.use_subquadratic_ops is False
+        test_config.use_subquadratic_ops = False
 
         with simple_parallel_state():
             with pytest.raises(AssertionError, match="fast_conv_mixer requires hyena_short_conv_len <= 4"):

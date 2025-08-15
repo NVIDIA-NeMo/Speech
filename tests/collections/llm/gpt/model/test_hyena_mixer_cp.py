@@ -14,7 +14,7 @@
 # limitations under the License.
 
 """Example Usage:
-torchrun --nproc_per_node=2 tests/collections/llm/gpt/model/test_hyena_mixer_cp.py --operator_type hyena_short_conv [--use_cuhyena]
+torchrun --nproc_per_node=2 tests/collections/llm/gpt/model/test_hyena_mixer_cp.py --operator_type hyena_short_conv [--use_subquadratic_ops]
 """
 
 import argparse
@@ -167,10 +167,10 @@ def zigzag_gather_from_group_ranks(data, group, seq_dim=0):
 
 
 class MixerModuleWrapper(torch.nn.Module):
-    def __init__(self, seq_len, operator_type="hyena_short_conv", use_cuhyena=False):
+    def __init__(self, seq_len, operator_type="hyena_short_conv", use_subquadratic_ops=False):
         super().__init__()
 
-        self.use_cuhyena = use_cuhyena
+        self.use_subquadratic_ops = use_subquadratic_ops
         self.operator_type = operator_type
 
         # Create necessary submodules - use the mixer submodules like in the regular mixer fixture
@@ -178,7 +178,7 @@ class MixerModuleWrapper(torch.nn.Module):
 
         # Set the b2b parameter in the config
         hyena_config = HyenaConfig(num_groups_hyena=4096, num_groups_hyena_short=256, num_groups_hyena_medium=256)
-        hyena_test_config = HyenaTestConfig(params_dtype=torch.float32, use_cuhyena=use_cuhyena)
+        hyena_test_config = HyenaTestConfig(params_dtype=torch.float32, use_subquadratic_ops=use_subquadratic_ops)
 
         logging.info("Creating HyenaMixer...")
         self.mixer = HyenaMixer(
@@ -191,8 +191,8 @@ class MixerModuleWrapper(torch.nn.Module):
         )
 
     def forward(self, x, _use_cp=True):
-        if self.use_cuhyena and self.operator_type != "hyena":
-            logging.info(f"Using cuHyena: {self.use_cuhyena}")
+        if self.use_subquadratic_ops and self.operator_type != "hyena":
+            logging.info(f"Using subquadratic_ops: {self.use_subquadratic_ops}")
             z = self.mixer.b2b_kernel(x, _use_cp=_use_cp)
         else:
             logging.info("Using PyTorch implementation")
@@ -208,10 +208,10 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Test hyena mixer with context parallelism")
     parser.add_argument(
-        "--use_cuhyena",
+        "--use_subquadratic_ops",
         action="store_true",
         default=False,
-        help="Whether to use cuHyena implementation",
+        help="Whether to use subquadratic_ops implementation",
     )
     parser.add_argument(
         "--operator_type",
@@ -273,7 +273,7 @@ if __name__ == "__main__":
         mixer_module_wrapper = MixerModuleWrapper(
             seq_len=seq_len,
             operator_type=args.operator_type,
-            use_cuhyena=args.use_cuhyena,
+            use_subquadratic_ops=args.use_subquadratic_ops,
         )
 
         ddp_mixer_module_wrapper = DDP(

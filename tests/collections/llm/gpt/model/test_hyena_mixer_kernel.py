@@ -118,15 +118,17 @@ def operator_type(request):
 
 
 class MixerModuleWrapper(torch.nn.Module):
-    def __init__(self, hyena_config, hyena_test_config, seq_len, use_cuhyena=False, operator_type="hyena_medium_conv"):
+    def __init__(
+        self, hyena_config, hyena_test_config, seq_len, use_subquadratic_ops=False, operator_type="hyena_medium_conv"
+    ):
         super().__init__()
 
         # Create necessary submodules - use the mixer submodules like in the regular mixer fixture
         submodules = hyena_stack_spec_no_te.submodules.hyena_layer.submodules.mixer.submodules
 
         # Set the b2b parameter in the config
-        hyena_test_config.use_cuhyena = use_cuhyena
-        self.use_cuhyena = use_cuhyena
+        hyena_test_config.use_subquadratic_ops = use_subquadratic_ops
+        self.use_subquadratic_ops = use_subquadratic_ops
         self.operator_type = operator_type
 
         print("Creating HyenaMixer...")
@@ -140,9 +142,9 @@ class MixerModuleWrapper(torch.nn.Module):
         )
 
     def forward(self, x, _use_cp=False):
-        if self.use_cuhyena and self.operator_type != "hyena":
+        if self.use_subquadratic_ops and self.operator_type != "hyena":
             z = self.mixer.b2b_kernel(x, _use_cp=_use_cp)
-        else:  # long `hyena` operator internally sets use_cuhyena from config
+        else:  # long `hyena` operator internally sets use_subquadratic_ops from config
             features = self.mixer.hyena_proj_conv(x, _use_cp=_use_cp)
             x1, x2, v = rearrange(
                 features, "b (g dg p) l -> b (g dg) p l", p=3, g=self.mixer.num_groups_per_tp_rank
@@ -157,7 +159,7 @@ def mixer(test_config: HyenaTestConfig, hyena_config: HyenaConfig, operator_type
     with init_distributed_parallel_state(world_size=1):
         # Create the mixer
         mixer = MixerModuleWrapper(
-            hyena_config, test_config, seq_len=512, use_cuhyena=False, operator_type=operator_type
+            hyena_config, test_config, seq_len=512, use_subquadratic_ops=False, operator_type=operator_type
         )
         yield mixer
 
@@ -168,13 +170,15 @@ def mixer_kernel(test_config: HyenaTestConfig, hyena_config: HyenaConfig, operat
     with init_distributed_parallel_state(world_size=1):
         # Create the mixer
         mixer_kernel = MixerModuleWrapper(
-            hyena_config, test_config, seq_len=512, use_cuhyena=True, operator_type=operator_type
+            hyena_config, test_config, seq_len=512, use_subquadratic_ops=True, operator_type=operator_type
         )
         yield mixer_kernel
 
 
-@pytest.mark.skipif(importlib.util.find_spec("cuhyena") is None, reason="cuhyena is not installed")
-def test_cuhyena_kernel(mixer: MixerModuleWrapper, mixer_kernel: MixerModuleWrapper, config_type, operator_type):
+@pytest.mark.skipif(importlib.util.find_spec("subquadratic_ops") is None, reason="subquadratic_ops is not installed")
+def test_subquadratic_ops_kernel(
+    mixer: MixerModuleWrapper, mixer_kernel: MixerModuleWrapper, config_type, operator_type
+):
     # Skip bf16 with short convolution due to numerical instability
     if mixer.mixer.transformer_config.params_dtype == torch.bfloat16 and operator_type == "hyena_short_conv":
         pytest.skip("bf16 with short convolution is skipped due to numerical instability")

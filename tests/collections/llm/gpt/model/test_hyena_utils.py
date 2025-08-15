@@ -409,8 +409,8 @@ def test_fftconv_func_high_dimensional_input():
 
 @patch('nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils.is_fused_supported')
 @patch('nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils.fft_causal_conv1d')
-def test_fftconv_func_use_cuhyena_success(mock_fft_causal_conv1d, mock_is_fused_supported):
-    """Test fftconv_func with use_cuhyena=True when supported."""
+def test_fftconv_func_use_subquadratic_ops_success(mock_fft_causal_conv1d, mock_is_fused_supported):
+    """Test fftconv_func with use_subquadratic_ops=True when supported."""
     mock_is_fused_supported.return_value = True
     mock_fft_causal_conv1d.return_value = torch.randn(2, 4, 8)
 
@@ -423,15 +423,15 @@ def test_fftconv_func_use_cuhyena_success(mock_fft_causal_conv1d, mock_is_fused_
     D = torch.randn(hidden_size)
     dropout_mask = torch.ones(batch_size, hidden_size)
 
-    output = fftconv_func(u, k, D, dropout_mask, gelu=True, bidirectional=False, use_cuhyena=True)
+    output = fftconv_func(u, k, D, dropout_mask, gelu=True, bidirectional=False, use_subquadratic_ops=True)
     assert isinstance(output, torch.Tensor)
     assert output.shape == u.shape
     mock_fft_causal_conv1d.assert_called_once()
 
 
 @patch('nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils.is_fused_supported')
-def test_fftconv_func_use_cuhyena_not_supported(mock_is_fused_supported):
-    """Test fftconv_func with use_cuhyena=True when not supported."""
+def test_fftconv_func_use_subquadratic_ops_not_supported(mock_is_fused_supported):
+    """Test fftconv_func with use_subquadratic_ops=True when not supported."""
     mock_is_fused_supported.return_value = False
 
     batch_size = 2
@@ -443,38 +443,44 @@ def test_fftconv_func_use_cuhyena_not_supported(mock_is_fused_supported):
     D = torch.randn(hidden_size)
     dropout_mask = torch.ones(batch_size, hidden_size)
 
-    with pytest.raises(ValueError, match="cuHyena FFT causal convolution is not supported for this filter length."):
-        fftconv_func(u, k, D, dropout_mask, gelu=True, bidirectional=False, use_cuhyena=True)
+    with pytest.raises(
+        ValueError, match="subquadratic_ops FFT causal convolution is not supported for this filter length."
+    ):
+        fftconv_func(u, k, D, dropout_mask, gelu=True, bidirectional=False, use_subquadratic_ops=True)
 
 
 class TestFallbackFunctions:
-    """Test the fallback functions that are defined when cuhyena import fails."""
+    """Test the fallback functions that are defined when subquadratic_ops import fails."""
 
     @patch('nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils.causal_conv1d')
     def test_causal_conv1d_fallback(self, mock_causal_conv1d):
         """Test that the fallback causal_conv1d function raises ImportError."""
         # Mock the function to raise ImportError
-        mock_causal_conv1d.side_effect = ImportError("cuhyena not installed. causal_conv1d is not available.")
+        mock_causal_conv1d.side_effect = ImportError("subquadratic_ops not installed. causal_conv1d is not available.")
 
-        with pytest.raises(ImportError, match="cuhyena not installed. causal_conv1d is not available."):
+        with pytest.raises(ImportError, match="subquadratic_ops not installed. causal_conv1d is not available."):
             mock_causal_conv1d(torch.randn(1, 1, 1), torch.randn(1, 1))
 
     @patch('nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils.b2b_causal_conv1d')
     def test_b2b_causal_conv1d_fallback(self, mock_b2b_causal_conv1d):
         """Test that the fallback b2b_causal_conv1d function raises ImportError."""
         # Mock the function to raise ImportError
-        mock_b2b_causal_conv1d.side_effect = ImportError("cuhyena not installed. b2b_causal_conv1d is not available.")
+        mock_b2b_causal_conv1d.side_effect = ImportError(
+            "subquadratic_ops not installed. b2b_causal_conv1d is not available."
+        )
 
-        with pytest.raises(ImportError, match="cuhyena not installed. b2b_causal_conv1d is not available."):
+        with pytest.raises(ImportError, match="subquadratic_ops not installed. b2b_causal_conv1d is not available."):
             mock_b2b_causal_conv1d(torch.randn(1, 1, 1), torch.randn(1, 1), torch.randn(1, 1), torch.randn(1))
 
     @patch('nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils.fft_causal_conv1d')
     def test_fft_causal_conv1d_fallback(self, mock_fft_causal_conv1d):
         """Test that the fallback fft_causal_conv1d function raises ImportError."""
         # Mock the function to raise ImportError
-        mock_fft_causal_conv1d.side_effect = ImportError("cuhyena not installed. fft_causal_conv1d is not available.")
+        mock_fft_causal_conv1d.side_effect = ImportError(
+            "subquadratic_ops not installed. fft_causal_conv1d is not available."
+        )
 
-        with pytest.raises(ImportError, match="cuhyena not installed. fft_causal_conv1d is not available."):
+        with pytest.raises(ImportError, match="subquadratic_ops not installed. fft_causal_conv1d is not available."):
             mock_fft_causal_conv1d(torch.randn(1, 1, 1), torch.randn(1, 1))
 
     @patch('nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils.is_fused_supported')
@@ -482,10 +488,10 @@ class TestFallbackFunctions:
         """Test that the fallback is_fused_supported function raises ImportError."""
         # Mock the function to raise ImportError
         mock_is_fused_supported.side_effect = ImportError(
-            "cuhyena not installed. is_fused_supported is not available."
+            "subquadratic_ops not installed. is_fused_supported is not available."
         )
 
-        with pytest.raises(ImportError, match="cuhyena not installed. is_fused_supported is not available."):
+        with pytest.raises(ImportError, match="subquadratic_ops not installed. is_fused_supported is not available."):
             mock_is_fused_supported(128)
 
     def test_fallback_functions_import_error_messages(self):

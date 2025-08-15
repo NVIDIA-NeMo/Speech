@@ -129,7 +129,7 @@ class HyenaConfig:
     Use a custom causal conv layer for the hyena short conv layer.
     """
 
-    use_cuhyena: bool = False
+    use_subquadratic_ops: bool = False
     """
     Use a back-to-back causal convolution CUDA kernel for the hyena short conv layers for improved performance.
     """

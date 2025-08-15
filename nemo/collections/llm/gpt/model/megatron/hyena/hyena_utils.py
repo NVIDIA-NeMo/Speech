@@ -54,27 +54,27 @@ except ImportError:
 
 
 try:
-    from cuhyena.b2b_causal_conv1d import b2b_causal_conv1d
-    from cuhyena.causal_conv1d import causal_conv1d
-    from cuhyena.fft_causal_conv1d import fft_causal_conv1d
-    from cuhyena.fft_causal_conv1d import short_fft_is_available as is_fused_supported
+    from subquadratic_ops.b2b_causal_conv1d import b2b_causal_conv1d
+    from subquadratic_ops.causal_conv1d import causal_conv1d
+    from subquadratic_ops.fft_causal_conv1d import fft_causal_conv1d
+    from subquadratic_ops.fft_causal_conv1d import short_fft_is_available as is_fused_supported
 except ImportError:
 
     def causal_conv1d(*args, **kwargs):
         """Not imported: causal_conv1d. An error will be raised if this is called."""
-        raise ImportError("cuhyena not installed. causal_conv1d is not available.")
+        raise ImportError("subquadratic_ops not installed. causal_conv1d is not available.")
 
     def b2b_causal_conv1d(*args, **kwargs):
         """Not imported: b2b_causal_conv1d. An error will be raised if this is called."""
-        raise ImportError("cuhyena not installed. b2b_causal_conv1d is not available.")
+        raise ImportError("subquadratic_ops not installed. b2b_causal_conv1d is not available.")
 
     def fft_causal_conv1d(*args, **kwargs):
         """Not imported: fft_causal_conv1d. An error will be raised if this is called."""
-        raise ImportError("cuhyena not installed. fft_causal_conv1d is not available.")
+        raise ImportError("subquadratic_ops not installed. fft_causal_conv1d is not available.")
 
     def is_fused_supported(*args, **kwargs):
         """Not imported: is_fused_supported. An error will be raised if this is called."""
-        raise ImportError("cuhyena not installed. is_fused_supported is not available.")
+        raise ImportError("subquadratic_ops not installed. is_fused_supported is not available.")
 
 
 def _get_zigzag_indices(N, device=None):
@@ -444,13 +444,13 @@ def hyena_no_weight_decay_cond(name, param):
     return no_wd
 
 
-def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=False, use_cuhyena=False):
+def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=False, use_subquadratic_ops=False):
     """Apply a 1D convolution to the input sequence u using the filter k and the shortcut D."""
     seqlen = u.shape[-1]
     fft_size = 2 * seqlen
 
-    # check if k is less than seqlen -- cuHyena input does not need padding
-    if not use_cuhyena and k.shape[-1] < seqlen:
+    # check if k is less than seqlen -- subquadratic_ops input does not need padding
+    if not use_subquadratic_ops and k.shape[-1] < seqlen:
         # Pad the filter k to the length of the input sequence u
         k = torch.nn.functional.pad(k, (0, seqlen - k.shape[-1]))
 
@@ -476,9 +476,9 @@ def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=Fal
 
     # causal
     else:
-        if use_cuhyena:
-            if not is_fused_supported(k.shape[-1]):  # TODO: Remove this check after full cuHyena support
-                raise ValueError("cuHyena FFT causal convolution is not supported for this filter length.")
+        if use_subquadratic_ops:
+            if not is_fused_supported(k.shape[-1]):  # TODO: Remove this check after full subquadratic_ops support
+                raise ValueError("subquadratic_ops FFT causal convolution is not supported for this filter length.")
             y = fft_causal_conv1d(u, k.squeeze(0))
         else:
             k_f = torch.fft.rfft(k, n=fft_size) / fft_size
@@ -762,7 +762,7 @@ class ParallelHyenaOperator(nn.Module):
         self.use_hyena_filter = hyena_config.use_hyena_filter
         self.zigzag = zigzag
 
-        self.use_cuhyena = transformer_config.use_cuhyena
+        self.use_subquadratic_ops = transformer_config.use_subquadratic_ops
 
         self.model_parallel_size = get_tensor_model_parallel_world_size()
         self.model_parallel_rank = get_tensor_model_parallel_rank()
@@ -1014,7 +1014,7 @@ class ParallelHyenaOperator(nn.Module):
                 dropout_mask=None,
                 gelu=False,
                 bidirectional=self.bidirectional,
-                use_cuhyena=self.use_cuhyena,
+                use_subquadratic_ops=self.use_subquadratic_ops,
             )
             z = z.to(v.dtype)
 
@@ -1068,7 +1068,7 @@ class ParallelShortHyenaOperator(nn.Module):
 
         world_size: int = get_tensor_model_parallel_world_size() if not local_init else 1
         # assert, if using fast_conv_mixer, then the hyena_short_conv_len must be 3
-        if use_fast_causal_conv and not transformer_config.use_cuhyena:
+        if use_fast_causal_conv and not transformer_config.use_subquadratic_ops:
             assert hyena_config.hyena_short_conv_len <= 4, "fast_conv_mixer requires hyena_short_conv_len <= 4"
 
         kernel_size = hyena_config.hyena_short_conv_len
@@ -1184,17 +1184,19 @@ class ParallelCausalDepthwiseConv1d(nn.Module):
         self.use_fast_causal_conv = use_fast_causal_conv
         self.num_groups = num_groups
         self.transformer_config = transformer_config
-        self.use_cuhyena = transformer_config.use_cuhyena
+        self.use_subquadratic_ops = transformer_config.use_subquadratic_ops
 
         if self.num_groups is None:
             self.num_groups = self.d_model
 
         self.group_dim = self.d_model // self.num_groups
 
-        if self.use_fast_causal_conv and not self.use_cuhyena:
+        if self.use_fast_causal_conv and not self.use_subquadratic_ops:
             assert causal_conv1d_fn is not None, "custom causal conv not installed"
             weight_shape = [self.num_groups, kernel_size]
-        elif self.use_fast_causal_conv and self.use_cuhyena:  # hyena_proj_conv of LI layer when cuhyena is enabled
+        elif (
+            self.use_fast_causal_conv and self.use_subquadratic_ops
+        ):  # hyena_proj_conv of LI layer when subquadratic_ops is enabled
             weight_shape = [self.num_groups, kernel_size]
         # use torch
         else:
@@ -1260,15 +1262,17 @@ class ParallelCausalDepthwiseConv1d(nn.Module):
         else:
             x = F.pad(x, (pad_size, 0))
 
-        # cuHyena causal_conv1d is only applied to the projection conv of Hyena LI layer
+        # subquadratic_ops causal_conv1d is only applied to the projection conv of Hyena LI layer
         # Projection conv is fused with SE/MR layers (B2BCausalConv1dModule)
-        # cuHyena handles padding in the kernel, so we don't need to pad (when CP=1)
+        # subquadratic_ops handles padding in the kernel, so we don't need to pad (when CP=1)
         # for cp > 1 padding == overlapping regions for conv
         if self.use_fast_causal_conv:  # hyena_proj_conv case
-            if self.use_cuhyena and _use_cp:  # hyena_proj_conv of LI layer when cuhyena is enabled
+            if self.use_subquadratic_ops and _use_cp:  # hyena_proj_conv of LI layer when subquadratic_ops is enabled
                 y = causal_conv1d(x, weight)[..., pad_size:]
-            elif self.use_cuhyena and not _use_cp:  # hyena_proj_conv of LI layer when cuhyena is enabled
-                y = causal_conv1d(x[..., pad_size:], weight)  # drop padding handling for cuhyena with no CP
+            elif (
+                self.use_subquadratic_ops and not _use_cp
+            ):  # hyena_proj_conv of LI layer when subquadratic_ops is enabled
+                y = causal_conv1d(x[..., pad_size:], weight)  # drop padding handling for subquadratic_ops with no CP
             else:
                 y = causal_conv1d_fn(x, weight, bias=None, activation=None)[..., pad_size:]
         else:  # hyena_short_conv case

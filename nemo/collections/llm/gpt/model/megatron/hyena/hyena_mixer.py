@@ -67,12 +67,12 @@ except ImportError:
     logger.warning("WARNING: transformer_engine not installed. Using default recipe.")
 
 try:
-    from cuhyena.rearrange import rearrange as cuhyena_rearrange
+    from subquadratic_ops.rearrange import rearrange as subquadratic_ops_rearrange
 except ImportError:
 
-    def cuhyena_rearrange(*args, **kwargs):
-        """Not imported: cuhyena_rearrange. An error will be raised if this is called."""
-        raise ImportError("cuhyena not installed. cuhyena_rearrange is not available.")
+    def subquadratic_ops_rearrange(*args, **kwargs):
+        """Not imported: subquadratic_ops_rearrange. An error will be raised if this is called."""
+        raise ImportError("subquadratic_ops not installed. subquadratic_ops_rearrange is not available.")
 
 
 def set_format_recipe():
@@ -114,7 +114,7 @@ class HyenaMixer(MegatronModule):
         self.fast_conv_mixer = self.hyena_config.fast_conv_mixer
 
         # Use b2b causal conv1d
-        self.use_cuhyena = self.transformer_config.use_cuhyena
+        self.use_subquadratic_ops = self.transformer_config.use_subquadratic_ops
 
         # Per attention head and per partition values.
         assert torch.distributed.is_initialized()
@@ -192,7 +192,7 @@ class HyenaMixer(MegatronModule):
                 use_conv_bias=self.transformer_config.use_short_conv_bias,
             )
 
-            if self.use_cuhyena:
+            if self.use_subquadratic_ops:
                 # Create a wrapper module that doesn't register parameters
                 # Use the existing weights from the original model
                 self.b2b_kernel = B2BCausalConv1dModule(
@@ -211,8 +211,8 @@ class HyenaMixer(MegatronModule):
                 self.num_groups = self.hyena_config.num_groups_hyena
             self.num_groups_per_tp_rank = self.num_groups // self.model_parallel_size
 
-            # cuHyena LI layer is handled internally in the ParallelHyenaOperator
-            # by transformer_configs.use_cuhyena
+            # subquadratic_ops LI layer is handled internally in the ParallelHyenaOperator
+            # by transformer_configs.use_subquadratic_ops
             self.mixer = ParallelHyenaOperator(
                 self.hidden_size,  # pass hidden size here to avoid recalculating
                 self.transformer_config,
@@ -222,7 +222,7 @@ class HyenaMixer(MegatronModule):
                 max_sequence_length,
             )
 
-            if self.use_cuhyena and self.operator_type == "hyena_medium_conv":
+            if self.use_subquadratic_ops and self.operator_type == "hyena_medium_conv":
                 # Create a wrapper module that doesn't register parameters
                 # Use the existing weights from the original model
                 self.b2b_kernel = B2BCausalConv1dModule(
@@ -315,13 +315,13 @@ class HyenaMixer(MegatronModule):
         else:
             features, _ = self.dense_projection(x)
 
-        if self.use_cuhyena:
-            features = cuhyena_rearrange(features, bhl_to_lbh=False)
+        if self.use_subquadratic_ops:
+            features = subquadratic_ops_rearrange(features, bhl_to_lbh=False)
         else:
             features = rearrange(features, "l b d -> b d l").contiguous()
 
         if (
-            self.use_cuhyena
+            self.use_subquadratic_ops
             and self.operator_type in ["hyena_short_conv", "hyena_medium_conv"]
             and inference_context is None
         ):
@@ -337,8 +337,8 @@ class HyenaMixer(MegatronModule):
             )
             z = self.mixer(x1, x2, v, _hyena_use_cp=_proj_use_cp, inference_context=inference_context)
 
-        if self.use_cuhyena:
-            z = cuhyena_rearrange(z, bhl_to_lbh=True)
+        if self.use_subquadratic_ops:
+            z = subquadratic_ops_rearrange(z, bhl_to_lbh=True)
         else:
             z = rearrange(z, "b d l -> l b d").contiguous()
         y, bias = self.dense(z)

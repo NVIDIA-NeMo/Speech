@@ -78,9 +78,9 @@ class SortformerModules(NeuralModule, Exportable):
         tf_d_model: int = 192,
         subsampling_factor: int = 8,
         spkcache_len: int = 188,
-        fifo_len: int = 188,
-        chunk_len: int = 12,
-        spkcache_update_period: int = 1,
+        fifo_len: int = 0,
+        chunk_len: int = 188,
+        spkcache_update_period: int = 188,
         chunk_left_context: int = 1,
         chunk_right_context: int = 1,
         spkcache_sil_frames_per_spk: int = 3,
@@ -127,7 +127,6 @@ class SortformerModules(NeuralModule, Exportable):
         self.strong_boost_rate = strong_boost_rate
         self.weak_boost_rate = weak_boost_rate
         self.min_pos_scores_rate = min_pos_scores_rate
-        self._check_streaming_parameters()
 
     def _check_streaming_parameters(self):
         """

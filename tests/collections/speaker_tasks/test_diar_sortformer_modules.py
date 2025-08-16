@@ -76,7 +76,8 @@ class TestSortformerModules_CheckStreamingParameters:
         with pytest.raises(
             ValueError, match=f"Parameter '{param_name}' must be at least {expected_min}, but got {param_value}."
         ):
-            SortformerModules(**params)
+            sortformer_modules = SortformerModules(**params)
+            sortformer_modules._check_streaming_parameters()
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -108,7 +109,8 @@ class TestSortformerModules_CheckStreamingParameters:
         with pytest.raises(
             TypeError, match=f"Parameter '{param_name}' must be an integer, but got {param_name}: {param_value}"
         ):
-            SortformerModules(**params)
+            sortformer_modules = SortformerModules(**params)
+            sortformer_modules._check_streaming_parameters()
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -135,7 +137,8 @@ class TestSortformerModules_CheckStreamingParameters:
             ValueError,
             match=f"Parameter 'spkcache_len' must be at least {min_spkcache_len}, but got {spkcache_len}.",
         ):
-            SortformerModules(**params)
+            sortformer_modules = SortformerModules(**params)
+            sortformer_modules._check_streaming_parameters()
 
 
 class TestSortformerModules_GeneralUtils:

@@ -1,2 +1,3 @@
 Model Name,Model Base Class,Model Card
-diar_sortformer_4spk,SortformerEncLabelModel,"https://huggingface.co/nvidia/diar_sortformer_4spk-v1"
+diar_sortformer_4spk-v1,SortformerEncLabelModel,"https://huggingface.co/nvidia/diar_sortformer_4spk-v1"
+diar_streaming_sortformer_4spk-v2,SortformerEncLabelModel,"https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2"

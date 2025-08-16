@@ -118,6 +118,9 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
 
         self.async_streaming = self._cfg.get("async_streaming", False)
         self.streaming_mode = self._cfg.get("streaming_mode", False)
+        if self.streaming_mode:
+            # Validate streaming parameters once at initialization for streaming models
+            self.sortformer_modules._check_streaming_parameters()
         self.save_hyperparameters("cfg")
         self._init_eval_metrics()
         speaker_inds = list(range(self._cfg.max_num_of_spks))

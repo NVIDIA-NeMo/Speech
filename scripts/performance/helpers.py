@@ -286,12 +286,70 @@ def set_cuda_graph_configs(recipe, enable_cuda_graphs: bool, task: str):
     return recipe
 
 
+def set_full_iteration_cuda_graph_configs(recipe, pp_size: int | None, vp_size: int | None):
+    """
+    Set optimizations required for full iteration CUDA graphs based on specific conditions.
+    """
+    if not (
+        hasattr(recipe.model, 'config')
+        and hasattr(recipe.model.config, 'cuda_graph_scope')
+        and recipe.model.config.cuda_graph_scope == 'full_iteration'
+    ):
+        return recipe
+
+    cuda_graph_configs = []
+
+    if recipe.trainer.strategy.ddp.check_for_nan_in_grad != False:
+        recipe.trainer.strategy.ddp.check_for_nan_in_grad = False
+        cuda_graph_configs.append("check_for_nan_in_grad=False")
+        logging.warning("For full iteration CUDA graphs, we need to disable check_for_nan_in_grad")
+
+    if pp_size and pp_size > 1:
+        if recipe.model.config.variable_seq_lengths != False:
+            recipe.model.config.variable_seq_lengths = False
+            cuda_graph_configs.append("variable_seq_lengths=False")
+            logging.warning("For full iteration CUDA graphs, we need to disable variable_seq_lengths")
+
+        if recipe.model.config.batch_p2p_sync != False:
+            recipe.model.config.batch_p2p_sync = False
+            cuda_graph_configs.append("batch_p2p_sync=False")
+            logging.warning("For full iteration CUDA graphs, we need to disable batch_p2p_sync")
+
+    comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
+    if comm_overlap_callback_idx is not None:
+        callback = recipe.trainer.callbacks[comm_overlap_callback_idx]
+
+        if pp_size and pp_size > 1:
+            if callback.batch_p2p_comm != False:
+                callback.batch_p2p_comm = False
+                cuda_graph_configs.append("batch_p2p_comm=False")
+                logging.warning("For full iteration CUDA graphs, disabling batch_p2p_comm would improve memory usage")
+
+        if vp_size and vp_size > 1:
+            if callback.overlap_param_gather_with_optimizer_step != False:
+                callback.overlap_param_gather_with_optimizer_step = False
+                cuda_graph_configs.append("overlap_param_gather_with_optimizer_step=False")
+                logging.warning(
+                    "For full iteration CUDA graphs, we need to disable overlap_param_gather_with_optimizer_step"
+                )
+    else:
+        logging.warning("MegatronCommOverlapCallback not found in recipe.trainer.callbacks")
+
+    # Log all applied configurations
+    if cuda_graph_configs:
+        logging.info(f"Applied full iteration CUDA graph optimizations: {', '.join(cuda_graph_configs)}")
+
+    return recipe
+
+
 def set_perf_optimization_configs(
     recipe,
     use_mcore_fsdp: bool,
     enable_cuda_graphs: bool,
     task: str,
     tp_size: int | None,
+    pp_size: int | None,
+    vp_size: int | None,
     compute_dtype: str,
     fp8_recipe: str | None,
     recompute_layers: int,
@@ -315,6 +373,9 @@ def set_perf_optimization_configs(
         logging.warning("Currently, cuda graphs are not supported with FSDP. Disabling cuda graphs.")
         enable_cuda_graphs = False
     recipe = set_cuda_graph_configs(recipe, enable_cuda_graphs, task)
+
+    if enable_cuda_graphs:
+        recipe = set_full_iteration_cuda_graph_configs(recipe, pp_size, vp_size)
 
     if use_mcore_fsdp:
         comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
@@ -410,6 +471,8 @@ def set_primary_perf_configs(
         enable_cuda_graphs=enable_cuda_graphs,
         task=task,
         tp_size=tp_size,
+        pp_size=pp_size,
+        vp_size=vp_size,
         compute_dtype=compute_dtype,
         fp8_recipe=fp8_recipe,
         recompute_layers=recompute_layers,

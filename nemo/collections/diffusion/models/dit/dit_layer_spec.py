@@ -579,7 +579,8 @@ class MMDiTLayer(TransformerLayer):
         hidden_size = config.hidden_size
         super().__init__(config=config, submodules=submodules, layer_number=layer_number)
 
-        if config.enable_cuda_graph:
+        # Enable per-Transformer layer cuda graph.
+        if config.enable_cuda_graph and config.cuda_graph_scope != "full_iteration":
             self.cudagraph_manager = CudaGraphManager(config, share_cudagraph_io_buffers=False)
 
         self.adaln = AdaLN(config, modulation_bias=True, n_adaln_chunks=6, use_second_norm=True)
@@ -695,7 +696,8 @@ class FluxSingleTransformerBlock(TransformerLayer):
     ):
         super().__init__(config=config, submodules=submodules, layer_number=layer_number)
 
-        if config.enable_cuda_graph:
+        # Enable per-Transformer layer cuda graph.
+        if config.enable_cuda_graph and config.cuda_graph_scope != "full_iteration":
             self.cudagraph_manager = CudaGraphManager(config, share_cudagraph_io_buffers=False)
         self.adaln = AdaLN(
             config=config, n_adaln_chunks=n_adaln_chunks, modulation_bias=modulation_bias, use_second_norm=False

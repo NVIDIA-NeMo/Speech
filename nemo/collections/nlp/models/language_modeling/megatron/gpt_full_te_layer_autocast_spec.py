@@ -270,7 +270,8 @@ class TETransformerLayerAutocast(MegatronModule, BaseTransformerLayer):  # type:
             transformer_layer_args["ub_atomic_gemm_rs"] = config.tp_comm_atomic_rs
         self.transformer_layer = AutocastTransformerLayer(**transformer_layer_args)
 
-        if self.config.enable_cuda_graph and self.training:
+        # Enable per-Transformer layer cuda graph.
+        if self.config.enable_cuda_graph and self.config.cuda_graph_scope != "full_iteration" and self.training:
             assert not config.cpu_offloading and config.recompute_granularity is None, "Cudagraphs not supported"
             self.add_module('cudagraph_manager', CudaGraphManager(config))
 

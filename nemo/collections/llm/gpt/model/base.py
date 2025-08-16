@@ -326,7 +326,8 @@ class GPTConfig(TransformerConfig, io.IOMixin):
         Returns:
             MCoreGPTModel: Configured Megatron Core GPT model instance
         """
-        if self.enable_cuda_graph:
+        # Enable per-Transformer layer cuda graph.
+        if self.enable_cuda_graph and self.cuda_graph_scope != "full_iteration":
             assert HAVE_TE, "Transformer Engine is required for cudagraphs."
             assert getattr(self, "use_te_rng_tracker", False), (
                 "Transformer engine's RNG tracker is required for cudagraphs, it can be "

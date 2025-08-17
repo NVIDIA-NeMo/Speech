@@ -2063,15 +2063,8 @@ class MagpieTTSModel(ModelPT):
         last_audio_timestep_scores = mean_cross_attn_scores[:, -1, :]  # B, text_timesteps
         return last_audio_timestep_scores, all_heads_cross_attn_scores
 
-    def get_most_attended_text_timestep(
-        self,
-        alignment_attention_scores,
-        last_attended_timesteps,
-        text_lens,
-        lookahead_window_size,
-        attended_timestep_counter,
-        batch_size,
-    ):
+    def get_most_attended_text_timestep(self, alignment_attention_scores, last_attended_timesteps,
+                                   text_lens, lookahead_window_size, attended_timestep_counter, batch_size, left_offset=0):
         """
         Returns the most attended timestep for each batch item
         """
@@ -2082,14 +2075,17 @@ class MagpieTTSModel(ModelPT):
                 # This is probably an attention sink! Move to the next timestep
                 last_attended_timestep += 1
             last_attended_timestep_in_this_window = last_attended_timestep - left_offset
+            last_attended_timestep_in_this_window = last_attended_timestep - left_offset
             window_size = lookahead_window_size
-            window_end = min(last_attended_timestep + window_size, text_lens[bidx] - 3) # Ignore the last 3 timesteps
-            item_attention_scores = alignment_attention_scores[bidx,last_attended_timestep:window_end]
+            window_end = min(last_attended_timestep_in_this_window + window_size, text_lens[bidx] - 3) # Ignore the last 3 timesteps
+            item_attention_scores = alignment_attention_scores[bidx,last_attended_timestep_in_this_window:window_end]
             if item_attention_scores.size(0) == 0:
                 # This means the sentence has ended
-                attended_timestep = text_lens[bidx] - 1
+                attended_timestep = text_lens[bidx] - 1 + left_offset
             else:
                 attended_timestep = item_attention_scores.argmax().item() + last_attended_timestep
+            if not isinstance(attended_timestep, int):
+                attended_timestep = attended_timestep.item()
             if not isinstance(attended_timestep, int):
                 attended_timestep = attended_timestep.item()
             text_time_step_attended.append(attended_timestep)
@@ -2155,20 +2151,77 @@ class MagpieTTSModel(ModelPT):
 
         return _attn_prior, unfinished_texts, finished_texts_counter
 
-    def get_inference_attention_plots(
-        self,
-        cross_attention_scores_all_timesteps,
-        all_heads_cross_attn_scores_all_timesteps,
-        text_lens,
-        predicted_codes_lens,
-        batch_size,
-        compute_all_heads_attn_maps,
-        last_attended_timestep,
-    ):
-        last_attended_timestep = np.array(last_attended_timestep).T
-        cross_attention_scores_all_timesteps = torch.stack(
-            cross_attention_scores_all_timesteps, dim=2
-        )  # B, text_timesteps, T'
+    def construct_streaming_inference_prior(self, prior_epsilon, cross_attention_scores,
+                                  text_lens, text_time_step_attended, attended_timestep_counter,
+                                  unfinished_texts, finished_texts_counter, end_indices, 
+                                  lookahead_window_size, batch_size, end_of_text, left_offset=0, use_exponential=False):
+        '''
+        Does the same thing as construct_inference_prior, but for streaming inference.
+        The main difference is that it uses a left_offset to account for the fact that the text is not provided in a single chunk.
+        It also uses a use_exponential flag to use an exponential distribution for the prior.
+        It also uses a end_of_text flag to indicate whether the text has ended.
+        It also uses a left_offset to account for the fact that the text is not provided in a single chunk.
+        '''
+        # Attn prior for the next timestep
+        _attn_prior = torch.zeros(cross_attention_scores.shape[0], 1, cross_attention_scores.shape[1]) + prior_epsilon
+        _attn_prior = _attn_prior.to(cross_attention_scores.device)
+        for bidx in range(cross_attention_scores.shape[0]):
+            if bidx < batch_size:
+                _text_len = text_lens[bidx]
+                if text_lens[bidx] <= 5:
+                    # Very short sentences, No Prior
+                    _attn_prior[bidx, 0, :] = 1.0
+                else:
+                    if use_exponential:
+                        scale = 1.25
+                        n_steps = text_time_step_attended[bidx]-left_offset + 1
+                        # Create an exponential pdf for the past steps
+                        x_pdf = list(range(n_steps))
+                        pdf = [(1/scale) * np.exp(-x/2) for x in x_pdf]
+                        pdf = pdf[::-1]
+                        for ii, p in enumerate(pdf):
+                            _attn_prior[bidx, 0, ii] = max(p, prior_epsilon*prior_epsilon)
+                        # Future
+                        _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+1-left_offset, _text_len - 1) ] = 1.0
+                        _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+2-left_offset, _text_len - 1) ] = 0.8
+                        _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+2-left_offset + 1, _text_len - 1):min(text_time_step_attended[bidx]+2-left_offset + 10, _text_len - 1) ] = prior_epsilon
+                        _attn_prior[bidx, 0, min(text_time_step_attended[bidx]+2-left_offset + 10, _text_len - 1): ] = prior_epsilon*prior_epsilon
+                    else:
+                        _attn_prior[bidx, 0, :max(1, text_time_step_attended[bidx]-1-left_offset)] = prior_epsilon*prior_epsilon
+                        _attn_prior[bidx, 0, max(1, text_time_step_attended[bidx]-1-left_offset)] = 0.2 # Slight exposure to history for better pronounciation. Not very important.
+                        _attn_prior[bidx, 0, text_time_step_attended[bidx]-left_offset] = 0.8 # Slightly bias to continue moving forward. Not very important.
+                        _attn_prior[bidx, 0, min(text_time_step_attended[bidx]-left_offset + 1, _text_len - 1)] = 1.0 # Slightly bias to continue moving forward. Not very important.
+                        _attn_prior[bidx, 0, min(text_time_step_attended[bidx]-left_offset + 2, _text_len - 1)] = 0.8
+                        _attn_prior[bidx, 0, min(text_time_step_attended[bidx]-left_offset + 3, _text_len - 1):] = prior_epsilon*prior_epsilon
+
+                # Penalize timesteps that have been attended to more than 10 times
+                for _timestep in attended_timestep_counter[bidx]:
+                    if _timestep > left_offset and attended_timestep_counter[bidx][_timestep] >= 10:
+                        # This means the timestep has been attended to more than 10 times (To avoid getting stuck)
+                        _attn_prior[bidx, 0, :_timestep-left_offset+1] = prior_epsilon
+
+                if not end_of_text:
+                    unfinished_texts[bidx] = True
+                else:
+                    unfinished_texts[bidx] = False
+                    if text_time_step_attended[bidx]-left_offset < text_lens[bidx] - 3:
+                        # This means the sentence has definitely not ended
+                        if bidx not in end_indices:
+                            unfinished_texts[bidx] = True
+
+                if end_of_text and (text_time_step_attended[bidx]-left_offset >= text_lens[bidx] - 4 or bidx in end_indices):
+                    if bidx not in finished_texts_counter:
+                        finished_texts_counter[bidx] = 0
+
+                chunk_end_has_reached = False
+                if not end_of_text and text_time_step_attended[bidx]-left_offset >= text_lens[bidx] - 4:
+                    # This means entire text has not been provided yet and audio generation for current chunk has almost reached the end
+                    chunk_end_has_reached = True
+
+        return _attn_prior, unfinished_texts, finished_texts_counter, chunk_end_has_reached
+
+    def get_inference_attention_plots(self, cross_attention_scores_all_timesteps, all_heads_cross_attn_scores_all_timesteps, text_lens, predicted_codes_lens, batch_size, compute_all_heads_attn_maps):
+        cross_attention_scores_all_timesteps = torch.stack(cross_attention_scores_all_timesteps, dim=2) # B, text_timesteps, T'
         headwise_cross_attention_scores_all_timesteps = []
         for hidx in range(len(all_heads_cross_attn_scores_all_timesteps[0])):
             head_cross_attention_all_timesteps = torch.stack(

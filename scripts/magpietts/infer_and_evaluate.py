@@ -140,6 +140,8 @@ def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0
 
 def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_text_conditioning=False):
     '''helper function to rename older yamls from t5 to magpie'''
+def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_text_conditioning=False):
+    ''' helper function to rename older yamls from t5 to magpie '''
     model_cfg.codecmodel_path = codecmodel_path
     if hasattr(model_cfg, 'text_tokenizer'):
         # Backward compatibility for models trained with absolute paths in text_tokenizer
@@ -148,6 +150,7 @@ def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_tex
         model_cfg.text_tokenizer.g2p.phoneme_probability = 1.0
     model_cfg.train_ds = None
     model_cfg.validation_ds = None
+    model_cfg.legacy_text_conditioning = legacy_text_conditioning
     model_cfg.legacy_text_conditioning = legacy_text_conditioning
     if "t5_encoder" in model_cfg:
         model_cfg.encoder = model_cfg.t5_encoder
@@ -162,6 +165,10 @@ def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_tex
         # For older checkpoints trained with a different parameter name
         model_cfg.local_transformer_type = "autoregressive"
         del model_cfg.use_local_transformer
+    if hasattr(model_cfg, 'downsample_factor'):
+        # Backward compatibility for models trained with the config option`downsample_factor` which was later renamed to `frame_stacking_factor`
+        model_cfg.frame_stacking_factor = model_cfg.downsample_factor
+        del model_cfg.downsample_factor
     if hasattr(model_cfg, 'downsample_factor'):
         # Backward compatibility for models trained with the config option`downsample_factor` which was later renamed to `frame_stacking_factor`
         model_cfg.frame_stacking_factor = model_cfg.downsample_factor
@@ -479,7 +486,7 @@ def run_inference(
         context_duration_max = model.cfg.get('context_duration_max', 5.0)
         if context_duration_min < 5.0 and context_duration_max > 5.0:
             context_duration_min = 5.0
-            context_duration_max = 5.0  # @pneekhara - For multiencoder models, I want fixed size contexts for fair eval. Not too important though.
+            context_duration_max = 5.0 # @pneekhara - For multiencoder models, I want fixed size contexts for fair eval. Not too important though.
 
         dataset_filewise_metrics_all_repeats = []  # Store metrics for all repeats of this dataset
         for repeat_idx in range(num_repeats):
@@ -619,7 +626,6 @@ def run_inference(
                 with_utmosv2=with_utmosv2,
             )
             metrics_n_repeated.append(metrics)
-            dataset_filewise_metrics_all_repeats.extend(filewise_metrics)  # Collect all filewise metrics for combined plot
             
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
@@ -692,11 +698,6 @@ def run_inference(
         measurements = [m['cer_cumulative'] for m in metrics_n_repeated]
         cer_current = np.mean(measurements)
         cer_per_dataset.append(cer_current)
-
-    # Create combined violin plot for all datasets
-    if len(all_datasets_filewise_metrics) > 1:  # Only create combined plot if we have multiple datasets
-        combined_output_png = os.path.join(out_dir, f"{checkpoint_name}_combined_violin_plot.png")
-        create_combined_violin_plots(all_datasets_filewise_metrics, violin_plot_metrics, combined_output_png)
     
     # Average across datasets
     ssim = np.mean(ssim_per_dataset)

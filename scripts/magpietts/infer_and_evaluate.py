@@ -580,10 +580,8 @@ def run_inference(
                 with_utmosv2=with_utmosv2,
             )
             metrics_n_repeated.append(metrics)
-            dataset_filewise_metrics_all_repeats.extend(
-                filewise_metrics
-            )  # Collect all filewise metrics for combined plot
-
+            dataset_filewise_metrics_all_repeats.extend(filewise_metrics)  # Collect all filewise metrics for combined plot
+            
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
 
@@ -660,7 +658,7 @@ def run_inference(
     if len(all_datasets_filewise_metrics) > 1:  # Only create combined plot if we have multiple datasets
         combined_output_png = os.path.join(out_dir, f"{checkpoint_name}_combined_violin_plot.png")
         create_combined_violin_plots(all_datasets_filewise_metrics, violin_plot_metrics, combined_output_png)
-
+    
     # Average across datasets
     ssim = np.mean(ssim_per_dataset)
     cer = np.mean(cer_per_dataset)

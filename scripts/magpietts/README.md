@@ -20,6 +20,18 @@ python scripts/magpietts/infer_and_evaluate.py \
 --out_dir ${OUT_DIR} \
 --use_cfg \
 --apply_attention_prior
+
+# If you want streaming
+DATASET=<dataset_name e.g. local_longer_1>
+python scripts/magpietts/infer_and_evaluate_streaming.py \
+--checkpoint_files ${CKPT} \
+--hparams_files ${HPARAM} \
+--codecmodel_path ${CODEC} \
+--out_dir ${OUT_DIR} \
+--datasets ${DATASET} \
+--use_cfg \
+--disable_fcd \
+--apply_attention_prior
 ```
 
 **Test Sets**

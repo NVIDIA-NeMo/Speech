@@ -44,6 +44,45 @@ EVALUATION_DATASETS = (
 )
 
 
+def setup_argument_parser():
+    """Setup and return the argument parser for the streaming inference script."""
+    parser = argparse.ArgumentParser(description='Experiment Evaluation')
+    parser.add_argument('--hparams_files', type=str, default=None)
+    parser.add_argument('--hparams_file_from_wandb', action='store_true')
+    parser.add_argument('--checkpoint_files', type=str, default=None)
+    parser.add_argument('--nemo_files', type=str, default=None)
+    parser.add_argument('--codecmodel_path', type=str, default=None, help="Path to codec model")
+    parser.add_argument('--datasets', type=str, default=None)
+    # Parameters for running inference experiments locally
+    parser.add_argument('--out_dir', type=str, default="/datap/misc/Evals/LocalTransformerAblations2")
+    parser.add_argument('--temperature', type=float, default=0.6)
+    parser.add_argument('--use_cfg', action='store_true')
+    parser.add_argument('--use_local_transformer', action='store_true', help="Enables use of local transformer for inference; applies to both Autoregressive and MaskGit sampling.")
+    parser.add_argument('--maskgit_n_steps', type=int, default=3)
+    parser.add_argument('--cfg_scale', type=float, default=2.5)
+    parser.add_argument('--apply_attention_prior', action='store_true')
+    parser.add_argument('--attention_prior_epsilon', type=float, default=0.1)
+    parser.add_argument('--attention_prior_lookahead_window', type=int, default=5)
+    parser.add_argument('--estimate_alignment_from_layers', type=str, default=None)
+    parser.add_argument('--apply_prior_to_layers', type=str, default=None)
+    parser.add_argument('--start_prior_after_n_audio_steps', type=int, default=0)
+    parser.add_argument('--topk', type=int, default=80)
+    parser.add_argument('--batch_size', type=int, default=32)
+    # Parameters for evaluation
+    parser.add_argument('--sv_model', type=str, default="titanet") # titanet, wavlm
+    parser.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b") # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
+    parser.add_argument('--num_repeats', type=int, default=1)
+    parser.add_argument('--confidence_level', type=float, default=0.95)
+    parser.add_argument('--legacy_codebooks', action='store_true')
+    parser.add_argument('--clean_up_disk', action='store_true')
+    parser.add_argument('--cer_target', type=float, default=None)
+    parser.add_argument('--ssim_target', type=float, default=None)
+    parser.add_argument('--log_exp_name', action='store_true', help="Include the experiment name (derived from the checkpoint path) in the output folder name.")
+    parser.add_argument('--disable_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
+    parser.add_argument('--violin_plot_metrics', type=str, nargs='*', default=['cer','pred_context_ssim'], help="Which metrics to add the violin plot.")
+    return parser
+
+
 def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0.90):
     metrics = {}
     for key in metric_keys:
@@ -631,77 +670,7 @@ def run_inference(
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Experiment Evaluation')
-    parser.add_argument('--hparams_files', type=str, default=None)
-    parser.add_argument('--hparams_file_from_wandb', action='store_true')
-    parser.add_argument('--checkpoint_files', type=str, default=None)
-    parser.add_argument('--nemo_files', type=str, default=None)
-    parser.add_argument('--codecmodel_path', type=str, default=None, help="Path to codec model")
-    parser.add_argument('--datasets', type=str, default=None)
-    # Parameters for running inference experiments locally
-    parser.add_argument('--out_dir', type=str, default="/datap/misc/Evals/LocalTransformerAblations2")
-    parser.add_argument('--temperature', type=float, default=0.6)
-    parser.add_argument('--use_cfg', action='store_true')
-    parser.add_argument(
-        '--use_local_transformer',
-        action='store_true',
-        help="Enables use of local transformer for inference; applies to both Autoregressive and MaskGit sampling.",
-    )
-    parser.add_argument('--maskgit_n_steps', type=int, default=3)
-    parser.add_argument('--maskgit_noise_scale', type=float, default=0.0)
-    parser.add_argument('--maskgit_fixed_schedule', type=int, nargs='+', default=None)
-    parser.add_argument(
-        '--maskgit_sampling_type', default=None, choices=["default", "causal", "purity_causal", "purity_default"]
-    )
-    parser.add_argument('--cfg_scale', type=float, default=2.5)
-    parser.add_argument('--apply_attention_prior', action='store_true')
-    parser.add_argument('--attention_prior_epsilon', type=float, default=0.1)
-    parser.add_argument('--attention_prior_lookahead_window', type=int, default=5)
-    parser.add_argument('--estimate_alignment_from_layers', type=str, default=None)
-    parser.add_argument('--apply_prior_to_layers', type=str, default=None)
-    parser.add_argument('--start_prior_after_n_audio_steps', type=int, default=0)
-    parser.add_argument('--topk', type=int, default=80)
-    parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument(
-        '--eos_detection_method',
-        type=str,
-        default="argmax_or_multinomial_any",
-        choices=[
-            "argmax_any",
-            "argmax_or_multinomial_any",
-            "argmax_all",
-            "argmax_or_multinomial_all",
-            "argmax_zero_cb",
-            "argmax_or_multinomial_zero_cb",
-        ],
-    )
-    # Parameters for evaluation
-    parser.add_argument('--sv_model', type=str, default="titanet")  # titanet, wavlm
-    parser.add_argument(
-        '--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b"
-    )  # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
-    parser.add_argument('--num_repeats', type=int, default=1)
-    parser.add_argument('--confidence_level', type=float, default=0.95)
-    parser.add_argument('--legacy_codebooks', action='store_true')
-    parser.add_argument('--legacy_text_conditioning', action='store_true')
-    parser.add_argument('--ignore_finished_sentence_tracking', action='store_true')
-    parser.add_argument('--clean_up_disk', action='store_true')
-    parser.add_argument('--cer_target', type=float, default=None)
-    parser.add_argument('--ssim_target', type=float, default=None)
-    parser.add_argument('--disable_utmosv2', action='store_true', help="Disable UTMOSv2 computation")
-    parser.add_argument(
-        '--log_exp_name',
-        action='store_true',
-        help="Include the experiment name (derived from the checkpoint path) in the output folder name.",
-    )
-    parser.add_argument('--disable_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
-    parser.add_argument(
-        '--violin_plot_metrics',
-        type=str,
-        nargs='*',
-        default=['cer', 'pred_context_ssim', 'utmosv2'],
-        help="Which metrics to add the violin plot.",
-    )
+    parser = setup_argument_parser()
     args = parser.parse_args()
 
     if args.datasets is None:

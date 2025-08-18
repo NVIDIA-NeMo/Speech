@@ -43,6 +43,7 @@ model_options: dict[str, Type[llm.SSMConfig]] = {
     "47B": llm.NemotronHConfig47B,
     "56B": llm.NemotronHConfig56B,
     "Nano9Bv2": llm.NemotronNano9Bv2,
+    "Nano12Bv2": llm.NemotronNano12Bv2,
 }
 
 

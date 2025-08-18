@@ -28,21 +28,20 @@ from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
+from nemo.collections.llm.recipes.precision.mixed_precision import nanov2_bf16_with_fp8_current_scaling_mixed
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
-from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.utils.exp_manager import TimingCallback
 
 torch._dynamo.config.suppress_errors = True
 
-NAME = "nemotron_nano_9b_v2"
+NAME = "nemotron_nano_12b_v2"
 
 
 @run.cli.factory(name=NAME)
 def tokenizer(vocab_file: str = None) -> run.Config[pl.LightningModule]:
     """
-    Factory function to create a tokenizer configuration for NemotronNano9Bv2 model.
+    Factory function to create a tokenizer configuration for NemotronNano12Bv2 model.
     """
     if vocab_file:
         return run.Config(
@@ -56,7 +55,7 @@ def tokenizer(vocab_file: str = None) -> run.Config[pl.LightningModule]:
         return run.Config(
             get_nmt_tokenizer,
             library='huggingface',
-            model_name="nvidia/NVIDIA-Nemotron-Nano-9B-v2-Base",
+            model_name="nvidia/NVIDIA-Nemotron-Nano-12B-v2-Base",
             use_fast=True,
         )
 
@@ -64,19 +63,19 @@ def tokenizer(vocab_file: str = None) -> run.Config[pl.LightningModule]:
 @run.cli.factory(name=NAME)
 def model(vocab_file: str = None) -> run.Config[pl.LightningModule]:
     """
-    Factory function to create a NemotronNano9Bv2 model configuration.
+    Factory function to create a NemotronNano12Bv2 model configuration.
     Returns:
-        run.Config[pl.LightningModule]: Configuration for the NemotronNano9Bv2 model.
+        run.Config[pl.LightningModule]: Configuration for the NemotronNano12Bv2 model.
     Examples:
         CLI usage:
-            $ nemo llm pretrain model=nemotron_nano_9b_v2 ...
+            $ nemo llm pretrain model=nemotron_nano_12b_v2 ...
         Python API usage:
             >>> model_config = model()
             >>> print(model_config)
     """
     return run.Config(
         llm.MambaModel,
-        config=run.Config(llm.NemotronNano9Bv2),
+        config=run.Config(llm.NemotronNano12Bv2),
         tokenizer=tokenizer(vocab_file=vocab_file),
     )
 
@@ -84,7 +83,7 @@ def model(vocab_file: str = None) -> run.Config[pl.LightningModule]:
 @run.cli.factory(target=finetune, name=NAME)
 def trainer(
     dir: str = None,
-    tensor_parallelism: int = 2,
+    tensor_parallelism: int = 4,
     pipeline_parallelism: int = 1,
     pipeline_parallelism_type: torch.dtype = torch.bfloat16,
     virtual_pipeline_parallelism: Optional[int] = None,
@@ -102,7 +101,7 @@ def trainer(
     callbacks: Optional[list[run.Config[Callback]]] = None,
 ) -> run.Config[nl.Trainer]:
     """
-    Configure the NeMo Lightning Trainer for NemotronNano9Bv2 model.
+    Configure the NeMo Lightning Trainer for NemotronNano12Bv2 model.
     This function sets up the distributed training strategy and other training parameters.
     Args:
         tensor_parallelism (int): Degree of tensor model parallelism.
@@ -119,7 +118,7 @@ def trainer(
         run.Config[nl.Trainer]: Configuration for the NeMo Lightning Trainer.
     Examples:
         CLI usage:
-            $ nemo llm pretrain trainer=nemotron_nano_9b_v2 ...
+            $ nemo llm pretrain trainer=nemotron_nano_12b_v2 ...
         Python API usage:
             >>> trainer_config = trainer(num_nodes=1, num_gpus_per_node=1)
             >>> print(trainer_config)
@@ -151,11 +150,6 @@ def trainer(
     callbacks = [
         run.Config(TimingCallback),
         run.Config(
-            MegatronCommOverlapCallback,
-            tp_comm_bootstrap_backend="nccl",
-            tp_comm_overlap=True,
-        ),
-        run.Config(
             ModelCheckpoint,
             every_n_train_steps=val_check_interval,
             dirpath=dir,
@@ -178,7 +172,7 @@ def trainer(
         limit_val_batches=limit_val_batches,
         num_sanity_val_steps=0,
         use_distributed_sampler=False,
-        plugins=[bf16_mixed()],
+        plugins=[nanov2_bf16_with_fp8_current_scaling_mixed()],
         val_check_interval=val_check_interval,
         enable_checkpointing=True,
     )
@@ -192,7 +186,7 @@ def pretrain_recipe(
     vocab_file: str = None,
     num_nodes: int = 8,
     num_gpus_per_node: int = 8,
-    tensor_parallelism: int = 2,
+    tensor_parallelism: int = 4,
     sequence_parallelism: bool = True,
     pipeline_parallelism: int = 1,
     max_steps: int = 10,
@@ -208,7 +202,7 @@ def pretrain_recipe(
     fn=pretrain,
 ) -> run.Partial:
     """
-    Create a pre-training recipe for NemotronNano9Bv2 model.
+    Create a pre-training recipe for NemotronNano12Bv2 model.
     This function sets up a complete configuration for pre-training, including
     model, trainer, data, logging, optimization, and resumption settings.
     Args:
@@ -221,10 +215,10 @@ def pretrain_recipe(
         run.Partial: Partial configuration for pre-training.
     Examples:
         CLI usage:
-            $ nemo llm pretrain --factory nemotron_nano_9b_v2
-            $ nemo llm pretrain --factory "nemotron_nano_9b_v2(num_nodes=32, name='my_pretrain')"
+            $ nemo llm pretrain --factory nemotron_nano_12b_v2
+            $ nemo llm pretrain --factory "nemotron_nano_12b_v2(num_nodes=32, name='my_pretrain')"
         Python API usage:
-            >>> recipe = pretrain_recipe(name="nemotron_nano_9b_v2_pretrain", num_nodes=32)
+            >>> recipe = pretrain_recipe(name="nemotron_nano_12b_v2_pretrain", num_nodes=32)
             >>> print(recipe)
     """
 
@@ -262,13 +256,13 @@ def pretrain_recipe(
 
 @run.cli.factory(target=finetune, name=NAME)
 def finetune_recipe(
-    resume_path: str = "nemotron_nano_9b_v2-pretrain",
+    resume_path: str = "nemotron_nano_12b_v2-pretrain",
     vocab_file: str = None,
     dir: Optional[str] = None,
     name: str = "default",
     num_nodes: int = 8,
     num_gpus_per_node: int = 8,
-    tensor_parallelism: int = 2,
+    tensor_parallelism: int = 4,
     sequence_parallelism: bool = True,
     pipeline_parallelism: int = 1,
     seq_length: int = 8192,
@@ -284,7 +278,7 @@ def finetune_recipe(
     peft_scheme: Optional[str] = 'none',
 ) -> run.Partial:
     """
-    Create a fine-tuning recipe for NemotronNano9Bv2 model.
+    Create a fine-tuning recipe for NemotronNano12Bv2 model.
     This function sets up a complete configuration for fine-tuning, including
     model, trainer, data, logging, optimization, and resumption settings.
     Args:
@@ -299,16 +293,16 @@ def finetune_recipe(
         run.Partial: Partial configuration for fine-tuning.
     Examples:
         CLI usage:
-            $ nemo llm finetune --factory nemotron_nano_9b_v2
+            $ nemo llm finetune --factory nemotron_nano_12b_v2
         Python API usage:
-            >>> recipe = finetune_recipe(name="nemotron_nano_9b_v2_finetune", num_nodes=32)
+            >>> recipe = finetune_recipe(name="nemotron_nano_12b_v2_finetune", num_nodes=32)
             >>> print(recipe)
     Note:
         This recipe uses the SQuAD dataset for fine-tuning.
         For converting an SSM pytorch checkpoint, use the following line of python code:
-        llm.MambaModel(llm.NemotronNano9Bv2(), tokenizer=tokenizer(vocab_file=vocab_file)).import_ckpt(
+        llm.MambaModel(llm.NemotronNano12Bv2(), tokenizer=tokenizer(vocab_file=vocab_file)).import_ckpt(
             path="pytorch://ABSOLUTE_PATH_TO_CKPT/your_pytorch_state_dict_file",
-            model_config=llm.NemotronNano9Bv2())
+            model_config=llm.NemotronNano12Bv2())
         This line will cache the nemo checkpoint to following directory:
             /root/.cache/nemo/models/your_pytorch_state_dict_file
     """

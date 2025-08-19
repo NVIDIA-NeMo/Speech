@@ -603,12 +603,6 @@ def deploy(
     enable_flash_decode: bool = True,
     legacy_ckpt: bool = False,
 ):
-    warnings.warn(
-        "The 'deploy' function is deprecated and will be removed in NeMo FW 25.09 container release. "
-        "For evaluation functionality, please use the new Eval repository: https://github.com/NVIDIA-NeMo/Eval",
-        DeprecationWarning,
-        stacklevel=2,
-    )
     """
     Deploys nemo model on a PyTriton server either "in-framework" or by converting to trtllm depending on the backend.
     This deploy method is intended to be used for evaluation.
@@ -656,6 +650,12 @@ def deploy(
             the trtllm backend).
         legacy_ckpt (bool): Indicates whether the checkpoint is in the legacy format. Default: False
     """
+    warnings.warn(
+        "The 'deploy' function is deprecated and will be removed in NeMo FW 25.09 container release. "
+        "For evaluation functionality, please use the new Eval repository: https://github.com/NVIDIA-NeMo/Eval",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     import os
 
     import uvicorn
@@ -797,12 +797,6 @@ def evaluate(
     eval_cfg: EvaluationConfig = EvaluationConfig(type="gsm8k"),
     adapter_cfg: AdapterConfig | None = None,
 ) -> dict:
-    warnings.warn(
-        "The 'evaluate' function is deprecated and will be removed in NeMo FW 25.09 container release. "
-        "For evaluation functionality, please use the new Eval repository: https://github.com/NVIDIA-NeMo/Eval",
-        DeprecationWarning,
-        stacklevel=2,
-    )
     """
     Evaluates nemo model deployed on PyTriton server using nvidia-lm-eval
 
@@ -813,6 +807,12 @@ def evaluate(
         adapter_cfg (AdapterConfig): configuration for adapters, the object between becnhmark and endpoint.
             Default: None.
     """
+    warnings.warn(
+        "The 'evaluate' function is deprecated and will be removed in NeMo FW 25.09 container release. "
+        "For evaluation functionality, please use the new Eval repository: https://github.com/NVIDIA-NeMo/Eval",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from nemo.collections.llm.evaluation.base import _legacy_evaluate, find_framework, wait_for_fastapi_server
 
     if target_cfg.api_endpoint.nemo_checkpoint_path is not None:
@@ -1184,7 +1184,7 @@ def generate(
     )
 
     if trainer.strategy.expert_model_parallel_size > 1:
-        gathered_results = results_on_this_dp_rank
+        gathered_results = [r.generated_text if text_only else r for r in results_on_this_dp_rank]
     else:
         gathered_results = [None] * dp_size
 

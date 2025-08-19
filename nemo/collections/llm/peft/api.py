@@ -124,6 +124,7 @@ def _load_base_model_and_lora(lora_checkpoint_path: Path) -> Tuple[pl.LightningM
     model.model_transform, model.__io__.model_transform = None, None
     model.config.bf16 = True
     model.config.params_dtype = torch.bfloat16
+    model.config.perform_initialization = False
     lora: Union[io.TrainerContext, LoRA] = io.load_context(
         ckpt_to_context_subdir(lora_checkpoint_path), "model.model_transform"
     )

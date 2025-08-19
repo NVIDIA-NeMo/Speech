@@ -17,7 +17,6 @@
 
 from argparse import ArgumentParser
 
-import torch
 import torch.distributed
 from megatron.core.inference.common_inference_params import CommonInferenceParams
 
@@ -81,6 +80,12 @@ def get_args():
         type=int,
         default=1,
         help="""Expert parallel size""",
+    )
+    parser.add_argument(
+        "--etp",
+        type=int,
+        default=None,
+        help="""Expert tensor parallel size""",
     )
     parser.add_argument(
         "--devices",
@@ -151,6 +156,11 @@ def get_args():
         action="store_true",
         help="""Load ckpt saved with TE < 1.14""",
     )
+    parser.add_argument(
+        "--disable_flash_decode",
+        action="store_true",
+        help="""Disable flash decode for models that do not support it""",
+    )
     args = parser.parse_args()
     return args
 
@@ -160,12 +170,15 @@ if __name__ == "__main__":
 
     if args.fp8:
         assert len(args.prompts) % 8 == 0, "Batch size should be divisible by 8 for FP8 inference"
+    if args.etp is None and args.ep > 1:
+        # Unless ETP is explicitly given, disable ETP if using EP. Otherwise ETP = TP.
+        args.etp = 1
 
     strategy = nl.MegatronStrategy(
         tensor_model_parallel_size=args.tp,
         pipeline_model_parallel_size=args.pp,
         expert_model_parallel_size=args.ep,
-        expert_tensor_parallel_size=1 if args.ep > 1 else None,
+        expert_tensor_parallel_size=args.etp,
         context_parallel_size=1,
         sequence_parallel=False,
         setup_optimizers=False,
@@ -206,10 +219,13 @@ if __name__ == "__main__":
             top_p=args.top_p,
             top_k=args.top_k,
             num_tokens_to_generate=args.num_tokens_to_generate,
+            return_log_probs=False,
+            top_n_logprobs=0,
         ),
         text_only=True,
         max_batch_size=args.max_batch_size,
         random_seed=args.random_seed,
+        enable_flash_decode=not args.disable_flash_decode,
     )
     if torch.distributed.get_rank() == 0:
         for i, r in enumerate(results):

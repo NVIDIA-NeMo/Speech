@@ -25,6 +25,8 @@ from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper 
 from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
 from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
 from megatron.core.optimizer import OptimizerConfig
+from megatron.core.transformer.dot_product_attention import DotProductAttention as MCoreDotProductAttention
+from megatron.core.transformer.enums import AttnBackend
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import get_batch_on_this_cp_rank
@@ -385,6 +387,10 @@ class GPTConfig(TransformerConfig, io.IOMixin):
             kwargs = {"mtp_block_spec": mtp_block_spec(self, vp_stage=vp_stage)}
         else:
             kwargs = {}
+
+        if self.attention_backend == AttnBackend.local:
+            if hasattr(transformer_layer_spec, 'submodules'):
+                transformer_layer_spec.submodules.self_attention.submodules.core_attention = MCoreDotProductAttention
         with model_init_device_context():
             model = MCoreGPTModel(
                 self,

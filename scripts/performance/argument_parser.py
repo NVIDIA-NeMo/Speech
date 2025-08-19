@@ -170,7 +170,7 @@ def parse_cli_args():
     )
     nemo_home_msg = [
         "Sets env var `NEMO_HOME` (on compute node using sbatch script)- directory where NeMo searches",
-        "for models and checkpoints. This saves a lot of time (especially for bigger models) if checkpoints already",
+        "for models and datasets. This saves a lot of time (especially for bigger models) if checkpoints already",
         f"exist here. Missing files will be downloaded here from HuggingFace. Defaults to {DEFAULT_NEMO_HOME}",
     ]
     parser.add_argument(

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 from nemo.collections.common.parts.perf_metrics_utils import LLM_VOCAB_SIZE_MAP
 
@@ -30,6 +30,7 @@ class FLOPSConfig:
     attention_heads: Optional[int] = None
     moe_router_topk: Optional[int] = None
     query_groups: Optional[int] = None
+    kv_channels: Optional[int] = None
     img_seq_len: Optional[int] = None
     img_h: Optional[int] = None
     img_w: Optional[int] = None
@@ -58,6 +59,9 @@ class FLOPSConfig:
     mamba_head_dim: Optional[int] = None
     mamba_num_groups: Optional[int] = None
     mamba_num_heads: Optional[int] = None
+    # SWA configs
+    window_attn_skip_freq: Optional[Union[int, List[int]]] = None
+    window_size: Optional[Tuple[int, int]] = (128, 0)
 
 
 def gpt3(config: FLOPSConfig):
@@ -510,3 +514,121 @@ def _hybrid_model_flops(config: FLOPSConfig):
 def nemotronh(config: FLOPSConfig):
     """Model FLOPs for NemotronH"""
     return _hybrid_model_flops(config)
+
+
+def attention_flops_calculator(
+    seqlen,
+    hidden_size,
+    num_attention_heads,
+    num_query_groups,
+    kv_channels: Optional[int] = None,
+    is_swa: bool = False,
+    swa_window_size: int = 128,
+):
+    """Calculate the flops for the attention part."""
+    kv_channels = kv_channels or (hidden_size // num_attention_heads)
+
+    linear_qkv = seqlen * hidden_size * (kv_channels * (num_attention_heads + num_query_groups * 2))
+
+    linear_proj = seqlen * hidden_size * (kv_channels * num_attention_heads)
+
+    if is_swa:
+        attention_mask_nz_elem = (
+            swa_window_size * (swa_window_size + 1) / 2 + (seqlen - swa_window_size) * swa_window_size
+        )
+        attention = num_attention_heads * (attention_mask_nz_elem * kv_channels) * 2
+    else:
+        bmm_k = kv_channels
+        bmm_b = num_attention_heads
+        attention_mask_nz_elem = seqlen * (seqlen + 1) / 2
+        attention = bmm_b * attention_mask_nz_elem * bmm_k * 2
+
+    return (linear_qkv + linear_proj + attention) * 6
+
+
+def moe_mlp_flops_calculator(
+    seqlen,
+    hidden_size,
+    moe_ffn_hidden_size,
+    moe_router_topk,
+    gated_linear_unit: bool = True,
+):
+    """Calculate the flops for the MLP"""
+    total_num_tokens = seqlen * moe_router_topk
+    linear_fc1 = total_num_tokens * hidden_size * moe_ffn_hidden_size * (2 if gated_linear_unit else 1)
+    linear_fc2 = total_num_tokens * moe_ffn_hidden_size * hidden_size
+    return (linear_fc1 + linear_fc2) * 6
+
+
+def loss_flops_calculator(
+    seqlen,
+    hidden_size,
+    vocab_size,
+):
+    """Calculate the flops for the loss"""
+    return (seqlen * hidden_size * vocab_size) * 6
+
+
+def gpt_oss_flops_calculator(
+    gbs,
+    num_layers,
+    seqlen,
+    hidden_size,
+    num_attention_heads,
+    num_query_groups,
+    moe_ffn_hidden_size,
+    moe_router_topk,
+    vocab_size,
+    kv_channels: Optional[int] = None,
+    swa_window_size: int = 128,
+    window_attn_skip_freq: Optional[int] = 2,
+):
+    """Calculate the flops for the GPT-OSS model"""
+    flops = 0
+    for i in range(num_layers):
+        if i % window_attn_skip_freq == 0:
+            flops += attention_flops_calculator(
+                seqlen,
+                hidden_size,
+                num_attention_heads,
+                num_query_groups,
+                kv_channels,
+                is_swa=False,
+            )
+        else:
+            flops += attention_flops_calculator(
+                seqlen,
+                hidden_size,
+                num_attention_heads,
+                num_query_groups,
+                kv_channels,
+                is_swa=True,
+                swa_window_size=swa_window_size,
+            )
+        flops += moe_mlp_flops_calculator(
+            seqlen,
+            hidden_size,
+            moe_ffn_hidden_size,
+            moe_router_topk,
+        )
+    flops += loss_flops_calculator(seqlen, hidden_size, vocab_size)
+    flops *= gbs
+    return flops
+
+
+def gpt_oss(config: FLOPSConfig):
+    """Model FLOPs for GPT-OSS"""
+    return gpt_oss_flops_calculator(
+        gbs=config.gbs,
+        num_layers=config.layers,
+        seqlen=config.enc_seq_len,
+        hidden_size=config.hs,
+        num_attention_heads=config.attention_heads,
+        num_query_groups=config.query_groups,
+        moe_ffn_hidden_size=config.moe_ffn_hidden_size,
+        moe_router_topk=config.moe_router_topk,
+        vocab_size=config.vocab_size,
+        kv_channels=config.kv_channels,
+        swa_window_size=config.window_size[0] if config.window_size is not None else 128,
+        window_attn_skip_freq=config.window_attn_skip_freq,
+    )

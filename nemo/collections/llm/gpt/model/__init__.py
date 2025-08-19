@@ -59,6 +59,7 @@ from nemo.collections.llm.gpt.model.gemma3 import (
     Gemma3Config27B,
     Gemma3Model,
 )
+from nemo.collections.llm.gpt.model.gpt_oss import GPTOSSConfig, GPTOSSConfig20B, GPTOSSConfig120B, GPTOSSModel
 from nemo.collections.llm.gpt.model.hf_auto_model_for_causal_lm import HFAutoModelForCausalLM
 from nemo.collections.llm.gpt.model.hf_llama_embedding import get_llama_bidirectional_hf_model
 from nemo.collections.llm.gpt.model.hyena import (
@@ -237,6 +238,10 @@ __all__ = [
     "LlamaEmbeddingModel",
     "Llama32EmbeddingConfig1B",
     "Llama32EmbeddingConfig3B",
+    "GPTOSSConfig",
+    "GPTOSSConfig120B",
+    "GPTOSSConfig20B",
+    "GPTOSSModel",
     "Phi3Config",
     "Phi3ConfigMini",
     "Phi3Model",

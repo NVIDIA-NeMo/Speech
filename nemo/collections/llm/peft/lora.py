@@ -519,13 +519,14 @@ class LoRAMerge(PEFT):
         if not isinstance(m, LoRALinear):
             return m
         logging.info(f'merging {(prefix if prefix else "") + "." + (name if name else "")}')
-        base_weight = m.to_wrap.weight
-        lora_weight = (
-            m.adapter.alpha
-            / m.adapter.dim
-            * m.adapter.linear_out.weight.to(base_weight.device)
-            @ m.adapter.linear_in.weight.to(base_weight.device)
-        )
-        merged_weight = base_weight + lora_weight
-        m.to_wrap.weight.data = merged_weight
+        lora_weight = m.adapter.alpha / m.adapter.dim * m.adapter.linear_out.weight @ m.adapter.linear_in.weight
+        if hasattr(m.to_wrap, "weight"):
+            base_weight = m.to_wrap.weight
+            merged_weight = base_weight + lora_weight.to(base_weight.device)
+            m.to_wrap.weight.data = merged_weight
+        else:  # TE Grouped Linear
+            for i in range(m.to_wrap.num_gemms):
+                base_weight = getattr(m.to_wrap, f"weight{i}")
+                merged_weight = base_weight + lora_weight.to(base_weight.device)
+                getattr(m.to_wrap, f"weight{i}").data = merged_weight
         return m

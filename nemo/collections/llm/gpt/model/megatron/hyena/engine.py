@@ -200,4 +200,8 @@ def prefill_via_modal_fft(*, x1v, L, poles, t, X_s):
     state_s = (poles.to(torch.float32) * t).exp()
     state_S = torch.fft.fft(state_s, n=fft_size).repeat(bs, 1, 1, 1)  # B, D, state_dim, 2 * L
     state = torch.fft.ifft(X_s[..., None, :] * state_S, n=fft_size)
-    return state.real[..., L - 1].to(dtype=torch.float32)
+    # Do not try to fix `UserWarning: Casting complex values to real discards
+    # the imaginary part` by inserting state.real conversion anywhere before
+    # float32 conversion. It will increase memory usage. Instead, let fp32
+    # conversion efficiently drop the complex part for us.
+    return state[..., L - 1].to(dtype=torch.float32)

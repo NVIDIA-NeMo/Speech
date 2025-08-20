@@ -144,6 +144,149 @@ class FaultTolerancePlugin(run.Plugin):
 
         _merge_callbacks(task, callbacks=callbacks)
 
+@dataclass(kw_only=True)
+class IsolationTestPlugin(run.Plugin):
+    """
+    A plugin for setting up performance optimized environments.
+
+    Attributes:
+        enable_layernorm_sm_margin (bool): Set SM margin for TransformerEngine's Layernorm, so
+            in order to not block DP level communication overlap.
+        layernorm_sm_margin (int): The SM margin for TransformerEngine Layernorm.
+        enable_vboost (bool): Whether to steer more power towards tensor cores via
+            `sudo nvidia-smi boost-slider --vboost 1`. May not work on all systems.
+    """
+
+    enable_layernorm_sm_margin: bool = True
+    layernorm_sm_margin: int = 16
+    enable_vboost: bool = False
+    nccl_pp_comm_chunksize: Optional[int] = None
+    gpu_sm100_or_newer: bool = False
+
+    def update_number_of_nodes_for_workload_and_noise(self, executor: run.Executor):
+        "Update the number of nodes for the workload and noise"
+        num_of_workload_nodes = executor.nodes
+        num_of_noise_nodes = 2
+        total_num_of_nodes = num_of_workload_nodes + num_of_noise_nodes
+
+        # set total number of nodes for sbatch
+        executor.nodes = total_num_of_nodes
+
+        # initialize env vars for workload and noise
+
+        executor.env_vars["NUM_OF_WORKLOAD_NODES"] = str(num_of_workload_nodes)
+        executor.env_vars["NUM_OF_NOISE_NODES"] = str(num_of_noise_nodes)
+        executor.env_vars["NOISE_BUILD_TIME"] = str(120)
+
+    def generate_noise_initialization_code(self, job_dir):
+        "Generate the noise preparation and execution code"
+
+        current_file_path = os.path.abspath(__file__)
+        current_directory = os.path.dirname(current_file_path)
+        noise_script_dir = os.path.join(current_directory, "scripts", "ib_write_bw")
+        split_nodes_dir = os.path.join(current_directory, "scripts", "split_nodes")
+
+        noise_cmd = f'''
+
+# Step 1: Save temporary input files
+scontrol show hostnames $SLURM_NODELIST > {job_dir}/allocated_nodes.txt
+scontrol show topo > {job_dir}/topology.txt
+
+# Step 2: Call external Python script
+python {split_nodes_dir}/split_nodes_by_leaf.py --allocated-nodes-file {job_dir}/allocated_nodes.txt --topology-file {job_dir}/topology.txt --strategy compact --workload-a-nodes ${{NUM_OF_WORKLOAD_NODES}} --workload-b-nodes ${{NUM_OF_NOISE_NODES}} --output-file {job_dir}/split-nodes.txt
+
+readarray -t SPLIT_NODES_OUTPUT < <(cat {job_dir}/split-nodes.txt)
+WORKLOAD_NODES=${{SPLIT_NODES_OUTPUT[0]}}
+NOISE_NODES=${{SPLIT_NODES_OUTPUT[1]}}
+
+echo "WORKLOAD_NODES: ${{WORKLOAD_NODES}}"
+echo "NOISE_NODES: ${{NOISE_NODES}}"
+
+IFS=',' read -ra NUM_ALLOCATED_WORKLOAD_NODES <<< "$WORKLOAD_NODES"
+IFS=',' read -ra NUM_ALLOCATED_NOISE_NODES <<< "$NOISE_NODES"
+
+# This is here to debug the script and make sure the number of nodes is correct
+NUM_ALLOCATED_WORKLOAD_NODES=${{#NUM_ALLOCATED_WORKLOAD_NODES[@]}}
+NUM_ALLOCATED_NOISE_NODES=${{#NUM_ALLOCATED_NOISE_NODES[@]}}
+
+# Verify that the number of LLM nodes matches expected value
+if [ "${{NUM_ALLOCATED_WORKLOAD_NODES}}" -ne ${{NUM_OF_WORKLOAD_NODES}} ]; then
+    echo "Error: Expected ${{NUM_OF_WORKLOAD_NODES}} for workload A, but got ${{NUM_ALLOCATED_WORKLOAD_NODES}}"
+    exit 1
+fi
+
+# Verify that the number of noisy neighbor nodes matches expected value
+if [ "${{NUM_ALLOCATED_NOISE_NODES}}" -ne ${{NUM_OF_NOISE_NODES}} ]; then
+    echo "Error: Expected ${{NUM_OF_NOISE_NODES}} for workload B, but got ${{NUM_ALLOCATED_NOISE_NODES}}"
+    exit 1
+fi
+
+
+# Step 3: Run the noise job
+export NODES_STR="${{NOISE_NODES[*]}}"
+mkdir -p {job_dir}/noise
+echo "Launching noise in the background"
+srun --ntasks-per-node=8 \
+--output={job_dir}/noise/out.log \
+--error={job_dir}/noise/err.log \
+--label \
+--no-kill \
+--mpi=pmix \
+--nodes=${{NUM_OF_NOISE_NODES}} \
+--nodelist=${{NOISE_NODES}} \
+--ntasks-per-node=32 \
+--container-image=/lustre/fsw/portfolios/hw/users/ayablonka/transfer/containers/ib_perftest.sqsh \
+--container-mounts {job_dir}/noise:/ib_write_bw/workdir,{noise_script_dir}:/ib_write_bw/scripts \
+--container-workdir /ib_write_bw/workdir \
+bash -c '/ib_write_bw/scripts/run_bisection_ib_write_bw.sh' &
+
+# wait for the noise to build up
+echo "Waiting ${{NOISE_BUILD_TIME}} seconds for the noise to build up"
+sleep ${{NOISE_BUILD_TIME}}
+
+# Step 4: run the workload with the noise
+echo "Launching workload with noise"
+
+        '''
+        return noise_cmd
+
+    def get_num_of_required_switches(self, nodes, job_dir):
+        "Get number of switches required for the job"
+        return 3
+
+    def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+        """Enable the performance environment settings"""
+
+        # Improve perf by steering power to tensor cores, may not work on all systems
+        if isinstance(executor, run.SlurmExecutor):
+            if not executor.additional_parameters:
+                executor.additional_parameters={}
+            if not executor.srun_args:
+                executor.srun_args=[]
+            if not executor.env_vars:
+                executor.env_vars={}
+
+            print("executor.job_dir", executor.job_dir)
+            print("executor.tunnel.job_dir", executor.tunnel.job_dir)
+            # add node numbers to srun args and requirements for workload and noise
+            self.update_number_of_nodes_for_workload_and_noise(executor)
+
+            # add number of switches to sbatch flags
+            num_of_switches = self.get_num_of_required_switches(executor.nodes, executor.tunnel.job_dir)
+            executor.additional_parameters["switches"] = num_of_switches
+
+            # add number of nodes and nodelist to srun args
+            executor.srun_args.insert(0, "--nodelist=${WORKLOAD_NODES}")
+            executor.srun_args.insert(0, "--nodes=${NUM_OF_WORKLOAD_NODES}")
+
+            # add noise command
+            noise_cmd = self.generate_noise_initialization_code(executor.tunnel.job_dir)
+            executor.setup_lines = (
+                executor.setup_lines + noise_cmd
+                if (executor.setup_lines and len(executor.setup_lines) > 0)
+                else noise_cmd
+            )
+
 
 @dataclass(kw_only=True)
 class NsysPlugin(run.Plugin):

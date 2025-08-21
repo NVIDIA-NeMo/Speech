@@ -449,6 +449,11 @@ def distill(
     )
     model.__io__ = _student_model.__io__
 
+    if resume is None:
+        resume = AutoResume()
+    if resume.restore_config is None:
+        resume.restore_config = nl.RestoreConfig(path=student_model_path)
+
     return train(
         model=model,
         data=data,

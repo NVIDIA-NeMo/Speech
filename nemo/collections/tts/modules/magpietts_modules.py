@@ -108,7 +108,10 @@ class SpecialAudioToken(Enum):
         Returns a list of token indices that should not be sampled or returned to user.
         Args:
             base_codebook_size (int): The size of the codec codebook (which is the first part of the embedding table).
-            forbid_audio_eos (bool): Whether AUDIO_EOS should be forbidden. Default: False (i.e. allowed).
+            forbid_audio_eos (bool): Whether to forbid the AUDIO_EOS token to be sampled.
+                                    * Set to `False` when internally generating tokens in MagpieTTS sampling
+                                    * Set to `True` when checking validity of tokens to be returned to user
+                                      or given to the codec for decoding
         """
         all_special_tokens = list(SpecialAudioToken)
         if not forbid_audio_eos:

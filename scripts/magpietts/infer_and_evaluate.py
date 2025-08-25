@@ -45,7 +45,7 @@ EVALUATION_DATASETS = (
 
 
 def setup_argument_parser():
-    """Setup and return the argument parser for the streaming inference script."""
+    """Setup and return the argument parser for the streaming inference script. """
     parser = argparse.ArgumentParser(description='Experiment Evaluation')
     parser.add_argument('--hparams_files', type=str, default=None)
     parser.add_argument('--hparams_file_from_wandb', action='store_true')

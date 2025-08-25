@@ -2161,17 +2161,29 @@ class MagpieTTSModel(ModelPT):
 
         return _attn_prior, unfinished_texts, finished_texts_counter
 
-    def construct_streaming_inference_prior(self, prior_epsilon, cross_attention_scores,
-                                  text_lens, text_time_step_attended, attended_timestep_counter,
-                                  unfinished_texts, finished_texts_counter, end_indices, 
-                                  lookahead_window_size, batch_size, end_of_text, left_offset=0, use_exponential=False):
-        '''
+    def construct_streaming_inference_prior(
+        self,
+        prior_epsilon,
+        cross_attention_scores,
+        text_lens,
+        text_time_step_attended,
+        attended_timestep_counter,
+        unfinished_texts,
+        finished_texts_counter,
+        end_indices,
+        lookahead_window_size,
+        batch_size,
+        end_of_text,
+        left_offset=0,
+        use_exponential=False,
+    ):
+        """
         Does the same thing as construct_inference_prior, but for streaming inference.
         The main difference is that it uses a left_offset to account for the fact that the text is not provided in a single chunk.
         It also uses a use_exponential flag to use an exponential distribution for the prior.
         It also uses a end_of_text flag to indicate whether the text has ended.
         It also uses a left_offset to account for the fact that the text is not provided in a single chunk.
-        '''
+        """
         # Attn prior for the next timestep
         _attn_prior = torch.zeros(cross_attention_scores.shape[0], 1, cross_attention_scores.shape[1]) + prior_epsilon
         _attn_prior = _attn_prior.to(cross_attention_scores.device)

@@ -83,3 +83,43 @@ class VLMTextGenerationController(SimpleTextGenerationController):
             prompts_tokens=prompts_tokens,
             image_dict=images,
         )
+
+
+class QwenVLTextGenerationController(VLMTextGenerationController):
+    """Text generation controller for QwenVL model"""
+
+    def __init__(self, inference_wrapped_model, tokenizer, image_processor, processor):
+        super().__init__(inference_wrapped_model, tokenizer, image_processor)
+
+        class QwenVLTokenizer(TokenizerWrapper):
+            # pylint: disable=C0115,C0116
+            def detokenize(self, tokens):
+                new_tokens = []
+                for token in tokens:
+                    if token == 151652:
+                        new_tokens.append(token)
+                        new_tokens.append(151655)
+                    elif token != -200:
+                        new_tokens.append(token)
+                return self._tokenizer.decode(new_tokens, skip_special_tokens=False)
+
+        self.tokenizer = QwenVLTokenizer(tokenizer)
+        self.processor = processor
+
+    def tokenize_prompt(self, prompt: str, image):
+        """Tokenize prompt and process image following the VLM controller API"""
+        inputs = self.processor(
+            text=[prompt],
+            images=image,
+            padding=True,
+            return_tensors="pt",
+        )
+
+        tokens = inputs['input_ids'][0]
+        tokens[tokens == 151655] = -200
+
+        image_dict = {
+            'pixel_values': inputs['pixel_values'],
+            'image_grid_thw': inputs['image_grid_thw'],
+        }
+        return tokens.tolist(), image_dict

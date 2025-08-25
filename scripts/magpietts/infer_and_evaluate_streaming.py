@@ -19,52 +19,65 @@ import os
 import random
 import shutil
 import time
-from typing import List
-from pathlib import Path
 from functools import partial
+from pathlib import Path
+from typing import List
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scipy.stats as stats
 import scripts.magpietts.evalset_config as evalset_config
 import scripts.magpietts.evaluate_generated_audio as evaluate_generated_audio
-from scripts.magpietts.infer_and_evaluate import setup_argument_parser, update_config, update_ckpt, delete_old_generated_files, compute_mean_and_confidence_interval, create_violin_plots, create_combined_violin_plots
-import numpy as np
-import scipy.stats as stats
 import soundfile as sf
 import torch
 from omegaconf.omegaconf import OmegaConf, open_dict
 from PIL import Image
-import matplotlib.pyplot as plt
-import pandas as pd
+from scripts.magpietts.infer_and_evaluate import (
+    compute_mean_and_confidence_interval,
+    create_combined_violin_plots,
+    create_violin_plots,
+    delete_old_generated_files,
+    setup_argument_parser,
+    update_ckpt,
+    update_config,
+)
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
-from nemo.collections.tts.models import MagpieTTSModel
-from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
+from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
+from nemo.collections.tts.models import MagpieTTSModel
 
 # EVALUATION_DATASETS is the full list of datasets for evaluation of a new model.
-EVALUATION_DATASETS = "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,vctk,libritts_seen,libritts_test_clean"
+EVALUATION_DATASETS = (
+    "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,vctk,libritts_seen,libritts_test_clean"
+)
 
-def chunk_and_tokenize_text(text, text_chunk_size, num_chunk_per_window, tokenizer_name, text_tokenizer, eos_token_id, start_of_generation=True):
-    split_text = text.split() # []
+
+def chunk_and_tokenize_text(
+    text, text_chunk_size, num_chunk_per_window, tokenizer_name, text_tokenizer, eos_token_id, start_of_generation=True
+):
+    split_text = text.split()  # []
     chunked_tokens = []
     chunked_tokens_len = []
     chunked_text = []
-    start = num_chunk_per_window*text_chunk_size if start_of_generation else text_chunk_size
+    start = num_chunk_per_window * text_chunk_size if start_of_generation else text_chunk_size
     current_text = " ".join(split_text[:start])
 
     chunked_text.append(current_text)
     tokens = text_tokenizer.encode(text=current_text, tokenizer_name=tokenizer_name)
     tokens = torch.tensor(tokens, dtype=torch.int32)
-    
+
     tokens_len = tokens.shape[0]
     chunked_tokens.append(tokens)
     chunked_tokens_len.append(tokens_len)
-    
+
     for i in range(start, len(split_text), text_chunk_size):
-        current_text = " ".join(split_text[i:min(i+text_chunk_size, len(split_text))])
+        current_text = " ".join(split_text[i : min(i + text_chunk_size, len(split_text))])
         chunked_text.append(current_text)
         tokens = text_tokenizer.encode(text=current_text, tokenizer_name=tokenizer_name)
-        if i+text_chunk_size >= len(split_text):
+        if i + text_chunk_size >= len(split_text):
             tokens = tokens + [eos_token_id]
         tokens = torch.tensor(tokens, dtype=torch.int32)
         tokens_len = tokens.shape[0]
@@ -75,38 +88,38 @@ def chunk_and_tokenize_text(text, text_chunk_size, num_chunk_per_window, tokeniz
 
 
 def run_inference_streaming(
-        hparams_file,
-        checkpoint_file,
-        nemo_file,
-        datasets,
-        out_dir,
-        temperature,
-        topk,
-        codecmodel_path,
-        use_cfg,
-        cfg_scale,
-        batch_size,
-        sv_model,
-        asr_model_name,
-        num_repeats=1,
-        apply_attention_prior=False,
-        attention_prior_epsilon=1e-3,
-        attention_prior_lookahead_window=10,
-        estimate_alignment_from_layers=None,
-        apply_prior_to_layers=None,
-        start_prior_after_n_audio_steps=10,
-        confidence_level=0.95,
-        use_exponential_weight=False,
-        use_local_transformer=False,
-        maskgit_n_steps=3,
-        legacy_codebooks=False,
-        clean_up_disk=False,
-        hparams_file_from_wandb=False,
-        log_exp_name=False,
-        compute_fcd=False,
-        violin_plot_metrics=['cer', 'pred_context_ssim'],
-        tokenizer_name=None,
-    ):
+    hparams_file,
+    checkpoint_file,
+    nemo_file,
+    datasets,
+    out_dir,
+    temperature,
+    topk,
+    codecmodel_path,
+    use_cfg,
+    cfg_scale,
+    batch_size,
+    sv_model,
+    asr_model_name,
+    num_repeats=1,
+    apply_attention_prior=False,
+    attention_prior_epsilon=1e-3,
+    attention_prior_lookahead_window=10,
+    estimate_alignment_from_layers=None,
+    apply_prior_to_layers=None,
+    start_prior_after_n_audio_steps=10,
+    confidence_level=0.95,
+    use_exponential_weight=False,
+    use_local_transformer=False,
+    maskgit_n_steps=3,
+    legacy_codebooks=False,
+    clean_up_disk=False,
+    hparams_file_from_wandb=False,
+    log_exp_name=False,
+    compute_fcd=False,
+    violin_plot_metrics=['cer', 'pred_context_ssim'],
+    tokenizer_name=None,
+):
     num_chunk_per_window = 2
     num_audio_tokens_per_text = 1
     true_window_size = 200
@@ -151,7 +164,9 @@ def run_inference_streaming(
     model.cuda()
     model.eval()
 
-    text_tokenizer, text_conditioning_tokenizer = setup_tokenizers(model.cfg.text_tokenizers, model.cfg.use_text_conditioning_encoder, mode='test')
+    text_tokenizer, text_conditioning_tokenizer = setup_tokenizers(
+        model.cfg.text_tokenizers, model.cfg.use_text_conditioning_encoder, mode='test'
+    )
 
     if log_exp_name:
         # the experiment name is the name of the directory two above the checkpoint path,
@@ -171,11 +186,15 @@ def run_inference_streaming(
         attention_prior_epsilon,
         attention_prior_lookahead_window,
         start_prior_after_n_audio_steps,
-        "".join([str(l) for l in estimate_alignment_from_layers]) if estimate_alignment_from_layers is not None else "None",
+        (
+            "".join([str(l) for l in estimate_alignment_from_layers])
+            if estimate_alignment_from_layers is not None
+            else "None"
+        ),
         "".join([str(l) for l in apply_prior_to_layers]) if apply_prior_to_layers is not None else "None",
         use_local_transformer,
         maskgit_n_steps,
-        sv_model
+        sv_model,
     )
 
     dataset_meta_info = evalset_config.dataset_meta_info
@@ -213,15 +232,19 @@ def run_inference_streaming(
 
         context_duration_min = model.cfg.get('context_duration_min', 5.0)
         context_duration_max = model.cfg.get('context_duration_max', 5.0)
-        codec_model_downsample_factor = model_cfg.codec_model_downsample_factor if "codec_model_downsample_factor" in model_cfg else model._codec_model.samples_per_frame
+        codec_model_downsample_factor = (
+            model_cfg.codec_model_downsample_factor
+            if "codec_model_downsample_factor" in model_cfg
+            else model._codec_model.samples_per_frame
+        )
         sample_rate = model_cfg.sample_rate if "sample_rate" in model_cfg else model.sample_rate
         if context_duration_min < 5.0 and context_duration_max > 5.0:
             context_duration_min = 5.0
             context_duration_max = 5.0
-        context_audio_bos_id=model.context_audio_bos_id
-        context_audio_eos_id=model.context_audio_eos_id
-        audio_bos_id=model.audio_bos_id
-        audio_eos_id=model.audio_eos_id
+        context_audio_bos_id = model.context_audio_bos_id
+        context_audio_eos_id = model.context_audio_eos_id
+        audio_bos_id = model.audio_bos_id
+        audio_eos_id = model.audio_eos_id
 
         batch = {}
         metrics_n_repeated = []
@@ -235,24 +258,26 @@ def run_inference_streaming(
                 text = entry["text"]
 
             chunked_tokens, chunked_tokens_len, chunked_text_list = chunk_and_tokenize_text(
-                text, 
-                text_chunk_size, 
-                num_chunk_per_window, 
-                "english_phoneme" if tokenizer_name is None else tokenizer_name, 
-                text_tokenizer, 
-                model.eos_id
-            ) # List, List
+                text,
+                text_chunk_size,
+                num_chunk_per_window,
+                "english_phoneme" if tokenizer_name is None else tokenizer_name,
+                text_tokenizer,
+                model.eos_id,
+            )  # List, List
 
-            assert 'context_audio_codes_path' in entry, f"Context audio codes path not found in manifest entry: {entry}"
+            assert (
+                'context_audio_codes_path' in entry
+            ), f"Context audio codes path not found in manifest entry: {entry}"
 
             context_audio_codes_path = entry['context_audio_codes_path']
-            context_audio_codes = torch.load(context_audio_codes_path).long() # (8, T)
+            context_audio_codes = torch.load(context_audio_codes_path).long()  # (8, T)
             # Sample random duration between self.context_duration_min and self.context_duration_max
             _context_duration_to_slice = random.uniform(context_duration_min, context_duration_max)
-            _num_frames_to_slice = int(_context_duration_to_slice * sample_rate / codec_model_downsample_factor) # ???
+            _num_frames_to_slice = int(_context_duration_to_slice * sample_rate / codec_model_downsample_factor)  # ???
             if _num_frames_to_slice < context_audio_codes.shape[1]:
                 start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
-                context_audio_codes = context_audio_codes[:, start_idx:start_idx+_num_frames_to_slice]
+                context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
             else:
                 # Repeaet the audio if it is shorter than the desired duration
                 _num_repeats = int(np.ceil(_num_frames_to_slice / context_audio_codes.shape[1]))
@@ -260,8 +285,12 @@ def run_inference_streaming(
                 context_audio_codes_repeated = context_audio_codes.repeat(1, _num_repeats)
                 context_audio_codes = context_audio_codes_repeated[:, :_num_frames_to_slice]
 
-            context_bos_tensor = torch.full((context_audio_codes.shape[0], 1), context_audio_bos_id, dtype=context_audio_codes.dtype)
-            context_eos_tensor = torch.full((context_audio_codes.shape[0], 1), context_audio_eos_id, dtype=context_audio_codes.dtype)
+            context_bos_tensor = torch.full(
+                (context_audio_codes.shape[0], 1), context_audio_bos_id, dtype=context_audio_codes.dtype
+            )
+            context_eos_tensor = torch.full(
+                (context_audio_codes.shape[0], 1), context_audio_eos_id, dtype=context_audio_codes.dtype
+            )
             context_audio_codes = torch.cat([context_bos_tensor, context_audio_codes, context_eos_tensor], dim=1)
             context_audio_codes_len = torch.tensor([context_audio_codes.shape[1]])
             context_audio_codes = context_audio_codes.unsqueeze(0)
@@ -276,6 +305,7 @@ def run_inference_streaming(
             model.decoder.reset_cache(use_cache=False)
             torch.cuda.empty_cache()
             import time
+
             st = time.time()
 
             for token_idx, inputs in enumerate(zip(chunked_tokens, chunked_tokens_len)):
@@ -285,26 +315,28 @@ def run_inference_streaming(
                 batch['text'] = current_tokens.cuda()
                 batch['text_lens'] = torch.tensor([current_tokens_lens]).cuda()
                 input_len += current_tokens_lens
-                
+
                 is_end_of_text = token_idx == (len(chunked_tokens) - 1)
                 beginning_of_text = token_idx == 0
-                current_predicted_codes, current_predicted_codes_lens, cross_attention_maps, _ = model.generate_speech_per_chunk_of_text(
-                    batch, 
-                    is_end_of_text, 
-                    beginning_of_text,
-                    max_decoder_steps=50000, 
-                    temperature=temperature, 
-                    topk=topk, 
-                    use_cfg=use_cfg,
-                    cfg_scale=cfg_scale, 
-                    return_cross_attn_probs=True, 
-                    apply_attention_prior=apply_attention_prior,
-                    prior_epsilon=attention_prior_epsilon,
-                    lookahead_window_size=attention_prior_lookahead_window,
-                    estimate_alignment_from_layers=estimate_alignment_from_layers,
-                    apply_prior_to_layers=apply_prior_to_layers,
-                    start_prior_after_n_audio_steps=start_prior_after_n_audio_steps,
-                    use_exponential_weight=use_exponential_weight,
+                current_predicted_codes, current_predicted_codes_lens, cross_attention_maps, _ = (
+                    model.generate_speech_per_chunk_of_text(
+                        batch,
+                        is_end_of_text,
+                        beginning_of_text,
+                        max_decoder_steps=50000,
+                        temperature=temperature,
+                        topk=topk,
+                        use_cfg=use_cfg,
+                        cfg_scale=cfg_scale,
+                        return_cross_attn_probs=True,
+                        apply_attention_prior=apply_attention_prior,
+                        prior_epsilon=attention_prior_epsilon,
+                        lookahead_window_size=attention_prior_lookahead_window,
+                        estimate_alignment_from_layers=estimate_alignment_from_layers,
+                        apply_prior_to_layers=apply_prior_to_layers,
+                        start_prior_after_n_audio_steps=start_prior_after_n_audio_steps,
+                        use_exponential_weight=use_exponential_weight,
+                    )
                 )
                 predicted_codes.append(current_predicted_codes)
                 predicted_codes_lens += current_predicted_codes_lens[0]
@@ -312,7 +344,7 @@ def run_inference_streaming(
             et = time.time()
             print(f"Magpie Time taken for inference: {et - st} seconds")
             torch.cuda.empty_cache()
-            
+
             predicted_codes = torch.cat(predicted_codes, dim=2).cuda()
             predicted_codes_lens = torch.tensor([predicted_codes_lens]).long().cuda()
             predicted_audio, predicted_audio_lens = model.codes_to_audio(predicted_codes, predicted_codes_lens)
@@ -329,11 +361,11 @@ def run_inference_streaming(
             language=language,
             sv_model_type=sv_model,
             asr_model_name=asr_model_name,
-            codecmodel_path=codecmodel_path if compute_fcd else None
+            codecmodel_path=codecmodel_path if compute_fcd else None,
         )
         metrics_n_repeated.append(metrics)
         dataset_filewise_metrics_all_repeats.extend(filewise_metrics)  # Collect all filewise metrics for combined plot
-        
+
         with open(os.path.join(eval_dir, f"{dataset}_metrics_0.json"), "w") as f:
             json.dump(metrics, f, indent=4)
 
@@ -351,18 +383,29 @@ def run_inference_streaming(
 
         output_png_file = Path(eval_dir) / f"{dataset}_violin_0.png"
         create_violin_plots(filewise_metrics, violin_plot_metrics, output_png_file)
-            
+
         # Store filewise metrics for this dataset for combined plotting
         all_datasets_filewise_metrics[dataset] = dataset_filewise_metrics_all_repeats
 
-        metric_keys = ['cer_filewise_avg', 'wer_filewise_avg', 'cer_cumulative', 'wer_cumulative',
-                       'ssim_pred_gt_avg', 'ssim_pred_context_avg', 'ssim_gt_context_avg',
-                       'ssim_pred_gt_avg_alternate', 'ssim_pred_context_avg_alternate', 'ssim_gt_context_avg_alternate',
-                       'cer_gt_audio_cumulative', 'wer_gt_audio_cumulative'
-                       ]
+        metric_keys = [
+            'cer_filewise_avg',
+            'wer_filewise_avg',
+            'cer_cumulative',
+            'wer_cumulative',
+            'ssim_pred_gt_avg',
+            'ssim_pred_context_avg',
+            'ssim_gt_context_avg',
+            'ssim_pred_gt_avg_alternate',
+            'ssim_pred_context_avg_alternate',
+            'ssim_gt_context_avg_alternate',
+            'cer_gt_audio_cumulative',
+            'wer_gt_audio_cumulative',
+        ]
         if compute_fcd:
             metric_keys.append('frechet_codec_distance')
-        metrics_mean_ci = compute_mean_and_confidence_interval(metrics_n_repeated, metric_keys, confidence=confidence_level)
+        metrics_mean_ci = compute_mean_and_confidence_interval(
+            metrics_n_repeated, metric_keys, confidence=confidence_level
+        )
         all_experiment_csv_with_ci = os.path.join(out_dir, "all_experiment_metrics_with_ci.csv")
         if not os.path.exists(all_experiment_csv_with_ci):
             with open(all_experiment_csv_with_ci, "w") as f:
@@ -379,7 +422,6 @@ def run_inference_streaming(
             f.write(data)
             print(f"Wrote metrics with CI for {checkpoint_name} and {dataset} to {all_experiment_csv_with_ci}")
 
-
         measurements = [m['ssim_pred_context_avg'] for m in metrics_n_repeated]
         ssim_current = np.mean(measurements)
         ssim_per_dataset.append(ssim_current)
@@ -391,14 +433,13 @@ def run_inference_streaming(
     if len(all_datasets_filewise_metrics) > 1:  # Only create combined plot if we have multiple datasets
         combined_output_png = os.path.join(out_dir, f"{checkpoint_name}_combined_violin_plot.png")
         create_combined_violin_plots(all_datasets_filewise_metrics, violin_plot_metrics, combined_output_png)
-    
+
     # Average across datasets
     ssim = np.mean(ssim_per_dataset)
     cer = np.mean(cer_per_dataset)
     if clean_up_disk:
         shutil.rmtree(out_dir)
     return cer, ssim
-
 
 
 def main():
@@ -445,16 +486,23 @@ def main():
         hparams_file_from_wandb=args.hparams_file_from_wandb,
         log_exp_name=args.log_exp_name,
         compute_fcd=compute_fcd,
-        violin_plot_metrics=args.violin_plot_metrics
+        violin_plot_metrics=args.violin_plot_metrics,
     )
 
     # Mode 1: Run inference from provided hparams and checkpoint files
-    if (args.hparams_files is not None) and (args.checkpoint_files is not None) and (args.hparams_files != "null") and (args.checkpoint_files != "null"):
+    if (
+        (args.hparams_files is not None)
+        and (args.checkpoint_files is not None)
+        and (args.hparams_files != "null")
+        and (args.checkpoint_files != "null")
+    ):
         hparam_files = args.hparams_files.split(",")
         checkpoint_files = args.checkpoint_files.split(",")
         print("Running inference for hparams files: ", hparam_files)
         print("Running inference for checkpoint files: ", checkpoint_files)
-        assert len(hparam_files) == len(checkpoint_files), "Number of hparams files and checkpoint files should be the same."
+        assert len(hparam_files) == len(
+            checkpoint_files
+        ), "Number of hparams files and checkpoint files should be the same."
         for hparams_file, checkpoint_file in zip(hparam_files, checkpoint_files):
             cer, ssim = run_inference_w_args(
                 hparams_file=hparams_file,

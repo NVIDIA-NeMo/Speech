@@ -84,7 +84,10 @@ def setup_argument_parser():
 
 
 # EVALUATION_DATASETS is the full list of datasets for evaluation of a new model.
-EVALUATION_DATASETS = "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,vctk,libritts_seen,libritts_test_clean"
+EVALUATION_DATASETS = (
+    "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,vctk,libritts_seen,libritts_test_clean"
+)
+
 
 def setup_argument_parser():
     """Setup and return the argument parser for the streaming inference script."""
@@ -99,7 +102,11 @@ def setup_argument_parser():
     parser.add_argument('--out_dir', type=str, default="/datap/misc/Evals/LocalTransformerAblations2")
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--use_cfg', action='store_true')
-    parser.add_argument('--use_local_transformer', action='store_true', help="Enables use of local transformer for inference; applies to both Autoregressive and MaskGit sampling.")
+    parser.add_argument(
+        '--use_local_transformer',
+        action='store_true',
+        help="Enables use of local transformer for inference; applies to both Autoregressive and MaskGit sampling.",
+    )
     parser.add_argument('--maskgit_n_steps', type=int, default=3)
     parser.add_argument('--cfg_scale', type=float, default=2.5)
     parser.add_argument('--apply_attention_prior', action='store_true')
@@ -111,17 +118,29 @@ def setup_argument_parser():
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=32)
     # Parameters for evaluation
-    parser.add_argument('--sv_model', type=str, default="titanet") # titanet, wavlm
-    parser.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b") # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
+    parser.add_argument('--sv_model', type=str, default="titanet")  # titanet, wavlm
+    parser.add_argument(
+        '--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b"
+    )  # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
     parser.add_argument('--num_repeats', type=int, default=1)
     parser.add_argument('--confidence_level', type=float, default=0.95)
     parser.add_argument('--legacy_codebooks', action='store_true')
     parser.add_argument('--clean_up_disk', action='store_true')
     parser.add_argument('--cer_target', type=float, default=None)
     parser.add_argument('--ssim_target', type=float, default=None)
-    parser.add_argument('--log_exp_name', action='store_true', help="Include the experiment name (derived from the checkpoint path) in the output folder name.")
+    parser.add_argument(
+        '--log_exp_name',
+        action='store_true',
+        help="Include the experiment name (derived from the checkpoint path) in the output folder name.",
+    )
     parser.add_argument('--disable_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
-    parser.add_argument('--violin_plot_metrics', type=str, nargs='*', default=['cer','pred_context_ssim'], help="Which metrics to add the violin plot.")
+    parser.add_argument(
+        '--violin_plot_metrics',
+        type=str,
+        nargs='*',
+        default=['cer', 'pred_context_ssim'],
+        help="Which metrics to add the violin plot.",
+    )
     return parser
 
 
@@ -140,8 +159,6 @@ def compute_mean_and_confidence_interval(metrics_list, metric_keys, confidence=0
 
 def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_text_conditioning=False):
     '''helper function to rename older yamls from t5 to magpie'''
-def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_text_conditioning=False):
-    ''' helper function to rename older yamls from t5 to magpie '''
     model_cfg.codecmodel_path = codecmodel_path
     if hasattr(model_cfg, 'text_tokenizer'):
         # Backward compatibility for models trained with absolute paths in text_tokenizer
@@ -222,6 +239,7 @@ def delete_old_generated_files(output_dir):
         os.remove(f)
     for f in glob.glob(f"{output_dir}/cross_attn_map_*.png"):
         os.remove(f)
+
 
 
 def create_violin_plots(metrics: List[dict], metric_keys: List[str], output_png: str):
@@ -626,7 +644,7 @@ def run_inference(
                 with_utmosv2=with_utmosv2,
             )
             metrics_n_repeated.append(metrics)
-            
+
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
 
@@ -698,7 +716,7 @@ def run_inference(
         measurements = [m['cer_cumulative'] for m in metrics_n_repeated]
         cer_current = np.mean(measurements)
         cer_per_dataset.append(cer_current)
-    
+
     # Average across datasets
     ssim = np.mean(ssim_per_dataset)
     cer = np.mean(cer_per_dataset)

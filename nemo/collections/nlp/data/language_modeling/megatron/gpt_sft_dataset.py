@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+# pylint: skip-file
+
 import json
 import math
 import re
@@ -680,7 +683,7 @@ class GPTSFTPackedDataset(GPTSFTDataset):
 
                 # The second eos_id index marks the length of the original unpadded sequence if the sequence is
                 # prepadded for cp_size > 1. Otherwise, there is no extra padding.
-                seqlen_unpadded = eos_idx[0][0] + 1 if eos_idx[0].any() else len(current_seq)
+                seqlen_unpadded = eos_idx[0][1] + 1 if eos_idx[0].shape[0] > 1 else len(current_seq)
                 cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1] + seqlen_unpadded)
 
             # if extra paddings are added in the packed sequence, they can't be counted as

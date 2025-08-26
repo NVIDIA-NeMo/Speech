@@ -436,6 +436,8 @@ class HyenaNV7bConfig(Hyena7bConfig):
     remove_activation_post_first_layer: bool = False
     add_attn_proj_bias: bool = False
     use_short_conv_bias: bool = True
+    ffn_hidden_size: int = 11264  # start with the larger FFN hidden size to avoid having to pad during extension.
+    rotary_base: int = 1_000_000
 
 
 @dataclass
@@ -469,6 +471,7 @@ class Hyena40bConfig(HyenaConfig):
     hyena_init_method: str = 'small_init'
     hyena_output_layer_init_method: str = 'wang_init'
     hyena_filter_no_wd: bool = True
+    rotary_base: int = 1_000_000
 
 
 @dataclass
@@ -482,6 +485,7 @@ class HyenaNV40bConfig(Hyena40bConfig):
     remove_activation_post_first_layer: bool = False
     add_attn_proj_bias: bool = False
     use_short_conv_bias: bool = True
+    ffn_hidden_size: int = 22528  # start with the larger FFN hidden size to avoid having to pad during extension.
 
 
 @dataclass
@@ -489,6 +493,23 @@ class Hyena7bARCLongContextConfig(Hyena7bConfig):
     """The checkpoint from ARC requires padding to the FFN dim
     due to constraintes from large TP size for training."""
 
+    seq_length: int = 1_048_576
+    ###
+    # Hand verification of RoPE base for 7B-1M @antonvnv
+    # >>> def inv_freq(base, dim):
+    #     return 1.0 / (base ** (torch.arange(0, dim, 2, device="cuda", dtype=torch.float32) / dim))
+    #
+    # >>> pt = torch.load("evo2_7b.pt", weights_only=False, mmap=True, map_location="cpu")
+    #
+    # >>> torch.mean(pt["blocks.3.inner_mha_cls.rotary_emb.inv_freq"] - inv_freq(1e11, 128).cpu())
+    # tensor(0.0688)
+    #
+    # >>> torch.mean(pt["blocks.3.inner_mha_cls.rotary_emb.inv_freq"] - inv_freq(1e6, 128).cpu())
+    # tensor(0.0361)
+    #
+    # >>> torch.mean(pt["blocks.3.inner_mha_cls.rotary_emb.inv_freq"] - inv_freq(1e4, 128).cpu())
+    # tensor(5.2014e-06)
+    rotary_base: int = 10_000
     ffn_hidden_size: int = 11264
     seq_len_interpolation_factor: float = 128
 
@@ -498,6 +519,20 @@ class Hyena40bARCLongContextConfig(Hyena40bConfig):
     """The checkpoint from ARC requires padding to the FFN dim
     due to constraintes from large TP size for training."""
 
+    seq_length: int = 1_048_576
+    ####
+    # For 40B-1M hand verification of RoPE base @antonvnv
+    # >>> def inv_freq(base, dim):
+    #     return 1.0 / (base ** (torch.arange(0, dim, 2, device="cuda", dtype=torch.float32) / dim))
+    #
+    # >>> pt = torch.load("evo2_40b.pt", weights_only=False, mmap=True, map_location="cpu")
+    #
+    # >>> torch.mean(pt["blocks.3.inner_mha_cls.rotary_emb.inv_freq"] - inv_freq(1e11, 128).cpu())
+    # tensor(0.0326)
+    #
+    # >>> torch.mean(pt["blocks.3.inner_mha_cls.rotary_emb.inv_freq"] - inv_freq(1e6, 128).cpu())
+    # tensor(-2.5294e-05)
+    rotary_base: int = 1_000_000
     ffn_hidden_size: int = 22528
     seq_len_interpolation_factor: float = 128
 

@@ -185,7 +185,7 @@ def set_mcore_fsdp_configs(recipe, comm_overlap_callback_idx: int | None, tp_siz
     # At fp32 gradient, `recipe.trainer.strategy.ddp.gradient_reduce_div_fusion` is used for fusion
     if recipe.trainer.plugins.grad_reduce_in_fp32:
         recipe.trainer.strategy.ddp.average_in_collective = False
-    recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = False
+    recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = False
     recipe.model.config.gradient_accumulation_fusion = False
     if (
         comm_overlap_callback_idx is not None
@@ -396,7 +396,7 @@ def set_perf_optimization_configs(
         recipe.trainer.strategy.ddp.check_for_large_grads = False
         recipe.trainer.strategy.ddp.nccl_ub = bool(use_user_buffer_registration)
         recipe.trainer.strategy.ddp.fsdp_double_buffer = bool(use_fsdp_double_buffer)
-        recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = bool(
+        recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = bool(
             keep_fsdp_fp8_transpose_cache
         )
 

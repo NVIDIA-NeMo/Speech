@@ -657,6 +657,9 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                         module,
                         disable_bucketing=disable_bucketing,
                     )
+                    dist_module.buffers = [dist_module.param_and_grad_buffer]
+                    dist_module.config = module.config
+                    dist_module.sharded_state_dict = lambda *args, **kwargs: dist_module.state_dict()
                 elif not isinstance(unwrapped_module, DDP):
                     dist_module = DDP(
                         module.config,

@@ -186,6 +186,17 @@ def set_mcore_fsdp_configs(recipe, comm_overlap_callback_idx: int | None, tp_siz
     if recipe.trainer.plugins.grad_reduce_in_fp32:
         recipe.trainer.strategy.ddp.average_in_collective = False
     recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = False
+
+
+    try:
+        recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = False
+    except:
+        recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = False
+        logging.warning(
+            "Deprecation Notice: `keep_fp8_transpose_cache_when_using_custom_fsdp` "
+            "will be deprecated in M-Core 0.14. "
+            "Please use `keep_fsdp_fp8_transpose_cache` instead."
+        )
     recipe.model.config.gradient_accumulation_fusion = False
     if (
         comm_overlap_callback_idx is not None
@@ -396,9 +407,19 @@ def set_perf_optimization_configs(
         recipe.trainer.strategy.ddp.check_for_large_grads = False
         recipe.trainer.strategy.ddp.nccl_ub = bool(use_user_buffer_registration)
         recipe.trainer.strategy.ddp.fsdp_double_buffer = bool(use_fsdp_double_buffer)
-        recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = bool(
-            keep_fsdp_fp8_transpose_cache
-        )
+        try:
+            recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = bool(
+                keep_fsdp_fp8_transpose_cache
+            )
+        except:
+            recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = bool(
+                keep_fsdp_fp8_transpose_cache
+            )
+            logging.warning(
+                "Deprecation Notice: `keep_fp8_transpose_cache_when_using_custom_fsdp` "
+                "will be deprecated in M-Core 0.14. "
+                "Please use `keep_fsdp_fp8_transpose_cache` instead."
+            )
 
     return recipe
 

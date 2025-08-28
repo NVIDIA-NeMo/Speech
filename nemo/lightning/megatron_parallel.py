@@ -61,6 +61,13 @@ from typing_extensions import override
 from nemo.utils.model_utils import check_lib_version
 
 try:
+    from megatron.core.distributed.custom_fsdp import FullyShardedDataParallel
+
+    HAVE_CUSTOM_FSDP = True
+except ImportError:
+    HAVE_CUSTOM_FSDP = False
+
+try:
     from megatron.core.distributed import FullyShardedDataParallel
 
     HAVE_MEGATRON_FSDP = True
@@ -553,7 +560,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         from megatron.core.tensor_parallel.layers import set_defaults_if_not_set_tensor_model_parallel_attributes
 
         for model_module in self:
-            if not self._cpu and (not HAVE_MEGATRON_FSDP or self.fsdp != "megatron"):
+            if not self._cpu and ((not HAVE_MEGATRON_FSDP and not HAVE_CUSTOM_FSDP) or self.fsdp != "megatron"):
                 # If Megatron custom FSDP is enabled, we don't need to move the model to GPU here to avoid GPU OOM.
                 model_module.cuda(torch.cuda.current_device())
 
@@ -634,7 +641,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                 # Avoid rewrapping the module if it's already wrapped with FSDP
                 unwrapped_module = unwrap_model(module, Float16Module)
                 if (
-                    HAVE_MEGATRON_FSDP
+                    (HAVE_MEGATRON_FSDP or HAVE_CUSTOM_FSDP)
                     and self.fsdp == "megatron"
                     and not isinstance(unwrapped_module, FullyShardedDataParallel)
                 ):
@@ -644,12 +651,24 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                         setattr(module.config, "use_megatron_fsdp", True)
                         logging.warning("Setting module.config.use_megatron_fsdp to True for MCore FSDP.")
 
+                    if not getattr(module.config, "use_custom_fsdp", False):
+                        setattr(module.config, "use_custom_fsdp", True)
+                        logging.warning("Setting module.config.use_custom_fsdp to True for MCore FSDP.")
+
                     if getattr(module.config, "gradient_accumulation_fusion", True):
                         setattr(module.config, "gradient_accumulation_fusion", False)
                         logging.warning("Setting module.config.gradient_accumulation_fusion to False for MCore FSDP.")
 
-                    assert module.config.use_megatron_fsdp, "MCore FSDP is not enabled in module.config."
-                    assert self.ddp_config.use_megatron_fsdp, "MCore FSDP is not enabled in ddp_config."
+                    if HAVE_MEGATRON_FSDP:
+                        assert module.config.use_megatron_fsdp, "MCore FSDP is not enabled in module.config."
+                        assert self.ddp_config.use_megatron_fsdp, "MCore FSDP is not enabled in ddp_config."
+                    elif HAVE_CUSTOM_FSDP:
+                        assert module.config.use_custom_fsdp, "MCore FSDP is not enabled in module.config."
+                        assert self.ddp_config.use_custom_fsdp, "MCore FSDP is not enabled in ddp_config."
+                        logging.warning(
+                            "Deprecation Notice: `use_custom_fsdp` will be deprecated in M-Core 0.14. "
+                            "Please use `use_megatron_fsdp` instead."
+                        )
 
                     dist_module = FullyShardedDataParallel(
                         module.config,
@@ -657,9 +676,10 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                         module,
                         disable_bucketing=disable_bucketing,
                     )
-                    dist_module.buffers = [dist_module.param_and_grad_buffer]
-                    dist_module.config = module.config
-                    dist_module.sharded_state_dict = lambda *args, **kwargs: dist_module.state_dict()
+                    if HAVE_MEGATRON_FSDP:
+                        dist_module.buffers = [dist_module.param_and_grad_buffer]
+                        dist_module.config = module.config
+                        dist_module.sharded_state_dict = lambda *args, **kwargs: dist_module.state_dict()
                 elif not isinstance(unwrapped_module, DDP):
                     dist_module = DDP(
                         module.config,

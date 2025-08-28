@@ -365,20 +365,29 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
         self._fsdp = None
 
-        if fsdp is None and self.ddp_config and self.ddp_config.use_megatron_fsdp:
+        use_custom_fsdp = getattr(self.ddp_config, "use_custom_fsdp", False)
+        use_megatron_fsdp = getattr(self.ddp_config, "use_megatron_fsdp", False)
+        if fsdp is None and self.ddp_config and (use_custom_fsdp or use_megatron_fsdp):
             logging.warning(
-                "FSDP option is not set but ddp_config.use_megatron_fsdp is set to true. "
+                "FSDP option is not set but ddp_config use megatron-fsdp is set to true. "
                 "Setting FSDP option to megatron"
             )
             fsdp = 'megatron'
-            if self.save_ckpt_format != "fsdp_dtensor":
-                raise NotImplementedError(f"FSDP checkpointing is not supported with {self.save_ckpt_format}.")
+            if use_megatron_fsdp and self.save_ckpt_format != "fsdp_dtensor":
+                raise NotImplementedError(f"Megatron-FSDP checkpointing is not supported with {self.save_ckpt_format}.")
 
         if fsdp == "pytorch":
             raise NotImplementedError("PyTorch FSDP2 is not supported with MegatronParallel.")
         elif fsdp == "megatron":
             self._fsdp = fsdp
-            if not self.ddp_config.use_megatron_fsdp:
+            if hasattr(self.ddp_config, "use_custom_fsdp") and not use_custom_fsdp:
+                self.ddp_config.use_custom_fsdp = True
+                logging.warning("Setting ddp_config.use_custom_fsdp to True for MCore FSDP.")
+                logging.warning(
+                    "Deprecation Notice: `use_custom_fsdp` will be deprecated in M-Core 0.14. "
+                    "Please use `use_megatron_fsdp` instead."
+                )
+            elif hasattr(self.ddp_config, "use_megatron_fsdp") and not use_megatron_fsdp:
                 self.ddp_config.use_megatron_fsdp = True
                 logging.warning("Setting ddp_config.use_megatron_fsdp to True for MCore FSDP.")
             logging.info("FSDP option is set to MCore. Using MCore's Custom FSDP for DP.")
@@ -1133,7 +1142,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         """Metadata used for sharded_state_dict generation during checkpoint save."""
         metadata = {}
         if isinstance(self.ddp_config, DistributedDataParallelConfig) and self.ddp_config.use_distributed_optimizer:
-            if self.ddp_config.use_megatron_fsdp:
+            use_megatron_fsdp = getattr(self.ddp_config, "use_megatron_fsdp", False)
+            if use_megatron_fsdp:
                 metadata["distrib_optim_sharding_type"] = "fsdp_dtensor"
             elif self.parallel_save_optim:
                 metadata["distrib_optim_sharding_type"] = "fully_sharded_model_space"

@@ -92,7 +92,6 @@ def flux_controlnet_training() -> run.Partial:
                 pipeline_dtype=torch.bfloat16,
                 ddp=run.Config(
                     DistributedDataParallelConfig,
-                    use_megatron_fsdp=True,
                     data_parallel_sharding_strategy='optim_grads_params',
                     check_for_nan_in_grad=True,
                     grad_reduce_in_fp32=True,
@@ -292,7 +291,6 @@ def unit_test(custom_fsdp=True) -> run.Partial:
 def configure_custom_fsdp(recipe) -> run.Partial:
     recipe.trainer.strategy.ddp = run.Config(
         DistributedDataParallelConfig,
-        use_megatron_fsdp=True,
         data_parallel_sharding_strategy='optim_grads_params',  # Custom FSDP
         check_for_nan_in_grad=True,
         grad_reduce_in_fp32=True,

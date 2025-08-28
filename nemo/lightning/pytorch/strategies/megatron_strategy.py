@@ -371,6 +371,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 "Setting FSDP option to megatron"
             )
             fsdp = 'megatron'
+            if self.save_ckpt_format != "fsdp_dtensor":
+                raise NotImplementedError(f"FSDP checkpointing is not supported with {self.save_ckpt_format}.")
 
         if fsdp == "pytorch":
             raise NotImplementedError("PyTorch FSDP2 is not supported with MegatronParallel.")
@@ -936,28 +938,24 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         model_key="model",
         optimizer_key="optimizer_states",
     ):
+        from megatron.core.distributed.fsdp.src.megatron_fsdp.uneven_dtensor import (
+            preprocess_state_dict_for_uneven_dtensor,
+        )
         from megatron.core.transformer.fsdp_dtensor_checkpoint import (
             handle_fp8_extra_state_case,
             handle_swiglu_in_state_dict,
-        )
-        from megatron.core.distributed.fsdp.src.megatron_fsdp.uneven_dtensor import (
-            preprocess_state_dict_for_uneven_dtensor,
         )
 
         state_dict = raw_state_dict.copy()
         handle_fp8_extra_state_case(state_dict[model_key])
         module = self.model[0].module
-        if torch.distributed.get_rank() == 0:
-            print(self.model, module)
         if getattr(module.config, "gated_linear_unit", False):
             model_state_dict = state_dict[model_key].copy()
             if optimizer_key in state_dict:
                 optimizer_state_dict = state_dict[optimizer_key].copy()
             else:
                 optimizer_state_dict = {}
-            handle_swiglu_in_state_dict(
-                module.module, model_state_dict, optimizer_state_dict
-            )
+            handle_swiglu_in_state_dict(module.module, model_state_dict, optimizer_state_dict)
             state_dict[model_key] = model_state_dict
             if optimizer_key in state_dict:
                 state_dict[optimizer_key] = optimizer_state_dict
@@ -1060,9 +1058,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             checkpoint_id=path,
             planner=planner,
         )
-        sharded_state_dict.update(
-            self._load_fsdp_dtensor_common_state(ckpt_dir=path)
-        )
+        sharded_state_dict.update(self._load_fsdp_dtensor_common_state(ckpt_dir=path))
         if "loops" in sharded_state_dict:
             sharded_state_dict["fit_loop"] = sharded_state_dict["loops"]["fit_loop"]
 

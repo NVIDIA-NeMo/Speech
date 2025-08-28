@@ -84,49 +84,6 @@ def override_recipe_configs(
     recipe = set_exp_logging_configs(
         recipe, "pre_train", "llm", "llama3", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
     )
-    # for saving checkpoints
-    ckpt_path = "/lustre/fsw/coreai_devtech_all/jianbinc/playground/nemo_nvfsdp_update/NeMo/checkpoints"
-    recipe.log.log_dir = ckpt_path
-    import nemo.lightning as nl
-    import nemo_run as run
-
-    recipe.log.ckpt = run.Config(
-        nl.ModelCheckpoint,
-        train_time_interval=None,
-        save_last=True,
-        every_n_train_steps=100,
-        save_top_k=1,
-        save_on_train_epoch_end=True,
-        save_optim_on_train_end=True,
-        always_save_context=False,
-        filename="{model_name}--{val_loss:.2f}-{step}-{consumed_samples}",
-    )
-    
-    # nl.ModelCheckpoint(
-    #     train_time_interval=None,
-    # )
-    # # recipe.log.ckpt.train_time_interval = None
-    # recipe.log.ckpt.save_last = True
-    # recipe.log.ckpt.every_n_train_steps = 100
-    # recipe.log.ckpt.save_top_k = 1
-    # recipe.log.ckpt.save_on_train_epoch_end = True
-    # recipe.log.ckpt.save_optim_on_train_end = True
-    # recipe.log.ckpt.always_save_context = False
-
-    # for loading checkpoints
-    recipe.resume.resume_if_exists = True
-    recipe.resume.resume_ignore_no_checkpoint = True
-    # recipe.resume.restore_config = RestoreConfig(
-    #     path=ckpt_path,
-    #     load_model_state=True,
-    #     load_optim_state=True,
-    # )
-
-    recipe.trainer.strategy.save_ckpt_format = "fsdp_dtensor"
-    recipe.trainer.strategy.ddp.average_in_collective = False
-    # recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = "optim"
-
-    recipe.optim.config.use_precision_aware_optimizer = False
 
     # data module configs
     if args.use_hf_tokenizer:

@@ -187,7 +187,6 @@ def set_mcore_fsdp_configs(recipe, comm_overlap_callback_idx: int | None, tp_siz
         recipe.trainer.strategy.ddp.average_in_collective = False
     recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = False
 
-
     try:
         recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = False
     except AttributeError:

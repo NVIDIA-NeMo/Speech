@@ -14,7 +14,7 @@
 
 import pytest
 
-from utils.data_prep import restore_token_case
+from nemo.collections.asr.parts.utils.aligner_utils import restore_token_case
 
 
 @pytest.mark.parametrize(

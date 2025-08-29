@@ -25,10 +25,11 @@ by the NFA alignemtns.
 
 import math
 import os
-import soundfile as sf
 
+import soundfile as sf
 from utils.constants import BLANK_TOKEN, SPACE_TOKEN
-from utils.data_prep import Segment, Token, Word
+
+from nemo.collections.asr.parts.utils.aligner_utils import Segment, Token, Word
 
 PLAYERRESX = 384
 PLAYERRESY = 288
@@ -65,7 +66,9 @@ def rgb_list_to_hex_bgr(rgb_list):
 
 
 def make_ass_files(
-    utt_obj, output_dir_root, ass_file_config,
+    utt_obj,
+    output_dir_root,
+    ass_file_config,
 ):
 
     # don't try to make files if utt_obj.segments_and_tokens is empty, which will happen

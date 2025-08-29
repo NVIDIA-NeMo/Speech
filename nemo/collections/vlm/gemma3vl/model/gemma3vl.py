@@ -69,7 +69,7 @@ class Gemma3VLConfig27B(Gemma3VLConfig):
 
 
 @io.model_importer(Gemma3VLModel, "hf")
-class Gemma3VLImporter(io.ModelConnector["Gemma3ForConditionalGeneration", Gemma3VLModel]):
+class Gemma3VLImporter(io.ModelConnector["Gemma3Model", Gemma3VLModel]):
     """Gemma3 VL model HF importer"""
 
     def init(self) -> Gemma3VLModel:
@@ -77,9 +77,9 @@ class Gemma3VLImporter(io.ModelConnector["Gemma3ForConditionalGeneration", Gemma
 
     def apply(self, output_path: Path) -> Path:
         # pylint: disable=C0115,C0116
-        from transformers import Gemma3ForConditionalGeneration
+        from transformers import Gemma3Model
 
-        source = Gemma3ForConditionalGeneration.from_pretrained(str(self))
+        source = Gemma3Model.from_pretrained(str(self))
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -114,20 +114,20 @@ class Gemma3VLImporter(io.ModelConnector["Gemma3ForConditionalGeneration", Gemma
             # vision projector
             "multi_modal_projector.mm_soft_emb_norm.weight": "vision_projection.mm_soft_embed_norm.weight",
             # text model
-            "language_model.model.embed_tokens.weight": "language_model.embedding.word_embeddings.weight",
-            "language_model.model.layers.*.input_layernorm.weight": "language_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight",
-            "language_model.model.layers.*.self_attn.q_norm.weight": "language_model.decoder.layers.*.self_attention.q_layernorm.weight",
-            "language_model.model.layers.*.self_attn.k_norm.weight": "language_model.decoder.layers.*.self_attention.k_layernorm.weight",
-            "language_model.model.layers.*.self_attn.o_proj.weight": "language_model.decoder.layers.*.self_attention.linear_proj.weight",
-            "language_model.model.layers.*.post_attention_layernorm.weight": (
+            "language_model.embed_tokens.weight": "language_model.embedding.word_embeddings.weight",
+            "language_model.layers.*.input_layernorm.weight": "language_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight",
+            "language_model.layers.*.self_attn.q_norm.weight": "language_model.decoder.layers.*.self_attention.q_layernorm.weight",
+            "language_model.layers.*.self_attn.k_norm.weight": "language_model.decoder.layers.*.self_attention.k_layernorm.weight",
+            "language_model.layers.*.self_attn.o_proj.weight": "language_model.decoder.layers.*.self_attention.linear_proj.weight",
+            "language_model.layers.*.post_attention_layernorm.weight": (
                 "language_model.decoder.layers.*.self_attention.linear_proj.post_layernorm.weight"
             ),
-            "language_model.model.layers.*.pre_feedforward_layernorm.weight": "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight",
-            "language_model.model.layers.*.mlp.down_proj.weight": "language_model.decoder.layers.*.mlp.linear_fc2.weight",
-            "language_model.model.layers.*.post_feedforward_layernorm.weight": (
+            "language_model.layers.*.pre_feedforward_layernorm.weight": "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight",
+            "language_model.layers.*.mlp.down_proj.weight": "language_model.decoder.layers.*.mlp.linear_fc2.weight",
+            "language_model.layers.*.post_feedforward_layernorm.weight": (
                 "language_model.decoder.layers.*.mlp.linear_fc2.post_layernorm.weight"
             ),
-            "language_model.model.norm.weight": "language_model.decoder.final_layernorm.weight",
+            "language_model.norm.weight": "language_model.decoder.final_layernorm.weight",
         }
         transforms = [
             _import_vision_qkv,
@@ -140,8 +140,8 @@ class Gemma3VLImporter(io.ModelConnector["Gemma3ForConditionalGeneration", Gemma
             ),
             io.state_transform(
                 source_key=(
-                    "language_model.model.layers.*.mlp.gate_proj.weight",
-                    "language_model.model.layers.*.mlp.up_proj.weight",
+                    "language_model.layers.*.mlp.gate_proj.weight",
+                    "language_model.layers.*.mlp.up_proj.weight",
                 ),
                 target_key="language_model.decoder.layers.*.mlp.linear_fc1.weight",
                 fn=TransformFns.merge_fc1,
@@ -191,15 +191,15 @@ class Gemma3VLImporter(io.ModelConnector["Gemma3ForConditionalGeneration", Gemma
 
 
 @io.model_exporter(Gemma3VLModel, "hf")
-class Gemma3VLExporter(io.ModelConnector[Gemma3VLModel, "Gemma3ForConditionalGeneration"]):
+class Gemma3VLExporter(io.ModelConnector[Gemma3VLModel, "Gemma3Model"]):
     """Export Gemma3 VL to HF"""
 
     def init(self):
-        from transformers import Gemma3ForConditionalGeneration
+        from transformers import Gemma3Model
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights():
-            return Gemma3ForConditionalGeneration._from_config(self.config)
+            return Gemma3Model._from_config(self.config)
 
     def apply(self, output_path: Path) -> Path:
         # pylint: disable=C0115,C0116
@@ -233,20 +233,20 @@ class Gemma3VLExporter(io.ModelConnector[Gemma3VLModel, "Gemma3ForConditionalGen
             # vision projector
             "vision_projection.mm_soft_embed_norm.weight": "multi_modal_projector.mm_soft_emb_norm.weight",
             # text model
-            "language_model.embedding.word_embeddings.weight": "language_model.model.embed_tokens.weight",
-            "language_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "language_model.model.layers.*.input_layernorm.weight",
-            "language_model.decoder.layers.*.self_attention.q_layernorm.weight": "language_model.model.layers.*.self_attn.q_norm.weight",
-            "language_model.decoder.layers.*.self_attention.k_layernorm.weight": "language_model.model.layers.*.self_attn.k_norm.weight",
-            "language_model.decoder.layers.*.self_attention.linear_proj.weight": "language_model.model.layers.*.self_attn.o_proj.weight",
+            "language_model.embedding.word_embeddings.weight": "language_model.embed_tokens.weight",
+            "language_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "language_model.layers.*.input_layernorm.weight",
+            "language_model.decoder.layers.*.self_attention.q_layernorm.weight": "language_model.layers.*.self_attn.q_norm.weight",
+            "language_model.decoder.layers.*.self_attention.k_layernorm.weight": "language_model.layers.*.self_attn.k_norm.weight",
+            "language_model.decoder.layers.*.self_attention.linear_proj.weight": "language_model.layers.*.self_attn.o_proj.weight",
             "language_model.decoder.layers.*.self_attention.linear_proj.post_layernorm.weight": (
-                "language_model.model.layers.*.post_attention_layernorm.weight"
+                "language_model.layers.*.post_attention_layernorm.weight"
             ),
-            "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "language_model.model.layers.*.pre_feedforward_layernorm.weight",
-            "language_model.decoder.layers.*.mlp.linear_fc2.weight": "language_model.model.layers.*.mlp.down_proj.weight",
+            "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "language_model.layers.*.pre_feedforward_layernorm.weight",
+            "language_model.decoder.layers.*.mlp.linear_fc2.weight": "language_model.layers.*.mlp.down_proj.weight",
             "language_model.decoder.layers.*.mlp.linear_fc2.post_layernorm.weight": (
-                "language_model.model.layers.*.post_feedforward_layernorm.weight"
+                "language_model.layers.*.post_feedforward_layernorm.weight"
             ),
-            "language_model.decoder.final_layernorm.weight": "language_model.model.norm.weight",
+            "language_model.decoder.final_layernorm.weight": "language_model.norm.weight",
         }
 
         transforms = [
@@ -261,8 +261,8 @@ class Gemma3VLExporter(io.ModelConnector[Gemma3VLModel, "Gemma3ForConditionalGen
             io.state_transform(
                 source_key="language_model.decoder.layers.*.mlp.linear_fc1.weight",
                 target_key=(
-                    "language_model.model.layers.*.mlp.gate_proj.weight",
-                    "language_model.model.layers.*.mlp.up_proj.weight",
+                    "language_model.layers.*.mlp.gate_proj.weight",
+                    "language_model.layers.*.mlp.up_proj.weight",
                 ),
                 fn=TransformFns.split_fc1,
             ),
@@ -327,9 +327,9 @@ def _vision_projector_permute(ctx: io.TransformCTX, x):
 
 @io.state_transform(
     source_key=(
-        "language_model.model.layers.*.self_attn.q_proj.weight",
-        "language_model.model.layers.*.self_attn.k_proj.weight",
-        "language_model.model.layers.*.self_attn.v_proj.weight",
+        "language_model.layers.*.self_attn.q_proj.weight",
+        "language_model.layers.*.self_attn.k_proj.weight",
+        "language_model.layers.*.self_attn.v_proj.weight",
     ),
     target_key="language_model.decoder.layers.*.self_attention.linear_qkv.weight",
 )
@@ -351,9 +351,9 @@ def _import_language_qkv(ctx: io.TransformCTX, q, k, v):
 @io.state_transform(
     source_key="language_model.decoder.layers.*.self_attention.linear_qkv.weight",
     target_key=(
-        "language_model.model.layers.*.self_attn.q_proj.weight",
-        "language_model.model.layers.*.self_attn.k_proj.weight",
-        "language_model.model.layers.*.self_attn.v_proj.weight",
+        "language_model.layers.*.self_attn.q_proj.weight",
+        "language_model.layers.*.self_attn.k_proj.weight",
+        "language_model.layers.*.self_attn.v_proj.weight",
     ),
 )
 def _export_language_qkv(ctx: io.TransformCTX, qkv):

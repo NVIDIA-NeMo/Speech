@@ -12,11 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+
+warnings.warn(
+    "This evaluation script is deprecated and will be removed in NeMo FW 25.09 container release. "
+    "For evaluation functionality, please use the new Eval repository: https://github.com/NVIDIA-NeMo/Eval",
+    DeprecationWarning,
+    stacklevel=1,
+)
+
 # NOTE: This script is only an example of using NeMo with NeMo-Run's APIs and is subject to change without notice.
 # This script is used for evaluation on local and slurm executors using NeMo-Run.
 # It uses deploy method from nemo/llm/collections/api.py to deploy nemo2.0 ckpt on PyTriton server and uses evaluate
 # method from nemo/llm/collections/api.py to run evaluation on it.
 # (https://github.com/NVIDIA/NeMo-Run) to configure and execute the runs.
+# DEPRECATED: This script and the underlying deploy/evaluate functions will be removed in NeMo FW 25.09.
+# Please use the new Eval repository: https://github.com/NVIDIA-NeMo/Eval
 
 import argparse
 from typing import Optional

@@ -23,11 +23,15 @@ class MockClassWithCudaGraphs(WithOptionalCudaGraphs):
         super().__init__()
         self.cuda_graphs_used = True
 
-    def disable_cuda_graphs(self):
+    def disable_cuda_graphs(self) -> bool:
+        cuda_graphs_were_used = self.cuda_graphs_used
         self.cuda_graphs_used = False
+        return cuda_graphs_were_used != self.cuda_graphs_used
 
-    def maybe_enable_cuda_graphs(self):
+    def maybe_enable_cuda_graphs(self) -> bool:
+        cuda_graphs_were_used = self.cuda_graphs_used
         self.cuda_graphs_used = True
+        return cuda_graphs_were_used != self.cuda_graphs_used
 
 
 class MockModuleWithCudaGraphs(MockClassWithCudaGraphs, nn.Module):

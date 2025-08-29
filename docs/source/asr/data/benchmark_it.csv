@@ -1,4 +1,5 @@
 Model,Model Base Class
+`canary-1b-v2 <https://huggingface.co/nvidia/canary-1b-v2>`_,EncDecMultiTaskModel
 `stt_it_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_it_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel
 `stt_it_conformer_ctc_large <https://huggingface.co/nvidia/stt_it_conformer_ctc_large>`_,EncDecCTCModelBPE
 `stt_it_conformer_transducer_large <https://huggingface.co/nvidia/stt_it_conformer_transducer_large>`_,EncDecRNNTBPEModel

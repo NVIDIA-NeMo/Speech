@@ -1,0 +1,11 @@
+# Postprocessing parameters for timestamp outputs from speaker diarization models.
+# This speaker diarization postprocessing scheme is inspired by the postprocessing procedure in the following paper:
+# Medennikov, Ivan, et al. "Target-Speaker Voice Activity Detection: a Novel Approach for Multi-Speaker Diarization in a Dinner Party Scenario." (2020).
+# These parameters were optimized on CallHome Dataset from the NIST SRE 2000 Disc8, especially from the part1 (callhome1) specified in: Kaldi, “Kaldi x-vector recipe v2,” https://github.com/kaldi-asr/kaldi/blob/master/egs/callhome_diarization/v2/run.sh
+parameters: 
+  onset: 0.641 # Onset threshold for detecting the beginning and end of a speech
+  offset: 0.561 # Offset threshold for detecting the end of a speech
+  pad_onset: 0.229  # Adding durations before each speech segment
+  pad_offset: 0.079  # Adding durations after each speech segment
+  min_duration_on: 0.511 # Threshold for small non-speech deletion
+  min_duration_off: 0.296 # Threshold for short speech segment deletion

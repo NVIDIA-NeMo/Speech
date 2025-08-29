@@ -39,12 +39,6 @@ Model Classes
     :show-inheritance:
     :members: from_asr_config, from_pretrained_models, save_asr_model_to, setup_training_data
 
-.. _confidence-ensembles-api:
-
-.. autoclass:: nemo.collections.asr.models.confidence_ensemble.ConfidenceEnsembleModel
-    :show-inheritance:
-    :members: transcribe
-
 .. _asr-api-modules:
 
 Modules

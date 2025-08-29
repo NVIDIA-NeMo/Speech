@@ -236,9 +236,14 @@ class PEFT(IOMixin, ABC, ModelTransform):
         adapter_sharded_state_dict = {}
         if self.wrapped_io.adapter_ckpt_path is not None:
             logging.info(f"Loading adapters from {self.wrapped_io.adapter_ckpt_path}")
+            sharded_sd_metadata = trainer.strategy.unwrapped_checkpoint_io.load_content_metadata(
+                self.wrapped_io.adapter_ckpt_path
+            )
             # create sharded state dict for adapter weights only to enable PEFT resume
             adapter_sharded_state_dict['state_dict'] = {
-                k: v for k, v in trainer.model.sharded_state_dict().items() if self.adapter_key_filter(k)
+                k: v
+                for k, v in trainer.model.sharded_state_dict(metadata=sharded_sd_metadata).items()
+                if self.adapter_key_filter(k)
             }
 
         if hasattr(trainer.strategy, "init_model_parallel"):
@@ -251,7 +256,7 @@ class PEFT(IOMixin, ABC, ModelTransform):
             if self.wrapped_io.adapter_ckpt_path is not None and trainer.strategy.should_restore_optimizer_states():
                 # PEFT resume, load optimizer state
                 adapter_sharded_state_dict['optimizer'] = [
-                    trainer.strategy.optimizer_sharded_state_dict(is_loading=True)
+                    trainer.strategy.optimizer_sharded_state_dict(is_loading=True, metadata=sharded_sd_metadata)
                 ]
 
         if adapter_sharded_state_dict:

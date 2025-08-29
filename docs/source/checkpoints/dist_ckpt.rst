@@ -330,15 +330,20 @@ dist_checkpointing.load_common_state_dict
 The ``dist_checkpointing.load_common_state_dict`` function is an entry point that allows loading only the “common” part of the checkpoints.
 Most of the checkpoint config and metadata can be loaded with this method, which allows skipping data loading in order to take decisions regarding checkpoint config, version, etc.
 
-dist_checkpointing.load_tensors_metadata
+dist_checkpointing.load_sharded_metadata
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-The ``dist_checkpointing.load_tensors_metadata`` function is an entry point that allows reading all ShardedTensors metadata from the checkpoint without loading any data.
+The ``dist_checkpointing.load_sharded_metadata`` function is an entry point that allows reading all ShardedTensors metadata from the checkpoint without loading any data.
 The result is a sharded state dict with trivial sharding (every tensor is sharded into one big shard).
 
 dist_checkpointing.load_plain_tensors
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 The ``dist_checkpointing.load_plain_tensors`` function is an entry point that allows reading sharded tensors stored in the checkpoint without any sharding (as plain tensors).
 This function is simply a composition of ``load_tensors_metadata`` and ``save``.
+
+dist_checkpointing.load_content_metadata
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The ``dist_checkpointing.load_content_metadata`` function is an entry point that allows reading content versioning metadata saved during `save`.
+See `Checkpoint versioning`_ for more details.
 
 Save and Load Strategies
 ------------------------
@@ -530,6 +535,50 @@ and using the ``dist_checkpointing.save`` and ``dist_checkpointing.load`` entryp
 In Megatron Core, the sharded state dictionary preparation is already implemented in a ``sharded_state_dict`` method which creates the sharded state dicts in a composable way.
 For other applications (e.g. with simpler types of supported parallelisms) it might be possible to apply a straightforward conversion from a regular model state dict into a sharded state dict.
 
+Checkpoint versioning
+^^^^^^^^^^^^^^^^^^^^^
+Megatron-Core v0.14 exposes ``content_metadata`` flag for the ``save`` routine which allows to store metadata describing the checkpoint content (and a corresponding `load_content_metadata` function for loading).
+In particular, this is the intended place to store application specific versioning information - ``dist_checkpointing`` doesn't interpret the metadata at any point.
+The idea behind this feature is to provide a way to access content identifying metadata without reading the whole checkpoint.
+Since loading a distributed checkpoint requires providing valid ShardedTensors to the ``load`` routine, in some cases it can be impossible
+to load the tensors from the checkpoint without using the content version to prepare the correct sharded state dict in advance.
+
+In Megatron-LM and NeMo frameworks, the whole content metadata is passed to ``shared_state_dict`` model and optimizer methods
+and therefore affects only the logic behind sharded_state_dict creation.
+The recommended versioning practice for those frameworks is to use content metadata only for ``sharded_state_dict`` behavior control,
+e.g. avoid storing metadata which affects framework logic in other way.
+The content metadata should be minimalistic (to avoid a bloated metadata with multiple possible configurations),
+ideally flat (or with a single nesting level) and with semantically meaningful flag names (e.g. ``distrib_optim_sharding_type`` or ``non_homogeneous_layers``).
+In particular, a simple integer (or SemVer) versioning flag (e.g. ``metadata['version'] = 3.4``) is discouraged,
+because the metadata serves for all models and optimizers and it's practically impossible to enforce a linearly increasing versioning for this whole space.
+
+In NeMo or Megatron-LM the versioning logic (calling ``sharded_state_dict`` method with appropriate metadata) is already implemented.
+In order to introduce a new checkpoint version, two steps are required:
+
+1. Add some new flag to the metadata which is passed to ``sharded_state_dict`` methods by the framework (e.g. ``metadata['model_X_layout_Y'] = True``).
+   E.g. in NeMo the metadata is determined in the ``MegatronStrategy.sharded_state_dict_metadata`` property.
+
+1. Handle the new flag in the appropriate ``sharded_state_dict`` method (in Megatron-Core or framework or user code).
+   **Make sure to keep the old logic in case the new flag is absent. This will ensure both the new and old checkpoints can be loaded correctly**.
+   This logic must be kept until the old checkpoint version is deprecated. Similarly with metadata flag removal. For example:
+
+   .. code-block:: python
+
+       def sharded_state_dict(..., metadata: Optional[dict] = None):
+           if (metadata or {}).get('model_X_layout_Y', False):
+               # new behavior
+           else:
+               # old behavior
+           if (metadata or {}).get('already_removed_flag', False):
+               # old behavior (!)
+           else:
+               # new behavior
+
+Note: Currently the content metadata is part of the "common" checkpoint state (and in consequence resides in ``common.pt`` file) but this is an implementation
+detail and could be changed in the future. Therefore it's recommended to save/load the content metadata with the API described at the beginning of this section.
+
+Note: currently in NeMo and Megatron-LM versioning content is stored only in global checkpoints. For local checkpoints,
+it is assumed that save and load content version are the same and thus `sharded_state_dict` uses runtime metadata in both cases.
 
 FAQs
 -----------------------
@@ -573,6 +622,14 @@ FAQs
    A: The Megatron Core Distributed Optimizer is recommended and is the default setting in NeMo 2.0. With Megatron Core Distributed Optimizer (model configuration ``mcore_distributed_optim``), the expected saving time should be approximately 1 second for a single checkpoint. With Distributed Fused Adam Optimizer from Apex (model configuration ``distributed_fused_adam``), the expected saving time should be longer, estimated to be about 3 seconds for a single checkpoint.
 
    To accelerate checkpoint saving, it is recommended to set ``dist_ckpt_assume_constant_structure=True``.
+
+**9. Q: I get an error about an "invalid access pattern". What does it mean?**
+
+   A: The logs print the access pattern tensor count. Its shape corresponds to the ShardedTensor sharding grid
+   (e.g. 3-dimensional parameter sharded by TP along the 1st axis would have the access pattern tensor of shape ``(1, TP size, 1)``).
+   The tensor values correspond to the number of ShardedTensors with main ``replica_id`` corresponding to that shard.
+   A correct shared_state_dict definition results in an access pattern with 1s in each cell. Invalid access pattern usually
+   means an incorrect ShardedTensor sharding defined in the ``sharded_state_dict`` model method.
 
 
 Glossary

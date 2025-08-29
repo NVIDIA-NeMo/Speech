@@ -1,2 +1,0 @@
-_target_: nemo.collections.multimodal.modules.nerf.background.static_background.StaticBackground
-background: [0, 0, 1] # rgb

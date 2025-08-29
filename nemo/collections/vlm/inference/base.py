@@ -30,8 +30,9 @@ from nemo.collections import vlm
 
 from .llava_inference_wrapper import LlavaInferenceWrapper
 from .mllama_inference_wrapper import MllamaInferenceWrapper
+from .qwenvl_inference_wrapper import QwenVLInferenceWrapper
 from .vlm_engine import VLMEngine
-from .vlm_inference_controller import VLMTextGenerationController
+from .vlm_inference_controller import QwenVLTextGenerationController, VLMTextGenerationController
 
 
 def _setup_trainer_and_restore_model(path: str, trainer: nl.Trainer, model: pl.LightningModule):
@@ -66,6 +67,9 @@ def setup_inference_wrapper(
     elif isinstance(config, vlm.LlavaConfig):
         wrapper_cls = LlavaInferenceWrapper
         hidden_size = config.language_transformer_config.hidden_size
+    elif isinstance(config, vlm.Qwen2VLConfig):
+        wrapper_cls = QwenVLInferenceWrapper
+        hidden_size = config.language_transformer_config.hidden_size
     else:
         raise ValueError(f"Unknown model config: {config}")
 
@@ -85,20 +89,63 @@ def setup_inference_wrapper(
 def setup_model_and_tokenizer(
     path: str,
     trainer: Optional[nl.Trainer] = None,
+    tp_size: int = 1,
+    pp_size: int = 1,
     params_dtype: torch.dtype = torch.bfloat16,
     inference_batch_times_seqlen_threshold: int = 1000,
 ):
     """Set up model and tokenizer"""
-    model_id = "meta-llama/Llama-3.2-11B-Vision-Instruct"
+    model_context = nl.io.load_context(path=nl.ckpt_utils.ckpt_to_context_subdir(path), subpath="model")
+    model_config = model_context.config
 
-    processor = AutoProcessor.from_pretrained(model_id)
-    tokenizer = processor.tokenizer
-    config = vlm.MLlamaConfig11BInstruct()
-    model = vlm.MLlamaModel(config, tokenizer=tokenizer)
+    if isinstance(model_config, vlm.MLlamaModelConfig):
+        model_id = "meta-llama/Llama-3.2-11B-Vision-Instruct"
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = vlm.MLlamaModel(model_config, tokenizer=processor.tokenizer)
+    elif isinstance(model_config, vlm.LlavaConfig):
+        model_id = "llava-hf/llava-1.5-7b-hf"
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = vlm.LlavaModel(model_config, tokenizer=processor.tokenizer)
+    elif isinstance(model_config, vlm.Qwen2VLConfig):
+        if model_config.vision_projection_config.projector_type != "mcore_mlp":
+            raise ValueError("Only support Qwen2.5-VL with mcore_mlp projector type")
+        if model_config.vision_projection_config.hidden_size == 2048:
+            model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
+        elif model_config.vision_projection_config.hidden_size == 3584:
+            model_id = "Qwen/Qwen2.5-VL-7B-Instruct"
+        elif model_config.vision_projection_config.hidden_size == 5120:
+            model_id = "Qwen/Qwen2.5-VL-32B-Instruct"
+        elif model_config.vision_projection_config.hidden_size == 8192:
+            model_id = "Qwen/Qwen2.5-VL-72B-Instruct"
+        else:
+            raise ValueError(f"Unknown model size: {model_config}")
+        min_pixels = 16 * 28 * 28
+        max_pixels = 64 * 28 * 28
+        processor = AutoProcessor.from_pretrained(model_id, min_pixels=min_pixels, max_pixels=max_pixels)
+        model = vlm.Qwen2VLModel(model_config, tokenizer=processor.tokenizer, model_version="qwen25-vl")
+    else:
+        raise ValueError(f"Unknown model config: {model_config}")
+
+    if trainer is None:
+        strategy = nl.MegatronStrategy(
+            tensor_model_parallel_size=tp_size,
+            pipeline_model_parallel_size=pp_size,
+            ckpt_include_optimizer=False,
+        )
+        trainer = nl.Trainer(
+            devices=tp_size * pp_size,
+            max_steps=1000,
+            accelerator="gpu",
+            strategy=strategy,
+            plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
+            val_check_interval=1000,
+            limit_val_batches=50,
+        )
+
     _setup_trainer_and_restore_model(path=path, trainer=trainer, model=model)
 
     inference_wrapped_model = setup_inference_wrapper(
-        model, tokenizer, params_dtype, inference_batch_times_seqlen_threshold
+        model, processor.tokenizer, params_dtype, inference_batch_times_seqlen_threshold
     )
 
     return inference_wrapped_model, processor
@@ -110,6 +157,7 @@ def generate(
     image_processor,
     prompts: List[str],
     images: List[Union[Image, List[Image]]],
+    processor=None,
     max_batch_size: int = 4,
     random_seed: Optional[int] = None,
     inference_params: Optional[CommonInferenceParams] = None,
@@ -131,11 +179,19 @@ def generate(
         list[Union["InferenceRequest", str]]: A list of generated text,
             either as a string or as an InferenceRequest object.
     """
-    text_generation_controller = VLMTextGenerationController(
-        inference_wrapped_model=wrapped_model,
-        tokenizer=tokenizer,
-        image_processor=image_processor,
-    )
+    if isinstance(wrapped_model, QwenVLInferenceWrapper):
+        text_generation_controller = QwenVLTextGenerationController(
+            inference_wrapped_model=wrapped_model,
+            tokenizer=tokenizer,
+            image_processor=image_processor,
+            processor=processor,
+        )
+    else:
+        text_generation_controller = VLMTextGenerationController(
+            inference_wrapped_model=wrapped_model,
+            tokenizer=tokenizer,
+            image_processor=image_processor,
+        )
     mcore_engine = VLMEngine(
         text_generation_controller=text_generation_controller, max_batch_size=max_batch_size, random_seed=random_seed
     )

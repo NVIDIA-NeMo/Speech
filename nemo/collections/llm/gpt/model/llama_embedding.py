@@ -30,6 +30,7 @@ from nemo.collections.llm.bert.loss import BERTInBatchExclusiveHardNegativesRank
 from nemo.collections.llm.gpt.model import GPTConfig
 from nemo.collections.llm.gpt.model.llama import (
     HFLlamaImporter,
+    Llama31Config,
     Llama32Config1B,
     Llama32Config3B,
     LlamaConfig,
@@ -385,6 +386,16 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
         from nemo.collections.llm.gpt.model.hf_llama_embedding import LlamaBidirectionalConfig
 
         LlamaBidirectionalConfig.register_for_auto_class("AutoConfig")
+        rope_scaling = None
+        # For Llama 3.1 and Llama 3.2, rope_scaling is used and thus needed to parsed to the config
+        if isinstance(source, Llama31Config):
+            rope_scaling = {
+                'factor': source.scale_factor,
+                'low_freq_factor': source.low_freq_factor,
+                'high_freq_factor': source.high_freq_factor,
+                'original_max_position_embeddings': source.old_context_len,
+                'rope_type': 'llama3',
+            }
         return LlamaBidirectionalConfig(
             num_hidden_layers=source.num_layers,
             hidden_size=source.hidden_size,
@@ -397,6 +408,7 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
             rope_theta=source.rotary_base,
             vocab_size=self.tokenizer.vocab_size,
             tie_word_embeddings=source.share_embeddings_and_output_weights,
+            rope_scaling=rope_scaling,
         )
 
     def convert_state(self, source, target):

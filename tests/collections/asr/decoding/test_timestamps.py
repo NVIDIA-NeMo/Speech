@@ -18,6 +18,7 @@ from typing import Any
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.collections.asr.parts.utils.timestamp_utils import get_segment_offsets, get_words_offsets
 
 
 class BaseTimestampsTest:
@@ -83,12 +84,12 @@ class BaseTimestampsTest:
     @property
     def char_offsets_wpe(self):
         char_offsets = [
-            {"char": 105, "start_offset": 0, "end_offset": 1},
-            {"char": 126, "start_offset": 2, "end_offset": 2},
-            {"char": 117, "start_offset": 3, "end_offset": 4},
-            {"char": 68, "start_offset": 5, "end_offset": 6},
-            {"char": 57, "start_offset": 6, "end_offset": 7},
-            {"char": 122, "start_offset": 8, "end_offset": 9},
+            {"char": "nineteen", "start_offset": 0, "end_offset": 1},
+            {"char": "##th", "start_offset": 2, "end_offset": 2},
+            {"char": "re", "start_offset": 3, "end_offset": 4},
+            {"char": "seven", "start_offset": 5, "end_offset": 6},
+            {"char": "##ty", "start_offset": 6, "end_offset": 7},
+            {"char": "eighty", "start_offset": 8, "end_offset": 9},
         ]
 
         return char_offsets
@@ -112,12 +113,25 @@ class BaseTimestampsTest:
     @property
     def char_offsets_bpe(self):
         char_offsets = [
-            {"char": 1014, "start_offset": 0, "end_offset": 2},
-            {"char": 1009, "start_offset": 2, "end_offset": 4},
-            {"char": 6, "start_offset": 5, "end_offset": 5},
-            {"char": 145, "start_offset": 5, "end_offset": 6},
-            {"char": 349, "start_offset": 6, "end_offset": 7},
-            {"char": 622, "start_offset": 8, "end_offset": 9},
+            {"char": "discuss", "start_offset": 0, "end_offset": 2},
+            {"char": "absolute", "start_offset": 2, "end_offset": 4},
+            {"char": "'", "start_offset": 5, "end_offset": 5},
+            {"char": "really", "start_offset": 5, "end_offset": 6},
+            {"char": "friend", "start_offset": 6, "end_offset": 7},
+            {"char": "ship", "start_offset": 8, "end_offset": 9},
+        ]
+
+        return char_offsets
+
+    @property
+    def encoded_char_offsets_bpe(self):
+        char_offsets = [
+            {"char": "▁discuss", "start_offset": 0, "end_offset": 2},
+            {"char": "▁absolute", "start_offset": 2, "end_offset": 4},
+            {"char": "'", "start_offset": 5, "end_offset": 5},
+            {"char": "▁really", "start_offset": 5, "end_offset": 6},
+            {"char": "▁friend", "start_offset": 6, "end_offset": 7},
+            {"char": "ship", "start_offset": 8, "end_offset": 9},
         ]
 
         return char_offsets
@@ -209,68 +223,83 @@ class BaseTimestampsTest:
         assert hypothesis_text == decoding.word_seperator.join(segments_from_timestamps)
 
     def test_word_offsets_chars(self):
-        word_offsets = self.decoding_char.get_words_offsets(
+        word_offsets = get_words_offsets(
             char_offsets=self.char_offsets_chars,
             encoded_char_offsets=None,
             word_delimiter_char=" ",
+            tokenizer_type="char",
             supported_punctuation={'.', '!', '?'},
+            decode_tokens_to_str=self.decoding_char.decode_tokens_to_str,
         )
 
         assert word_offsets == self.word_offsets_chars_expected_output
 
     def test_word_offsets_char_other_delimiter(self):
-        word_offsets = self.decoding_char.get_words_offsets(
+        word_offsets = get_words_offsets(
             char_offsets=self.char_offsets_chars,
             encoded_char_offsets=None,
+            tokenizer_type="char",
             word_delimiter_char=".",
             supported_punctuation={'.', '!', '?'},
+            decode_tokens_to_str=self.decoding_char.decode_tokens_to_str,
         )
 
         assert word_offsets == self.word_offsets_chars_expected_output_other_delimiter
 
     def test_word_offsets_subword_wpe(self):
-        word_offsets = self.decoding_subword_wpe.get_words_offsets(
-            char_offsets=None,
-            encoded_char_offsets=self.char_offsets_wpe,
+
+        word_offsets = get_words_offsets(
+            char_offsets=self.char_offsets_wpe,
+            encoded_char_offsets=None,
             word_delimiter_char=" ",
+            tokenizer_type="wpe",
             supported_punctuation={'.', '!', '?'},
+            decode_tokens_to_str=self.decoding_subword_wpe.decode_tokens_to_str,
         )
 
         assert word_offsets == self.word_offsets_wpe_expected_output
 
     def test_word_offsets_subword_wpe_other_delimiter(self):
-        word_offsets = self.decoding_subword_wpe.get_words_offsets(
-            char_offsets=None,
-            encoded_char_offsets=self.char_offsets_wpe,
+
+        word_offsets = get_words_offsets(
+            char_offsets=self.char_offsets_wpe,
+            encoded_char_offsets=None,
             word_delimiter_char="re",
+            tokenizer_type="wpe",
             supported_punctuation={'.', '!', '?'},
+            decode_tokens_to_str=self.decoding_subword_wpe.decode_tokens_to_str,
         )
 
         assert word_offsets == self.word_offsets_wpe_expected_output_other_delimiter
 
     def test_word_offsets_subword_bpe(self):
-        word_offsets = self.decoding_subword_bpe.get_words_offsets(
-            char_offsets=None,
-            encoded_char_offsets=self.char_offsets_bpe,
+
+        word_offsets = get_words_offsets(
+            char_offsets=self.char_offsets_bpe,
+            encoded_char_offsets=self.encoded_char_offsets_bpe,
             word_delimiter_char=" ",
+            tokenizer_type="bpe",
             supported_punctuation={'.', '!', '?'},
+            decode_tokens_to_str=self.decoding_subword_bpe.decode_tokens_to_str,
         )
 
         assert word_offsets == self.word_offsets_bpe_expected_output
 
     def test_word_offsets_subword_bpe_other_delimiter(self):
-        word_offsets = self.decoding_subword_bpe.get_words_offsets(
-            char_offsets=None,
-            encoded_char_offsets=self.char_offsets_bpe,
+        word_offsets = get_words_offsets(
+            char_offsets=self.char_offsets_bpe,
+            encoded_char_offsets=self.encoded_char_offsets_bpe,
             word_delimiter_char="really",
+            tokenizer_type="bpe",
             supported_punctuation={'.', '!', '?'},
+            decode_tokens_to_str=self.decoding_subword_bpe.decode_tokens_to_str,
         )
 
         assert word_offsets == self.word_offsets_bpe_expected_output_other_delimiter
 
     def test_segment_offsets_delimiter(self):
-        segment_offsets = self.decoding_char._get_segment_offsets(
-            offsets=self.word_offsets_chars_expected_output,
+        segment_offsets = get_segment_offsets(
+            word_offsets=self.word_offsets_chars_expected_output,
             segment_delimiter_tokens=['.', '!', '?'],
             supported_punctuation={'.', '!', '?'},
         )
@@ -278,8 +307,8 @@ class BaseTimestampsTest:
         assert segment_offsets == self.segment_offsets_expected_output
 
     def test_segment_offsets_gap(self):
-        segment_offsets = self.decoding_char._get_segment_offsets(
-            offsets=self.word_offsets_chars_expected_output,
+        segment_offsets = get_segment_offsets(
+            word_offsets=self.word_offsets_chars_expected_output,
             segment_delimiter_tokens=[],
             supported_punctuation={},
             segment_gap_threshold=10,

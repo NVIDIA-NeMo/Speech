@@ -71,7 +71,11 @@ def _set_gpt_mamba_modelopt_spec(
     logging.info("Setting model layer specification to the modelopt layer spec")
 
     if isinstance(model_cfg, llm.GPTConfig):
-        model_cfg.transformer_layer_spec = partial(get_gpt_modelopt_spec, remap_te_layernorm=True)
+        model_cfg.transformer_layer_spec = partial(
+            get_gpt_modelopt_spec,
+            remap_te_layernorm=True,
+            local_core_attention=getattr(model_cfg, "softmax_type", "vanilla") != "vanilla",
+        )
     elif isinstance(model_cfg, llm.SSMConfig):
         model_cfg.mamba_stack_spec = partial(get_mamba_stack_modelopt_spec, remap_te_layernorm=True)
     else:
@@ -234,6 +238,7 @@ def restore_modelopt_state(
         mto.plugins.restore_sharded_modelopt_state(
             [core_model],
             ckpt_to_weights_subdir(path, is_saving=False),
+            prefix="module.",
         )
     if mto.ModeloptStateManager.is_converted(core_model):
         logging.info("Restored Model Optimizer state from checkpoint.")

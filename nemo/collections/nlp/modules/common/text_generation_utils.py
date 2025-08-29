@@ -30,13 +30,6 @@ import torch.nn.functional as F
 from lightning.fabric.utilities.seed import seed_everything
 
 from nemo.collections.common.tokenizers.tabular_tokenizer import TabularTokenizer
-from nemo.collections.multimodal.data.neva.conversation import (
-    DEFAULT_IM_END_TOKEN,
-    DEFAULT_IM_START_TOKEN,
-    DEFAULT_IMAGE_PATCH_TOKEN,
-    DEFAULT_VID_END_TOKEN,
-    DEFAULT_VID_START_TOKEN,
-)
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
 from nemo.collections.nlp.modules.common.text_generation_strategy import model_inference_strategy_dispatcher
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, OutputType, SamplingParam
@@ -64,7 +57,6 @@ __all__ = [
     "get_default_sampling_params",
     "get_default_length_params",
     "megatron_gpt_generate",
-    "megatron_neva_generate",
     "get_computeprob_response",
     "generate",
     "sample_token_greedy",
@@ -209,115 +201,6 @@ def encode_time_str(text: str, duration: float, num_time_tokens: int = 100, time
     # This is to remove the timestamps from the text
     text = re.sub(r"<!\|t([\d.]+)t\|!>", "", text)
     return text.strip()
-
-
-def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_params, inference_config, **strategy_args):
-    use_lita = model.cfg.mm_cfg.get('use_lita', False)
-    if use_lita:
-        num_time_tokens = model.cfg.data.get('num_time_tokens', 100)
-        TIME_TOKEN_TEMPLATE = "<t{t}>"
-        time_tokens = [TIME_TOKEN_TEMPLATE.format(t=i) for i in range(num_time_tokens)]
-        time_token_ids = model.tokenizer.tokens_to_ids(time_tokens)
-
-    model_type = model.cfg.mm_cfg.llm.get("model_type", "nvgpt")
-    conv_template = model.cfg.data.get("conv_template", "nvgpt")
-    final_response = []
-    for idx, prompt_dict in enumerate(prompt_dict_list):
-        # determine the media type in the prompt_dict
-        media_type_token = inference_config.inference.get("media_type", "image")
-        if use_lita:
-            if prompt_dict.get("duration") is not None:
-                duration = prompt_dict.get("duration")
-                prompt_dict['prompt'] = encode_time_str(
-                    prompt_dict['prompt'], duration, num_time_tokens, TIME_TOKEN_TEMPLATE
-                )
-            else:
-                print("duration field is not in prompt file, skipping time encoding.")
-        response = generate(
-            model,
-            inputs=prompt_dict.get('prompt'),
-            tokens_to_generate=length_params['max_length'],
-            all_probs=sampling_params['all_probs'],
-            compute_logprob=sampling_params['compute_logprob'],
-            temperature=sampling_params['temperature'],
-            add_BOS=sampling_params['add_BOS'],
-            top_k=sampling_params['top_k'],
-            top_p=sampling_params['top_p'],
-            greedy=sampling_params['use_greedy'],
-            repetition_penalty=sampling_params['repetition_penalty'],
-            end_strings=sampling_params['end_strings'],
-            min_tokens_to_generate=length_params['min_length'],
-            compute_attention_mask=sampling_params.get("compute_attention_mask", True),
-            image_list=prompt_dict.get(media_type_token),
-            **strategy_args,
-        )
-
-        # Middle stages of PP will return None
-        if response is None:
-            continue
-
-        # Regular expression pattern to match the sequence
-        pattern = re.compile(
-            rf'{DEFAULT_IM_START_TOKEN[model_type]}( ⁇ )+{DEFAULT_IM_END_TOKEN[model_type]}'.replace(r'|', r'\|')
-        )
-        pattern_nvgpt = re.compile(
-            rf'{DEFAULT_IM_START_TOKEN[model_type]}({DEFAULT_IMAGE_PATCH_TOKEN[model_type]})+{DEFAULT_IM_END_TOKEN[model_type]}'.replace(
-                r'|', r'\|'
-            )
-        )
-
-        if use_lita:
-            pattern_lita = re.compile(rf'{DEFAULT_IM_START_TOKEN[model_type]}(.)+{DEFAULT_IM_END_TOKEN[model_type]}')
-            combined_pattern = re.compile(f'{pattern_lita.pattern}')
-        else:
-            combined_pattern = re.compile(f'{pattern.pattern}|{pattern_nvgpt.pattern}')
-        clean_text = re.sub(combined_pattern, f"<{media_type_token}>", response['sentences'][0])
-
-        clean_response = clean_text
-
-        if conv_template in ["nvgpt", "nv_steerlm"]:
-            labels_str_regexp = re.compile(f"<extra_id_2>quality:.*\n")
-            last_match_end_position = None
-            for match in re.finditer(labels_str_regexp, clean_response):
-                last_match_end_position = match.end()
-            if last_match_end_position is not None:
-                clean_response = clean_response[last_match_end_position:]
-            clean_response = clean_response.strip("<extra_id_1>")
-        elif conv_template == 'nv_dpo':
-            clean_response = clean_response.split("<extra_id_1>Assistant\n")[-1]
-            clean_response = clean_response.strip("<extra_id_1>")
-        elif conv_template == "llama_2":
-            clean_response = clean_response.rsplit("[/INST] ", 1)[-1]
-        elif conv_template == "llama_3":
-            clean_response = clean_response.rsplit("assistant<|end_header_id|>\n\n", 1)[-1]
-            clean_response = re.sub(r"(<\|eot_id\|>)+$", "", clean_response)
-        elif conv_template == "yi_34b":
-            clean_response = clean_response.split("<|im_start|>assistant\n")[-1]
-            clean_response = clean_response.strip("<|im_end|>")
-        elif conv_template == "v1":
-            clean_response = clean_response.rsplit("ASSISTANT: ", 1)[-1]
-
-        if use_lita:
-            if prompt_dict.get("duration", None) is not None:
-                duration = prompt_dict.get("duration")
-                clean_response = decode_time_tokens(
-                    model.tokenizer, clean_response, duration, time_tokens, time_token_ids
-                )
-            else:
-                print("duration field is not in prompt file, skipping time decoding.")
-        clean_response = clean_response.strip()
-        response["clean_text"] = clean_text
-        response["clean_response"] = clean_response
-        final_response.append(response)
-
-        if torch.cuda.current_device() == 0:
-            print(f"------------- PROMPT {idx} of {len(prompt_dict_list)} ------------ ")
-            print(clean_text)
-            print()
-            print(f"CLEAN RESPONSE: {clean_response}")
-            print("---------------------------------------------\n")
-
-    return final_response
 
 
 def get_computeprob_response(tokenizer, response, inputs):

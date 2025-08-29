@@ -15,5 +15,3 @@
 BLANK_TOKEN = "<b>"
 
 SPACE_TOKEN = "<space>"
-
-V_NEGATIVE_NUM = -3.4e38  # this is just above the most negative number in torch.float32

@@ -370,7 +370,10 @@ class Flux(VisionModule):
         if load_dist_ckpt:
             from megatron.core import dist_checkpointing
 
-            sharded_state_dict = dict(state_dict=self.sharded_state_dict(prefix="module."))
+            sharded_sd_metadata = dist_checkpointing.load_content_metadata(ckpt_path)
+            sharded_state_dict = dict(
+                state_dict=self.sharded_state_dict(prefix="module.", metadata=sharded_sd_metadata)
+            )
             loaded_state_dict = dist_checkpointing.load(
                 sharded_state_dict=sharded_state_dict, checkpoint_dir=ckpt_path
             )

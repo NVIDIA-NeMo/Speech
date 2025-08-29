@@ -16,7 +16,6 @@ import json
 import os
 import shutil
 import tarfile
-import unicodedata
 from abc import ABC, abstractmethod
 from typing import List
 
@@ -29,6 +28,10 @@ from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModel
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.utils import asr_module_utils
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.collections.asr.parts.utils.tokenizer_utils import (
+    extract_capitalized_tokens_from_vocab,
+    extract_punctuation_from_vocab,
+)
 from nemo.collections.common import tokenizers
 from nemo.utils import app_state, logging
 
@@ -482,11 +485,8 @@ class ASRBPEMixin(ABC):
     def _derive_tokenizer_properties(self):
         vocab = self.tokenizer.tokenizer.get_vocab()
 
-        capitalized_tokens = {token.strip() for token in vocab if any(char.isupper() for char in token)}
-        self.tokenizer.supports_capitalization = bool(capitalized_tokens)
-
-        punctuation = {char for token in vocab for char in token if unicodedata.category(char).startswith('P')}
-        self.tokenizer.supported_punctuation = punctuation
+        self.tokenizer.supports_capitalization = bool(extract_capitalized_tokens_from_vocab(vocab))
+        self.tokenizer.supported_punctuation = extract_punctuation_from_vocab(vocab)
 
 
 class ASRModuleMixin(ASRAdapterModelMixin):

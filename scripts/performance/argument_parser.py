@@ -170,7 +170,7 @@ def parse_cli_args():
     )
     nemo_home_msg = [
         "Sets env var `NEMO_HOME` (on compute node using sbatch script)- directory where NeMo searches",
-        "for models and checkpoints. This saves a lot of time (especially for bigger models) if checkpoints already",
+        "for models and datasets. This saves a lot of time (especially for bigger models) if checkpoints already",
         f"exist here. Missing files will be downloaded here from HuggingFace. Defaults to {DEFAULT_NEMO_HOME}",
     ]
     parser.add_argument(
@@ -392,6 +392,28 @@ def parse_cli_args():
         type=bool_arg,
         required=False,
         default=None,
+    )
+    parser.add_argument(
+        "-vb",
+        "--enable_vboost",
+        help="Enable VBoost which steers more power towards tensor cores. Disabled by default",
+        type=bool_arg,
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
+        "--use_te_act_func",
+        help="Use TE activation function for the MLP part.",
+        type=bool_arg,
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
+        "--act_func_fp8_input_store",
+        help="Store input of activation function in FP8 (tensorwise recipe). Disabled by default",
+        type=bool_arg,
+        required=False,
+        default=False,
     )
 
     return parser

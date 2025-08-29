@@ -439,6 +439,12 @@ class TestEncDecRNNTModel:
             'blank_index',
             'tdt_include_duration_confidence',
             'tdt_include_token_duration',
+            'boosting_tree',
+            'boosting_tree_alpha',
+            'fusion_models',
+            'fusion_models_alpha',
+            'ngram_lm_model',
+            'ngram_lm_alpha',
         ]
 
         result = assert_dataclass_signature_match(
@@ -453,7 +459,13 @@ class TestEncDecRNNTModel:
 
     @pytest.mark.unit
     def test_BeamRNNTInferConfig(self):
-        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index']
+        IGNORE_ARGS = [
+            'decoder_model',
+            'joint_model',
+            'blank_index',
+            'boosting_tree',
+            'boosting_tree_alpha',
+        ]
 
         result = assert_dataclass_signature_match(
             beam_decode.BeamRNNTInfer, beam_decode.BeamRNNTInferConfig, ignore_args=IGNORE_ARGS

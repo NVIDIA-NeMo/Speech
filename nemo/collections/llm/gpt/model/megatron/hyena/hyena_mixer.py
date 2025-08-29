@@ -44,7 +44,6 @@ from nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils import (
 logger = logging.getLogger(__name__)
 
 try:
-    import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
 except ImportError:
 
@@ -65,6 +64,14 @@ except ImportError:
 
     te = _te()  # if a user accesses anything in this module, an error will be raised
     logger.warning("WARNING: transformer_engine not installed. Using default recipe.")
+
+try:
+    from subquadratic_ops.rearrange import rearrange as subquadratic_ops_rearrange
+except ImportError:
+
+    def subquadratic_ops_rearrange(*args, **kwargs):
+        """Not imported: subquadratic_ops_rearrange. An error will be raised if this is called."""
+        raise ImportError("subquadratic_ops not installed. subquadratic_ops_rearrange is not available.")
 
 
 def set_format_recipe():
@@ -106,7 +113,7 @@ class HyenaMixer(MegatronModule):
         self.fast_conv_mixer = self.hyena_config.fast_conv_mixer
 
         # Use b2b causal conv1d
-        self.use_b2b_causal_conv1d = self.transformer_config.use_b2b_causal_conv1d
+        self.use_subquadratic_ops = self.transformer_config.use_subquadratic_ops
 
         # Per attention head and per partition values.
         assert torch.distributed.is_initialized()
@@ -184,7 +191,7 @@ class HyenaMixer(MegatronModule):
                 use_conv_bias=self.transformer_config.use_short_conv_bias,
             )
 
-            if self.use_b2b_causal_conv1d:
+            if self.use_subquadratic_ops:
                 # Create a wrapper module that doesn't register parameters
                 # Use the existing weights from the original model
                 self.b2b_kernel = B2BCausalConv1dModule(
@@ -203,6 +210,8 @@ class HyenaMixer(MegatronModule):
                 self.num_groups = self.hyena_config.num_groups_hyena
             self.num_groups_per_tp_rank = self.num_groups // self.model_parallel_size
 
+            # subquadratic_ops LI layer is handled internally in the ParallelHyenaOperator
+            # by transformer_configs.use_subquadratic_ops
             self.mixer = ParallelHyenaOperator(
                 self.hidden_size,  # pass hidden size here to avoid recalculating
                 self.transformer_config,
@@ -212,7 +221,7 @@ class HyenaMixer(MegatronModule):
                 max_sequence_length,
             )
 
-            if self.use_b2b_causal_conv1d and self.operator_type == "hyena_medium_conv":
+            if self.use_subquadratic_ops and self.operator_type == "hyena_medium_conv":
                 # Create a wrapper module that doesn't register parameters
                 # Use the existing weights from the original model
                 self.b2b_kernel = B2BCausalConv1dModule(
@@ -227,6 +236,12 @@ class HyenaMixer(MegatronModule):
         self.dropout_p = self.transformer_config.attention_dropout
         self.attention_dropout = nn.Dropout(self.dropout_p)
 
+        # When using non-parallel row linears, we allow PyTorch's Linear to
+        # add bias: this is faster for TP=1 inference. For other cases (and
+        # training), a more complex path is used, where bias is added as a
+        # separate step.
+        dense_skip_bias_add = not self.transformer_config.plain_row_linear
+
         self.dense = build_module(
             submodules.dense,
             self.hidden_size,
@@ -235,7 +250,7 @@ class HyenaMixer(MegatronModule):
             init_method=self.transformer_config.output_layer_init_method,
             bias=True,
             input_is_parallel=True,
-            skip_bias_add=True,
+            skip_bias_add=dense_skip_bias_add,
             is_expert=False,
             tp_comm_buffer_name='fc2',
         )
@@ -251,12 +266,6 @@ class HyenaMixer(MegatronModule):
                 sharded_state_dict.update(module_sharded_sd)
 
         return sharded_state_dict
-
-    def _maybe_use_fp8(self, func, *args, **kwargs):
-        if self.transformer_config.vortex_style_fp8:
-            with te.fp8_autocast(enabled=True, fp8_recipe=set_format_recipe()):
-                return func(*args, **kwargs)
-        return func(*args, **kwargs)
 
     def forward(self, x, layer_past=None, inference_context=None, _hyena_use_cp=True):
         """Applies the Hyena sequence mixing operation to input embeddings.
@@ -280,36 +289,17 @@ class HyenaMixer(MegatronModule):
             _proj_use_cp = True
         else:
             _proj_use_cp = False
-        # Handle padding for FP8 if enabled
-        if self.transformer_config.vortex_style_fp8:
 
-            def pad_to_multiple(x, multiple=16):
-                """Pad tensor to make sequence length divisible by multiple."""
-                seq_len = x.size(0)
-                if seq_len % multiple == 0:
-                    return x
-
-                pad_len = multiple - (seq_len % multiple)
-                pad_tensor = torch.zeros(pad_len, *x.shape[1:], device=x.device, dtype=x.dtype)
-                return torch.cat([x, pad_tensor], dim=0)
-
-            # Direct padding without rearrange
-            L = x.shape[0]
-            x = pad_to_multiple(x)
-            features, _ = self._maybe_use_fp8(self.dense_projection, x)
-
-            # Slice back to original sequence length if padding was added
-
-            if features.shape[0] > L:
-                features = features[:L, :, :]
+        features, _ = self.dense_projection(x)
+        if self.use_subquadratic_ops:
+            features = subquadratic_ops_rearrange(features, bhl_to_lbh=False)
         else:
-            features, _ = self.dense_projection(x)
-        features = rearrange(features, "l b d -> b d l").contiguous()
+            features = rearrange(features, "l b d -> b d l").contiguous()
 
         if (
-            self.use_b2b_causal_conv1d
+            self.use_subquadratic_ops
             and self.operator_type in ["hyena_short_conv", "hyena_medium_conv"]
-            and inference_context is not None
+            and inference_context is None
         ):
             # todo: support inference_context for b2b_kernel
             # Use the B2BCausalConv1dModule wrapper with the existing weights from the original model
@@ -323,6 +313,9 @@ class HyenaMixer(MegatronModule):
             )
             z = self.mixer(x1, x2, v, _hyena_use_cp=_proj_use_cp, inference_context=inference_context)
 
-        z = rearrange(z, "b d l -> l b d").contiguous()
+        if self.use_subquadratic_ops:
+            z = subquadratic_ops_rearrange(z, bhl_to_lbh=True)
+        else:
+            z = rearrange(z, "b d l -> l b d").contiguous()
         y, bias = self.dense(z)
         return y, bias

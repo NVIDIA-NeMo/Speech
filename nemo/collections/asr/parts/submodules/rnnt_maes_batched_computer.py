@@ -16,7 +16,6 @@ from typing import Optional
 
 import torch
 
-from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INACTIVE_SCORE,
@@ -105,8 +104,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             expected_blank_index = self.joint.num_classes_with_blank - self.joint.num_extra_outputs - 1
             if self._blank_index != expected_blank_index:
                 raise ValueError(f"Invalid blank index: expected {expected_blank_index}, got {self._blank_index}")
-
-            self.ngram_lm_batch = NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=self._blank_index)
+            self.ngram_lm_batch = ngram_lm_model
 
             self.pruning_mode = PruningMode.EARLY if pruning_mode is None else PruningMode(pruning_mode)
             self.blank_lm_score_mode = (

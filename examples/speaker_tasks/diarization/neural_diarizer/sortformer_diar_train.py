@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import lightning.pytorch as pl
+from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
-from pytorch_lightning import seed_everything
 
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.core.config import hydra_runner

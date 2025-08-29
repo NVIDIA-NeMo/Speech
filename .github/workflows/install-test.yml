@@ -40,7 +40,7 @@ jobs:
             export NEMO_TAG
             export NEMO_REPO
             export INSTALL_DIR=$(pwd)
-            
+
             bash docker/common/install_dep.sh --library all --mode install
             pip install --no-cache-dir ".[all]"
           fi
@@ -48,7 +48,7 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts" "nlp"; do
+          for collection in "asr" "tts" "nlp" "lightning" "core"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
 
@@ -85,7 +85,7 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts" "nlp"; do
+          for collection in "asr" "tts" "nlp" "lightning" "core"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
 
@@ -122,6 +122,6 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts" "nlp"; do
+          for collection in "asr" "tts" "nlp" "lightning" "core"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done

@@ -21,16 +21,17 @@ Canary
 ~~~~~~
 
 Canary is the latest family of models from NVIDIA NeMo. Canary models are encoder-decoder models with a :ref:`FastConformer Encoder <Fast-Conformer>` and Transformer Decoder :cite:`asr-models-vaswani2017aayn`.
-They are multi-lingual, multi-task model, supporting automatic speech-to-text recognition (ASR) in 4 languages (English, German, French, Spanish) as well as translation between English and the 3 other supported languages.
+They are multi-lingual, multi-task model, supporting automatic speech-to-text recognition (ASR) in 25 EU languages as well as translation between English and the 24 other supported languages.
 
 Models:
-
+* `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`__ model card
 * `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`__ model card
 * `Canary-180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`__ model card
 * `Canary-1B <https://huggingface.co/nvidia/canary-1b>`__ model card
 
 Spaces:
 
+* `Canary-1B V2 <https://huggingface.co/spaces/nvidia/canary-1b-v2>`__
 * `Canary-1B Flash <https://huggingface.co/spaces/nvidia/canary-1b-flash>`__
 * `Canary-1B <https://huggingface.co/spaces/nvidia/canary-1b>`__
 
@@ -308,38 +309,6 @@ For the detailed information see:
 
 * :ref:`Text-only dataset <Hybrid-ASR-TTS_model__Text-Only-Data>` preparation
 * :ref:`Configs and training <Hybrid-ASR-TTS_model__Config>`
-
-
-.. _Confidence-Ensembles:
-
-Confidence-based Ensembles
---------------------------
-
-Confidence-based ensemble is a simple way to combine multiple models into a single system by only retaining the
-output of the most confident model. Below is a schematic illustration of how such ensembles work.
-
-.. image:: images/conf-ensembles-overview.png
-    :align: center
-    :alt: confidence-based ensembles
-    :scale: 50%
-
-For more details about this model, see the `paper <https://arxiv.org/abs/2306.15824>`_
-or read our `tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Confidence_Ensembles.ipynb>`_.
-
-NeMo support Confidence-based Ensembles through the
-:ref:`nemo.collections.asr.models.confidence_ensemble.ConfidenceEnsembleModel <confidence-ensembles-api>` class.
-
-A typical workflow to create and use the ensemble is like this
-
-1. Run `scripts/confidence_ensembles/build_ensemble.py <https://github.com/NVIDIA/NeMo/blob/main/scripts/confidence_ensembles/build_ensemble.py>`_
-   script to create ensemble from existing models. See the documentation inside the script for usage examples
-   and description of all the supported functionality.
-2. The script outputs a checkpoint that combines all the models in an ensemble. It can be directly used to transcribe
-   speech by calling ``.trascribe()`` method or using
-   `examples/asr/transcribe_speech.py <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/transcribe_speech.py>`_.
-
-Note that the ensemble cannot be modified after construction (e.g. it does not support finetuning) and only
-transcribe functionality is supported (e.g., ``.forward()`` is not properly defined).
 
 .. _Jasper_model:
 

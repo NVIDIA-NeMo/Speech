@@ -1,4 +1,5 @@
 Model,Model Base Class
+`canary-1b-v2 <https://huggingface.co/nvidia/canary-1b-v2>`_,EncDecMultiTaskModel
 `parakeet-tdt-1.1b <https://huggingface.co/nvidia/parakeet-tdt-1.1b>`_, EncDecRNNTBPEModel
 `parakeet-tdt_ctc-1.1b <https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b>`_, ASRModel
 `parakeet-tdt_ctc-110m <https://huggingface.co/nvidia/parakeet-tdt_ctc-110m>`_, ASRModel

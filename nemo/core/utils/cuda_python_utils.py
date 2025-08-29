@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from packaging.version import Version
 
-__CUDA_PYTHON_MINIMUM_VERSION_CUDA_GRAPH_CONDITIONAL_NODES_SUPPORTED__ = (12, 3)  # 12030
+__CUDA_PYTHON_MINIMUM_VERSION_CUDA_GRAPH_CONDITIONAL_NODES_SUPPORTED__ = (12, 6)  # 12060
 
 
 def check_cuda_python_cuda_graphs_conditional_nodes_supported():
@@ -89,7 +89,8 @@ def assert_drv(err):
 
 def cu_call(f_call_out):
     """
-    Makes calls to cuda-python's functions inside cuda.cuda more python by throwing an exception if they return a status which is not cudaSuccess
+    Makes calls to cuda-python's functions inside cuda.cuda more python by throwing an exception
+    if they return a status which is not cudaSuccess
     """
     from cuda import cudart
 
@@ -111,7 +112,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     execute the next iteration of the loop).
     """
     from cuda import __version__ as cuda_python_version
-    from cuda import cuda, cudart, nvrtc
+    from cuda import cuda, cudart
 
     capture_status, _, graph, _, _ = cu_call(
         cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)

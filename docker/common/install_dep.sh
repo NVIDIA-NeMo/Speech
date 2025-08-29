@@ -244,7 +244,7 @@ mcore() {
 
   build() {
     if [[ "${NVIDIA_PYTORCH_VERSION}" != "" ]]; then
-      pip wheel --no-deps --no-cache-dir --wheel-dir $WHEELS_DIR $MAMBA_DIR
+      pip wheel --no-deps --no-cache-dir --no-build-isolation --wheel-dir $WHEELS_DIR $MAMBA_DIR
       pip wheel --no-deps --no-cache-dir --wheel-dir $WHEELS_DIR $CAUSAL_CONV1D_DIR
     fi
 

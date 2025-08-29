@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import lightning.pytorch as pl
 import torch
@@ -182,3 +182,72 @@ class ParameterDebugger(Callback):
 
             debug_table.align = "l"
             logging.info("\n" + debug_table.get_string())
+
+
+class ModelTrainingStateCallback(Callback):
+    """
+    Callback to detect model training state corruption after validation loop.
+
+    This callback monitors whether all model components maintain their training
+    state consistently before and after validation. Designed to catch issues
+    where some modules are left in eval() mode after PTL validation loop.
+
+    Args:
+        val_check_interval: Interval at which validation occurs. Default: 10.
+        strict: If True, raises an exception when corruption is detected. Default: False.
+    """
+
+    def __init__(self, val_check_interval: int = 10, strict: bool = False):
+        self.val_check_interval = val_check_interval
+        self.strict = strict
+        self._pre_validation_state = None
+        self._expecting_check = False
+
+    def _get_training_state(self, trainer: "pl.Trainer") -> Dict[str, int]:
+        """Get training/eval module counts from model chunks."""
+        from nemo.lightning.megatron_parallel import MegatronParallel
+        from nemo.utils.model_utils import unwrap_model
+
+        # Extract model chunks
+        model = trainer.model
+        if isinstance(model, MegatronParallel):
+            chunks = model.pipeline
+            model_chunks = chunks if isinstance(chunks, list) else [chunks]
+        else:
+            model_chunks = model if isinstance(model, list) else [model]
+
+        # Count training/eval modules
+        training_count = sum(sum(1 for m in unwrap_model(chunk).modules() if m.training) for chunk in model_chunks)
+
+        return {'training_modules': training_count, 'num_chunks': len(model_chunks)}
+
+    def on_train_batch_start(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", batch: Any, batch_idx: int
+    ) -> None:
+        """Monitor training state before/after validation."""
+        step = trainer.global_step
+
+        # Check state after validation
+        if self._expecting_check and self._pre_validation_state:
+            pre_count = self._pre_validation_state['training_modules']
+            post_count = self._get_training_state(trainer)['training_modules']
+
+            if pre_count != post_count:
+                msg = (
+                    f"Model training state corruption detected! "
+                    f"Before validation: {pre_count} training modules, "
+                    f"after validation: {post_count} training modules (step {step})"
+                )
+
+                if self.strict:
+                    raise RuntimeError(msg)
+                else:
+                    logging.warning(msg)
+
+            self._pre_validation_state = None
+            self._expecting_check = False
+
+        # Capture state before next validation
+        if (step + 1) % self.val_check_interval == 0:
+            self._pre_validation_state = self._get_training_state(trainer)
+            self._expecting_check = True

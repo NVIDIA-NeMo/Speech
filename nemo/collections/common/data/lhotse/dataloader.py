@@ -111,6 +111,7 @@ class LhotseDataLoadingConfig:
     pretokenize: bool = True  # should we apply tokenizer before data sampling
     prompt_format: str | None = None  # when provided, we'll apply the prompt in addition to the tokenizer
     use_multimodal_sampling: bool = False
+    audio_locator_tag: str | None = None  # global audio placeholder token, propagates to datasets in input_cfg
     token_equivalent_duration: float | None = None
     batch_tokens: int | None = None
     quadratic_factor: float | None = None
@@ -463,7 +464,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         cuts = cuts.map(partial(_select_channel, channel_selector=config.channel_selector))
 
     # Resample as a safeguard; it's a no-op when SR is already OK
-    cuts = cuts.resample(config.sample_rate)
+    cuts = cuts.map(partial(resample, sampling_rate=config.sample_rate), apply_fn=None)
 
     # Expands cuts if multiple translations are provided.
     cuts = CutSet(LazyFlattener(cuts.map(_flatten_alt_text, apply_fn=None)))
@@ -648,6 +649,7 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 token_equivalent_duration=config.token_equivalent_duration,
                 strict_2d=config.bucketing_2d_strict_mode,
                 max_ratio=config.max_tpt if isinstance(config.max_tpt, Sequence) else None,
+                measure_total_length=config.measure_total_length,
             )
             cuts = cuts.filter(BucketingFilter(constraint))
         else:
@@ -656,6 +658,7 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 batch_size=config.batch_size,
                 batch_tokens=config.batch_tokens,
                 quadratic_factor=config.quadratic_factor,
+                measure_total_length=config.measure_total_length,
             )
     else:
         if config.bucket_batch_size is not None:
@@ -834,6 +837,20 @@ def maybe_set_cuda_expandable_segments(enabled: bool):
                 "Failed to set expandable_segments:True for PyTorch CUDA allocator. "
                 "You may get training speed improvements if you enable this "
             )
+
+
+def resample(example, sampling_rate):
+    from nemo.collections.common.data.lhotse.text_adapters import NeMoMultimodalConversation
+
+    if isinstance(example, Cut):
+        return example.resample(sampling_rate)
+    elif isinstance(example, NeMoMultimodalConversation):
+        for turn in example.turns:
+            if hasattr(turn, "cut"):
+                turn.cut = turn.cut.resample(sampling_rate)
+        return example
+    else:
+        return example
 
 
 def _select_channel(cut, channel_selector: int | str) -> list:

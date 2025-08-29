@@ -13,13 +13,13 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import torch
 
 from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
@@ -43,8 +43,8 @@ class BatchedLabelLoopingState:
     predictor_outputs: torch.Tensor
     labels: torch.Tensor
     decoded_lengths: torch.Tensor
-    lm_states: Optional[torch.Tensor] = None
-    time_jumps: Optional[torch.Tensor] = None
+    fusion_states_list: list[torch.Tensor] | None = None
+    time_jumps: torch.Tensor | None = None
 
 
 @dataclass
@@ -55,11 +55,11 @@ class LabelLoopingStateItem:
     predictor_output: torch.Tensor
     label: torch.Tensor
     decoded_length: torch.Tensor
-    lm_state: Optional[torch.Tensor] = None
-    time_jump: Optional[torch.Tensor] = None
+    fusion_state_list: list[torch.Tensor] | None = None
+    time_jump: torch.Tensor | None = None
 
 
-class GreedyBatchedLabelLoopingComputerBase(ABC):
+class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
     """
     Base class for Label-Looping algorithm implementation https://arxiv.org/abs/2406.06220
     for optimized batched greedy decoding.
@@ -87,11 +87,11 @@ class GreedyBatchedLabelLoopingComputerBase(ABC):
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
         self.state = None
 
-    def maybe_enable_cuda_graphs(self):
+    def maybe_enable_cuda_graphs(self) -> bool:
         """Enable CUDA graphs if conditions met"""
         if self.cuda_graphs_mode is not None:
             # CUDA graphs are already enabled
-            return
+            return False
 
         if not self.allow_cuda_graphs:
             self.cuda_graphs_mode = None
@@ -113,14 +113,16 @@ class GreedyBatchedLabelLoopingComputerBase(ABC):
                 )
                 self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
         self.reset_cuda_graphs_state()
+        return self.cuda_graphs_mode is not None
 
-    def disable_cuda_graphs(self):
+    def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs, can be used to disable graphs temporary, e.g., in training process"""
         if self.cuda_graphs_mode is None:
             # nothing to disable
-            return
+            return False
         self.cuda_graphs_mode = None
         self.reset_cuda_graphs_state()
+        return True
 
     @abstractmethod
     def torch_impl(
@@ -209,11 +211,9 @@ class GreedyBatchedLabelLoopingComputerBase(ABC):
             prev_batched_state: previous batched decoding state
         """
         if self.cuda_graphs_mode is not None and x.device.type == "cuda":
-            is_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
-            # disable CUDA graphs if DDP and Mixed Precision are used
-            ctx = torch.amp.autocast(device_type="cuda", enabled=False) if is_ddp else nullcontext()
-            with ctx:
-                # TODO(vbataev): fix issue with DDP+mixed precision, remove this restriction
+            # disable CUDA graphs if Mixed Precision is used due to incorrect behavior
+            with torch.amp.autocast(device_type="cuda", enabled=False):
+                # TODO(vbataev): fix issue with mixed precision, remove this restriction
                 return self.cuda_graphs_impl(
                     encoder_output=x, encoder_output_length=out_len, prev_batched_state=prev_batched_state
                 )

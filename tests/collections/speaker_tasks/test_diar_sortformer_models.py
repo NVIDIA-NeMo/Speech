@@ -27,6 +27,8 @@ def sortformer_model():
         'pil_weight': 0.5,
         'ats_weight': 0.5,
         'max_num_of_spks': 4,
+        'async_streaming': False,
+        'streaming_mode': False,
     }
     model_defaults = {
         'fc_d_model': 512,
@@ -126,9 +128,10 @@ def sortformer_model():
     return model
 
 
-class TestSortformerEncLabelModel:
+class TestSortformerEncLabelModelOffline:
     @pytest.mark.unit
     def test_constructor(self, sortformer_model):
+        sortformer_model.streaming_mode = False
         sortformer_diar_model = sortformer_model.train()
         confdict = sortformer_diar_model.to_config_dict()
         instance2 = SortformerEncLabelModel.from_config_dict(confdict)
@@ -136,14 +139,57 @@ class TestSortformerEncLabelModel:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "batch_size, frame_length, sample_len",
+        "batch_size, sample_len",
         [
-            (4, 0.08, 16),  # Example 1
-            (2, 0.02, 32),  # Example 2
-            (1, 0.1, 20),  # Example 3
+            (2, 1),  # Example 1
+            (1, 2),  # Example 2
         ],
     )
-    def test_forward_infer(self, sortformer_model, batch_size, frame_length, sample_len, num_spks=4):
+    def test_forward_infer(self, sortformer_model, batch_size, sample_len):
+        sortformer_model.streaming_mode = False
+        sortformer_diar_model = sortformer_model.eval()
+        confdict = sortformer_diar_model.to_config_dict()
+        sampling_rate = confdict['preprocessor']['sample_rate']
+        input_signal = torch.randn(size=(batch_size, sample_len * sampling_rate))
+        input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
+
+        with torch.no_grad():
+            # batch size 1
+            preds_list = []
+            for i in range(input_signal.size(0)):
+                preds = sortformer_diar_model.forward(input_signal[i : i + 1], input_signal_length[i : i + 1])
+                preds_list.append(preds)
+            preds_instance = torch.cat(preds_list, 0)
+
+            # batch size 4
+            preds_batch = sortformer_diar_model.forward(input_signal, input_signal_length)
+        assert preds_instance.shape == preds_batch.shape
+
+        diff = torch.mean(torch.abs(preds_instance - preds_batch))
+        assert diff <= 1e-6
+        diff = torch.max(torch.abs(preds_instance - preds_batch))
+        assert diff <= 1e-6
+
+
+class TestSortformerEncLabelModelStreaming:
+    @pytest.mark.unit
+    def test_constructor(self, sortformer_model):
+        sortformer_model.streaming_mode = True
+        sortformer_diar_model = sortformer_model.train()
+        confdict = sortformer_diar_model.to_config_dict()
+        instance2 = SortformerEncLabelModel.from_config_dict(confdict)
+        assert isinstance(instance2, SortformerEncLabelModel)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "batch_size, sample_len",
+        [
+            (2, 1),  # Example 1
+            (1, 2),  # Example 2
+        ],
+    )
+    def test_forward_infer(self, sortformer_model, batch_size, sample_len):
+        sortformer_model.streaming_mode = True
         sortformer_diar_model = sortformer_model.eval()
         confdict = sortformer_diar_model.to_config_dict()
         sampling_rate = confdict['preprocessor']['sample_rate']

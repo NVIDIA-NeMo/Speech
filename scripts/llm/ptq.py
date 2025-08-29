@@ -19,6 +19,7 @@ from nemo.collections import llm
 from nemo.collections.llm.modelopt import ExportConfig, QuantizationConfig
 from nemo.collections.llm.modelopt.quantization.quant_cfg_choices import get_quant_cfg_choices
 from nemo.collections.llm.modelopt.quantization.quantizer import KV_QUANT_CFG_CHOICES
+from nemo.utils import logging
 
 
 def get_args():
@@ -136,6 +137,9 @@ def get_args():
 def main():
     """Example NeMo 2.0 Post Training Quantization workflow"""
     args = get_args()
+    if os.path.exists(args.export_path):
+        logging.info(f"Export path: {args.export_path} already exists. Will skip PTQ")
+        return
 
     quantization_config = QuantizationConfig(
         algorithm=None if args.algorithm == "no_quant" else args.algorithm,

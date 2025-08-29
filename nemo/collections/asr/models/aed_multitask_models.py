@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
+
 import numpy as np
 import torch
 from lightning.pytorch import Trainer
@@ -39,8 +40,12 @@ from nemo.collections.asr.parts.mixins.transcription import (
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecoding, MultiTaskDecodingConfig
 from nemo.collections.asr.parts.submodules.token_classifier import TokenClassifier
+from nemo.collections.asr.parts.utils.chunking_utils import merge_all_hypotheses, merge_parallel_chunks
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
-from nemo.collections.asr.parts.utils.timestamp_utils import process_aed_timestamp_outputs
+from nemo.collections.asr.parts.utils.timestamp_utils import (
+    get_forced_aligned_timestamps_with_external_model,
+    process_aed_timestamp_outputs,
+)
 from nemo.collections.common import tokenizers
 from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
 from nemo.collections.common.metrics import GlobalAverageLossMetric
@@ -48,6 +53,7 @@ from nemo.collections.common.parts import transformer_weights_init
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.collections.common.prompts.formatter import PromptFormatter
 from nemo.core.classes.common import typecheck
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.neural_types import (
     AudioSignal,
     ChannelType,
@@ -59,6 +65,7 @@ from nemo.core.neural_types import (
     SpectrogramType,
 )
 from nemo.utils import logging, model_utils
+from nemo.utils.app_state import AppState
 
 __all__ = ['EncDecMultiTaskModel']
 
@@ -104,6 +111,10 @@ class MultiTaskTranscriptionInternalConfig(InternalTranscribeConfig):
 class MultiTaskTranscriptionConfig(TranscribeConfig):
     """
     Configuration for Multi Task Transcription
+
+    enable_chunking: bool = True
+            Whether to enable parallel processing of audio chunks for long-form audio.
+            If enabled, batch_size should be set to 1 or single audio be passed.
     """
 
     prompt: list[dict[str, dict[str, str]]] | None = None
@@ -113,6 +124,7 @@ class MultiTaskTranscriptionConfig(TranscribeConfig):
     _internal: Optional[MultiTaskTranscriptionInternalConfig] = field(
         default_factory=lambda: MultiTaskTranscriptionInternalConfig()
     )
+    enable_chunking: bool = True
 
     def __post_init__(self):
         self.prompt = parse_multitask_prompt(self.prompt)
@@ -240,6 +252,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         # Setup encoder adapters (from ASRAdapterModelMixin)
         self.setup_adapters()
+
+        timestamps_asr_model = self.__restore_timestamps_asr_model()
+        # Using object.__setattr__ to bypass PyTorch's module registration
+        object.__setattr__(self, 'timestamps_asr_model', timestamps_asr_model)
 
     def change_decoding_strategy(self, decoding_cfg: DictConfig):
         """
@@ -485,6 +501,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
     ) -> Union[List[str], List[Hypothesis]]:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
+        This allows the model to process long audio in manageable chunks and merge the results.
         Args:
             audio: (a single or list) of paths to audio files or a np.ndarray/tensor audio array or path 
                 to a manifest file.
@@ -515,19 +532,21 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         Returns:
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order 
-            as paths2audio_files
+            as paths2audio_files 
         """
         if timestamps is not None:
-            # TODO: Handle this key gracefully later
-
-            if timestamps is True:
-                timestamps = 'yes'
-            elif timestamps is False:
-                timestamps = 'no'
+            if self.timestamps_asr_model is None:
+                # TODO: Handle this key gracefully later
+                if timestamps is True:
+                    timestamps = 'yes'
+                elif timestamps is False:
+                    timestamps = 'no'
+                else:
+                    timestamps = str(timestamps)
+                    assert timestamps in ('yes', 'no', 'timestamp', 'notimestamp', '1', '0')
+                prompt['timestamp'] = timestamps
             else:
-                timestamps = str(timestamps)
-                assert timestamps in ('yes', 'no', 'timestamp', 'notimestamp', '1', '0')
-            prompt['timestamp'] = timestamps
+                prompt['timestamp'] = 'no'
 
         if override_config is None:
             trcfg = MultiTaskTranscriptionConfig(
@@ -538,6 +557,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 augmentor=augmentor,
                 verbose=verbose,
                 prompt=prompt,
+                timestamps=timestamps,
             )
         else:
             if not isinstance(override_config, MultiTaskTranscriptionConfig):
@@ -546,16 +566,37 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                     f"but got {type(override_config)}"
                 )
             trcfg = override_config
+            trcfg.timestamps = timestamps
 
-        return super().transcribe(audio=audio, override_config=trcfg)
+        if trcfg.enable_chunking:
+            # Check if only one audio is provided with string
+            is_one_audio = isinstance(audio, str) and not (audio.endswith("json") or audio.endswith("jsonl"))
+            # Check if it is provided as a list of strings
+            is_one_audio = is_one_audio or (isinstance(audio, list) and len(audio) == 1)
+            # Check if chunking will be enabled
+            trcfg.enable_chunking = is_one_audio or (override_config is not None and override_config.batch_size == 1)
+            if not trcfg.enable_chunking:
+                logging.warning("Chunking is disabled. Please pass a single audio file or set batch_size to 1")
+
+        results = super().transcribe(audio=audio, override_config=trcfg)
+        if trcfg.enable_chunking:
+            results = merge_all_hypotheses(results, trcfg.timestamps, self.encoder.subsampling_factor)
+
+        return results
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
+
         assert config.get("use_lhotse", False), (
             "Multi-task model only supports dataloading with Lhotse. "
             "Please set config.{train,validation,test}_ds.use_lhotse=True"
         )
         global_rank = config.get("global_rank", self.global_rank)
         world_size = config.get("world_size", self.world_size)
+        enable_chunking = config.get("enable_chunking", False)
+        if enable_chunking:
+            # Adding this to support processing audio files of arbitrary length by chunking them into hour-long segments.
+            config.cut_into_windows_duration = 3600
+            config.cut_into_windows_hop = 3600
         return get_lhotse_dataloader_from_config(
             config,
             global_rank=global_rank,
@@ -563,6 +604,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             dataset=PromptedAudioToTextLhotseDataset(
                 tokenizer=self.tokenizer,
                 prompt=self.prompt,
+                enable_chunking=enable_chunking,  # <-- enables chunking
             ),
             tokenizer=self.tokenizer,
         )
@@ -856,6 +898,9 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                     trcfg._internal.primary_language = self.tokenizer.langs[0]
                     logging.debug(f"Transcribing with default setting of {trcfg._internal.primary_language}.")
 
+        if trcfg.timestamps and self.timestamps_asr_model is not None:
+            self.timestamps_asr_model.to(trcfg._internal.device)
+
     def _transcribe_input_manifest_processing(
         self, audio_files: List[str], temp_dir: str, trcfg: MultiTaskTranscriptionConfig
     ) -> Dict[str, Any]:
@@ -872,10 +917,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             A config dict that is used to setup the dataloader for transcription.
         """
         manifest_filepath = trcfg._internal.manifest_filepath
-
         audio_files = self._may_be_make_dict_and_fix_paths(audio_files, manifest_filepath, trcfg)
 
-        return super()._transcribe_input_manifest_processing(audio_files, temp_dir, trcfg)
+        ds_config = super()._transcribe_input_manifest_processing(audio_files, temp_dir, trcfg)
+        if trcfg.enable_chunking:
+            ds_config['enable_chunking'] = True
+        return ds_config
 
     def _transcribe_forward(
         self, batch: PromptedAudioToTextMiniBatch | tuple[torch.Tensor, ...], trcfg: MultiTaskTranscriptionConfig
@@ -955,12 +1002,15 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             encoder_states=enc_states,
             encoder_mask=enc_mask,
             decoder_input_ids=decoder_input_ids,
+            batch=batch,
         )
 
     def _transcribe_output_processing(self, outputs, trcfg: MultiTaskTranscriptionConfig) -> GenericTranscriptionType:
         """
         Internal function to process the model's outputs to return the results to the user. This function is called by
         `transcribe()` and `transcribe_generator()` to process the model's outputs.
+        If parallel chunking was used (enable_chunking=True), merges the hypotheses from each chunk
+        into a single hypothesis, joining text, token sequences, and timestamps.
 
         Args:
             outputs: The model's outputs that are processed by `_transcribe_forward()`.
@@ -970,28 +1020,59 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             The output can be a list of
             objects, list of list of objects.
             Its type is defined in `TranscriptionReturnType`.
+
         """
         log_probs = outputs.pop('log_probs')
         encoded_len = outputs.pop('encoded_lengths')
         enc_states = outputs.pop('encoder_states')
         enc_mask = outputs.pop('encoder_mask')
         decoder_input_ids = outputs.pop('decoder_input_ids')
+        batch = outputs.pop('batch')
 
-        del log_probs, encoded_len
-
+        del log_probs
+        num_chunks = enc_states.shape[0]
+        # Repear decoder_input_ids to match number of chunks
+        if trcfg.enable_chunking and num_chunks > decoder_input_ids.shape[0]:
+            decoder_input_ids = decoder_input_ids.repeat(num_chunks, 1)
         hypotheses = self.decoding.decode_predictions_tensor(
             encoder_hidden_states=enc_states,
             encoder_input_mask=enc_mask,
             decoder_input_ids=decoder_input_ids,
             return_hypotheses=trcfg.return_hypotheses,
         )
+        merge_to_be_done = trcfg.enable_chunking and len(hypotheses) > 1
 
         del enc_states, enc_mask, decoder_input_ids
 
-        hypotheses = process_aed_timestamp_outputs(
-            hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
-        )
+        if trcfg.timestamps and self.timestamps_asr_model is not None:
+            hypotheses = get_forced_aligned_timestamps_with_external_model(
+                audio=[audio.squeeze()[:audio_len] for audio, audio_len in zip(batch.audio, batch.audio_lens)],
+                batch_size=len(batch.audio),
+                external_ctc_model=self.timestamps_asr_model,
+                main_model_predictions=hypotheses,
+                timestamp_type='char' if merge_to_be_done else ['word', 'segment'],
+                viterbi_device=trcfg._internal.device,
+            )
+        elif trcfg.timestamps:
+            hypotheses = process_aed_timestamp_outputs(
+                hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+            )
+        if merge_to_be_done:
+            merged_hypotheses = merge_parallel_chunks(
+                hypotheses=hypotheses,
+                encoded_len=encoded_len,
+                model=self,
+                timestamps=trcfg.timestamps,
+                subsampling_factor=self.encoder.subsampling_factor,
+                window_stride=self.cfg['preprocessor']['window_stride'],
+                decoding=self.decoding,
+            )
+            # Inject the id of the cut to hypothese to later be used for separate batches
+            setattr(merged_hypotheses, 'id', batch.cuts[0].id.split("-", 1)[0])
+            return [merged_hypotheses]
 
+        if trcfg.enable_chunking and len(hypotheses) == 1:
+            setattr(hypotheses[0], 'id', batch.cuts[0].id.split("-", 1)[0])
         return hypotheses
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
@@ -1007,6 +1088,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                     stored.
         Returns:
             A pytorch DataLoader for the given audio file(s).
+
         """
         if 'manifest_filepath' in config:
             manifest_filepath = config['manifest_filepath']
@@ -1031,6 +1113,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             'channel_selector': config.get('channel_selector', None),
             'pad_min_duration': config.get('pad_min_duration', 1.0),
             'pad_direction': config.get('pad_direction', 'both'),
+            'enable_chunking': config.get('enable_chunking', False),
         }
 
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
@@ -1062,6 +1145,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         # This method is a legacy helper for Canary that checks whether prompt slot values were provided
         # in the input manifest and if not, it injects the defaults.
         out_json_items = []
+        timestamps_required = False
         for item in json_items:
             if isinstance(item, str):
                 # assume it is a path to audio file
@@ -1099,7 +1183,21 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 if k not in entry:
                     # last-chance fallback injecting legacy Canary defaults if none were provided.
                     entry[k] = default_turn.get(k, dv)
+                if k == "timestamp":
+                    if (
+                        str(entry[k]).lower() not in ['notimestamp', "no", "false", "0"]
+                        and self.timestamps_asr_model is not None
+                    ):
+                        timestamps_required = True
+                        entry[k] = 'notimestamp'
             out_json_items.append(entry)
+
+        if timestamps_required:
+            trcfg.timestamps = True
+            logging.warning(
+                "Timestamps are enabled for at least one of the input items. "
+                "Setting timestamps to True for all the input items, as the current model is using external ASR model for alignment."
+            )
         return out_json_items
 
     @classmethod
@@ -1113,7 +1211,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         return MultiTaskTranscriptionConfig()
 
     def predict_step(
-        self, batch: PromptedAudioToTextMiniBatch, batch_idx=0, dataloader_idx=0, has_processed_signal=False
+        self,
+        batch: PromptedAudioToTextMiniBatch,
+        batch_idx=0,
+        dataloader_idx=0,
+        has_processed_signal=False,
+        timestamps=False,
     ):
         if has_processed_signal:
             processed_signal = batch.audio
@@ -1140,9 +1243,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             return_hypotheses=False,
         )
 
-        hypotheses = process_aed_timestamp_outputs(
-            hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
-        )
+        if timestamps and self.timestamps_asr_model is None:
+            hypotheses = process_aed_timestamp_outputs(
+                hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+            )
 
         if batch.cuts:
             return list(zip(batch.cuts, hypotheses))
@@ -1181,6 +1285,39 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 {"name": "prompt_lens", "type": "dummy"},
             ],
         }
+
+    def __restore_timestamps_asr_model(self):
+        """
+        This method is used to restore the external timestamp ASR model that will be used for forced alignment in `.transcribe()`.
+        The config and weights are expected to be in the main .nemo file and be named `timestamps_asr_model_config.yaml` and `timestamps_asr_model_weights.ckpt` respectively.
+        """
+        app_state = AppState()
+        model_restore_path = app_state.model_restore_path
+
+        if not model_restore_path:
+            return None
+
+        save_restore_connector = SaveRestoreConnector()
+
+        filter_fn = lambda name: "timestamps_asr_model" in name
+        members = save_restore_connector._filtered_tar_info(model_restore_path, filter_fn=filter_fn)
+
+        if not members:
+            return None
+
+        try:
+            save_restore_connector.model_config_yaml = "timestamps_asr_model_config.yaml"
+            save_restore_connector.model_weights_ckpt = "timestamps_asr_model_weights.ckpt"
+            external_timestamps_model = ASRModel.restore_from(
+                model_restore_path, save_restore_connector=save_restore_connector
+            )
+            external_timestamps_model.eval()
+        except Exception as e:
+            raise RuntimeError(
+                f"Error restoring external timestamps ASR model with timestamps_asr_model_config.yaml and timestamps_asr_model_weights.ckpt: {e}"
+            )
+
+        return external_timestamps_model
 
 
 def parse_multitask_prompt(prompt: dict | None) -> list[dict]:

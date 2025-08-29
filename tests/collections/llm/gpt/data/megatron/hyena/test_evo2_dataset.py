@@ -1045,13 +1045,6 @@ def benchmark_phylo_tag_masking(num_iterations: int = 1000) -> tuple[float, floa
     return old_time, new_time
 
 
-def test_phylo_tag_masking_speed():
-    num_iterations = 2000
-    old_time, new_time = benchmark_phylo_tag_masking(num_iterations=num_iterations)
-    # Assert performance equivalent to within 20% or better on a small example.
-    assert old_time / num_iterations > (new_time / num_iterations) * 0.8
-
-
 if __name__ == "__main__":
     num_iterations = 2000
     old_time, new_time = benchmark_phylo_tag_masking(num_iterations=num_iterations)

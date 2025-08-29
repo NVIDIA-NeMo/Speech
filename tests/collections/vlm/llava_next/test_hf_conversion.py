@@ -63,7 +63,7 @@ def compare_parameters(model1, model2, label1="Model1", label2="Model2"):
     all_keys = set(params1.keys()).union(set(params2.keys()))
 
     # Parameters to ignore shape differences due to vocabulary size padding
-    vocab_size_params = ['language_model.lm_head.weight', 'language_model.model.embed_tokens.weight']
+    vocab_size_params = ['lm_head.weight', 'model.language_model.embed_tokens.weight']
 
     # Print summary of parameter counts
     print(f"{label1} parameters: {len(params1)}")

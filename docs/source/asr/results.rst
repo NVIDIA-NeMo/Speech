@@ -190,14 +190,14 @@ Sometimes, the downsampling module at the earliest stage of the model can take m
 Inference with Multi-task Models
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Multi-task models that use structured prompts require additionl task tokens as input, in which case it is recommended to use manifest as input. Below is an example of using the `nvidia/canary-1b` model:
+Multi-task models that use structured prompts require additionl task tokens as input, in which case it is recommended to use manifest as input. Below is an example of using the `nvidia/canary-1b-v2` model:
 
 .. code-block:: python
 
     from nemo.collections.asr.models import EncDecMultiTaskModel
    
     # load model
-    canary_model = EncDecMultiTaskModel.from_pretrained('nvidia/canary-1b')
+    canary_model = EncDecMultiTaskModel.from_pretrained('nvidia/canary-1b-v2')
    
     # update dcode params
     decode_cfg = canary_model.cfg.decoding

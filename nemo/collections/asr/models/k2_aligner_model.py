@@ -81,7 +81,8 @@ class AlignerWrapperModel(ASRModel):
                 self.graph_decoder.split_batch_size = self.decode_batch_size
             else:
                 self.graph_decoder = ViterbiDecoderWithGraph(
-                    num_classes=self.blank_id, split_batch_size=self.decode_batch_size,
+                    num_classes=self.blank_id,
+                    split_batch_size=self.decode_batch_size,
                 )
             # override decoder args if a config is provided
             decoder_module_cfg = cfg.get("decoder_module_cfg", None)
@@ -119,16 +120,18 @@ class AlignerWrapperModel(ASRModel):
 
             from nemo.collections.asr.parts.k2.utils import apply_rnnt_prune_ranges, get_uniform_rnnt_prune_ranges
 
-            self.prepare_pruned_outputs = lambda encoder_outputs, encoded_len, decoder_outputs, transcript_len: apply_rnnt_prune_ranges(
-                encoder_outputs,
-                decoder_outputs,
-                get_uniform_rnnt_prune_ranges(
-                    encoded_len,
-                    transcript_len,
-                    self.predictor_window_size + 1,
-                    self.predictor_step_size,
-                    encoder_outputs.size(1),
-                ).to(device=encoder_outputs.device),
+            self.prepare_pruned_outputs = (
+                lambda encoder_outputs, encoded_len, decoder_outputs, transcript_len: apply_rnnt_prune_ranges(
+                    encoder_outputs,
+                    decoder_outputs,
+                    get_uniform_rnnt_prune_ranges(
+                        encoded_len,
+                        transcript_len,
+                        self.predictor_window_size + 1,
+                        self.predictor_step_size,
+                        encoder_outputs.size(1),
+                    ).to(device=encoder_outputs.device),
+                )
             )
 
             from nemo.collections.asr.parts.k2.classes import GraphModuleConfig
@@ -231,9 +234,9 @@ class AlignerWrapperModel(ASRModel):
     def _apply_prob_suppress(self, log_probs: torch.Tensor) -> torch.Tensor:
         """Multiplies probability of an element with index self.prob_suppress_index by self.prob_suppress_value times
         with stochasticity preservation of the log_probs tensor.
-        
+
         Often used to suppress <blank> probability of the output of a CTC model.
-        
+
         Example:
             For
                 - log_probs = torch.log(torch.tensor([0.015, 0.085, 0.9]))
@@ -305,7 +308,7 @@ class AlignerWrapperModel(ASRModel):
             # we have no token probabilities for the argmax rnnt setup
             token_prob = [1.0] * len(tokens)
             if self.word_output:
-                words = [w for w in self._model.decoding.decode_tokens_to_str(pred_ids).split(" ") if w != ""]
+                words = [w for w in self._model.decoding.decode_ids_to_str(pred_ids).split(" ") if w != ""]
                 words, word_begin, word_len, word_prob = (
                     self._process_tokens_to_words(tokens, token_begin, token_len, token_prob, words)
                     if hasattr(self._model, "tokenizer")
@@ -411,7 +414,7 @@ class AlignerWrapperModel(ASRModel):
     def _results_to_ctmUnits(
         self, s_id: int, pred: torch.Tensor, prob: torch.Tensor
     ) -> Tuple[int, List['FrameCtmUnit']]:
-        """Transforms predictions with probabilities to a list of FrameCtmUnit objects, 
+        """Transforms predictions with probabilities to a list of FrameCtmUnit objects,
         containing frame-level alignment information (label, start, duration, probability), for a given sample id.
 
         Alignment information can be either token-based (char, wordpiece, ...) or word-based.
@@ -440,7 +443,7 @@ class AlignerWrapperModel(ASRModel):
             for i, j in zip(non_blank_idx.tolist(), non_blank_idx[1:].tolist() + [len(pred)])
         ]
         if self.word_output:
-            words = wer_module.decode_tokens_to_str(pred_ids).split(" ")
+            words = wer_module.decode_ids_to_str(pred_ids).split(" ")
             words, word_begin, word_len, word_prob = (
                 self._process_tokens_to_words(tokens, token_begin, token_len, token_prob, words)
                 if hasattr(self._model, "tokenizer")
@@ -539,7 +542,11 @@ class AlignerWrapperModel(ASRModel):
 
     @torch.no_grad()
     def transcribe(
-        self, manifest: List[str], batch_size: int = 4, num_workers: int = None, verbose: bool = True,
+        self,
+        manifest: List[str],
+        batch_size: int = 4,
+        num_workers: int = None,
+        verbose: bool = True,
     ) -> List['FrameCtmUnit']:
         """
         Does alignment. Use this method for debugging and prototyping.

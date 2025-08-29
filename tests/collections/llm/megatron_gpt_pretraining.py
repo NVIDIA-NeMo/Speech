@@ -27,7 +27,7 @@ from nemo.collections.llm.api import train
 from nemo.collections.llm.gpt.data import PreTrainingDataModule
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning import AutoResume, NeMoLogger
-from nemo.lightning.pytorch.callbacks import ModelCheckpoint, ParameterDebugger
+from nemo.lightning.pytorch.callbacks import ModelCheckpoint, ModelTrainingStateCallback, ParameterDebugger
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from tests.collections.llm.common import AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays
 
@@ -101,10 +101,14 @@ if __name__ == '__main__':
         grad_fn=create_verify_precision(torch.float32),
         log_on_hooks=["on_train_start", "on_train_end"],
     )
+
+    val_check_interval = args.max_steps // 2
+
     callbacks = [
         checkpoint_callback,
         debugger,
         AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays(),
+        ModelTrainingStateCallback(val_check_interval=val_check_interval, strict=True),
     ]
 
     loggers = []
@@ -131,6 +135,7 @@ if __name__ == '__main__':
         callbacks=callbacks,
         log_every_n_steps=1,
         limit_val_batches=2,
+        val_check_interval=val_check_interval,
         plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
     )
 

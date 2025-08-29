@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 class SharedStateDictProtocol(Protocol):
     """ """
 
-    def sharded_state_dict(self, prefix=""):
+    def sharded_state_dict(self, prefix="", metadata: Optional[dict] = None):
         """ """
         ...
 
@@ -453,12 +453,24 @@ def enable_nvidia_optimizations() -> None:
 def optimizer_sharded_state_dict(
     model: SharedStateDictProtocol,
     optimizer: "Optimizable",
-    is_loading=False,
-    sharding_type='fully_sharded_model_space',
+    is_loading: bool = False,
+    sharding_type: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Sharded state dictionary for an MainParamsOptimizerWrapper.
     Used to save and load the optimizer state when training with distributed_checkpoint.
+
+    Args:
+        model (SharedStateDictProtocol): model with a `sharded_state_dict` method
+        optimizer (Optimizable): optimizer to get the state dict of
+        is_loading (bool, optional): set to True if the sharded state dict is intended
+            for checkpoint loading (as opposed to saving). Defaults to False.
+        sharding_type (str, optional): deprecated, use metadata flags instead.
+        metadata (dict, optional): sharded state dict metadata passed from the framework.
+            Used to control the details of sharded state dict creation, in particular
+            the state dict format of the DistributedOptimizer with the flag
+            `distrib_optim_sharding_type`. Defaults to None (empty metadata).
 
     Returns
     -------
@@ -475,16 +487,25 @@ def optimizer_sharded_state_dict(
     from nemo.core.optim import MainParamsOptimizerWrapper
     from nemo.core.optim.optimizers import init_optimizer_states
 
-    model_sharded_state_dict = model.sharded_state_dict()
+    model_sharded_state_dict = model.sharded_state_dict(metadata=metadata)
 
     # remove _extra_state
     model_sharded_state_dict = {
         key: value for key, value in model_sharded_state_dict.items() if not key.endswith("_extra_state")
     }
 
+    if sharding_type is not None:
+        logging.warning("sharding_type is deprecated, please use `metadata['distrib_optim_sharding_type']` instead")
+        if metadata is None:
+            metadata = {}
+        if 'distrib_optim_sharding_type' not in metadata:
+            metadata["distrib_optim_sharding_type"] = sharding_type
+
     if hasattr(optimizer, "sharded_state_dict"):
         return optimizer.sharded_state_dict(
-            model_sharded_state_dict, is_loading=is_loading, sharding_type=sharding_type
+            model_sharded_state_dict,
+            is_loading=is_loading,
+            metadata=metadata,
         )
 
     if not isinstance(optimizer, MainParamsOptimizerWrapper):
@@ -664,10 +685,13 @@ def setup_megatron_optimizer(
             optimizer_state_dict=None,
             is_loading=False,
             sharding_type='fully_sharded_model_space',
+            metadata=None,
         ):
             mcore_optimizer_sig = inspect.signature(self.mcore_optimizer.sharded_state_dict).parameters
             distrib_optim_kwargs = {}
-            if "sharding_type" in mcore_optimizer_sig:
+            if "metadata" in mcore_optimizer_sig:
+                distrib_optim_kwargs["metadata"] = metadata
+            elif "sharding_type" in mcore_optimizer_sig:
                 distrib_optim_kwargs["sharding_type"] = sharding_type
             state_dict = self.mcore_optimizer.sharded_state_dict(
                 model_sharded_state_dict, is_loading=is_loading, **distrib_optim_kwargs

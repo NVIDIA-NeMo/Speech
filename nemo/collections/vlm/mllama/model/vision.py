@@ -226,7 +226,12 @@ def forward_with_return_intermediate(
                         packed_seq_params=packed_seq_params,
                     )
                     # CUDA graph doesn't output context and is expected to be None
-                    assert (context is None) or (not self.config.enable_cuda_graph) or (not self.training)
+                    assert (
+                        (context is None)
+                        or (not self.config.enable_cuda_graph)
+                        or (self.config.cuda_graph_scope == "full_iteration")
+                        or (not self.training)
+                    )
 
                 if (
                     torch.is_grad_enabled()

@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=C0301,C0115,C0116
 import abc
-import copy
-import os
-import re
 import warnings
 from typing import List, Set, Tuple
 
@@ -418,168 +416,7 @@ class GriffinModelTextGenerationStrategy(TextGenerationStrategy):
 
 
 def neva_process_prompts(prompt, tokenizer, multimodal_cfg, num_media_latents, conv_template):
-    from nemo.collections.multimodal.data.neva.neva_dataset import (
-        DEFAULT_IMAGE_TOKEN,
-        preprocess_llama_2,
-        preprocess_llama_3,
-        preprocess_multimodal,
-        preprocess_nv_dpo,
-        preprocess_nvgpt,
-        preprocess_v1,
-        preprocess_yi_34b,
-    )
-
-    list_data_dict = []
-    if multimodal_cfg["conv_template"] in ["nvgpt", "nv_steerlm", "nv_dpo"]:
-        record = {
-            'system': (
-                '\n'
-                if multimodal_cfg["conv_template"] == 'nv_dpo'
-                else 'A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\'s questions.\n\n'
-            ),
-            'conversations': [
-                {'from': 'User', 'value': prompt},
-                {
-                    'from': 'Assistant',
-                    'value': '',
-                },
-            ],
-        }
-
-        for turn in record['conversations']:
-            if turn.get('value') is not None:
-                turn['value'] = re.sub('<image>', f'{DEFAULT_IMAGE_TOKEN}\n', turn['value'])
-        list_data_dict.append(record)
-
-        # overwrite the media_type in multimodal_cfg to image for image inference using video neva
-        # if the prompt does not contain video, then the media_type is image
-        if list_data_dict[0]['conversations'][0]['value'].find('video') == -1:
-            if multimodal_cfg.get('media_type') is not None and multimodal_cfg.get('num_frames') is not None:
-                multimodal_cfg['media_type'] = 'image'
-                multimodal_cfg['num_frames'] = 1
-
-        sources = preprocess_multimodal(copy.deepcopy(list_data_dict), multimodal_cfg, num_media_latents)
-        if multimodal_cfg["conv_template"] in ["nvgpt", "nv_steerlm"]:
-            data_dict = preprocess_nvgpt(sources, tokenizer, multimodal_cfg)
-        else:
-            data_dict = preprocess_nv_dpo(sources, tokenizer, multimodal_cfg)
-
-    elif multimodal_cfg["conv_template"] == "llama_2":
-        record = {
-            'conversations': [
-                {
-                    'from': 'human',
-                    'value': prompt,
-                },
-                {
-                    'from': 'gpt',
-                    'value': '',
-                },
-            ],
-        }
-
-        for turn in record['conversations']:
-            if turn.get('value') is not None:
-                turn['value'] = re.sub('<image>', f'{DEFAULT_IMAGE_TOKEN}\n', turn['value'])
-        list_data_dict.append(record)
-
-        sources = preprocess_multimodal(
-            copy.deepcopy(list_data_dict), multimodal_cfg, num_media_latents
-        )  # HARDCODED FOR NOW
-        data_dict = preprocess_llama_2(sources, tokenizer, multimodal_cfg)
-    elif multimodal_cfg["conv_template"] == "yi_34b":
-        record = {
-            'conversations': [
-                {
-                    'from': 'human',
-                    'value': prompt,
-                },
-                {
-                    'from': 'gpt',
-                    'value': '',
-                },
-            ],
-        }
-        for turn in record['conversations']:
-            if turn.get('value') is not None:
-                turn['value'] = re.sub('<image>', f'{DEFAULT_IMAGE_TOKEN}\n', turn['value'])
-        list_data_dict.append(record)
-        sources = preprocess_multimodal(
-            copy.deepcopy(list_data_dict), multimodal_cfg, num_media_latents
-        )  # HARDCODED FOR NOW
-        data_dict = preprocess_yi_34b(sources, tokenizer, multimodal_cfg)
-
-    elif multimodal_cfg["conv_template"] == "llama_3":
-        record = {
-            'conversations': [
-                {
-                    'from': 'human',
-                    'value': prompt,
-                },
-                {
-                    'from': 'gpt',
-                    'value': '',
-                },
-            ],
-        }
-
-        for turn in record['conversations']:
-            if turn.get('value') is not None:
-                turn['value'] = re.sub('<image>', f'{DEFAULT_IMAGE_TOKEN}\n', turn['value'])
-        list_data_dict.append(record)
-        sources = preprocess_multimodal(
-            copy.deepcopy(list_data_dict), multimodal_cfg, num_media_latents
-        )  # HARDCODED FOR NOW
-        data_dict = preprocess_llama_3(sources, tokenizer, multimodal_cfg)
-
-    elif multimodal_cfg["conv_template"] == "mistral":
-        record = {
-            'conversations': [
-                {
-                    'from': 'human',
-                    'value': prompt,
-                },
-                {
-                    'from': 'gpt',
-                    'value': '',
-                },
-            ],
-        }
-        for turn in record['conversations']:
-            if turn.get('value') is not None:
-                turn['value'] = re.sub('<image>', f'{DEFAULT_IMAGE_TOKEN}\n', turn['value'])
-        list_data_dict.append(record)
-        sources = preprocess_multimodal(
-            copy.deepcopy(list_data_dict), multimodal_cfg, num_media_latents
-        )  # HARDCODED FOR NOW
-        data_dict = preprocess_llama_2(sources, tokenizer, multimodal_cfg, is_mistral=True)
-
-    elif multimodal_cfg["conv_template"] == "v1":
-        record = {
-            'conversations': [
-                {
-                    'from': 'human',
-                    'value': prompt,
-                },
-                {
-                    'from': 'gpt',
-                    'value': '',
-                },
-            ],
-        }
-
-        for turn in record['conversations']:
-            if turn.get('value') is not None:
-                turn['value'] = re.sub('<image>', f'{DEFAULT_IMAGE_TOKEN}\n', turn['value'])
-        list_data_dict.append(record)
-
-        sources = preprocess_multimodal(
-            copy.deepcopy(list_data_dict), multimodal_cfg, num_media_latents
-        )  # HARDCODED FOR NOW
-        data_dict = preprocess_v1(sources, tokenizer, multimodal_cfg)
-    else:
-        raise ValueError(f"Conversation template `{conv_template}` is not supported in Neva now.")
-    return data_dict['tokens'].tolist()
+    raise NotImplementedError("This method is deprecated.")
 
 
 class NevaModelTextGenerationStrategy(TextGenerationStrategy):
@@ -1045,7 +882,6 @@ class McoreRetroModelTextGenerationStrategy(TextGenerationStrategy):
 
 
 def model_inference_strategy_dispatcher(model, **args):
-    from nemo.collections.multimodal.models.multimodal_llm.neva.neva_model import MegatronNevaModel
     from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
     from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_model import (
         MegatronGPTPromptLearningModel,
@@ -1064,8 +900,6 @@ def model_inference_strategy_dispatcher(model, **args):
         return GriffinModelTextGenerationStrategy(model)
     if isinstance(model, MegatronMambaModel):
         return GPTModelTextGenerationStrategy(model)
-    if isinstance(model, MegatronNevaModel):
-        return NevaModelTextGenerationStrategy(model)
     if isinstance(model, MegatronGPTPromptLearningModel):
         return PromptLearningModelTextGenerationStrategy(model, **args)
     elif isinstance(model, MegatronGPTModel) and not (isinstance(model, MegatronRetroModel)):

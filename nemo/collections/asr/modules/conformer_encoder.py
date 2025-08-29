@@ -578,9 +578,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             )
 
         if bypass_pre_encode:
-            self.update_max_seq_length(
-                seq_length=audio_signal.size(2) * self.subsampling_factor, device=audio_signal.device
-            )
+            self.update_max_seq_length(seq_length=audio_signal.size(1), device=audio_signal.device)
         else:
             self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
         return self.forward_internal(

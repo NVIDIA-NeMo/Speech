@@ -752,24 +752,39 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                     raise ValueError(f"Expected 'loss' in output dict, got {out.keys()}")
 
                 reduced_train_loss = out["loss"]
-
+            # pl_module.log () will trigger pageable H2D Memcpy which stalls CPU. Use pin_memory=True to avoid it
+            global_step = (
+                self.trainer.global_step
+                if (torch.is_tensor(self.trainer.global_step) and self.trainer.global_step.is_cuda)
+                else torch.tensor(self.trainer.global_step, pin_memory=True).to("cuda", non_blocking=True)
+            )
             self.lightning_module.log(
                 "global_step",
-                self.trainer.global_step,
+                global_step,
                 prog_bar=True,
                 batch_size=1,
             )
 
             self.lightning_module.log(
                 "step",
-                self.trainer.global_step,
+                global_step,
             )
 
             if self.log_memory_usage:
                 # maximum GPU memory that has been managed by the caching allocator
                 max_memory_reserved = torch.cuda.max_memory_reserved()
+                max_memory_reserved = (
+                    max_memory_reserved
+                    if (torch.is_tensor(max_memory_reserved) and max_memory_reserved.is_cuda)
+                    else torch.tensor(max_memory_reserved, pin_memory=True).to("cuda", non_blocking=True)
+                )
                 # maximum GPU memory that has been occupied by active tensors
                 max_memory_allocated = torch.cuda.max_memory_allocated()
+                max_memory_allocated = (
+                    max_memory_allocated
+                    if (torch.is_tensor(max_memory_allocated) and max_memory_allocated.is_cuda)
+                    else torch.tensor(max_memory_allocated, pin_memory=True).to("cuda", non_blocking=True)
+                )
                 self.lightning_module.log(
                     "max_memory_reserved",
                     max_memory_reserved,
@@ -787,6 +802,11 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 # p2p now, broadcast later at ckpt. only with pp, some ranks will log 0.0
                 # WHICH IS OK because we broadcast later at checkpoint time
                 _strategy_lib._sync_from_last_pipeline_stage(reduced_train_loss, broadcast=False)
+                reduced_train_loss = (
+                    reduced_train_loss
+                    if (torch.is_tensor(reduced_train_loss) and reduced_train_loss.is_cuda)
+                    else torch.tensor(reduced_train_loss, pin_memory=True).to("cuda", non_blocking=True)
+                )
                 self.lightning_module.log(
                     "reduced_train_loss", reduced_train_loss, prog_bar=True, batch_size=1, sync_dist=False
                 )
@@ -813,8 +833,18 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         if isinstance(optimizer, McoreDistributedOptimizer):
             optimizer_output, grad_norm, num_zeros_in_grad = optimizer_output
             if grad_norm is not None:
+                grad_norm = (
+                    grad_norm
+                    if (torch.is_tensor(grad_norm) and grad_norm.is_cuda)
+                    else torch.tensor(grad_norm, pin_memory=True).to("cuda", non_blocking=True)
+                )
                 self.lightning_module.log('grad_norm', grad_norm, batch_size=1)
             if num_zeros_in_grad is not None:
+                num_zeros_in_grad = (
+                    num_zeros_in_grad
+                    if (torch.is_tensor(num_zeros_in_grad) and num_zeros_in_grad.is_cuda)
+                    else torch.tensor(num_zeros_in_grad, pin_memory=True).to("cuda", non_blocking=True)
+                )
                 self.lightning_module.log('num_zeros_in_grad', num_zeros_in_grad, batch_size=1)
 
         return optimizer_output

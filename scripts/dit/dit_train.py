@@ -194,7 +194,7 @@ def pretrain_l() -> run.Partial:
 def set_use_megatron_fsdp(recipe):
     try:
         recipe.trainer.strategy.ddp.use_megatron_fsdp = True
-    except:
+    except AttributeError:
         recipe.trainer.strategy.ddp.use_custom_fsdp = True
 
 

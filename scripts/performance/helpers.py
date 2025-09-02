@@ -190,7 +190,7 @@ def set_mcore_fsdp_configs(recipe, comm_overlap_callback_idx: int | None, tp_siz
 
     try:
         recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = False
-    except:
+    except AttributeError:
         recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = False
         logging.warning(
             "Deprecation Notice: `keep_fp8_transpose_cache_when_using_custom_fsdp` "
@@ -411,7 +411,7 @@ def set_perf_optimization_configs(
             recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = bool(
                 keep_fsdp_fp8_transpose_cache
             )
-        except:
+        except AttributeError:
             recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = bool(
                 keep_fsdp_fp8_transpose_cache
             )

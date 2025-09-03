@@ -246,29 +246,49 @@ class Flux(VisionModule):
         if not self.config.fp8:
             fp8_context = nullcontext()
         else:
-            import transformer_engine  # To keep out TE dependency when not training in fp8
+            # To keep out TE dependency when not training in fp8
+            from transformer_engine.common.recipe import (
+                DelayedScaling,
+                Float8BlockScaling,
+                Float8CurrentScaling,
+                Format,
+                MXFP8BlockScaling,
+            )
+            from transformer_engine.pytorch import fp8_autocast
 
             if self.config.fp8 == "e4m3":
-                fp8_format = transformer_engine.common.recipe.Format.E4M3
+                fp8_format = Format.E4M3
             elif self.config.fp8 == "hybrid":
-                fp8_format = transformer_engine.common.recipe.Format.HYBRID
+                fp8_format = Format.HYBRID
             else:
                 raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
 
-            fp8_recipe = transformer_engine.common.recipe.DelayedScaling(
-                margin=self.config.fp8_margin,
-                interval=self.config.fp8_interval,
-                fp8_format=fp8_format,
-                amax_compute_algo=self.config.fp8_amax_compute_algo,
-                amax_history_len=self.config.fp8_amax_history_len,
-                override_linear_precision=(False, False, not self.config.fp8_wgrad),
-            )
+            # Defaults to delayed scaling for backward compatibility
+            if not self.config.fp8_recipe:
+                self.config.fp8_recipe = "delayed"
+
+            if self.config.fp8_recipe == "delayed":
+                fp8_recipe = DelayedScaling(
+                    margin=self.config.fp8_margin,
+                    interval=self.config.fp8_interval,
+                    fp8_format=fp8_format,
+                    amax_compute_algo=self.config.fp8_amax_compute_algo,
+                    amax_history_len=self.config.fp8_amax_history_len,
+                    override_linear_precision=(False, False, not self.config.fp8_wgrad),
+                )
+            elif self.config.fp8_recipe == "current":
+                fp8_recipe = Float8CurrentScaling(fp8_format=fp8_format)
+            elif self.config.fp8_recipe == "block":
+                fp8_recipe = Float8BlockScaling(fp8_format=fp8_format)
+            elif self.config.fp8_recipe == "mxfp8":
+                fp8_recipe = MXFP8BlockScaling(fp8_format=fp8_format)
+            else:
+                raise ValueError(f"Unsupported FP8 recipe: {self.config.fp8_recipe}")
+
             fp8_group = None
             if parallel_state.model_parallel_is_initialized():
                 fp8_group = parallel_state.get_amax_reduction_group(with_context_parallel=True)
-            fp8_context = transformer_engine.pytorch.fp8_autocast(
-                enabled=True, fp8_recipe=fp8_recipe, fp8_group=fp8_group
-            )
+            fp8_context = fp8_autocast(enabled=True, fp8_recipe=fp8_recipe, fp8_group=fp8_group)
         return fp8_context
 
     def forward(

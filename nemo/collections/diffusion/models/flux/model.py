@@ -448,6 +448,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
     def __init__(
         self,
         flux_params: FluxModelParams,
+        seed: int,
         optim: Optional[OptimizerModule] = None,
     ):
         # pylint: disable=C0116
@@ -465,6 +466,11 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
         self.model_type = ModelType.encoder_or_decoder
         self.text_precached = self.t5_params is None or self.clip_params is None
         self.image_precached = self.vae_config is None
+        self.seed = seed
+
+    def setup(self, stage: str):
+        super().setup(stage)
+        torch.manual_seed(self.seed + 100 * parallel_state.get_data_parallel_rank())
 
     def configure_model(self):
         # pylint: disable=C0116
@@ -590,15 +596,15 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
                 guidance=guidance_vec,
             )
 
-        noise_pred = self._unpack_latents(
-            noise_pred.transpose(0, 1),
-            int(latents.shape[2] * self.vae_scale_factor // 2),
-            int(latents.shape[3] * self.vae_scale_factor // 2),
-            vae_scale_factor=self.vae_scale_factor,
-        ).transpose(0, 1)
+            noise_pred = self._unpack_latents(
+                noise_pred.transpose(0, 1),
+                int(latents.shape[2] * self.vae_scale_factor // 2),
+                int(latents.shape[3] * self.vae_scale_factor // 2),
+                vae_scale_factor=self.vae_scale_factor,
+            ).transpose(0, 1)
 
-        target = noise - latents
-        loss = F.mse_loss(noise_pred.float(), target.float(), reduction="mean")
+            target = noise - latents
+            loss = F.mse_loss(noise_pred.float(), target.float(), reduction="mean")
         return loss
 
     def encode_prompt(self, prompt, device='cuda', dtype=torch.float32):

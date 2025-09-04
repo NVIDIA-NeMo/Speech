@@ -89,6 +89,7 @@ def override_recipe_configs(
         use_user_buffer_registration=args.use_user_buffer_registration,
         nccl_communicator_config_path=args.nccl_communicator_config_path,
         use_sharp=args.use_sharp,
+        use_te_op_fuser=args.use_te_op_fuser or use_mcore_fsdp,
         use_te_act_func=args.use_te_act_func,
         act_func_fp8_input_store=args.act_func_fp8_input_store,
     )

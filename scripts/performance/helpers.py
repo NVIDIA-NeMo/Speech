@@ -429,6 +429,7 @@ def set_primary_perf_configs(
     recompute_modules: Optional[List[str]] = None,
     nccl_communicator_config_path: str = None,
     keep_fsdp_fp8_transpose_cache: Optional[bool] = None,
+    use_te_op_fuser: Optional[bool] = None,
     use_te_act_func: Optional[bool] = None,
     act_func_fp8_input_store: Optional[bool] = None,
 ):
@@ -466,6 +467,14 @@ def set_primary_perf_configs(
         recipe.trainer.callbacks[comm_overlap_callback_idx].overlap_param_gather_with_optimizer_step = bool(
             dp_size > 1 and pp_size > 1 and vp_size and vp_size > 1
         )
+
+    # te op fuser for MLP part
+    if use_te_op_fuser:
+        assert recipe.model.config.num_moe_experts is None, "use_te_op_fuser is not supported for MOE models"
+        if hasattr(recipe.model.config, "use_transformer_engine_op_fuser"):
+            recipe.model.config.use_transformer_engine_op_fuser = True
+        else:
+            logging.warning("use_transformer_engine_op_fuser is not supported for this version of MCORE.")
 
     # te activation function for MLP part
     recipe.model.config.use_te_activation_func = use_te_act_func or False

@@ -468,8 +468,8 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
     def __init__(
         self,
         flux_params: FluxModelParams,
-        seed: int,
         optim: Optional[OptimizerModule] = None,
+        seed: int = 42,
     ):
         # pylint: disable=C0116
         self.params = flux_params

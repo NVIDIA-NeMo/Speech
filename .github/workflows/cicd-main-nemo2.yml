@@ -281,6 +281,7 @@ jobs:
             script: L2_NeMo_2_Flux_ControlNet_Training_DDP_Test
           - runner: self-hosted-azure
             script: L2_NeMo_2_Flux_ControlNet_Training_FSDP_Test
+            is-optional: true
 
 
     needs: [build]

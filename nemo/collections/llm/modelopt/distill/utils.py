@@ -23,7 +23,7 @@ from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.validation import StrictHandling, parse_strict_flag
 from megatron.core.pipeline_parallel.schedules import get_tensor_shapes
 from megatron.core.transformer import TransformerLayer
-from megatron.core.utils import get_model_config, get_model_type
+from megatron.core.utils import get_model_config
 
 from nemo import lightning as nl
 from nemo.collections import llm
@@ -259,25 +259,25 @@ def get_tensor_shapes_adjust_fn_for_distillation(
         return None
 
     def adjust_tensor_shapes(recv_tensor_shapes: List[Tuple[int, ...]], send_tensor_shapes: List[Tuple[int, ...]]):
-        rank = parallel_state.get_pipeline_model_parallel_rank()
         teacher_config = get_model_config(model.teacher_model)
-        teacher_model_type = get_model_type(model.teacher_model)
+        tp_group = parallel_state.get_tensor_model_parallel_group()
+        cp_group = parallel_state.get_context_parallel_group()
 
         teacher_recv_tensor_shapes = get_tensor_shapes(
-            rank=rank - 1,
-            model_type=teacher_model_type,
             seq_length=seq_length,
             micro_batch_size=micro_batch_size,
             decoder_seq_length=decoder_seq_length,
             config=teacher_config,
+            tp_group=tp_group,
+            cp_group=cp_group,
         )
         teacher_send_tensor_shapes = get_tensor_shapes(
-            rank=rank,
-            model_type=teacher_model_type,
             seq_length=seq_length,
             micro_batch_size=micro_batch_size,
             decoder_seq_length=decoder_seq_length,
             config=teacher_config,
+            tp_group=tp_group,
+            cp_group=cp_group,
         )
         model.set_student_input_tensor_shape(recv_tensor_shapes)
 

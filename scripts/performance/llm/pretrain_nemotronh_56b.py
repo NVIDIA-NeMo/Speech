@@ -87,8 +87,6 @@ def override_recipe_configs(
         recipe, "pre_train", "llm", "nemotronh", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
     )
 
-    gpu_type = args.gpu.lower()
-
     # data module configs
     if args.use_hf_tokenizer:
         recipe.data.tokenizer = hf_tokenizer("nvidia/Nemotron-H-8B-Base-8K")
@@ -183,6 +181,10 @@ if __name__ == "__main__":
         wandb_key=args.wandb_key,
         additional_slurm_params=additional_slurm_params,
     )
+
+    # Workaround for CUDA graph illegal memory access error
+    if enable_cuda_graphs and "PYTORCH_CUDA_ALLOC_CONF" in executor.env_vars:
+        del executor.env_vars["PYTORCH_CUDA_ALLOC_CONF"]
 
     with run.Experiment(exp_name) as exp:
         exp.add(

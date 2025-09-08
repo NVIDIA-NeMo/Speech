@@ -172,12 +172,6 @@ def override_recipe_configs(
         )
     recipe.model.tokenizer = recipe.data.tokenizer
 
-    # Workaround for MXFP8 functionality issue
-    if args.compute_dtype == "fp8" and recipe.trainer.plugins.fp8_recipe == "mxfp8":
-        recipe.trainer.plugins.fp8_param_gather = False
-        recipe.trainer.strategy.ddp.reuse_grad_buf_for_mxfp8_param_ag = False
-        recipe.optim.config.reuse_grad_buf_for_mxfp8_param_ag = False
-
     return recipe
 
 
@@ -274,6 +268,10 @@ if __name__ == "__main__":
         network='sharp' if use_sharp else None,
         additional_slurm_params=additional_slurm_params,
     )
+
+    # Workaround for CUDA graph illegal memory access error
+    if enable_cuda_graphs and "PYTORCH_CUDA_ALLOC_CONF" in executor.env_vars:
+        del executor.env_vars["PYTORCH_CUDA_ALLOC_CONF"]
 
     with run.Experiment(exp_name) as exp:
         exp.add(

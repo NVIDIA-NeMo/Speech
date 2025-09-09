@@ -518,18 +518,21 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
         # pylint: disable=C0116
         if isinstance(vae, nn.Module):
             self.vae = vae.eval().cuda()
-            self.vae_scale_factor = 2 ** (len(self.vae.params.ch_mult))
+            self.vae_scale_factor = 2 ** (len(self.vae.params.ch_mult) - 1)
+            self.vae_channels = self.vae.params.z_channels
             for param in self.vae.parameters():
                 param.requires_grad = False
         elif isinstance(vae, AutoEncoderConfig):
             self.vae = AutoEncoder(vae).eval().cuda()
-            self.vae_scale_factor = 2 ** (len(vae.ch_mult))
+            self.vae_scale_factor = 2 ** (len(vae.ch_mult) - 1)
+            self.vae_channels = vae.z_channels
             for param in self.vae.parameters():
                 param.requires_grad = False
         else:
             logging.info("Vae not provided, assuming the image input is precached...")
             self.vae = None
-            self.vae_scale_factor = 16
+            self.vae_scale_factor = 8
+            self.vae_channels = 16
 
     def configure_text_encoders(self, clip, t5):
         # pylint: disable=C0116
@@ -618,9 +621,8 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
 
             noise_pred = self._unpack_latents(
                 noise_pred.transpose(0, 1),
-                int(latents.shape[2] * self.vae_scale_factor // 2),
-                int(latents.shape[3] * self.vae_scale_factor // 2),
-                vae_scale_factor=self.vae_scale_factor,
+                latents.shape[2],
+                latents.shape[3],
             ).transpose(0, 1)
 
             target = noise - latents
@@ -717,17 +719,15 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
             timesteps,
         )
 
-    def _unpack_latents(self, latents, height, width, vae_scale_factor):
+    def _unpack_latents(self, latents, height, width):
         # pylint: disable=C0116
         batch_size, num_patches, channels = latents.shape
 
-        height = height // vae_scale_factor
-        width = width // vae_scale_factor
-
-        latents = latents.view(batch_size, height, width, channels // 4, 2, 2)
+        # adjust h and w for patching
+        latents = latents.view(batch_size, height // 2, width // 2, channels // 4, 2, 2)
         latents = latents.permute(0, 3, 1, 4, 2, 5)
 
-        latents = latents.reshape(batch_size, channels // (2 * 2), height * 2, width * 2)
+        latents = latents.reshape(batch_size, channels // 4, height, width)
 
         return latents
 

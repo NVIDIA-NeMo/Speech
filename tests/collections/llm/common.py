@@ -224,3 +224,4 @@ class Llama3ConfigCI(llm.Llama3Config8B):
     ffn_hidden_size: int = 3072
     num_attention_heads: int = 8
     vocab_size: int = 50304
+    use_transformer_engine_op_fuser: bool = False

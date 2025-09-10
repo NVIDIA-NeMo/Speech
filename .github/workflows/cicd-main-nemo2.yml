@@ -143,6 +143,8 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1_Chat
             runner: self-hosted-azure
+          - script: L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1_TE_op_fuser
+            runner: self-hosted-azure
           - script: L2_NeMo_2_Mixtral_LoRA_EP2PP1_MBS2_exclude
             runner: self-hosted-azure
           - script: L2_NeMo_2_Mixtral_LoRA_EP2PP1_MBS2

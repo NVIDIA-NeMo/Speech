@@ -23,7 +23,6 @@ from nemo.collections import llm
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
 from nemo.utils import logging
-from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
 
 from .utils import adjust_distillation_model_for_mcore, load_distillation_config, teacher_provider
@@ -32,7 +31,7 @@ if TYPE_CHECKING:
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
     from nemo.lightning.pytorch.optim import OptimizerModule
 
-mtd, HAVE_MODELOPT = safe_import("modelopt.torch.distill")
+import modelopt.torch.distill as mtd
 
 
 class _DistillationLossReduction(MaskedTokenLossReduction):
@@ -134,8 +133,6 @@ class DistillationGPTModel(llm.GPTModel):
             tokenizer: Tokenizer.
             model_transform: Transform to apply to model during setup.
         """
-        if not HAVE_MODELOPT:
-            raise RuntimeError("nvidia-modelopt is needed to use DistillationGPTModel")
         super().__init__(config, optim, tokenizer, model_transform)
         self._teacher_config = teacher_config
         self._teacher_ckpt_path = teacher_ckpt_path

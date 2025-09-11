@@ -277,6 +277,7 @@ def create_violin_plots(metrics: List[dict], metric_keys: List[str], output_png:
     plt.tight_layout()
     plt.savefig(output_png, format="png", bbox_inches="tight")
 
+
 def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], output_png: str):
     """
     Create box plots comparing multiple datasets for each metric in a single figure.

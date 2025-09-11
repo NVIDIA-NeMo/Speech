@@ -277,6 +277,91 @@ def create_violin_plots(metrics: List[dict], metric_keys: List[str], output_png:
     plt.tight_layout()
     plt.savefig(output_png, format="png", bbox_inches="tight")
 
+def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], output_png: str):
+    """
+    Create box plots comparing multiple datasets for each metric in a single figure.
+    Args:
+        dataset_metrics: Dictionary where keys are dataset names and values are lists of metric dictionaries
+        metric_keys: List of metric names to plot
+        output_png: Output file path for the combined plot
+    """
+    # Prepare data for plotting
+    datasets = list(dataset_metrics.keys())
+    num_datasets = len(datasets)
+    num_metrics = len(metric_keys)
+
+    # Create figure with subplots for each metric
+    fig, axs = plt.subplots(1, num_metrics, figsize=(num_metrics * 6, 6))
+
+    # Handle case where there's only one metric (axs won't be an array)
+    if num_metrics == 1:
+        axs = [axs]
+
+    # Define colors for different datasets
+    colors = plt.cm.Set3(np.linspace(0, 1, num_datasets))
+
+    for metric_idx, metric in enumerate(metric_keys):
+        ax = axs[metric_idx]
+
+        # Collect data for all datasets for this metric
+        all_data = []
+        positions = []
+        dataset_labels = []
+
+        for dataset_idx, dataset in enumerate(datasets):
+            df = pd.DataFrame(dataset_metrics[dataset])
+            if metric in df.columns:
+                data = df[metric].dropna()
+                all_data.append(data)
+                positions.append(dataset_idx + 1)
+                dataset_labels.append(dataset)
+
+        # Create box plots
+        if all_data:
+            bp = ax.boxplot(
+                all_data,
+                positions=positions,
+                widths=0.6,
+                patch_artist=True,
+                showmeans=True,
+                meanline=False,
+                meanprops={'marker': 'o', 'markerfacecolor': 'red', 'markeredgecolor': 'red', 'markersize': 6},
+            )
+
+            # Color the box plots
+            for i, patch in enumerate(bp['boxes']):
+                patch.set_facecolor(colors[i])
+                patch.set_alpha(0.7)
+
+            # Add mean labels for each dataset
+            for i, (data, pos) in enumerate(zip(all_data, positions)):
+                mean = data.mean()
+                sem = data.sem()
+
+                label_numeric = f"{mean:.3f}±{1.96 * sem:.3f}"
+                ax.text(pos + 0.1, mean, label_numeric, ha="left", va="center", fontsize=8)
+
+        # Set labels and title
+        ax.set_title(f"{metric.upper()}", fontsize=12, fontweight='bold')
+        ax.set_xticks(positions)
+        ax.set_xticklabels(dataset_labels, rotation=45, ha='right')
+        ax.grid(True, linestyle="dotted", alpha=0.7)
+        ax.set_xlabel("Dataset")
+        ax.set_ylabel(metric)
+
+        # Set y-axis limit for CER metrics
+        if 'cer' in metric.lower():
+            ax.set_ylim(0, 0.3)
+
+    # Add overall title
+    fig.suptitle("Performance Comparison Across Datasets", fontsize=14, fontweight='bold')
+
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(output_png, format="png", bbox_inches="tight", dpi=300)
+    plt.close()
+    print(f"Combined violin plot saved to: {output_png}")
+
 
 def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], output_png: str):
     """
@@ -644,6 +729,9 @@ def run_inference(
                 with_utmosv2=with_utmosv2,
             )
             metrics_n_repeated.append(metrics)
+            dataset_filewise_metrics_all_repeats.extend(
+                filewise_metrics
+            )  # Collect all filewise metrics for combined plot
 
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
@@ -716,6 +804,11 @@ def run_inference(
         measurements = [m['cer_cumulative'] for m in metrics_n_repeated]
         cer_current = np.mean(measurements)
         cer_per_dataset.append(cer_current)
+
+    # Create combined violin plot for all datasets
+    if len(all_datasets_filewise_metrics) > 1:  # Only create combined plot if we have multiple datasets
+        combined_output_png = os.path.join(out_dir, f"{checkpoint_name}_combined_violin_plot.png")
+        create_combined_violin_plots(all_datasets_filewise_metrics, violin_plot_metrics, combined_output_png)
 
     # Average across datasets
     ssim = np.mean(ssim_per_dataset)

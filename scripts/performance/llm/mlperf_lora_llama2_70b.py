@@ -26,7 +26,7 @@ from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommO
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
-from ..argument_parser import parse_cli_args
+from ..argument_parser import parse_additional_slurm_params, parse_cli_args
 from ..executors import slurm_executor
 from ..helpers import args_sanity_check, build_perf_env_plugin
 from ..utils import import_ckpt_experiment
@@ -253,6 +253,10 @@ def mlperf_lora_llama2_70b_recipe(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
     args_sanity_check(args)
+    # Parse additional SLURM parameters if provided
+    additional_slurm_params = None
+    if hasattr(args, 'additional_slurm_params') and args.additional_slurm_params:
+        additional_slurm_params = parse_additional_slurm_params(args.additional_slurm_params)
 
     if args.finetuning.lower() != "lora" or args.compute_dtype != "fp8":
         raise ValueError(
@@ -320,6 +324,7 @@ if __name__ == "__main__":
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,
         network='sharp' if args.use_sharp else None,
+        additional_slurm_params=additional_slurm_params,
     )
 
     recipe = mlperf_lora_llama2_70b_recipe(

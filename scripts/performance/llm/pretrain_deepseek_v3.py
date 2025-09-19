@@ -23,7 +23,7 @@ from nemo.lightning.pytorch.callbacks.megatron_enable_experimental_callback impo
 from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
-from ..argument_parser import parse_cli_args
+from ..argument_parser import parse_additional_slurm_params, parse_cli_args
 from ..executors import slurm_executor
 from ..helpers import (
     args_sanity_check,
@@ -175,6 +175,10 @@ def override_recipe_configs(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
     args_sanity_check(args)
+    # Parse additional SLURM parameters if provided
+    additional_slurm_params = None
+    if hasattr(args, 'additional_slurm_params') and args.additional_slurm_params:
+        additional_slurm_params = parse_additional_slurm_params(args.additional_slurm_params)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "deepseek", "v3", args)
     (
@@ -235,6 +239,7 @@ if __name__ == "__main__":
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,
         network='sharp' if use_sharp else None,
+        additional_slurm_params=additional_slurm_params,
     )
 
     plugins = [build_perf_env_plugin(args, pp_size=pp_size)]

@@ -21,7 +21,7 @@ from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8
 from nemo.collections.vlm.recipes.llama4_omni_e16 import pretrain_recipe
 from nemo.lightning.run.plugins import NsysPlugin
 
-from ..argument_parser import parse_cli_args
+from ..argument_parser import parse_additional_slurm_params, parse_cli_args
 from ..executors import slurm_executor
 from ..helpers import (
     args_sanity_check,
@@ -112,6 +112,10 @@ def override_recipe_configs(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
     args_sanity_check(args)
+    # Parse additional SLURM parameters if provided
+    additional_slurm_params = None
+    if hasattr(args, 'additional_slurm_params') and args.additional_slurm_params:
+        additional_slurm_params = parse_additional_slurm_params(args.additional_slurm_params)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "vlm_llama4", "e16", args)
     num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size, enable_cuda_graphs, _, _, _ = kwargs[
@@ -141,6 +145,7 @@ if __name__ == "__main__":
         hf_token=args.hf_token,
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,
+        additional_slurm_params=additional_slurm_params,
     )
 
     if args.gpu.lower() in ['gb200'] and "PYTORCH_CUDA_ALLOC_CONF" in executor.env_vars:

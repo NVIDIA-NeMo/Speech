@@ -16,6 +16,7 @@ import math
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -97,6 +98,7 @@ class FluxConfig(TransformerConfig, io.IOMixin):
     use_cpu_initialization: bool = True
     gradient_accumulation_fusion: bool = False
     enable_cuda_graph: bool = False
+    cuda_graph_scope: Optional[str] = None  # full, full_iteration
     use_te_rng_tracker: bool = False
     cuda_graph_warmup_steps: int = 2
 
@@ -731,6 +733,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
 
         return latents
 
+    @lru_cache
     def _prepare_latent_image_ids(
         self, batch_size: int, height: int, width: int, device: torch.device, dtype: torch.dtype
     ):

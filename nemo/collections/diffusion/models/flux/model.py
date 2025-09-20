@@ -66,7 +66,7 @@ def flux_data_step(dataloader_iter):
     else:
         _batch = batch
 
-    _batch['loss_mask'] = torch.Tensor([1.0]).cuda(non_blocking=True)
+    _batch['loss_mask'] = torch.ones(1, device="cuda")
     return _batch
 
 
@@ -746,7 +746,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
             batch_size, latent_image_id_height * latent_image_id_width, latent_image_id_channels
         )
 
-        return latent_image_ids.to(device=device, dtype=dtype)
+        return latent_image_ids.to(device=device, dtype=dtype, non_blocking=True)
 
     def _pack_latents(self, latents, batch_size, num_channels_latents, height, width):
         # pylint: disable=C0116

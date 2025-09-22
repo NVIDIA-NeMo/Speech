@@ -235,9 +235,11 @@ exp_manager:
   create_tensorboard_logger: true
   create_wandb_logger: false
   wandb_logger_kwargs:
-    name: null
+    entity: null
     project: null
-    resume: true
+    group: null
+    name: ${name}
+    resume: true  # enable resume to ensure continuous training log metrics merged on the previous run id.
   create_checkpoint_callback: true
   checkpoint_callback_params:
     monitor: val_loss

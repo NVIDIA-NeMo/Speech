@@ -19,8 +19,14 @@ def set_env():
     os.environ['NVTE_APPLY_QK_LAYER_SCALING'] = '1'
 
 
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock
+
+sys.modules["nv_one_logger"] = (
+    MagicMock()
+)  # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
+
 
 import lightning.pytorch as pl
 import pytest
@@ -60,11 +66,6 @@ def get_model_and_data(mbs=2, gbs=2):
 
 
 class TestDistCkptIO:
-
-    @pytest.fixture(autouse=True, scope="class")
-    def _mock_onelogger_update_config(self):
-        with patch('nemo.lightning.callback_group.CallbackGroup.update_config', return_value=None):
-            yield
 
     @pytest.mark.run_only_on('GPU')
     def test_dist_ckpt_io_called_for_mcore_models(self, tmp_path):

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import signal
 import sys
 from functools import partial
 from typing import Any, Optional
@@ -23,7 +22,6 @@ sys.modules["nv_one_logger"] = (
 )  # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
 
 import pytest
-import yaml
 from invoke.config import Config
 from invoke.context import Context
 

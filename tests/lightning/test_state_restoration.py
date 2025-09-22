@@ -256,8 +256,7 @@ def run_resume_train(mbs, gbs, num_dev):
 
 
 @pytest.mark.run_only_on('GPU')
-@patch('nemo.lightning.callback_group.CallbackGroup.get_instance', return_value=MagicMock())
-def test_optim_state_restoration(mock_get_instance):
+def test_optim_state_restoration():
     mbs, gbs = 1, 2
     num_devices = 1
     try:

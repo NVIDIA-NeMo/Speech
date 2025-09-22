@@ -12,28 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import modelopt.torch.opt as mto
+import modelopt.torch.speculative as mtsp
 import torch.nn as nn
 
 from nemo.collections.llm import GPTModel
 from nemo.utils import logging
-from nemo.utils.import_utils import UnavailableError, safe_import
 from nemo.utils.model_utils import unwrap_model
 
-mto, HAVE_MODELOPT = safe_import("modelopt.torch.opt")
-mtsp, _ = safe_import("modelopt.torch.speculative")
-
-try:
-    ALGORITHMS = {
-        "eagle3": mtsp.EAGLE3_DEFAULT_CFG,
-        # more TBD
-    }
-except UnavailableError:
-    ALGORITHMS = {}
+ALGORITHMS = {
+    "eagle3": mtsp.EAGLE3_DEFAULT_CFG,
+    # more TBD
+}
 
 
 def apply_speculative_decoding(model: nn.Module, algorithm: str = "eagle3") -> nn.Module:
-    """
-    Transform a model to enable Speculative Decoding using Model Optimizer.
+    """Transform a model to enable Speculative Decoding using Model Optimizer.
 
     Args:
         model: The model to transform.
@@ -43,9 +37,6 @@ def apply_speculative_decoding(model: nn.Module, algorithm: str = "eagle3") -> n
     Returns:
         The transformed model.
     """
-    if not HAVE_MODELOPT:
-        raise ImportError("nvidia-modelopt is required to use Speculative Decoding")
-
     assert algorithm in ALGORITHMS, f"Invalid algorithm: {algorithm}. Choices: {ALGORITHMS.keys()}"
     mode_cfg = ALGORITHMS[algorithm]
     mode, cfg = mode_cfg["algorithm"], mode_cfg["config"]
@@ -63,16 +54,26 @@ def apply_speculative_decoding(model: nn.Module, algorithm: str = "eagle3") -> n
     if unwrapped_model.config.virtual_pipeline_model_parallel_size is not None:
         raise ValueError("Speculative decoding is incompatible with virtual pipeline parallelism.")
 
-    logging.info(f"Converting to Speculative Decoding model with mode: {mode} and config:\n{cfg}")
+    # Adjust decoder head architecture
+    if "eagle_architecture_config" in cfg:
+        # These ones are necessary
+        cfg["eagle_architecture_config"]["hidden_size"] = unwrapped_model.config.hidden_size
+        cfg["eagle_architecture_config"]["vocab_size"] = unwrapped_model.vocab_size
+        cfg["eagle_architecture_config"]["draft_vocab_size"] = unwrapped_model.vocab_size
+        # These ones are optional but we copy base model's to scale memory usage reasonably
+        cfg["eagle_architecture_config"]["intermediate_size"] = unwrapped_model.config.ffn_hidden_size
+        cfg["eagle_architecture_config"]["num_attention_heads"] = unwrapped_model.config.num_attention_heads
+        cfg["eagle_architecture_config"]["num_key_value_heads"] = unwrapped_model.config.num_query_groups
+
+    # Convert
+    logging.info(f"Converting to Speculative Decoding model with mode: '{mode}' and config:\n{cfg}")
     mtsp.convert(unwrapped_model, [(mode, cfg)])  # assumes in-place
 
     return model
 
 
 def _has_same_speculative_decoding_state(model: nn.Module, mode: str) -> bool:
-    """
-    Check if the model has the same Speculative Decoding state as the incoming algorithm mode.
-    """
+    """Check if the model has the same Speculative Decoding state as the incoming algorithm mode."""
     from modelopt.torch.opt.mode import _ModeRegistryCls
 
     mode_registry = _ModeRegistryCls.get_registry_by_name("speculative")

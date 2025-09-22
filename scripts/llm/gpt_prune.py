@@ -63,6 +63,12 @@ Example usage to prune depth by dropping specific model layers (1-indexed):
 import argparse
 import os
 
+# isort: off
+# Import modelopt first to avoid circular import in 0.35.0
+import modelopt.torch.prune  # noqa: F401
+
+# isort: on
+
 from nemo.collections import llm
 from nemo.collections.llm.modelopt.prune import PruningConfig
 from nemo.utils import logging
@@ -102,6 +108,8 @@ def main(args):
         target_hidden_size=args.target_hidden_size,
         target_num_attention_heads=args.target_num_attention_heads,
         target_num_query_groups=args.target_num_query_groups,
+        target_mamba_num_heads=args.target_mamba_num_heads,
+        target_mamba_head_dim=args.target_mamba_head_dim,
         target_num_layers=args.target_num_layers,
         drop_layers=args.drop_layers,
     )
@@ -116,6 +124,8 @@ def main(args):
         num_nodes=args.num_nodes,
         tp_size=args.tp_size,
         pp_size=args.pp_size,
+        num_layers_in_first_pipeline_stage=args.num_layers_in_first_pipeline_stage,
+        num_layers_in_last_pipeline_stage=args.num_layers_in_last_pipeline_stage,
         num_train_samples=args.num_train_samples,
         data=data_module,
         tokenizer_path=args.tokenizer,
@@ -134,6 +144,18 @@ if __name__ == "__main__":
         help="Tensor parallel size. Can only be 1 if pruning and not dropping layers",
     )
     parser.add_argument("--pp_size", type=int, default=1, help="Pipeline parallel size")
+    parser.add_argument(
+        "--num_layers_in_first_pipeline_stage",
+        type=int,
+        default=None,
+        help="Number of layers in the first pipeline stage. If None, pp will default to evenly split layers.",
+    )
+    parser.add_argument(
+        "--num_layers_in_last_pipeline_stage",
+        type=int,
+        default=None,
+        help="Number of layers in the last pipeline stage. If None, pp will default to evenly split layers.",
+    )
     parser.add_argument(
         "--seq_length",
         type=int,
@@ -197,6 +219,16 @@ if __name__ == "__main__":
         type=int,
         help="Prune number of transformer layers to this value based on "
         "Block Influence metric (cosine similarity) as per https://arxiv.org/abs/2403.03853",
+    )
+    parser.add_argument(
+        "--target_mamba_num_heads",
+        type=int,
+        help="Prune number of Mamba attention heads to this value",
+    )
+    parser.add_argument(
+        "--target_mamba_head_dim",
+        type=int,
+        help="Prune dimension of Mamba attention heads to this value",
     )
     parser.add_argument(
         "--drop_layers",

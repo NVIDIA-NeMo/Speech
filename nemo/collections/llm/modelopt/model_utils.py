@@ -18,6 +18,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Callable, Optional, Union
 
 import lightning.pytorch as L
+import modelopt.torch.opt as mto
 import torch
 import torch.nn as nn
 from lightning.pytorch.plugins.io.wrapper import _WrappingCheckpointIO
@@ -31,8 +32,6 @@ from nemo.lightning.io.pl import ckpt_to_weights_subdir
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
-
-mto, HAVE_MODELOPT = safe_import("modelopt.torch.opt")
 
 _, HAVE_TE = safe_import("transformer_engine")
 if HAVE_TE:
@@ -218,8 +217,6 @@ def restore_modelopt_state(
         path (str): The path to the checkpoint.
         trainer (pl.Trainer): The trainer object, in case path not provided.
     """
-    if not HAVE_MODELOPT:
-        return
     if not path:
         if trainer is None:
             return
@@ -258,9 +255,6 @@ def save_modelopt_state(model: "MegatronParallel", path: str, checkpoint_io: "Ch
         path (str): The path to the checkpoint.
         checkpoint_io (CheckpointIO): The checkpoint IO object from MegatronStrategy.
     """
-    if not HAVE_MODELOPT:
-        return
-
     # Save ModelOpt state too, if it exists.
     core_model = unwrap_model(model)
     if not mto.ModeloptStateManager.is_converted(core_model):

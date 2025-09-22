@@ -167,7 +167,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         )
 
         # Setup bleu object
-        self.bleu = BLEU(decoding=self.decoding, tokenize=self.cfg.get('bleu_tokenizer', "13a"), log_prediction=True)
+        self._bleu = BLEU(decoding=self.decoding, tokenize=self.cfg.get('bleu_tokenizer', "13a"), log_prediction=True)
 
         # Setup fused Joint step if flag is set
         if self.joint.fuse_loss_wer:

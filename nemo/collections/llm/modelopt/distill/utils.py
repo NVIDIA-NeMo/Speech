@@ -28,7 +28,6 @@ from megatron.core.utils import get_model_config
 from nemo import lightning as nl
 from nemo.collections import llm
 from nemo.utils import logging
-from nemo.utils.import_utils import safe_import, safe_import_from
 
 from .loss import HiddenStateCosineLoss, LogitsAndIntermediatesLossBalancer, LogitsKLLoss, ProjectionLayer
 
@@ -39,9 +38,8 @@ if TYPE_CHECKING:
 
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
-mto, HAVE_MODELOPT = safe_import("modelopt.torch.opt")
-DistillationModel, _ = safe_import_from("modelopt.torch.distill", "DistillationModel", alt=object)
-DistillationLossBalancer, _ = safe_import_from("modelopt.torch.distill", "DistillationLossBalancer", alt=object)
+import modelopt.torch.opt as mto
+from modelopt.torch.distill import DistillationLossBalancer, DistillationModel
 
 
 @dataclass
@@ -242,8 +240,6 @@ def get_tensor_shapes_adjust_fn_for_distillation(
     Currently only used during non-interleaved pipelining for Distillation.
     Concatenates sizes of student and teacher output tensors for inter-process communication.
     """
-    if not HAVE_MODELOPT:
-        return None
     if (
         forward_only
         or parallel_state.get_pipeline_model_parallel_world_size() == 1

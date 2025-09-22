@@ -961,7 +961,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         """
         Decodes a list of tokens ids to a string.
         """
-        return self.decode_tokens_to_str(self.decode_ids_to_tokens(tokens))
+        if hasattr(self, 'tokenizer') and isinstance(self.tokenizer, AggregateTokenizer):
+            return self.tokenizer.ids_to_text(tokens)
+        else:
+            return self.decode_tokens_to_str(self.decode_ids_to_tokens(tokens))
 
     def decode_tokens_to_str_with_strip_punctuation(self, tokens: List[int]) -> str:
         """

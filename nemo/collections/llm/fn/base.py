@@ -20,6 +20,8 @@ from torch import nn
 
 @runtime_checkable
 class HasBool(Protocol):
+    """Protocol for objects with bool operation"""
+
     def __bool__(self) -> bool: ...
 
 
@@ -72,13 +74,18 @@ def map(  # noqa: A001
     if not kwargs.pop("_skip_map", False) and hasattr(module, "map"):
         return module.map(func, leaf_only=leaf_only, **kwargs)
 
+    if isinstance(module, nn.Module) and not isinstance(module, (nn.Sequential, nn.ModuleList, nn.ModuleDict)):
+        return _map_module(module, func, leaf_only=leaf_only, **kwargs)
     elif isinstance(module, Iterable):
+        # Assume iterable is API-compatible with dict or list
         if all(hasattr(module, key) for key in ["items", "values", "keys"]):
             return _map_module_dict(module, func, leaf_only=leaf_only, **kwargs)
-
         return _map_module_list(module, func, leaf_only=leaf_only, **kwargs)
     else:
-        return _map_module(module, func, leaf_only=leaf_only, **kwargs)
+        raise ValueError(
+            "Expected `module` to be a PyTorch module or a collection of modules, "
+            f"but got {module.__class__.__name__}."
+        )
 
 
 def walk(

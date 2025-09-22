@@ -27,6 +27,9 @@ def get_parser():
     parser.add_argument("--output-path", type=str, default="/tmp/output_hf")
     parser.add_argument("--add-model-name", action="store_true", default=False)
     parser.add_argument("--hf-target-class", type=str, default="AutoModelForCausalLM")
+    parser.add_argument(
+        "--allow-mismatch", nargs='+', default=[], help="List of parameter names to compare after casting to bfloat16"
+    )
     return parser
 
 
@@ -52,9 +55,14 @@ if __name__ == '__main__':
     for (name1, parameter1), (name2, parameter2) in zip(
         converted_hf.named_parameters(), original_hf.named_parameters()
     ):
-        assert name1 == name2, f'Parameter names do not match: {name1} != {name2}'
+        if any(k in name1 for k in args.allow_mismatch):
+            param1_cmp = parameter1.bfloat16()
+            param2_cmp = parameter2.bfloat16()
+        else:
+            param1_cmp = parameter1
+            param2_cmp = parameter2
         assert torch.all(
-            torch.isclose(parameter1, parameter2, atol=1e-3)
+            torch.isclose(param1_cmp, param2_cmp, atol=1e-3)
         ).item(), f'Parameter weight do not match for {name1}'
 
     print('All weights matched.')

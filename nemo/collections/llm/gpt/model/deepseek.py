@@ -632,6 +632,7 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
             target,
             mapping=mapping,
             transforms=transforms,
+            cast_dtype=torch.bfloat16,
         )
 
     def _modify_source_state(self, source: Dict[str, Any], source_config: Dict[str, Any]) -> _ModelState:

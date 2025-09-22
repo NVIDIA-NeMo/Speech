@@ -12,14 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from functools import partial
 from typing import Any, Optional
-from unittest.mock import MagicMock, patch
-
-sys.modules["nv_one_logger"] = (
-    MagicMock()
-)  # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
+from unittest.mock import patch
 
 import pytest
 from invoke.config import Config

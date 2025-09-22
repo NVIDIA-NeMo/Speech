@@ -14,12 +14,6 @@
 
 import math
 import random
-import sys
-from unittest.mock import MagicMock
-
-sys.modules["nv_one_logger"] = (
-    MagicMock()
-)  # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
 
 import pytest
 import torch

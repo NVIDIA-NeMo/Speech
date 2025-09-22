@@ -19,13 +19,7 @@ def set_env():
     os.environ['NVTE_APPLY_QK_LAYER_SCALING'] = '1'
 
 
-import sys
 from pathlib import Path
-from unittest.mock import MagicMock
-
-sys.modules["nv_one_logger"] = (
-    MagicMock()
-)  # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
 
 
 import lightning.pytorch as pl

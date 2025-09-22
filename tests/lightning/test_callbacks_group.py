@@ -13,9 +13,7 @@
 # limitations under the License.
 
 import importlib
-import sys
-import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from lightning.pytorch.callbacks import Callback as PTLCallback
 
@@ -23,11 +21,13 @@ from nemo.lightning.base_callback import BaseCallback
 
 
 def _fresh_group_module():
-    """Import the callback_group module from nemo.lightning."""
-    if 'nemo.lightning.callback_group' in sys.modules:
-        del sys.modules['nemo.lightning.callback_group']
-    # Stub out OneLoggerNeMoCallback to avoid importing external deps during tests
-    stub_one_logger_mod = types.ModuleType('nemo.lightning.one_logger_callback')
+    """Reset the CallbackGroup singleton and stub OneLoggerNeMoCallback safely.
+
+    This avoids deleting modules from sys.modules. We import the module,
+    replace the OneLoggerNeMoCallback symbol with a lightweight stub,
+    and reset the internal singleton so a new instance is built.
+    """
+    mod = importlib.import_module('nemo.lightning.callback_group')
 
     class _StubOneLoggerCallback(BaseCallback):
         def __init__(self, *args, **kwargs):
@@ -36,10 +36,10 @@ def _fresh_group_module():
         def update_config(self, *args, **kwargs):
             pass
 
-    setattr(stub_one_logger_mod, 'OneLoggerNeMoCallback', _StubOneLoggerCallback)
-
-    with patch.dict(sys.modules, {'nemo.lightning.one_logger_callback': stub_one_logger_mod}):
-        return importlib.import_module('nemo.lightning.callback_group')
+    setattr(mod, 'OneLoggerNeMoCallback', _StubOneLoggerCallback)
+    # Reset the singleton so the next get_instance() uses the stubbed class
+    mod.CallbackGroup._instance = None
+    return mod
 
 
 def test_base_callback_noops_do_not_raise():

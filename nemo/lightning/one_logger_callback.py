@@ -257,8 +257,16 @@ class OneLoggerNeMoCallback(OneLoggerPTLCallback, BaseCallback):
     update_config computes TrainingTelemetryConfig and applies it.
     """
 
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self) -> None:
-        # Configure provider from meta info
+        if getattr(self, '_initialized', False):
+            return
         init_config = get_one_logger_init_config()
         one_logger_config = OneLoggerConfig(**init_config)
         TrainingTelemetryProvider.instance().with_base_config(

@@ -265,7 +265,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         if is_dataclass(decoding_cfg):
             decoding_cfg = OmegaConf.structured(decoding_cfg)
 
-        print(decoding_cfg)
         self.cfg = decoding_cfg
         self.blank_id = blank_id
         self.supported_punctuation = supported_punctuation
@@ -334,9 +333,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         self._init_confidence(self.cfg.get('confidence_cfg', None))
 
         if model_type is TransducerModelType.TDT:
-            print("include durtions to true")
             self.tdt_include_token_duration = self.tdt_include_token_duration or self.compute_timestamps
-            print(self.tdt_include_token_duration, self.compute_timestamps)
             self._compute_offsets = self._compute_offsets_tdt
             self._refine_timestamps = self._refine_timestamps_tdt
 
@@ -456,9 +453,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     fusion_models_alpha=fusion_models_alpha,
                 )
             case TransducerDecodingStrategyType.GREEDY_BATCH, TransducerModelType.TDT:
-                print("#"*10)
-                print(self.tdt_include_token_duration, self.compute_timestamps)
-                print("#"*10)
                 self.decoding = rnnt_greedy_decoding.GreedyBatchedTDTInfer(
                     decoder_model=decoder,
                     joint_model=joint,
@@ -1035,7 +1029,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 # NB: if blank tokens are present, _refine_timestamps will not work properly
                 # as offests and encoded_offsets will not be 1:1 match
                 assert char != self.blank_id, "Offsets should not contain blank tokens"
-                chars_tokens.append(self.decode_tokens_to_str([int(char)]))
+                chars_tokens.append(self.decode_ids_to_tokens([int(char)])[0])
                 chars_text.append(self.decode_ids_to_str([int(char)]))
             char_offsets[i]["char"] = chars_text
             encoded_char_offsets[i]["char"] = chars_tokens

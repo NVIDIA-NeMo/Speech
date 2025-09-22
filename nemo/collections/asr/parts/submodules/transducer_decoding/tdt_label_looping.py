@@ -242,7 +242,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
-        self.use_alignments = preserve_alignments or preserve_frame_confidence
+        self.preserve_alignments = preserve_alignments or preserve_frame_confidence
         self.allow_cuda_graphs = allow_cuda_graphs
         self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
@@ -250,8 +250,6 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
         assert self._SOS == self._blank_index  # "blank as pad" algorithm only
         
-        # assert include_duration == True
-
         self.state = None
         self.full_graph = None
         self.separate_graphs = None
@@ -837,7 +835,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         # to avoid any manipulations with allocated memory outside the decoder
         return (
             self.state.batched_hyps.clone(),
-            self.state.alignments.clone() if self.use_alignments else None,
+            self.state.alignments.clone() if self.preserve_alignments else None,
             decoding_state,
         )
 

@@ -84,6 +84,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import lightning.pytorch as pl
@@ -93,6 +94,7 @@ from omegaconf import OmegaConf
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.streaming_utils import CacheAwareStreamingAudioBuffer
 from nemo.collections.asr.parts.utils.transcribe_utils import get_inference_device, get_inference_dtype, setup_model
@@ -387,10 +389,13 @@ def main(cfg: TranscriptionConfig):
         all_refs_text = []
         batch_size = cfg.batch_size
 
-        with open(cfg.dataset_manifest, 'r') as f:
-            for line in f:
-                item = json.loads(line)
-                samples.append(item)
+        manifest_dir = Path(cfg.dataset_manifest).parent
+        samples = read_manifest(cfg.dataset_manifest)
+        # fix relative paths
+        for item in samples:
+            audio_filepath = Path(item["audio_filepath"])
+            if not audio_filepath.is_absolute():
+                item["audio_filepath"] = str(manifest_dir / audio_filepath)
 
         logging.info(f"Loaded {len(samples)} from the manifest at {cfg.dataset_manifest}.")
 

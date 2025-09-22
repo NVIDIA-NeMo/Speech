@@ -276,6 +276,7 @@ class BatchedHyps:
         init_length: int,
         device: Optional[torch.device] = None,
         float_dtype: Optional[torch.dtype] = None,
+        is_with_durations: bool = False,
     ):
         """
 
@@ -294,6 +295,7 @@ class BatchedHyps:
         self.batch_size = batch_size
         self.device = device
         self.float_dtype = float_dtype
+        self.is_with_durations = is_with_durations
 
         # batch of current lengths of hypotheses and correspoinding timestamps
         self.current_lengths = torch.zeros(batch_size, device=device, dtype=torch.long)
@@ -302,7 +304,8 @@ class BatchedHyps:
         # tensor for storing timestamps corresponding to transcripts
         self.timestamps = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
         # tensor for storing durations corresponding to transcripts tokens
-        self.token_durations = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
+        if is_with_durations:
+            self.token_durations = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
         # accumulated scores for hypotheses
         self.scores = torch.zeros(batch_size, device=device, dtype=float_dtype)
 
@@ -321,10 +324,12 @@ class BatchedHyps:
         self.current_lengths.fill_(0)
         self.transcript.fill_(0)
         self.timestamps.fill_(0)
-        self.token_durations.fill_(0)
         self.scores.fill_(0.0)
         self.last_timestamp.fill_(-1)
         self.last_timestamp_lasts.fill_(0)
+
+        if self.is_with_durations:
+            self.token_durations.fill_(0)
 
     def _allocate_more(self):
         """
@@ -333,7 +338,8 @@ class BatchedHyps:
         """
         self.transcript = torch.cat((self.transcript, torch.zeros_like(self.transcript)), dim=-1)
         self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
-        self.token_durations = torch.cat((self.token_durations, torch.zeros_like(self.token_durations)), dim=-1)
+        if self.is_with_durations:
+            self.token_durations = torch.cat((self.token_durations, torch.zeros_like(self.token_durations)), dim=-1)
         self._max_length *= 2
 
     def add_results_(
@@ -364,7 +370,7 @@ class BatchedHyps:
             labels=labels,
             time_indices=time_indices,
             scores=scores,
-            token_durations=token_durations,
+            token_durations=token_durations if self.is_with_durations else None,
         )
 
     def add_results_no_checks_(
@@ -429,7 +435,7 @@ class BatchedHyps:
             labels=labels,
             time_indices=time_indices,
             scores=scores,
-            token_durations=token_durations,
+            token_durations=token_durations if self.is_with_durations else None,
         )
 
     def add_results_masked_no_checks_(
@@ -459,7 +465,7 @@ class BatchedHyps:
         # store transcript and timestamps
         self.transcript[self._batch_indices, self.current_lengths] = labels
         self.timestamps[self._batch_indices, self.current_lengths] = time_indices
-        if token_durations is not None:
+        if self.is_with_durations:
             self.token_durations[self._batch_indices, self.current_lengths] = token_durations
         # store last observed timestamp + number of observation for the current timestamp
         # if last_timestamp == time_indices, increase; else set to 1
@@ -493,11 +499,13 @@ class BatchedHyps:
             init_length=self._max_length,
             device=self.device,
             float_dtype=self.float_dtype,
+            is_with_durations=self.is_with_durations,
         )
         batched_hyps.current_lengths.copy_(self.current_lengths)
         batched_hyps.transcript.copy_(self.transcript)
         batched_hyps.timestamps.copy_(self.timestamps)
-        batched_hyps.token_durations.copy_(self.token_durations)
+        if self.is_with_durations:
+            batched_hyps.token_durations.copy_(self.token_durations)
         batched_hyps.scores.copy_(self.scores)
         batched_hyps.last_timestamp.copy_(self.last_timestamp)
         batched_hyps.last_timestamp_lasts.copy_(self.last_timestamp_lasts)
@@ -513,14 +521,16 @@ class BatchedHyps:
         """
         self.transcript = torch.cat((self.transcript, torch.zeros_like(other.transcript)), dim=-1)
         self.timestamps = torch.cat((self.timestamps, torch.zeros_like(other.timestamps)), dim=-1)
-        self.token_durations = torch.cat((self.token_durations, torch.zeros_like(other.token_durations)), dim=-1)
+        if self.is_with_durations:
+            self.token_durations = torch.cat((self.token_durations, torch.zeros_like(other.token_durations)), dim=-1)
         self._max_length += other._max_length
 
         indices = torch.arange(other.transcript.shape[1], device=self.current_lengths.device)
         shifted_indices = self.current_lengths[:, None] + indices[None, :]
         self.transcript.scatter_(dim=1, index=shifted_indices, src=other.transcript)
         self.timestamps.scatter_(dim=1, index=shifted_indices, src=other.timestamps)
-        self.token_durations.scatter_(dim=1, index=shifted_indices, src=other.token_durations)
+        if self.is_with_durations:
+            self.token_durations.scatter_(dim=1, index=shifted_indices, src=other.token_durations)
 
         self.current_lengths += other.current_lengths
         self.scores += other.scores
@@ -763,10 +773,8 @@ def batched_hyps_to_hypotheses(
             y_sequence=transcript[i, : current_lengths[i]],
             timestamp=timestamps[i, : batched_hyps.current_lengths[i]],
             token_duration=(
-                durations
-                if not torch.all(
-                    (durations := batched_hyps.token_durations[i, : batched_hyps.current_lengths[i]]) == 0
-                )
+                batched_hyps.token_durations[i, : batched_hyps.current_lengths[i]]
+                if batched_hyps.is_with_durations
                 else torch.empty(0)
             ),
             alignments=None,

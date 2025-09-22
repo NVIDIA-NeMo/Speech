@@ -15,7 +15,7 @@
 import math
 import random
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 sys.modules["nv_one_logger"] = (
     MagicMock()

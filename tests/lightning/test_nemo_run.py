@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 import signal
 from functools import partial
 from typing import Any, Optional
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+
+sys.modules["nv_one_logger"] = MagicMock() # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
 
 import pytest
 import yaml
@@ -35,12 +38,6 @@ class MockContext(Context):
     def run(self, command: str, **kwargs: Any):
         kwargs["in_stream"] = False
         super().run(command, **kwargs)
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _mock_onelogger_update_config():
-    with patch('nemo.lightning.callback_group.CallbackGroup.update_config', return_value=None):
-        yield
 
 
 @pytest.mark.parametrize(
@@ -168,11 +165,3 @@ def test_recipes_with_nemo_run(module, recipe, name, tmpdir, monkeypatch):
             plugins=run_plugins,
         )
         exp.dryrun()
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _yaml_signal_representer():
-    # PyYAML SafeDumper can't serialize signal.Signals (Enum). PreemptionPlugin uses SIGTERM by default.
-    # Register a representer to dump it as an integer (e.g., 15) so experiment configs can be YAML-dumped.
-    yaml.add_representer(signal.Signals, lambda dumper, data: dumper.represent_int(int(data)), Dumper=yaml.SafeDumper)
-    yield

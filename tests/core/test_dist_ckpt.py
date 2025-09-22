@@ -13,15 +13,19 @@
 # limitations under the License.
 
 import os
+import sys
 import types
 from pathlib import Path
 from typing import Any, Dict
 
 import lightning.pytorch as pl
 import pytest
+from unittest.mock import MagicMock, patch
 import torch
 from lightning.fabric.plugins import TorchCheckpointIO
 from lightning.pytorch.demos.boring_classes import BoringModel
+
+sys.modules["nv_one_logger"] = MagicMock() # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
 
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.utils.callbacks.dist_ckpt_io import (

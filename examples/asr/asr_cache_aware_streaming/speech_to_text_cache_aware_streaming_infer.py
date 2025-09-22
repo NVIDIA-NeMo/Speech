@@ -114,7 +114,7 @@ class TranscriptionConfig:
     # audio_dir: Optional[str] = None  # Path to a directory which contains audio files
     audio_file: Optional[str] = None  # Path to an audio file to perform streaming
     dataset_manifest: Optional[str] = None  # Path to dataset's JSON manifest
-    output_filename: Optional[str] = None  # Path to output file when manifest is used as input
+    output_path: Optional[str] = None  # Path to output file when manifest is used as input
 
     # General configs
     batch_size: int = 32
@@ -416,7 +416,7 @@ def main(cfg: TranscriptionConfig):
         logging.info(f"The whole streaming process took: {round(end_time - start_time, 2)}s")
 
         # stores the results including the transcriptions of the streaming inference in a json file
-        if cfg.output_filename is not None and len(all_refs_text) == len(all_streaming_tran):
+        if cfg.output_path is not None and len(all_refs_text) == len(all_streaming_tran):
             fname = (
                 "streaming_out_"
                 + os.path.splitext(os.path.basename(model_name))[0]
@@ -425,8 +425,8 @@ def main(cfg: TranscriptionConfig):
                 + ".json"
             )
 
-            hyp_json = os.path.join(cfg.output_filename, fname)
-            os.makedirs(cfg.output_filename, exist_ok=True)
+            hyp_json = os.path.join(cfg.output_path, fname)
+            os.makedirs(cfg.output_path, exist_ok=True)
             with open(hyp_json, "w") as out_f:
                 for i, hyp in enumerate(all_streaming_tran):
                     record = {

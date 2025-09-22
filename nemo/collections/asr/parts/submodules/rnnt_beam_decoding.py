@@ -85,7 +85,7 @@ def pack_hypotheses(hypotheses: List[Hypothesis]) -> List[Hypothesis]:
         if hyp.timestamp is not None and len(hyp.timestamp) > 0 and hyp.timestamp[0] == -1:
             # Remove -1 from timestep
             hyp.timestamp = hyp.timestamp[1:]
-            hyp.y_sequence = hyp.y_sequence[1:] # remove <sos> to have equal lengths with timestamps
+            hyp.y_sequence = hyp.y_sequence[1:]  # remove <sos> to have equal lengths with timestamps
 
     return hypotheses
 

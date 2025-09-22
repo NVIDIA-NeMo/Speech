@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from itertools import islice
 from pathlib import Path
 
 import lhotse
@@ -18,6 +19,7 @@ import numpy as np
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment, compute_num_samples
+from lhotse.shar import JsonlShardWriter
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
@@ -91,6 +93,17 @@ def multimodal_conversations_path(tmp_path_factory):
     dummy_recording(0, 5.73, with_data=True).to_cut().save_audio(tmp_path / "123.wav")
     dummy_recording(0, 7.11, with_data=True).to_cut().save_audio(tmp_path / "123_answer.wav")
     return en_path
+
+
+@pytest.fixture(scope="session")
+def tarred_multimodal_conversations_path(multimodal_conversations_path, tmp_path_factory):
+    (conversation,) = list(NeMoMultimodalConversationJsonlAdapter(multimodal_conversations_path, "[audio]"))
+    tar_dir = tmp_path_factory.mktemp("multi_convo_tarred")
+    with NeMoMultimodalConversationTarWriter(tar_dir, shard_size=5) as writer:
+        for i in range(10):
+            conversation.id = f'convo-{i}'
+            writer.write(conversation)
+    return str(tar_dir / "manifest_{0..1}.jsonl"), str(tar_dir / "audio_{0..1}.tar")
 
 
 def test_multimodal_conversation_input(multimodal_conversations_path):
@@ -803,3 +816,80 @@ def test_s2s_cut_to_conversation_conversion(s2s_cutset_path, tokenizer):
 
     assert conv.custom["test_key"] == "test_value"
     assert conv.turns[0].cut.custom["test_key"] == "test_value"
+
+
+def test_dataloader_multimodal_conversation_tarred_slice_length_multi_epoch_different_sample(
+    tarred_multimodal_conversations_path,
+):
+    jsonl, tar = tarred_multimodal_conversations_path
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    # 2 shards, 5 utterances each
+                    "type": "multimodal_conversation",
+                    "manifest_filepath": jsonl,
+                    "tarred_audio_filepaths": tar,
+                },
+            ],
+            "slice_length": 2,
+            "shuffle": False,  # shuffle is disabled, but the slice offset still must be random!
+            "num_workers": 0,
+            "seed": 0,
+            "shard_seed": 0,
+            "batch_size": 2,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    # 2 batches == 1 epoch => 4 batches == 2 epochs
+    batches = [b for b in islice(dl, 4)]
+    assert len(batches) == 4
+
+    epoch0_ids = [cut.id for b in batches[:2] for cut in b]
+    epoch1_ids = [cut.id for b in batches[2:] for cut in b]
+    print(epoch0_ids, epoch1_ids)
+    assert epoch0_ids != epoch1_ids
+    assert epoch0_ids + epoch1_ids != sorted(epoch0_ids + epoch1_ids)  # true when slice_length=None
+
+
+@pytest.fixture(scope="session")
+def multiple_multimodal_conversations_path(multimodal_conversations_path, tmp_path_factory):
+    (conversation,) = list(NeMoMultimodalConversationJsonlAdapter(multimodal_conversations_path, "[audio]"))
+    out_dir = tmp_path_factory.mktemp("multi_convo")
+    with JsonlShardWriter(f"{out_dir}/manifest_%d.jsonl", shard_size=5) as writer:
+        for i in range(10):
+            conversation.id = f'convo-{i}'
+            writer.write(conversation.to_dict())
+    return str(out_dir) + "/manifest_{0..1}.jsonl"
+
+
+def test_dataloader_multimodal_conversation_nontarred_slice_length_ignored(multiple_multimodal_conversations_path):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    # 2 shards, 5 utterances each
+                    "type": "multimodal_conversation",
+                    "manifest_filepath": multiple_multimodal_conversations_path,
+                },
+            ],
+            "slice_length": 2,
+            "shuffle": False,  # shuffle is disabled, but the slice offset still must be random!
+            "num_workers": 0,
+            "seed": 0,
+            "shard_seed": 0,
+            "batch_size": 2,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    # 5 batches = 1 epoch
+    batches = [b for b in islice(dl, 5)]
+    assert len(batches) == 5
+    ids = [c.id for b in batches for c in b]
+    assert len(ids) == 10
+    assert len(set(ids)) == 10
+    assert ids == sorted(ids)

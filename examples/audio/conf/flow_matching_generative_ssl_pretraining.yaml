@@ -8,6 +8,7 @@ model:
   p_cond: 0.9 # Proability of feeding the conditional input into the model.
   normalize_input: true # normalize the input signal to 0dBFS
   max_utts_evaluation_metrics: 125
+  estimator_target: conditional_vector_field # or data
 
   train_ds:
     shar_path: ???
@@ -66,6 +67,7 @@ model:
     num_steps: 20
     time_min: 1e-8
     time_max: 1.0
+    estimator_target: conditional_vector_field # or data
     
   ssl_pretrain_masking:
     _target_: nemo.collections.audio.modules.ssl_pretrain_masking.SSLPretrainWithMaskedPatch

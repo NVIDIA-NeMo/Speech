@@ -43,7 +43,7 @@ def flux_mock_datamodule() -> pl.LightningDataModule:
 @run.cli.factory(target=llm.train, name='flux_controlnet_training_fsdp_test')
 def flux_controlnet_training_fsdp() -> run.Partial:
     """Flux Controlnet Training Config with FSDP"""
-    recipe = flux_control_training_unit_test(custom_fsdp=True)
+    recipe = flux_control_training_unit_test(megatron_fsdp=True)
     recipe.trainer.num_sanity_val_steps = 0
     recipe.trainer.limit_val_batches = 0
     recipe.trainer.max_steps = 10
@@ -71,7 +71,7 @@ def flux_controlnet_training_ddp(
     flux_controlnet_num_single_layers=1,
 ) -> run.Partial:
     """Flux Controlnet Training Config with DDP"""
-    recipe = flux_control_training_unit_test(custom_fsdp=False)
+    recipe = flux_control_training_unit_test(megatron_fsdp=False)
     recipe.model = run.Config(
         MegatronFluxControlNetModel,
         flux_params=run.Config(
@@ -115,7 +115,7 @@ def flux_training_ddp(
     flux_num_single_layers=1,
 ) -> run.Partial:
     """Flux Training Config with DDP"""
-    recipe = flux_training_unit_test(custom_fsdp=False)
+    recipe = flux_training_unit_test(megatron_fsdp=False)
     recipe.data = flux_mock_datamodule()
     recipe.model = run.Config(
         MegatronFluxModel,
@@ -151,7 +151,7 @@ def flux_training_ddp(
 @run.cli.factory(target=llm.train, name='flux_training_fsdp_test')
 def flux_training_fsdp() -> run.Partial:
     """Flux Training Config with custom FSDP"""
-    recipe = flux_training_unit_test(custom_fsdp=True)
+    recipe = flux_training_unit_test(megatron_fsdp=True)
     recipe.trainer.num_sanity_val_steps = 0
     recipe.trainer.limit_val_batches = 0
     recipe.trainer.max_steps = 10

@@ -169,6 +169,12 @@ def parse_cli_args():
         default=None,
     )
     parser.add_argument(
+        "-etp",
+        "--enable_torch_profiler",
+        help="Enable torch profiler. Disabled by default",
+        action="store_true",
+    )
+    parser.add_argument(
         "-tb",
         "--tensorboard",
         help="Enable tensorboard logging. Disabled by default",

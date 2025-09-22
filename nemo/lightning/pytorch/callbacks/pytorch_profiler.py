@@ -33,7 +33,7 @@ def trace_handler(prof, chakra_device_trace_path):
         chakra_device_trace_path: The path where the trace file will be saved.
     """
     rank = get_rank()
-    trace_file = chakra_device_trace_path / f"rank-{rank}.json"
+    trace_file = chakra_device_trace_path / f"rank-{rank}.json.gz"
     prof.export_chrome_trace(str(trace_file))
     logging.info(f"Kineto trace saved: {trace_file}")
 
@@ -52,6 +52,7 @@ class PytorchProfilerCallback(Callback, IOMixin):
         warmup_steps (int): Number of warmup steps before profiling starts.
         active_steps (int): Number of active profiling steps.
         trace_dir (str): Directory where traces will be saved.
+        collect_et (bool): Collect Execution Trace (host trace).
         profiler_kwargs (dict, optional): Additional keyword args to pass to torch.profiler.profile
     """
 
@@ -59,9 +60,9 @@ class PytorchProfilerCallback(Callback, IOMixin):
         self,
         start_step: int,
         end_step: int,
-        warmup_steps: int = 0,
-        active_steps: int = 1,
+        warmup_steps: int = 2,
         trace_dir: str = None,
+        collect_et: bool = False,
         profiler_kwargs: Optional[Dict[str, Any]] = None,
     ):
         if trace_dir is None:
@@ -79,23 +80,29 @@ class PytorchProfilerCallback(Callback, IOMixin):
         self.start_step = start_step
         self.end_step = end_step
         self.warmup_steps = warmup_steps
-        self.active_steps = active_steps
+        self.active_steps = max(self.end_step - self.start_step, 1)
+
+        wait_steps = max(self.start_step - self.warmup_steps, 0)
 
         self.trace_dir = Path(trace_dir)
         self.chakra_host_trace_path = self.trace_dir / "host"
-        self.chakra_device_trace_path = self.trace_dir / "device"
+        self.chakra_device_trace_path = self.trace_dir / "torch_profiler"
 
-        self.chakra_host_trace_path.mkdir(parents=True, exist_ok=True)
         self.chakra_device_trace_path.mkdir(parents=True, exist_ok=True)
 
-        self.trace_observer = torch.profiler.ExecutionTraceObserver()
+        self.trace_observer = None
+        if collect_et:
+            self.chakra_host_trace_path.mkdir(parents=True, exist_ok=True)
+            self.trace_observer = torch.profiler.ExecutionTraceObserver()
+            trace_file = self.chakra_host_trace_path / f"rank-{get_rank()}.json.gz"
+            self.trace_observer.register_callback(str(trace_file))
 
         base_kwargs = {
             "activities": [
                 torch.profiler.ProfilerActivity.CPU,
                 torch.profiler.ProfilerActivity.CUDA,
             ],
-            "schedule": torch.profiler.schedule(wait=0, warmup=self.warmup_steps, active=self.active_steps),
+            "schedule": torch.profiler.schedule(wait=wait_steps, warmup=self.warmup_steps, active=self.active_steps, repeat=1),
             "on_trace_ready": lambda prof: trace_handler(prof, self.chakra_device_trace_path),
             "execution_trace_observer": self.trace_observer,
         }
@@ -105,55 +112,34 @@ class PytorchProfilerCallback(Callback, IOMixin):
             base_kwargs.update(profiler_kwargs)
 
         self.profiler = torch.profiler.profile(**base_kwargs)
-        self.is_profiling = False
 
         logging.info(
-            "Chakra profiling initialized:\n"
+            "PyTorch profiling initialized:\n"
             f" - Start Step: {self.start_step}\n"
             f" - End Step: {self.end_step}\n"
             f" - Warmup Steps: {self.warmup_steps}\n"
             f" - Active Steps: {self.active_steps}\n"
             f" - Trace Directory: {self.trace_dir}\n"
+            f" - Collect Execution Trace: {collect_et}\n"
             f" - Extra profiler kwargs: {profiler_kwargs or {}}"
         )
 
-    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx: int) -> None:
-        """Chakra trace collection starts."""
-        if trainer.global_step == self.start_step:
-            if self.is_profiling:
-                logging.warning(
-                    f"Attempted to start Chakra profiler multiple times at step {trainer.global_step}. Skipping."
-                )
-                return
-
-            logging.info(f"====== Start Chakra profiling at global_step {trainer.global_step} ======")
-
-            trace_file = self.chakra_host_trace_path / f"rank-{get_rank()}.json"
-            self.trace_observer.register_callback(str(trace_file))
-
-            self.profiler.start()
-            self.is_profiling = True
-
-            logging.info("Chakra Profiler Started.\n")
-
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx: int) -> None:
         """Chakra trace collection ends."""
-        if self.is_profiling:
-            if trainer.global_step < self.end_step:
-                self.profiler.step()
-                logging.info(f"Profiler step executed at global_step {trainer.global_step}")
-            else:
-                logging.info(f"====== End Chakra profiling at global_step {trainer.global_step} ======")
-                self._stop_profiler()
+        # Step the profiler after each training batch
+        if self.profiler:
+            self.profiler.step()
 
-    def _stop_profiler(self):
-        if self.is_profiling:
-            logging.info("Stopping Chakra Profiler...")
-            self.profiler.stop()
-            self.is_profiling = False
+    def on_train_end(self, trainer, pl_module):
+        if self.profiler:
+            self.profiler.step()
 
+        if self.trace_observer:
             try:
                 logging.info("Unregistering ExecutionTraceObserver...")
                 self.trace_observer.unregister_callback()
             except RuntimeError as e:
                 logging.warning(f"ExecutionTraceObserver cleanup failed: {e}")
+
+# Add an alias, ideally we want camelcase for PyTorch
+PyTorchProfilerCallback = PytorchProfilerCallback

@@ -17,7 +17,7 @@ import os
 import signal
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 import nemo_run as run
 import yaml
@@ -25,7 +25,7 @@ from lightning.pytorch import Callback
 from lightning.pytorch.loggers import WandbLogger
 from nemo_run.core.serialization.yaml import YamlSerializer
 
-from nemo.lightning.pytorch.callbacks import MemoryProfileCallback, NsysCallback, PreemptionCallback
+from nemo.lightning.pytorch.callbacks import MemoryProfileCallback, NsysCallback, PreemptionCallback, PyTorchProfilerCallback
 from nemo.lightning.pytorch.strategies.megatron_strategy import MegatronStrategy
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
@@ -229,6 +229,39 @@ class MemoryProfilePlugin(run.Plugin):
                 ranks=self.ranks or [0],
             )
             callbacks: list[run.Config[Callback]] = [memprof_callback]  # type: ignore
+            _merge_callbacks(task, callbacks=callbacks)
+
+
+@dataclass(kw_only=True)
+class PyTorchProfilerPlugin(run.Plugin):
+    """
+    A plugin for torch profiling.
+
+    You can specify when to start and end the profiling, on which ranks to run the profiling,
+    and what to trace during profiling.
+
+    Args:
+        start_step (int): The step at which to start the nsys profiling.
+        end_step (int): The step at which to end the nsys profiling.
+        with_modules(bool) : show modules
+    """
+    output_path: str
+    start_step: int
+    end_step: int
+    with_stack: bool = False
+    profiler_kwargs: Optional[Dict[str, Any]] = None
+
+    def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+        """Set up the torch profiling plugin."""
+        if isinstance(task, run.Partial):
+            profiler_callback = run.Config(
+                PyTorchProfilerCallback,
+                trace_dir=self.output_path,
+                start_step=self.start_step,
+                end_step=self.end_step,
+                profiler_kwargs=self.profiler_kwargs,
+            )
+            callbacks: list[run.Config[Callback]] = [profiler_callback]  # type: ignore
             _merge_callbacks(task, callbacks=callbacks)
 
 

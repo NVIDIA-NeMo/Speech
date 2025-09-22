@@ -21,7 +21,6 @@ def set_env():
 
 from pathlib import Path
 
-
 import lightning.pytorch as pl
 import pytest
 import torch

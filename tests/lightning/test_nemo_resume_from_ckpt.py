@@ -13,7 +13,6 @@
 # limitations under the License.
 import os
 from typing import List, Optional
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,6 +21,7 @@ def set_env():
     os.environ['NVTE_APPLY_QK_LAYER_SCALING'] = '0'
 
 
+import sys
 from pathlib import Path
 
 import pytest

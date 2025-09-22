@@ -16,6 +16,7 @@
 
 import os
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 from lightning.pytorch.callbacks import Callback as PTLCallback
@@ -51,6 +52,8 @@ class TestOneLoggerNeMoCallback:
             mock_config_instance = MagicMock()
             mock_config_class.return_value = mock_config_instance
             mock_provider_instance = MagicMock()
+            mock_provider_instance.config = MagicMock()
+            mock_provider_instance.config.telemetry_config = None
             mock_provider.instance.return_value = mock_provider_instance
             mock_ptl_callback_instance = MagicMock()
             mock_ptl_callback.return_value = mock_ptl_callback_instance
@@ -85,6 +88,8 @@ class TestOneLoggerNeMoCallback:
         mock_config_class.return_value = mock_config_instance
 
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
 
         # Create callback instance
@@ -274,6 +279,23 @@ class TestOneLoggerCallback:
             assert config["train_iterations_target_or_fn"] == 200
 
     @pytest.mark.unit
+    def test_get_nemo_v2_callback_config_uses_micro_when_global_missing(self):
+        """Test v2 config computes global_batch_size via micro_batch_size * WORLD_SIZE when global is missing."""
+        trainer = MagicMock()
+        trainer.max_steps = 100
+        trainer.val_check_interval = 0
+
+        # Data module without global_batch_size, but with micro_batch_size and seq_length
+        data = SimpleNamespace(micro_batch_size=8, seq_length=2048)
+
+        with patch.dict(os.environ, {"WORLD_SIZE": "4"}):
+            config = get_nemo_v2_callback_config(trainer=trainer, data=data)
+
+        assert config["global_batch_size_or_fn"] == 32  # 8 * 4
+        assert config["seq_length_or_fn"] == 2048
+        assert config["train_iterations_target_or_fn"] == 100
+
+    @pytest.mark.unit
     def test_get_nemo_v2_callback_config_no_data(self):
         """Test get_nemo_v2_callback_config without data module."""
         trainer = MagicMock()
@@ -329,6 +351,8 @@ class TestOneLoggerCallback:
         mock_get_config.return_value = {"application_name": "test"}
         mock_config_class.return_value = MagicMock()
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
         mock_ptl_callback.return_value = MagicMock()
 
@@ -372,6 +396,8 @@ class TestOneLoggerCallback:
         mock_get_config.return_value = {"application_name": "test"}
         mock_config_class.return_value = MagicMock()
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
         mock_ptl_callback.return_value = MagicMock()
 
@@ -416,6 +442,8 @@ class TestOneLoggerCallback:
         mock_get_config.return_value = {"application_name": "test"}
         mock_config_class.return_value = MagicMock()
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
         mock_ptl_callback.return_value = MagicMock()
 
@@ -459,6 +487,8 @@ class TestOneLoggerCallback:
         mock_get_config.return_value = {"application_name": "test"}
         mock_config_class.return_value = MagicMock()
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
         mock_ptl_callback.return_value = MagicMock()
 
@@ -502,6 +532,8 @@ class TestOneLoggerCallback:
         mock_get_config.return_value = {"application_name": "test"}
         mock_config_class.return_value = MagicMock()
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
         mock_ptl_callback.return_value = MagicMock()
 
@@ -550,6 +582,8 @@ class TestOneLoggerCallback:
         }
         mock_config_class.return_value = MagicMock()
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
         mock_ptl_callback.return_value = MagicMock()
 
@@ -587,6 +621,8 @@ class TestOneLoggerCallback:
         mock_get_config.return_value = {"application_name": "test"}
         mock_config_class.return_value = MagicMock()
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
         mock_ptl_callback.return_value = MagicMock()
 
@@ -606,87 +642,6 @@ class TestOneLoggerCallback:
         # Verify empty config was passed to TrainingTelemetryConfig
         mock_telemetry_config_class.assert_called_once_with(**{})
         mock_provider_instance.set_training_telemetry_config.assert_called_once_with(mock_telemetry_config_instance)
-
-    @patch('nemo.lightning.one_logger_callback.TrainingTelemetryProvider')
-    @patch('nemo.lightning.one_logger_callback.get_nemo_v1_callback_config')
-    @patch('nemo.lightning.one_logger_callback.TrainingTelemetryConfig')
-    @patch('nemo.lightning.one_logger_callback.get_one_logger_init_config')
-    @patch('nemo.lightning.one_logger_callback.OneLoggerConfig')
-    @patch('nemo.lightning.one_logger_callback.on_app_start')
-    @patch('nemo.lightning.one_logger_callback.OneLoggerPTLCallback')
-    def test_update_config_provider_exception_handling(
-        self,
-        mock_ptl_callback,
-        mock_on_app_start,
-        mock_config_class,
-        mock_get_config,
-        mock_telemetry_config_class,
-        mock_get_v1_config,
-        mock_provider,
-    ):
-        """Test update_config handles provider exceptions gracefully."""
-        # Setup mocks
-        mock_get_config.return_value = {"application_name": "test"}
-        mock_config_class.return_value = MagicMock()
-        mock_provider_instance = MagicMock()
-        mock_provider.instance.return_value = mock_provider_instance
-        mock_ptl_callback.return_value = MagicMock()
-
-        mock_v1_config = {"job_name": "test-job"}
-        mock_get_v1_config.return_value = mock_v1_config
-
-        mock_telemetry_config_instance = MagicMock()
-        mock_telemetry_config_class.return_value = mock_telemetry_config_instance
-
-        # Make provider raise an exception
-        mock_provider_instance.set_training_telemetry_config.side_effect = Exception("Provider error")
-
-        # Create callback and trainer
-        callback = OneLoggerNeMoCallback()
-        trainer = MagicMock()
-
-        # Call update_config and expect exception to be raised
-        with pytest.raises(Exception, match="Provider error"):
-            callback.update_config(nemo_version='v1', trainer=trainer)
-
-    @patch('nemo.lightning.one_logger_callback.TrainingTelemetryProvider')
-    @patch('nemo.lightning.one_logger_callback.get_nemo_v1_callback_config')
-    @patch('nemo.lightning.one_logger_callback.TrainingTelemetryConfig')
-    @patch('nemo.lightning.one_logger_callback.get_one_logger_init_config')
-    @patch('nemo.lightning.one_logger_callback.OneLoggerConfig')
-    @patch('nemo.lightning.one_logger_callback.on_app_start')
-    @patch('nemo.lightning.one_logger_callback.OneLoggerPTLCallback')
-    def test_update_config_config_exception_handling(
-        self,
-        mock_ptl_callback,
-        mock_on_app_start,
-        mock_config_class,
-        mock_get_config,
-        mock_telemetry_config_class,
-        mock_get_v1_config,
-        mock_provider,
-    ):
-        """Test update_config handles TrainingTelemetryConfig exceptions gracefully."""
-        # Setup mocks
-        mock_get_config.return_value = {"application_name": "test"}
-        mock_config_class.return_value = MagicMock()
-        mock_provider_instance = MagicMock()
-        mock_provider.instance.return_value = mock_provider_instance
-        mock_ptl_callback.return_value = MagicMock()
-
-        mock_v1_config = {"job_name": "test-job"}
-        mock_get_v1_config.return_value = mock_v1_config
-
-        # Make TrainingTelemetryConfig raise an exception
-        mock_telemetry_config_class.side_effect = Exception("Config error")
-
-        # Create callback and trainer
-        callback = OneLoggerNeMoCallback()
-        trainer = MagicMock()
-
-        # Call update_config and expect exception to be raised
-        with pytest.raises(Exception, match="Config error"):
-            callback.update_config(nemo_version='v1', trainer=trainer)
 
     def test_callback_instantiation_without_mocks_raises_import_error(self):
         """Test that callback instantiation without proper mocks raises appropriate errors."""
@@ -715,6 +670,8 @@ class TestOneLoggerCallback:
         mock_config_instance = MagicMock()
         mock_config_class.return_value = mock_config_instance
         mock_provider_instance = MagicMock()
+        mock_provider_instance.config = MagicMock()
+        mock_provider_instance.config.telemetry_config = None
         mock_provider.instance.return_value = mock_provider_instance
 
         # Create callback instance

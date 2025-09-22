@@ -222,8 +222,16 @@ def get_nemo_v2_callback_config(
     seq_length = 1  # Default fallback
 
     if data is not None:
-        global_batch_size = data.global_batch_size
         seq_length = data.seq_length
+        # Prefer explicit global_batch_size if provided by the data module
+        if hasattr(data, 'global_batch_size') and getattr(data, 'global_batch_size') is not None:
+            global_batch_size = int(getattr(data, 'global_batch_size'))
+        else:
+            # Fall back to micro_batch_size multiplied by WORLD_SIZE when global_batch_size is unavailable
+            micro_batch_size = getattr(data, 'micro_batch_size', None)
+            if micro_batch_size is not None:
+                world_size = int(os.environ.get('WORLD_SIZE', 1))
+                global_batch_size = int(micro_batch_size) * world_size
 
     # Get base configuration with calculated values
     config = _get_base_callback_config(
@@ -278,6 +286,9 @@ class OneLoggerNeMoCallback(OneLoggerPTLCallback, BaseCallback):
         on_app_start()
 
     def update_config(self, nemo_version: str, trainer: Trainer, **kwargs) -> None:
+        # Avoid this function being called multiple times
+        if TrainingTelemetryProvider.instance().config.telemetry_config is not None:
+            return
         if nemo_version == 'v1':
             config = get_nemo_v1_callback_config(trainer=trainer)
         elif nemo_version == 'v2':

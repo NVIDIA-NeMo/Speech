@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
-quick_gelu, HAVE_QUICK_GELU = safe_import_from("megatron.core.fusions.fused_bias_geglu", "quick_gelu", alt=object)
+quick_gelu, HAVE_QUICK_GELU = safe_import_from("megatron.core.activations", "quick_gelu", alt=object)
 
 
 @dataclass

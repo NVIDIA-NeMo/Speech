@@ -3,7 +3,7 @@ editdistance
 einops
 jiwer>=3.1.0,<4.0.0
 kaldi-python-io
-lhotse!=1.31.0
+lhotse>=1.31.1
 # Align with upstream PyTorch requirements
 librosa>=0.10.1
 marshmallow

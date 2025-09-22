@@ -16,6 +16,7 @@ import math
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -66,7 +67,7 @@ def flux_data_step(dataloader_iter):
     else:
         _batch = batch
 
-    _batch['loss_mask'] = torch.Tensor([1.0]).cuda(non_blocking=True)
+    _batch['loss_mask'] = torch.ones(1, device="cuda")
     return _batch
 
 
@@ -97,6 +98,7 @@ class FluxConfig(TransformerConfig, io.IOMixin):
     use_cpu_initialization: bool = True
     gradient_accumulation_fusion: bool = False
     enable_cuda_graph: bool = False
+    cuda_graph_scope: Optional[str] = None  # full, full_iteration
     use_te_rng_tracker: bool = False
     cuda_graph_warmup_steps: int = 2
 
@@ -731,6 +733,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
 
         return latents
 
+    @lru_cache
     def _prepare_latent_image_ids(
         self, batch_size: int, height: int, width: int, device: torch.device, dtype: torch.dtype
     ):
@@ -746,7 +749,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
             batch_size, latent_image_id_height * latent_image_id_width, latent_image_id_channels
         )
 
-        return latent_image_ids.to(device=device, dtype=dtype)
+        return latent_image_ids.to(device=device, dtype=dtype, non_blocking=True)
 
     def _pack_latents(self, latents, batch_size, num_channels_latents, height, width):
         # pylint: disable=C0116

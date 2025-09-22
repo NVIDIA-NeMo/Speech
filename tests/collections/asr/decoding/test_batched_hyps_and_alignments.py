@@ -168,6 +168,7 @@ class TestBatchedHyps:
         assert hyps.last_timestamp.tolist() == [1, 2]
         assert hyps.last_timestamp_lasts.tolist() == [2, 1]
 
+
 class TestBatchedAlignments:
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
@@ -292,6 +293,7 @@ class TestBatchedAlignments:
             assert (
                 alignments.logits[i, : alignments.current_lengths[i]] == sample_logits[i, add_logits_mask[i]]
             ).all()
+
 
 class TestConvertToHypotheses:
     @pytest.mark.unit

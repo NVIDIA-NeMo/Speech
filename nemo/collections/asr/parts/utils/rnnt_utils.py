@@ -327,7 +327,7 @@ class BatchedHyps:
         self.scores.fill_(0.0)
         self.last_timestamp.fill_(-1)
         self.last_timestamp_lasts.fill_(0)
-        
+
         if self.is_with_durations:
             self.token_durations.fill_(0)
 
@@ -772,7 +772,11 @@ def batched_hyps_to_hypotheses(
             score=scores[i].item(),
             y_sequence=transcript[i, : current_lengths[i]],
             timestamp=timestamps[i, : batched_hyps.current_lengths[i]],
-            token_duration=batched_hyps.token_durations[i, : batched_hyps.current_lengths[i]] if batched_hyps.is_with_durations else torch.empty(0),
+            token_duration=(
+                batched_hyps.token_durations[i, : batched_hyps.current_lengths[i]]
+                if batched_hyps.is_with_durations
+                else torch.empty(0)
+            ),
             alignments=None,
             dec_state=None,
         )

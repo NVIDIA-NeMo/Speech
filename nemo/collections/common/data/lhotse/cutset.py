@@ -203,6 +203,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
+        "slice_length": config.get("slice_length", None),
     }
     cuts, is_tarred = parse_and_combine_datasets(config.input_cfg, propagate_attrs=propagate_attrs)
     return cuts, is_tarred
@@ -241,7 +242,7 @@ def read_txt_paths(config: DictConfig) -> tuple[CutSet, bool]:
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -261,7 +262,7 @@ def read_txt_pair_paths(config: DictConfig) -> tuple[CutSet, bool]:
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -277,7 +278,7 @@ def read_nemo_sft_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -293,10 +294,11 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             system_prompt=config.get("tags", {}).get("system_prompt"),
+            slice_length=config.get("slice_length"),
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -312,10 +314,11 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             token_equivalent_duration=config.get("token_equivalent_duration"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
+            slice_length=config.get("slice_length"),
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -425,10 +428,13 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         if isinstance(config.shar_path, (str, Path)):
             logging.info(f"Initializing Lhotse Shar CutSet (tarred) from a single data source: '{config.shar_path}'")
             cuts = CutSet.from_shar(
-                **_resolve_shar_inputs(config.shar_path, metadata_only), shuffle_shards=True, seed=shard_seed
+                **_resolve_shar_inputs(config.shar_path, metadata_only),
+                shuffle_shards=True,
+                seed=shard_seed,
+                slice_length=config.get("slice_length", None),
             )
             if not metadata_only and not force_finite:
-                cuts = cuts.repeat()
+                cuts = cuts.repeat(preserve_id=True)
         elif isinstance(config.shar_path, Sequence):
             # Multiple datasets in Lhotse Shar format: we will dynamically multiplex them
             # with probability approximately proportional to their size
@@ -442,7 +448,10 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 if isinstance(item, (str, Path)):
                     path = item
                     cs = CutSet.from_shar(
-                        **_resolve_shar_inputs(path, metadata_only), shuffle_shards=True, seed=shard_seed
+                        **_resolve_shar_inputs(path, metadata_only),
+                        shuffle_shards=True,
+                        seed=shard_seed,
+                        slice_length=config.get("slice_length", None),
                     )
                     weight = len(cs)
                 else:
@@ -454,7 +463,10 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                     )
                     path, weight = item
                     cs = CutSet.from_shar(
-                        **_resolve_shar_inputs(path, metadata_only), shuffle_shards=True, seed=shard_seed
+                        **_resolve_shar_inputs(path, metadata_only),
+                        shuffle_shards=True,
+                        seed=shard_seed,
+                        slice_length=config.get("slice_length", None),
                     )
                 logging.info(f"- {path=} {weight=}")
                 cutsets.append(cs)
@@ -475,9 +487,14 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
             )
             if metadata_only:
                 fields = {"cuts": fields["cuts"]}
-            cuts = CutSet.from_shar(fields=fields, shuffle_shards=True, seed=shard_seed)
+            cuts = CutSet.from_shar(
+                fields=fields,
+                shuffle_shards=True,
+                seed=shard_seed,
+                slice_length=config.get("slice_length", None),
+            )
             if not metadata_only and not force_finite:
-                cuts = cuts.repeat()
+                cuts = cuts.repeat(preserve_id=True)
         else:
             raise RuntimeError(
                 f"Unexpected value for key 'shar_path'. We support string, list of strings, "
@@ -711,11 +728,12 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     config.manifest_filepath,
                     tar_paths=config.tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    slice_length=config.get("slice_length", None),
                     **common_kwargs,
                 )
             )
             if not force_finite:
-                cuts = cuts.repeat()
+                cuts = cuts.repeat(preserve_id=True)
         else:
             cuts = CutSet(LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **common_kwargs))
     else:
@@ -755,6 +773,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    slice_length=config.get("slice_length", None),
                     **common_kwargs,
                 )
             else:
@@ -813,7 +832,7 @@ def mux(
         cuts = CutSet.infinite_mux(*cutsets, weights=weights, seed=seed, max_open_streams=max_open_streams)
     else:
         if not force_finite:
-            cutsets = [cs.repeat() for cs in cutsets]
+            cutsets = [cs.repeat(preserve_id=True) for cs in cutsets]
         if len(cutsets) == 1:
             # CutSet.mux must take more than one CutSet.
             cuts = cutsets[0]

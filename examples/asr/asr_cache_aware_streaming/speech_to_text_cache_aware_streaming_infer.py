@@ -300,42 +300,25 @@ def main(cfg: TranscriptionConfig):
         else:
             raise ValueError("Model does not support multiple lookaheads.")
 
-        # configure the decoding config
-        # Setup decoding strategy
-        if hasattr(asr_model, 'change_decoding_strategy') and hasattr(asr_model, 'decoding'):
-            if cfg.decoder_type is not None:
-                # TODO: Support compute_langs in CTC eventually
-                if cfg.compute_langs and cfg.decoder_type == 'ctc':
-                    raise ValueError("CTC models do not support `compute_langs` at the moment")
+    # Setup decoding strategy
+    if hasattr(asr_model, 'change_decoding_strategy') and hasattr(asr_model, 'decoding'):
+        if cfg.decoder_type is not None:
+            decoding_cfg = cfg.rnnt_decoding if cfg.decoder_type == 'rnnt' else cfg.ctc_decoding
 
-                decoding_cfg = cfg.rnnt_decoding if cfg.decoder_type == 'rnnt' else cfg.ctc_decoding
-                if cfg.extract_nbest:
-                    decoding_cfg.beam.return_best_hypothesis = False
-                    cfg.return_hypotheses = True
-                if 'compute_langs' in decoding_cfg:
-                    decoding_cfg.compute_langs = cfg.compute_langs
-                if hasattr(asr_model, 'cur_decoder'):
-                    asr_model.change_decoding_strategy(decoding_cfg, decoder_type=cfg.decoder_type)
-                else:
-                    asr_model.change_decoding_strategy(decoding_cfg)
-
-            # Check if ctc or rnnt model
-            elif hasattr(asr_model, 'joint'):  # RNNT model
-                if cfg.extract_nbest:
-                    cfg.rnnt_decoding.beam.return_best_hypothesis = False
-                    cfg.return_hypotheses = True
-                cfg.rnnt_decoding.fused_batch_size = -1
-                cfg.rnnt_decoding.compute_langs = cfg.compute_langs
-
-                asr_model.change_decoding_strategy(cfg.rnnt_decoding)
+            if hasattr(asr_model, 'cur_decoder'):
+                asr_model.change_decoding_strategy(decoding_cfg, decoder_type=cfg.decoder_type)
             else:
-                if cfg.compute_langs:
-                    raise ValueError("CTC models do not support `compute_langs` at the moment.")
-                if cfg.extract_nbest:
-                    cfg.ctc_decoding.beam.return_best_hypothesis = False
-                    cfg.return_hypotheses = True
+                asr_model.change_decoding_strategy(decoding_cfg)
 
-                asr_model.change_decoding_strategy(cfg.ctc_decoding)
+        # Check if ctc or rnnt model
+        elif hasattr(asr_model, 'joint'):  # RNNT model
+            cfg.rnnt_decoding.fused_batch_size = -1
+            if hasattr(asr_model, 'cur_decoder'):
+                asr_model.change_decoding_strategy(cfg.rnnt_decoding, decoder_type=cfg.decoder_type)
+            else:
+                asr_model.change_decoding_strategy(cfg.rnnt_decoding)
+        else:
+            asr_model.change_decoding_strategy(cfg.ctc_decoding)
 
     asr_model = asr_model.to(device=device, dtype=compute_dtype)
     asr_model.eval()

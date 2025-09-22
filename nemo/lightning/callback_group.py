@@ -65,8 +65,8 @@ class CallbackGroup:
                 method = getattr(cb, 'update_config')
                 if callable(method):
                     method(nemo_version=nemo_version, trainer=trainer, **kwargs)
-            # CallbackGroup callback functions should be called first
-            trainer.callbacks.insert(0, cb)
+        # CallbackGroup callback functions should be called first
+        trainer.callbacks = self._callbacks + trainer.callbacks
 
     @property
     def callbacks(self) -> List['BaseCallback']:

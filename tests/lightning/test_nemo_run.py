@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 import signal
+import sys
 from functools import partial
 from typing import Any, Optional
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-sys.modules["nv_one_logger"] = MagicMock() # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
+sys.modules["nv_one_logger"] = (
+    MagicMock()
+)  # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
 
 import pytest
 import yaml

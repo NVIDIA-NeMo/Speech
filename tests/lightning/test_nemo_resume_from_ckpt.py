@@ -25,7 +25,9 @@ def set_env():
 import sys
 from pathlib import Path
 
-sys.modules["nv_one_logger"] = MagicMock() # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
+sys.modules["nv_one_logger"] = (
+    MagicMock()
+)  # Run multiple tests with nv-one-logger will cause issues with initialization, so we mock it here.
 
 import pytest
 import torch

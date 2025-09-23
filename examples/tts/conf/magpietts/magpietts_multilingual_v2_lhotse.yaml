@@ -101,6 +101,9 @@ model:
     hindi_phoneme:
       _target_: AutoTokenizer
       pretrained_model: "google/byt5-small"
+    vietnamese_phoneme:
+      _target_: AutoTokenizer
+      pretrained_model: "google/byt5-small"
 
   train_ds:
     use_lhotse: ${model.use_lhotse}

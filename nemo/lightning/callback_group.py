@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import atexit
 from typing import Any, Callable, List, Optional
 
 from nemo.lightning.base_callback import BaseCallback
@@ -42,6 +43,8 @@ class CallbackGroup:
 
     def __init__(self) -> None:
         self._callbacks: List[BaseCallback] = [OneLoggerNeMoCallback()]
+        # Ensure application-end is emitted at most once per process
+        self._app_end_emitted: bool = False
 
     def register(self, callback: BaseCallback) -> None:
         """Register a callback to the callback group.
@@ -94,6 +97,17 @@ class CallbackGroup:
 
         return dispatcher
 
+    # Explicit idempotent app-end to avoid duplicate emissions across multiple callers
+    def on_app_end(self, *args, **kwargs) -> None:
+        if self._app_end_emitted:
+            return
+        self._app_end_emitted = True
+        for cb in self._callbacks:
+            if hasattr(cb, 'on_app_end'):
+                method = getattr(cb, 'on_app_end')
+                if callable(method):
+                    method(*args, **kwargs)
+
 
 def hook_class_init_with_callbacks(cls, start_callback: str, end_callback: str) -> None:
     """Hook a class's __init__ to emit CallbackGroup start/end hooks.
@@ -134,5 +148,9 @@ def hook_class_init_with_callbacks(cls, start_callback: str, end_callback: str) 
 
 # Eagerly create the singleton on import so that early callers can use it
 CallbackGroup.get_instance()
+
+# Ensure that a single app-end is emitted at process shutdown (e.g., pytest end-of-session,
+# non-Hydra entrypoints). Safe due to idempotent on_app_end.
+atexit.register(lambda: CallbackGroup.get_instance().on_app_end())
 
 __all__ = ['CallbackGroup', 'hook_class_init_with_callbacks']

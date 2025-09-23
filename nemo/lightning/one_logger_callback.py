@@ -173,21 +173,25 @@ def get_nemo_v1_callback_config(trainer: Any) -> Dict[str, Any]:
         and hasattr(trainer.lightning_module, 'cfg')
     ):
         model_cfg = trainer.lightning_module.cfg
-        if hasattr(model_cfg, 'train_ds') and hasattr(model_cfg.train_ds, 'batch_size'):
-            micro_batch_size = model_cfg.train_ds.batch_size
-            global_batch_size = micro_batch_size * int(os.environ.get('WORLD_SIZE', 1))
-        elif hasattr(model_cfg, 'train_ds') and hasattr(model_cfg.train_ds, 'bucket_batch_size'):
-            # For ASR with bucketing, use the average batch size
-            # This is a temporary fix to support the bucketing
-            bucket_batch_sizes = model_cfg.train_ds.bucket_batch_size
-            # Handle both ListConfig and regular list types
-            if hasattr(bucket_batch_sizes, '__len__') and len(bucket_batch_sizes) > 0:
-                # Convert to list if it's a ListConfig, otherwise use as is
-                bucket_list = (
-                    list(bucket_batch_sizes) if hasattr(bucket_batch_sizes, '__iter__') else bucket_batch_sizes
-                )
-                avg_batch_size = sum(bucket_list) / len(bucket_list)
-                global_batch_size = int(avg_batch_size) * int(os.environ.get('WORLD_SIZE', 1))
+        if hasattr(model_cfg, 'train_ds'):
+            train_ds = model_cfg.train_ds
+            micro_batch_size = getattr(train_ds, 'batch_size', None)
+            if micro_batch_size is not None:
+                # Standard fixed-size batching
+                global_batch_size = int(micro_batch_size) * int(os.environ.get('WORLD_SIZE', 1))
+            else:
+                # Try bucketing average first if available
+                if hasattr(train_ds, 'bucket_batch_size'):
+                    # For ASR with bucketing, use the average batch size
+                    bucket_batch_sizes = train_ds.bucket_batch_size
+                    # Handle both ListConfig and regular list types
+                    if hasattr(bucket_batch_sizes, '__len__') and len(bucket_batch_sizes) > 0:
+                        # Convert to list if it's a ListConfig, otherwise use as is
+                        bucket_list = (
+                            list(bucket_batch_sizes) if hasattr(bucket_batch_sizes, '__iter__') else bucket_batch_sizes
+                        )
+                        avg_batch_size = sum(bucket_list) / len(bucket_list)
+                        global_batch_size = int(avg_batch_size) * int(os.environ.get('WORLD_SIZE', 1))
         if hasattr(model_cfg, 'encoder') and hasattr(model_cfg.encoder, 'd_model'):
             seq_length = model_cfg.encoder.d_model
 

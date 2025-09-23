@@ -93,8 +93,11 @@ class MagpieTTSModel(ModelPT):
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
 
-        # load codec
-        codec_model = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), strict=False)
+        # load codec, disable loading of loss modules not needed during inference
+        codec_model_cfg = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), return_config=True)
+        if "use_scl_loss" in codec_model_cfg:
+            codec_model_cfg.use_scl_loss = False
+        codec_model = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), strict=False, override_config_path=codec_model_cfg)
         self.sample_rate = codec_model.sample_rate
         # del codec discriminator to free memory
         del codec_model.discriminator

@@ -99,6 +99,11 @@ class CallbackGroup:
 
     # Explicit idempotent app-end to avoid duplicate emissions across multiple callers
     def on_app_end(self, *args, **kwargs) -> None:
+        """Emit application-end callbacks exactly once per process.
+
+        Invokes `on_app_end` on each registered callback, if present. Subsequent
+        calls are no-ops. All positional and keyword arguments are forwarded.
+        """
         if self._app_end_emitted:
             return
         self._app_end_emitted = True

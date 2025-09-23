@@ -82,6 +82,7 @@ class DiarizationConfig:
     no_der: bool = False
     out_rttm_dir: Optional[str] = None
     save_preds_tensors: bool = False
+    precision: str = "32"  # 32, bf16, bf16-mixed
 
     # General configs
     session_len_sec: float = -1  # End-to-end diarization session length in seconds
@@ -346,10 +347,13 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
         raise ValueError("cfg.model_path must end with.ckpt or.nemo!")
 
     diar_model._cfg.test_ds.session_len_sec = cfg.session_len_sec
-    trainer = pl.Trainer(devices=device, accelerator=accelerator)
+    trainer = pl.Trainer(devices=device, accelerator=accelerator, precision=cfg.precision)
     diar_model.set_trainer(trainer)
 
-    diar_model = diar_model.eval()
+    if torch.cuda.is_bf16_supported() and cfg.precision.startswith("bf16"):
+        diar_model = diar_model.to(dtype=torch.bfloat16).eval()
+    else:
+        diar_model = diar_model.eval()
 
     if cfg.presort_manifest:
         audio_key = cfg.get('audio_key', 'audio_filepath')
@@ -405,7 +409,9 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
         diar_model_preds_total_list = torch.load(tensor_path)
     else:
         logging.info("No saved prediction tensors found. Running inference on the dataset...")
-        diar_model.test_batch()
+        with torch.inference_mode(), torch.autocast(device_type=diar_model.device.type, dtype=diar_model.dtype):
+            diar_model.test_batch()
+
         diar_model_preds_total_list = diar_model.preds_total_list
         if cfg.save_preds_tensors:
             torch.save(diar_model.preds_total_list, tensor_path)

@@ -225,7 +225,7 @@ def nemo_tarred_manifest_subset_path(nemo_tarred_manifest_path: Tuple[str, str])
     from lhotse.shar.writers import JsonlShardWriter
 
     json_p, tar_p = nemo_tarred_manifest_path
-    json_dir = json_p.parent / "shard_manifests"
+    json_dir = json_p.parent / "shard_manifests_subset"
     json_dir.mkdir(exist_ok=True)
     all_items = list(load_jsonl(json_p))
     tarr_0_data = all_items[:5]
@@ -2592,3 +2592,126 @@ def test_dataloader_from_data_input_cfg_yaml_path_with_skipme(cutset_shar_path, 
     skipme_s = [cut.custom.get('_skipme', 0) for batch in batches for cut in batch]
 
     assert not any(skipme_s)
+
+
+def test_dataloader_lhotse_shar_nemo_tarred_slice_length(
+    nemo_tarred_manifest_path_multi: tuple[str, str], cutset_shar_path: Path
+):
+    json_mft, tar_mft = nemo_tarred_manifest_path_multi
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    # 2 shards, 5 utterances each
+                    "type": "nemo_tarred",
+                    "manifest_filepath": json_mft,
+                    "tarred_audio_filepaths": tar_mft,
+                    "tags": {"origin": "nemo_tarred"},
+                },
+                {
+                    # 2 shards, 5 utterances each
+                    "type": "lhotse_shar",
+                    "shar_path": cutset_shar_path,
+                    "tags": {"origin": "lhotse_shar"},
+                },
+            ],
+            "slice_length": 2,
+            "shuffle": True,
+            "num_workers": 0,
+            "seed": 0,
+            "shard_seed": 0,
+            "batch_size": 4,
+            "force_finite": True,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    batches = [b for b in dl]
+    assert len(batches) == 2
+
+    # We expect to sample a total of 8 examples (4 shards, 2 examples each), in 2 batches of size 4 each,
+    # half of it coming from nemo tarred dataset, and the other half from lhotse shar dataset.
+    origin_tags = Counter()
+    origin_shards = Counter()
+    for b in batches:
+        assert len(b) == 4
+        for cut in b:
+            origin_tags[cut.origin] += 1
+            if cut.origin == "lhotse_shar":
+                origin_shard = cut.shard_origin
+            else:
+                origin_shard = cut.manifest_origin
+            origin_shard = Path(origin_shard).name
+            origin_shards[origin_shard] += 1
+    assert origin_tags["lhotse_shar"] == 4
+    assert origin_tags["nemo_tarred"] == 4
+    assert origin_shards["cuts.000000.jsonl.gz"] == 2
+    assert origin_shards["cuts.000001.jsonl.gz"] == 2
+    assert origin_shards["manifest_0.jsonl"] == 2
+    assert origin_shards["manifest_1.jsonl"] == 2
+
+
+def test_dataloader_lhotse_shar_slice_length_multi_epoch_different_sample(cutset_shar_path: Path):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    # 2 shards, 5 utterances each
+                    "type": "lhotse_shar",
+                    "shar_path": cutset_shar_path,
+                },
+            ],
+            "slice_length": 2,
+            "shuffle": False,  # shuffle is disabled, but the slice offset still must be random!
+            "num_workers": 0,
+            "seed": 0,
+            "shard_seed": 0,
+            "batch_size": 2,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    # 2 batches == 1 epoch => 4 batches == 2 epochs
+    batches = [b for b in islice(dl, 4)]
+    assert len(batches) == 4
+    epoch0_ids = [cut.id for b in batches[:2] for cut in b]
+    epoch1_ids = [cut.id for b in batches[2:] for cut in b]
+    assert epoch0_ids != epoch1_ids
+    assert epoch0_ids + epoch1_ids != sorted(epoch0_ids + epoch1_ids)  # true when slice_length=None
+
+
+def test_dataloader_nemo_tarred_slice_length_multi_epoch_different_sample(
+    nemo_tarred_manifest_path_multi: tuple[str, str],
+):
+    json_mft, tar_mft = nemo_tarred_manifest_path_multi
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    # 2 shards, 5 utterances each
+                    "type": "nemo_tarred",
+                    "manifest_filepath": json_mft,
+                    "tarred_audio_filepaths": tar_mft,
+                },
+            ],
+            "slice_length": 2,
+            "shuffle": False,  # shuffle is disabled, but the slice offset still must be random!
+            "num_workers": 0,
+            "seed": 0,
+            "shard_seed": 0,
+            "batch_size": 2,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    # 2 batches == 1 epoch => 4 batches == 2 epochs
+    batches = [b for b in islice(dl, 4)]
+    assert len(batches) == 4
+
+    epoch0_ids = [cut.id for b in batches[:2] for cut in b]
+    epoch1_ids = [cut.id for b in batches[2:] for cut in b]
+    assert epoch0_ids != epoch1_ids
+    assert epoch0_ids + epoch1_ids != sorted(epoch0_ids + epoch1_ids)  # true when slice_length=None

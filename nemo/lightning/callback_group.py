@@ -69,7 +69,18 @@ class CallbackGroup:
                 if callable(method):
                     method(nemo_version=nemo_version, trainer=trainer, **kwargs)
         # CallbackGroup callback functions should be called first
-        trainer.callbacks = self._callbacks + trainer.callbacks
+        callbacks = self._callbacks + trainer.callbacks
+        # Sanitize callback state_key to be pickle-safe (string) in one pass
+        for cb in callbacks:
+            try:
+                key = getattr(cb, 'state_key', None)
+                if not isinstance(key, str):
+                    safe_key = f"{cb.__class__.__module__}.{getattr(cb.__class__, '__qualname__', cb.__class__.__name__)}"
+                    setattr(cb, 'state_key', safe_key)
+            except Exception:
+                # Best-effort: ignore if callback prevents attribute set
+                pass
+        trainer.callbacks = callbacks
 
     @property
     def callbacks(self) -> List['BaseCallback']:

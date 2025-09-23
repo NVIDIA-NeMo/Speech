@@ -80,8 +80,17 @@ def test_callback_group_update_config_fanout_and_attach(monkeypatch):
     mod = _fresh_group_module()
     group = mod.CallbackGroup.get_instance()
 
-    mock_cb = MagicMock()
-    group._callbacks = [mock_cb]
+    class _StubCallback(BaseCallback):
+        def __init__(self):
+            self.called = False
+            self.kwargs = None
+
+        def update_config(self, *args, **kwargs):
+            self.called = True
+            self.kwargs = kwargs
+
+    stub_cb = _StubCallback()
+    group._callbacks = [stub_cb]
 
     class Trainer:
         def __init__(self):
@@ -91,12 +100,12 @@ def test_callback_group_update_config_fanout_and_attach(monkeypatch):
     marker = object()
     group.update_config('v2', trainer, data=marker)
 
-    assert mock_cb.update_config.called
-    kwargs = mock_cb.update_config.call_args.kwargs
+    assert stub_cb.called
+    kwargs = stub_cb.kwargs
     assert kwargs['nemo_version'] == 'v2'
     assert kwargs['trainer'] is trainer
     assert kwargs['data'] is marker
-    assert trainer.callbacks[0] is mock_cb
+    assert trainer.callbacks[0] is stub_cb
 
 
 def test_callback_group_dynamic_dispatch_calls_when_present():

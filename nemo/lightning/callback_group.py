@@ -16,6 +16,7 @@ import atexit
 import functools
 from typing import Any, Callable, List, Optional
 
+from lightning.pytorch.callbacks import Callback as PTLCallback
 from nemo.lightning.base_callback import BaseCallback
 from nemo.lightning.one_logger_callback import OneLoggerNeMoCallback
 
@@ -63,6 +64,7 @@ class CallbackGroup:
             **kwargs: Forwarded to each callback's update_config implementation.
         """
         # Forward update to each callback that supports update_config
+        sanitized_group_callbacks: List[BaseCallback] = []
         for cb in self._callbacks:
             # Will ignore other callbacks like unittest.mock.MagicMock
             if not isinstance(cb, BaseCallback):
@@ -71,7 +73,27 @@ class CallbackGroup:
                 method = getattr(cb, 'update_config')
                 if callable(method):
                     method(nemo_version=nemo_version, trainer=trainer, **kwargs)
-        trainer.callbacks = self._callbacks + trainer.callbacks
+            sanitized_group_callbacks.append(cb)
+
+        # Filter trainer callbacks to avoid leaking MagicMocks from tests
+        existing = list(getattr(trainer, 'callbacks', []))
+        sanitized_trainer_callbacks = [cb for cb in existing if isinstance(cb, PTLCallback)]
+
+        callbacks = sanitized_group_callbacks + sanitized_trainer_callbacks
+
+        # Sanitize callback state_key for pickling safety
+        for cb in callbacks:
+            try:
+                key = getattr(cb, 'state_key', None)
+                if not isinstance(key, str):
+                    safe_key = (
+                        f"{cb.__class__.__module__}.{getattr(cb.__class__, '__qualname__', cb.__class__.__name__)}"
+                    )
+                    setattr(cb, 'state_key', safe_key)
+            except Exception:
+                pass
+
+        trainer.callbacks = callbacks
 
     @property
     def callbacks(self) -> List['BaseCallback']:

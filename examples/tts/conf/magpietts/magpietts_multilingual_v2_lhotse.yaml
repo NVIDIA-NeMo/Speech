@@ -10,6 +10,7 @@ model:
   use_lhotse: true
   model_type: "decoder_ce" # single_encoder_sv_tts, decoder_context_tts or decoder_pretrain_synthesizer
   use_text_conditioning_encoder: true # If true, distilbert will be used to encode context_text if provided.
+  text_conditioning_tokenizer_name: text_ce_tokenizer
   context_duration_min: 5.0
   context_duration_max: 5.0
   load_cached_codes_if_available: true
@@ -102,6 +103,9 @@ model:
       _target_: AutoTokenizer
       pretrained_model: "google/byt5-small"
     vietnamese_phoneme:
+      _target_: AutoTokenizer
+      pretrained_model: "google/byt5-small"
+    text_ce_tokenizer:
       _target_: AutoTokenizer
       pretrained_model: "google/byt5-small"
 

@@ -132,7 +132,7 @@ class TranscriptionConfig:
     # the pre-encoding for all the steps including the the first step. It may make the outputs of the downsampling
     # slightly different from offline mode for some techniques like striding or sw_striding.
     pad_and_drop_preencoded: bool = False
-    att_context_size: Optional[str] = (
+    att_context_size: Optional[list] = (
         None  # Sets the att_context_size for the models which support multiple lookaheads
     )
 
@@ -296,7 +296,7 @@ def main(cfg: TranscriptionConfig):
     logging.info(asr_model.encoder.streaming_cfg)
     if cfg.att_context_size is not None:
         if hasattr(asr_model.encoder, "set_default_att_context_size"):
-            asr_model.encoder.set_default_att_context_size(att_context_size=json.loads(cfg.att_context_size))
+            asr_model.encoder.set_default_att_context_size(att_context_size=cfg.att_context_size)
         else:
             raise ValueError("Model does not support multiple lookaheads.")
 

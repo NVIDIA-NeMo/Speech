@@ -185,3 +185,17 @@ def test_hook_class_init_with_callbacks_idempotent():
     mod.hook_class_init_with_callbacks(Child, 'on_model_init_start', 'on_model_init_end')
     second = Child.__init__
     assert first is second
+
+
+def test_on_app_end_is_idempotent(monkeypatch):
+    """Test on_app_end fans out only once even if called multiple times."""
+    mod = _fresh_group_module()
+    group = mod.CallbackGroup.get_instance()
+
+    mock_cb = MagicMock()
+    group._callbacks = [mock_cb]
+
+    group.on_app_end()
+    group.on_app_end()
+
+    assert mock_cb.on_app_end.call_count == 1

@@ -126,7 +126,7 @@ class TranscriptionConfig:
     # Chunked configs
     chunk_size: int = -1  # The chunk_size to be used for models trained with full context and offline models
     shift_size: int = -1  # The shift_size to be used for models trained with full context and offline models
-    left_chunks: int = 2  # The number of left chunks to be used as left context via caching for offline models
+    left_chunks: Optional[int] = 2  # The number of left chunks to be used as left context via caching for offline models
     online_normalization: bool = False  # Perform normalization on the run per chunk.
     # `pad_and_drop_preencoded` enables padding the audio input and then dropping the extra steps after
     # the pre-encoding for all the steps including the the first step. It may make the outputs of the downsampling

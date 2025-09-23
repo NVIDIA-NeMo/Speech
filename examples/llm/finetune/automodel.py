@@ -286,6 +286,7 @@ def main():
         action='store_true',
         help='Enables trust_remote_code to load HF models with unverified sources',
     )
+    parser.add_argument('--load-in-4bit', action='store_true', help='Use 4-bit quantization for e.g. for qlora')
     parser.add_argument('--fp8', action='store_true', help='Enables fp8 training')
     parser.add_argument('--lr', type=float, default=3e-6, help='Learning rate for training.')
     parser.add_argument(
@@ -374,6 +375,7 @@ def main():
         use_liger_kernel=args.liger,
         enable_grad_ckpt=args.enable_grad_ckpt,
         use_linear_ce_loss=args.no_lce,
+        load_in_4bit=args.load_in_4bit,
     )
 
     assert (

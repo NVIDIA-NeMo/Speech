@@ -477,7 +477,13 @@ class SqueezeExcite(nn.Module):
             # Create sample mask - 1 represents value, 0 represents pad
             mask = self.make_pad_mask(lengths, max_audio_length=max_len, device=x.device)
             mask = ~mask  # 0 represents value, 1 represents pad
-            x = x.float()  # For stable AMP, SE must be computed at fp32.
+
+            # Ensure SE runs in FP32: cast fc weights and activations to float32
+            if self.fc[0].weight.dtype != torch.float32:
+                self.fc.float()
+            if x.dtype != torch.float32:
+                x = x.float()
+
             x = x.masked_fill(mask, 0.0)  # mask padded values explicitly to 0
             y = self._se_pool_step(x, mask)  # [B, C, 1]
             y = y.transpose(1, -1)  # [B, 1, C]
@@ -490,6 +496,8 @@ class SqueezeExcite(nn.Module):
 
             y = torch.sigmoid(y)
             y = x * y
+            # Cast back to original dtype for downstream consistency
+            y = y.to(dtype)
         return y, lengths
 
     def _se_pool_step(self, x, mask):

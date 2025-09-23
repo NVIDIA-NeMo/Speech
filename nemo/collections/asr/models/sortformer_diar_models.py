@@ -811,6 +811,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         Returns:
             (dict): A dictionary containing the following training metrics.
         """
+        targets = targets.to(preds.dtype)
         if preds.shape[1] < targets.shape[1]:
             logging.info(
                 f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "
@@ -883,6 +884,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         Returns:
             val_metrics (dict): A dictionary containing the following validation metrics
         """
+        targets = targets.to(preds.dtype)
         if preds.shape[1] < targets.shape[1]:
             logging.info(
                 f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "
@@ -1014,6 +1016,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             target_lens (torch.Tensor): Lengths of target sequences.
                 Shape: (batch_size,)
         """
+        targets = targets.to(preds.dtype)
         if preds.shape[1] < targets.shape[1]:
             logging.info(
                 f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "

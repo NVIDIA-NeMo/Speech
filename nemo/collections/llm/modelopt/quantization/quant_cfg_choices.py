@@ -14,9 +14,7 @@
 
 from typing import Any, Dict
 
-from nemo.utils.import_utils import safe_import
-
-mtq, HAVE_MODELOPT = safe_import("modelopt.torch.quantization")
+import modelopt.torch.quantization as mtq
 
 
 def get_quant_cfg_choices() -> Dict[str, Dict[str, Any]]:
@@ -32,9 +30,6 @@ def get_quant_cfg_choices() -> Dict[str, Dict[str, Any]]:
         dict: A dictionary where keys are short names (e.g., "fp8") and values are the
             corresponding modelopt quantization configuration objects.
     """
-    if not HAVE_MODELOPT:
-        return {}
-
     QUANT_CFG_NAMES = [
         ("int8", "INT8_DEFAULT_CFG"),
         ("int8_sq", "INT8_SMOOTHQUANT_CFG"),

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from megatron.core.datasets.megatron_tokenizer import MegatronTokenizer
+from megatron.core.datasets.megatron_tokenizer import MegatronLegacyTokenizer as MegatronTokenizer
 
 
 class NullTokenizer(MegatronTokenizer):

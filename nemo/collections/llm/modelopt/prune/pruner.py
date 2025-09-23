@@ -15,6 +15,7 @@
 from dataclasses import dataclass
 from functools import partial
 
+import modelopt.torch.prune as mtp
 import pytorch_lightning as pl
 from megatron.core import dist_checkpointing
 
@@ -24,9 +25,6 @@ from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.lightning.io.pl import TrainerContext, ckpt_to_weights_subdir
 from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
-from nemo.utils.import_utils import safe_import
-
-mtp, HAVE_MODELOPT = safe_import("modelopt.torch.prune")
 
 SUPPORTED_PRUNING_HPARAMS = {
     # Width pruning
@@ -34,6 +32,8 @@ SUPPORTED_PRUNING_HPARAMS = {
     "hidden_size",
     "num_attention_heads",
     "num_query_groups",
+    "mamba_num_heads",
+    "mamba_head_dim",
     # Depth pruning
     "num_layers",
 }
@@ -50,6 +50,8 @@ class PruningConfig:
             Required if `target_num_query_groups` is provided.
         target_num_query_groups (int, optional): Target number of query groups for grouped-query attention.
             Required if `target_num_attention_heads` is provided.
+        target_mamba_num_heads (int, optional): Target number of Mamba attention heads.
+        target_mamba_head_dim (int, optional): Target dimension of Mamba attention heads.
         target_num_layers (int, optional): Target number of transformer layers using importance metric.
         drop_layers (list[int], optional): List of specific layer indices (1-indexed) to drop from the model.
             Cannot be used with other pruning parameters.
@@ -59,6 +61,8 @@ class PruningConfig:
     target_hidden_size: int | None = None
     target_num_attention_heads: int | None = None
     target_num_query_groups: int | None = None
+    target_mamba_num_heads: int | None = None
+    target_mamba_head_dim: int | None = None
     target_num_layers: int | None = None
     drop_layers: list[int] | None = None
 
@@ -69,19 +73,21 @@ class PruningConfig:
                 self.target_hidden_size,
                 self.target_num_attention_heads,
                 self.target_num_query_groups,
+                self.target_mamba_num_heads,
+                self.target_mamba_head_dim,
                 self.target_num_layers,
             ]
             if any(p is not None for p in other_params):
                 raise ValueError("drop_layers cannot be used with other pruning parameters")
 
 
-def prune_gpt_model(
+def prune_language_model(
     model: llm.GPTModel,
     pruning_config: PruningConfig,
     data_module: pl.LightningDataModule | None = None,
     trainer: nl.Trainer | None = None,
 ) -> llm.GPTModel:
-    """Prune a GPT model in-place based on the provided pruning configuration.
+    """Prune a GPT / Mamba (sub-class of GPT) model in-place based on the provided pruning configuration.
 
     Args:
         model (llm.GPTModel): The model to prune.
@@ -94,9 +100,8 @@ def prune_gpt_model(
     Returns:
         llm.GPTModel: The pruned model.
     """
-    assert HAVE_MODELOPT, "nvidia-modelopt is required to prune the model."
     if pruning_config.drop_layers:
-        mtp.plugins.drop_mcore_gpt_layers(model, layers_to_drop=pruning_config.drop_layers)
+        mtp.plugins.drop_mcore_language_model_layers(model, layers_to_drop=pruning_config.drop_layers)
     else:
         assert data_module is not None, "data_module is required to prune the model."
         assert trainer is not None, "trainer is required to prune the model."
@@ -111,7 +116,7 @@ def prune_gpt_model(
         }
         mtp.prune(
             model,
-            mode="mcore_gpt_minitron",
+            mode="mcore_minitron",
             constraints={"export_config": export_config},
             dummy_input=None,  # Not used
             config={"forward_loop": partial(llm.validate, data=data_module, trainer=trainer, tokenizer="model")},

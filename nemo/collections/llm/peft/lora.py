@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass, field
-from typing import List, Literal
+from typing import Literal, Optional
 
 import torch
+from megatron.core import parallel_state
 
 from nemo.utils.import_utils import safe_import
 
@@ -37,6 +40,7 @@ from nemo.collections.llm.peft.module_matcher import ModuleMatcher
 from nemo.collections.llm.peft.utils import get_adapter_attributes_from_linear, is_expert_linear
 from nemo.lightning.pytorch.callbacks.peft import PEFT, AdapterWrapper
 from nemo.utils import logging
+from nemo.utils.te_utils import te_version
 
 
 class LoRALinear(AdapterWrapper):
@@ -47,12 +51,274 @@ class LoRALinear(AdapterWrapper):
     class to provide a specific implementation of the forward method.
     """
 
-    def forward(self, x, *args, **kwargs):
+    def forward(
+        self,
+        x: torch.Tensor,
+        *args,
+        **kwargs,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         # pylint: disable=C0115,C0116
         linear_output, bias, layernorm_output = self.base_linear_forward(x, *args, **kwargs)
         adapter_output = self.adapter(layernorm_output.contiguous())
         adapter_output = adapter_output.reshape(linear_output.shape)
         return linear_output + adapter_output, bias
+
+
+# Fused LoRA requires Transformer Engine 2.7+
+HAVE_TE_FUSED_LORA: bool = HAVE_TE and te_version() >= (2, 7)
+
+if HAVE_TE_FUSED_LORA:
+
+    class TEFusedLoRALinear(LoRALinear):
+        """LoRA adapter wrapper using Transformer Engine operation fuser"""
+
+        def __init__(self, to_wrap: nn.Module, adapter: nn.Module):
+            super().__init__(to_wrap, adapter)
+            self._fused_branches: Optional[tuple[te.ops.Sequential, te.ops.Sequential]] = None
+
+        def _make_fused_branches(self) -> tuple[te.ops.Sequential, te.ops.Sequential]:
+            """Construct fused modules for main and LoRA branches"""
+
+            # Extract layer size and tensor parallel config
+            kwargs = {
+                "in_features": self.to_wrap.weight.size(1),
+                "out_features": self.to_wrap.weight.size(0),
+                "tensor_parallel_mode": None,
+                "tensor_parallel_group": None,
+                "sequence_parallel": False,
+            }
+            tensor_parallel_size = parallel_state.get_tensor_model_parallel_world_size()
+            if tensor_parallel_size > 1:
+                kwargs["tensor_parallel_group"] = parallel_state.get_tensor_model_parallel_group()
+                if isinstance(self.to_wrap, (te.Linear, te.LayerNormLinear)):
+                    kwargs["tensor_parallel_mode"] = self.to_wrap.parallel_mode
+                    kwargs["sequence_parallel"] = self.to_wrap.sequence_parallel
+                if kwargs["tensor_parallel_mode"] == "row":
+                    kwargs["in_features"] *= tensor_parallel_size
+                elif kwargs["tensor_parallel_mode"] == "column":
+                    kwargs["out_features"] *= tensor_parallel_size
+
+            # wgrad accumulation fusion
+            accumulate_into_main_grad = False
+            if isinstance(self.to_wrap, (te.Linear, te.LayerNormLinear)):
+                accumulate_into_main_grad = self.to_wrap.fuse_wgrad_accumulation
+            kwargs["accumulate_into_main_grad"] = accumulate_into_main_grad
+
+            # Construct fused branches
+            main_branch = self._make_main_branch(**kwargs)
+            lora_branch = self._make_lora_branch(**kwargs)
+
+            # Get submodule forward hooks
+            forward_pre_hooks = []
+            forward_post_hooks = []
+            for submodule in self.modules():
+                for hook in submodule._forward_pre_hooks.values():
+                    forward_pre_hooks.append((submodule, hook))
+                for hook in submodule._forward_hooks.values():
+                    forward_post_hooks.append((submodule, hook))
+
+            # Attempt to emulate submodule forward hooks if needed
+            # Note: Assume hooks do not interact with submodule inputs
+            # or outputs since they are internal to the op fuser.
+            if forward_pre_hooks:
+
+                def forward_pre_hook(module, *_) -> None:
+                    for submodule, hook in forward_pre_hooks:
+                        # Assume that hook does not interact with
+                        # input
+                        hook(submodule, None)
+
+                main_branch.register_forward_pre_hook(forward_pre_hook)
+            if forward_post_hooks:
+
+                def forward_post_hook(module, *_) -> None:
+                    for submodule, hook in forward_post_hooks:
+                        # Assume that hook does not interact with
+                        # input or output
+                        hook(submodule, None, None)
+
+                lora_branch.register_forward_hook(forward_post_hook)
+
+            return main_branch, lora_branch
+
+        def _make_main_branch(
+            self,
+            *,
+            in_features: int,
+            out_features: int,
+            tensor_parallel_mode: Optional[str],
+            tensor_parallel_group: Optional[torch.distributed.ProcessGroup],
+            sequence_parallel: bool,
+            accumulate_into_main_grad: bool,
+        ) -> te.ops.Sequential:
+            """Construct fused module for main branch (norm + fork + linear)"""
+
+            # Check wrapped linear class
+            if not isinstance(self.to_wrap, (te.Linear, te.LayerNormLinear, torch.nn.Linear)):
+                raise ValueError(f"Unsupported class for wrapped linear ({self.to_wrap.__class__.__name__})")
+
+            # Ops in main branch
+            main_branch = te.ops.Sequential()
+
+            # Norm op
+            if isinstance(self.to_wrap, te.LayerNormLinear):
+                norm_type = self.to_wrap.normalization
+                kwargs = {
+                    "eps": self.to_wrap.eps,
+                    "device": "meta",
+                    "dtype": self.to_wrap.layer_norm_weight.dtype,
+                    "zero_centered_gamma": self.to_wrap.zero_centered_gamma,
+                }
+                op = None
+                if norm_type == "LayerNorm":
+                    op = te.ops.LayerNorm(in_features, **kwargs)
+                    op.weight = self.to_wrap.layer_norm_weight
+                    op.bias = self.to_wrap.layer_norm_bias
+                elif norm_type == "RMSNorm":
+                    op = te.ops.RMSNorm(in_features, **kwargs)
+                    op.weight = self.to_wrap.layer_norm_weight
+                else:
+                    raise ValueError(f"Unsupported normalization ({norm_type})")
+                main_branch.append(op)
+                main_branch.append(te.ops.Quantize(forward=True, backward=False))
+
+            # Fork to LoRA branch
+            # Note: GEMM with beta=1 in backward pass
+            main_branch.append(te.ops.MakeExtraOutput(in_place=True))
+
+            # Linear op
+            weight = self.to_wrap.weight
+            bias = self.to_wrap.bias
+            if isinstance(bias, torch.Tensor) and bias.numel() == 0:
+                bias = None
+            op = te.ops.Linear(
+                in_features,
+                out_features,
+                bias=bias is not None,
+                device="meta",
+                dtype=weight.dtype,
+                tensor_parallel_mode=tensor_parallel_mode,
+                tensor_parallel_group=tensor_parallel_group,
+                sequence_parallel=sequence_parallel,
+                accumulate_into_main_grad=accumulate_into_main_grad,
+            )
+            op.weight = weight
+            op.bias = bias
+            main_branch.append(op)
+
+            return main_branch
+
+        def _make_lora_branch(
+            self,
+            *,
+            in_features: int,
+            out_features: int,
+            tensor_parallel_mode: Optional[str],
+            tensor_parallel_group: Optional[torch.distributed.ProcessGroup],
+            sequence_parallel: bool,
+            accumulate_into_main_grad: bool,
+        ) -> te.ops.Sequential:
+            """Construct fused module for LoRA branch (lora_a + lora_b + add)"""
+
+            from nemo.collections.llm.peft.utils import ParallelLinearAdapter
+
+            # Extract params from LoRA adapter
+            lora_a_weight = None
+            lora_b_weight = None
+            lora_dim = None
+            dropout = 0
+            dropout_position = None
+            scale = None
+            if isinstance(self.adapter, (LinearAdapter, TELinearAdapter)):
+                lora_a_weight = self.adapter.lora_a.weight
+                lora_b_weight = self.adapter.lora_b.weight
+                lora_dim = lora_b_weight.size(1)
+                dropout = self.adapter.dropout.p
+                dropout_position = self.adapter.dropout_position
+                scale = self.adapter.scale
+            elif isinstance(self.adapter, ParallelLinearAdapter):
+                lora_a_weight = self.adapter.linear_in.weight
+                lora_b_weight = self.adapter.linear_out.weight
+                lora_dim = lora_b_weight.size(1)
+                if self.adapter.dropout is not None:
+                    dropout = self.adapter.dropout.p
+                dropout_position = self.adapter.dropout_position
+                scale = self.adapter.alpha / self.adapter.dim
+            else:
+                raise ValueError(f"Unsupported class for LoRA adapter ({self.adapter.__class__.__name__})")
+
+            # Ops in LoRA branch
+            lora_branch = te.ops.Sequential()
+
+            # LoRA pre-processing
+            if dropout > 0 and dropout_position == "pre":
+                lora_branch.append(te.ops.Dropout(dropout))
+
+            # LoRA A linear op
+            op = te.ops.Linear(
+                in_features,
+                lora_dim,
+                bias=False,
+                device="meta",
+                dtype=lora_a_weight.dtype,
+                tensor_parallel_mode=tensor_parallel_mode,
+                tensor_parallel_group=tensor_parallel_group,
+                sequence_parallel=sequence_parallel,
+                accumulate_into_main_grad=accumulate_into_main_grad,
+            )
+            op.weight = lora_a_weight
+            lora_branch.append(op)
+
+            # LoRA B linear op
+            if tensor_parallel_mode == "column":
+                # All-gather along dim -1
+                raise NotImplementedError("Column tensor parallelism is not yet supported")
+            op = te.ops.Linear(
+                lora_dim,
+                out_features,
+                bias=False,
+                device="meta",
+                dtype=lora_b_weight.dtype,
+                tensor_parallel_mode=None if tensor_parallel_mode is None else "column",
+                tensor_parallel_group=tensor_parallel_group,
+                sequence_parallel=False,
+                accumulate_into_main_grad=accumulate_into_main_grad,
+            )
+            op.weight = lora_b_weight
+            lora_branch.append(op)
+
+            # LoRA post-processing
+            if scale != 1:
+                lora_branch.append(te.ops.ConstantScale(scale))
+            if dropout > 0 and dropout_position == "post":
+                lora_branch.append(te.ops.Dropout(dropout))
+            if tensor_parallel_mode == "row":
+                # All-gather along dim -1
+                raise NotImplementedError("Row tensor parallelism is not yet supported")
+
+            # Add with main branch
+            # Note: GEMM with beta=1 in forward pass
+            lora_branch.append(te.ops.AddExtraInput(in_place=True))
+
+            return lora_branch
+
+        def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, None]:
+            # pylint: disable=C0115,C0116
+
+            # Construct fused impl if needed
+            # Note: We initialize during the first forward pass in
+            # case the params are modified after the constructor.
+            # Note: The fused impl is stored in a tuple to avoid
+            # registering submodules.
+            if self._fused_branches is None:
+                self._fused_branches = self._make_fused_branches()
+
+            # Apply fused impl
+            main_branch, lora_branch = self._fused_branches
+            linear_output, linear_input = main_branch(x)
+            with te.fp8_autocast(enabled=False):
+                out = lora_branch(linear_input, linear_output)
+            return out, None
 
 
 if HAVE_TE:
@@ -364,7 +630,7 @@ class LoRA(PEFT, ModuleMatcher):
     This class facilitates the application of LoRA to specific modules within the model architecture.
 
     Args:
-        target_modules (List[str], optional): A list of module names to apply LoRA to.
+        target_modules (list[str], optional): A list of module names to apply LoRA to.
             Defaults to all linear layers ['linear_qkv', 'linear_proj', 'linear_fc1', 'linear_fc2'].
                 - 'linear_qkv': Apply LoRA to the fused linear layer used for query, key, and value projections
                                 in self-attention.
@@ -374,7 +640,7 @@ class LoRA(PEFT, ModuleMatcher):
             Target modules can also contain wildcards. For example, you can specify
                 target_modules=['*.layers.0.*.linear_qkv', '*.layers.1.*.linear_qkv'] to add LoRA to only linear_qkv
                 on the first two layers.
-        exclude_modules (List[str], optional): A list of module names not to apply LoRa to. It will
+        exclude_modules (list[str], optional): A list of module names not to apply LoRa to. It will
             match all nn.Linear & nn.Linear-adjacent modules whose name does not match any string in
             exclude_modules. If used, will require target_modules to be empty list or None.
         dim (int): Dimension of the low-rank projection space. Defaults to 32.
@@ -405,7 +671,7 @@ class LoRA(PEFT, ModuleMatcher):
     )
     """
 
-    target_modules: List[str] = field(
+    target_modules: list[str] = field(
         default_factory=lambda: ['linear_qkv', 'linear_proj', 'linear_fc1', 'linear_fc2']
     )
     dim: int = 32
@@ -453,6 +719,7 @@ class LoRA(PEFT, ModuleMatcher):
                 else:
                     lora_cls = LinearAdapter
 
+                # Construct LoRA module
                 return lora_cls(
                     m,
                     dim=self.dim,
@@ -464,6 +731,13 @@ class LoRA(PEFT, ModuleMatcher):
 
             input_is_parallel, in_features, out_features, disable_sp_comm, base_linear_is_parallel = (
                 get_adapter_attributes_from_linear(m)
+            )
+            enable_op_fuser = (
+                HAVE_TE_FUSED_LORA
+                and hasattr(m, "config")
+                and getattr(m.config, "use_transformer_engine_op_fuser", False)
+                # TP not yet supported
+                and parallel_state.get_tensor_model_parallel_world_size() == 1
             )
             logging.info(f"Adding lora to: {full_name}")
             adapter = ParallelLinearAdapter(
@@ -487,7 +761,10 @@ class LoRA(PEFT, ModuleMatcher):
                 dropout_recompute=self.dropout_recompute,
                 base_linear_is_parallel=base_linear_is_parallel,
             )
-            return LoRALinear(m, adapter)
+            if enable_op_fuser:
+                return TEFusedLoRALinear(m, adapter)
+            else:
+                return LoRALinear(m, adapter)
         return m
 
 

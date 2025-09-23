@@ -42,6 +42,7 @@ def get_args():
     parser.add_argument('--pp_size', type=int, default=1, help="pipeline parallel size")
     parser.add_argument('--packed', action='store_true', help="use packed sequence dataset")
     parser.add_argument('--dataset', type=str, default="dolly", choices=['dolly', 'chat'], help="Dataset to use")
+    parser.add_argument('--te_op_fuser', action='store_true', help="Enable Transformer Engine operation fuser")
 
     return parser.parse_args()
 
@@ -98,6 +99,9 @@ if __name__ == '__main__':
         peft = llm.peft.PEFT_STR2CLS[args.peft]()
     else:
         peft = None
+    if args.te_op_fuser:
+        # TE op fuser replaces MLP, so only finetune qkv and proj layers
+        peft.target_modules = ["linear_proj", "linear_qkv"]
 
     packed_sequence_specs = (
         PackedSequenceSpecs(packed_sequence_size=2048, tokenizer_model_name="dummy_tokenizer") if args.packed else None
@@ -126,7 +130,8 @@ if __name__ == '__main__':
     assert str(data.dataset_root).startswith(os.environ.get("NEMO_HOME"))
 
     tokenizer = get_nmt_tokenizer(tokenizer_model=os.path.join(args.restore_path, "dummy_tokenizer.model"))
-    llama3_8b = llm.LlamaModel(Llama3ConfigCI(), tokenizer=tokenizer)
+    model_config = Llama3ConfigCI(use_transformer_engine_op_fuser=args.te_op_fuser)
+    llama3_8b = llm.LlamaModel(model_config, tokenizer=tokenizer)
 
     resume = nl.AutoResume(
         restore_config=nl.RestoreConfig(path=args.restore_path),

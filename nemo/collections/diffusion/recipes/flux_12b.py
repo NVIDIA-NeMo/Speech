@@ -113,7 +113,6 @@ def trainer(
         gradient_accumulation_fusion=True,
         ddp=run.Config(
             DistributedDataParallelConfig,
-            # use_custom_fsdp=True,
             # data_parallel_sharding_strategy='optim_grads_params',
             check_for_nan_in_grad=True,
             grad_reduce_in_fp32=True,

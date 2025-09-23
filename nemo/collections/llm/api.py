@@ -42,7 +42,7 @@ from nemo.collections.llm.modelopt import (
     PruningConfig,
     QuantizationConfig,
     Quantizer,
-    prune_gpt_model,
+    prune_language_model,
     save_pruned_model,
     set_modelopt_spec_if_exists_in_ckpt,
     setup_trainer_and_restore_model_with_modelopt_spec,
@@ -310,6 +310,8 @@ def prune(
     num_nodes: int = 1,
     tp_size: int = 1,
     pp_size: int = 1,
+    num_layers_in_first_pipeline_stage: int | None = None,
+    num_layers_in_last_pipeline_stage: int | None = None,
     num_train_samples: int = 1024,
     data: pl.LightningDataModule | None = None,
     tokenizer_path: str | None = None,
@@ -327,6 +329,8 @@ def prune(
         tp_size (int): The tensor parallel size.
         pp_size (int): The pipeline parallel size.
         num_train_samples (int): Number of training samples for importance estimation using forward pass.
+        num_layers_in_first_pipeline_stage (int): The number of layers in the first pipeline stage.
+        num_layers_in_last_pipeline_stage (int): The number of layers in the last pipeline stage.
         data (pl.LightningDataModule): The data module for forward pass.
             Required if not dropping layers.
         tokenizer_path (str): Path to the tokenizer if not using model's tokenizer.
@@ -362,6 +366,8 @@ def prune(
         model_path=nemo_checkpoint,
         tensor_model_parallel_size=tp_size,
         pipeline_model_parallel_size=pp_size,
+        num_layers_in_first_pipeline_stage=num_layers_in_first_pipeline_stage,
+        num_layers_in_last_pipeline_stage=num_layers_in_last_pipeline_stage,
         devices=devices,
         num_nodes=num_nodes,
         inference_only=True,
@@ -371,7 +377,7 @@ def prune(
         trainer_kwargs={"max_steps": steps, "limit_val_batches": steps, "val_check_interval": steps},
         model_config_overrides={"sequence_parallel": False},
     )
-    prune_gpt_model(model, pruning_config, data, trainer)
+    prune_language_model(model, pruning_config, data, trainer)
     save_pruned_model(trainer, save_path)
 
     console = Console()

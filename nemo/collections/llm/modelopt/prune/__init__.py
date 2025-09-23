@@ -14,6 +14,6 @@
 
 """Prune utilities for using TensorRT Model Optimizer."""
 
-from .pruner import PruningConfig, prune_gpt_model, save_pruned_model
+from .pruner import PruningConfig, prune_language_model, save_pruned_model
 
-__all__ = ["PruningConfig", "prune_gpt_model", "save_pruned_model"]
+__all__ = ["PruningConfig", "prune_language_model", "save_pruned_model"]

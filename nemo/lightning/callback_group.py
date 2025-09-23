@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import functools
 import atexit
+import functools
 from typing import Any, Callable, List, Optional
 
 from nemo.lightning.base_callback import BaseCallback

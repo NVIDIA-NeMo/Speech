@@ -64,11 +64,14 @@ class CallbackGroup:
         """
         # Forward update to each callback that supports update_config
         for cb in self._callbacks:
+            # Will ignore other callbacks like unittest.mock.MagicMock
+            if not isinstance(cb, BaseCallback):
+                continue
             if hasattr(cb, 'update_config'):
                 method = getattr(cb, 'update_config')
                 if callable(method):
                     method(nemo_version=nemo_version, trainer=trainer, **kwargs)
-            trainer.callbacks.insert(0, cb)
+        trainer.callbacks = self._callbacks + trainer.callbacks
 
     @property
     def callbacks(self) -> List['BaseCallback']:

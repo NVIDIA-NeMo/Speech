@@ -2102,9 +2102,9 @@ class MagpieTTSModel(ModelPT):
         maskgit_fixed_schedule=None,
         maskgit_dynamic_cfg_scale=False,
         maskgit_sampling_type=None,
-        min_generated_frames=4,
         ignore_finished_sentence_tracking=False,
         eos_detection_method="argmax_or_multinomial_any",
+        min_generated_frames=4,
     ):
         eos_detection_method = EOSDetectionMethod(eos_detection_method)
         with torch.no_grad():

@@ -496,7 +496,7 @@ def run_inference(
                     maskgit_sampling_type=maskgit_sampling_type,
                     ignore_finished_sentence_tracking=ignore_finished_sentence_tracking,
                     eos_detection_method=eos_detection_method,
-                    min_frames=min_frames,
+                    min_generated_frames=min_frames,
                 )
 
                 all_rtf_metrics.append(rtf_metrics)

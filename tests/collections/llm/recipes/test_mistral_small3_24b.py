@@ -14,7 +14,7 @@
 
 import nemo_run as run
 import pytest
-
+import torch
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
@@ -52,7 +52,7 @@ class TestMistralSmall3_24B:
         assert trainer_config.strategy.pipeline_dtype is None
         assert trainer_config.strategy.virtual_pipeline_model_parallel_size is None
         assert trainer_config.strategy.context_parallel_size == 1
-        assert trainer_config.strategy.sequence_parallel is False
+        assert trainer_config.strategy.sequence_parallel is True
 
     def test_pretrain_recipe(self, recipe_module):
         recipe = recipe_module.pretrain_recipe()

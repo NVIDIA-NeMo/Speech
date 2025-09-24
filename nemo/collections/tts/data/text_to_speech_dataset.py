@@ -355,6 +355,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         pad_context_text_to_max_duration: Whether to pad context text to max context audio frames.
         context_duration_min: Minimum duration of context audio in seconds.
         context_duration_max: Maximum duration of context audio in seconds.
+        text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
+        text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
     """
 
     def __init__(
@@ -383,6 +385,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         pad_context_text_to_max_duration: bool = False,
         context_duration_min: float = 3.0,
         context_duration_max: float = 10.0,
+        text_context_remapping: Dict[str, str] = None,
+        text_context_remapping_prob: float = 0.0,
     ):
         super().__init__(
             dataset_meta=dataset_meta,
@@ -417,6 +421,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.pad_context_text_to_max_duration = pad_context_text_to_max_duration
         self.context_duration_min = context_duration_min
         self.context_duration_max = context_duration_max
+        self.text_context_remapping = text_context_remapping
+        self.text_context_remapping_prob = text_context_remapping_prob
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -578,9 +584,12 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
         if self.use_text_conditioning_tokenizer:
             if 'context_text' in data.manifest_entry:
-                context_tokens = self.text_tokenizer.encode(
-                    data.manifest_entry['context_text'], self.text_conditioning_tokenizer_name
-                )
+                context_text = data.manifest_entry['context_text']
+                if self.text_context_remapping is not None and context_text in self.text_context_remapping:
+                    if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:
+                        # Only remap during training. Give the exact text context during inference.
+                        context_text = self.text_context_remapping[context_text]
+                context_tokens = self.text_tokenizer.encode(context_text, self.text_conditioning_tokenizer_name)
                 example['has_text_context'] = True
             else:
                 context_tokens = self.text_tokenizer.encode("[NO TEXT CONTEXT]", self.text_conditioning_tokenizer_name)

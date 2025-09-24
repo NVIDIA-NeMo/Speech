@@ -36,6 +36,48 @@ class LocalTransformerType(PrettyStrEnum):
     MASKGIT = "maskgit"
 
 
+class EOSDetectionMethod(PrettyStrEnum):
+    """
+    Enum for the EOS detection method to use in the MagpieTTS model.
+    These strings are the values allowed in the YAML config file.
+    """
+
+    ARGMAX_ANY = "argmax_any"
+    ARGMAX_OR_MULTINOMIAL_ANY = "argmax_or_multinomial_any"
+    ARGMAX_ALL = "argmax_all"
+    ARGMAX_OR_MULTINOMIAL_ALL = "argmax_or_multinomial_all"
+    ARGMAX_ZERO_CB = "argmax_zero_cb"
+    ARGMAX_OR_MULTINOMIAL_ZERO_CB = "argmax_or_multinomial_zero_cb"
+
+    @staticmethod
+    def detection_type(detection_method: EOSDetectionMethod):
+        if detection_method in [EOSDetectionMethod.ARGMAX_ANY, EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ANY]:
+            return "any"
+        elif detection_method in [EOSDetectionMethod.ARGMAX_ALL, EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ALL]:
+            return "all"
+        elif detection_method in [EOSDetectionMethod.ARGMAX_ZERO_CB, EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ZERO_CB]:
+            return "zero_cb"
+        else:
+            raise ValueError(f"Invalid EOS detection method: {detection_method}")
+
+    @staticmethod
+    def sampling_type(detection_method: EOSDetectionMethod):
+        if detection_method in [
+            EOSDetectionMethod.ARGMAX_ANY,
+            EOSDetectionMethod.ARGMAX_ALL,
+            EOSDetectionMethod.ARGMAX_ZERO_CB,
+        ]:
+            return "argmax"
+        elif detection_method in [
+            EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ANY,
+            EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ALL,
+            EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ZERO_CB,
+        ]:
+            return "argmax_or_multinomial"
+        else:
+            raise ValueError(f"Invalid EOS detection method: {detection_method}")
+
+
 class SpecialAudioToken(Enum):
     """
     Enum for the special tokens to use in the MagpieTTS model.

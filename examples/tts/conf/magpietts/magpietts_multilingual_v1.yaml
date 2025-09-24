@@ -55,6 +55,9 @@ model:
   local_transformer_n_heads: 1
   local_transformer_hidden_dim: 256
 
+  text_context_remapping_json: null # JSON file defining mapping of multiple text contexts to a single text context. Does not need to cover all text contexts.
+  text_context_remapping_prob: 0.0
+
   text_tokenizers: # Add more languages for multi-lingual TTS
     english_phoneme:
       _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer

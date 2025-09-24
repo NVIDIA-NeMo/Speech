@@ -126,6 +126,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         tokenizer_config (Optional[DictConfig]): Configuration for the text tokenizers.
             Used for lazy initialization within workers. Must be provided if tokenizers
             are not set externally. Defaults to None.
+        text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
+        text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
     """
 
     def __init__(
@@ -148,6 +150,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         use_text_conditioning_tokenizer: bool = False,
         text_conditioning_tokenizer_name: str = None,
         tokenizer_config: DictConfig = None,
+        text_context_remapping: Dict[str, str] = None,
+        text_context_remapping_prob: float = 0.0,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -172,6 +176,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.context_duration_max = context_duration_max
         self.tokenizer_config = tokenizer_config
         self.text_tokenizer = None
+        self.text_context_remapping = text_context_remapping
+        self.text_context_remapping_prob = text_context_remapping_prob
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -369,8 +375,13 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
             if self.use_text_conditioning_tokenizer:
                 if cut.supervisions[0].has_custom("context_text"):
+                    context_text = cut.supervisions[0].context_text
+                    if self.text_context_remapping is not None and context_text in self.text_context_remapping:
+                        if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:
+                            # Only remap during training. Give the exact text context during inference.
+                            context_text = self.text_context_remapping[context_text]
                     context_text_tokens = self.text_tokenizer.encode(
-                        cut.supervisions[0].context_text, tokenizer_name=self.text_conditioning_tokenizer_name
+                        context_text, tokenizer_name=self.text_conditioning_tokenizer_name
                     )
                     has_text_context = True
                 else:

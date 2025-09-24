@@ -294,6 +294,8 @@ def run_inference(
     compute_fcd=False,
     violin_plot_metrics=['cer', 'pred_context_ssim'],
     min_frames=0,
+    eos_detection_method=None,
+    ignore_finished_sentence_tracking=False,
 ):
     # Load model
     if hparams_file is not None and checkpoint_file is not None:
@@ -359,8 +361,7 @@ def run_inference(
     checkpoint_name += (
         f"LT_{use_local_transformer}_"
         f"MaskGit_{maskgit_n_steps}_{maskgit_sampling_type}_{''.join([str(l) for l in maskgit_fixed_schedule]) if maskgit_fixed_schedule is not None else 'None'}_"
-        f"SV_{sv_model}_"
-        f"MinFrames_{min_frames}"
+        f"SV_{sv_model}"
     )
 
     dataset_meta_info = evalset_config.dataset_meta_info
@@ -490,7 +491,6 @@ def run_inference(
                     maskgit_noise_scale=maskgit_noise_scale,
                     maskgit_fixed_schedule=maskgit_fixed_schedule,
                     maskgit_sampling_type=maskgit_sampling_type,
-                    min_generated_frames=min_frames,
                 )
 
                 all_rtf_metrics.append(rtf_metrics)
@@ -653,6 +653,19 @@ def main():
     parser.add_argument('--start_prior_after_n_audio_steps', type=int, default=0)
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument(
+        '--eos_detection_method',
+        type=str,
+        default="argmax_or_multinomial_any",
+        choices=[
+            "argmax_any",
+            "argmax_or_multinomial_any",
+            "argmax_all",
+            "argmax_or_multinomial_all",
+            "argmax_zero_cb",
+            "argmax_or_multinomial_zero_cb",
+        ],
+    )
     # Parameters for evaluation
     parser.add_argument('--sv_model', type=str, default="titanet")  # titanet, wavlm
     parser.add_argument(
@@ -662,6 +675,7 @@ def main():
     parser.add_argument('--confidence_level', type=float, default=0.95)
     parser.add_argument('--legacy_codebooks', action='store_true')
     parser.add_argument('--legacy_text_conditioning', action='store_true')
+    parser.add_argument('--ignore_finished_sentence_tracking', action='store_true')
     parser.add_argument('--clean_up_disk', action='store_true')
     parser.add_argument('--cer_target', type=float, default=None)
     parser.add_argument('--ssim_target', type=float, default=None)
@@ -726,7 +740,6 @@ def main():
         log_exp_name=args.log_exp_name,
         compute_fcd=compute_fcd,
         violin_plot_metrics=args.violin_plot_metrics,
-        min_frames=args.min_frames,
     )
 
     # Mode 1: Run inference from provided hparams and checkpoint files

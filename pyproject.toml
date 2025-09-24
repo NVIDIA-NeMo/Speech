@@ -88,7 +88,7 @@ skip_string_normalization = true
 # major year version is stable, see details in
 # https://black.readthedocs.io/en/stable/the_black_code_style/index.html
 # `required_version` is necessary for consistency (other `black` versions will fail to reformat files)
-required_version = "24"
+required_version = "25"
 target-version = ['py310', 'py311', 'py312']
 extend-exclude = '''
 # A regex preceded with ^/ will apply only to files and directories

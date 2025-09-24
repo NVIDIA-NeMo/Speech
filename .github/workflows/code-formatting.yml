@@ -50,13 +50,12 @@ jobs:
           python-version: "3.10"
 
       - name: black
-        uses: psf/black@stable
+        uses: psf/black@25.9.0
         if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
         with:
           options: "--verbose"
           # apply only to changed files (pass explicitly the files)
           src: "${{ steps.changed-files.outputs.all_changed_files }}"
-          version: "~= 25.9.0"
 
       - name: isort
         uses: isort/isort-action@v1

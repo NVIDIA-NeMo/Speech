@@ -149,7 +149,7 @@ def create_violin_plots(metrics: List[dict], metric_keys: List[str], output_png:
         assert column in df
         # Create empty lists to store the parts objects for each DataFrame
         # Plot the violin plots for each DataFrame
-        axs[i].violinplot(df[column], showmedians=True, positions=[i], widths=0.5)
+        axs[i].violinplot(df[column], showmedians=True, positions=[i], widths=0.5, showextrema=True)
 
         axs[i].set_title(column)
         axs[i].set_xticks([i])

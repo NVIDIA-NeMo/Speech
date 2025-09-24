@@ -726,7 +726,9 @@ class MagpieTTSModel(ModelPT):
             logits: (B, C, num_audio_tokens_per_codebook)
         """
         logits[
-            :, :, SpecialAudioToken.get_forbidden_tokens(self._codec_model.codebook_size, forbid_audio_eos=forbid_audio_eos),
+            :,
+            :,
+            SpecialAudioToken.get_forbidden_tokens(self._codec_model.codebook_size, forbid_audio_eos=forbid_audio_eos),
         ] = float('-inf')
         return logits
 
@@ -922,7 +924,7 @@ class MagpieTTSModel(ModelPT):
         use_cfg=False,
         cfg_scale=1.0,
         use_kv_cache=True,
-        forbid_audio_eos=False
+        forbid_audio_eos=False,
     ):
         # dec_output: (B, E)
         self.local_transformer.reset_cache(use_cache=use_kv_cache)
@@ -950,7 +952,9 @@ class MagpieTTSModel(ModelPT):
                 codebook_logits[item_idx, :] = float('-inf')
                 codebook_logits[item_idx, self.audio_eos_id] = 0.0
 
-            codebook_logits = self.clear_forbidden_logits(codebook_logits.unsqueeze(1), forbid_audio_eos=forbid_audio_eos).squeeze(1)
+            codebook_logits = self.clear_forbidden_logits(
+                codebook_logits.unsqueeze(1), forbid_audio_eos=forbid_audio_eos
+            ).squeeze(1)
             codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
             indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
                 -1
@@ -1005,7 +1009,9 @@ class MagpieTTSModel(ModelPT):
                 for item_idx in finished_items:
                     codebook_logits[item_idx, :] = float('-inf')
                     codebook_logits[item_idx, self.audio_eos_id] = 0.0
-                codebook_logits = self.clear_forbidden_logits(codebook_logits.unsqueeze(1), forbid_audio_eos=forbid_audio_eos).squeeze(1)
+                codebook_logits = self.clear_forbidden_logits(
+                    codebook_logits.unsqueeze(1), forbid_audio_eos=forbid_audio_eos
+                ).squeeze(1)
                 codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
                 indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
                     -1
@@ -2211,7 +2217,7 @@ class MagpieTTSModel(ModelPT):
                 # Don't allow termination until we have generated at least `min_generated_frames` frames (rounded up to the nearest multiple of frame_stacking_factor)
                 forbid_audio_eos = idx * self.frame_stacking_factor < min_generated_frames
 
-                all_code_logits_t = all_code_logits[:, -1, :] # (B, num_codebooks * num_tokens_per_codebook)
+                all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
                 if use_local_transformer_for_inference:
                     if self.local_transformer_type == LocalTransformerType.AR:
                         # Autoregressive sampling with local transformer
@@ -2224,7 +2230,7 @@ class MagpieTTSModel(ModelPT):
                             use_cfg=use_cfg,
                             cfg_scale=cfg_scale,
                             use_kv_cache=use_LT_kv_cache,
-                            forbid_audio_eos=forbid_audio_eos
+                            forbid_audio_eos=forbid_audio_eos,
                         )
                     elif self.local_transformer_type == LocalTransformerType.MASKGIT:
                         audio_codes_next = self.local_transformer_sample_maskgit(
@@ -2240,7 +2246,7 @@ class MagpieTTSModel(ModelPT):
                             fixed_schedule=maskgit_fixed_schedule,
                             dynamic_cfg_scale=maskgit_dynamic_cfg_scale,
                             sampling_type=maskgit_sampling_type,
-                            forbid_audio_eos=forbid_audio_eos
+                            forbid_audio_eos=forbid_audio_eos,
                         )
                     else:
                         raise ValueError(

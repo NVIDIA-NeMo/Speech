@@ -293,9 +293,9 @@ def run_inference(
     log_exp_name=False,
     compute_fcd=False,
     violin_plot_metrics=['cer', 'pred_context_ssim'],
-    min_frames=0,
     eos_detection_method=None,
     ignore_finished_sentence_tracking=False,
+    min_frames=0,
 ):
     # Load model
     if hparams_file is not None and checkpoint_file is not None:
@@ -362,6 +362,9 @@ def run_inference(
         f"LT_{use_local_transformer}_"
         f"MaskGit_{maskgit_n_steps}_{maskgit_sampling_type}_{''.join([str(l) for l in maskgit_fixed_schedule]) if maskgit_fixed_schedule is not None else 'None'}_"
         f"SV_{sv_model}"
+        f"EOS_{eos_detection_method}"
+        f"IgnoreFST_{ignore_finished_sentence_tracking}"
+        f"MinFrames_{min_frames}"
     )
 
     dataset_meta_info = evalset_config.dataset_meta_info
@@ -491,6 +494,9 @@ def run_inference(
                     maskgit_noise_scale=maskgit_noise_scale,
                     maskgit_fixed_schedule=maskgit_fixed_schedule,
                     maskgit_sampling_type=maskgit_sampling_type,
+                    ignore_finished_sentence_tracking=ignore_finished_sentence_tracking,
+                    eos_detection_method=eos_detection_method,
+                    min_frames=min_frames,
                 )
 
                 all_rtf_metrics.append(rtf_metrics)
@@ -740,6 +746,9 @@ def main():
         log_exp_name=args.log_exp_name,
         compute_fcd=compute_fcd,
         violin_plot_metrics=args.violin_plot_metrics,
+        eos_detection_method=args.eos_detection_method,
+        ignore_finished_sentence_tracking=args.ignore_finished_sentence_tracking,
+        min_frames=args.min_frames,
     )
 
     # Mode 1: Run inference from provided hparams and checkpoint files

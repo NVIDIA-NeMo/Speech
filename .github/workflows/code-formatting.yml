@@ -56,7 +56,7 @@ jobs:
           options: "--verbose"
           # apply only to changed files (pass explicitly the files)
           src: "${{ steps.changed-files.outputs.all_changed_files }}"
-          version: "~= 24.3"
+          version: "~= 25.9.0"
 
       - name: isort
         uses: isort/isort-action@v1

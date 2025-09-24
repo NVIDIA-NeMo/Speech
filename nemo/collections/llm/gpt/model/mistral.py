@@ -118,7 +118,7 @@ class MistralSmall3Config24B(MistralConfig7B):
     window_size: List[int] = None
     cp_comm_type: str = None
     rotary_percent: float = 1.0
-    rotary_base: float = 100000000.0
+    rotary_base: float = 1000000000.0
     params_dtype: torch.dtype = torch.bfloat16
 
 

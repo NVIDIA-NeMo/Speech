@@ -47,11 +47,11 @@ class TestMistralSmall3_24B:
         # Check strategy configuration
         assert isinstance(trainer_config.strategy, run.Config)
         assert trainer_config.strategy.__fn_or_cls__.__name__ == "MegatronStrategy"
-        assert trainer_config.strategy.tensor_model_parallel_size == 1
-        assert trainer_config.strategy.pipeline_model_parallel_size == 1
+        assert trainer_config.strategy.tensor_model_parallel_size == 4
+        assert trainer_config.strategy.pipeline_model_parallel_size == 2
         assert trainer_config.strategy.pipeline_dtype is None
         assert trainer_config.strategy.virtual_pipeline_model_parallel_size is None
-        assert trainer_config.strategy.context_parallel_size == 2
+        assert trainer_config.strategy.context_parallel_size == 1
         assert trainer_config.strategy.sequence_parallel is False
 
     def test_pretrain_recipe(self, recipe_module):

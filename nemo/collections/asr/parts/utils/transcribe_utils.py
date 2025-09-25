@@ -39,6 +39,20 @@ _MPS_WARNING_TEXT = (
 )
 
 
+def get_auto_inference_device(allow_mps: bool = True) -> torch.device:
+    """Get best available inference device. Preference: CUDA -> MPS -> CPU"""
+    cuda_available = torch.cuda.is_available()
+    mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    if cuda_available:
+        device = torch.device('cuda:0')  # use 0th CUDA device
+    elif allow_mps and mps_available:
+        logging.warning(_MPS_WARNING_TEXT)
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    return device
+
+
 def get_inference_device(cuda: int | None = None, allow_mps: bool = True) -> torch.device:
     """
     Get the best available device for model inference
@@ -53,13 +67,7 @@ def get_inference_device(cuda: int | None = None, allow_mps: bool = True) -> tor
     mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
     cuda_available = torch.cuda.is_available()
     if cuda is None:
-        if cuda_available:
-            device = torch.device('cuda:0')  # use 0th CUDA device
-        elif allow_mps and mps_available:
-            logging.warning(_MPS_WARNING_TEXT)
-            device = torch.device('mps')
-        else:
-            device = torch.device('cpu')
+        return get_auto_inference_device(allow_mps=allow_mps)
     elif cuda < 0:
         # negative number => inference on CPU or MPS
         if allow_mps and mps_available:
@@ -75,18 +83,21 @@ def get_inference_device(cuda: int | None = None, allow_mps: bool = True) -> tor
     return device
 
 
+def get_auto_inference_dtype(device: torch.device) -> torch.dtype:
+    """Get inference dtype automatically. Preference: bfloat16 -> float32"""
+    can_use_bfloat16 = device.type == "cuda" and torch.cuda.is_bf16_supported()
+    if can_use_bfloat16:
+        return torch.bfloat16
+    return torch.float32
+
+
 def get_inference_dtype(compute_dtype: str | None, device: torch.device) -> torch.dtype:
     """Get dtype for model inference. If compute_dtype is None, the best available option is selected"""
     dtype: torch.dtype
     if compute_dtype is None:
-        can_use_bfloat16 = device.type == "cuda" and torch.cuda.is_bf16_supported()
-        if can_use_bfloat16:
-            dtype = torch.bfloat16
-        else:
-            dtype = torch.float32
-    else:
-        assert compute_dtype in {"float32", "bfloat16", "float16"}
-        dtype = getattr(torch, compute_dtype)
+        return get_auto_inference_dtype(device=device)
+    assert compute_dtype in {"float32", "bfloat16", "float16"}
+    dtype = getattr(torch, compute_dtype)
     return dtype
 
 

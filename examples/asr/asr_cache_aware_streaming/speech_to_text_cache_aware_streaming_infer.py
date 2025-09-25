@@ -297,15 +297,11 @@ def main(cfg: TranscriptionConfig):
     amp_dtype = torch.float16 if cfg.amp_dtype == "float16" else torch.bfloat16
 
     compute_dtype: torch.dtype
-    if cfg.compute_dtype is None:
-        can_use_bfloat16 = (not cfg.amp) and device.type == "cuda" and torch.cuda.is_bf16_supported()
-        if can_use_bfloat16:
-            compute_dtype = torch.bfloat16
-        else:
-            compute_dtype = torch.float32
+    if cfg.amp:
+        # with amp model weights required to be in float32
+        compute_dtype = torch.float32
     else:
-        assert cfg.compute_dtype in {"float32", "bfloat16", "float16"}
-        compute_dtype = getattr(torch, cfg.compute_dtype)
+        compute_dtype = get_inference_dtype(compute_dtype=cfg.compute_dtype, device=device)
 
     if compute_dtype != torch.float32:
         # NB: cache-aware models do not currently work with compute_dtype != float32

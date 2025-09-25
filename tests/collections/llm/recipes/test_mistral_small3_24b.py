@@ -110,5 +110,5 @@ class TestMistralSmall3_24B:
         assert mistral_config.kv_channels == 128
         assert mistral_config.window_size is None
         assert mistral_config.rotary_percent == 1.0
-        assert mistral_config.rotary_base == 1000000000.0
+        assert mistral_config.rotary_base == 100000000.0
         assert mistral_config.params_dtype == torch.bfloat16

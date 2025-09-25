@@ -149,7 +149,7 @@ def create_violin_plots(metrics: List[dict], metric_keys: List[str], output_png:
         assert column in df
         # Create empty lists to store the parts objects for each DataFrame
         # Plot the violin plots for each DataFrame
-        axs[i].violinplot(df[column], showmedians=True, positions=[i], widths=0.5, showextrema=True)
+        axs[i].violinplot(df[column], showmedians=True, positions=[i], widths=0.5)
 
         axs[i].set_title(column)
         axs[i].set_xticks([i])
@@ -295,7 +295,6 @@ def run_inference(
     violin_plot_metrics=['cer', 'pred_context_ssim'],
     eos_detection_method=None,
     ignore_finished_sentence_tracking=False,
-    min_frames=0,
 ):
     # Load model
     if hparams_file is not None and checkpoint_file is not None:
@@ -364,7 +363,6 @@ def run_inference(
         f"SV_{sv_model}"
         f"EOS_{eos_detection_method}"
         f"IgnoreFST_{ignore_finished_sentence_tracking}"
-        f"MinFrames_{min_frames}"
     )
 
     dataset_meta_info = evalset_config.dataset_meta_info
@@ -496,7 +494,6 @@ def run_inference(
                     maskgit_sampling_type=maskgit_sampling_type,
                     ignore_finished_sentence_tracking=ignore_finished_sentence_tracking,
                     eos_detection_method=eos_detection_method,
-                    min_generated_frames=min_frames,
                 )
 
                 all_rtf_metrics.append(rtf_metrics)
@@ -698,7 +695,6 @@ def main():
         default=['cer', 'pred_context_ssim'],
         help="Which metrics to add the violin plot.",
     )
-    parser.add_argument('--min_frames', type=int, default=0, help="Minimum number of frames to generate")
     args = parser.parse_args()
 
     if args.datasets is None:
@@ -748,7 +744,6 @@ def main():
         violin_plot_metrics=args.violin_plot_metrics,
         eos_detection_method=args.eos_detection_method,
         ignore_finished_sentence_tracking=args.ignore_finished_sentence_tracking,
-        min_frames=args.min_frames,
     )
 
     # Mode 1: Run inference from provided hparams and checkpoint files

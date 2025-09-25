@@ -265,6 +265,10 @@ if __name__ == "__main__":
             network='sharp' if args.use_sharp else None,
         )
 
+    # Workaround for CUDA graphs illegal memory access error
+    if enable_cuda_graphs and "PYTORCH_CUDA_ALLOC_CONF" in executor.env_vars:
+        del executor.env_vars["PYTORCH_CUDA_ALLOC_CONF"]
+
     with run.Experiment(exp_name) as exp:
         if args.skip_import_checkpoint is not True:
             assert args.hf_token is not None, "HF token is required for importing checkpoint from HuggingFace"

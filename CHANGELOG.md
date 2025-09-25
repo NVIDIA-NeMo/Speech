@@ -1,69 +1,43 @@
 # Changelog
 
 <!-- Next changelog -->
-## NVIDIA Neural Modules 2.3.0
+## NVIDIA Neural Modules 2.3.3
 
-### Detailed Changelogs:
+This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
 
-
-</details>
-
-#### NLP / NMT
-
-<details><summary>Changelog</summary>
-
-- Cherry-pick `Remove unused DynamicRetrievalServer and Bert dataset loader classes` to `r2.3.0` by @chtruong814 :: PR: #14432
-
-</details>
-
-#### Export
-
-<details><summary>Changelog</summary>
-
-- Cherry-pick `Remove unpack_tarball from tensorrt llm export` to `r2.3.0` by @chtruong814 :: PR: #14431
-
-</details>
-
-#### Uncategorized:
-
-<details><summary>Changelog</summary>
-
-- Pin nvidia-lm-eval to 25.5 by @chtruong814 :: PR: #14471
-
-</details>
 ## NVIDIA Neural Modules 2.4.0
 
 ### Highlights
 
 - Collections:
-  - Speech  
-    - Batched beam search for transducers (RNN-T and TDT)  
-      - RNNT/TDT buffered/streaming inference \+ batched decoding support in cache-aware  
-      - add support for CTC batched beam search with GPU-LM  
-      - Key fixes  
-        - Punctuation Marks in Timestamps  
-        - Fix timestamps when cuda graphs enabled  
-        - Fix masking of \<pad\> tokens in AED inference  
+  - Speech
+    - Batched beam search for transducers (RNN-T and TDT)
+      - RNNT/TDT buffered/streaming inference \+ batched decoding support in cache-aware
+      - add support for CTC batched beam search with GPU-LM
+      - Key fixes
+        - Punctuation Marks in Timestamps
+        - Fix timestamps when cuda graphs enabled
+        - Fix masking of \<pad\> tokens in AED inference
         - TDT streaming inference fix
   - LLM
-    - Qwen 3 235B-A22B Perf Optimized  
-    - DeepSeek V3 Perf Optimized  
-    - Gemma3 support from Google  
-    - Embedding and Reranker models  
+    - Qwen 3 235B-A22B Perf Optimized
+    - DeepSeek V3 Perf Optimized
+    - Gemma3 support from Google
+    - Embedding and Reranker models
   - MM
-    - Llama 4  
+    - Llama 4
     - AVLM
-- Training performance (speed)  
-  - NVL sharp \+ IB sharp for DP/FSDP-communications on H100 and B200  
-  - MXFP8 with TP communication overlap  
-  - MXFP8 with reduced memory allocation  
-  - FP8 sub-channel recipe (128x128 for weight and 1x128 for activation)  
-  - cudnn fused attention for MLA (both Hopper and Blackwell)  
-  - Advanced custom asymmetric pipelining (for MTP, loss func, and embd)  
-  - BF16 optimizer for model memory saving  
-  - CUDA graph fix for fine-tuning benchmarks  
+- Training performance (speed)
+  - NVL sharp \+ IB sharp for DP/FSDP-communications on H100 and B200
+  - MXFP8 with TP communication overlap
+  - MXFP8 with reduced memory allocation
+  - FP8 sub-channel recipe (128x128 for weight and 1x128 for activation)
+  - cudnn fused attention for MLA (both Hopper and Blackwell)
+  - Advanced custom asymmetric pipelining (for MTP, loss func, and embd)
+  - BF16 optimizer for model memory saving
+  - CUDA graph fix for fine-tuning benchmarks
   - CUDA graph support for LLAMA4
-  
+
 ### Detailed Changelogs
 
 #### ASR

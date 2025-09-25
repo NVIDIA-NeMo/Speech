@@ -3,7 +3,8 @@
 <!-- Next changelog -->
 ## NVIDIA Neural Modules 2.3.3
 
-This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- Pin nvidia-lm-eval to 25.5
 
 ## NVIDIA Neural Modules 2.4.0
 
@@ -367,6 +368,7 @@ This release addresses known security issues. For the latest NVIDIA Vulnerabilit
 - Cherry pick `update ffmpeg install (14237)` into `r2.4.0` by @chtruong814 :: PR: #14279
 
 </details>
+
 ## NVIDIA Neural Modules 2.3.2
 
 This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>

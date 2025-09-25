@@ -381,9 +381,7 @@ def main(cfg: TranscriptionConfig):
     with torch.amp.autocast('cuda' if device.type == "cuda" else "cpu", dtype=amp_dtype, enabled=cfg.amp):
         if cfg.audio_file is not None:
             # stream a single audio file
-            processed_signal, processed_signal_length, stream_id = streaming_buffer.append_audio_file(
-                cfg.audio_file, stream_id=-1
-            )
+            _ = streaming_buffer.append_audio_file(cfg.audio_file, stream_id=-1)
             perform_streaming(
                 asr_model=asr_model,
                 streaming_buffer=streaming_buffer,
@@ -393,7 +391,6 @@ def main(cfg: TranscriptionConfig):
             )
         else:
             # stream audio files in a manifest file in batched mode
-            samples = []
             all_streaming_tran = []
             all_offline_tran = []
             all_refs_text = []
@@ -411,9 +408,7 @@ def main(cfg: TranscriptionConfig):
 
             start_time = time.time()
             for sample_idx, sample in enumerate(samples):
-                processed_signal, processed_signal_length, stream_id = streaming_buffer.append_audio_file(
-                    sample['audio_filepath'], stream_id=-1
-                )
+                _ = streaming_buffer.append_audio_file(sample['audio_filepath'], stream_id=-1)
                 if "text" in sample:
                     all_refs_text.append(sample["text"])
                 logging.info(f'Added this sample to the buffer: {sample["audio_filepath"]}')

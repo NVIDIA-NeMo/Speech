@@ -144,15 +144,13 @@ class TranscriptionConfig:
     # device anyway, and do inference on CPU only if CUDA device is not found.
     # If `cuda` is a negative number, inference will be on CPU only.
     cuda: Optional[int] = None
-    allow_mps: bool = True  # allow to select MPS device (Apple Silicon M-series GPU)
+    allow_mps: bool = False  # allow to select MPS device (Apple Silicon M-series GPU)
+    amp: bool = False
+    amp_dtype: str = "float16"  # can be set to "float16" or "bfloat16" when using amp
     compute_dtype: Optional[str] = (
-        None  # "float32", "bfloat16" or "float16"; if None (default): bfloat16 if available, else float32
+        None  # "float32", "bfloat16" or "float16"; if None (default): bfloat16 if available else float32
     )
     matmul_precision: str = "high"  # Literal["highest", "high", "medium"]
-    # audio_type: str = "wav"
-
-    # Recompute model transcription, even if the output folder exists with scores.
-    # overwrite_transcripts: bool = True
 
     # Decoding strategy for CTC models
     ctc_decoding: CTCDecodingConfig = field(default_factory=CTCDecodingConfig)
@@ -192,7 +190,12 @@ def calc_drop_extra_pre_encoded(asr_model, step_num, pad_and_drop_preencoded):
 
 
 def perform_streaming(
-    asr_model, streaming_buffer, compare_vs_offline=False, debug_mode=False, pad_and_drop_preencoded=False
+    asr_model,
+    streaming_buffer,
+    compute_dtype: torch.dtype,
+    compare_vs_offline=False,
+    debug_mode=False,
+    pad_and_drop_preencoded=False,
 ):
     batch_size = len(streaming_buffer.streams_length)
     if compare_vs_offline:
@@ -200,6 +203,7 @@ def perform_streaming(
         # the output of the model in the offline and streaming mode should be exactly the same
         with torch.inference_mode():
             processed_signal, processed_signal_length = streaming_buffer.get_all_audios()
+            processed_signal = processed_signal.to(compute_dtype)
             with torch.no_grad():
                 (
                     pred_out_offline,
@@ -229,7 +233,7 @@ def perform_streaming(
         with torch.inference_mode():
             # keep_all_outputs needs to be True for the last step of streaming when model is trained with att_context_style=regular
             # otherwise the last outputs would get dropped
-
+            chunk_audio = chunk_audio.to(compute_dtype)
             with torch.no_grad():
                 (
                     pred_out_stream,
@@ -286,7 +290,30 @@ def main(cfg: TranscriptionConfig):
 
     # setup device
     device = get_inference_device(cuda=cfg.cuda, allow_mps=cfg.allow_mps)
-    compute_dtype = get_inference_dtype(cfg.compute_dtype, device=device)
+
+    if (cfg.compute_dtype is not None and cfg.compute_dtype != "float32") and cfg.amp:
+        raise ValueError("amp=true is mutually exclusive with a compute_dtype other than float32")
+
+    amp_dtype = torch.float16 if cfg.amp_dtype == "float16" else torch.bfloat16
+
+    compute_dtype: torch.dtype
+    if cfg.compute_dtype is None:
+        can_use_bfloat16 = (not cfg.amp) and device.type == "cuda" and torch.cuda.is_bf16_supported()
+        if can_use_bfloat16:
+            compute_dtype = torch.bfloat16
+        else:
+            compute_dtype = torch.float32
+    else:
+        assert cfg.compute_dtype in {"float32", "bfloat16", "float16"}
+        compute_dtype = getattr(torch, cfg.compute_dtype)
+
+    if compute_dtype != torch.float32:
+        # NB: cache-aware models do not currently work with compute_dtype != float32
+        # since in some layers output is force-casted to float32
+        # TODO(vbataev): implement support in future
+        raise NotImplementedError(
+            f"Compute dtype {cfg.compute_dtype} is not yet supported for cache-aware models, use float32 instead"
+        )
 
     if (cfg.audio_file is None and cfg.dataset_manifest is None) or (
         cfg.audio_file is not None and cfg.dataset_manifest is not None
@@ -355,57 +382,62 @@ def main(cfg: TranscriptionConfig):
         online_normalization=online_normalization,
         pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
     )
-    if cfg.audio_file is not None:
-        # stream a single audio file
-        processed_signal, processed_signal_length, stream_id = streaming_buffer.append_audio_file(
-            cfg.audio_file, stream_id=-1
-        )
-        perform_streaming(
-            asr_model=asr_model,
-            streaming_buffer=streaming_buffer,
-            compare_vs_offline=cfg.compare_vs_offline,
-            pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
-        )
-    else:
-        # stream audio files in a manifest file in batched mode
-        samples = []
-        all_streaming_tran = []
-        all_offline_tran = []
-        all_refs_text = []
-        batch_size = cfg.batch_size
-
-        manifest_dir = Path(cfg.dataset_manifest).parent
-        samples = read_manifest(cfg.dataset_manifest)
-        # fix relative paths
-        for item in samples:
-            audio_filepath = Path(item["audio_filepath"])
-            if not audio_filepath.is_absolute():
-                item["audio_filepath"] = str(manifest_dir / audio_filepath)
-
-        logging.info(f"Loaded {len(samples)} from the manifest at {cfg.dataset_manifest}.")
-
-        start_time = time.time()
-        for sample_idx, sample in enumerate(samples):
+    with torch.amp.autocast('cuda' if device.type == "cuda" else "cpu", dtype=amp_dtype, enabled=cfg.amp):
+        if cfg.audio_file is not None:
+            # stream a single audio file
             processed_signal, processed_signal_length, stream_id = streaming_buffer.append_audio_file(
-                sample['audio_filepath'], stream_id=-1
+                cfg.audio_file, stream_id=-1
             )
-            if "text" in sample:
-                all_refs_text.append(sample["text"])
-            logging.info(f'Added this sample to the buffer: {sample["audio_filepath"]}')
+            perform_streaming(
+                asr_model=asr_model,
+                streaming_buffer=streaming_buffer,
+                compute_dtype=compute_dtype,
+                compare_vs_offline=cfg.compare_vs_offline,
+                pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
+            )
+        else:
+            # stream audio files in a manifest file in batched mode
+            samples = []
+            all_streaming_tran = []
+            all_offline_tran = []
+            all_refs_text = []
+            batch_size = cfg.batch_size
 
-            if (sample_idx + 1) % batch_size == 0 or sample_idx == len(samples) - 1:
-                logging.info(f"Starting to stream samples {sample_idx - len(streaming_buffer) + 1} to {sample_idx}...")
-                streaming_tran, offline_tran = perform_streaming(
-                    asr_model=asr_model,
-                    streaming_buffer=streaming_buffer,
-                    compare_vs_offline=cfg.compare_vs_offline,
-                    debug_mode=cfg.debug_mode,
-                    pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
+            manifest_dir = Path(cfg.dataset_manifest).parent
+            samples = read_manifest(cfg.dataset_manifest)
+            # fix relative paths
+            for item in samples:
+                audio_filepath = Path(item["audio_filepath"])
+                if not audio_filepath.is_absolute():
+                    item["audio_filepath"] = str(manifest_dir / audio_filepath)
+
+            logging.info(f"Loaded {len(samples)} from the manifest at {cfg.dataset_manifest}.")
+
+            start_time = time.time()
+            for sample_idx, sample in enumerate(samples):
+                processed_signal, processed_signal_length, stream_id = streaming_buffer.append_audio_file(
+                    sample['audio_filepath'], stream_id=-1
                 )
-                all_streaming_tran.extend(streaming_tran)
-                if cfg.compare_vs_offline:
-                    all_offline_tran.extend(offline_tran)
-                streaming_buffer.reset_buffer()
+                if "text" in sample:
+                    all_refs_text.append(sample["text"])
+                logging.info(f'Added this sample to the buffer: {sample["audio_filepath"]}')
+
+                if (sample_idx + 1) % batch_size == 0 or sample_idx == len(samples) - 1:
+                    logging.info(
+                        f"Starting to stream samples {sample_idx - len(streaming_buffer) + 1} to {sample_idx}..."
+                    )
+                    streaming_tran, offline_tran = perform_streaming(
+                        asr_model=asr_model,
+                        streaming_buffer=streaming_buffer,
+                        compute_dtype=compute_dtype,
+                        compare_vs_offline=cfg.compare_vs_offline,
+                        debug_mode=cfg.debug_mode,
+                        pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
+                    )
+                    all_streaming_tran.extend(streaming_tran)
+                    if cfg.compare_vs_offline:
+                        all_offline_tran.extend(offline_tran)
+                    streaming_buffer.reset_buffer()
 
         if cfg.compare_vs_offline and len(all_refs_text) == len(all_offline_tran):
             offline_wer = word_error_rate(hypotheses=all_offline_tran, references=all_refs_text)

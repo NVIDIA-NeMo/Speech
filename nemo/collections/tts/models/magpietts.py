@@ -2104,6 +2104,8 @@ class MagpieTTSModel(ModelPT):
         maskgit_sampling_type=None,
         ignore_finished_sentence_tracking=False,
         eos_detection_method="argmax_or_multinomial_any",
+        # setting this greater than 0 prevents rare cases of first-frame termination. Any number greater between 1 and 4 should work, but 4
+        # lines up with the codec's minimum frame requirement.
         min_generated_frames=4,
     ):
         eos_detection_method = EOSDetectionMethod(eos_detection_method)

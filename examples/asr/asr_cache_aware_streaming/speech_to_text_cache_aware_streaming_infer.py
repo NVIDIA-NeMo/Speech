@@ -23,7 +23,7 @@ The manifest file must conform to standard ASR definition - containing `audio_fi
 
 ## To evaluate a model in cache-aware streaming mode on a single audio file:
 
-python speech_to_text_streaming_infer.py \
+python speech_to_text_cache_aware_streaming_infer.py \
     model_path=asr_model.nemo \
     audio_file=audio_file.wav \
     compare_vs_offline=true \
@@ -32,10 +32,24 @@ python speech_to_text_streaming_infer.py \
 
 ## To evaluate a model in cache-aware streaming mode on a manifest file:
 
-python speech_to_text_streaming_infer.py \
+python speech_to_text_cache_aware_streaming_infer.py \
     model_path=asr_model.nemo \
     dataset_manifest=manifest_file.json \
     batch_size=16 \
+    compare_vs_offline=true \
+    amp=true \
+    debug_mode=true
+
+## It is also possible to use phrase boosting or external LM with cache-aware models:
+
+python speech_to_text_cache_aware_streaming_infer.py \
+    model_path=asr_model.nemo \
+    dataset_manifest=manifest_file.json \
+    batch_size=16 \
+    rnnt_decoding.greedy.boosting_tree.key_phrases_file=key_words_list.txt \
+    rnnt_decoding.greedy.boosting_tree_alpha=1.0 \
+    rnnt_decoding.greedy.ngram_lm_model=lm_model.nemo \
+    rnnt_decoding.greedy.ngram_lm_model=0.5 \
     compare_vs_offline=true \
     amp=true \
     debug_mode=true
@@ -45,6 +59,9 @@ If compare_vs_offline is not used, then significantly larger batch_size can be u
 Setting `pad_and_drop_preencoded` would perform the caching for all steps including the first step.
 It may result in slightly different outputs from the sub-sampling module compared to offline mode for some techniques like striding and sw_striding.
 Enabling it would make it easier to export the model to ONNX.
+
+For customization details (phrases list, n-gram LM) see details in the documentation:
+https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/asr_language_modeling_and_customization.html
 
 ## Hybrid ASR models
 For Hybrid ASR models which have two decoders, you may select the decoder by decoder_type DECODER_TYPE, where DECODER_TYPE can be "ctc" or "rnnt".
@@ -66,7 +83,7 @@ Also argument online_normalization should be enabled to simulate a realistic str
 The following command would simulate cache-aware streaming on a pretrained model from NGC with chunk_size of 100, shift_size of 50 and 2 left chunks as left context.
 The chunk_size of 100 would be 100*4*10=4000ms for a model with 4x downsampling and 10ms shift in feature extraction.
 
-python speech_to_text_streaming_infer.py \
+python speech_to_text_cache_aware_streaming_infer.py \
     pretrained_name=stt_en_conformer_ctc_large \
     chunk_size=100 \
     shift_size=50 \
@@ -147,8 +164,9 @@ class TranscriptionConfig:
     allow_mps: bool = False  # allow to select MPS device (Apple Silicon M-series GPU)
     amp: bool = False
     amp_dtype: str = "float16"  # can be set to "float16" or "bfloat16" when using amp
+    # NB: default compute_dtype is float32 since currently cache-aware models do not work with different dtype
     compute_dtype: Optional[str] = (
-        None  # "float32", "bfloat16" or "float16"; if None (default): bfloat16 if available else float32
+        "float32"  # "float32" (default), "bfloat16" or "float16"; if None: bfloat16 if available else float32
     )
     matmul_precision: str = "high"  # Literal["highest", "high", "medium"]
 
@@ -306,9 +324,9 @@ def main(cfg: TranscriptionConfig):
     if compute_dtype != torch.float32:
         # NB: cache-aware models do not currently work with compute_dtype != float32
         # since in some layers output is force-casted to float32
-        # TODO(vbataev): implement support in future
+        # TODO(vbataev): implement support in future; set `compute_dtype` in config to None by default
         raise NotImplementedError(
-            f"Compute dtype {cfg.compute_dtype} is not yet supported for cache-aware models, use float32 instead"
+            f"Compute dtype {compute_dtype} is not yet supported for cache-aware models, use float32 instead"
         )
 
     if (cfg.audio_file is None and cfg.dataset_manifest is None) or (

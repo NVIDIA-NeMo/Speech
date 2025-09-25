@@ -24,34 +24,34 @@ The manifest file must conform to standard ASR definition - containing `audio_fi
 ## To evaluate a model in cache-aware streaming mode on a single audio file:
 
 python speech_to_text_streaming_infer.py \
-    --asr_model=asr_model.nemo \
-    --audio_file=audio_file.wav \
-    --compare_vs_offline \
-    --use_amp \
-    --debug_mode
+    model_path=asr_model.nemo \
+    audio_file=audio_file.wav \
+    compare_vs_offline=true \
+    amp=true \
+    debug_mode=true
 
 ## To evaluate a model in cache-aware streaming mode on a manifest file:
 
 python speech_to_text_streaming_infer.py \
-    --asr_model=asr_model.nemo \
-    --manifest_file=manifest_file.json \
-    --batch_size=16 \
-    --compare_vs_offline \
-    --use_amp \
-    --debug_mode
+    model_path=asr_model.nemo \
+    dataset_manifest=manifest_file.json \
+    batch_size=16 \
+    compare_vs_offline=true \
+    amp=true \
+    debug_mode=true
 
-You may drop the '--debug_mode' and '--compare_vs_offline' to speedup the streaming evaluation.
+You may drop the 'debug_mode' and 'compare_vs_offline' to speedup the streaming evaluation.
 If compare_vs_offline is not used, then significantly larger batch_size can be used.
-Setting `--pad_and_drop_preencoded` would perform the caching for all steps including the first step.
+Setting `pad_and_drop_preencoded` would perform the caching for all steps including the first step.
 It may result in slightly different outputs from the sub-sampling module compared to offline mode for some techniques like striding and sw_striding.
 Enabling it would make it easier to export the model to ONNX.
 
 ## Hybrid ASR models
-For Hybrid ASR models which have two decoders, you may select the decoder by --set_decoder DECODER_TYPE, where DECODER_TYPE can be "ctc" or "rnnt".
+For Hybrid ASR models which have two decoders, you may select the decoder by decoder_type DECODER_TYPE, where DECODER_TYPE can be "ctc" or "rnnt".
 If decoder is not set, then the default decoder would be used which is the RNNT decoder for Hybrid ASR models.
 
 ## Multi-lookahead models
-For models which support multiple lookaheads, the default is the first one in the list of model.encoder.att_context_size. To change it, you may use --att_context_size, for example --att_context_size [70,1].
+For models which support multiple lookaheads, the default is the first one in the list of model.encoder.att_context_size. To change it, you may use att_context_size, for example att_context_size=§[70,1].
 
 
 ## Evaluate a model trained with full context for offline mode

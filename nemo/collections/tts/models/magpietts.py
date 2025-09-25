@@ -2273,6 +2273,7 @@ class MagpieTTSModel(ModelPT):
                     unfinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
                 # Don't allow termination until we have generated at least `min_generated_frames` frames (rounded up to the nearest multiple of frame_stacking_factor)
+                # This guards against rare cases of termination right at the start of generation.
                 forbid_audio_eos = idx * self.frame_stacking_factor < min_generated_frames
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)

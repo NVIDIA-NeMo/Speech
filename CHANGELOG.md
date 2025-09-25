@@ -1,6 +1,11 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.3.3
+
+- This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- Pin nvidia-lm-eval to 25.5
+
 ## NVIDIA Neural Modules 2.3.2
 
 This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit https://www.nvidia.com/en-us/security/, for acknowledgement please reach out to the NVIDIA PSIRT team at PSIRT@nvidia.com

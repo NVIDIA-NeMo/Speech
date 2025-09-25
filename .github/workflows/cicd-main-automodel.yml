@@ -49,7 +49,7 @@ jobs:
         with:
           path: ${{ github.run_id }}
       - name: main
-        uses: .github/actions/test-template
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: ${{ matrix.script }}
@@ -128,7 +128,7 @@ jobs:
   #       with:
   #         path: ${{ github.run_id }}
   #     - name: main
-  #       uses: .github/actions/test-template@main
+  #       uses: ./.github/actions/test-template@main
   #       with:
   #         runner: ${{ runner.name }}
   #         script: ${{ matrix.script }}

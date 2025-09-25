@@ -249,6 +249,7 @@ class PyTorchProfilerPlugin(run.Plugin):
     start_step: int
     end_step: int
     with_stack: bool = False
+    collect_et: bool = False
     profiler_kwargs: Optional[Dict[str, Any]] = None
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
@@ -259,6 +260,7 @@ class PyTorchProfilerPlugin(run.Plugin):
                 trace_dir=self.output_path,
                 start_step=self.start_step,
                 end_step=self.end_step,
+                collect_et=self.collect_et,
                 profiler_kwargs=self.profiler_kwargs,
             )
             callbacks: list[run.Config[Callback]] = [profiler_callback]  # type: ignore

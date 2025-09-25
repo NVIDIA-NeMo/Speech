@@ -628,7 +628,7 @@ def build_torch_profiler_plugin(args):
 
     enable_torch_profiler = args.enable_torch_profiler or os.environ.get('ENABLE_TORCH_PROFILER', '0') == '1'
 
-    if args.nsys_profile and enable_torch_profiler:
+    if args.enable_nsys and enable_torch_profiler:
         logging.warning("Cannot run both Nsys and PyTorch profiler at the same time.")
         return None
 
@@ -641,6 +641,7 @@ def build_torch_profiler_plugin(args):
             output_path=args.log_dir,  # a subdir torch_profiles will be created here.
             profiler_kwargs={
                 "with_stack": os.environ.get('TORCH_PROFILER_WITH_STACK', '0') == '1',
-            }
+            },
+            collect_et=os.environ.get('TORCH_PROFILER_COLLECT_ET', '0') == '1',
         )
     return None

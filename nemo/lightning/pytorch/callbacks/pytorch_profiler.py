@@ -131,9 +131,6 @@ class PytorchProfilerCallback(Callback, IOMixin):
             self.profiler.step()
 
     def on_train_end(self, trainer, pl_module):
-        if self.profiler:
-            self.profiler.step()
-
         if self.trace_observer:
             try:
                 logging.info("Unregistering ExecutionTraceObserver...")

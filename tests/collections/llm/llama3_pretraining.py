@@ -154,7 +154,6 @@ def main():
             start_step=0,
             end_step=args.max_steps,
             warmup_steps=0,
-            active_steps=args.max_steps,
             trace_dir=trace_dir,
             profiler_kwargs={'with_stack': True},
         )
@@ -172,7 +171,7 @@ def main():
     if args.profiler:
         exp_path = os.path.join(args.experiment_dir, exp_name)
         trace_root = os.path.join(exp_path, "traces")
-        device_dir = os.path.join(trace_root, "device")
+        device_dir = os.path.join(trace_root, "torch_profiler")
         host_dir = os.path.join(trace_root, "host")
 
         assert os.path.isdir(device_dir), f"Missing device traces directory: {device_dir}"

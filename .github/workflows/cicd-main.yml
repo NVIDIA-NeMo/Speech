@@ -231,7 +231,7 @@ jobs:
           path: ${{ github.run_id }}
 
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: NVIDIA/NeMo/.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: L0_Setup_Test_Data_And_Models

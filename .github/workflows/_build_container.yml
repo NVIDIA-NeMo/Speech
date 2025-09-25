@@ -22,8 +22,11 @@ jobs:
       build_args: ${{ steps.manifest.outputs.BUILD_ARGS }}
       cache-from: ${{ steps.cache_from.outputs.LAST_PRS }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout NeMo
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
       - name: Parse manifest.json
         id: manifest

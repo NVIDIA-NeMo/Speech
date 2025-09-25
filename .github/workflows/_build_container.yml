@@ -23,9 +23,7 @@ jobs:
       cache-from: ${{ steps.cache_from.outputs.LAST_PRS }}
     steps:
       - name: Checkout NeMo
-        uses: actions/checkout@v5
-        with:
-          path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
+        uses: actions/checkout@v4
 
       - name: Parse manifest.json
         id: manifest

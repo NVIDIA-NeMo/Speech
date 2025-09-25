@@ -16,11 +16,11 @@ import random
 import warnings
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Optional, Sequence, Union, Tuple, List
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
+import lhotse
 import numpy as np
 import torch
-import lhotse
 from lhotse import CutSet, RecordingSet
 from lhotse.cut import Cut
 from lhotse.dataset import (
@@ -649,7 +649,9 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
 
     if config.lowpass_enabled:
         if lhotse.get_current_resampling_backend() != "libsox":
-            logging.warning("Lowpass augmentation works best with libsox backend. Consider setting resamping backend in Lhotse to libsox.")
+            logging.warning(
+                "Lowpass augmentation works best with libsox backend. Consider setting resamping backend in Lhotse to libsox."
+            )
         sampler = sampler.map(
             LowpassUsingResampling(
                 frequencies_interval=OmegaConf.to_container(config.lowpass_frequencies_interval),
@@ -685,7 +687,11 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
                 codecs=OmegaConf.to_container(config.compression_codecs),
                 p=config.compression_prob,
                 compression_level=OmegaConf.to_container(config.compression_level_interval),
-                codec_weights=OmegaConf.to_container(config.compression_codec_weights) if config.compression_codec_weights else config.compression_codec_weights,
+                codec_weights=(
+                    OmegaConf.to_container(config.compression_codec_weights)
+                    if config.compression_codec_weights
+                    else config.compression_codec_weights
+                ),
                 compress_custom_fields=config.compression_enable_for_custom_fields,
                 seed=config.shard_seed,
             )

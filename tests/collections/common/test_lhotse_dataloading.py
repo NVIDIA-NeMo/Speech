@@ -15,7 +15,7 @@ from collections import Counter
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 import lhotse
 import numpy as np
@@ -2137,8 +2137,11 @@ def test_dataloader_bucket_batch_size(nemo_tarred_manifest_path_multi: tuple[str
 
 @pytest.mark.parametrize("clipping_prob_hard", [0.0, 1.0])
 @pytest.mark.parametrize("clipping_oversampling", [None, 1, 2])
-def test_dataloader_with_clipping_lhotse_jsonl(cutset_path: Path, clipping_prob_hard: float, clipping_oversampling: Optional[int]):
-    from lhotse.augmentation import Resample, Clipping
+def test_dataloader_with_clipping_lhotse_jsonl(
+    cutset_path: Path, clipping_prob_hard: float, clipping_oversampling: Optional[int]
+):
+    from lhotse.augmentation import Clipping, Resample
+
     config = OmegaConf.create(
         {
             "cuts_path": str(cutset_path),
@@ -2216,6 +2219,7 @@ def test_dataloader_with_compression_lossy_lhotse_jsonl(cutset_path: Path):
 
 def test_dataloader_with_compression_gsm_lhotse_jsonl(cutset_path: Path):
     from lhotse.augmentation import Compress, Resample
+
     config = OmegaConf.create(
         {
             "cuts_path": str(cutset_path),
@@ -2247,6 +2251,7 @@ def test_dataloader_with_compression_gsm_lhotse_jsonl(cutset_path: Path):
 
 def test_dataloader_with_lowpass_using_resampling_lhotse_jsonl(cutset_path: Path):
     from lhotse.augmentation import Resample
+
     config = OmegaConf.create(
         {
             "cuts_path": str(cutset_path),

@@ -20,6 +20,7 @@ from typing import Any, Optional, Sequence, Union, Tuple, List
 
 import numpy as np
 import torch
+import lhotse
 from lhotse import CutSet, RecordingSet
 from lhotse.cut import Cut
 from lhotse.dataset import (
@@ -29,6 +30,7 @@ from lhotse.dataset import (
     DynamicBucketingSampler,
     DynamicCutSampler,
     IterableDatasetWrapper,
+    LowpassUsingResampling,
     ReverbWithImpulseResponse,
     RoundRobinSampler,
     ZipSampler,
@@ -178,7 +180,11 @@ class LhotseDataLoadingConfig:
     #   f. Padding to a minimum duration. Examples shorter than this will be padded, others are unaffected.
     pad_min_duration: Optional[float] = None
     pad_direction: str = "right"  # "right" | "left" | "both" | "random"
-    #   g. Lossy compression augmentation (opus, mp3, vorbis, gsm)
+    #   g. Bandwidth limitation via back-and-forth resampling
+    lowpass_enabled: bool = False
+    lowpass_frequencies_interval: Tuple[float, float] = (3500.0, 8000.0)
+    lowpass_prob: float = 0.5
+    #   h. Lossy compression augmentation (opus, mp3, vorbis, gsm)
     #   implemented via soundfile, so compression level is specified via number in [0.0, 1.0]
     #   0.0 denotes the highest bitrate and denotes the lowest bitrate for a given codec
     #   overall, parameters mirror lhotse interface
@@ -188,7 +194,7 @@ class LhotseDataLoadingConfig:
     compression_codecs: Tuple[str] = ("opus",)
     compression_codec_weights: Optional[List[float]] = None
     compression_enable_for_custom_fields: bool = False
-    #   h. Clipping/saturation augmentation
+    #   i. Clipping/saturation augmentation
     clipping_enabled: bool = False
     clipping_gain_db: Tuple[float, float] = (0.0, 24.0)
     clipping_normalize: bool = True
@@ -640,6 +646,17 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             sampler = sampler.map(partial(_normalize_loudness, db_norm=config.db_norm))
         if config.concatenate_merge_supervisions:
             sampler = sampler.map(_merge_supervisions)
+
+    if config.lowpass_enabled:
+        if lhotse.get_current_resampling_backend() != "libsox":
+            logging.warning("Lowpass augmentation works best with libsox backend. Consider setting resamping backend in Lhotse to libsox.")
+        sampler = sampler.map(
+            LowpassUsingResampling(
+                frequencies_interval=OmegaConf.to_container(config.lowpass_frequencies_interval),
+                p=config.lowpass_prob,
+                seed=config.shard_seed,
+            )
+        )
 
     if config.clipping_enabled:
         sampler = sampler.map(

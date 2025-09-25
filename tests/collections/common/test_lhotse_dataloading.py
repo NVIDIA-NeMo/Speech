@@ -2245,6 +2245,40 @@ def test_dataloader_with_compression_gsm_lhotse_jsonl(cutset_path: Path):
         cut.load_audio()
 
 
+def test_dataloader_with_lowpass_using_resampling_lhotse_jsonl(cutset_path: Path):
+    from lhotse.augmentation import Resample
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "lowpass_enabled": True,
+            "lowpass_frequencies_interval": [3500.0, 4000.0],
+            "lowpass_prob": 1.0,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+    )
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 4
+    cut = batch[0]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms[-2], Resample)
+    assert isinstance(cut.recording.transforms[-1], Resample)
+    cut = batch[1]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms[-2], Resample)
+    assert isinstance(cut.recording.transforms[-1], Resample)
+    for cut in batch:
+        cut.load_audio()
+
+
 def test_dataloader_with_multiple_augmentations_lhotse_jsonl(cutset_path: Path):
     from lhotse.augmentation import Compress, Resample, ReverbWithImpulseResponse
 
@@ -2256,6 +2290,9 @@ def test_dataloader_with_multiple_augmentations_lhotse_jsonl(cutset_path: Path):
             "noise_snr": [-5.0, 5.0],
             "rir_enabled": True,
             "rir_prob": 1.0,
+            "lowpass_enabled": True,
+            "lowpass_frequencies_interval": [3500.0, 4000.0],
+            "lowpass_prob": 1.0,
             "compression_enabled": True,
             "compression_codecs": ["gsm"],
             "compression_prob": 1.0,

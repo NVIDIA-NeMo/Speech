@@ -185,7 +185,6 @@ jobs:
       - name: Checkout NeMo
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
           path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
       - name: Run some checks

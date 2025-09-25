@@ -42,6 +42,13 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
         freeze_vision_model=False,
         **kwargs,
     ):
+        from nemo.utils.decorators import deprecated_warning
+
+        deprecated_warning(
+            old_method="Automodel on NVIDIA/NeMo",
+            new_method="https://github.com/NVIDIA-NeMo/Automodel repo",
+            wait_seconds=2,
+        )
         super().__init__()
         self.save_hyperparameters()
         self.model_name = model_name

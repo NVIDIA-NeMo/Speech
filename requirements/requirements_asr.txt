@@ -18,8 +18,5 @@ ruamel.yaml
 scipy>=0.14
 soundfile
 sox<=1.5.0
-texterrors<1.0.0 # Version 1.0.6 of texterrors introduces a new StringVector object
-# and only operates on these. We currently feed lists of strings into texterrors,
-# causing it to error. We'd need to figure out how to cast lists into StringVectors -
-# but for now we're just pinning it down.
+kaldialign<=0.9.1
 whisper_normalizer

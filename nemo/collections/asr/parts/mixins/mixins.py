@@ -14,7 +14,6 @@
 
 import json
 import os
-import shutil
 import tarfile
 from abc import ABC, abstractmethod
 from typing import List
@@ -34,6 +33,7 @@ from nemo.collections.asr.parts.utils.tokenizer_utils import (
 )
 from nemo.collections.common import tokenizers
 from nemo.utils import app_state, logging
+from nemo.utils.file_utils import robust_copy
 
 
 class ASRBPEMixin(ABC):
@@ -432,7 +432,7 @@ class ASRBPEMixin(ABC):
             # Check if the value is a filepath (new model init) or has `nemo:` in it (restored model)
             if isinstance(v, str) and os.path.exists(v):
                 # local file from first instantiation
-                loc = shutil.copy2(v, dir)
+                loc = robust_copy(v, dir)
                 logging.info(f"Saved {k} at {loc}")
 
             if isinstance(v, str) and v.startswith('nemo:'):

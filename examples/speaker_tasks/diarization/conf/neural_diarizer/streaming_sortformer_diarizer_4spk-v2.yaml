@@ -201,7 +201,8 @@ model:
 
 trainer:
   devices: 1 # number of gpus (devices)
-  accelerator: gpu 
+  accelerator: gpu
+  precision: 32 # 32, bf16, bf16-mixed
   max_epochs: 800
   max_steps: -1 # computed at runtime if not set
   num_nodes: 1

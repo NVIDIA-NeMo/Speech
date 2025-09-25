@@ -23,6 +23,7 @@ import torch
 from lhotse import CutSet, RecordingSet
 from lhotse.cut import Cut
 from lhotse.dataset import (
+    ClippingTransform,
     Compress,
     CutConcatenate,
     DynamicBucketingSampler,
@@ -187,6 +188,13 @@ class LhotseDataLoadingConfig:
     compression_codecs: Tuple[str] = ("opus",)
     compression_codec_weights: Optional[List[float]] = None
     compression_enable_for_custom_fields: bool = False
+    #   h. Clipping/saturation augmentation
+    clipping_enabled: bool = False
+    clipping_gain_db: Tuple[float, float] = (0.0, 24.0)
+    clipping_normalize: bool = True
+    clipping_oversampling: Optional[int] = 2
+    clipping_prob_hard: float = 0.5
+    clipping_prob: float = 0.5
 
     # 5. Other Lhotse options.
     text_field: str = "text"  # key to read the transcript from
@@ -632,6 +640,18 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             sampler = sampler.map(partial(_normalize_loudness, db_norm=config.db_norm))
         if config.concatenate_merge_supervisions:
             sampler = sampler.map(_merge_supervisions)
+
+    if config.clipping_enabled:
+        sampler = sampler.map(
+            ClippingTransform(
+                gain_db=OmegaConf.to_container(config.clipping_gain_db),
+                normalize=config.clipping_normalize,
+                p=config.clipping_prob,
+                p_hard=config.clipping_prob_hard,
+                oversampling=config.clipping_oversampling,
+                seed=config.shard_seed,
+            )
+        )
 
     if config.rir_enabled:
         sampler = sampler.map(

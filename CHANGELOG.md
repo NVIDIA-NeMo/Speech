@@ -1,6 +1,36 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.3.0
+
+### Detailed Changelogs:
+
+
+</details>
+
+#### NLP / NMT
+
+<details><summary>Changelog</summary>
+
+- Cherry-pick `Remove unused DynamicRetrievalServer and Bert dataset loader classes` to `r2.3.0` by @chtruong814 :: PR: #14432
+
+</details>
+
+#### Export
+
+<details><summary>Changelog</summary>
+
+- Cherry-pick `Remove unpack_tarball from tensorrt llm export` to `r2.3.0` by @chtruong814 :: PR: #14431
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Pin nvidia-lm-eval to 25.5 by @chtruong814 :: PR: #14471
+
+</details>
 ## NVIDIA Neural Modules 2.4.0
 
 ### Highlights

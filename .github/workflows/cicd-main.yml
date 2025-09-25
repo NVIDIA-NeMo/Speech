@@ -230,7 +230,7 @@ jobs:
           path: ${{ github.run_id }}
 
       - name: main
-        uses: ./.github/actions/test-template
+        uses: ./${{ github.run_id }}/.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: L0_Setup_Test_Data_And_Models

@@ -111,5 +111,5 @@ def test_mistral_small3_config_24b():
     assert config.layernorm_epsilon == 1e-5
     assert config.window_size is None
     assert config.rotary_percent == 1.0
-    assert config.rotary_base == 1000000000.0
+    assert config.rotary_base == 100000000.0
     assert config.kv_channels == 128

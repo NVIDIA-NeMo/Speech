@@ -1,6 +1,44 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.3.0
+
+### Detailed Changelogs:
+
+
+</details>
+
+#### NLP / NMT
+
+<details><summary>Changelog</summary>
+
+- Cherry-pick `Remove unused DynamicRetrievalServer and Bert dataset loader classes` to `r2.3.0` by @chtruong814 :: PR: #14432
+
+</details>
+
+#### Export
+
+<details><summary>Changelog</summary>
+
+- Cherry-pick `Remove unpack_tarball from tensorrt llm export` to `r2.3.0` by @chtruong814 :: PR: #14431
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Cherry pick `Update changelog for `r2.3.1` (13719)` into `r2.3.0` by @ko3n1g :: PR: #13725
+- ci: Rename FW templates by @ko3n1g :: PR: #13901
+- Cherry-pick `Use jiwer less than 4.0.0 (#13997)` to `r2.3.0` by @chtruong814 :: PR: #13999
+- Bump to 2.3.2 by @chtruong814 :: PR: #13726
+- Cherry pick `decompressing joblib file before checking it (13804)` into `r2.3.0` by @ko3n1g :: PR: #13984
+- Cherry-pick `move classes to module to use __target__ feature` (#14031) to `r2.3.0` by @chtruong814 :: PR: #14043
+- Cherry-pick `Added safe loading of models (#13607)` to `r2.3.0` by @chtruong814 :: PR: #13985
+- Cherry pick `Update changelog for `r2.3.0` (14160)` into `r2.3.0` by @ko3n1g :: PR: #14163
+- Pin nvidia-lm-eval to 25.5 by @chtruong814 :: PR: #14471
+
+</details>
 ## NVIDIA Neural Modules 2.4.0
 
 ### Highlights

@@ -256,8 +256,8 @@ class Evo2Dataset(GPTDataset):
                 seg_len = end - start
                 if is_tag and seg_len < max_tag_len:  # Prefer faulty tag mask logic over masking entire seqs
                     seg_mask[start:end] = 0
-                elif seg_len >= max_tag_len:
-                    is_tag = not is_tag  # Flip the state machine because the is_tag label was for a very long region
+                elif is_tag and seg_len >= max_tag_len:
+                    is_tag = False  # Flip the state machine because the is_tag=True was for a very long region
                 else:
                     pass
                 is_tag = not is_tag  # Flip the state machine.

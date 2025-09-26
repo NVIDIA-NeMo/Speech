@@ -218,9 +218,17 @@ def finetune_recipe(
 if __name__ == "__main__":
     env_vars = {
         "CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+        "UB_SKIPMC": "1",
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     }
     recipe = finetune_recipe(num_gpus_per_node=8)
 
     executor = run.LocalExecutor(ntasks_per_node=8, launcher="torchrun", env_vars=env_vars)
+    from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
+
+    recipe.trainer.plugins = bf16_with_fp8_mixed()
+    recipe.trainer.plugins.grad_reduce_in_fp32 = False
+    recipe.trainer.strategy.tensor_model_parallel_size = 2
+    recipe.trainer.strategy.pipeline_model_parallel_size = 1
 
     run.run(recipe, executor=executor, name="qwen2.5vl_7b_finetune")

@@ -27,7 +27,7 @@ from nemo.lightning.pytorch.callbacks.peft import PEFT
 from nemo.lightning.pytorch.callbacks.preemption import PreemptionCallback
 from nemo.lightning.pytorch.callbacks.progress_bar import MegatronProgressBar
 from nemo.lightning.pytorch.callbacks.progress_printer import ProgressPrinter
-from nemo.lightning.pytorch.callbacks.pytorch_profiler import PytorchProfilerCallback
+from nemo.lightning.pytorch.callbacks.pytorch_profiler import PytorchProfilerCallback, PyTorchProfilerCallback
 from nemo.lightning.pytorch.callbacks.runtime_estimator import RuntimeEstimator
 from nemo.lightning.pytorch.callbacks.speed_monitor import SpeedMonitor
 
@@ -38,6 +38,7 @@ __all__ = [
     "PEFT",
     "NsysCallback",
     "PytorchProfilerCallback",
+    "PyTorchProfilerCallback",
     "MegatronProgressBar",
     "ProgressPrinter",
     "PreemptionCallback",

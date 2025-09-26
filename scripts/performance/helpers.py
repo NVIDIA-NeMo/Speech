@@ -609,3 +609,32 @@ def build_perf_env_plugin(args, pp_size: int | None = None, user_buffer_registra
         gpu_sm100_or_newer=gpu_sm100_or_newer,
         user_buffer_registration=user_buf,
     )
+
+
+def build_torch_profiler_plugin(args):
+    """
+    Build a PyTorchProfilerPlugin with consistent defaults across scripts.
+    """
+    from nemo.lightning.run.plugins import PyTorchProfilerPlugin
+
+    enable_torch_profiler = args.enable_torch_profiler or os.environ.get('ENABLE_TORCH_PROFILER', '0') == '1'
+
+    if args.enable_nsys and enable_torch_profiler:
+        logging.warning("Cannot run both Nsys and PyTorch profiler at the same time.")
+        return None
+
+    if enable_torch_profiler:
+        start_iter = int(os.environ.get('TORCH_PROFILER_START_ITER', args.profiling_start_step))
+        end_iter = int(os.environ.get('TORCH_PROFILER_END_ITER', args.profiling_stop_step))
+        return PyTorchProfilerPlugin(
+            start_step=start_iter,
+            end_step=end_iter,
+            output_path=os.environ.get(
+                'TORCH_PROFILES_DIR', args.torch_profile_out_path
+            ),  # a subdir torch_profiles will be created here.
+            profiler_kwargs={
+                "with_stack": os.environ.get('TORCH_PROFILER_WITH_STACK', '0') == '1',
+            },
+            collect_et=os.environ.get('TORCH_PROFILER_COLLECT_ET', '0') == '1',
+        )
+    return None

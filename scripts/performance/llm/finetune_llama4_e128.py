@@ -25,6 +25,7 @@ from ..executors import slurm_executor
 from ..helpers import (
     args_sanity_check,
     build_perf_env_plugin,
+    build_torch_profiler_plugin,
     get_user_configs,
     set_exp_logging_configs,
     set_primary_perf_configs,
@@ -180,6 +181,8 @@ if __name__ == "__main__":
 
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=5, end_step=6))
+    if torch_profiler_plugin := build_torch_profiler_plugin(args):
+        plugins.append(torch_profiler_plugin)
     if args.enable_memory_profile:
         assert args.memory_profile_out_path is not None
         plugins.append(MemoryProfilePlugin(dir=args.memory_profile_out_path))

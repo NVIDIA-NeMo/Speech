@@ -25,7 +25,12 @@ from lightning.pytorch import Callback
 from lightning.pytorch.loggers import WandbLogger
 from nemo_run.core.serialization.yaml import YamlSerializer
 
-from nemo.lightning.pytorch.callbacks import MemoryProfileCallback, NsysCallback, PreemptionCallback, PyTorchProfilerCallback
+from nemo.lightning.pytorch.callbacks import (
+    MemoryProfileCallback,
+    NsysCallback,
+    PreemptionCallback,
+    PyTorchProfilerCallback,
+)
 from nemo.lightning.pytorch.strategies.megatron_strategy import MegatronStrategy
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
@@ -245,6 +250,7 @@ class PyTorchProfilerPlugin(run.Plugin):
         end_step (int): The step at which to end the nsys profiling.
         with_modules(bool) : show modules
     """
+
     output_path: str
     start_step: int
     end_step: int

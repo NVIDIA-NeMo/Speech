@@ -102,7 +102,9 @@ class PytorchProfilerCallback(Callback, IOMixin):
                 torch.profiler.ProfilerActivity.CPU,
                 torch.profiler.ProfilerActivity.CUDA,
             ],
-            "schedule": torch.profiler.schedule(wait=wait_steps, warmup=self.warmup_steps, active=self.active_steps, repeat=1),
+            "schedule": torch.profiler.schedule(
+                wait=wait_steps, warmup=self.warmup_steps, active=self.active_steps, repeat=1
+            ),
             "on_trace_ready": lambda prof: trace_handler(prof, self.chakra_device_trace_path),
             "execution_trace_observer": self.trace_observer,
         }
@@ -137,6 +139,7 @@ class PytorchProfilerCallback(Callback, IOMixin):
                 self.trace_observer.unregister_callback()
             except RuntimeError as e:
                 logging.warning(f"ExecutionTraceObserver cleanup failed: {e}")
+
 
 # Add an alias, ideally we want camelcase for PyTorch
 PyTorchProfilerCallback = PytorchProfilerCallback

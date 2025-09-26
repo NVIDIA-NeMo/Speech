@@ -26,7 +26,13 @@ from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
 from ..argument_parser import parse_additional_slurm_params, parse_cli_args
 from ..executors import slurm_executor
-from ..helpers import args_sanity_check, build_perf_env_plugin, build_torch_profiler_plugin, get_user_configs, set_primary_perf_configs
+from ..helpers import (
+    args_sanity_check,
+    build_perf_env_plugin,
+    build_torch_profiler_plugin,
+    get_user_configs,
+    set_primary_perf_configs,
+)
 from ..utils import hf_tokenizer, import_ckpt_experiment, isfile_train_pack_metadata
 
 HF_MODEL_URI = "deepseek-ai/DeepSeek-V3-Base"

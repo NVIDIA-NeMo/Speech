@@ -52,11 +52,11 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Noop
-      shell: bash
-      run: |
-        chmod -R u+rwX ${{ github.run_id }}
-        echo "noop"
+    # - name: Noop
+    #   shell: bash
+    #   run: |
+    #     chmod -R u+rwX ${{ github.run_id }}
+    #     echo "noop"
 
     - name: Docker system cleanup
       shell: bash

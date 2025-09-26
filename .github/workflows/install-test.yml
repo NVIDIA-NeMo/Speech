@@ -23,6 +23,22 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v2
 
+      - name: Check disk space before cleanup
+        run: df -h
+
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary files on macOS
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/local/lib/node_modules || true
+          brew cleanup || true
+          # Clear pip cache
+          pip cache purge || true
+
+      - name: Check disk space after cleanup
+        run: df -h
+
       - uses: actions/setup-python@v5
         with:
           python-version: "${{ matrix.python }}"
@@ -45,6 +61,9 @@ jobs:
             pip install --no-cache-dir ".[all]"
           fi
 
+      - name: Check disk space after installation
+        run: df -h
+
       - name: Run import checks
         run: |
           # Run import checks
@@ -64,6 +83,25 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v2
 
+      - name: Check disk space before cleanup
+        run: df -h
+
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary packages and files on Ubuntu
+          sudo apt-get clean
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/az || true
+          # Clear pip and npm caches
+          pip cache purge || true
+          sudo npm cache clean --force || true
+
+      - name: Check disk space after cleanup
+        run: df -h
+
       - name: Install Python
         uses: actions/setup-python@v5
         with:
@@ -74,13 +112,16 @@ jobs:
           INSTALLER: ${{ matrix.installer }}
         run: |
           if [ "$INSTALLER" = "pip-install" ]; then
-            pip install --upgrade pip
-            pip install ".[all]"
+            pip install --no-cache-dir --upgrade pip
+            pip install --no-cache-dir ".[all]"
           else
             export INSTALL_DIR=$(pwd)
             bash docker/common/install_dep.sh --library "te,mcore,extra" --mode install
             pip install --no-cache-dir ".[all]"
           fi
+
+      - name: Check disk space after installation
+        run: df -h
 
       - name: Run import checks
         run: |
@@ -101,6 +142,25 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v2
 
+      - name: Check disk space before cleanup
+        run: df -h
+
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary packages and files on Ubuntu ARM
+          sudo apt-get clean
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/az || true
+          # Clear pip and npm caches
+          pip cache purge || true
+          sudo npm cache clean --force || true
+
+      - name: Check disk space after cleanup
+        run: df -h
+
       - name: Install Python
         uses: actions/setup-python@v5
         with:
@@ -111,13 +171,16 @@ jobs:
           INSTALLER: ${{ matrix.installer }}
         run: |
           if [ "$INSTALLER" = "pip-install" ]; then
-            pip install --upgrade pip
-            pip install -vvv ".[all]"
+            pip install --no-cache-dir --upgrade pip
+            pip install --no-cache-dir ".[all]"
           else
             export INSTALL_DIR=$(pwd)
             bash docker/common/install_dep.sh --library "te,mcore,extra" --mode install
             pip install --no-cache-dir ".[all]"
           fi
+
+      - name: Check disk space after installation
+        run: df -h
 
       - name: Run import checks
         run: |

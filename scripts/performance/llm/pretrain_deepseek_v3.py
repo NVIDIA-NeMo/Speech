@@ -177,6 +177,12 @@ def override_recipe_configs(
             get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=129280
         )
     recipe.model.tokenizer = recipe.data.tokenizer
+    # Workaround for FP8 functionality issue
+    if args.compute_dtype == "fp8":
+        recipe.trainer.plugins.fp8_param_gather = False
+        if recipe.trainer.plugins.fp8_recipe == "mxfp8":
+            recipe.trainer.strategy.ddp.reuse_grad_buf_for_mxfp8_param_ag = False
+            recipe.optim.config.reuse_grad_buf_for_mxfp8_param_ag = False
 
     return recipe
 

@@ -1,12 +1,9 @@
 # Changelog
 
 <!-- Next changelog -->
-## NVIDIA Neural Modules 2.4.0
+## NVIDIA Neural Modules 2.4.1
 
 ### Detailed Changelogs:
-
-
-</details>
 
 #### Uncategorized:
 
@@ -20,6 +17,7 @@
 - Pin nvidia-lm-eval to 25.6.1 by @chtruong814 :: PR: #14470
 
 </details>
+
 ## NVIDIA Neural Modules 2.3.3
 
 - This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>

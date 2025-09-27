@@ -289,10 +289,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          path: ${{ github.run_id }}
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: ${{ matrix.script }}

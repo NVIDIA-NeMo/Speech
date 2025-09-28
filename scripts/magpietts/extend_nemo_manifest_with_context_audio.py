@@ -36,6 +36,10 @@ from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 
 logger = logging.getLogger(__name__)
 
+# Constant for masking identical items in similarity matrix
+# Set below valid cosine similarity range [-1, 1] to ensure masked items are never selected
+MASKED_SIMILARITY_VALUE = -2.0
+
 """
 Usage:
 python scripts/magpietts/extend_manifest_with_context_audio.py
@@ -351,7 +355,7 @@ class EmbeddingSimilarityExtractorSharded(pl.LightningModule):
             for n_idx in range(len(all_items_to_process)):
                 if n_idx in original_index_to_context_position:
                     context_pos = original_index_to_context_position[n_idx]
-                    similarity_matrix[n_idx, context_pos] = -2.0  # Set below valid cosine similarity range [-1, 1]
+                    similarity_matrix[n_idx, context_pos] = MASKED_SIMILARITY_VALUE
 
             # Sort all similarities for each item to iterate through candidates
             # sorted_similarities_tensor will contain sorted similarities for each row (original item)
@@ -371,9 +375,9 @@ class EmbeddingSimilarityExtractorSharded(pl.LightningModule):
                     candidate_ssim = sorted_similarities_tensor[i, candidate_rank].item()
                     context_pool_idx = sorted_indices_tensor[i, candidate_rank].item()
 
-                    # if ANY candidate has similarity ≤ -2.0, all subsequent ones will be ≤ -2.0
+                    # if ANY candidate has similarity ≤ MASKED_SIMILARITY_VALUE, all subsequent ones will be ≤ MASKED_SIMILARITY_VALUE
                     # since similarities are sorted in descending order, we can break early
-                    if candidate_ssim <= -2.0:
+                    if candidate_ssim <= MASKED_SIMILARITY_VALUE:
                         break
 
                     # If SSIM is below threshold, stop searching for this item

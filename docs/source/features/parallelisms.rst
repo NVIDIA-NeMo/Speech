@@ -392,7 +392,7 @@ Set ``context_parallel_size`` directly from CLI:
       
       nemo llm pretrain --factory llama3_8b model.config.context_parallel_size=2
 
-The configuration can be found and modified here: `NeMo Megatron Core Context Config <https://docs.nvidia.com/Megatron-Core/developer-guide/latest/api-guide/context_parallel.html>`_.
+The configuration can be found and modified here: `NeMo Megatron Core Context Config <https://docs.nvidia.com/megatron-core/developer-guide/latest/api-guide/context_parallel.html>`_.
 
 Implement Context Parallelism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

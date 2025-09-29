@@ -350,12 +350,12 @@ class SelfAttention(Attention):
                 v = torch.cat([self.cache['self_v'], v], dim=1)
             self.cache['self_k'] = k
             self.cache['self_v'] = v
-        
+
         # query_mask is a boolean mask of shape (B, T)
         # mask should be of shape (B, 1, T, T) where mask[:,0,i,:] == mask[:,0,:,i] == query_mask
         mask = query_mask.unsqueeze(1) * query_mask.unsqueeze(2)
         mask = mask.unsqueeze(1)
-        
+
         return q, k, v, mask
 
 

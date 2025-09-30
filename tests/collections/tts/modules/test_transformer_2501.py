@@ -36,7 +36,9 @@ def set_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
 
+
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
+
 
 @pytest.mark.unit
 class TestConvolutionLayer:
@@ -799,6 +801,7 @@ class TestTransformer:
                 atol=1e-4,
             )
 
+
 @pytest.mark.unit
 class TestTransformerBatchedInference:
     @classmethod
@@ -812,7 +815,7 @@ class TestTransformerBatchedInference:
         cls.max_length_causal_mask = 10
         cls.short_length = 4
         cls.long_length = 10
-    
+
     def test_forward(self):
         set_seed(0)
         query_tensor1 = torch.randn(1, self.long_length, self.d_model)
@@ -846,5 +849,9 @@ class TestTransformerBatchedInference:
                 output_bs1_1 = model(query_tensor1, mask_bs1_1)
                 output_bs1_2 = model(query_tensor2, mask_bs1_2)
 
-                assert torch.allclose(output_batched['output'][0][:self.long_length,:], output_bs1_1['output'], atol=1e-4)
-                assert torch.allclose(output_batched['output'][1][:self.short_length,:], output_bs1_2['output'], atol=1e-4)
+                assert torch.allclose(
+                    output_batched['output'][0][: self.long_length, :], output_bs1_1['output'], atol=1e-4
+                )
+                assert torch.allclose(
+                    output_batched['output'][1][: self.short_length, :], output_bs1_2['output'], atol=1e-4
+                )

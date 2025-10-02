@@ -31,9 +31,9 @@ from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types.elements import (
     AudioSignal,
     EncodedRepresentation,
-    Index,
     LengthsType,
     MelSpectrogramType,
+    TokenIndex,
     VoidType,
 )
 from nemo.core.neural_types.neural_type import NeuralType
@@ -512,6 +512,7 @@ class CausalConvTranspose1dNorm(NeuralModule):
         kernel_size: int,
         stride: int = 1,
         groups: int = None,
+        activation: Optional[str] = None,
         trim_right_ratio: int = 1,
         bias=True,
     ):
@@ -523,6 +524,11 @@ class CausalConvTranspose1dNorm(NeuralModule):
         groups = out_channels if groups is None else groups
 
         self.conv = nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride, groups=groups, bias=bias)
+
+        if activation is not None:
+            self.activation = CodecActivation(activation=activation, channels=out_channels)
+        else:
+            self.activation = nn.Identity()
 
         kernel_size = self.conv.kernel_size[0]
         stride = self.conv.stride[0]
@@ -552,6 +558,7 @@ class CausalConvTranspose1dNorm(NeuralModule):
         # unpad
         end = hidden_states.shape[-1] - self.padding_right
         hidden_states = hidden_states[..., self.padding_left : end]
+        hidden_states = self.activation(hidden_states)
         # mask
         hidden_states = mask_sequence_tensor(hidden_states, input_len)
         return hidden_states
@@ -568,6 +575,7 @@ class CausalConv1dNorm(NeuralModule):
         stride: int = 1,
         dilation: int = 1,
         groups: int = 1,
+        activation: Optional[str] = None,
         pad_mode: str = "zeros",
         extra_pad_mode: str = "constant",
         bias: bool = True,
@@ -592,6 +600,10 @@ class CausalConv1dNorm(NeuralModule):
             bias=bias,
             padding_mode=pad_mode,
         )
+        if activation is not None:
+            self.activation = CodecActivation(activation=activation, channels=out_channels)
+        else:
+            self.activation = nn.Identity()
 
         kernel_size = self.conv.kernel_size[0]
         stride = torch.tensor(self.conv.stride[0], dtype=torch.int64)
@@ -649,6 +661,7 @@ class CausalConv1dNorm(NeuralModule):
         # Left padding for causal
         hidden_states = self._pad1d(inputs, (self.padding_total, extra_padding), mode=self.extra_pad_mode)
         hidden_states = self.conv(hidden_states)
+        hidden_states = self.activation(hidden_states)
 
         # mask output
         hidden_states = mask_sequence_tensor(hidden_states, input_len)
@@ -711,7 +724,15 @@ class Conv1dNorm(NeuralModule):
 
 
 class ConvTranspose1dNorm(NeuralModule):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int = 1, groups: int = 1):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        stride: int = 1,
+        groups: int = 1,
+        activation: Optional[str] = None,
+    ):
         super().__init__()
         padding, output_padding = get_up_sample_padding(kernel_size, stride)
         conv = nn.ConvTranspose1d(
@@ -725,6 +746,11 @@ class ConvTranspose1dNorm(NeuralModule):
             groups=groups,
         )
         self.conv = nn.utils.parametrizations.weight_norm(conv)
+
+        if activation is not None:
+            self.activation = CodecActivation(activation=activation, channels=out_channels)
+        else:
+            self.activation = nn.Identity()
 
     @property
     def input_types(self):
@@ -745,6 +771,7 @@ class ConvTranspose1dNorm(NeuralModule):
     @typecheck()
     def forward(self, inputs, input_len):
         out = self.conv(inputs)
+        out = self.activation(out)
         out = mask_sequence_tensor(out, input_len)
         return out
 
@@ -1147,7 +1174,7 @@ class VectorQuantizerBase(NeuralModule, ABC):
     def output_types(self):
         return {
             "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
-            "indices": NeuralType(('D', 'B', 'T'), Index()),
+            "indices": NeuralType(('D', 'B', 'T'), TokenIndex()),
         }
 
     @typecheck()
@@ -1160,7 +1187,7 @@ class VectorQuantizerBase(NeuralModule, ABC):
             "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
+        output_types={"indices": NeuralType(('D', 'B', 'T'), TokenIndex())},
     )
     @abstractmethod
     def encode(self, inputs: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
@@ -1168,7 +1195,7 @@ class VectorQuantizerBase(NeuralModule, ABC):
 
     @typecheck(
         input_types={
-            "indices": NeuralType(('D', 'B', 'T'), Index()),
+            "indices": NeuralType(('D', 'B', 'T'), TokenIndex()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
         output_types={
@@ -1285,7 +1312,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
             "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"codes": NeuralType(('B', 'D', 'T'), Index())},
+        output_types={"codes": NeuralType(('B', 'D', 'T'), TokenIndex())},
     )
     def inputs_to_codes(self, inputs: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
         # apply compression
@@ -1347,7 +1374,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
             "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
             "input_len": NeuralType(tuple('B'), LengthsType(), optional=True),
         },
-        output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
+        output_types={"indices": NeuralType(('D', 'B', 'T'), TokenIndex())},
     )
     def encode(self, inputs: torch.Tensor, input_len: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Convert a continuous code vector to a single index."""
@@ -1356,7 +1383,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
 
     @typecheck(
         input_types={
-            "indices": NeuralType(('D', 'B', 'T'), Index()),
+            "indices": NeuralType(('D', 'B', 'T'), TokenIndex()),
             "input_len": NeuralType(tuple('B'), LengthsType(), optional=True),
         },
         output_types={
@@ -1460,7 +1487,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
             "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
+        output_types={"indices": NeuralType(('D', 'B', 'T'), TokenIndex())},
     )
     def encode(self, inputs: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
         """Input is split into groups, each group is encoded separately, then the results are concatenated."""
@@ -1478,7 +1505,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
 
     @typecheck(
         input_types={
-            "indices": NeuralType(('D', 'B', 'T'), Index()),
+            "indices": NeuralType(('D', 'B', 'T'), TokenIndex()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
         output_types={
@@ -1505,7 +1532,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
         output_types={
-            "indices": NeuralType(('B', 'D', 'T'), Index()),
+            "indices": NeuralType(('B', 'D', 'T'), TokenIndex()),
         },
     )
     def codes_to_indices(self, codes: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
@@ -1610,7 +1637,10 @@ class ResidualBlockV2(NeuralModule):
         channels: Input dimension.
         filters: Number of channels in the residual convolutions.
         kernel_size: Kernel size of the residual convolutions.
-        activation: Name of activation function.
+        activation: Activation to apply in between residual convolutions.
+        is_causal:  Whether to use causal convolutions.
+        pad_mode: Type of padding to use for conv1d layers.
+            See https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
     """
 
     def __init__(
@@ -1619,13 +1649,28 @@ class ResidualBlockV2(NeuralModule):
         filters: int,
         kernel_size: int = 3,
         activation: str = "lrelu",
+        is_causal: bool = False,
+        pad_mode: str = "reflect",
     ):
         super(ResidualBlockV2, self).__init__()
 
-        self.input_conv = Conv1dNorm(
-            in_channels=channels, out_channels=filters, kernel_size=kernel_size, activation=activation
-        )
-        self.skip_conv = Conv1dNorm(in_channels=filters, out_channels=channels, kernel_size=kernel_size)
+        if not is_causal:
+            self.input_conv = Conv1dNorm(
+                in_channels=channels,
+                out_channels=filters,
+                kernel_size=kernel_size,
+                activation=activation,
+                pad_mode=pad_mode,
+            )
+            self.skip_conv = Conv1dNorm(
+                in_channels=filters, out_channels=channels, kernel_size=kernel_size, pad_mode=pad_mode
+            )
+        else:
+            self.input_conv = CausalConv1dNorm(
+                in_channels=channels, out_channels=filters, kernel_size=kernel_size, activation=activation
+            )
+            self.skip_conv = CausalConv1dNorm(in_channels=filters, out_channels=channels, kernel_size=kernel_size)
+
         self.output_activation = CodecActivation(activation=activation, channels=channels)
 
     def remove_weight_norm(self):
@@ -1646,6 +1691,7 @@ class ResidualBlockV2(NeuralModule):
         res = self.skip_conv(inputs=res, input_len=input_len)
         out = inputs + res
         out = self.output_activation(out)
+        out = mask_sequence_tensor(out, lengths=input_len)
         return out
 
 
@@ -2585,6 +2631,7 @@ class STFTResidualBlock(NeuralModule):
         kernel_size: int,
         activation: str,
         down_sample_rate: int,
+        pad_mode: str,
     ):
         super(STFTResidualBlock, self).__init__()
         down_sample_kernel_size = down_sample_rate * 2 + 1
@@ -2596,6 +2643,7 @@ class STFTResidualBlock(NeuralModule):
             kernel_size=down_sample_kernel_size,
             stride=self.down_sample_rate,
             activation=activation,
+            pad_mode=pad_mode,
         )
 
         n_fft, hop_length, win_length = resolution
@@ -2605,7 +2653,7 @@ class STFTResidualBlock(NeuralModule):
         self.spec_act = CodecActivation(activation=activation, channels=filters)
 
         self.res_block = ResidualBlockV2(
-            channels=filters, filters=filters, kernel_size=kernel_size, activation=activation
+            channels=filters, filters=filters, kernel_size=kernel_size, activation=activation, pad_mode=pad_mode
         )
 
     def remove_weight_norm(self):
@@ -2661,6 +2709,7 @@ class DownSampleResidualBlock(NeuralModule):
         kernel_size: int,
         activation: str,
         down_sample_rate: int,
+        pad_mode: str,
     ):
         super(DownSampleResidualBlock, self).__init__()
         down_sample_kernel_size = down_sample_rate * 2 + 1
@@ -2672,6 +2721,7 @@ class DownSampleResidualBlock(NeuralModule):
             kernel_size=down_sample_kernel_size,
             stride=self.down_sample_rate,
             activation=activation,
+            pad_mode=pad_mode,
         )
         self.res_block = ResidualBlockV2(
             channels=filters, filters=filters, kernel_size=kernel_size, activation=activation
@@ -2702,7 +2752,8 @@ class DownSampleResidualBlock(NeuralModule):
 
 class MultiResolutionSTFTEncoder(NeuralModule):
     """
-    Interface for computing log magnitude STFT features.
+    Encoder which computes log magnitude STFT features at several time resolutions and encodes them into a low
+    frame-rate representation.
 
     Args:
         out_dim: Dimension of encoder output embedding.
@@ -2714,6 +2765,10 @@ class MultiResolutionSTFTEncoder(NeuralModule):
             The total down sample rate of the encoder will be 2**(len(resolutions)) * product(down_sample_rate_list)
         kernel_size: Kernel size to use in all convolutions.
         activation: Name of activation function.
+        resample_rates: Optional tuple of two integers. If provided, input audio will be resampled from sampling rate
+            resample_rates[0] to sampling rate resample_rates[1].
+        pad_mode: Type of padding to use for conv1d layers.
+            See https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
     """
 
     def __init__(
@@ -2725,20 +2780,41 @@ class MultiResolutionSTFTEncoder(NeuralModule):
         down_sample_rate_list: Tuple[int] = (),
         kernel_size: int = 3,
         activation: str = "lrelu",
+        resample_rates: Tuple[int] = (),
+        pad_mode: str = "replicate",
     ):
         super(MultiResolutionSTFTEncoder, self).__init__()
         assert len(resolutions) >= 1
         assert len(resolutions) == len(resolution_filter_list)
+
+        if resample_rates:
+            if not HAVE_TORCHAUDIO:
+                raise ValueError("Must install torchaudio for resampling.")
+
+            input_sr, encoder_sr = resample_rates
+            self.resample = torchaudio.transforms.Resample(input_sr, encoder_sr)
+            self.resample_length_modifier = encoder_sr / input_sr
+        else:
+            self.resample = torch.nn.Identity()
+            self.resample_length_modifier = 1.0
 
         n_fft, hop_length, win_length = resolutions[0]
         input_filters = resolution_filter_list[0]
         input_dim = n_fft // 2 + 1
         self.pre_spec_processor = STFTProcessor(n_fft=n_fft, win_length=win_length, hop_length=hop_length)
         self.pre_conv = Conv1dNorm(
-            in_channels=input_dim, out_channels=input_filters, kernel_size=kernel_size, activation=activation
+            in_channels=input_dim,
+            out_channels=input_filters,
+            kernel_size=kernel_size,
+            activation=activation,
+            pad_mode=pad_mode,
         )
         self.pre_res_block = ResidualBlockV2(
-            channels=input_filters, filters=input_filters, kernel_size=kernel_size, activation=activation
+            channels=input_filters,
+            filters=input_filters,
+            kernel_size=kernel_size,
+            activation=activation,
+            pad_mode=pad_mode,
         )
         input_dim = input_filters
         self.stft_blocks = nn.ModuleList([])
@@ -2750,6 +2826,7 @@ class MultiResolutionSTFTEncoder(NeuralModule):
                 filters=filters,
                 kernel_size=kernel_size,
                 activation=activation,
+                pad_mode=pad_mode,
             )
             self.stft_blocks.append(stft_block)
             input_dim = filters
@@ -2765,11 +2842,17 @@ class MultiResolutionSTFTEncoder(NeuralModule):
                 down_sample_rate=down_sample_rate,
                 kernel_size=kernel_size,
                 activation=activation,
+                pad_mode=pad_mode,
             )
             self.down_sample_blocks.append(down_sample_block)
             input_dim = filters
 
-        self.post_conv = Conv1dNorm(in_channels=input_dim, out_channels=out_dim, kernel_size=kernel_size)
+        self.post_conv = Conv1dNorm(
+            in_channels=input_dim,
+            out_channels=out_dim,
+            kernel_size=kernel_size,
+            pad_mode=pad_mode,
+        )
 
     def remove_weight_norm(self):
         self.encoder.remove_weight_norm()
@@ -2790,6 +2873,9 @@ class MultiResolutionSTFTEncoder(NeuralModule):
 
     @typecheck()
     def forward(self, audio, audio_len):
+        audio = self.resample(audio)
+        audio_len = torch.round(self.resample_length_modifier * audio_len).int()
+
         encoded, encoded_len = self.pre_spec_processor(audio=audio, audio_len=audio_len)
         encoded = self.pre_conv(inputs=encoded, input_len=encoded_len)
         encoded = self.pre_res_block(inputs=encoded, input_len=encoded_len)
@@ -2863,3 +2949,176 @@ class VectorQuantizerIndexConverter(NeuralModule):
             codes=audio_codes, input_len=audio_lens
         )
         return audio_tokens_original
+
+
+class ResNetDecoder(NeuralModule):
+    """
+    A residual decoder designed for low-latency. Most processing is done at a low frame-rate (e.g. 50 FPS), while
+    minimizing the size of the network which upsamples to the final waveform.
+
+    Args:
+        input_dim: Dimension of decoder input.
+        input_filters: Size of the first CNN layer applied to the decoder input.
+        pre_up_sample_rates: Up sample rates to apply prior to main decoder network.
+        pre_up_sample_filters: Size of residual blocks in first up sampling blocks.
+        n_hidden_layers: Number of residual blocks in the main decoder network, which processes the latent space at
+            low frame-rate.
+        hidden_filters: Size of each rsidual block in the main decoder network.
+        resblock_up_sample_rates: Up sample rates to apply after main decoder network.
+        resblock_up_sample_filters: Size of residual blocks in final up sampling blocks.
+        resblock_up_sample_kernel_size: Kernel size to use in final up sampling blocks.
+        kernel_size: Kernel size to use in all other CNN layers.
+        activation: Name of activation to use in residual blocks.
+        is_causal: Whether to make the decoder causal.
+        pad_mode: Type of padding to use for conv1d layers.
+            See https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        input_filters: int,
+        pre_up_sample_rates: List[int],
+        pre_up_sample_filters: List[int],
+        n_hidden_layers: int,
+        hidden_filters: int,
+        resblock_up_sample_rates: List[int],
+        resblock_up_sample_filters: List[int],
+        resblock_up_sample_kernel_size: int = 7,
+        kernel_size: int = 3,
+        activation: str = "half_snake",
+        is_causal: bool = False,
+        pad_mode: str = "replicate",
+    ):
+        super().__init__()
+
+        assert len(pre_up_sample_rates) == len(pre_up_sample_filters)
+        assert len(resblock_up_sample_rates) == len(resblock_up_sample_filters)
+
+        if not is_causal:
+            conv_class = Conv1dNorm
+        else:
+            conv_class = CausalConv1dNorm
+
+        if not is_causal:
+            conv_transpose_class = ConvTranspose1dNorm
+        else:
+            conv_transpose_class = CausalConvTranspose1dNorm
+
+        self.pre_conv = conv_class(
+            in_channels=input_dim,
+            out_channels=input_filters,
+            kernel_size=kernel_size,
+        )
+
+        in_channels = input_filters
+        self.pre_up_sample_rates = pre_up_sample_rates
+        self.pre_resblocks = nn.ModuleList([])
+        self.pre_up_sample_layers = nn.ModuleList([])
+        for up_sample_rate, filters in zip(self.pre_up_sample_rates, pre_up_sample_filters):
+            res_block = ResidualBlockV2(
+                channels=in_channels,
+                filters=(2 * in_channels),
+                kernel_size=kernel_size,
+                activation=activation,
+                is_causal=is_causal,
+                pad_mode=pad_mode,
+            )
+            self.pre_resblocks.append(res_block)
+            conv = conv_transpose_class(
+                in_channels=in_channels,
+                out_channels=filters,
+                kernel_size=(2 * up_sample_rate),
+                stride=up_sample_rate,
+                activation=activation,
+            )
+            self.pre_up_sample_layers.append(conv)
+
+            in_channels = filters
+
+        self.conv_layers = nn.ModuleList(
+            [
+                ResidualBlockV2(
+                    channels=in_channels,
+                    filters=hidden_filters,
+                    kernel_size=kernel_size,
+                    activation=activation,
+                    is_causal=is_causal,
+                    pad_mode=pad_mode,
+                )
+                for _ in range(n_hidden_layers)
+            ]
+        )
+
+        self.resblock_up_sample_rates = resblock_up_sample_rates
+        self.resblock_up_sample_layers = nn.ModuleList([])
+        self.resblocks = nn.ModuleList([])
+        for up_sample_rate, filters in zip(self.resblock_up_sample_rates, resblock_up_sample_filters):
+            conv = conv_transpose_class(
+                in_channels=in_channels,
+                out_channels=filters,
+                kernel_size=(2 * up_sample_rate),
+                stride=up_sample_rate,
+                activation=activation,
+            )
+            self.resblock_up_sample_layers.append(conv)
+            res_block = ResidualBlockV2(
+                channels=filters,
+                filters=(2 * filters),
+                kernel_size=resblock_up_sample_kernel_size,
+                activation=activation,
+                is_causal=is_causal,
+                pad_mode=pad_mode,
+            )
+            self.resblocks.append(res_block)
+            in_channels = filters
+
+        self.post_conv = conv_class(
+            in_channels=in_channels, out_channels=1, kernel_size=resblock_up_sample_kernel_size, pad_mode=pad_mode
+        )
+
+        self.out_activation = ClampActivation(clamp_training=False)
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T_encoded'), VoidType()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
+            "audio_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @typecheck()
+    def forward(self, inputs, input_len):
+
+        out = self.pre_conv(inputs=inputs, input_len=input_len)
+
+        audio_len = input_len
+        for pre_up_sample_rate, pre_up_sample_layer, pre_resblock in zip(
+            self.pre_up_sample_rates, self.pre_up_sample_layers, self.pre_resblocks
+        ):
+            out = pre_resblock(inputs=out, input_len=audio_len)
+            audio_len = pre_up_sample_rate * audio_len
+            out = pre_up_sample_layer(inputs=out, input_len=audio_len)
+
+        for conv in self.conv_layers:
+            out = conv(inputs=out, input_len=audio_len)
+
+        for resblock_up_sample_rate, resblock_up_sample_layer, resblock in zip(
+            self.resblock_up_sample_rates, self.resblock_up_sample_layers, self.resblocks
+        ):
+            audio_len = resblock_up_sample_rate * audio_len
+            out = resblock_up_sample_layer(inputs=out, input_len=audio_len)
+            out = resblock(inputs=out, input_len=audio_len)
+
+        out = self.post_conv(inputs=out, input_len=audio_len)
+        out = rearrange(out, 'B 1 T -> B T')
+        audio = self.out_activation(out)
+        audio = mask_sequence_tensor(audio, audio_len)
+
+        return audio, audio_len

@@ -143,6 +143,22 @@ class AudioCodecModel(ModelPT):
         self.gen_loss_fn = instantiate(cfg.generator_loss)
         self.disc_loss_fn = instantiate(cfg.discriminator_loss)
 
+        self.mmd_loss_start_epoch = cfg.get("mmd_loss_start_epoch", 0)
+
+        if "mmd_loss" in cfg:
+            self.mmd_loss_fn = instantiate(cfg.mmd_loss)
+            self.mmd_loss_scale = cfg.get("mmd_loss_scale", 1.0)
+        else:
+            self.mmd_loss_fn = None
+            self.mmd_loss_scale = None
+
+        if "mmd_time_loss" in cfg:
+            self.mmd_time_loss_fn = instantiate(cfg.mmd_time_loss)
+            self.mmd_time_loss_scale = cfg.get("mmd_time_loss_scale", 1.0)
+        else:
+            self.mmd_time_loss_fn = None
+            self.mmd_time_loss_scale = None
+
         feature_loss_type = cfg.get("feature_loss_type", "relative")
         if feature_loss_type == "relative":
             self.feature_loss_fn = RelativeFeatureMatchingLoss()
@@ -497,7 +513,7 @@ class AudioCodecModel(ModelPT):
         encoded = encoded.to(self.dtype)  # make sure vector quantizer output is in the model dtype
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
 
-        return audio, audio_len, audio_gen, commit_loss
+        return audio, audio_len, audio_gen, commit_loss, encoded
 
     @property
     def disc_update_prob(self) -> float:
@@ -514,7 +530,7 @@ class AudioCodecModel(ModelPT):
     def training_step(self, batch, batch_idx):
         optim_gen, optim_disc = self.optimizers()
 
-        audio, audio_len, audio_gen, commit_loss = self._process_batch(batch)
+        audio, audio_len, audio_gen, commit_loss, codes = self._process_batch(batch)
 
         metrics = {
             "global_step": self.global_step,
@@ -578,6 +594,19 @@ class AudioCodecModel(ModelPT):
             metrics["g_loss_commit"] = commit_loss
             generator_losses.append(self.commit_loss_scale * commit_loss)
 
+        if self.mmd_loss_scale:
+            loss_mmd = self.mmd_loss_fn(inputs=codes)
+            metrics["g_loss_mmd"] = loss_mmd
+
+            if self.current_epoch >= self.mmd_loss_start_epoch:
+                generator_losses.append(self.mmd_loss_scale * loss_mmd)
+
+        if self.mmd_time_loss_scale:
+            loss_mmd_time = self.mmd_time_loss_fn(inputs=codes)
+            metrics["g_loss_mmd_time"] = loss_mmd_time
+            if self.current_epoch >= self.mmd_loss_start_epoch:
+                generator_losses.append(self.mmd_time_loss_scale * loss_mmd_time)
+
         # compute embeddings for speaker consistency loss
         if self.use_scl_loss:
             # concate generated and GT waveforms
@@ -623,7 +652,7 @@ class AudioCodecModel(ModelPT):
         self.update_lr("epoch")
 
     def validation_step(self, batch, batch_idx):
-        audio, audio_len, audio_gen, _ = self._process_batch(batch)
+        audio, audio_len, audio_gen, _, _ = self._process_batch(batch)
 
         loss_mel_l1, loss_mel_l2 = self.mel_loss_fn(
             audio_real=audio.float(), audio_gen=audio_gen.float(), audio_len=audio_len

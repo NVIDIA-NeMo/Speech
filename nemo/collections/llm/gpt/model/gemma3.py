@@ -30,7 +30,7 @@ from megatron.core.transformer import ModuleSpec, TransformerConfig, Transformer
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.enums import AttnBackend, AttnMaskType
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
-from torch import Tensor, nn
+from torch import Tensor, nn, stack
 
 from nemo.collections.llm.fn.activation import openai_gelu
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
@@ -338,7 +338,7 @@ class Gemma3RotaryEmbedding(RotaryEmbedding):
         """Get global and local rope embedding"""
         rope_global = super().forward(max_seq_len, offset, packed_seq)
         rope_local = self.rope_local.forward(max_seq_len, offset, packed_seq)
-        return rope_local, rope_global
+        return stack([rope_local, rope_global], dim=0)
 
 
 def _is_local_attn_layer(

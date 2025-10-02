@@ -35,6 +35,7 @@ from nemo.utils.file_utils import robust_copy
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.model_utils import inject_model_parallel_rank
 from nemo.utils.msc_utils import import_multistorageclient, is_multistorageclient_url
+from nemo.utils.secure import torch_load, torch_save
 
 
 class SaveRestoreConnector:
@@ -48,7 +49,7 @@ class SaveRestoreConnector:
         self._model_extracted_dir = None
         self._pack_nemo_file = True
 
-    def save_to(self, model: "nemo_classes.ModelPT", save_path: str):
+    def save_to(self, model: "nemo_classes.ModelPT", save_path: str, safe: bool = False):
         """
         Saves model instance (weights and configuration) into .nemo file.
         You can use "restore_from" method to fully restore instance from .nemo file.
@@ -61,6 +62,8 @@ class SaveRestoreConnector:
         Args:
             model: ModelPT object to be saved.
             save_path: Path to .nemo file where model instance should be saved
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                  and only safetensors will be allowed
 
         Returns:
             str: Path to .nemo file where model instance was saved (same as save_path argument) or None if not rank 0
@@ -78,7 +81,7 @@ class SaveRestoreConnector:
                     self._handle_artifacts(model, nemo_file_folder=tmpdir)
                     # We should not update self._cfg here - the model can still be in use
                     self._update_artifact_paths(model, path2yaml_file=config_yaml)
-                self._save_state_dict_to_disk(model.state_dict(), model_weights)
+                self._save_state_dict_to_disk(model.state_dict(), model_weights, safe=safe)
 
                 # Check if we are packing the folder into a nemo file
                 if self.pack_nemo_file:
@@ -102,6 +105,7 @@ class SaveRestoreConnector:
         return_config: bool = False,
         trainer: Trainer = None,
         validate_access_integrity: bool = True,
+        safe: bool = False,
     ):
         """
         Restores model instance (weights and configuration) into .nemo file
@@ -115,7 +119,8 @@ class SaveRestoreConnector:
             strict: Passed to load_state_dict. By default True
             return_config: If set to true, will return just the underlying config of the restored
                 model as an OmegaConf DictConfig object without instantiating the model.
-
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                  and only safetensors will be allowed
         Example:
             ```
             model = nemo.collections.asr.models.EncDecCTCModel.restore_from('asr.nemo')
@@ -192,7 +197,7 @@ class SaveRestoreConnector:
                 # add load_state_dict override
                 if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
                     model_weights = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.model_weights_ckpt)
-                state_dict = self._load_state_dict_from_disk(model_weights, map_location=map_location)
+                state_dict = self._load_state_dict_from_disk(model_weights, map_location=map_location, safe=safe)
             finally:
                 os.chdir(cwd)
 
@@ -240,6 +245,7 @@ class SaveRestoreConnector:
         return_config: bool = False,
         trainer: Trainer = None,
         validate_access_integrity: bool = True,
+        safe: bool = False,
     ):
         """
         Restores model instance (weights and configuration) into .nemo file
@@ -254,7 +260,8 @@ class SaveRestoreConnector:
             return_config: If set to true, will return just the underlying config of the restored
                 model as an OmegaConf DictConfig object without instantiating the model.
             trainer: An optional Trainer object, passed to the model constructor.
-
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                  and only safetensors will be allowed
         Example:
             ```
             model = nemo.collections.asr.models.EncDecCTCModel.restore_from('asr.nemo')
@@ -275,6 +282,7 @@ class SaveRestoreConnector:
             return_config,
             trainer,
             validate_access_integrity,
+            safe=safe,
         )
         if not isinstance(loaded_params, tuple) or return_config is True:
             return loaded_params
@@ -284,7 +292,9 @@ class SaveRestoreConnector:
         logging.info(f'Model {instance.__class__.__name__} was successfully restored from {restore_path}.')
         return instance
 
-    def extract_state_dict_from(self, restore_path: str, save_dir: str, split_by_module: bool = False):
+    def extract_state_dict_from(
+        self, restore_path: str, save_dir: str, split_by_module: bool = False, safe: bool = False
+    ):
         """
         Extract the state dict(s) from a provided .nemo tarfile and save it to a directory.
 
@@ -293,6 +303,8 @@ class SaveRestoreConnector:
             save_dir: directory in which the saved state dict(s) should be stored
             split_by_module: bool flag, which determins whether the output checkpoint should
                 be for the entire Model, or the individual module's that comprise the Model
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                and only safetensors will be allowed
 
         Example:
             To convert the .nemo tarfile into a single Model level PyTorch checkpoint
@@ -303,7 +315,8 @@ class SaveRestoreConnector:
             To restore a model from a Model level checkpoint
             ::
             model = nemo.collections.asr.models.EncDecCTCModel(cfg)  # or any other method of restoration
-            model.load_state_dict(torch.load("./asr_ckpts/model_weights.ckpt"))
+            import safetensors.torch as storch
+            model.load_state_dict(storch.load("./asr_ckpts/model_weights.ckpt"))
 
 
             To convert the .nemo tarfile into multiple Module level PyTorch checkpoints
@@ -318,9 +331,10 @@ class SaveRestoreConnector:
             model = nemo.collections.asr.models.EncDecCTCModel(cfg)  # or any other method of restoration
 
             # load the individual components
-            model.preprocessor.load_state_dict(torch.load("./asr_ckpts/preprocessor.ckpt"))
-            model.encoder.load_state_dict(torch.load("./asr_ckpts/encoder.ckpt"))
-            model.decoder.load_state_dict(torch.load("./asr_ckpts/decoder.ckpt"))
+            import safetensors.torch as storch
+            model.preprocessor.load_state_dict(storch.load("./asr_ckpts/preprocessor.ckpt"))
+            model.encoder.load_state_dict(storch.load("./asr_ckpts/encoder.ckpt"))
+            model.decoder.load_state_dict(storch.load("./asr_ckpts/decoder.ckpt"))
 
 
         Returns:
@@ -338,11 +352,11 @@ class SaveRestoreConnector:
                 self._unpack_nemo_file(path2file=restore_path, out_folder=tmpdir)
                 os.chdir(tmpdir)
                 model_weights = os.path.join(tmpdir, self.model_weights_ckpt)
-                state_dict = self._load_state_dict_from_disk(model_weights)
+                state_dict = self._load_state_dict_from_disk(model_weights, safe=safe)
 
                 if not split_by_module:
                     filepath = os.path.join(save_dir, self.model_weights_ckpt)
-                    self._save_state_dict_to_disk(state_dict, filepath)
+                    self._save_state_dict_to_disk(state_dict, filepath, safe=safe)
 
                 else:
                     key_set = set([key.split(".")[0] for key in state_dict.keys()])
@@ -352,7 +366,7 @@ class SaveRestoreConnector:
                             ".".join(inner_key.split(".")[1:]): state_dict[inner_key] for inner_key in inner_keys
                         }
                         filepath = os.path.join(save_dir, f"{primary_key}.ckpt")
-                        self._save_state_dict_to_disk(state_dict_subset, filepath)
+                        self._save_state_dict_to_disk(state_dict_subset, filepath, safe=safe)
 
                 logging.info(f'Checkpoints from {restore_path} were successfully extracted into {save_dir}.')
             finally:
@@ -752,12 +766,12 @@ class SaveRestoreConnector:
         return out_folder
 
     @staticmethod
-    def _save_state_dict_to_disk(state_dict, filepath):
-        torch.save(state_dict, filepath)
+    def _save_state_dict_to_disk(state_dict, filepath, safe=False):
+        torch_save(state_dict, filepath, safe=safe)
 
     @staticmethod
-    def _load_state_dict_from_disk(model_weights, map_location=None):
-        return torch.load(model_weights, map_location='cpu', weights_only=False)
+    def _load_state_dict_from_disk(model_weights, map_location=None, safe=False):
+        return torch_load(model_weights, map_location='cpu', weights_only=False, safe=safe)
 
     @property
     def model_config_yaml(self) -> str:

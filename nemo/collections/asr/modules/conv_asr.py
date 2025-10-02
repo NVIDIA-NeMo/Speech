@@ -272,11 +272,11 @@ class ParallelConvASREncoder(NeuralModule, Exportable):
         """Implement this method to return a set of output names disabled for export"""
         return set(["encoded_lengths"])
 
-    def save_to(self, save_path: str):
+    def save_to(self, save_path: str, safe: bool = False):
         pass
 
     @classmethod
-    def restore_from(cls, restore_path: str):
+    def restore_from(cls, restore_path: str, safe: bool = False):
         pass
 
     @property

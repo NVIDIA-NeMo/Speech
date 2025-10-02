@@ -4,4 +4,5 @@ inflect
 mediapy==1.1.6
 pandas
 sacremoses>=0.0.43
+safetensors
 sentencepiece<1.0.0

@@ -1045,7 +1045,7 @@ class NeuralDiarizer(LightningModule):
         return msdd_model.cfg
 
     @rank_zero_only
-    def save_to(self, save_path: str):
+    def save_to(self, save_path: str, safe: bool = False):
         """
         Saves model instances (weights and configuration) into EFF archive.
         You can use "restore_from" method to fully restore instance from .nemo file.
@@ -1057,6 +1057,8 @@ class NeuralDiarizer(LightningModule):
 
         Args:
             save_path: Path to .nemo file where model instance should be saved
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                  and only safetensors will be allowed
         """
         self.clus_diar = self.clustering_embedding.clus_diar_model
         _NEURAL_DIAR_MODEL = "msdd_model.nemo"
@@ -1069,9 +1071,9 @@ class NeuralDiarizer(LightningModule):
             self.clus_diar.to_config_file(path2yaml_file=config_yaml)
             if self.clus_diar.has_vad_model:
                 vad_model = os.path.join(tmpdir, _VAD_MODEL)
-                self.clus_diar._vad_model.save_to(vad_model)
-            self.clus_diar._speaker_model.save_to(spkr_model)
-            self.msdd_model.save_to(neural_diar_model)
+                self.clus_diar._vad_model.save_to(vad_model, safe=safe)
+            self.clus_diar._speaker_model.save_to(spkr_model, safe=safe)
+            self.msdd_model.save_to(neural_diar_model, safe=safe)
             self.clus_diar.__make_nemo_file_from_folder(filename=save_path, source_dir=tmpdir)
 
     def extract_standalone_speaker_model(self, prefix: str = 'msdd._speaker_model.') -> EncDecSpeakerLabelModel:

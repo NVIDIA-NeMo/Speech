@@ -401,7 +401,7 @@ class ModelPT(LightningModule, Model):
             ):
                 yield submodule_name, subconfig_path, submodule
 
-    def save_to(self, save_path: str):
+    def save_to(self, save_path: str, safe: bool = False):
         """
         Saves model instance (weights and configuration) into .nemo file
          You can use "restore_from" method to fully restore instance from .nemo file.
@@ -413,6 +413,8 @@ class ModelPT(LightningModule, Model):
 
         Args:
             save_path: Path to .nemo file where model instance should be saved
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                  and only safetensors will be allowed
         """
 
         def maybe_make_save_dir(path: Union[str, 'pathlib.Path']):
@@ -436,10 +438,14 @@ class ModelPT(LightningModule, Model):
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
             # connector checks for ranks properly, no need to check here
-            self._save_restore_connector.save_to(self, str(save_path))  # downstream tasks expect str, not Path
+            self._save_restore_connector.save_to(
+                self, str(save_path), safe=safe
+            )  # downstream tasks expect str, not Path
         elif is_global_rank_zero():
             maybe_make_save_dir(save_path)
-            self._save_restore_connector.save_to(self, str(save_path))  # downstream tasks expect str, not Path
+            self._save_restore_connector.save_to(
+                self, str(save_path), safe=safe
+            )  # downstream tasks expect str, not Path
 
     @classmethod
     def restore_from(
@@ -452,6 +458,7 @@ class ModelPT(LightningModule, Model):
         save_restore_connector: SaveRestoreConnector = None,
         trainer: Optional[Trainer] = None,
         validate_access_integrity: bool = True,
+        safe: bool = False,
     ):
         """
         Restores model instance (weights and configuration) from .nemo file.
@@ -468,7 +475,8 @@ class ModelPT(LightningModule, Model):
             trainer: Optional, a pytorch lightning Trainer object that will be forwarded to the
                 instantiated model's constructor.
             save_restore_connector (SaveRestoreConnector): Can be overridden to add custom save and restore logic.
-
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                  and only safetensors will be allowed
             Example:
                 ```
                 model = nemo.collections.asr.models.EncDecCTCModel.restore_from('asr.nemo')
@@ -510,6 +518,7 @@ class ModelPT(LightningModule, Model):
             return_config,
             trainer,
             validate_access_integrity,
+            safe=safe,
         )
         if isinstance(instance, ModelPT):
             instance._save_restore_connector = save_restore_connector

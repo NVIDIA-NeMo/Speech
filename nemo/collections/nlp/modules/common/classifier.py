@@ -37,7 +37,11 @@ class Classifier(NeuralModule, Exportable):
         """
         return {"hidden_states": NeuralType(('B', 'T', 'D'), ChannelType())}
 
-    def __init__(self, hidden_size: int, dropout: float = 0.0,) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        dropout: float = 0.0,
+    ) -> None:
         """
         Initializes the Classifier base module.
         Args:
@@ -67,19 +71,23 @@ class Classifier(NeuralModule, Exportable):
         example = torch.randn(max_batch, max_dim, self._hidden_size).to(sample.device).to(sample.dtype)
         return tuple([example])
 
-    def save_to(self, save_path: str):
+    def save_to(self, save_path: str, safe: bool = False):
         """
         Saves the module to the specified path.
         Args:
             save_path: Path to where to save the module.
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                  and only safetensors will be allowed
         """
         pass
 
     @classmethod
-    def restore_from(cls, restore_path: str):
+    def restore_from(cls, restore_path: str, safe: bool = False):
         """
         Restores the module from the specified path.
         Args:
             restore_path: Path to restore the module from.
+            safe: Boolean value, when safe=True pytorch state dictionaries will not be allowed to load,
+                  and only safetensors will be allowed
         """
         pass

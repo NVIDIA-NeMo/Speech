@@ -407,3 +407,7 @@ class AbstractRNNTDecoder(NeuralModule, ABC):
             states filtered by mask (same type as `states`)
         """
         raise NotImplementedError()
+
+    @abstractmethod
+    def state_size_is_fixed(self) -> bool:
+        raise NotImplementedError()

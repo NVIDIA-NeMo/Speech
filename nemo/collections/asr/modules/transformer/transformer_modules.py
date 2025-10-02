@@ -22,7 +22,6 @@ from torch import nn
 from torch.nn.functional import gelu
 
 from nemo.collections.common.parts import form_attention_mask
-from nemo.utils import logging
 
 __all__ = ["TransformerEmbedding", "AttentionBridge"]
 
@@ -101,7 +100,7 @@ class TransformerEmbedding(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-5)
         self.dropout = nn.Dropout(embedding_dropout)
 
-    def forward(self, input_ids, token_type_ids=None, start_pos=0):
+    def forward(self, input_ids, token_type_ids=None, start_pos: int | torch.Tensor = 0):
         seq_length = input_ids.size(1)
         # we fail here only with parametric positional embedding. FixedPositionalEncoding automatically extends.
         if self.learn_positional_encodings and (seq_length > self.max_sequence_length):
@@ -109,10 +108,12 @@ class TransformerEmbedding(nn.Module):
                 f"Input sequence is longer than maximum allowed sequence length for positional encoding. "
                 f"Got {seq_length} and {self.max_sequence_length}"
             )
-        position_ids = torch.arange(
-            start=start_pos, end=start_pos + seq_length, dtype=torch.long, device=input_ids.device
-        )
+        position_ids = torch.arange(start=0, end=seq_length, dtype=torch.long, device=input_ids.device)
         position_ids = position_ids.unsqueeze(0).repeat(input_ids.size(0), 1)
+        if isinstance(start_pos, torch.Tensor):
+            position_ids += start_pos.unsqueeze(1)
+        else:
+            position_ids += start_pos
 
         token_embeddings = self.token_embedding(input_ids)
         position_embeddings = self.position_embedding(position_ids)

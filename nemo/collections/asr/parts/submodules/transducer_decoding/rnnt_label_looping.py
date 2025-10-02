@@ -30,6 +30,7 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.core.utils.cuda_python_utils import cu_call, run_nvrtc, with_conditional_node
+from nemo.utils import logging
 
 try:
     from cuda import cudart
@@ -221,6 +222,9 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
         self.allow_cuda_graphs = allow_cuda_graphs
+        if self.allow_cuda_graphs and not self.decoder.state_size_is_fixed():
+            logging.warning("Decoding with CUDA graphs is not supported with Transformer-Decoder.")
+            self.allow_cuda_graphs = False
         self._SOS = self._blank_index
         self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
         assert self._SOS == self._blank_index  # "blank as pad" algorithm only
@@ -228,6 +232,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.state = None
         self.full_graph = None
         self.separate_graphs = None
+        self.decoder_state_size_is_fixed = self.decoder.state_size_is_fixed()
 
         self.cuda_graphs_mode = None
         self.maybe_enable_cuda_graphs()
@@ -458,11 +463,12 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             decoder_output = self.joint.project_prednet(decoder_output)  # do not recalculate joint projection
 
             # preserve correct states/outputs for inactive elements
-            self.decoder.batch_replace_states_mask(
-                src_states=prev_state,
-                dst_states=state,
-                mask=~active_mask,
-            )
+            if self.decoder_state_size_is_fixed:
+                self.decoder.batch_replace_states_mask(
+                    src_states=prev_state,
+                    dst_states=state,
+                    mask=~active_mask,
+                )
             torch.where(
                 active_mask.unsqueeze(-1).unsqueeze(-1), decoder_output, prev_decoder_output, out=decoder_output
             )
@@ -859,15 +865,15 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         if self.cuda_graphs_mode is not self.CudaGraphsMode.NO_GRAPHS:
             self._warmup_for_cuda_graphs()
 
-        if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
-            self._full_graph_compile()
-        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
-            self._partial_graphs_compile()
-        elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
-            # no graphs needed
-            pass
-        else:
-            raise NotImplementedError
+        match self.cuda_graphs_mode:
+            case self.CudaGraphsMode.FULL_GRAPH:
+                self._full_graph_compile()
+            case self.CudaGraphsMode.NO_WHILE_LOOPS:
+                self._separate_graphs_compile()
+            case self.CudaGraphsMode.NO_GRAPHS:
+                pass  # nothing to compile
+            case _:
+                raise NotImplementedError(f"Not implemented graph mode: {self.cuda_graphs_mode}")
 
     def _warmup_for_cuda_graphs(self):
         """Warmup before compiling CUDA graphs"""
@@ -888,7 +894,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         torch.cuda.current_stream().wait_stream(s)
         self.state.encoder_output_length.fill_(0)
 
-    def _partial_graphs_compile(self):
+    def _separate_graphs_compile(self):
         """Compile decoding by parts"""
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.state.device)

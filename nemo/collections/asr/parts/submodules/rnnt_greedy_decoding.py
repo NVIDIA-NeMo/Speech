@@ -785,6 +785,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         if partial_hypotheses is None or all(hyp is None for hyp in partial_hypotheses):
             batched_state = None
         else:
+            if not self.decoder.state_size_is_fixed():
+                raise NotImplementedError("Partial hypotheses support is not implemented with Transformer-Decoder")
             batched_state = self.decoding_computer.merge_to_batched_state(
                 [hyp.dec_state if hyp is not None else None for hyp in partial_hypotheses]
             )
@@ -794,8 +796,9 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             prev_batched_state=batched_state,
         )
         hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
-        for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
-            hyp.dec_state = state_item
+        if self.decoder.state_size_is_fixed():
+            for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
+                hyp.dec_state = state_item
 
         if partial_hypotheses:
             for i, (hyp, hyp_continuation) in enumerate(zip(partial_hypotheses, hyps)):
@@ -2921,6 +2924,8 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         if partial_hypotheses is None or all(hyp is None for hyp in partial_hypotheses):
             batched_state = None
         else:
+            if not self.decoder.state_size_is_fixed():
+                raise NotImplementedError("Partial hypotheses support is not implemented with Transformer-Decoder")
             batched_state = self.decoding_computer.merge_to_batched_state(
                 [hyp.dec_state if hyp is not None else None for hyp in partial_hypotheses]
             )
@@ -2930,8 +2935,9 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             prev_batched_state=batched_state,
         )
         hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
-        for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
-            hyp.dec_state = state_item
+        if self.decoder.state_size_is_fixed():
+            for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
+                hyp.dec_state = state_item
 
         if partial_hypotheses:
             for i, (hyp, hyp_continuation) in enumerate(zip(partial_hypotheses, hyps)):

@@ -26,9 +26,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.utils.checkpoint
 from omegaconf import DictConfig
 
 from nemo.collections.asr.modules import rnnt_abstract
@@ -547,6 +549,9 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
                     processed_idx += 1
 
         return [dec_out for dec_out, _ in final], [dec_states for _, dec_states in final]
+
+    def state_size_is_fixed(self) -> bool:
+        return True
 
 
 class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMixin):
@@ -1276,6 +1281,9 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
         cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self.pred_hidden)
         return cfg
 
+    def state_size_is_fixed(self) -> bool:
+        return True
+
 
 class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin):
     """A Recurrent Neural Network Transducer Joint Network (RNN-T Joint Network).
@@ -1409,6 +1417,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         fused_batch_size: Optional[int] = None,
         experimental_fuse_loss_wer: Any = None,
         masking_prob: float = -1.0,
+        num_layers: int = 1,
+        use_checkpointing: Optional[bool] = None,
     ):
         super().__init__()
 
@@ -1462,6 +1472,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             joint_n_hidden=self.joint_hidden,
             activation=self.activation,
             dropout=dropout,
+            num_layers=num_layers,
         )
 
         # Flag needed for RNNT export support
@@ -1469,6 +1480,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         # to change, requires running ``model.temperature = T`` explicitly
         self.temperature = 1.0
+
+        default_use_checkpointing = num_layers > 1
+        self.use_checkpointing = use_checkpointing if use_checkpointing is not None else default_use_checkpointing
 
     @typecheck()
     def forward(
@@ -1692,20 +1706,31 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             rand = torch.gt(rand, self.masking_prob)
             g = g * rand
 
-        inp = f + g  # [B, T, U, H]
+        if self.use_checkpointing:
 
-        del f, g
+            def _compute_joint(f, g):
+                inp = f + g  # [B, T, U, H]
+                if self.is_adapter_available():
+                    inp = self.forward_enabled_adapters(inp)
+                res = self.joint_net(inp)  # [B, T, U, V + 1]
+                return res
 
-        # Forward adapter modules on joint hidden
-        if self.is_adapter_available():
-            inp = self.forward_enabled_adapters(inp)
+            res = torch.utils.checkpoint.checkpoint(_compute_joint, f, g, use_reentrant=False)
+        else:
+            inp = f + g  # [B, T, U, H]
 
-        res = self.joint_net(inp)  # [B, T, U, V + 1]
+            del f, g
 
-        del inp
+            # Forward adapter modules on joint hidden
+            if self.is_adapter_available():
+                inp = self.forward_enabled_adapters(inp)
 
-        if self.preserve_memory:
-            torch.cuda.empty_cache()
+            res = self.joint_net(inp)  # [B, T, U, V + 1]
+
+            del inp
+
+            if self.preserve_memory:
+                torch.cuda.empty_cache()
 
         # If log_softmax is automatic
         if self.log_softmax is None:
@@ -1723,7 +1748,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         return res
 
-    def _joint_net_modules(self, num_classes, pred_n_hidden, enc_n_hidden, joint_n_hidden, activation, dropout):
+    def _joint_net_modules(
+        self, num_classes, pred_n_hidden, enc_n_hidden, joint_n_hidden, activation, dropout, num_layers=1
+    ):
         """
         Prepare the trainable modules of the Joint Network
 
@@ -1744,14 +1771,27 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         activation = activation.lower()
 
         if activation == 'relu':
-            activation = torch.nn.ReLU(inplace=True)
+            activation_factory = lambda: torch.nn.ReLU(inplace=True)
         elif activation == 'sigmoid':
-            activation = torch.nn.Sigmoid()
+            activation_factory = torch.nn.Sigmoid
         elif activation == 'tanh':
-            activation = torch.nn.Tanh()
+            activation_factory = torch.nn.Tanh
+        else:
+            raise NotImplementedError(f"Unsupported activation for RNNT: {activation}")
 
-        layers = (
-            [activation]
+        layers = list(
+            itertools.chain.from_iterable(
+                [
+                    [activation_factory()]
+                    + ([torch.nn.Dropout(p=dropout)] if dropout else [])
+                    + [torch.nn.Linear(joint_n_hidden, joint_n_hidden)]
+                ]
+                for _ in range(num_layers - 1)
+            )
+        )
+
+        layers += (
+            [activation_factory()]
             + ([torch.nn.Dropout(p=dropout)] if dropout else [])
             + [torch.nn.Linear(joint_n_hidden, num_classes)]
         )

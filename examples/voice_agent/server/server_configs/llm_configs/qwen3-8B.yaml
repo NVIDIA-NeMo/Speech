@@ -6,7 +6,7 @@ dtype: bfloat16  # torch.dtype for LLM
 model: "Qwen/Qwen3-8B"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
 device: "cuda"
 system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
-system_prompt_suffix: null  # a string that would be appended to the system prompt, used to enable/disable thinking
+system_prompt_suffix: "/no_think"  # a string that would be appended to the system prompt, used to enable/disable thinking
 
 ##############################
 ## Common generation config ##

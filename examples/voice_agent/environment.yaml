@@ -1,4 +1,4 @@
-name: nemo2
+name: nemo-voice
 channels:
   - defaults
 dependencies:
@@ -131,6 +131,7 @@ dependencies:
     - gguf==0.17.1
     - gitdb==4.0.12
     - gitpython==3.1.45
+    - graphviz==0.21
     - greenlet==3.2.4
     - grpcio==1.75.1
     - h11==0.16.0
@@ -328,7 +329,6 @@ dependencies:
     - pytest-runner==6.0.1
     - python-dateutil==2.9.0.post0
     - python-dotenv==1.1.1
-    - python-graphviz==0.21
     - python-json-logger==3.3.0
     - python-multipart==0.0.20
     - pytorch-lightning==2.5.5

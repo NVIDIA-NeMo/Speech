@@ -5,7 +5,7 @@ type: auto  # choices in ['auto', 'hf', 'vllm']
 dtype: bfloat16  # torch.dtype for LLM
 device: "cuda"
 system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
-system_prompt_suffix: null  # a string that would be appended to the system prompt, used to enable/disable thinking
+system_prompt_suffix: "/no_think"  # a string that would be appended to the system prompt, used to enable/disable thinking
 
 ##############################
 ## Common generation config ##

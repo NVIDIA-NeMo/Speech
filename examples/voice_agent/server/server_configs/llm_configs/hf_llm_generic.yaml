@@ -1,4 +1,4 @@
-# This is an example config for setting up Qwen2.5-7B model for a NeMo Voice Agent server.
+# This is an example config for setting up a generic HuggingFace LLM for a NeMo Voice Agent server.
 # Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
 
 type: auto  # choices in ['auto', 'hf', 'vllm']

@@ -1,0 +1,5 @@
+# This is an example config for setting up a NeMo cache-aware streaming ASR model for a NeMo Voice Agent server.
+# Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
+
+  att_context_size: [70,1] # left and right attention context sizes for streaming ASR
+  frame_len_in_secs: 0.08  # default for FastConformer, do not change unless using other architechtures

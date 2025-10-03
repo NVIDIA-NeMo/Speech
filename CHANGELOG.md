@@ -11,7 +11,6 @@
 <details><summary>Changelog</summary>
 
 - Modernize logger interface by @emmanuel-ferdman :: PR: #13783
-- Remove kaldiio by @chtruong814 :: PR: #14006
 - Higher-level API for SALM.generate by @pzelasko :: PR: #14034
 - add/refactor docs for asr lm customization  by @lilithgrigoryan :: PR: #14088
 - Improve NEST GPU Utilization 1/N by @MahmoudAshraf97 :: PR: #14086
@@ -21,10 +20,7 @@
 - GPU-accelerated Phrase-Boosting (GPU-PB) for AED decoding by @andrusenkoau :: PR: #14108
 - Fix decoding with ngpu-lm when training (#13994) by @hoangtran9122 :: PR: #13995
 - fix eval_beamsearch_ngram_ctc script by @lilithgrigoryan :: PR: #14238
-- Confidence fix for tutorial by @nune-tadevosyan :: PR: #14250
 - fix wrong typing for ctc-ws context graph by @andrusenkoau :: PR: #14262
-- added new models to documentation by @Ssofja :: PR: #14264
-- update ffmpeg install by @ankitapasad :: PR: #14237
 - fix frame vad by @stevehuang52 :: PR: #14337
 - Improve NEST GPU Utilization 3/N by @MahmoudAshraf97 :: PR: #14234
 - remove confidence ensemble models by @lilithgrigoryan :: PR: #14343
@@ -51,7 +47,6 @@
 
 - Improve ASR models' invariance to padding/batch size by @pzelasko :: PR: #13827
 - remove nlp modules by @dimapihtar :: PR: #14127
-- Remove g2p_en by @chtruong814 :: PR: #14204
 - Temporarily Remove Encoder PP Support by @yaoyu-33 :: PR: #14167
 - Remove T5-TTS by @blisc :: PR: #14252
 
@@ -63,11 +58,8 @@
 
 - add extra params for MegatronDataSampler by @dimapihtar :: PR: #13956
 - Modernize logger interface by @emmanuel-ferdman :: PR: #13783
-- GPU memory logging update by @erhoo82 :: PR: #13982
 - remove dialogue collection by @dimapihtar :: PR: #14087
 - remove QA collection by @dimapihtar :: PR: #14092
-- Perf scripts updates by @guyueh1 :: PR: #14005
-- Bump to pytorch 25.05 container along with TE update by @chtruong814 :: PR: #13899
 - remove text nlp collection by @dimapihtar :: PR: #14110
 - remove nlp modules by @dimapihtar :: PR: #14127
 - remove rag collection by @dimapihtar :: PR: #14157
@@ -97,7 +89,6 @@
 <details><summary>Changelog</summary>
 
 - ci: Set L2_NeMo_2_Export_Deploy_Query_In_Framework to be optional by @chtruong814 :: PR: #13946
-- Moving export security fixes over here by @oyilmaz-nvidia :: PR: #14254
 - Remove old export doc by @oyilmaz-nvidia :: PR: #14292
 - Llama4 Export: Remove outdated MLP weight transform by @suiyoubi :: PR: #14297
 - Update mllama hf import/export for transformers 4.53 by @meatybobby :: PR: #14327
@@ -121,67 +112,38 @@
 
 - Version bump to `2.5.0rc0.dev0` by @github-actions[bot] :: PR: #13944
 - [Llama4] Enable tp comm overlap for llama4 by @gdengk :: PR: #13940
-- Fix Loading Custom Quantization Config by @jenchen13 :: PR: #13934
 - Fix for Squad Dataset Download by @rhmukundan :: PR: #13893
 - add nmh HF conversion by @JRD971000 :: PR: #13941
 - Speechlm2 SALM improvements by @pzelasko :: PR: #13829
 - fix dataset issue by @dimapihtar :: PR: #13953
-- Use jiwer less than 4.0.0 by @chtruong814 :: PR: #13997
-- [automodel] fix sft notebook by @akoumpa :: PR: #14002
-- Use average reduction in FSDP grad reduce-scatter when grad dtype is … by @erhoo82 :: PR: #13981
-- Remove container license reference by @chtruong814 :: PR: #14010
-- Remove nemo1 stable diffusion test by @chtruong814 :: PR: #14018
-- bf16 grads for bf16 jobs by @malay-nagda :: PR: #14016
 - Editing MMLU to pull from the correct repo by @ruchaa-apte :: PR: #13991
 - move classes to module to use __target__ feature (#14023) by @nithinraok :: PR: #14031
 - Add Nemotron-H prompt format, fix cut-to-conversation custom attr propagation by @pzelasko :: PR: #13963
 - Bump release_library template to v0.40.0 by @chtruong814 :: PR: #14046
-- Set L2_NeMo_2_Flux_Import_Test to be optional by @chtruong814 :: PR: #14056
-- Bump protobuf to 5.29.5 by @chtruong814 :: PR: #14045
 - [automodel] add support for layer-freezing by @akoumpa :: PR: #14000
-- Detect hardware before enabling DeepEP  by @cuichenx :: PR: #14022
-- Fix SFT Dataset Bug by @jenchen13 :: PR: #13918
-- Align adapter shape with base linear output shape by @guyueh1 :: PR: #14009
 - [Qwen3] Recipe config bug fix by @gdengk :: PR: #14084
 - Add TE import guard in qwen2vl vision module by @chtruong814 :: PR: #14091
-- [MoE] Update the fp8 precision interface for llama4 and qwen3 by @gdengk :: PR: #14094
 - Update bitsandbytes dependency to v0.46.0 by @pramodk :: PR: #14050
 - Update FSDP2 docstring by @BoxiangW :: PR: #14105
 - Interface to enable fsdp-double-buffer without enabling NCCL-UB by @youngeunkwon0405 :: PR: #14076
-- [Llama4] Tokenizer naming update by @gdengk :: PR: #14114
 - SpeechLM2 SALM: load ckpt faster, with less GPU memory by @pzelasko :: PR: #14113
-- Remove unstructured by @chtruong814 :: PR: #14070
 - Add object_storage_cache_path to PreTrainingDataModule by @shunjiad :: PR: #14103
 - Update changelog for `r2.3.0` by @github-actions[bot] :: PR: #14160
 - Fix FLUX test with correct env var by @suiyoubi :: PR: #14149
 - add mmap_bin_files param by @dimapihtar :: PR: #14122
-- Add checkpoint info for NIM Embedding Expor Tutorial by @oyilmaz-nvidia :: PR: #14177
-- Fix dsv3 script by @guyueh1 :: PR: #14007
 - Add option to suppress import checks in `Dockerfile.speech` by @artbataev :: PR: #14185
 - Safely import optional python packages by @roclark :: PR: #13936
 - Set flux test as optional by @chtruong814 :: PR: #14190
-- 405b perf script updates by @sanandaraj5597 :: PR: #14176
 - Revert "Safely import optional python packages (#13936)" by @chtruong814 :: PR: #14197
 - Fix "Safely import optional python packages (#13936)" by @chtruong814 :: PR: #14198
-- Add option to disable gloo process groups by @ananthsub :: PR: #14156
 - Add fix for evo2 generate/inference by @jwilber :: PR: #14027
-- Fix nemotronh flops calculator by @guyueh1 :: PR: #14161
-- diffusion mock data null args by @malay-nagda :: PR: #14173
-- perf-scripts: Change b200 config to EP8 by @guyueh1 :: PR: #14207
-- Change RerankerSpecter Dataset question key by @suiyoubi :: PR: #14200
-- Fix the forward when final_loss_mask is not present by @suiyoubi :: PR: #14201
-- Fix Llama Nemotron Nano Importer by @suiyoubi :: PR: #14222
-- [automodel] fix loss_mask pad token by @akoumpa :: PR: #14150
 - Fixing file path suffix by @gautham-kollu :: PR: #14179
-- [Performance script] FSDP-UBR related recipe update by @youngeunkwon0405 :: PR: #14208
-- Fix for MCore dist ckpt loading by @stevehuang52 :: PR: #14229
+X- [Performance script] FSDP-UBR related recipe update by @youngeunkwon0405 :: PR: #14208
+X- Fix for MCore dist ckpt loading by @stevehuang52 :: PR: #14229
 - Update AVLM finetune example for vanilla fine-tuning by @huvunvidia :: PR: #14232
 - [finetune] Add dataset_kwargs to prepare packed sequence data by @jiajunly :: PR: #14169
 - Allow exception in hf ckpt load attempt before fallback to standard l… by @trvachov :: PR: #14214
-- FIx Flux & Flux_Controlnet initialization issue by @suiyoubi :: PR: #14263
-- Add cp per token loss check by @cuichenx :: PR: #14282
 - Load master weights from checkpoint by @kunlunl :: PR: #14072
-- Change Llama Embedding Tutorial to use SFT by default by @suiyoubi :: PR: #14231
 - Add deploy lora adapter portion by @ruchaa-apte :: PR: #14255
 - fix speechlm lhotse loading nemo_tarred by @stevehuang52 :: PR: #14314
 - Update changelog for `r2.4.0` by @github-actions[bot] :: PR: #14334
@@ -189,8 +151,6 @@
 - Support dump perf recipe diff from base recipe by @guyueh1 :: PR: #14206
 - Bugfix degenerate bases evo2 dataset by @jstjohn :: PR: #14359
 - Hyena support for flash decode API by @jstjohn :: PR: #14315
-- Fix callbacks in DSV3 script by @guyueh1 :: PR: #14350
-- Add calculate_per_token_loss support for Context Parallel by @BoxiangW :: PR: #14065
 - Fix Gemma2/3  & Llava (Next) & Llama4 conversion issue with latest transformers by @suiyoubi :: PR: #14367
 - fix: reduce the excessive test time of test_msdd_diar_inference by @tango4j :: PR: #14366
 - SpeechLM2: S2S->S2T data reader, excessive padding fixes by @pzelasko :: PR: #14124
@@ -242,6 +202,7 @@
 - Cherry pick `ci: Automodel deprecation warning (14787)` into `r2.5.0` by @chtruong814 :: PR: #14791
 
 </details>
+
 ## NVIDIA Neural Modules 2.4.1
 
 ### Detailed Changelogs:

@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 import time
 from collections import defaultdict
@@ -35,6 +36,10 @@ from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 
 logger = logging.getLogger(__name__)
 
+# Constant for masking identical items in similarity matrix
+# Set below valid cosine similarity range [-1, 1] to ensure masked items are never selected
+MASKED_SIMILARITY_VALUE = -2.0
+
 """
 Usage:
 python scripts/magpietts/extend_manifest_with_context_audio.py
@@ -48,9 +53,15 @@ python scripts/magpietts/extend_manifest_with_context_audio.py
     --num-workers 4
     --context-min-duration 3.0
     --context-min-ssim 0.6
+    --max-speaker-items 20000  # optional, prevents OOM for large speakers
 
 This script distributes speakers across DDP ranks. Each rank processes its assigned speakers
 and writes a partial manifest. Rank 0 then merges these into a final manifest.
+
+The --max-speaker-items parameter limits the size of the context pool per speaker to prevent OOM
+when computing similarity matrices. If a speaker has more items than this limit, a random
+sample will be used as the context pool, but all items will still be processed to find
+their best context from this pool.
 
 Input manifest example entry:
 {
@@ -183,6 +194,7 @@ class EmbeddingSimilarityExtractorSharded(pl.LightningModule):
         context_min_ssim: float,
         speaker_expected_counts_map: dict,
         initial_assigned_count: int,
+        max_speaker_items: int = None,
     ):
         super().__init__()
         self.sv_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
@@ -197,6 +209,7 @@ class EmbeddingSimilarityExtractorSharded(pl.LightningModule):
         self.context_min_ssim = context_min_ssim
         self.speaker_expected_counts = speaker_expected_counts_map
         self.initial_assigned_count = initial_assigned_count
+        self.max_speaker_items = max_speaker_items
 
         # Per-rank attributes
         self.output_file_path = None
@@ -216,6 +229,10 @@ class EmbeddingSimilarityExtractorSharded(pl.LightningModule):
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self.output_manifest_file = open(self.output_file_path, "w", encoding="utf-8")
             logger.info(f"Writing partial manifest to: `{self.output_file_path}`")
+            if self.max_speaker_items:
+                logger.info(f"Max speaker items limit set to: {self.max_speaker_items}")
+            else:
+                logger.info("No max speaker items limit set (potential OOM risk for very large speakers)")
             logger.debug(f"Expected speaker counts for model: {self.speaker_expected_counts}")
 
     def forward(self, batch):
@@ -295,46 +312,80 @@ class EmbeddingSimilarityExtractorSharded(pl.LightningModule):
             self.total_accumulated_items -= len(speaker_items)
             self.processed_speakers_set.add(speaker_id)
 
-            # NOTE: Potential OOM (Out Of Memory) risk if a single speaker has an extremely large
-            # number of segments (e.g., tens of thousands). The N x N similarity matrix calculated below
-            # (where N = len(speaker_items)) can consume significant CPU RAM.
-            # For example, 50,000 segments for one speaker could lead to a float32 similarity matrix
-            # requiring approximately 10 GB of RAM. Consider this if processing datasets with
-            # speakers having a very high number of utterances.
-            embeddings = torch.stack([item['embedding'] for item in speaker_items])
-            embeddings_norm = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-            similarity_matrix = torch.matmul(embeddings_norm, embeddings_norm.transpose(0, 1))
-            similarity_matrix.fill_diagonal_(-2.0)  # cosine similarity range is [-1, 1]
+            # Apply speaker size limit to prevent OOM while processing all items
+            all_items_to_process = speaker_items  # We want to process ALL items
+
+            # Create context pool with original indices for easy identification
+            if self.max_speaker_items and len(speaker_items) > self.max_speaker_items:
+                logger.warning(
+                    f"Speaker {speaker_id} has {len(speaker_items)} items, exceeding max limit of {self.max_speaker_items}. "
+                    f"Using random sample of {self.max_speaker_items} items as context pool, but processing all {len(speaker_items)} items."
+                )
+                # Randomly sample with original indices preserved
+                random.seed(12345)  # For reproducibility
+                indexed_items = [(idx, item) for idx, item in enumerate(speaker_items)]
+                sampled_indexed_items = random.sample(indexed_items, self.max_speaker_items)
+                context_pool_items = [item for _, item in sampled_indexed_items]
+                context_pool_original_indices = [idx for idx, _ in sampled_indexed_items]
+            else:
+                # Use all items as context pool
+                context_pool_items = speaker_items
+                context_pool_original_indices = list(range(len(speaker_items)))
+
+            # NOTE: Now we compute similarities between ALL items and the context pool.
+            # This limits the similarity matrix to N×M instead of N×N where M <= max_speaker_items.
+            # Memory usage: N×M×4 bytes instead of N×N×4 bytes.
+            all_embeddings = torch.stack([item['embedding'] for item in all_items_to_process])
+            context_embeddings = torch.stack([item['embedding'] for item in context_pool_items])
+
+            all_embeddings_norm = torch.nn.functional.normalize(all_embeddings, p=2, dim=1)
+            context_embeddings_norm = torch.nn.functional.normalize(context_embeddings, p=2, dim=1)
+
+            # Compute N×M similarity matrix: each row is similarities for one item against all context candidates
+            similarity_matrix = torch.matmul(all_embeddings_norm, context_embeddings_norm.transpose(0, 1))
+
+            # Mask positions where items are identical (same item appearing in both N and M sets)
+            # Using original indices as identifiers. This prevents an item from being selected as its own context.
+            # Create a mapping from original indices to context pool positions
+            original_index_to_context_position = {}
+            for context_pos, original_idx in enumerate(context_pool_original_indices):
+                original_index_to_context_position[original_idx] = context_pos
+
+            # Mask similarities for identical items
+            for n_idx in range(len(all_items_to_process)):
+                if n_idx in original_index_to_context_position:
+                    context_pos = original_index_to_context_position[n_idx]
+                    similarity_matrix[n_idx, context_pos] = MASKED_SIMILARITY_VALUE
 
             # Sort all similarities for each item to iterate through candidates
-            # best_similarities_tensor will contain sorted similarities for each row (original item)
-            # best_indices_tensor will contain original indices of these sorted items
+            # sorted_similarities_tensor will contain sorted similarities for each row (original item)
+            # sorted_indices_tensor will contain indices in the context_pool
             sorted_similarities_tensor, sorted_indices_tensor = torch.sort(similarity_matrix, dim=1, descending=True)
 
-            record_preparation_start_time = time.time()
             num_records_written_for_speaker = 0
             # Initialize a counter for items discarded for this specific speaker
             num_discarded_for_this_speaker_no_context = 0
 
-            for i, current_item_data in enumerate(speaker_items):
+            for i, current_item_data in enumerate(all_items_to_process):
                 output_record = current_item_data['metadata'].copy()
                 write_this_record = False
 
-                # Iterate through potential candidates, sorted by similarity
+                # Iterate through potential candidates from context pool, sorted by similarity
                 for candidate_rank in range(sorted_indices_tensor.size(1)):
                     candidate_ssim = sorted_similarities_tensor[i, candidate_rank].item()
-                    original_candidate_idx = sorted_indices_tensor[i, candidate_rank].item()
+                    context_pool_idx = sorted_indices_tensor[i, candidate_rank].item()
 
-                    # Skip if candidate is the item itself (safeguard)
-                    if original_candidate_idx == i:
-                        continue
+                    # if ANY candidate has similarity ≤ MASKED_SIMILARITY_VALUE, all subsequent ones will be ≤ MASKED_SIMILARITY_VALUE
+                    # since similarities are sorted in descending order, we can break early
+                    if candidate_ssim <= MASKED_SIMILARITY_VALUE:
+                        break
 
-                    # If SSIM is below threshold, stop searching for this item (since candidates are sorted)
+                    # If SSIM is below threshold, stop searching for this item
                     if candidate_ssim < self.context_min_ssim:
                         break
 
                     # Check duration if SSIM is acceptable
-                    best_meta_dict = speaker_items[original_candidate_idx]['metadata']
+                    best_meta_dict = context_pool_items[context_pool_idx]['metadata']
                     candidate_duration = best_meta_dict["duration"]
 
                     if candidate_duration >= self.context_min_duration:
@@ -562,6 +613,12 @@ def main():
     )
     parser.add_argument(
         "--context-min-ssim", type=float, default=0.6, help="Minimum cosine similarity for a context audio segment."
+    )
+    parser.add_argument(
+        "--max-speaker-items",
+        type=int,
+        default=None,
+        help="Maximum size of context pool per speaker to prevent OOM. If a speaker has more items, a random sample will be used as context pool, but all items will still be processed. Default: None (no limit, potential OOM risk).",
     )
     parser.add_argument("--devices", type=int, default=-1)
     parser.add_argument("--num-nodes", type=int, default=1)
@@ -837,6 +894,7 @@ def main():
         context_min_ssim=args.context_min_ssim,
         speaker_expected_counts_map=my_speaker_expected_counts,
         initial_assigned_count=len(assigned_records_for_this_rank),
+        max_speaker_items=args.max_speaker_items,
     )
     logger.info(
         f"Starting prediction with {len(assigned_records_for_this_rank)} records ({len(my_speaker_expected_counts)} unique speakers for this rank according to counts)."

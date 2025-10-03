@@ -3,8 +3,23 @@
 <!-- Next changelog -->
 ## NVIDIA Neural Modules 2.5.0
 
-### Detailed Changelogs:
+### Highlights
 
+- Collections:
+  - Speech
+    - New SpeechLM2 collection
+    - Streaming Softformer model
+    - Deprecate Confidence Ensemble models
+    - parakeet-tdt-0.6b-v3 and canary-1b-v2 models
+    - Added chunk inference support with .transcribe() for canary based models
+    - Enable prediction of timestamps with streaming ASR
+    - Improve ASR models’ invariance to padding/batch size
+    - Qwen prompt format support, SALM generation fixes
+    - High-level SALM model.generate API closely resembling HF models
+    - SALM model initialization with time/memory optimization
+    - SpeechLM2: fixed excessive padding, support on-the-fly resampling for SALM
+
+### Detailed Changelogs:
 
 #### ASR
 
@@ -138,8 +153,6 @@
 - Fix "Safely import optional python packages (#13936)" by @chtruong814 :: PR: #14198
 - Add fix for evo2 generate/inference by @jwilber :: PR: #14027
 - Fixing file path suffix by @gautham-kollu :: PR: #14179
-X- [Performance script] FSDP-UBR related recipe update by @youngeunkwon0405 :: PR: #14208
-X- Fix for MCore dist ckpt loading by @stevehuang52 :: PR: #14229
 - Update AVLM finetune example for vanilla fine-tuning by @huvunvidia :: PR: #14232
 - [finetune] Add dataset_kwargs to prepare packed sequence data by @jiajunly :: PR: #14169
 - Allow exception in hf ckpt load attempt before fallback to standard l… by @trvachov :: PR: #14214

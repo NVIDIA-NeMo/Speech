@@ -16,7 +16,7 @@ import os
 import random
 import time
 from functools import partial
-from typing import List, Union
+from typing import Dict, List, Union, Optional
 
 import numpy as np
 import soundfile as sf
@@ -753,22 +753,77 @@ class MagpieTTSModel(ModelPT):
 
     def local_transformer_sample_maskgit(
         self,
-        dec_output,
-        temperature=0.7,
-        topk=80,
-        unfinished_items={},
-        finished_items={},
-        use_cfg=False,
-        cfg_scale=1.0,
-        n_steps=3,
-        noise_scale=0.0,
-        fixed_schedule=None,
-        dynamic_cfg_scale=False,
-        sampling_type=None,
-        forbid_audio_eos=False,
-    ):
+        dec_output: torch.Tensor,
+        temperature: float = 0.7,
+        topk: int = 80,
+        unfinished_items: Dict[int, bool] = {},
+        finished_items: Dict[int, bool] = {},
+        use_cfg: bool = False,
+        cfg_scale: float = 1.0,
+        n_steps: int = 3,
+        noise_scale: float = 0.0,
+        fixed_schedule: Optional[List[int]] = None,
+        dynamic_cfg_scale: bool = False,
+        sampling_type: Optional[str] = None,
+        forbid_audio_eos: bool = False,
+    ) -> torch.Tensor:
         """
-        Sample codes for one timestep from the local transformer using MaskGit.
+        Sample audio codes for the current timestep using MaskGit-like iterative
+        prediction with the local transformer. If frame-stacking is enabled, the
+        codes for all frames in the stack are sampled, treated as one long sequence.
+
+        The MaskGit process starts with all positions masked and iteratively unmasks the
+        most confident positions over multiple steps. By "masked" we mean that a
+        dedicated MASK token is used (as opposed to attention masking). The LT in this
+        case is a non-causal transformer decoder. At each step the model predicts all
+        positions at once.  Of those predictions, a subset of the most confident
+        previously-masked positions is kept and unmasked in the next step. The number of
+        positions that are unmasked at each step is determined by the unmasking
+        schedule. We support a cosine schedule and a fixed schedule provided by the
+        user.
+
+        Uses multinomial sampling with temperature, top-k, and classifier-free guidance (CFG).
+
+        Special handling:
+        * forbids special tokens (like AUDIO_BOS, AUDIO_CONTEXT_EOS, etc.) from being sampled
+        * forces / forbids EOS for finished / unfinished items respectively
+        * optionally, globally forbids audio EOS for all items in the batch.
+          This is useful early in the generation process.
+        * supports different unmasking methods, see `sampling_type` argument for details.
+
+        Args:
+            dec_output (torch.Tensor): Decoder output tensor with shape (B, E) where B is batch size
+                and E is primary decoder's embedding dimension.
+            temperature (float, optional): Sampling temperature
+            topk (int, optional): Number of top-probability tokens to consider in sampling.
+            unfinished_items (dict, optional): Dictionary containing indices of batch
+                items that we are confident have not completed generation. For these items, audio EOS
+                sampling is forbidden.
+            finished_items (dict, optional): Dictionary containing indices of batch
+                items that we are confident are completed. For these items, audio EOS sampling
+                is forced.
+            use_cfg (bool, optional): Whether to use classifier-free guidance. If True, expects batch size
+                to be doubled with conditional and unconditional outputs from the primary decoder.
+            cfg_scale (float, optional): Scale factor for classifier-free guidance. Only used if use_cfg=True.
+            n_steps (int, optional): Number of iterative refinement steps for MaskGit sampling.
+            noise_scale (float, optional): Scale factor for noise to add to confidence scores
+                during sampling (experimental).
+            fixed_schedule (list, optional): Fixed schedule for number of tokens to unmask at each step.
+                If None, uses cosine schedule.
+            dynamic_cfg_scale (bool, optional): Whether to dynamically adjust CFG scale during
+                sampling (experimental).
+            sampling_type (str, optional): Type of sampling strategy. Options are:
+             ["default", "causal", "purity_causal", "purity_default"].
+             * Purity refers to "purity sampling" from https://arxiv.org/abs/2304.01515. If "purity"
+               is not specified, confidence sampling is used as in the original MaskGit paper.
+             * "default"/"causal": Controls the order of unmasking across frames when frame-stacking is enabled.
+                                   If "causal" is specified, frames are unmasked in causal order. "default"
+                                   doesn't impose any constraints on the unmasking order.
+            forbid_audio_eos (bool, optional): Whether to globally forbid audio EOS for the entire
+                batch.
+
+        Returns:
+            torch.Tensor: Sampled audio codes with shape (B, num_codebooks, frame_stacking_factor)
         """
         # dec_output: (B, E)
         device = dec_output.device
@@ -935,17 +990,56 @@ class MagpieTTSModel(ModelPT):
 
     def local_transformer_sample_autoregressive(
         self,
-        dec_output,
-        temperature=0.7,
-        topk=80,
-        unfinished_items={},
-        finished_items={},
-        use_cfg=False,
-        cfg_scale=1.0,
-        use_kv_cache=True,
-        forbid_audio_eos=False,
-    ):
-        # dec_output: (B, E)
+        dec_output: torch.Tensor,
+        temperature: float = 0.7,
+        topk: int = 80,
+        unfinished_items: Dict[int, bool] = {},
+        finished_items: Dict[int, bool] = {},
+        use_cfg: bool = False,
+        cfg_scale: float = 1.0,
+        use_kv_cache: bool = True,
+        forbid_audio_eos: bool = False,
+    ) -> torch.Tensor:
+        """
+        Sample audio codes autoregressively across codebooks using the local
+        transformer. Uses multinomial sampling with temperature, top-k, and
+        classifier-free guidance (CFG).
+
+        The sequence is initialized with the primary decoder's hidden output as the only
+        input and is gradually extended a code for one codebook at a time, appending the
+        sampled code as input sequence for the next step. At the last step the sequence
+        is `num_codebooks` long. If frame stacking is enabled, codes for all frames in
+        the stack are sampled as one long sequence and the final sequence length is
+        `num_codebooks * frame_stacking_factor` codes long.
+
+        Special handling:
+        * forbids special tokens (like AUDIO_BOS, AUDIO_CONTEXT_EOS, etc.) from being sampled
+        * forces / forbids EOS for finished / unfinished items respectively
+        * optionally, globally forbids audio EOS (useful early in the generation process)
+
+        Args:
+            dec_output (torch.Tensor): Decoder output tensor with shape (B, E) where B is batch size
+                and E is primary decoder's embedding dimension.
+            temperature (float, optional): Sampling temperature.
+            topk (int, optional): Number of top-probability tokens to consider in sampling.
+            unfinished_items (dict, optional): Dictionary containing indices of batch
+                items that we are confident have not completed generation. For these items, audio EOS
+                sampling is forbidden.
+            finished_items (dict, optional): Dictionary containing indices of batch
+                items that we are confident are completed. For these items, audio EOS sampling
+                is forced.
+            use_cfg (bool, optional): Whether to use classifier-free guidance. If True, expects batch size
+                to be doubled with conditional and unconditional outputs from the primary decoder.
+            cfg_scale (float, optional): Scale factor for classifier-free guidance. Only used if use_cfg=True.
+            use_kv_cache (bool, optional): Whether to use key-value caching in the transformer.
+            forbid_audio_eos (bool, optional): Whether to globally forbid audio EOS for the entire
+                batch.
+
+        Returns:
+            torch.Tensor: Sampled audio codes with shape (B, num_codebooks, frame_stacking_factor)
+                where B is batch size (or actual_batch_size if use_cfg=True).
+        """
+
         self.local_transformer.reset_cache(use_cache=use_kv_cache)
         dec_output = dec_output.unsqueeze(1)  # (B, 1, E)
         local_transformer_input = self.local_transformer_in_projection(dec_output)  # (B, 1, 128)
@@ -1010,14 +1104,40 @@ class MagpieTTSModel(ModelPT):
 
     def sample_codes_from_logits(
         self,
-        all_code_logits_t,
-        temperature=0.7,
-        topk=80,
-        unfinished_items={},
-        finished_items={},
-        forbid_audio_eos=False,
-    ):
-        # all_code_logits_t: (B, num_codebooks * num_tokens_per_codebook), logits at a given timestep
+        all_code_logits_t: torch.Tensor,
+        temperature: float = 0.7,
+        topk: int = 80,
+        unfinished_items: Dict[int, bool] = {},
+        finished_items: Dict[int, bool] = {},
+        forbid_audio_eos: bool = False,
+    ) -> torch.Tensor:
+        """
+        Sample codes for all codebooks at a given timestep. Uses multinomial sampling
+        with temperature and top-k. If frame stacking is on (i.e. `frame_stacking_factor
+        > 1`), this function will sample across the entire frame stack.
+
+        Special handling:
+        * forbids special tokens (like AUDIO_BOS, AUDIO_CONTEXT_EOS, etc.) from being sampled
+        * forces / forbids EOS for finished / unfinished items respectively
+        * optionally, globally forbids audio EOS (useful early in the generation process)
+
+        Args:
+            all_code_logits_t (torch.Tensor): Logits at a given timestep with shape
+                (B, num_tokens_per_codebook * num_codebooks * frame_stacking_factor)
+            temperature (float, optional): Sampling temperature
+            topk (int, optional): Number of top-probability tokens to consider in sampling.
+            unfinished_items (dict, optional): Dictionary containing indices of batch
+            items that we are confident have not completed generation. For these items, audio EOS
+                sampling is forbidden.
+            finished_items (dict, optional): Dictionary containing indices of batch
+                items that we are confident are completed. For these items, audio EOS sampling
+                is forced.
+            forbid_audio_eos (bool, optional): Whether to globally forbid audio EOS for the entire
+                batch.
+
+        Returns:
+            torch.Tensor: Sampled audio codes with shape (B, num_codebooks, frame_stacking_factor).
+        """
         all_preds = [[] for _ in range(self.frame_stacking_factor)]
         for fs_index in range(self.frame_stacking_factor):
             for idx in range(self.num_audio_codebooks):

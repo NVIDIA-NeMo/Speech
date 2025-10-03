@@ -24,7 +24,6 @@ from pipecat.frames.frames import (
     Frame,
     InterimTranscriptionFrame,
     StartInterruptionFrame,
-    StopInterruptionFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -333,8 +332,6 @@ class NeMoTurnTakingService(FrameProcessor):
         elif isinstance(frame, UserStoppedSpeakingFrame):
             logger.debug("User stopped speaking")
             await self.push_frame(frame)
-            if self.interruptions_allowed:
-                await self.push_frame(StopInterruptionFrame(), direction=FrameDirection.DOWNSTREAM)
         else:
             logger.debug(f"Unknown frame type for _handle_user_interruption: {type(frame)}")
 

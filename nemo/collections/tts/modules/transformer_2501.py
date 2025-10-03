@@ -82,11 +82,15 @@ class ConvolutionLayer(torch.nn.Module):
             bias=bias,
         )
 
-    def forward(self, signal):
+    def forward(self, signal, signal_mask):
+        # signal: (B, C, T)
+        # signal_mask: (B, T)
+        signal = signal * signal_mask.unsqueeze(1)
         if self.is_causal:  # TODO: maybe replace with identify rather than keep conditional if in forward
             signal = F.pad(signal, self.causal_padding)
 
         conv_signal = self.conv(signal)
+        conv_signal = conv_signal * signal_mask.unsqueeze(1)
 
         return conv_signal
 
@@ -126,12 +130,13 @@ class PositionwiseConvFF(torch.nn.Module):
         self.o_net = ConvolutionLayer(d_ffn, d_model, bias=bias, kernel_size=kernel_size, is_causal=is_causal)
         self.dropout = torch.nn.Dropout(p_dropout)
 
-    def forward(self, x):
+    def forward(self, x, x_mask):
         """
         x (B, T, C)
+        x_mask (B, T)
         """
-        x = self.non_linearity(self.proj(x.transpose(1, 2)))
-        x = self.dropout(self.o_net(x).transpose(1, 2))
+        x = self.non_linearity(self.proj(x.transpose(1, 2), x_mask))
+        x = self.dropout(self.o_net(x, x_mask).transpose(1, 2))
         return x
 
 
@@ -350,7 +355,14 @@ class SelfAttention(Attention):
                 v = torch.cat([self.cache['self_v'], v], dim=1)
             self.cache['self_k'] = k
             self.cache['self_v'] = v
-        mask = query_mask[:, None, :, None] if query_mask is not None else None
+
+        mask = None
+        if query_mask is not None:
+            # query_mask is a boolean mask of shape (B, T)
+            # mask should be of shape (B, 1, T, T) where mask[:,0,i,:] == mask[:,0,:,i] == query_mask
+            mask = query_mask.unsqueeze(1) * query_mask.unsqueeze(2)
+            mask = mask.unsqueeze(1)
+
         return q, k, v, mask
 
 
@@ -551,7 +563,7 @@ class TransformerLayer(torch.nn.Module):
             x = x + x_res
 
         # mlp final projection
-        x = x + self.pos_ff(self.norm_pos_ff(x))
+        x = x + self.pos_ff(self.norm_pos_ff(x), x_mask)
         x = x * x_mask.unsqueeze(-1)
 
         return {

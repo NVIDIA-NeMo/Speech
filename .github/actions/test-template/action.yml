@@ -52,11 +52,11 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Noop
-      shell: bash
-      run: |
-        chmod -R u+rwX ${{ github.run_id }}
-        echo "noop"
+    # - name: Noop
+    #   shell: bash
+    #   run: |
+    #     chmod -R u+rwX ${{ github.run_id }}
+    #     echo "noop"
 
     - name: Docker system cleanup
       shell: bash
@@ -81,7 +81,6 @@ runs:
     - name: Checkout NeMo
       uses: actions/checkout@v5
       with:
-        ref: ${{ github.event.pull_request.head.ref }}
         path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
     - name: Start container

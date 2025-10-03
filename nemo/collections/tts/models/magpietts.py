@@ -36,6 +36,7 @@ from nemo.collections.tts.losses.aligner_loss import ForwardSumLoss
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.modules.aligner import AlignmentEncoder
+from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
     EOSDetectionMethod,
@@ -99,16 +100,30 @@ class MagpieTTSModel(ModelPT):
             codec_model_cfg.use_scl_loss = False
         codec_model = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), strict=False, override_config_path=codec_model_cfg)
         self.sample_rate = codec_model.sample_rate
+        self.codec_model_samples_per_frame = codec_model.samples_per_frame
         # del codec discriminator to free memory
         del codec_model.discriminator
 
-        # Set up codebook configuration
-        self.num_audio_codebooks = codec_model.num_codebooks
-        self.codec_model_samples_per_frame = codec_model.samples_per_frame
+        # When using FSQ tokens, the codebook structure can be changed at any time.
+        # An FSQ definition can be provided in `vector_quantizer` config to train with a codebook structure
+        # that is different than in the audio codec checkpoint.
+        vector_quantizer = cfg.get('vector_quantizer')
+        if vector_quantizer is not None:
+            vector_quantizer = instantiate(vector_quantizer)
+            self.num_audio_codebooks = vector_quantizer.num_codebooks
+            self.codebook_size = vector_quantizer.codebook_size
+            codec_converter = VectorQuantizerIndexConverter(
+                vector_quantizer_original=codec_model.vector_quantizer,
+                vector_quantizer_new=vector_quantizer,
+            )
+        else:
+            self.num_audio_codebooks = codec_model.num_codebooks
+            self.codebook_size = codec_model.codebook_size
+            codec_converter = None
+
         # Our codebooks start with actual audio codec tokens, followed by special tokens.
         # The `forced_*` options are for backward compatibility for models trained with older code.
-        num_audio_tokens = codec_model.codebook_size
-        get_token_index = partial(SpecialAudioToken.get_index, base_codebook_size=num_audio_tokens)
+        get_token_index = partial(SpecialAudioToken.get_index, base_codebook_size=self.codebook_size)
         self.audio_bos_id = cfg.get('forced_audio_bos_id', get_token_index(SpecialAudioToken.AUDIO_BOS))
         self.audio_eos_id = cfg.get('forced_audio_eos_id', get_token_index(SpecialAudioToken.AUDIO_EOS))
         self.context_audio_bos_id = cfg.get(
@@ -119,7 +134,7 @@ class MagpieTTSModel(ModelPT):
         )
         self.mask_token_id = cfg.get('forced_mask_token_id', get_token_index(SpecialAudioToken.MASK_TOKEN))
         self.num_all_tokens_per_codebook = cfg.get(
-            'forced_num_all_tokens_per_codebook', num_audio_tokens + len(SpecialAudioToken)
+            'forced_num_all_tokens_per_codebook', self.codebook_size + len(SpecialAudioToken)
         )
         self.use_bpe_char_tokenizer = cfg.get('use_bpe_char_tokenizer', False)
 
@@ -204,6 +219,7 @@ class MagpieTTSModel(ModelPT):
         # This needs to happen after super().__init__()
         self._codec_model = codec_model
         self._codec_model.freeze()  # Lightning does requires_grad = False and self.eval()
+        self._codec_converter = codec_converter
 
         audio_embeddings = []
         for _ in range(self.num_audio_codebooks * self.frame_stacking_factor):
@@ -453,6 +469,8 @@ class MagpieTTSModel(ModelPT):
         self._codec_model.eval()
         with torch.no_grad(), torch.autocast(device_type=audio.device.type, dtype=torch.float32):
             codes, codes_len = self._codec_model.encode(audio=audio, audio_len=audio_len)
+            if self._codec_converter is not None:
+                codes = self._codec_converter.convert_original_to_new(audio_tokens=codes, audio_lens=codes_len)
             # Add a timestep to begining and end of codes tensor
             bos_tensor = torch.full(
                 (codes.size(0), codes.size(1), 1), audio_bos_id, dtype=codes.dtype, device=codes.device
@@ -481,6 +499,10 @@ class MagpieTTSModel(ModelPT):
             codes_copy[codes == self.audio_bos_id] = 0  # zero is the padding token
             codes_copy[codes == self.audio_eos_id] = 0
             # Pass the modified integer token IDs
+            if self._codec_converter is not None:
+                codes_copy = self._codec_converter.convert_new_to_original(
+                    audio_tokens=codes_copy, audio_lens=codes_len
+                )
             audio, audio_len = self._codec_model.decode(tokens=codes_copy, tokens_len=codes_len)
             # audio: (B, T)
             # audio_len: (B,)
@@ -737,7 +759,7 @@ class MagpieTTSModel(ModelPT):
             output_str += c
         logging.debug(output_str)
 
-    def clear_forbidden_logits(self, logits):
+    def clear_forbidden_logits(self, logits, forbid_audio_eos=False):
         """
         Sets logits of forbidden tokens to `-inf` so they will never be sampled.
         Specifically, we forbid sampling of all special tokens except AUDIO_EOS.
@@ -745,7 +767,9 @@ class MagpieTTSModel(ModelPT):
             logits: (B, C, num_audio_tokens_per_codebook)
         """
         logits[
-            :, :, SpecialAudioToken.get_forbidden_tokens(self._codec_model.codebook_size, forbid_audio_eos=False)
+            :,
+            :,
+            SpecialAudioToken.get_forbidden_tokens(self.codebook_size, forbid_audio_eos=forbid_audio_eos),
         ] = float('-inf')
         return logits
 
@@ -763,6 +787,7 @@ class MagpieTTSModel(ModelPT):
         fixed_schedule=None,
         dynamic_cfg_scale=False,
         sampling_type=None,
+        forbid_audio_eos=False,
     ):
         """
         Sample codes for one timestep from the local transformer using MaskGit.
@@ -871,7 +896,7 @@ class MagpieTTSModel(ModelPT):
                 logits[:actual_batch_size] = cfg_logits
 
             # Disallow generation of special tokens (except audio EOS which is handled separately)
-            logits = self.clear_forbidden_logits(logits)
+            logits = self.clear_forbidden_logits(logits, forbid_audio_eos=forbid_audio_eos)
 
             # handle unfinished and finished items
             for item_idx in unfinished_items:
@@ -940,6 +965,7 @@ class MagpieTTSModel(ModelPT):
         use_cfg=False,
         cfg_scale=1.0,
         use_kv_cache=True,
+        forbid_audio_eos=False,
     ):
         # dec_output: (B, E)
         self.local_transformer.reset_cache(use_cache=use_kv_cache)
@@ -967,7 +993,9 @@ class MagpieTTSModel(ModelPT):
                 codebook_logits[item_idx, :] = float('-inf')
                 codebook_logits[item_idx, self.audio_eos_id] = 0.0
 
-            codebook_logits = self.clear_forbidden_logits(codebook_logits.unsqueeze(1)).squeeze(1)
+            codebook_logits = self.clear_forbidden_logits(
+                codebook_logits.unsqueeze(1), forbid_audio_eos=forbid_audio_eos
+            ).squeeze(1)
             codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
             indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
                 -1
@@ -1001,7 +1029,13 @@ class MagpieTTSModel(ModelPT):
         return all_preds
 
     def sample_codes_from_logits(
-        self, all_code_logits_t, temperature=0.7, topk=80, unfinished_items={}, finished_items={}
+        self,
+        all_code_logits_t,
+        temperature=0.7,
+        topk=80,
+        unfinished_items={},
+        finished_items={},
+        forbid_audio_eos=False,
     ):
         # all_code_logits_t: (B, num_codebooks * num_tokens_per_codebook), logits at a given timestep
         all_preds = [[] for _ in range(self.frame_stacking_factor)]
@@ -1016,7 +1050,9 @@ class MagpieTTSModel(ModelPT):
                 for item_idx in finished_items:
                     codebook_logits[item_idx, :] = float('-inf')
                     codebook_logits[item_idx, self.audio_eos_id] = 0.0
-                codebook_logits = self.clear_forbidden_logits(codebook_logits.unsqueeze(1)).squeeze(1)
+                codebook_logits = self.clear_forbidden_logits(
+                    codebook_logits.unsqueeze(1), forbid_audio_eos=forbid_audio_eos
+                ).squeeze(1)
                 codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
                 indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
                     -1
@@ -1265,6 +1301,10 @@ class MagpieTTSModel(ModelPT):
             if 'context_audio_codes' in batch:
                 context_audio_codes = batch['context_audio_codes']
                 context_audio_codes_lens = batch['context_audio_codes_lens']
+                if self._codec_converter is not None:
+                    context_audio_codes = self._codec_converter.convert_original_to_new(
+                        audio_tokens=context_audio_codes, audio_lens=context_audio_codes_lens
+                    ).long()
             else:
                 context_audio_codes, context_audio_codes_lens = self.audio_to_codes(
                     batch['context_audio'], batch['context_audio_lens'], audio_type='context'
@@ -1487,6 +1527,10 @@ class MagpieTTSModel(ModelPT):
         else:
             audio_codes = batch['audio_codes']
             audio_codes_lens = batch['audio_codes_lens']
+            if self._codec_converter:
+                audio_codes = self._codec_converter.convert_original_to_new(
+                    audio_tokens=audio_codes, audio_lens=audio_codes_lens
+                ).long()
         if self.frame_stacking_factor > 1:
             # repeat the BOS token to frame_stacking_factor times. This is necessary since at inference
             # we need to start autoregressive generation from a full stack indicating BOS.
@@ -2093,6 +2137,9 @@ class MagpieTTSModel(ModelPT):
         maskgit_sampling_type=None,
         ignore_finished_sentence_tracking=False,
         eos_detection_method="argmax_or_multinomial_any",
+        # Setting this greater than 0 prevents rare cases of first-frame termination. Any number greater between 1 and 4 should work, but 4
+        # lines up with the codec's minimum frame requirement.
+        min_generated_frames=4,
     ):
         eos_detection_method = EOSDetectionMethod(eos_detection_method)
         with torch.no_grad():
@@ -2260,6 +2307,10 @@ class MagpieTTSModel(ModelPT):
                     }  # Items that have been close to the end for atleast 20 timesteps
                     unfinished_items = {k: v for k, v in unfinished_texts.items() if v}
 
+                # Don't allow termination until we have generated at least `min_generated_frames` frames (rounded up to the nearest multiple of frame_stacking_factor)
+                # This guards against rare cases of termination right at the start of generation.
+                forbid_audio_eos = idx * self.frame_stacking_factor < min_generated_frames
+
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
                 if use_local_transformer_for_inference:
                     if self.local_transformer_type == LocalTransformerType.AR:
@@ -2273,6 +2324,7 @@ class MagpieTTSModel(ModelPT):
                             use_cfg=use_cfg,
                             cfg_scale=cfg_scale,
                             use_kv_cache=use_LT_kv_cache,
+                            forbid_audio_eos=forbid_audio_eos,
                         )
                     elif self.local_transformer_type == LocalTransformerType.MASKGIT:
                         audio_codes_next = self.local_transformer_sample_maskgit(
@@ -2288,6 +2340,7 @@ class MagpieTTSModel(ModelPT):
                             fixed_schedule=maskgit_fixed_schedule,
                             dynamic_cfg_scale=maskgit_dynamic_cfg_scale,
                             sampling_type=maskgit_sampling_type,
+                            forbid_audio_eos=forbid_audio_eos,
                         )
                     else:
                         raise ValueError(
@@ -2301,12 +2354,15 @@ class MagpieTTSModel(ModelPT):
                         topk=topk,
                         unfinished_items=unfinished_items,
                         finished_items=finished_items,
+                        forbid_audio_eos=forbid_audio_eos,
                     )  # (B, num_codebooks, frame_stacking_factor)
                 all_codes_next_argmax = self.sample_codes_from_logits(
                     all_code_logits_t,
                     temperature=0.01,
+                    topk=1,
                     unfinished_items=unfinished_items,
                     finished_items=finished_items,
+                    forbid_audio_eos=forbid_audio_eos,
                 )  # (B, num_codebooks, frame_stacking_factor)
 
                 for item_idx in range(all_codes_next_argmax.size(0)):

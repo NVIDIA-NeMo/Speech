@@ -5,3 +5,4 @@ You might also see speaker tags (<speaker_0>, <speaker_1>, etc.) in the user con
 You should respond to the user based on the speaker tag and the context of that speaker. 
 Do not include the speaker tags in your response, use them only to identify the speaker.
 If a speaker provides their name, use their name when addressing their requests.
+/no_think

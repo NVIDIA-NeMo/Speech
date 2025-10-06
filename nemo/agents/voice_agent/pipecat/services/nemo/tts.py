@@ -183,32 +183,48 @@ class BaseNemoTTSService(TTSService):
     def _handle_think_tokens(self, text: str) -> Optional[str]:
         """
         Handle the thinking tokens for TTS.
-        If the thinking tokens are not provided, return the text as is.
-        If the thinking tokens are provided, and the LLM is thinking, return None.
-        If the thinking tokens are provided, and the LLM is done thinking, return the text after the end of thinking tokens.
-        If the thinking tokens are provided, and the LLM starts thinking, return the text before the start of thinking tokens.
-        If the thinking tokens are provided, and the LLM is not thinking, return the text as is.
+        If the thinking tokens are not provided, return the text as it is.
+        Otherwise:
+            If both thinking tokens appear in the text, return the text after the end of thinking tokens.
+            If the LLM is thinking, return None.
+            If the LLM is done thinking, return the text after the end of thinking tokens.
+            If the LLM starts thinking, return the text before the start of thinking tokens.
+            If the LLM is not thinking, return the text as is.
         """
         if not self._think_tokens:
+            return text
+        elif self._think_tokens[0] in text and self._think_tokens[1] in text:
+            # LLM finishes thinking in one chunk or outputs dummy thinking tokens
+            logger.debug(f"LLM finishes thinking: {text}")
+            idx = text.index(self._think_tokens[1])
+            # only return the text after the end of thinking tokens
+            text = text[idx + len(self._think_tokens[1]) :]
+            self._have_seen_think_tokens = False
+            logger.debug(f"Returning text after thinking: {text}")
             return text
         elif self._have_seen_think_tokens:
             # LLM is thinking
             if self._think_tokens[1] not in text:
+                logger.debug(f"LLM is still thinking: {text}")
                 # LLM is still thinking
                 return None
             else:
                 # LLM is done thinking
+                logger.debug(f"LLM is done thinking: {text}")
                 idx = text.index(self._think_tokens[1])
                 # only return the text after the end of thinking tokens
                 text = text[idx + len(self._think_tokens[1]) :]
                 self._have_seen_think_tokens = False
+                logger.debug(f"Returning text after thinking: {text}")
                 return text
         elif self._think_tokens[0] in text:
             # LLM now starts thinking
+            logger.debug(f"LLM starts thinking: {text}")
             self._have_seen_think_tokens = True
             # return text before the start of thinking tokens
             idx = text.index(self._think_tokens[0])
             text = text[:idx]
+            logger.debug(f"Returning text before thinking: {text}")
             return text
         else:
             # LLM is not thinking

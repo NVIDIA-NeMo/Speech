@@ -1,0 +1,57 @@
+# This is an example config for setting up Qwen2.5-7B model for a NeMo Voice Agent server.
+# Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
+
+type: auto  # choices in ['auto', 'hf', 'vllm']
+dtype: bfloat16  # torch.dtype for LLM
+model: meta-llama/Llama-3.1-8B-Instruct
+device: "cuda"
+system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
+system_prompt_suffix: null  # a string that would be appended to the system prompt, used to enable/disable thinking
+
+##############################
+## Common generation config ##
+##############################
+temperature: 0.7  # LLM sampling params
+top_k: 20  # LLM sampling params
+top_p: 0.8  # LLM sampling params
+min_p: 0.0  # LLM sampling params
+max_new_tokens: 256  # max num of output tokens from LLM
+##############################
+##### HuggingFace config #####
+##############################
+# Please refer to the model page of each HF LLM model to set following params properly.
+# kwargs that will be passed into tokenizer.apply_chat_template() function
+apply_chat_template_kwargs:  
+  add_generation_prompt: true  # This is required in most cases, do not change unless you're sure of it
+  tokenize: false  # This is required, do not change
+# kwargs that will be passed into model.generate() function of HF models
+generation_kwargs:  
+  temperature: ${llm.temperature}  # LLM sampling params
+  top_k: ${llm.top_k}  # LLM sampling params
+  top_p: ${llm.top_p}  # LLM sampling params
+  min_p: ${llm.min_p} # LLM sampling params
+  max_new_tokens: ${llm.max_new_tokens}  # max num of output tokens from LLM
+  do_sample: true # enable sampling
+##############################
+######## vLLM config #########
+##############################
+api_key: "EMPTY"
+base_url: "http://localhost:8000/v1"  
+# Set `start_vllm_on_init` to automatically start vllm server if it's not manually started yet
+start_vllm_on_init: true
+# Specifying vllm_server_params with the parameters you want to pass to the vllm server command `vllm serve $model $vllm_server_params`
+# Refer to each LLM's model page for details on the recommended parameters
+# It's recommended to stay with `--max-num-seqs` 1 as the voice agent currently supports one connection at a time.
+# You can try increasing the model's max context len `--max-model-len` if GPU memory allows, or decrease it if GPU OOM occurs.
+vllm_server_params: "--trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.85"  
+# `params` are the inference parameters that would be passed into OpenAI API, 
+# please put additional model-specific parameters in `extra`
+vllm_generation_params:
+  frequency_penalty: 0.0  # Penalty for frequent tokens (-2.0 to 2.0).
+  presence_penalty: 0.0  # Penalty for new tokens (-2.0 to 2.0).
+  seed: 42  # Random seed for deterministic outputs.
+  temperature: ${llm.temperature}  # Sampling temperature (0.0 to 2.0).
+  top_k: null  # Top-k sampling parameter (currently ignored by OpenAI).
+  top_p: ${llm.top_p}  # Top-p (nucleus) sampling parameter (0.0 to 1.0).
+  max_completion_tokens: ${llm.max_new_tokens}  # max number of tokens to generate
+  extra: null  # additional model specific params can be specified in dict format

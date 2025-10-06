@@ -1,6 +1,23 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.4.1
+
+### Detailed Changelogs:
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Update package_info.py by @ko3n1g :: PR: #14400
+- Patch to address issue 14392 by @youngeunkwon0405 :: PR: #14398
+- Cherry pick `Fix callbacks in DSV3 script (14350)` into `r2.4.0` by @chtruong814 :: PR: #14370
+- Cherry pick `Change Llama Embedding Tutorial to use SFT by default (14231)` into `r2.4.0` by @chtruong814 :: PR: #14303
+- Cherrypick `calculate_per_token_loss requirement for context parallel` (#14065) (#14282) into `r2.4.0` by @chtruong814 :: PR: #14448
+- Pin nvidia-lm-eval to 25.6.1 by @chtruong814 :: PR: #14470
+
+</details>
+
 ## NVIDIA Neural Modules 2.3.3
 
 - This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>

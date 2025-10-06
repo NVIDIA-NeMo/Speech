@@ -6,6 +6,8 @@
 ### Highlights
 
 - Collections:
+  - Models
+    - Nano v2 12B and 9B
   - Speech
     - New SpeechLM2 collection
     - Streaming Softformer model
@@ -18,6 +20,8 @@
     - High-level SALM model.generate API closely resembling HF models
     - SALM model initialization with time/memory optimization
     - SpeechLM2: fixed excessive padding, support on-the-fly resampling for SALM
+
+- Automodel and Export-Deploy functionality are available in their individual repositories respectively and deprecated in NeMo2
 
 ### Detailed Changelogs:
 

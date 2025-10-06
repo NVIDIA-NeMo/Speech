@@ -93,7 +93,7 @@ def evenly_split_nodes_between_workloads(
         nodes_left_b = max(0, workload_b_nodes - total_b)
         
         # If we have enough nodes, allocate as needed
-        if num_nodes <= nodes_left_a + nodes_left_b:
+        if num_nodes > nodes_left_a + nodes_left_b:
             # Figure out how to divide this switch's nodes
             if nodes_left_a == 0:
                 # All to B
@@ -137,10 +137,10 @@ def evenly_split_nodes_between_workloads(
         total_b += b_count
     
     # Find unallocated nodes and assign them to workload B
-    unallocated_nodes = sorted(set(all_nodes) - allocated_nodes)
-    if unallocated_nodes:
-        # print(f"Info: Assigning {len(unallocated_nodes)} unallocated nodes to workload B", file=sys.stderr)
-        workload_b.extend(unallocated_nodes)
+    # unallocated_nodes = sorted(set(all_nodes) - allocated_nodes)
+    # if unallocated_nodes:
+    #     # print(f"Info: Assigning {len(unallocated_nodes)} unallocated nodes to workload B", file=sys.stderr)
+    #     workload_b.extend(unallocated_nodes)
         
     return workload_a, workload_b
 
@@ -150,7 +150,8 @@ def compact_split_nodes_between_workloads(
     node_to_switch: Dict[str, str], 
     switch_hierarchy: Dict[str, Dict[str, str]], 
     workload_a_nodes: int,
-    workload_b_nodes: int
+    workload_b_nodes: int,
+    victim_nodes: int = 1
 ) -> Tuple[List[str], List[str]]:
     """Split nodes between workloads using a compact allocation strategy.
     
@@ -196,57 +197,84 @@ def compact_split_nodes_between_workloads(
         print(f"Info: Unable to find the largest switch, returning empty workloads", file=sys.stderr)
         return workload_a, workload_b
     
-    if len(switch_to_nodes[largest_switch]) < 1:
-        print(f"Info: Got only {len(switch_to_nodes[largest_switch])} nodes from the largest switch, returning empty workloads", file=sys.stderr)
-        return workload_a, workload_b
+    # if len(switch_to_nodes[largest_switch]) < 27:
+    #     print(f"Info: Got only {len(switch_to_nodes[largest_switch])} nodes from the largest switch, returning empty workloads", file=sys.stderr)
+    #     return workload_a, workload_b
     
     # Sort nodes for deterministic behavior
     sorted_nodes = sorted(switch_to_nodes[largest_switch])
     print(f"Info: Largest switch: {largest_switch}, node count: {len(sorted_nodes)}")
     
+    # verifying that we have enough nodes in the largest switch
+    if len(sorted_nodes) < victim_nodes + workload_b_nodes // 2:
+        print(f"Info: Not enough nodes in the largest switch, returning empty workloads", file=sys.stderr)
+        return workload_a, workload_b
+    
     # Place 1 node from the largest switch in workload A
-    workload_a.append(sorted_nodes[0])
+    nodes_needed_for_a = workload_a_nodes - len(workload_a)
+    required_victim_nodes = min(victim_nodes, nodes_needed_for_a, len(sorted_nodes))
+    if required_victim_nodes > 0:
+        workload_a.extend(sorted_nodes[:required_victim_nodes])
+        largest_switch_remaining_nodes = sorted_nodes[required_victim_nodes:]
+    else:
+        largest_switch_remaining_nodes = sorted_nodes
     
     # Keep a copy of the remaining nodes from the largest switch for potential later use
-    largest_switch_remaining_nodes = sorted_nodes[1:]
 
     # Take nodes from the largest switch for workload B up to the number of nodes needed
-    nodes_needed_for_b_from_largest_switch = min(workload_b_nodes, len(largest_switch_remaining_nodes))
+    nodes_needed_for_b_from_largest_switch = min(workload_b_nodes // 2, len(largest_switch_remaining_nodes))
+    print(f"Info: Taking {nodes_needed_for_b_from_largest_switch} nodes from the largest switch for workload B")
     workload_b.extend(largest_switch_remaining_nodes[:nodes_needed_for_b_from_largest_switch])
     largest_switch_remaining_nodes = largest_switch_remaining_nodes[nodes_needed_for_b_from_largest_switch:]
-    
+
     # Sort remaining switches by "distance" from the largest switch
     remaining_switches = [(switch, calculate_switch_distance(largest_switch, switch, switch_hierarchy)) 
                           for switch in switch_to_nodes.keys() 
                           if switch != largest_switch]
     remaining_switches.sort(key=lambda x: x[1])  # Sort by distance
+    print(f"Info: Remaining switches: {remaining_switches}")
     
     # Fill workload A with nodes from nearby switches
-    nodes_needed = workload_a_nodes - len(workload_a)
+    nodes_needed_for_a = workload_a_nodes - len(workload_a)
+    nodes_needed_for_b = workload_b_nodes - len(workload_b)
     
     for switch, _ in remaining_switches:
         # Sort nodes in this switch for deterministic behavior
         switch_nodes = sorted(switch_to_nodes[switch])
+        print(f"Info: Switch: {switch}, node count: {len(switch_nodes)}")
         
+        if nodes_needed_for_b > 0:
+            if len(switch_nodes) <= nodes_needed_for_b:
+                workload_b.extend(switch_nodes)
+                nodes_needed_for_b -= len(switch_nodes)
+                continue
+            else:
+                # Take only as many as we need
+                workload_b.extend(switch_nodes[:nodes_needed_for_b])
+                switch_nodes = switch_nodes[nodes_needed_for_b:]
+                nodes_needed_for_b = 0
+
         # If we can take all nodes from this switch
-        if len(switch_nodes) <= nodes_needed:
-            workload_a.extend(switch_nodes)
-            nodes_needed -= len(switch_nodes)
-        else:
-            # Take only as many as we need
-            workload_a.extend(switch_nodes[:nodes_needed])
-            nodes_needed = 0
+        if nodes_needed_for_a > 0:
+            if len(switch_nodes) <= nodes_needed_for_a:
+                workload_a.extend(switch_nodes)
+                nodes_needed_for_a -= len(switch_nodes)
+                continue
+            else:
+                # Take only as many as we need
+                workload_a.extend(switch_nodes[:nodes_needed_for_a])
+                switch_nodes = switch_nodes[nodes_needed_for_a:]
+                nodes_needed_for_a = 0
         
         # If we have enough nodes, stop
-        if nodes_needed <= 0:
+        if nodes_needed_for_a <= 0 and nodes_needed_for_b <= 0:
             break
     
     # If we still need more nodes for workload A, use nodes from the largest switch
-    if nodes_needed > 0:
+    if nodes_needed_for_a > 0:
         # Take what we need from the largest switch's remaining nodes
-        workload_a.extend(largest_switch_remaining_nodes[:nodes_needed])
+        workload_a.extend(largest_switch_remaining_nodes[:nodes_needed_for_a])
     
-    nodes_needed_for_b = workload_b_nodes - len(workload_b)
     if nodes_needed_for_b > 0:
         # Find unallocated nodes (nodes not yet assigned to either workload)
         allocated_nodes = set(workload_a + workload_b)
@@ -254,4 +282,4 @@ def compact_split_nodes_between_workloads(
         # print(f"Info: Assigning {len(unallocated_nodes)} unallocated nodes to workload B", file=sys.stderr)
         workload_b.extend(unallocated_nodes[:nodes_needed_for_b])
     
-    return workload_a, workload_b 
+    return workload_a, workload_b

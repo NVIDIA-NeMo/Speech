@@ -147,27 +147,25 @@ class FaultTolerancePlugin(run.Plugin):
 @dataclass(kw_only=True)
 class IsolationTestPlugin(run.Plugin):
     """
-    A plugin for setting up performance optimized environments.
+    A plugin for adding a noise job to the workload job for measuring the impact of noisy neighbors
+    on the performance of the workload.
 
-    Attributes:
-        enable_layernorm_sm_margin (bool): Set SM margin for TransformerEngine's Layernorm, so
-            in order to not block DP level communication overlap.
-        layernorm_sm_margin (int): The SM margin for TransformerEngine Layernorm.
-        enable_vboost (bool): Whether to steer more power towards tensor cores via
-            `sudo nvidia-smi boost-slider --vboost 1`. May not work on all systems.
+    Args:
+        num_of_noise_pairs: Number of noise pairs to run
+        min_victims_nodes: Minimum number of victims nodes for isolation test
+        extra_nodes_to_allocate: Extra nodes to allocate for the job to increase the chance of having enough nodes under single leaf switch
+        isolation_container_image: Container image to use for isolation test
     """
-
-    enable_layernorm_sm_margin: bool = True
-    layernorm_sm_margin: int = 16
-    enable_vboost: bool = False
-    nccl_pp_comm_chunksize: Optional[int] = None
-    gpu_sm100_or_newer: bool = False
+    num_of_noise_pairs: int = 1
+    min_victims_nodes: int = 1
+    extra_nodes_to_allocate: int = 0
+    isolation_container_image: str = "nvcr.io/nvidia/pytorch:25.02-py3"
 
     def update_number_of_nodes_for_workload_and_noise(self, executor: run.Executor):
         "Update the number of nodes for the workload and noise"
         num_of_workload_nodes = executor.nodes
-        num_of_noise_nodes = 2
-        total_num_of_nodes = num_of_workload_nodes + num_of_noise_nodes
+        num_of_noise_nodes = 2 * self.num_of_noise_pairs
+        total_num_of_nodes = num_of_workload_nodes + num_of_noise_nodes + self.extra_nodes_to_allocate
 
         # set total number of nodes for sbatch
         executor.nodes = total_num_of_nodes
@@ -176,6 +174,7 @@ class IsolationTestPlugin(run.Plugin):
 
         executor.env_vars["NUM_OF_WORKLOAD_NODES"] = str(num_of_workload_nodes)
         executor.env_vars["NUM_OF_NOISE_NODES"] = str(num_of_noise_nodes)
+        executor.env_vars["MIN_VICTIMS_NODES"] = str(self.min_victims_nodes)
         executor.env_vars["NOISE_BUILD_TIME"] = str(120)
 
     def generate_noise_initialization_code(self, job_dir):
@@ -183,7 +182,6 @@ class IsolationTestPlugin(run.Plugin):
 
         current_file_path = os.path.abspath(__file__)
         current_directory = os.path.dirname(current_file_path)
-        noise_script_dir = os.path.join(current_directory, "scripts", "ib_write_bw")
         split_nodes_dir = os.path.join(current_directory, "scripts", "split_nodes")
 
         noise_cmd = f'''
@@ -193,7 +191,7 @@ scontrol show hostnames $SLURM_NODELIST > {job_dir}/allocated_nodes.txt
 scontrol show topo > {job_dir}/topology.txt
 
 # Step 2: Call external Python script
-python {split_nodes_dir}/split_nodes_by_leaf.py --allocated-nodes-file {job_dir}/allocated_nodes.txt --topology-file {job_dir}/topology.txt --strategy compact --workload-a-nodes ${{NUM_OF_WORKLOAD_NODES}} --workload-b-nodes ${{NUM_OF_NOISE_NODES}} --output-file {job_dir}/split-nodes.txt
+python {split_nodes_dir}/split_nodes_by_leaf.py --allocated-nodes-file {job_dir}/allocated_nodes.txt --topology-file {job_dir}/topology.txt --strategy compact --workload-a-nodes ${{NUM_OF_WORKLOAD_NODES}} --workload-b-nodes ${{NUM_OF_NOISE_NODES}} --victim-nodes ${{MIN_VICTIMS_NODES}} --output-file {job_dir}/split-nodes.txt
 
 readarray -t SPLIT_NODES_OUTPUT < <(cat {job_dir}/split-nodes.txt)
 WORKLOAD_NODES=${{SPLIT_NODES_OUTPUT[0]}}
@@ -223,22 +221,10 @@ fi
 
 
 # Step 3: Run the noise job
-export NODES_STR="${{NOISE_NODES[*]}}"
 mkdir -p {job_dir}/noise
 echo "Launching noise in the background"
-srun --ntasks-per-node=8 \
---output={job_dir}/noise/out.log \
---error={job_dir}/noise/err.log \
---label \
---no-kill \
---mpi=pmix \
---nodes=${{NUM_OF_NOISE_NODES}} \
---nodelist=${{NOISE_NODES}} \
---ntasks-per-node=32 \
---container-image=/lustre/fsw/portfolios/hw/users/ayablonka/transfer/containers/ib_perftest.sqsh \
---container-mounts {job_dir}/noise:/ib_write_bw/workdir,{noise_script_dir}:/ib_write_bw/scripts \
---container-workdir /ib_write_bw/workdir \
-bash -c '/ib_write_bw/scripts/run_bisection_ib_write_bw.sh' &
+NUMBER_OF_PAIRS=$(($NUM_WORKLOAD_B_NODES * 4)) # we have 8 GPUS per node, and we want to split to pairs
+  srun --nodes=${{NUM_OF_NOISE_NODES}} --nodelist=${{NOISE_NODES}} --label --ntasks-per-node=8 --output={job_dir}/noise/out.log --error={job_dir}/noise/err.log --export=ALL --mpi=pmix --container-image={self.isolation_container_image} bash -c "NCCL_TESTS_SPLIT=%${{NUMBER_OF_PAIRS}} NCCL_IB_QPS_PER_CONNECTION=4 sendrecv_perf_mpi --nthreads 1 --ngpus 1 --minbytes 4G --maxbytes 4G --stepbytes 1M --op sum --datatype float --root 0 --iters 25 --warmup_iters 1 --agg_iters 1 --average 1 --parallel_init 0 --check 0 --blocking 0 --cudagraph 0 --stepfactor 2 --run_cycles 0 -R 1" &
 
 # wait for the noise to build up
 echo "Waiting ${{NOISE_BUILD_TIME}} seconds for the noise to build up"
@@ -250,14 +236,9 @@ echo "Launching workload with noise"
         '''
         return noise_cmd
 
-    def get_num_of_required_switches(self, nodes, job_dir):
-        "Get number of switches required for the job"
-        return 3
-
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
         """Enable the performance environment settings"""
 
-        # Improve perf by steering power to tensor cores, may not work on all systems
         if isinstance(executor, run.SlurmExecutor):
             if not executor.additional_parameters:
                 executor.additional_parameters={}
@@ -266,14 +247,8 @@ echo "Launching workload with noise"
             if not executor.env_vars:
                 executor.env_vars={}
 
-            print("executor.job_dir", executor.job_dir)
-            print("executor.tunnel.job_dir", executor.tunnel.job_dir)
             # add node numbers to srun args and requirements for workload and noise
             self.update_number_of_nodes_for_workload_and_noise(executor)
-
-            # add number of switches to sbatch flags
-            num_of_switches = self.get_num_of_required_switches(executor.nodes, executor.tunnel.job_dir)
-            executor.additional_parameters["switches"] = num_of_switches
 
             # add number of nodes and nodelist to srun args
             executor.srun_args.insert(0, "--nodelist=${WORKLOAD_NODES}")

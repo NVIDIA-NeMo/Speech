@@ -533,6 +533,45 @@ def parse_cli_args():
         required=False,
         default=0,
     )
+    
+    parser.add_argument(
+        "--enable_isolation",
+        help="Activate isolation test with noisy neighbors. Disabled by default",
+        action="store_true",
+        required=False,
+    )
+
+    parser.add_argument(
+        "--isolation_container_image",
+        type=str,
+        help="Container image to use for isolation test",
+        required=False,
+        default="nvcr.io/nvidia/pytorch:25.02-py3",
+    )
+
+    parser.add_argument(
+        "--isolation_noise_pairs",
+        type=int,
+        help="Container image to use for isolation test",
+        required=False,
+        default=1,
+    )
+
+    parser.add_argument(
+        "--isolation_min_victims_nodes",
+        type=int,
+        help="Minimum number of victims nodes for isolation test",
+        required=False,
+        default=1,
+    )
+
+    parser.add_argument(
+        "--isolation_extra_nodes_to_allocate",
+        type=int,
+        help="Extra nodes to allocate for the job to increase the chance of having enough nodes under single leaf switch",
+        required=False,
+        default=0,
+    )
 
     parser.add_argument(
         "-vb",

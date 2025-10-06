@@ -34,7 +34,8 @@ def process_files(
     output_file: str,
     strategy: str = 'compact', 
     workload_a_nodes: Optional[int] = None, 
-    workload_b_nodes: Optional[int] = None
+    workload_b_nodes: Optional[int] = None,
+    victim_nodes: int = 1
 ) -> None:
     """Core processing logic that orchestrates node allocation.
     
@@ -80,11 +81,24 @@ def process_files(
     else:
         # Use the compact allocation strategy
         workload_a, workload_b = compact_split_nodes_between_workloads(
-            switch_to_nodes, node_to_switch, switch_hierarchy, workload_a_nodes, workload_b_nodes)
+            switch_to_nodes, node_to_switch, switch_hierarchy, workload_a_nodes, workload_b_nodes, victim_nodes)
 
     if len(workload_a) != workload_a_nodes or len(workload_b) != workload_b_nodes:
         print(f"Error: Requested {workload_a_nodes} nodes for workload A and {workload_b_nodes} nodes for workload B, but got {len(workload_a)} and {len(workload_b)} nodes respectively", file=sys.stderr)
         sys.exit(1)
+
+    from collections import Counter
+    # Get unique switches for each workload
+    workload_a_switches = Counter(node_to_switch[node] for node in workload_a)
+    workload_b_switches = Counter(node_to_switch[node] for node in workload_b)
+    
+    print("Switch Distribution:")
+    print("Workload A switches:")
+    for switch, count in workload_a_switches.items():
+        print(f"{switch}: {count}")
+    print("Workload B switches:")
+    for switch, count in workload_b_switches.items():
+        print(f"{switch}: {count}")
 
     # Output comma-separated nodelists
     with open(output_file, 'w') as f:
@@ -102,6 +116,8 @@ def process_files(
               help='Number of nodes required for workload A')
 @click.option('--workload-b-nodes', type=int, required=True,
               help='Number of nodes required for workload B')
+@click.option('--victim-nodes', type=int, required=True, default=1,
+              help='Number of victim nodes required in workload A in compact strategy')
 @click.option('--output-file', type=click.Path(exists=False), required=False,
               help='File to write the output to')
 def main(
@@ -110,14 +126,15 @@ def main(
     strategy: str, 
     workload_a_nodes: int, 
     workload_b_nodes: int,
-    output_file: str
+    output_file: str,
+    victim_nodes: int
 ) -> None:
     """Split nodes by leaf switch for workload distribution.
     
     ALLOCATED_NODES_FILE: File containing list of allocated nodes
     TOPOLOGY_FILE: File containing cluster topology information
     """
-    process_files(allocated_nodes_file, topology_file, output_file, strategy, workload_a_nodes, workload_b_nodes)
+    process_files(allocated_nodes_file, topology_file, output_file, strategy, workload_a_nodes, workload_b_nodes, victim_nodes)
 
 
 def test_main() -> None:
@@ -129,68 +146,40 @@ def test_main() -> None:
     print(f"Nodes file exists: {nodes_path.exists()}")
     print(f"Topology file exists: {topo_path.exists()}")
     
-    a_nodes = 2
-    b_nodes = 8
+    a_nodes = 16
+    b_nodes = 60
+    victim_nodes = 1
     # Test even strategy with specific node counts
     print(f"\n=== Testing EVEN strategy with {a_nodes} nodes for A, {b_nodes} for B ===")
     split_nodes_path = Path('split-nodes-even.txt')
-    output = StringIO()
-    with redirect_stdout(output):
-        process_files(str(nodes_path), str(topo_path), str(split_nodes_path), 'even', a_nodes, b_nodes)
+    process_files(str(nodes_path), str(topo_path), str(split_nodes_path), 'even', a_nodes, b_nodes)
     
     with open(split_nodes_path, 'r') as f:
-        split_nodes = f.read().strip().split('\n')
+        split_nodes = f.read().split('\n')
     print(f"Split nodes: {split_nodes}")
 
     print(f"Workload A ({a_nodes} nodes):", split_nodes[0])
     print(f"Workload B ({b_nodes} nodes):", split_nodes[1])
     
-    # Print node-to-switch mapping for debugging
-    print("\nNode to Switch Mapping:")
     node_to_switch, _ = parse_topology_file(str(topo_path))
-    allocated_nodes = parse_allocated_nodes(str(nodes_path))
-    
-    for node in allocated_nodes:
-        switch = node_to_switch.get(node)
-        if switch:
-            print(f"{node} -> {switch}")
-        else:
-            print(f"{node} -> Not found in topology")
 
     # Print switch distribution for each workload
-    print("\nSwitch Distribution:")
-    workload_a_nodes = split_nodes[0].split(',')
-    workload_b_nodes = split_nodes[1].split(',')
-    
-    # Get unique switches for each workload
-    workload_a_switches = sorted(set(node_to_switch[node] for node in workload_a_nodes))
-    workload_b_switches = sorted(set(node_to_switch[node] for node in workload_b_nodes))
-    
-    print("Workload A switches:", ", ".join(workload_a_switches))
-    print("Workload B switches:", ", ".join(workload_b_switches))
+    workload_a_nodes = split_nodes[0].split(',') if split_nodes[0] else []
+    workload_b_nodes = split_nodes[1].split(',') if split_nodes[1] else []
+    print(f"Workload A nodes: '{workload_a_nodes}'")
+    print(f"Workload B nodes: '{workload_b_nodes}'")
+
 
     # Test compact strategy with specific node counts
     print(f"\n=== Testing COMPACT strategy with {a_nodes} nodes for A, {b_nodes} for B ===")
     split_nodes_path = Path('split-nodes-compact.txt')
-    process_files(str(nodes_path), str(topo_path), str(split_nodes_path), 'compact', a_nodes, b_nodes)
+    process_files(str(nodes_path), str(topo_path), str(split_nodes_path), 'compact', a_nodes, b_nodes, victim_nodes)
     
     with open(split_nodes_path, 'r') as f:
-        split_nodes = f.read().strip().split('\n')
+        split_nodes = f.read().split('\n')
 
     print(f"Workload A ({a_nodes} nodes):", split_nodes[0])
     print(f"Workload B ({b_nodes} nodes):", split_nodes[1])
-    
-    # Print switch distribution for each workload
-    print("\nSwitch Distribution:")
-    workload_a_nodes = split_nodes[0].split(',')
-    workload_b_nodes = split_nodes[1].split(',')
-    
-    # Get unique switches for each workload
-    workload_a_switches = sorted(set(node_to_switch[node] for node in workload_a_nodes))
-    workload_b_switches = sorted(set(node_to_switch[node] for node in workload_b_nodes))
-    
-    print("Workload A switches:", ", ".join(workload_a_switches))
-    print("Workload B switches:", ", ".join(workload_b_switches))
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--test":

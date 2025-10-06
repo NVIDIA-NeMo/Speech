@@ -156,6 +156,17 @@ if __name__ == "__main__":
     if args.gpu.lower() == 'gb200':
         custom_env_vars |= {"NCCL_NET_GDR_LEVEL": "PHB"}
 
+    if args.enable_isolation:
+        plugins.append(
+            IsolationTestPlugin(
+                isolation_container_image=args.isolation_container_image,
+                num_of_noise_pairs=args.isolation_noise_pairs,
+                min_victims_nodes=args.isolation_min_victims_nodes,
+                extra_nodes_to_allocate=args.isolation_extra_nodes_to_allocate,
+            )
+        )
+        exp_name = exp_name + "_isolation"
+
     if args.enable_nsys:
         plugins.append(
             NsysPlugin(

@@ -387,14 +387,6 @@ class FabricMegatronStrategy(DDPStrategy):
 
         # After dist_checkpointing.load, sharded tensors will be replaced with tensors
         sharded_sd_metadata = self.unwrapped_checkpoint_io.load_content_metadata(path)
-        if sharded_sd_metadata is None:
-            # Backward-compatibility - old checkpoint don't have content metadata
-            sharded_sd_metadata = {}
-            if (
-                isinstance(self.ddp_config, DistributedDataParallelConfig)
-                and self.ddp_config.use_distributed_optimizer
-            ):
-                sharded_sd_metadata['distrib_optim_sharding_type'] = 'fully_sharded_model_space'
         sharded_state_dict = {}
         if isinstance(state, Module):
             sharded_state_dict["state_dict"] = state.sharded_state_dict(metadata=sharded_sd_metadata)

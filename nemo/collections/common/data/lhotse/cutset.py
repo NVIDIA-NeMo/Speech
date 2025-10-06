@@ -24,6 +24,7 @@ import omegaconf
 from lhotse import CutSet, Features, Recording
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
+from lhotse.serialization import load_yaml
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.nemo_adapters import (
@@ -346,8 +347,8 @@ def parse_and_combine_datasets(
     tarred_status = []
 
     if isinstance(config_list, (str, Path)):
-        # Resolve /path/to/input_cfg.yaml into config contents if needed.
-        config_list = OmegaConf.load(config_list)
+        # Resolve local filepath /path/to/input_cfg.yaml or remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
+        config_list = load_yaml(config_list)
     assert len(config_list) > 0, "Empty group in dataset config list."
 
     for item in config_list:

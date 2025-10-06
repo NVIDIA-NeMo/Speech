@@ -21,7 +21,7 @@ from nemo.utils import logging
 from nemo.utils.model_utils import unwrap_model
 
 ALGORITHMS = {
-    "eagle3": mtsp.EAGLE3_DEFAULT_CFG,
+    "eagle3": mtsp.EAGLE3_DEFAULT_CFG if hasattr(mtsp, "EAGLE3_DEFAULT_CFG") else None,
     # more TBD
 }
 

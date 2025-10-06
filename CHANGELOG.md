@@ -6,7 +6,7 @@
 ### Highlights
 
 - Collections:
-  - Models
+  - LLM
     - Nano v2 12B and 9B
   - Speech
     - New SpeechLM2 collection

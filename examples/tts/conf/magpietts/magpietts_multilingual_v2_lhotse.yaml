@@ -102,6 +102,9 @@ model:
     hindi_phoneme:
       _target_: AutoTokenizer
       pretrained_model: "google/byt5-small"
+    italian_phoneme:
+      _target_: AutoTokenizer
+      pretrained_model: "google/byt5-small"
     vietnamese_phoneme:
       _target_: AutoTokenizer
       pretrained_model: "google/byt5-small"

@@ -348,8 +348,8 @@ def parse_and_combine_datasets(
         config_list = load_yaml(config_list)
     assert len(config_list) > 0, "Empty group in dataset config list."
 
-    for item in config_list:
-
+    for item_dict in config_list:
+        item = OmegaConf.create(item_dict)
         # Check if we have any attributes that are propagated downwards to each item in the group.
         # If a key already exists in the item, it takes precedence (we will not overwrite);
         # otherwise we will assign it.

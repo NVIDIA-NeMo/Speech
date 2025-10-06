@@ -47,7 +47,7 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
-from nemo.collections.tts.models import MagpieTTSModel
+from nemo.collections.tts.models import MagpieTTSStreamingInference
 
 # EVALUATION_DATASETS is the full list of datasets for evaluation of a new model.
 EVALUATION_DATASETS = (
@@ -113,6 +113,7 @@ def run_inference_streaming(
     use_local_transformer=False,
     maskgit_n_steps=3,
     legacy_codebooks=False,
+    legacy_text_conditioning=False,
     clean_up_disk=False,
     hparams_file_from_wandb=False,
     log_exp_name=False,
@@ -134,9 +135,9 @@ def run_inference_streaming(
             model_cfg = model_cfg.value
 
         with open_dict(model_cfg):
-            model_cfg, cfg_sample_rate = update_config(model_cfg, codecmodel_path, legacy_codebooks)
+            model_cfg, cfg_sample_rate = update_config(model_cfg, codecmodel_path, legacy_codebooks, legacy_text_conditioning)
 
-        model = MagpieTTSModel(cfg=model_cfg)
+        model = MagpieTTSStreamingInference(cfg=model_cfg)
         # use_kv_cache_for_inference is not enabled for streaming inference
         model.use_kv_cache_for_inference = False
 
@@ -147,10 +148,10 @@ def run_inference_streaming(
         model.load_state_dict(state_dict)
         checkpoint_name = checkpoint_file.split("/")[-1].split(".ckpt")[0]
     elif nemo_file is not None:
-        model_cfg = MagpieTTSModel.restore_from(nemo_file, return_config=True)
+        model_cfg = MagpieTTSStreamingInference.restore_from(nemo_file, return_config=True)
         with open_dict(model_cfg):
-            model_cfg, cfg_sample_rate = update_config(model_cfg, codecmodel_path, legacy_codebooks)
-        model = MagpieTTSModel.restore_from(nemo_file, override_config_path=model_cfg)
+            model_cfg, cfg_sample_rate = update_config(model_cfg, codecmodel_path, legacy_codebooks, legacy_text_conditioning)
+        model = MagpieTTSStreamingInference.restore_from(nemo_file, override_config_path=model_cfg)
         # use_kv_cache_for_inference is not enabled for streaming inference
         model.use_kv_cache_for_inference = False
         checkpoint_name = nemo_file.split("/")[-1].split(".nemo")[0]
@@ -482,6 +483,7 @@ def main():
         use_local_transformer=args.use_local_transformer,
         maskgit_n_steps=args.maskgit_n_steps,
         legacy_codebooks=args.legacy_codebooks,
+        legacy_text_conditioning=args.legacy_text_conditioning,
         clean_up_disk=args.clean_up_disk,
         hparams_file_from_wandb=args.hparams_file_from_wandb,
         log_exp_name=args.log_exp_name,

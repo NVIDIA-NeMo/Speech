@@ -43,23 +43,6 @@ Example usage:
         --shuffle-seed 42 \
     2>&1 | tee ./log/create_lhotse_shar_from_nemo_manifest.stdout
 
-    MANIFEST="/results/audio_codecs/21fpsCausalDecoder/lhotse_shars_multilingual/mdesta_fr/french_train_simplified.json"
-    AUDIO_BASE_DIR="/data/audio/CML"
-    OUTPUT_DIR="/results/audio_codecs/21fpsCausalDecoder/lhotse_shars_multilingual/mdesta_fr/"
-    NUM_JOBS=10
-    CHUNK_SIZE=1000
-    AUDIO_FORMAT="wav"
-    LOG_LEVEL="INFO"
-    python scripts/magpietts/create_lhotse_shar_from_nemo_manifest.py \
-        --manifest-path ${MANIFEST} \
-        --audio-base-dir ${AUDIO_BASE_DIR} \
-        --output-dir ${OUTPUT_DIR} \
-        --num-jobs ${NUM_JOBS} \
-        --processing-chunk-size ${CHUNK_SIZE} \
-        --audio-format ${AUDIO_FORMAT} \
-        --log-level ${LOG_LEVEL} \
-    2>&1 | tee debug_create_lhotse_shar_from_nemo_manifest.log
-
 Expected output:
     $ tree ${OUTPUT_DIR}
     ${OUTPUT_DIR}/
@@ -85,17 +68,13 @@ import os
 import random
 import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-import torch
 from lhotse import AudioSource, MonoCut, Recording, SupervisionSegment, compute_num_samples, fastcopy
-from lhotse.array import Array, TemporalArray
 from lhotse.serialization import load_jsonl
 from lhotse.shar.writers import AudioTarWriter, JsonlShardWriter
-from lhotse.shar.writers.array import ArrayTarWriter
 from tqdm import tqdm
 
 NEMO_KEYS_NO_NEED_TO_LOG_IN_CUSTOM_FIELDS_FOR_SUPERVISION = [
@@ -175,12 +154,6 @@ def process_manifest_entry(entry: Dict[str, Any], audio_base_dir: Path) -> Tuple
 
         target_audio_filepath = audio_base_dir / target_audio_path_relative
         context_audio_filepath = audio_base_dir / context_audio_path_relative
-        audio_segment, sample_rate = librosa.load(
-            path=str(context_audio_filepath), sr=None, offset=0.0, duration=context_audio_duration
-        )
-        context_audio_duration_librosa = librosa.get_duration(y=audio_segment, sr=sample_rate)
-        if not math.isclose(context_audio_duration_librosa, context_audio_duration, abs_tol=0.01):
-            context_audio_duration = context_audio_duration_librosa
 
         if not target_audio_filepath.is_file():
             logging.warning(
@@ -217,15 +190,6 @@ def process_manifest_entry(entry: Dict[str, Any], audio_base_dir: Path) -> Tuple
         # offset in seconds
         target_offset_in_seconds = entry.get("offset", 0.0)
         context_offset_in_seconds = entry.get("context_audio_offset", 0.0)
-
-        # If audio codes are available in the manifest then get their paths as well
-        target_audio_codes_path_relative = entry.get("target_audio_codes_path", None)
-        context_audio_codes_path_relative = entry.get("context_audio_codes_path", None)
-
-        target_audio_codes, context_audio_codes = None, None
-        if target_audio_codes_path_relative is not None:
-            target_audio_codes = torch.load(target_audio_codes_path_relative, map_location="cpu")
-            context_audio_codes = torch.load(context_audio_codes_path_relative, map_location="cpu")
 
         # Create Supervision for target cut. We constrain one supervision per cut for now.
         supervision = SupervisionSegment(
@@ -271,7 +235,7 @@ def process_manifest_entry(entry: Dict[str, Any], audio_base_dir: Path) -> Tuple
             channel=0,  # only support mono audio for now
             recording=context_recording,
         )
-        return target_cut, context_cut, target_audio_codes, context_audio_codes
+        return target_cut, context_cut
 
     except Exception as e:
         logging.error(f"Skipping entry due to error during metadata processing: {entry}: {e}", exc_info=True)
@@ -344,7 +308,6 @@ def process_and_write_chunk(
     initial_errors = 0
     for entry in manifest_chunk:
         result = process_manifest_entry(entry, audio_base_dir=audio_base_dir)
-        audio_codes_exist = result[2] is not None and result[3] is not None
         if result is not None:
             chunk_metadata.append(result)
         else:
@@ -361,15 +324,9 @@ def process_and_write_chunk(
     )
 
     # --- 2. Initialize writers and perform iterative load-and-write ---
-    codec_model_name = "21fpsCausalDecoder"
-    codec_frame_rate = 21.5
     cuts_dir = output_dir / "cuts"
     target_recordings_dir = output_dir / "target_audio"
     context_recordings_dir = output_dir / "context_audio"
-    target_audio_codes_dir = output_dir / codec_model_name / "target_codes"
-    context_audio_codes_dir = output_dir / codec_model_name / "context_codes"
-    target_audio_codes_dir.mkdir(parents=True, exist_ok=True)
-    context_audio_codes_dir.mkdir(parents=True, exist_ok=True)
 
     cuts_pattern = str(cuts_dir / "cuts.%06d.jsonl.gz")
     target_rec_pattern = str(target_recordings_dir / "recording.%06d.tar")
@@ -385,18 +342,6 @@ def process_and_write_chunk(
     try:
         # Specify shard_size with len(chunk_metadata) and shard_offset with chunk_idx, ensuring each chunk is written to a separate shard file.
         shard_size_for_worker = len(chunk_metadata)
-        if audio_codes_exist:
-            target_audio_codes_pattern = str(target_audio_codes_dir / f"codes.{chunk_idx:06d}.tar")
-            context_audio_codes_pattern = str(context_audio_codes_dir / f"codes.{chunk_idx:06d}.tar")
-            target_audio_codes_writer_manager = ArrayTarWriter(
-                pattern=target_audio_codes_pattern, shard_size=None, compression="numpy"
-            )
-            context_audio_codes_writer_manager = ArrayTarWriter(
-                pattern=context_audio_codes_pattern, shard_size=None, compression="numpy"
-            )
-        else:
-            target_audio_codes_writer_manager = nullcontext()
-            context_audio_codes_writer_manager = nullcontext()
         with (
             JsonlShardWriter(
                 pattern=cuts_pattern, shard_size=shard_size_for_worker, shard_offset=chunk_idx
@@ -413,11 +358,9 @@ def process_and_write_chunk(
                 format=audio_format,
                 shard_offset=chunk_idx,
             ) as context_rec_writer,
-            target_audio_codes_writer_manager as target_audio_codes_writer,
-            context_audio_codes_writer_manager as context_audio_codes_writer,
         ):
             # Iterate directly over chunk_metadata
-            for target_cut, context_cut, target_audio_codes, context_audio_codes in chunk_metadata:
+            for target_cut, context_cut in chunk_metadata:
                 # 1. load target/context audio given the audio offset
                 try:
                     target_audio = target_cut.load_audio()
@@ -456,47 +399,7 @@ def process_and_write_chunk(
                     chunk_write_errors += 1
                     continue
 
-                # 3. write target/context audio codes
-                try:
-                    if target_audio_codes is not None:
-                        target_codes_array_manifest = TemporalArray(
-                            array=Array(
-                                storage_type="shar",
-                                storage_path="",
-                                storage_key="",
-                                shape=list(target_audio_codes.shape),
-                            ),
-                            temporal_dim=-1,
-                            frame_shift=1 / codec_frame_rate,
-                            start=0,
-                        )
-                        target_audio_codes_writer.write(
-                            key=target_cut.id, value=target_audio_codes.numpy(), manifest=target_codes_array_manifest
-                        )
-                    if context_audio_codes is not None:
-                        context_codes_array_manifest = TemporalArray(
-                            array=Array(
-                                storage_type="shar",
-                                storage_path="",
-                                storage_key="",
-                                shape=list(context_audio_codes.shape),
-                            ),
-                            temporal_dim=-1,
-                            frame_shift=1 / codec_frame_rate,
-                            start=0,
-                        )
-                        context_audio_codes_writer.write(
-                            key=target_cut.id, value=context_audio_codes.numpy(), manifest=context_codes_array_manifest
-                        )
-                except Exception as e:
-                    logging.error(
-                        f"[Worker {worker_pid}, Chunk {chunk_idx}] Error writing target/context audio codes for target cut {target_cut}: {e}",
-                        exc_info=True,
-                    )
-                    chunk_write_errors += 1
-                    continue
-
-                # 4. write cut metadata
+                # 3. write cut metadata
                 try:
                     cut_writer.write(target_cut)
                 except Exception as e:
@@ -534,11 +437,11 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description="Convert NeMo manifest to sharded Lhotse JSONL/TARs using parallel workers per chunk.",
     )
-    parser.add_argument("--manifest-path", required=True, type=str, help="Path to the input NeMo JSON manifest file.")
+    parser.add_argument("--manifest-path", required=True, type=Path, help="Path to the input NeMo JSON manifest file.")
     parser.add_argument(
-        "--audio-base-dir", required=True, type=str, help="Base directory where audio files are located."
+        "--audio-base-dir", required=True, type=Path, help="Base directory where audio files are located."
     )
-    parser.add_argument("--output-dir", required=True, type=str, help="Base directory to save the sharded outputs.")
+    parser.add_argument("--output-dir", required=True, type=Path, help="Base directory to save the sharded outputs.")
     parser.add_argument(
         "--num-jobs",
         type=int,
@@ -574,37 +477,6 @@ def main():
     )
 
     args = parser.parse_args()
-    manifest_paths = args.manifest_path.split(",")
-    audio_base_dirs = args.audio_base_dir.split(",")
-    output_dirs = args.output_dir.split(",")
-
-    for manifest_path, audio_base_dir, output_dir in zip(manifest_paths, audio_base_dirs, output_dirs):
-        manifest_path = Path(manifest_path)
-        audio_base_dir = Path(audio_base_dir)
-        output_dir = Path(output_dir)
-        logging.info(f"Processing manifest from: {manifest_path}")
-        logging.info(f"Audio base directory: {audio_base_dir}")
-        logging.info(f"Output directory: {output_dir}")
-
-        # Configure logging based on argument
-        log_level = getattr(logging, args.log_level.upper(), logging.INFO)
-        log_format = '%(asctime)s - PID:%(process)d - %(levelname)s - %(message)s'
-        logging.basicConfig(level=log_level, format=log_format)
-
-        # Ensure output directories exist
-        cuts_dir = output_dir / "cuts"
-        target_recordings_dir = output_dir / "target_audio"
-        context_recordings_dir = output_dir / "context_audio"
-        cuts_dir.mkdir(parents=True, exist_ok=True)
-        target_recordings_dir.mkdir(parents=True, exist_ok=True)
-        context_recordings_dir.mkdir(parents=True, exist_ok=True)
-
-        logging.info(f"Reading NeMo manifest lazily from: {manifest_path}")
-        manifest_iterable = load_jsonl(manifest_path)
-
-        logging.info(
-            f"Processing manifest in chunks of {args.processing_chunk_size} using {args.num_jobs} parallel workers..."
-        )
 
     # Configure logging based on argument
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
@@ -628,56 +500,61 @@ def main():
     else:
         logging.info(f"Reading NeMo manifest lazily from: {args.manifest_path}")
         manifest_iterable = load_jsonl(args.manifest_path)
-        total_processed_count = 0
-        total_initial_errors = 0
-        total_audio_load_errors = 0
-        total_write_errors = 0
-        num_chunks = 0
 
-        worker_func = partial(
-            process_and_write_chunk,
-            audio_base_dir=audio_base_dir,
-            output_dir=output_dir,
-            audio_format=args.audio_format,
-        )
+    logging.info(
+        f"Processing manifest in chunks of {args.processing_chunk_size} using {args.num_jobs} parallel workers..."
+    )
 
-        with ProcessPoolExecutor(max_workers=args.num_jobs) as executor:
-            # Enumerate chunks to pass index to worker. Each index is the same as the shard_offset.
-            chunk_iterator = enumerate(chunked_iterator(manifest_iterable, args.processing_chunk_size))
-            futures = {
-                executor.submit(worker_func, chunk_with_idx): chunk_with_idx[0] for chunk_with_idx in chunk_iterator
-            }
-            num_chunks = len(futures)
+    total_processed_count = 0
+    total_initial_errors = 0
+    total_audio_load_errors = 0
+    total_write_errors = 0
+    num_chunks = 0
 
-            logging.info(f"Submitted {num_chunks} chunks to workers.")
+    worker_func = partial(
+        process_and_write_chunk,
+        audio_base_dir=args.audio_base_dir,
+        output_dir=args.output_dir,
+        audio_format=args.audio_format,
+    )
 
-            for future in tqdm(as_completed(futures), total=num_chunks, desc="Processing Chunks"):
-                chunk_idx = futures[future]
-                try:
-                    result = future.result()
-                    total_processed_count += result["processed"]
-                    total_initial_errors += result["initial_errors"]
-                    total_audio_load_errors += result["audio_load_errors"]
-                    total_write_errors += result["write_errors"]
-                    logging.debug(f"Chunk {chunk_idx} finished with result: {result}")
-                except Exception as e:
-                    logging.error(f"Chunk {chunk_idx} failed with exception: {e}", exc_info=True)
-                    # Increment error count based on chunk size. Difficult to know precisely. Assume all failed.
-                    total_initial_errors += args.processing_chunk_size
+    with ProcessPoolExecutor(max_workers=args.num_jobs) as executor:
+        # Enumerate chunks to pass index to worker. Each index is the same as the shard_offset.
+        chunk_iterator = enumerate(chunked_iterator(manifest_iterable, args.processing_chunk_size))
+        futures = {
+            executor.submit(worker_func, chunk_with_idx): chunk_with_idx[0] for chunk_with_idx in chunk_iterator
+        }
+        num_chunks = len(futures)
 
-        logging.info("=" * 30 + " Processing Summary " + "=" * 30)
-        logging.info(f"Total chunks processed: {num_chunks}")
-        logging.info(f"Successfully processed and wrote data for approximately {total_processed_count} entries.")
-        total_errors = total_initial_errors + total_audio_load_errors + total_write_errors
-        if total_errors > 0:
-            logging.warning(f"Encountered errors/skips in {total_errors} potential entries:")
-            logging.warning(f"  - Initial processing errors/skips: {total_initial_errors}")
-            logging.warning(f"  - Audio loading errors/skips (affecting writes): {total_audio_load_errors}")
-            logging.warning(f"  - Writing errors: {total_write_errors}")
-            logging.warning("Check logs above (use DEBUG level for more details) for specific entry issues.")
-        else:
-            logging.info("No significant errors reported.")
-        logging.info("Manifest creation finished.")
+        logging.info(f"Submitted {num_chunks} chunks to workers.")
+
+        for future in tqdm(as_completed(futures), total=num_chunks, desc="Processing Chunks"):
+            chunk_idx = futures[future]
+            try:
+                result = future.result()
+                total_processed_count += result["processed"]
+                total_initial_errors += result["initial_errors"]
+                total_audio_load_errors += result["audio_load_errors"]
+                total_write_errors += result["write_errors"]
+                logging.debug(f"Chunk {chunk_idx} finished with result: {result}")
+            except Exception as e:
+                logging.error(f"Chunk {chunk_idx} failed with exception: {e}", exc_info=True)
+                # Increment error count based on chunk size. Difficult to know precisely. Assume all failed.
+                total_initial_errors += args.processing_chunk_size
+
+    logging.info("=" * 30 + " Processing Summary " + "=" * 30)
+    logging.info(f"Total chunks processed: {num_chunks}")
+    logging.info(f"Successfully processed and wrote data for approximately {total_processed_count} entries.")
+    total_errors = total_initial_errors + total_audio_load_errors + total_write_errors
+    if total_errors > 0:
+        logging.warning(f"Encountered errors/skips in {total_errors} potential entries:")
+        logging.warning(f"  - Initial processing errors/skips: {total_initial_errors}")
+        logging.warning(f"  - Audio loading errors/skips (affecting writes): {total_audio_load_errors}")
+        logging.warning(f"  - Writing errors: {total_write_errors}")
+        logging.warning("Check logs above (use DEBUG level for more details) for specific entry issues.")
+    else:
+        logging.info("No significant errors reported.")
+    logging.info("Manifest creation finished.")
 
 
 if __name__ == "__main__":

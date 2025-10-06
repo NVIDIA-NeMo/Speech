@@ -475,7 +475,7 @@ FAQ can be found on the NeMo [Discussions
 board](https://github.com/NVIDIA/NeMo/discussions). You are welcome to
 ask questions or start discussions on the board.
 
-## Contribute to NeMo
+## Contribute to NeMo###important
 
 We welcome community contributions! Please refer to
 [CONTRIBUTING.md](https://github.com/NVIDIA/NeMo/blob/stable/CONTRIBUTING.md)

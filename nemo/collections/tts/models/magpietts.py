@@ -2075,11 +2075,11 @@ class MagpieTTSModel(ModelPT):
     ):
         """
         Determines the most attended text timestep for each batch item based on alignment attention scores.
-        
+
         This method identifies which text token is most attended to within a lookahead window, starting from
         the last attended timestep. It includes logic to detect attention sinks (tokens attended to excessively)
         and move past them. The method also tracks how many times each timestep has been attended.
-        
+
         Args:
             alignment_attention_scores (torch.Tensor): Attention scores between audio and text tokens.
                 Shape: (batch_size, text_length).
@@ -2093,7 +2093,7 @@ class MagpieTTSModel(ModelPT):
             batch_size (int): Number of items in the batch.
             left_offset (int, optional): Offset to adjust timestep indices, used in streaming inference when
                 text is provided in chunks. Defaults to 0.
-        
+
         Returns:
             tuple: A tuple containing:
                 - text_time_step_attended (list): List of integers, one per batch item, indicating the most
@@ -2144,12 +2144,12 @@ class MagpieTTSModel(ModelPT):
     ):
         """
         Constructs an attention prior for the next audio generation timestep during inference.
-        
+
         This method creates a prior distribution over text tokens to guide cross-attention during
         autoregressive audio generation. It biases attention toward a lookahead window around the
         currently attended text token, penalizes over-attended tokens to prevent getting stuck,
         and tracks text completion status to determine when to allow EOS prediction.
-        
+
         Args:
             prior_epsilon (float): Small epsilon value used as the base prior probability for
                 non-targeted text positions. Prevents zero probabilities.
@@ -2168,7 +2168,7 @@ class MagpieTTSModel(ModelPT):
             lookahead_window_size (int): Size of the forward window from the current attended timestep
                 that should receive high prior probability.
             batch_size (int): Number of items in the batch.
-        
+
         Returns:
             tuple: A tuple containing:
                 - _attn_prior (torch.Tensor): Attention prior distribution for the next timestep.
@@ -2219,7 +2219,6 @@ class MagpieTTSModel(ModelPT):
                 unfinished_texts[bidx] = False
 
         return _attn_prior, unfinished_texts, finished_texts_counter
-
 
     def get_inference_attention_plots(
         self,
@@ -2849,6 +2848,7 @@ class MagpieTTSModel(ModelPT):
     def list_available_models(cls) -> List[PretrainedModelInfo]:
         return []
 
+
 class MagpieTTSStreamingInference(MagpieTTSModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg, trainer)
@@ -2908,12 +2908,12 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
     ):
         """
         Constructs an attention prior for streaming inference where text is provided incrementally in chunks.
-        
+
         This method extends construct_inference_prior for streaming scenarios where text tokens arrive
         progressively. It accounts for chunk boundaries using a left_offset, supports optional exponential
         decay for historical attention, detects when chunks are exhausted, and manages text completion
         tracking across chunk boundaries.
-        
+
         Args:
             prior_epsilon (float): Small epsilon value used as the base prior probability for
                 non-targeted text positions. Prevents zero probabilities.
@@ -2939,7 +2939,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                 Used to convert between absolute text positions and chunk-relative positions. Defaults to 0.
             use_exponential (bool, optional): If True, applies an exponential decay distribution for
                 past attended positions. If False, uses a simpler discrete weighting scheme. Defaults to False.
-        
+
         Returns:
             tuple: A tuple containing:
                 - _attn_prior (torch.Tensor): Attention prior distribution for the next timestep.

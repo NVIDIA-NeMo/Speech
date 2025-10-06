@@ -135,7 +135,9 @@ def run_inference_streaming(
             model_cfg = model_cfg.value
 
         with open_dict(model_cfg):
-            model_cfg, cfg_sample_rate = update_config(model_cfg, codecmodel_path, legacy_codebooks, legacy_text_conditioning)
+            model_cfg, cfg_sample_rate = update_config(
+                model_cfg, codecmodel_path, legacy_codebooks, legacy_text_conditioning
+            )
 
         model = MagpieTTSStreamingInference(cfg=model_cfg)
         # use_kv_cache_for_inference is not enabled for streaming inference
@@ -150,7 +152,9 @@ def run_inference_streaming(
     elif nemo_file is not None:
         model_cfg = MagpieTTSStreamingInference.restore_from(nemo_file, return_config=True)
         with open_dict(model_cfg):
-            model_cfg, cfg_sample_rate = update_config(model_cfg, codecmodel_path, legacy_codebooks, legacy_text_conditioning)
+            model_cfg, cfg_sample_rate = update_config(
+                model_cfg, codecmodel_path, legacy_codebooks, legacy_text_conditioning
+            )
         model = MagpieTTSStreamingInference.restore_from(nemo_file, override_config_path=model_cfg)
         # use_kv_cache_for_inference is not enabled for streaming inference
         model.use_kv_cache_for_inference = False

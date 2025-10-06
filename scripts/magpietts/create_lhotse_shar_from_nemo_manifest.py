@@ -84,15 +84,15 @@ import math
 import os
 import random
 import re
-import torch
-from contextlib import nullcontext
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from lhotse.array import Array, TemporalArray
+import torch
 from lhotse import AudioSource, MonoCut, Recording, SupervisionSegment, compute_num_samples, fastcopy
+from lhotse.array import Array, TemporalArray
 from lhotse.serialization import load_jsonl
 from lhotse.shar.writers import AudioTarWriter, JsonlShardWriter
 from lhotse.shar.writers.array import ArrayTarWriter
@@ -179,9 +179,7 @@ def process_manifest_entry(entry: Dict[str, Any], audio_base_dir: Path) -> Tuple
             path=str(context_audio_filepath), sr=None, offset=0.0, duration=context_audio_duration
         )
         context_audio_duration_librosa = librosa.get_duration(y=audio_segment, sr=sample_rate)
-        if not math.isclose(
-            context_audio_duration_librosa, context_audio_duration, abs_tol=0.01
-        ):
+        if not math.isclose(context_audio_duration_librosa, context_audio_duration, abs_tol=0.01):
             context_audio_duration = context_audio_duration_librosa
 
         if not target_audio_filepath.is_file():
@@ -390,24 +388,34 @@ def process_and_write_chunk(
         if audio_codes_exist:
             target_audio_codes_pattern = str(target_audio_codes_dir / f"codes.{chunk_idx:06d}.tar")
             context_audio_codes_pattern = str(context_audio_codes_dir / f"codes.{chunk_idx:06d}.tar")
-            target_audio_codes_writer_manager = ArrayTarWriter(pattern=target_audio_codes_pattern, shard_size=None, compression="numpy")
-            context_audio_codes_writer_manager = ArrayTarWriter(pattern=context_audio_codes_pattern, shard_size=None, compression="numpy")
+            target_audio_codes_writer_manager = ArrayTarWriter(
+                pattern=target_audio_codes_pattern, shard_size=None, compression="numpy"
+            )
+            context_audio_codes_writer_manager = ArrayTarWriter(
+                pattern=context_audio_codes_pattern, shard_size=None, compression="numpy"
+            )
         else:
             target_audio_codes_writer_manager = nullcontext()
             context_audio_codes_writer_manager = nullcontext()
-        with JsonlShardWriter(
-            pattern=cuts_pattern, shard_size=shard_size_for_worker, shard_offset=chunk_idx
-        ) as cut_writer, AudioTarWriter(
-            pattern=target_rec_pattern,
-            shard_size=shard_size_for_worker,
-            format=audio_format,
-            shard_offset=chunk_idx,
-        ) as target_rec_writer, AudioTarWriter(
-            pattern=context_rec_pattern,
-            shard_size=shard_size_for_worker,
-            format=audio_format,
-            shard_offset=chunk_idx,
-        ) as context_rec_writer, target_audio_codes_writer_manager as target_audio_codes_writer, context_audio_codes_writer_manager as context_audio_codes_writer:
+        with (
+            JsonlShardWriter(
+                pattern=cuts_pattern, shard_size=shard_size_for_worker, shard_offset=chunk_idx
+            ) as cut_writer,
+            AudioTarWriter(
+                pattern=target_rec_pattern,
+                shard_size=shard_size_for_worker,
+                format=audio_format,
+                shard_offset=chunk_idx,
+            ) as target_rec_writer,
+            AudioTarWriter(
+                pattern=context_rec_pattern,
+                shard_size=shard_size_for_worker,
+                format=audio_format,
+                shard_offset=chunk_idx,
+            ) as context_rec_writer,
+            target_audio_codes_writer_manager as target_audio_codes_writer,
+            context_audio_codes_writer_manager as context_audio_codes_writer,
+        ):
             # Iterate directly over chunk_metadata
             for target_cut, context_cut, target_audio_codes, context_audio_codes in chunk_metadata:
                 # 1. load target/context audio given the audio offset
@@ -452,22 +460,39 @@ def process_and_write_chunk(
                 try:
                     if target_audio_codes is not None:
                         target_codes_array_manifest = TemporalArray(
-                            array=Array(storage_type="shar", storage_path="", storage_key="", shape=list(target_audio_codes.shape)),
+                            array=Array(
+                                storage_type="shar",
+                                storage_path="",
+                                storage_key="",
+                                shape=list(target_audio_codes.shape),
+                            ),
                             temporal_dim=-1,
                             frame_shift=1 / codec_frame_rate,
                             start=0,
                         )
-                        target_audio_codes_writer.write(key=target_cut.id, value=target_audio_codes.numpy(), manifest=target_codes_array_manifest)
+                        target_audio_codes_writer.write(
+                            key=target_cut.id, value=target_audio_codes.numpy(), manifest=target_codes_array_manifest
+                        )
                     if context_audio_codes is not None:
                         context_codes_array_manifest = TemporalArray(
-                            array=Array(storage_type="shar", storage_path="", storage_key="", shape=list(context_audio_codes.shape)),
+                            array=Array(
+                                storage_type="shar",
+                                storage_path="",
+                                storage_key="",
+                                shape=list(context_audio_codes.shape),
+                            ),
                             temporal_dim=-1,
                             frame_shift=1 / codec_frame_rate,
                             start=0,
                         )
-                        context_audio_codes_writer.write(key=target_cut.id, value=context_audio_codes.numpy(), manifest=context_codes_array_manifest)
+                        context_audio_codes_writer.write(
+                            key=target_cut.id, value=context_audio_codes.numpy(), manifest=context_codes_array_manifest
+                        )
                 except Exception as e:
-                    logging.error(f"[Worker {worker_pid}, Chunk {chunk_idx}] Error writing target/context audio codes for target cut {target_cut}: {e}", exc_info=True)
+                    logging.error(
+                        f"[Worker {worker_pid}, Chunk {chunk_idx}] Error writing target/context audio codes for target cut {target_cut}: {e}",
+                        exc_info=True,
+                    )
                     chunk_write_errors += 1
                     continue
 

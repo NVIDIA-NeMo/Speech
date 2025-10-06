@@ -1152,6 +1152,9 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             sharded_sd_metadata = self.sharded_state_dict_metadata
         else:
             sharded_sd_metadata = self.unwrapped_checkpoint_io.load_content_metadata(checkpoint_path)
+            if sharded_sd_metadata is None:
+                logging.debug("No content metadata in the checkpoint. Assuming empty metadata for backward compatibility.")
+                sharded_sd_metadata = {}
         sharded_state_dict = {}
         with sharded_state_context():
             sharded_state_dict["state_dict"] = self.megatron_parallel.sharded_state_dict(metadata=sharded_sd_metadata)

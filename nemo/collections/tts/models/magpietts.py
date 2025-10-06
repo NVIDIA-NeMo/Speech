@@ -110,16 +110,25 @@ class MagpieTTSModel(ModelPT):
         vector_quantizer = cfg.get('vector_quantizer')
         if vector_quantizer is not None:
             vector_quantizer = instantiate(vector_quantizer)
-            self.num_audio_codebooks = vector_quantizer.num_codebooks
-            self.codebook_size = vector_quantizer.codebook_size
+            num_audio_codebooks = vector_quantizer.num_codebooks
+            codebook_size = vector_quantizer.codebook_size
             codec_converter = VectorQuantizerIndexConverter(
                 vector_quantizer_original=codec_model.vector_quantizer,
                 vector_quantizer_new=vector_quantizer,
             )
+            data_num_audio_codebooks = codec_model.vector_quantizer.num_codebooks
         else:
-            self.num_audio_codebooks = codec_model.num_codebooks
-            self.codebook_size = codec_model.codebook_size
+            num_audio_codebooks = codec_model.num_codebooks
+            data_num_audio_codebooks = num_audio_codebooks
+            codebook_size = codec_model.codebook_size
             codec_converter = None
+        # The dataloader needs to know the number of codebooks that the context codes were stored in
+        # In the case where there are no context codes saved, and there is no context audio (in the text context path),
+        # We create a dummy context code tensor that is only [context_BOS, context_EOS] that is repeated for
+        # data_num_audio_codebooks
+        self.data_num_audio_codebooks = data_num_audio_codebooks
+        self.num_audio_codebooks = num_audio_codebooks
+        self.codebook_size = codebook_size
 
         # Our codebooks start with actual audio codec tokens, followed by special tokens.
         # The `forced_*` options are for backward compatibility for models trained with older code.
@@ -2522,7 +2531,7 @@ class MagpieTTSModel(ModelPT):
             audio_eos_id=self.audio_eos_id,
             context_audio_bos_id=self.context_audio_bos_id,
             context_audio_eos_id=self.context_audio_eos_id,
-            num_audio_codebooks=self.num_audio_codebooks,
+            num_audio_codebooks=self.data_num_audio_codebooks,
             codec_model_samples_per_frame=self.codec_model_samples_per_frame,
             prior_scaling_factor=self.cfg.prior_scaling_factor,
             load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
@@ -2552,7 +2561,7 @@ class MagpieTTSModel(ModelPT):
             audio_eos_id=self.audio_eos_id,
             context_audio_bos_id=self.context_audio_bos_id,
             context_audio_eos_id=self.context_audio_eos_id,
-            num_audio_codebooks=self.num_audio_codebooks,
+            num_audio_codebooks=self.data_num_audio_codebooks,
             prior_scaling_factor=self.cfg.prior_scaling_factor,
             load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
             dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)

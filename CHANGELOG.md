@@ -1,6 +1,225 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.5.0
+
+### Highlights
+
+- Collections:
+  - LLM
+    - Nano v2 12B and 9B
+  - Speech
+    - New SpeechLM2 collection
+    - Streaming Softformer model
+    - Deprecate Confidence Ensemble models
+    - parakeet-tdt-0.6b-v3 and canary-1b-v2 models
+    - Added chunk inference support with .transcribe() for canary based models
+    - Enable prediction of timestamps with streaming ASR
+    - Improve ASR models’ invariance to padding/batch size
+    - Qwen prompt format support, SALM generation fixes
+    - High-level SALM model.generate API closely resembling HF models
+    - SALM model initialization with time/memory optimization
+    - SpeechLM2: fixed excessive padding, support on-the-fly resampling for SALM
+
+- Automodel and Export-Deploy functionality are available in their individual repositories respectively and deprecated in NeMo2
+
+### Detailed Changelogs:
+
+#### ASR
+
+<details><summary>Changelog</summary>
+
+- Modernize logger interface by @emmanuel-ferdman :: PR: #13783
+- Higher-level API for SALM.generate by @pzelasko :: PR: #14034
+- add/refactor docs for asr lm customization  by @lilithgrigoryan :: PR: #14088
+- Improve NEST GPU Utilization 1/N by @MahmoudAshraf97 :: PR: #14086
+- Improve ASR models' invariance to padding/batch size by @pzelasko :: PR: #13827
+- Clean up transducer decoding initialization by @artbataev :: PR: #14112
+- Improve NEST GPU Utilization 2/N by @MahmoudAshraf97 :: PR: #14089
+- GPU-accelerated Phrase-Boosting (GPU-PB) for AED decoding by @andrusenkoau :: PR: #14108
+- Fix decoding with ngpu-lm when training (#13994) by @hoangtran9122 :: PR: #13995
+- fix eval_beamsearch_ngram_ctc script by @lilithgrigoryan :: PR: #14238
+- fix wrong typing for ctc-ws context graph by @andrusenkoau :: PR: #14262
+- fix frame vad by @stevehuang52 :: PR: #14337
+- Improve NEST GPU Utilization 3/N by @MahmoudAshraf97 :: PR: #14234
+- remove confidence ensemble models by @lilithgrigoryan :: PR: #14343
+- Fix ASR decoding issues with CUDA graphs in training by @artbataev :: PR: #14184
+- Streaming Sortformer release PR01: uploading bugfixes, refactored variables and yaml file name changes  by @tango4j :: PR: #14416
+- Streaming Sortformer release PR02: unit tests for streaming models and modules by @tango4j :: PR: #14417
+- GPU-accelerated Phrase-Boosting (GPU-PB) for CTC, RNN-T, and TDT decoding by @andrusenkoau :: PR: #14277
+- Fix subsampling chunking test by @monica-sekoyan :: PR: #14452
+- Canary2 with NFA by @monica-sekoyan :: PR: #14121
+- Initial Chunking by @nune-tadevosyan :: PR: #14321
+- Chunking fix by @nune-tadevosyan :: PR: #14482
+- Tutorial and doc update by @nune-tadevosyan :: PR: #14484
+- Streaming Sortformer release PR03: NeMo documentations and tutorial notebook by @tango4j :: PR: #14388
+- Add wget_from_nemo by @nune-tadevosyan :: PR: #14623
+- Downgrade "datasets" library version in ASR tutorial to ensure compatibility with HF Datasets used by @KunalDhawan :: PR: #14685
+- Canary tutorial fix  by @nune-tadevosyan :: PR: #14708
+- Force activations and weights cast to FP32 Jasper Encoder Squeeze-Excite by @erastorgueva-nv :: PR: #14715
+
+</details>
+
+#### TTS
+
+<details><summary>Changelog</summary>
+
+- Improve ASR models' invariance to padding/batch size by @pzelasko :: PR: #13827
+- remove nlp modules by @dimapihtar :: PR: #14127
+- Temporarily Remove Encoder PP Support by @yaoyu-33 :: PR: #14167
+- Remove T5-TTS by @blisc :: PR: #14252
+
+</details>
+
+#### NLP / NMT
+
+<details><summary>Changelog</summary>
+
+- add extra params for MegatronDataSampler by @dimapihtar :: PR: #13956
+- Modernize logger interface by @emmanuel-ferdman :: PR: #13783
+- remove dialogue collection by @dimapihtar :: PR: #14087
+- remove QA collection by @dimapihtar :: PR: #14092
+- remove text nlp collection by @dimapihtar :: PR: #14110
+- remove nlp modules by @dimapihtar :: PR: #14127
+- remove rag collection by @dimapihtar :: PR: #14157
+- remove nmt collection by @dimapihtar :: PR: #14191
+- Fix importerror in transformer_lm_model after nlp module removals by @chtruong814 :: PR: #14199
+- fix QA comments NVBug by @huvunvidia :: PR: #14196
+- Temporarily Remove Encoder PP Support by @yaoyu-33 :: PR: #14167
+- remove mixins collections by @dimapihtar :: PR: #14281
+- feat: print expert groups on megatron init by @clumsy :: PR: #13874
+- [speechlm2] [lhotse] sharegpt data and testloader by @huckiyang :: PR: #14294
+- Add notebook for LoRA on GPT-OSS-20B by @shashank3959 :: PR: #14439
+- Sketch dist-ckpt content versioning by @mikolajblaz :: PR: #13839
+- Change to enable full iteration CUDA graph for LLMs by @vasunvidia :: PR: #14077
+
+</details>
+
+#### Text Normalization / Inverse Text Normalization
+
+<details><summary>Changelog</summary>
+
+- Check lightning and core imports in install test by @chtruong814 :: PR: #14403
+
+</details>
+
+#### Export
+
+<details><summary>Changelog</summary>
+
+- ci: Set L2_NeMo_2_Export_Deploy_Query_In_Framework to be optional by @chtruong814 :: PR: #13946
+- Remove old export doc by @oyilmaz-nvidia :: PR: #14292
+- Llama4 Export: Remove outdated MLP weight transform by @suiyoubi :: PR: #14297
+- Update mllama hf import/export for transformers 4.53 by @meatybobby :: PR: #14327
+
+</details>
+
+#### Bugfixes
+
+<details><summary>Changelog</summary>
+
+- Bugfix for Hyena to the get_t function which comes up when doing longer context inference by @jstjohn :: PR: #14256
+- fix skipped cuHyena kernel while training by @farhadrgh :: PR: #14365
+- Remove flaky Evo2 dataset performance test by @jstjohn :: PR: #14371
+- Use module prefix in restore_modelopt_state by @jenchen13 :: PR: #14384
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Version bump to `2.5.0rc0.dev0` by @github-actions[bot] :: PR: #13944
+- [Llama4] Enable tp comm overlap for llama4 by @gdengk :: PR: #13940
+- Fix for Squad Dataset Download by @rhmukundan :: PR: #13893
+- add nmh HF conversion by @JRD971000 :: PR: #13941
+- Speechlm2 SALM improvements by @pzelasko :: PR: #13829
+- fix dataset issue by @dimapihtar :: PR: #13953
+- Editing MMLU to pull from the correct repo by @ruchaa-apte :: PR: #13991
+- move classes to module to use __target__ feature (#14023) by @nithinraok :: PR: #14031
+- Add Nemotron-H prompt format, fix cut-to-conversation custom attr propagation by @pzelasko :: PR: #13963
+- Bump release_library template to v0.40.0 by @chtruong814 :: PR: #14046
+- [automodel] add support for layer-freezing by @akoumpa :: PR: #14000
+- [Qwen3] Recipe config bug fix by @gdengk :: PR: #14084
+- Add TE import guard in qwen2vl vision module by @chtruong814 :: PR: #14091
+- Update bitsandbytes dependency to v0.46.0 by @pramodk :: PR: #14050
+- Update FSDP2 docstring by @BoxiangW :: PR: #14105
+- Interface to enable fsdp-double-buffer without enabling NCCL-UB by @youngeunkwon0405 :: PR: #14076
+- SpeechLM2 SALM: load ckpt faster, with less GPU memory by @pzelasko :: PR: #14113
+- Add object_storage_cache_path to PreTrainingDataModule by @shunjiad :: PR: #14103
+- Update changelog for `r2.3.0` by @github-actions[bot] :: PR: #14160
+- Fix FLUX test with correct env var by @suiyoubi :: PR: #14149
+- add mmap_bin_files param by @dimapihtar :: PR: #14122
+- Add option to suppress import checks in `Dockerfile.speech` by @artbataev :: PR: #14185
+- Safely import optional python packages by @roclark :: PR: #13936
+- Set flux test as optional by @chtruong814 :: PR: #14190
+- Revert "Safely import optional python packages (#13936)" by @chtruong814 :: PR: #14197
+- Fix "Safely import optional python packages (#13936)" by @chtruong814 :: PR: #14198
+- Add fix for evo2 generate/inference by @jwilber :: PR: #14027
+- Fixing file path suffix by @gautham-kollu :: PR: #14179
+- Update AVLM finetune example for vanilla fine-tuning by @huvunvidia :: PR: #14232
+- [finetune] Add dataset_kwargs to prepare packed sequence data by @jiajunly :: PR: #14169
+- Allow exception in hf ckpt load attempt before fallback to standard l… by @trvachov :: PR: #14214
+- Load master weights from checkpoint by @kunlunl :: PR: #14072
+- Add deploy lora adapter portion by @ruchaa-apte :: PR: #14255
+- fix speechlm lhotse loading nemo_tarred by @stevehuang52 :: PR: #14314
+- Update changelog for `r2.4.0` by @github-actions[bot] :: PR: #14334
+- Flaky test timing out: @pytest.mark.pleasefixme by @pablo-garay :: PR: #14351
+- Support dump perf recipe diff from base recipe by @guyueh1 :: PR: #14206
+- Bugfix degenerate bases evo2 dataset by @jstjohn :: PR: #14359
+- Hyena support for flash decode API by @jstjohn :: PR: #14315
+- Fix Gemma2/3  & Llava (Next) & Llama4 conversion issue with latest transformers by @suiyoubi :: PR: #14367
+- fix: reduce the excessive test time of test_msdd_diar_inference by @tango4j :: PR: #14366
+- SpeechLM2: S2S->S2T data reader, excessive padding fixes by @pzelasko :: PR: #14124
+- chore: Release 2.5.0rc0 by @ko3n1g :: PR: #14389
+- Add pyxis flag for container writable. by @sudostock :: PR: #14395
+- [MoE] Partial Cudagraph support for MoE by @gdengk :: PR: #14362
+- Revert "[MoE] Partial Cudagraph support for MoE (#14362)" by @chtruong814 :: PR: #14402
+- Update AVLM recipes for NeMo-CI runs by @huvunvidia :: PR: #14397
+- Remove nemo1 multimodal and vision by @yaoyu-33 :: PR: #14095
+- Fix LazyNeMoIterator supervision for multi-channel cuts by @anteju :: PR: #14409
+- Bump Mcore to 7f7439f by @chtruong814 :: PR: #14373
+- Use cuhyena rearrange when available. by @moradza :: PR: #14383
+- Fix model training/eval state after PTL validation loop by @paul-gibbons :: PR: #14152
+- Add deprecation notice to eval code by @athitten :: PR: #14316
+- Streaming Sortformer release PR04: Adding functional tests for streaming sortformer by @tango4j :: PR: #14435
+- QWEN2.5-VL 7B Performance Recipe by @tomlifu :: PR: #14401
+- Discount FLOPs in dot-product att by @erhoo82 :: PR: #14424
+- Bump to pytorch 25.06 and newer TE commit by @chtruong814 :: PR: #14423
+- Enable precision aware optimizer for dsv3 by @guyueh1 :: PR: #14444
+- Make VBoost activation conditional by @bdubauski :: PR: #14458
+- cuHyena FFTConv support for Hyena Long Implicit (LI) Layer by @farhadrgh :: PR: #14396
+- Alit/nano v2 by @JRD971000 :: PR: #14464
+- Fix reuse_grad_buf_for_mxfp8_param_ag for mxfp8 by @guyueh1 :: PR: #14445
+- Fix loss mask for chat datasets by @cuichenx :: PR: #14369
+- Rename to subquadratic_ops by @farhadrgh :: PR: #14486
+- Allows using other signals (than SIGTERM) with PreemptionPlugin by @zachmoshe :: PR: #14248
+- Qwen2.5-VL 32B Performance Recipe by @tomlifu :: PR: #14485
+- Alit/nanov2 12b by @JRD971000 :: PR: #14483
+- Freeze tags in in `r2.5.0` by @github-actions[bot] :: PR: #14513
+- deprecate t0 by @dimapihtar :: PR: #14599
+- Cherry pick `Use hugginface_hub for downloading the FLUX checkpoint (14638)` into `r2.5.0` by @chtruong814 :: PR: #14640
+- Cherry pick `Fix function calling notebook (14643)` into `r2.5.0` by @chtruong814 :: PR: #14650
+- Cherry pick `remove service launch scripts (14647)` into `r2.5.0` by @chtruong814 :: PR: #14648
+- Cherry pick `Delete tutorials/llm/llama/biomedical-qa directory (14653)` into `r2.5.0` by @chtruong814 :: PR: #14654
+- Cherry pick `Remove PEFT scheme condition from recipe (14661)` into `r2.5.0` by @chtruong814 :: PR: #14662
+- Cherry pick `fixing kernel restarting when transcribing (14665)` into `r2.5.0` by @chtruong814 :: PR: #14672
+- Delete nemo 1 notebooks by @cuichenx :: PR: #14675
+- Cherry pick `Fixing Sortformer training tutorial notebook (14680)` into `r2.5.0` by @chtruong814 :: PR: #14681
+- Cherry-pick `Update get_tensor_shapes function whose signature was refactored` (14594) into `r2.5.0` by @chtruong814 :: PR: #14678
+- Cherry pick `Skip trt-llm and vllm install in install test (14663)` into `r2.5.0` by @chtruong814 :: PR: #14697
+- Cherry pick `Fix for \EncDecRNNTBPEModel transcribe() failed with TypeError\ (14698)` into `r2.5.0` by @chtruong814 :: PR: #14709
+- Cherry pick `Fix broken link in Reasoning-SFT.ipynb (14716)` into `r2.5.0` by @chtruong814 :: PR: #14717
+- cherry-pick add load-in-4bit param (14636) into r2.5.0 by @dimapihtar :: PR: #14719
+- Cherry pick `Fix deepseek export dtype (14307)` into `r2.5.0` by @chtruong814 :: PR: #14682
+- Cherry pick `remove env var (14739)` into `r2.5.0` by @chtruong814 :: PR: #14746
+- Cherry-pick 'Bump modelopt to 0.35.0 and remove `safe_import("modelopt")` in llm collection (#14656)' into 'r2.5.0' by @chtruong814 :: PR: #14771
+- Cherry pick `Update prune-distill notebooks to Qwen3 + simplify + mmlu eval (14785)` into `r2.5.0` by @chtruong814 :: PR: #14789
+- Cherry pick `Remove export-deploy, automodel, and eval tutorials (14790)` into `r2.5.0` by @chtruong814 :: PR: #14792
+- Cherry pick `ci: Automodel deprecation warning (14787)` into `r2.5.0` by @chtruong814 :: PR: #14791
+
+</details>
+
 ## NVIDIA Neural Modules 2.4.1
 
 ### Detailed Changelogs:

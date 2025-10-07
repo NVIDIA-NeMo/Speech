@@ -165,7 +165,7 @@ def qwen3(config: FLOPSConfig):
     seq_len = config.enc_seq_len
     hidden_size = config.hs
     gated_linear_multiplier = 2
-    query_projection_to_hidden_size_ratio =  config.kv_channels * config.attention_heads / hidden_size
+    query_projection_to_hidden_size_ratio = config.kv_channels * config.attention_heads / hidden_size
 
     # attention flops for GQA
     attention_flops = (

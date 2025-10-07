@@ -345,11 +345,10 @@ def parse_and_combine_datasets(
 
     if isinstance(config_list, (str, Path)):
         # Resolve local filepath /path/to/input_cfg.yaml or remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
-        config_list = load_yaml(config_list)
+        config_list = OmegaConf.create(load_yaml(config_list))
     assert len(config_list) > 0, "Empty group in dataset config list."
 
-    for item_dict in config_list:
-        item = OmegaConf.create(item_dict)
+    for item in config_list:
         # Check if we have any attributes that are propagated downwards to each item in the group.
         # If a key already exists in the item, it takes precedence (we will not overwrite);
         # otherwise we will assign it.

@@ -13,7 +13,7 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \
-    pretrained_name="nvidia/stt_en_fastconformer_transducer_large" \
+    model_path="/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo" \
     audio_dir="/home/TestData/an4_transcribe/test_subset/" \
     chunk_secs=2.0 \
     left_context_secs=10.0 \

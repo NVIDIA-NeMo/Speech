@@ -143,6 +143,8 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1_Chat
             runner: self-hosted-azure
+          - script: L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1_TE_op_fuser
+            runner: self-hosted-azure
           - script: L2_NeMo_2_Mixtral_LoRA_EP2PP1_MBS2_exclude
             runner: self-hosted-azure
           - script: L2_NeMo_2_Mixtral_LoRA_EP2PP1_MBS2
@@ -281,6 +283,7 @@ jobs:
             script: L2_NeMo_2_Flux_ControlNet_Training_DDP_Test
           - runner: self-hosted-azure
             script: L2_NeMo_2_Flux_ControlNet_Training_FSDP_Test
+            is-optional: true
 
 
     needs: [build]

@@ -27,7 +27,7 @@ from megatron.core.models.common.embeddings.language_model_embedding import Lang
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.common.language_module.language_module import LanguageModule
 from megatron.core.packed_seq_params import PackedSeqParams
-from megatron.core.process_groups_config import ModelCommProcessGroups
+from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.quantization.utils import get_quant_config_or_none
 from megatron.core.transformer.enums import ModelType
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
@@ -74,21 +74,21 @@ class HyenaModel(LanguageModule):
         hyena_output_layer_init_method: str = None,
         remove_activation_post_first_layer: bool = True,
         add_attn_proj_bias: bool = True,
-        model_comm_pgs: Optional[ModelCommProcessGroups] = None,
+        pg_collection: Optional[ProcessGroupCollection] = None,
         vp_stage: Optional[int] = None,
     ) -> None:
-        # Check if super().__init__ accepts model_comm_pgs parameter
+        # Check if super().__init__ accepts pg_collection parameter
         super_init_signature = inspect.signature(super().__init__)
-        if 'model_comm_pgs' in super_init_signature.parameters:
-            super().__init__(config=transformer_config, model_comm_pgs=model_comm_pgs)
+        if 'pg_collection' in super_init_signature.parameters:
+            super().__init__(config=transformer_config, pg_collection=pg_collection)
         else:
-            # Older version of Megatron does not initialize model_comm_pgs yet.
+            # Older version of Megatron does not initialize pg_collection yet.
             super().__init__(config=transformer_config)
-            # Store model_comm_pgs for use in submodules
-            if model_comm_pgs is None:
-                model_comm_pgs = ModelCommProcessGroups.use_mpu_process_groups()
-            self.model_comm_pgs = model_comm_pgs
-            self.pp_group = model_comm_pgs.pp
+            # Store pg_collection for use in submodules
+            if pg_collection is None:
+                pg_collection = ProcessGroupCollection.use_mpu_process_groups()
+            self.pg_collection = pg_collection
+            self.pp_group = pg_collection.pp
 
         self.transformer_config = transformer_config
         self.hyena_config = HyenaConfig()
@@ -131,7 +131,7 @@ class HyenaModel(LanguageModule):
                 vocab_size=self.vocab_size,
                 max_sequence_length=self.max_sequence_length,
                 position_embedding_type=position_embedding_type,
-                tp_group=self.model_comm_pgs.tp,
+                tp_group=self.pg_collection.tp,
             )
         # Cache for RoPE tensors which do not change between iterations.
         self.rotary_pos_emb_cache = {}
@@ -142,7 +142,7 @@ class HyenaModel(LanguageModule):
                 seq_len_interpolation_factor=seq_len_interpolation_factor,
                 rotary_base=rotary_base,
                 use_cpu_initialization=self.transformer_config.use_cpu_initialization,
-                cp_group=self.model_comm_pgs.cp,
+                cp_group=self.pg_collection.cp,
             )
 
         self.decoder = build_module(
@@ -154,7 +154,7 @@ class HyenaModel(LanguageModule):
             pre_process=self.pre_process,
             post_process=self.post_process,
             post_layer_norm=self.post_layer_norm,
-            model_comm_pgs=self.model_comm_pgs,
+            pg_collection=self.pg_collection,
         )
 
         # In some Hyena species, the published checkpoint has identity activations after the first
@@ -219,7 +219,7 @@ class HyenaModel(LanguageModule):
                 skip_bias_add=False,
                 gather_output=not self.parallel_output,
                 skip_weight_param_allocation=self.pre_process and self.share_embeddings_and_output_weights,
-                tp_group=self.model_comm_pgs.tp,
+                tp_group=self.pg_collection.tp,
             )
             if self.config.add_bias_output:
                 self.output_layer.bias.data.zero_()

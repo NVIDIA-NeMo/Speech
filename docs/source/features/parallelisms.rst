@@ -172,7 +172,7 @@ Implement Tensor Parallelism
 
 NeMo Framework integrates TP through the implementation from Megatron Core. To understand how TP is activated within transformer blocks, refer to the code in the following repository: `Megatron-LM Transformer Block <https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/transformer_block.py>`__.
 
-For detailed API usage and additional configurations, consult the `Megatron Core Developer Guide <https://docs.nvidia.com/Megatron-Core/developer-guide/latest/api-guide/tensor_parallel.html>`_.
+For detailed API usage and additional configurations, consult the `Megatron Core Developer Guide <https://docs.nvidia.com/megatron-core/developer-guide/latest/api-guide/tensor_parallel.html>`_.
 
 ..
     FSDP is not supported in NeMo 2.0 yet.
@@ -252,7 +252,7 @@ Implement Pipeline Parallelism
 
 The NeMo Framework implementation of PP leverages functionalities from Megatron Core. For a practical example of how PP is implemented within transformer blocks in NeMo, you can inspect the following codebase: `Megatron-LM Transformer Block <https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/transformer_block.py>`_.
 
-For more detailed API usage and configurations related to PP, visit the `Megatron Core Developer Guide <https://docs.nvidia.com/Megatron-Core/developer-guide/latest/api-guide/tensor_parallel.html>`_.
+For more detailed API usage and configurations related to PP, visit the `Megatron Core Developer Guide <https://docs.nvidia.com/megatron-core/developer-guide/latest/api-guide/tensor_parallel.html>`_.
 
 Expert Parallelism
 ^^^^^^^^^^^^^^^^^^
@@ -392,7 +392,7 @@ Set ``context_parallel_size`` directly from CLI:
       
       nemo llm pretrain --factory llama3_8b model.config.context_parallel_size=2
 
-The configuration can be found and modified here: `NeMo Megatron Core Context Config <https://docs.nvidia.com/Megatron-Core/developer-guide/latest/api-guide/context_parallel.html>`_.
+The configuration can be found and modified here: `NeMo Megatron Core Context Config <https://docs.nvidia.com/megatron-core/developer-guide/latest/api-guide/context_parallel.html>`_.
 
 Implement Context Parallelism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

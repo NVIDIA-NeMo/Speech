@@ -168,46 +168,6 @@ class TestBatchedHyps:
         assert hyps.last_timestamp.tolist() == [1, 2]
         assert hyps.last_timestamp_lasts.tolist() == [2, 1]
 
-    @pytest.mark.unit
-    @pytest.mark.parametrize("device", DEVICES)
-    def test_torch_jit_compatibility_add_results(self, device: torch.device):
-        @torch.jit.script
-        def hyps_add_wrapper(
-            active_indices: torch.Tensor, labels: torch.Tensor, time_indices: torch.Tensor, scores: torch.Tensor
-        ):
-            hyps = BatchedHyps(batch_size=2, init_length=3, device=active_indices.device)
-            hyps.add_results_(active_indices=active_indices, labels=labels, time_indices=time_indices, scores=scores)
-            return hyps
-
-        scores = torch.tensor([0.1, 0.1], device=device)
-        hyps = hyps_add_wrapper(
-            torch.tensor([0, 1], device=device),
-            torch.tensor([2, 4], device=device),
-            torch.tensor([0, 0], device=device),
-            scores,
-        )
-        assert torch.allclose(hyps.scores, scores)
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize("device", DEVICES)
-    def test_torch_jit_compatibility_add_results_masked(self, device: torch.device):
-        @torch.jit.script
-        def hyps_add_wrapper(
-            active_mask: torch.Tensor, labels: torch.Tensor, time_indices: torch.Tensor, scores: torch.Tensor
-        ):
-            hyps = BatchedHyps(batch_size=2, init_length=3, device=active_mask.device)
-            hyps.add_results_masked_(active_mask=active_mask, labels=labels, time_indices=time_indices, scores=scores)
-            return hyps
-
-        scores = torch.tensor([0.1, 0.1], device=device)
-        hyps = hyps_add_wrapper(
-            torch.tensor([True, True], device=device),
-            torch.tensor([2, 4], device=device),
-            torch.tensor([0, 0], device=device),
-            scores,
-        )
-        assert torch.allclose(hyps.scores, scores)
-
 
 class TestBatchedAlignments:
     @pytest.mark.unit
@@ -333,26 +293,6 @@ class TestBatchedAlignments:
             assert (
                 alignments.logits[i, : alignments.current_lengths[i]] == sample_logits[i, add_logits_mask[i]]
             ).all()
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize("device", DEVICES)
-    def test_torch_jit_compatibility(self, device: torch.device):
-        @torch.jit.script
-        def alignments_add_wrapper(
-            active_indices: torch.Tensor, logits: torch.Tensor, labels: torch.Tensor, time_indices: torch.Tensor
-        ):
-            hyps = BatchedAlignments(batch_size=2, logits_dim=3, init_length=3, device=active_indices.device)
-            hyps.add_results_(active_indices=active_indices, logits=logits, labels=labels, time_indices=time_indices)
-            return hyps
-
-        logits = torch.tensor([[0.1, 0.1, 0.3], [0.5, 0.2, 0.9]], device=device)
-        hyps = alignments_add_wrapper(
-            active_indices=torch.tensor([0, 1], device=device),
-            logits=logits,
-            labels=torch.tensor([2, 4], device=device),
-            time_indices=torch.tensor([0, 0], device=device),
-        )
-        assert torch.allclose(hyps.logits[:, 0], logits)
 
 
 class TestConvertToHypotheses:

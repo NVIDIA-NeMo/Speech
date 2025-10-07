@@ -1,0 +1,35 @@
+# Model registry configuration
+# Centralized registry of available models and their corresponding configuration files
+#
+# "reasoning_supported=true" means that there's a another llm yaml file with the same name but addidional "_think.yaml" suffix,
+# which is tested to work as expected, otherwise you need to mamually modify the llm yaml to enable their reasoning mode.
+
+llm_models:
+  "nvidia/NVIDIA-Nemotron-Nano-9B-v2":
+    yaml_id: "nemotron_nano_v2.yaml"
+    reasoning_supported: false
+    
+  "meta-llama/Llama-3.1-8B-Instruct":
+    yaml_id: "llama3.1-8B-instruct.yaml"
+    reasoning_supported: false
+
+  "Qwen/Qwen2.5-7B-Instruct":
+    yaml_id: "qwen2.5-7B.yaml"
+    reasoning_supported: false
+    
+  "Qwen/Qwen3-8B":
+    yaml_id: "qwen3-8B.yaml"
+    reasoning_supported: true
+
+  "hf_llm_generic":
+    yaml_id: "hf_llm_generic.yaml"
+    reasoning_supported: false
+
+tts_models:
+  "fastpitch-hifigan":
+    yaml_id: "nemo_fastpitch-hifigan.yaml"
+
+stt_models:
+  "stt_en_fastconformer_hybrid_large_streaming_80ms":
+    yaml_id: "nemo_cache_aware_streaming.yaml"
+    type: "nemo"

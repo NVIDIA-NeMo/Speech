@@ -1,0 +1,54 @@
+# This is an example config for setting up a NeMo Voice Agent server.
+# Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
+# STT, LLM and TTS models have standalone configs in the folder "server/server_configs/{stt,llm,tts}_configs".
+# Specify the type and an a model identifier to automatically configure the model.
+
+transport:
+  audio_out_10ms_chunks: 10  # use 4 as websocket default, but increasing to a larger number might have less glitches in TTS output
+
+vad:
+  type: silero
+  confidence: 0.6  # VAD threshold for detecting speech versus non-speech
+  start_secs: 0.1  # min amount of speech to trigger UserStartSpeaking
+  stop_secs: 0.8  # min amount of silence to trigger UserStopSpeaking
+  min_volume: 0.4  # Microphone volumn threshold for VAD
+
+stt:
+  type: nemo # choices in ['nemo'] currently only NeMo is supported
+  model: "stt_en_fastconformer_hybrid_large_streaming_80ms"
+  model_config: "./server_configs/stt_configs/nemo_cache_aware_streaming.yaml"
+  device: "cuda"
+
+diar:
+  type: nemo
+  enabled: true # set to false to disable
+  model: "nvidia/diar_streaming_sortformer_4spk-v2"
+  device: "cuda"
+  threshold: 0.4  # threshold value used to determine if a speaker exists or not, setting it to a lower value will increaset the sensitivity of the model
+  frame_len_in_secs: 0.08  # default for Sortformer, do not change unless using other architechtures
+
+turn_taking:
+  backchannel_phrases_path: "./server/backchannel_phrases.yaml"  # set it to the actual path of the file, or specify a list of backchannel phrases here
+  max_buffer_size: 2  # num of words more than this amount will interrupt the LLM immediately if not backchannel phrases
+  bot_stop_delay: 0.5  # a delay in seconds allowed between server and client audio output, so that the BotStopSpeaking signal is handled not too far away from the actual time that the user hears all audio output
+
+llm:
+  type: auto  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
+  model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+  # if `model_config` is not specified, and the llm.model is not in model_registry.yaml, it will use `llm_configs/hf_llm_generic.yaml`
+  model_config: "./server_configs/llm_configs/nemotron_nano_v2.yaml"
+  # model: "Qwen/Qwen2.5-7B-Instruct" 
+  # model_config: "./server_configs/llm_configs/qwen2.5-7B.yaml"
+  # model: "Qwen/Qwen3-8B"
+  # model_config: "./server_configs/llm_configs/qwen3-8B.yaml"
+  device: "cuda"
+  enable_reasoning: false  # it's best to turn-off reasoning for lowest latency
+  # `system_prompt` is used as the sytem prompt to the LLM, please refer to differnt LLM webpage for spcial functions like enabling/disabling thinking
+  # system_prompt: /path/to/prompt.txt  # or use path to a txt file that contains a long prompt, for example in `../example_prompts/fast_bite.txt`
+  system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user warmly and introducing yourself within one sentence. Your answer should be concise and to the point. You might also see speaker tags (<speaker_0>, <speaker_1>, etc.) in the user context. You should respond to the user based on the speaker tag and the context of that speaker. Do not include the speaker tags in your response, use them only to identify the speaker."
+
+tts:
+  type: nemo # choices in ['nemo', 'hf']
+  model: fastpitch-hifigan
+  model_config: "./server_configs/tts_configs/nemo_fastpitch-hifigan.yaml"
+  device: "cuda"

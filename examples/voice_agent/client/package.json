@@ -1,0 +1,26 @@
+{
+  "name": "client",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/protobufjs": "^6.0.0",
+    "@vitejs/plugin-react-swc": "^3.10.1",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  },
+  "dependencies": {
+    "@pipecat-ai/client-js": "^0.4.0",
+    "@pipecat-ai/websocket-transport": "^0.4.1",
+    "protobufjs": "^7.4.0"
+  }
+}

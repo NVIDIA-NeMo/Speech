@@ -331,7 +331,7 @@ def main(cfg: TranscriptionConfig):
             f"Compute dtype {compute_dtype} is not yet supported for cache-aware models, use float32 instead"
         )
 
-    if sum((cfg.audio_file is not None, cfg.dataset_manifest is not None, cfg.audio_dir is not None)):
+    if sum((cfg.audio_file is not None, cfg.dataset_manifest is not None, cfg.audio_dir is not None)) != 1:
         raise ValueError("Exactly one of the `audio_file`, `dataset_manifest` or `audio_dir` should be non-empty!")
 
     asr_model, model_name = setup_model(cfg=cfg, map_location=device)

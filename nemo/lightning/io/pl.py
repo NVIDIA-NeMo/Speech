@@ -411,7 +411,8 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
         if sharded_state_dict_metadata is None:
             sharded_state_dict_metadata = {"distrib_optim_sharding_type": "fully_sharded_model_space"}
             logging.info(
-                f"No content metadata in the checkpoint. Assuming backward compatibility metadata: {sharded_state_dict_metadata}"
+                f"No content metadata in the checkpoint."
+                f" Assuming backward compatibility metadata: {sharded_state_dict_metadata}"
             )
         else:
             logging.info(f'Loaded sharded_state_dict_metadata from checkpoint: {sharded_state_dict_metadata}')

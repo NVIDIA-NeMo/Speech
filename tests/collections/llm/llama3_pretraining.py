@@ -75,8 +75,9 @@ def get_args():
         action='store_true',
         help="Attach PytorchProfilerCallback and verify trace files after training",
     )
-    parser.add_argument('--ckpt-optim-fully-reshardable', action='store_true',
-                        help="Enable optimizer checkpoint fully-reshardability")
+    parser.add_argument(
+        '--ckpt-optim-fully-reshardable', action='store_true', help="Enable optimizer checkpoint fully-reshardability"
+    )
 
     return parser.parse_args()
 

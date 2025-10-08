@@ -223,7 +223,7 @@ fi
 # Step 3: Run the noise job
 mkdir -p {job_dir}/noise
 echo "Launching noise in the background"
-NUMBER_OF_PAIRS=$(($NUM_WORKLOAD_B_NODES * 4)) # we have 8 GPUS per node, and we want to split to pairs
+NUMBER_OF_PAIRS=$(($NUM_OF_NOISE_NODES * 4)) # we have 8 GPUS per node, and we want to split to pairs
   srun --nodes=${{NUM_OF_NOISE_NODES}} --nodelist=${{NOISE_NODES}} --label --ntasks-per-node=8 --output={job_dir}/noise/out.log --error={job_dir}/noise/err.log --export=ALL --mpi=pmix --container-image={self.isolation_container_image} bash -c "NCCL_TESTS_SPLIT=%${{NUMBER_OF_PAIRS}} NCCL_IB_QPS_PER_CONNECTION=4 sendrecv_perf_mpi --nthreads 1 --ngpus 1 --minbytes 4G --maxbytes 4G --stepbytes 1M --op sum --datatype float --root 0 --iters 25 --warmup_iters 1 --agg_iters 1 --average 1 --parallel_init 0 --check 0 --blocking 0 --cudagraph 0 --stepfactor 2 --run_cycles 0 -R 1" &
 
 # wait for the noise to build up

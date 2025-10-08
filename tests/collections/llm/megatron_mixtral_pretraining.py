@@ -19,6 +19,7 @@ from pathlib import Path
 import torch
 from megatron.core.distributed import DistributedDataParallelConfig as McoreDDPConfig
 from megatron.core.transformer.enums import AttnBackend
+from megatron.core.dist_checkpointing import load_content_metadata
 
 from nemo.collections.llm import MixtralConfig8x3B, MixtralModel, PreTrainingDataModule
 from nemo.collections.llm.api import train
@@ -326,6 +327,21 @@ def main(args):
         ),
     }
     ckpt = load_dcp(output_path)
+
+    # Handle new optimizer format
+    content_metadata = load_content_metadata(output_path)
+    if content_metadata and content_metadata.get('distrib_optim_sharding_type') == 'dp_reshardable':
+        optim_keys = set(k for k in ckpt.keys() if k.startswith('optimizer') or k.startswith('chained_'))
+        for optim_key in optim_keys:
+            assert optim_key.split(".")[-1] in ["param", "exp_avg", "exp_avg_sq"]
+            assert "dp_group_idx" in optim_key and "gbuf_idx" in optim_key and "bucket_idx" in optim_key, f"Unexpected dp_reshardable optimizer key structure: {optim_key}"
+            # we can't check the exact size because it differs for different devices num
+            assert len(ckpt[optim_key].shape) == 1, f"Expected {optim_key} to be 1-dimensional"
+
+        # Trim state dicts for the rest of the checks to only compare model parts
+        ckpt = {k: v for k, v in ckpt.items() if k not in optim_keys}
+        expected_ckpt = {k: v for k, v in expected_ckpt.items() if not k.startswith('optimizer')}
+
     ckpt_keys = set(ckpt.keys())
     expected_keys = set(expected_ckpt.keys())
     assert len(ckpt) == len(expected_ckpt), (

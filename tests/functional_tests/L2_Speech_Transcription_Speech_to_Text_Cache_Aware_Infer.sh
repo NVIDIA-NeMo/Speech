@@ -13,6 +13,6 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py \
-    pretrained_name="/home/TestData/asr/stt_en_fastconformer_hybrid_large_streaming_multi.nemo" \
+    model_path="/home/TestData/asr/stt_en_fastconformer_hybrid_large_streaming_multi.nemo" \
     audio_dir="/home/TestData/an4_transcribe/test_subset/" \
     output_path="/tmp/stt_cache_aware_streaming_test_res"

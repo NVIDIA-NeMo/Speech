@@ -26,7 +26,10 @@ def get_metadata(
     ckpt_parallel_save_optim: bool = None,
     ckpt_optim_fully_reshardable: bool = None,
 ) -> dict:
-    metadata = {'singleton_local_shards': False}
+    metadata = {
+        'singleton_local_shards': False,
+        'chained_optim_avoid_prefix': True,
+    }
     if ckpt_save_pre_mcore_014:
         if ckpt_parallel_save_optim:
             metadata['distrib_optim_sharding_type'] = 'fully_sharded_model_space'

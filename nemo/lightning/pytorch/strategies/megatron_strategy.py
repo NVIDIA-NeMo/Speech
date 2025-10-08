@@ -1198,6 +1198,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     def sharded_state_dict_metadata(self):
         """Metadata used for sharded_state_dict generation during checkpoint save."""
         metadata = {}
+        metadata['singleton_local_shards'] = False
         use_distributed_optimizer = (
             isinstance(self.ddp_config, DistributedDataParallelConfig) and self.ddp_config.use_distributed_optimizer
         )
@@ -1213,14 +1214,12 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             )
 
         if self.ckpt_save_pre_mcore_014 or force_pre_mcore_014:
-            metadata['singleton_local_shards'] = False
             if use_distributed_optimizer and not use_megatron_fsdp:
                 if self.parallel_save_optim:
                     metadata["distrib_optim_sharding_type"] = "fully_sharded_model_space"
                 else:
                     metadata["distrib_optim_sharding_type"] = "dp_zero_gather_scatter"
         else:
-            metadata['singleton_local_shards'] = True
             if use_distributed_optimizer and not use_megatron_fsdp:
                 if self.ckpt_optim_fully_reshardable:
                     metadata['distrib_optim_sharding_type'] = 'fully_reshardable'

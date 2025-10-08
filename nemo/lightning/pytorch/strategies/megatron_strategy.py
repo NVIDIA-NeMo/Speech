@@ -1199,6 +1199,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         """Metadata used for sharded_state_dict generation during checkpoint save."""
         metadata = {}
         metadata['singleton_local_shards'] = False
+        metadata['chained_optim_avoid_prefix'] = True
+
         use_distributed_optimizer = (
             isinstance(self.ddp_config, DistributedDataParallelConfig) and self.ddp_config.use_distributed_optimizer
         )

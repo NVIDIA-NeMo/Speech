@@ -107,9 +107,7 @@ def get_lm_model(
 
     def get_megatron_pretrained_bert_models() -> List[str]:
 
-        all_pretrained_megatron_bert_models = [
-            model.pretrained_model_name for model in list_available_models()
-        ]
+        all_pretrained_megatron_bert_models = [model.pretrained_model_name for model in list_available_models()]
         return all_pretrained_megatron_bert_models
 
     all_pretrained_megatron_bert_models = get_megatron_pretrained_bert_models()

@@ -227,9 +227,7 @@ class BatchedBeamHyps:
             self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
 
         if self.model_type == ASRModelTypeEnum.TDT:
-            self.token_durations = torch.cat(
-                (self.token_durations, torch.zeros_like(self.token_durations)), dim=-1
-            )
+            self.token_durations = torch.cat((self.token_durations, torch.zeros_like(self.token_durations)), dim=-1)
 
         self._max_length *= 2
 

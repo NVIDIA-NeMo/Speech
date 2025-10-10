@@ -83,6 +83,7 @@ class BaseNemoTTSService(TTSService):
         raise NotImplementedError("Subclass must implement _generate_audio")
 
     def can_generate_metrics(self) -> bool:
+        """If the TTS service can generate metrics."""
         return True
 
     async def start(self, frame: StartFrame):
@@ -359,6 +360,17 @@ class BaseNemoTTSService(TTSService):
 
 
 class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
+    """Text-to-Speech service using NeMo FastPitch-Hifigan model.
+
+    More info: https://huggingface.co/nvidia/tts_en_fastpitch
+
+    Args:
+        fastpitch_model: FastPitch model name
+        hifigan_model: Hifigan model name
+        device: Device to run on (default: 'cuda')
+        **kwargs: Additional arguments passed to BaseNemoTTSService
+    """
+
     def __init__(
         self,
         fastpitch_model: str = "nvidia/tts_en_fastpitch",
@@ -461,7 +473,8 @@ class KokoroTTSService(BaseNemoTTSService):
             # We only need the audio component
             for i, (gs, ps, audio) in enumerate(generator):
                 logger.debug(
-                    f"Kokoro generated audio chunk {i}: gs={gs}, ps={ps}, audio_shape={audio.shape if hasattr(audio, 'shape') else len(audio)}"
+                    f"Kokoro generated audio chunk {i}: gs={gs}, ps={ps},"
+                    f"audio_shape={audio.shape if hasattr(audio, 'shape') else len(audio)}"
                 )
                 if isinstance(audio, torch.Tensor):
                     audio = audio.detach().cpu().numpy()

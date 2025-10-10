@@ -22,19 +22,6 @@ import sys
 from loguru import logger
 from omegaconf import OmegaConf
 
-# Configure loguru to output to both console and file
-logger.remove()  # Remove default handler
-logger.add(
-    sys.stderr,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-    level="DEBUG",
-)
-
-logger.add("bot_server.log", rotation="1 day", level="DEBUG")
-
-# Global flag for graceful shutdown
-shutdown_event = asyncio.Event()
-
 from pipecat.audio.vad.silero import SileroVADAnalyzer, VADParams
 from pipecat.frames.frames import EndTaskFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -55,6 +42,24 @@ from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import 
 )
 from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
 from nemo.agents.voice_agent.utils.config_manager import ConfigManager
+
+
+def setup_logging():
+    # Configure loguru to output to both console and file
+    logger.remove()  # Remove default handler
+    logger.add(
+        sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level="DEBUG",
+    )
+
+    logger.add("bot_server.log", rotation="1 day", level="DEBUG")
+
+
+setup_logging()
+
+# Global flag for graceful shutdown
+shutdown_event = asyncio.Event()
 
 # Initialize configuration manager
 config_manager = ConfigManager(
@@ -288,6 +293,9 @@ async def run_bot_websocket_server():
 
     # Track task state
     task_running = True
+
+    # Setup logging again to avoid logger from being overwritten during setting up the pipeline components
+    setup_logging()
 
     @rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi: RTVIProcessor):

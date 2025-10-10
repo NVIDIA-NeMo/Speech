@@ -220,6 +220,10 @@ class HuggingFaceLLMLocalService(LLMUtilsMixin):
 
 
 class HuggingFaceLLMService(OpenAILLMService):
+    """
+    LLM service that hosts a HuggingFace model.
+    """
+
     def __init__(
         self,
         *,
@@ -301,6 +305,10 @@ class HuggingFaceLLMService(OpenAILLMService):
 
 
 class VLLMService(OpenAILLMService, LLMUtilsMixin):
+    """
+    LLM service that hosts a vLLM server.
+    """
+
     def __init__(
         self,
         *,

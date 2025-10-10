@@ -60,6 +60,8 @@ token after the pipe and it is a 'd' character. Make sure tests are consistent w
             )
 """
 
+MAX_TAG_LEN = 2048
+
 
 @pytest.fixture
 def tag_tokens():
@@ -98,6 +100,7 @@ def test_mask_phylogenetic_tags_with_eod(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],  # '|'
         other_tag_chars=tag_tokens["other_chars"],  # { '_',';',' ' }
         eod_token_id=tag_tokens["eod"],  # 0
+        max_tag_len=MAX_TAG_LEN,
     )
 
     expected_mask = torch.tensor([1, 0, 0, 1, 0, 1])
@@ -115,55 +118,69 @@ def test_mask_phylogenetic_tags_middle(tag_tokens):
     Expected behavior: The DNA should be unmasked (1s) while everything between
     and including the pipe characters should be masked (0s), as it's a valid phylo tag.
     """
-    sequence = torch.tensor(
-        [
-            65,
-            84,
-            71,  # ATG
-            124,
-            100,
-            110,
-            102,
-            111,
-            95,
-            116,
-            97,
-            103,
-            124,  # |d__tag|
-            84,
-            67,
-            71,
-            65,  # TCGA
-        ]
-    )
+    # use a viral style phylo tag in upper case this time.
+    sequence_chrs = "ATG|R__tag|TCGA"
+    expected_mask = torch.tensor([1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1])
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
 
     mask = Evo2Dataset.mask_phylogenetic_tags(
         tokenized_sequence=sequence,
         terminal_tag_char=tag_tokens["terminal"],  # |
         other_tag_chars=tag_tokens["other_chars"],  # _, ;, space
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
+    assert torch.equal(mask, expected_mask)
 
-    expected_mask = torch.tensor(
-        [
-            1,
-            1,
-            1,  # DNA unmasked
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,  # phylo tag masked
-            1,
-            1,
-            1,
-            1,  # DNA unmasked
-        ]
+
+def test_mask_phylogenetic_tags_middle_new_format(tag_tokens):
+    """Tests masking a phylogenetic tag that appears in the middle of a DNA sequence.
+
+    The sequence contains:
+    1. Normal DNA (ATG)
+    2. A novel format phylo tag (|X_|)
+    3. More DNA (TCGA)
+
+    Expected behavior: The DNA should be unmasked (1s) while everything between
+    and including the pipe characters should be masked (0s), as it's a valid phylo tag.
+    """
+    # use a viral style phylo tag in upper case this time.
+    sequence_chrs = "ATG|X__tag|TCGA"
+    expected_mask = torch.tensor([1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1])
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
+
+    mask = Evo2Dataset.mask_phylogenetic_tags(
+        tokenized_sequence=sequence,
+        terminal_tag_char=tag_tokens["terminal"],  # |
+        other_tag_chars=tag_tokens["other_chars"],  # _, ;, space
+        eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
+    )
+    assert torch.equal(mask, expected_mask)
+
+
+def test_mask_phylogenetic_tags_middle_missing_top_level_annotation(tag_tokens):
+    """Tests masking a phylogenetic tag that appears in the middle of a DNA sequence.
+
+    The sequence contains:
+    1. Normal DNA (ATG)
+    2. A novel format phylo tag (|;;;|)
+    3. More DNA (TCGA)
+
+    Expected behavior: The DNA should be unmasked (1s) while everything between
+    and including the pipe characters should be masked (0s), as it's a valid phylo tag.
+    """
+    # use a viral style phylo tag in upper case this time.
+    sequence_chrs = "ATG|;;;;;|TCGA"
+    expected_mask = torch.tensor([1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1])
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
+
+    mask = Evo2Dataset.mask_phylogenetic_tags(
+        tokenized_sequence=sequence,
+        terminal_tag_char=tag_tokens["terminal"],  # |
+        other_tag_chars=tag_tokens["other_chars"],  # _, ;, space
+        eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     assert torch.equal(mask, expected_mask)
 
@@ -198,6 +215,7 @@ def test_mask_partial_tag_start(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
 
     expected_mask = torch.tensor(
@@ -226,40 +244,68 @@ def test_mask_partial_tag_end(tag_tokens):
     Sequence: "ATG|info_" (ending mid-tag)
     Expected: DNA unmasked, all tag-related characters masked
     """
-    sequence = torch.tensor(
-        [
-            65,
-            84,
-            71,  # ATG
-            124,  # |
-            100,
-            110,
-            102,
-            111,
-            95,  # info_
-        ]
-    )
+    sequence_chrs = "ATG|r_"
+    expected_mask = torch.tensor([1, 1, 1, 0, 0, 0])
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
 
     mask = Evo2Dataset.mask_phylogenetic_tags(
         tokenized_sequence=sequence,
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
 
-    expected_mask = torch.tensor(
-        [
-            1,
-            1,
-            1,  # DNA unmasked
-            0,  # opening pipe masked
-            0,
-            0,
-            0,
-            0,
-            0,  # partial tag end masked
-        ]
+    assert torch.equal(mask, expected_mask)
+
+
+def test_mask_partial_tag_end2(tag_tokens):
+    """Tests handling a sequence that ends with a partial phylogenetic tag.
+
+    The sequence contains DNA followed by an opening pipe and tag characters,
+    but no closing pipe. Per requirements, we aggressively mask any potential
+    tag characters to ensure the model only learns DNA bases {A,C,G,T}.
+
+    Sequence: "ATG|info_" (ending mid-tag)
+    Expected: DNA unmasked, all tag-related characters masked
+    """
+    sequence_chrs = "ATG|D"
+    expected_mask = torch.tensor([1, 1, 1, 0, 0])
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
+
+    mask = Evo2Dataset.mask_phylogenetic_tags(
+        tokenized_sequence=sequence,
+        terminal_tag_char=tag_tokens["terminal"],
+        other_tag_chars=tag_tokens["other_chars"],
+        eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
+
+    assert torch.equal(mask, expected_mask)
+
+
+def test_mask_partial_tag_end3(tag_tokens):
+    """Tests handling a sequence that ends with a partial phylogenetic tag.
+
+    The sequence contains DNA followed by an opening pipe and tag characters,
+    but no closing pipe. Per requirements, we aggressively mask any potential
+    tag characters to ensure the model only learns DNA bases {A,C,G,T}.
+
+    Sequence: "ATG|info_" (ending mid-tag)
+    Expected: DNA unmasked, all tag-related characters masked
+    """
+    sequence_chrs = "ATG|;"
+    expected_mask = torch.tensor([1, 1, 1, 0, 0])
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
+
+    mask = Evo2Dataset.mask_phylogenetic_tags(
+        tokenized_sequence=sequence,
+        terminal_tag_char=tag_tokens["terminal"],
+        other_tag_chars=tag_tokens["other_chars"],
+        eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
+    )
+
     assert torch.equal(mask, expected_mask)
 
 
@@ -270,17 +316,19 @@ def test_standalone_tag(tag_tokens):
     non-DNA characters. This ensures the model only learns to output
     {A,C,G,T} tokens.
 
-    Sequence: |tag_|
+    Sequence: |d__tag|
     Expected: All tokens masked (all zeros)
     """
-    sequence = torch.tensor([124, 100, 97, 103, 95, 124])  # |dtag_|
+    sequence_chrs = "|d__tag|"
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])  # |d__tag|
     mask = Evo2Dataset.mask_phylogenetic_tags(
         tokenized_sequence=sequence,
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
-    expected = torch.tensor([0, 0, 0, 0, 0, 0])  # All masked
+    expected = torch.tensor([0] * len(sequence_chrs))  # All masked
     assert torch.equal(mask, expected)
 
 
@@ -291,29 +339,19 @@ def test_sequence_starting_with_tag(tag_tokens):
     DNA bases, the tag portion is masked while the DNA portion remains
     unmasked.
 
-    Sequence: |tag_|ATG
+    Sequence: |D__|ATG
     Expected: Tag masked (zeros), DNA unmasked (ones)
     """
-    sequence = torch.tensor(
-        [
-            124,
-            100,  # d token for domain
-            97,
-            103,
-            95,
-            124,  # |tag_|
-            65,
-            84,
-            71,  # ATG
-        ]
-    )
+    sequence_chrs = "|D__|ATG"
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
+    expected = torch.tensor([0] * len('|D__|') + [1, 1, 1])  # Tag masked, DNA unmasked
     mask = Evo2Dataset.mask_phylogenetic_tags(
         tokenized_sequence=sequence,
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
-    expected = torch.tensor([0, 0, 0, 0, 0, 0, 1, 1, 1])  # Tag masked, DNA unmasked
     assert torch.equal(mask, expected)
 
 
@@ -326,26 +364,16 @@ def test_sequence_ending_with_tag(tag_tokens):
     Sequence: ATG|tag_|
     Expected: DNA unmasked (ones), tag masked (zeros)
     """
-    sequence = torch.tensor(
-        [
-            65,
-            84,
-            71,  # ATG
-            124,
-            100,
-            97,
-            103,
-            95,
-            124,  # |tag_|
-        ]
-    )
+    sequence_chrs = "ATG|D__|"
+    expected = torch.tensor([1, 1, 1, 0, 0, 0, 0, 0])  # DNA unmasked, tag masked
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
     mask = Evo2Dataset.mask_phylogenetic_tags(
         tokenized_sequence=sequence,
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
-    expected = torch.tensor([1, 1, 1, 0, 0, 0, 0, 0, 0])  # DNA unmasked, tag masked
     assert torch.equal(mask, expected)
 
 
@@ -361,63 +389,18 @@ def test_mask_multiple_tags(tag_tokens):
     Sequence: "ATG|tag_1|CG|tag_2|AT"
     Expected: Only DNA sequences should remain unmasked
     """
-    sequence = torch.tensor(
-        [
-            65,
-            84,
-            71,  # ATG
-            124,
-            100,
-            97,
-            103,
-            95,
-            49,
-            124,  # |tag_1|
-            67,
-            71,  # CG
-            124,
-            100,
-            97,
-            103,
-            95,
-            50,
-            124,  # |tag_2|
-            65,
-            84,  # AT
-        ]
-    )
+    sequence_chrs = "ATG|d__|CG|r__|AT"
+    sequence = torch.tensor([ord(c) for c in sequence_chrs])
+    expected_mask = torch.tensor(
+        [1] * 3 + [0] * len('|d__|') + [1] * 2 + [0] * len('|r__|') + [1] * 2
+    )  # DNA unmasked, tag masked
 
     mask = Evo2Dataset.mask_phylogenetic_tags(
         tokenized_sequence=sequence,
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
-    )
-
-    expected_mask = torch.tensor(
-        [
-            1,
-            1,
-            1,  # DNA unmasked
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,  # first tag masked
-            1,
-            1,  # DNA unmasked
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,  # second tag masked
-            1,
-            1,  # DNA unmasked
-        ]
+        max_tag_len=MAX_TAG_LEN,
     )
     assert torch.equal(mask, expected_mask)
 
@@ -446,6 +429,7 @@ def test_mask_dna_after_pipe(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
 
     expected_mask = torch.tensor([0, 1, 1, 1])  # Pipe masked, DNA unmasked
@@ -478,6 +462,7 @@ def test_ambiguous_dna_char_followed_by_tag_start(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
 
     expected_mask = torch.tensor([0, 0, 1, 1, 1, 1])  # Ambiguous t and pipe masked, DNA unmasked
@@ -510,6 +495,7 @@ def test_dna_followed_by_unambiguous_tag_start(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
 
     expected_mask = torch.tensor([1, 1, 1, 1, 0, 0])  # DNA unmasked, tag start masked
@@ -572,6 +558,7 @@ def test_double_partial_tags_with_dna_middle(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
 
     expected_mask = torch.tensor(
@@ -633,6 +620,7 @@ def test_packed_partial_tag_subsequence_predna(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -653,6 +641,7 @@ def test_packed_partial_tag_subsequence_pretag(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -679,6 +668,7 @@ def test_packed_partial_tag_subsequence_predna_middletag(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -705,6 +695,7 @@ def test_packed_partial_tag_subsequence_pretag_middletag(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -732,6 +723,7 @@ def test_packed_partial_tag_subsequence_pretag_middletag_bs2(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -773,6 +765,7 @@ def test_packed_partial_tag_subsequence_pretag_middletag_bs3(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -810,6 +803,7 @@ def test_packed_partial_tag_subsequence_pretag_middletag_bs3_cuda(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask.cpu(), expected_mask)
 
@@ -829,6 +823,7 @@ def test_multiple_packed_tags(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -845,6 +840,7 @@ def test_multiple_eods(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -861,6 +857,7 @@ def test_multiple_eods_prefix_no_suffix(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -877,6 +874,7 @@ def test_no_eods_with_batch(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, torch.stack([expected_mask, expected_mask]))
 
@@ -893,6 +891,7 @@ def test_no_eods_one_tag_with_batch_bs2(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, torch.stack([expected_mask, expected_mask]))
 
@@ -914,6 +913,7 @@ def test_packed_partial_tag_subsequence_predna_with_control_and_degenerate_base(
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -935,6 +935,7 @@ def test_packed_partial_tag_subsequence_predna_with_control2(tag_tokens):
         terminal_tag_char=tag_tokens["terminal"],
         other_tag_chars=tag_tokens["other_chars"],
         eod_token_id=tag_tokens["eod"],
+        max_tag_len=MAX_TAG_LEN,
     )
     torch.testing.assert_close(mask, expected_mask)
 
@@ -1019,7 +1020,9 @@ def benchmark_phylo_tag_masking(num_iterations: int = 1000) -> tuple[float, floa
 
     # Time the new implementation
     new_time1 = timeit.timeit(
-        lambda: Evo2Dataset.mask_phylogenetic_tags(sequence.unsqueeze(0), 124, {95, 59, 32}, 0),
+        lambda: Evo2Dataset.mask_phylogenetic_tags(
+            sequence.unsqueeze(0), 124, {95, 59, 32}, 0, max_tag_len=MAX_TAG_LEN
+        ),
         number=num_iterations,
     )
 
@@ -1031,7 +1034,9 @@ def benchmark_phylo_tag_masking(num_iterations: int = 1000) -> tuple[float, floa
 
     # Time the new implementation
     new_time2 = timeit.timeit(
-        lambda: Evo2Dataset.mask_phylogenetic_tags(sequence.unsqueeze(0), 124, {95, 59, 32}, 0),
+        lambda: Evo2Dataset.mask_phylogenetic_tags(
+            sequence.unsqueeze(0), 124, {95, 59, 32}, 0, max_tag_len=MAX_TAG_LEN
+        ),
         number=num_iterations,
     )
 

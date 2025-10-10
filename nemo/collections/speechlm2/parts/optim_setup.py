@@ -88,7 +88,7 @@ def freeze_and_subset(
 
         >>> model = MyModel()
         ... # freeze all LLM parameters in "model.llm"
-        ... params = freeze_and_subset(model.named_parameters(), ['^llm\..+$'])
+        ... params = freeze_and_subset(model.named_parameters(), [r'^llm\\.\\..+$'])
         ... optimizer = torch.optim.AdamW(params, lr=1e-3)
 
     """

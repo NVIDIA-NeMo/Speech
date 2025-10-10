@@ -48,6 +48,7 @@ from nemo.core import optim
 from nemo.core.classes.common import Model
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import McoreDistributedOptimizer, prepare_lr_scheduler
+from nemo.lightning.callback_group import CallbackGroup
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
 from nemo.utils.debug_hook import register_debug_hooks
@@ -86,6 +87,10 @@ class ModelPT(LightningModule, Model):
                 f"trainer constructor argument must be either None or lightning.pytorch.Trainer. "
                 f"But got {type(trainer)} instead."
             )
+
+        # Track model init start
+        CallbackGroup.get_instance().on_model_init_start()
+
         super().__init__()
 
         """
@@ -152,6 +157,8 @@ class ModelPT(LightningModule, Model):
         if torch.cuda.is_available() and torch.cuda.current_device() is not None:
             app_state.device_id = torch.cuda.current_device()
 
+        CallbackGroup.get_instance().on_model_init_end()
+        CallbackGroup.get_instance().on_dataloader_init_start()
         if self._cfg is not None and not self._is_model_being_restored():
             # Setup data loaders now (default) or defer setup to `self.setup()`
             # if `defer_setup` is set in the config of the corresponding dataloader.
@@ -197,6 +204,8 @@ class ModelPT(LightningModule, Model):
                     f"and provide a valid configuration file to setup the test data loader(s).\n"
                     f"Test config : \n{OmegaConf.to_yaml(self._cfg.test_ds)}"
                 )
+
+        CallbackGroup.get_instance().on_dataloader_init_end()
 
         # Create list of lists for val and test outputs to support multiple dataloaders
         # Initialize an empty list as sometimes self._validation_dl can be None at this stage
@@ -469,6 +478,8 @@ class ModelPT(LightningModule, Model):
         Returns:
             An instance of type cls or its underlying config (if return_config is set).
         """
+        # Notify OneLogger of checkpoint loading start for telemetry tracking
+        CallbackGroup.get_instance().on_load_checkpoint_start()
 
         if save_restore_connector is None:
             save_restore_connector = SaveRestoreConnector()
@@ -502,6 +513,10 @@ class ModelPT(LightningModule, Model):
         )
         if isinstance(instance, ModelPT):
             instance._save_restore_connector = save_restore_connector
+
+        # Notify OneLogger of checkpoint loading completion for telemetry tracking
+        CallbackGroup.get_instance().on_load_checkpoint_end()
+
         return instance
 
     @classmethod
@@ -518,6 +533,9 @@ class ModelPT(LightningModule, Model):
         Loads ModelPT from checkpoint, with some maintenance of restoration.
         For documentation, please refer to LightningModule.load_from_checkpoint() documentation.
         """
+        # Notify OneLogger of checkpoint loading start for telemetry tracking
+        CallbackGroup.get_instance().on_load_checkpoint_start()
+
         checkpoint = None
         try:
             cls._set_model_restore_state(is_being_restored=True)
@@ -533,6 +551,10 @@ class ModelPT(LightningModule, Model):
 
         finally:
             cls._set_model_restore_state(is_being_restored=False)
+
+        # Notify OneLogger of checkpoint loading completion for telemetry tracking
+        CallbackGroup.get_instance().on_load_checkpoint_end()
+
         return checkpoint
 
     @abstractmethod
@@ -729,7 +751,8 @@ class ModelPT(LightningModule, Model):
 
         if optimizer_cls is None:
             # Try to get optimizer name for dynamic resolution, defaulting to Adam
-            optimizer_name = optim_config.get('name', 'adam')
+            # Use or instead of default as None will also results in default value not used.
+            optimizer_name = optim_config.get('name') or 'adam'
         else:
             if inspect.isclass(optimizer_cls):
                 optimizer_name = optimizer_cls.__name__.lower()
@@ -890,7 +913,11 @@ class ModelPT(LightningModule, Model):
         """
         Configure the optimizer and scheduler.
         """
+        # Track optimizer init start
+        CallbackGroup.get_instance().on_optimizer_init_start()
         self.setup_optimization()
+
+        CallbackGroup.get_instance().on_optimizer_init_end()
 
         if self._scheduler is None:
             return self._optimizer
@@ -954,6 +981,9 @@ class ModelPT(LightningModule, Model):
             )
             if no_test_dataloader and test_deferred_setup:
                 self.setup_multiple_test_data(test_data_config=self._cfg.test_ds)
+
+        if stage == 'fit':
+            CallbackGroup.get_instance().update_config(nemo_version='v1', trainer=self._trainer)
 
     def train_dataloader(self):
         """
@@ -1344,6 +1374,8 @@ class ModelPT(LightningModule, Model):
                 f"Found : {[args[idx] for idx, arg_present in enumerate(arg_matches) if arg_present]}"
             )
 
+        CallbackGroup.get_instance().on_load_checkpoint_start()
+
         if 'init_from_nemo_model' in cfg and cfg.init_from_nemo_model is not None:
             with open_dict(cfg):
                 if isinstance(cfg.init_from_nemo_model, str):
@@ -1459,6 +1491,9 @@ class ModelPT(LightningModule, Model):
                         del ckpt
                 else:
                     raise TypeError("Invalid type: init_from_ptl_ckpt is not a string or a dict!")
+
+        # Track load checkpoint end
+        CallbackGroup.get_instance().on_load_checkpoint_end()
 
     def teardown(self, stage: str):
         """

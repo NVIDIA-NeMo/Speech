@@ -310,7 +310,16 @@ class Qwen2VLConfig(TransformerConfig, io.IOMixin):
             'batch_p2p_comm',
         ]
 
-        # Set configs for all transformer components
+        # FP8 attributes
+        fp8_attrs = [
+            'fp8',
+            'fp8_recipe',
+            'fp8_margin',
+            'fp8_amax_history_len',
+            'fp8_amax_compute_algo',
+        ]
+
+        # Set common configs for all transformer components
         for config in [
             self.language_transformer_config,
             self.vision_transformer_config,
@@ -319,7 +328,11 @@ class Qwen2VLConfig(TransformerConfig, io.IOMixin):
             for attr in config_attrs:
                 setattr(config, attr, getattr(self, attr))
 
-        # Set tp_comm_overlap only for language transformer
+        # Set FP8 attributes for language transformer only
+        for attr in fp8_attrs:
+            setattr(self.language_transformer_config, attr, getattr(self, attr))
+
+        # Set tp_comm_overlap only for language transformer only
         self.language_transformer_config.tp_comm_overlap = self.tp_comm_overlap
         self.vision_transformer_config.tp_comm_overlap = False
         self.vision_projection_config.tp_comm_overlap = False

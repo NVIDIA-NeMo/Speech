@@ -171,6 +171,13 @@ class BatchedBeamHyps:
             self.next_timestamp = torch.zeros((batch_size, self.beam_size), device=device, dtype=torch.long)
             self.last_timestamp_lasts = torch.zeros((batch_size, self.beam_size), device=device, dtype=torch.long)
 
+            # For TDT models, also store token durations to enable correct timestamp offset computation
+            # Beam search stores END timestamps (timesteps + duration), but offset computation expects START
+            if self.model_type == ASRModelTypeEnum.TDT:
+                self.token_durations = torch.zeros(
+                    (batch_size, self.beam_size, self._max_length), device=device, dtype=torch.long
+                )
+
     def clear_(self):
         """
         Clears and resets the internal state of the object.
@@ -199,6 +206,9 @@ class BatchedBeamHyps:
             self.next_timestamp.fill_(0)
             self.last_timestamp_lasts.fill_(0)
 
+        if self.model_type == ASRModelTypeEnum.TDT:
+            self.token_durations.fill_(0)
+
     def _allocate_more(self):
         """
         Dynamically allocates more memory for the internal buffers.
@@ -215,6 +225,11 @@ class BatchedBeamHyps:
             self.timestamps = self._create_timestamps_tensor(2 * self._max_length)
         else:
             self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
+
+        if self.model_type == ASRModelTypeEnum.TDT:
+            self.token_durations = torch.cat(
+                (self.token_durations, torch.zeros_like(self.token_durations)), dim=-1
+            )
 
         self._max_length *= 2
 
@@ -300,6 +315,13 @@ class BatchedBeamHyps:
                 dim=-1,
                 index=self.current_lengths_wb.unsqueeze(-1),
                 src=(timesteps + next_label_durations).unsqueeze(-1),
+            )
+            # Also store token durations for TDT (needed for correct offset computation)
+            durations_to_store = torch.where(is_extended, next_label_durations, 0)
+            self.token_durations.scatter_(
+                dim=-1,
+                index=self.current_lengths_wb.unsqueeze(-1),
+                src=durations_to_store.unsqueeze(-1),
             )
             torch.where(is_extended, timesteps + next_label_durations, timesteps, out=self.next_timestamp)
             torch.where(
@@ -474,19 +496,28 @@ class BatchedBeamHyps:
         max_idx = self.current_lengths_wb.max() - 1
         timestamps = self.timestamps[..., 0, : max_idx + 1]
         transcripts = self.transcript_wb[..., 0, : max_idx + 1]
-        hypotheses = [
-            Hypothesis(
+
+        if self.model_type == ASRModelTypeEnum.TDT:
+            token_durations = self.token_durations[..., 0, : max_idx + 1]
+
+        hypotheses = []
+        for batch_idx in range(self.batch_size):
+            mask = self._create_transcripts_mask(transcripts[batch_idx])
+            hyp = Hypothesis(
                 score=scores[batch_idx],
-                y_sequence=transcripts[batch_idx][mask := self._create_transcripts_mask(transcripts[batch_idx])]
-                .cpu()
-                .detach()
-                .numpy(),
+                y_sequence=transcripts[batch_idx][mask].cpu().detach().numpy(),
                 timestamp=timestamps[batch_idx][mask].cpu().detach().numpy(),
                 alignments=None,
                 dec_state=None,
             )
-            for batch_idx in range(self.batch_size)
-        ]
+
+            # Populate token_duration and mark semantics for TDT
+            if self.model_type == ASRModelTypeEnum.TDT:
+                hyp.token_duration = token_durations[batch_idx][mask].cpu().detach().numpy().tolist()
+                hyp._timestamp_semantics = "end"  # Explicit marker
+
+            hypotheses.append(hyp)
+
         return hypotheses
 
     def to_nbest_hyps_list(self, score_norm: bool = True) -> list[NBestHypotheses]:
@@ -506,27 +537,33 @@ class BatchedBeamHyps:
         max_idx = self.current_lengths_wb.max() - 1
         transcripts = self.transcript_wb[..., : max_idx + 1]
         timestamps = self.timestamps[..., : max_idx + 1]
-        hypotheses = [
-            NBestHypotheses(
-                [
-                    Hypothesis(
+
+        if self.model_type == ASRModelTypeEnum.TDT:
+            token_durations = self.token_durations[..., : max_idx + 1]
+
+        hypotheses = []
+        for batch_idx in range(self.batch_size):
+            batch_hyps = []
+            for beam_idx in range(self.beam_size):
+                if scores[batch_idx][beam_idx] > INACTIVE_SCORE:
+                    mask = self._create_transcripts_mask(transcripts[batch_idx][beam_idx])
+                    hyp = Hypothesis(
                         score=scores[batch_idx][beam_idx],
-                        y_sequence=transcripts[batch_idx][beam_idx][
-                            mask := self._create_transcripts_mask(transcripts[batch_idx][beam_idx])
-                        ]
-                        .cpu()
-                        .detach()
-                        .numpy(),
+                        y_sequence=transcripts[batch_idx][beam_idx][mask].cpu().detach().numpy(),
                         timestamp=timestamps[batch_idx][beam_idx][mask].cpu().detach().numpy(),
                         alignments=None,
                         dec_state=None,
                     )
-                    for beam_idx in range(self.beam_size)
-                    if scores[batch_idx][beam_idx] > INACTIVE_SCORE
-                ]
-            )
-            for batch_idx in range(self.batch_size)
-        ]
+
+                    # Populate token_duration and mark semantics for TDT
+                    if self.model_type == ASRModelTypeEnum.TDT:
+                        hyp.token_duration = token_durations[batch_idx][beam_idx][mask].cpu().detach().numpy().tolist()
+                        hyp._timestamp_semantics = "end"  # Explicit marker
+
+                    batch_hyps.append(hyp)
+
+            hypotheses.append(NBestHypotheses(batch_hyps))
+
         return hypotheses
 
     def flatten_sort_(self, score_norm: bool = True):
@@ -551,6 +588,17 @@ class BatchedBeamHyps:
 
         max_idx = self.current_lengths_wb.max() - 1
         ptrs = indices
+
+        # Sort token_durations BEFORE updating ptrs to avoid misalignment
+        if self.model_type == ASRModelTypeEnum.TDT:
+            token_durations_sorted = torch.zeros_like(self.token_durations)
+            temp_ptrs = indices
+            for idx in range(max_idx, -1, -1):
+                token_durations_sorted[..., idx].copy_(
+                    self.token_durations[self.batch_indices.unsqueeze(-1), temp_ptrs, idx]
+                )
+                temp_ptrs = self.transcript_wb_prev_ptr[self.batch_indices.unsqueeze(-1), temp_ptrs, idx]
+            self.token_durations.copy_(token_durations_sorted)
 
         for idx in range(max_idx, -1, -1):
             self.transcript_wb[..., idx].copy_(self.transcript_wb[self.batch_indices.unsqueeze(-1), ptrs, idx])

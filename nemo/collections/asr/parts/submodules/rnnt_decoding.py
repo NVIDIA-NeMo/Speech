@@ -1106,7 +1106,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         Returns:
             List[Dict[str, Union[str, int]]]: A list of dictionaries, where each dictionary contains:
-                - "char": List[str] - The character/subword token
+                - "char": List[int] - The character/subword token ID
                 - "start_offset": int - The start time index of the token
                 - "end_offset": int - The end time index of the token
 
@@ -1127,32 +1127,78 @@ class AbstractRNNTDecoding(ConfidenceMixin):
     @staticmethod
     def _compute_offsets_tdt(hypothesis: Hypothesis, blank_id: int, *args) -> List[Dict[str, Union[str, int]]]:
         """
-        Utility method that calculates the indidual time indices where a token starts and ends.
+        Utility method that calculates the individual time indices where a token starts and ends for TDT models.
+
+        This method handles both START and END timestamp semantics. Beam search in TDT stores END timestamps
+        (timesteps + duration), while greedy decoding stores START timestamps. The method uses an explicit
+        _timestamp_semantics flag or a fallback heuristic to determine the correct interpretation.
 
         Args:
-            hypothesis: A Hypothesis object that contains `text` field that holds the character / subword token
-                emitted at a specific time step considering predicted durations of the previous tokens.
+            hypothesis: A Hypothesis object that contains `timestamp` and `token_duration` fields.
+            blank_id: The index representing the blank token in the vocabulary.
+            *args: Additional arguments (unused, for compatibility).
 
         Returns:
             List[Dict[str, Union[str, int]]]: A list of dictionaries, where each dictionary contains:
-                - "char": List[str] - The character/subword token
+                - "char": List[int] - The character/subword token ID
                 - "start_offset": int - The start time index of the token
                 - "end_offset": int - The end time index of the token
 
         **Note**: Blank tokens are not included in the offsets.
         """
-        if isinstance(hypothesis.timestamp, torch.Tensor):
-            hypothesis.token_duration = hypothesis.token_duration.cpu().tolist()
+        # Handle missing token_duration (compute from timestamp diffs)
+        if hypothesis.token_duration is None:
+            if hypothesis.timestamp is None or len(hypothesis.timestamp) == 0:
+                return []
+            if isinstance(hypothesis.timestamp, torch.Tensor):
+                timestamps = hypothesis.timestamp.cpu().tolist()
+            else:
+                timestamps = list(hypothesis.timestamp)
+            durations = []
+            prev = 0
+            for curr in timestamps:
+                durations.append(max(0, curr - prev))
+                prev = curr
+            hypothesis.token_duration = durations
 
+        # Convert to lists
         if isinstance(hypothesis.timestamp, torch.Tensor):
             hypothesis.timestamp = hypothesis.timestamp.cpu().tolist()
+        if isinstance(hypothesis.token_duration, torch.Tensor):
+            hypothesis.token_duration = hypothesis.token_duration.cpu().tolist()
 
-        # Merge the results per token into a list of dictionaries
-        offsets = [
-            {"char": [t], "start_offset": s, "end_offset": s + d}
-            for t, s, d in zip(hypothesis.y_sequence, hypothesis.timestamp, hypothesis.token_duration)
-            if t != blank_id
-        ]
+        # Determine timestamp semantics
+        semantics_flag = getattr(hypothesis, "_timestamp_semantics", None)
+        if semantics_flag == "end":
+            timestamps_are_ends = True
+        elif semantics_flag == "start":
+            timestamps_are_ends = False
+        else:
+            # Fallback heuristic: END timestamps never precede cumulative duration
+            timestamps_are_ends = False
+            if len(hypothesis.timestamp) > 0 and len(hypothesis.token_duration) > 0:
+                cumulative = 0
+                matches_end_semantics = True
+                for ts, dur in zip(hypothesis.timestamp, hypothesis.token_duration):
+                    cumulative += dur
+                    if ts + 1 < cumulative:  # 1-frame slack
+                        matches_end_semantics = False
+                        break
+                if matches_end_semantics and hypothesis.timestamp[0] >= hypothesis.token_duration[0]:
+                    timestamps_are_ends = True
+
+        # Compute offsets
+        offsets = []
+        for t, ts, d in zip(hypothesis.y_sequence, hypothesis.timestamp, hypothesis.token_duration):
+            if t == blank_id:
+                continue
+            if timestamps_are_ends:
+                start_offset = ts - d
+                end_offset = ts
+            else:
+                start_offset = ts
+                end_offset = ts + d
+            offsets.append({"char": [t], "start_offset": start_offset, "end_offset": end_offset})
         return offsets
 
     @staticmethod

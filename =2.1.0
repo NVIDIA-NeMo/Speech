@@ -1,0 +1,55 @@
+Collecting nv_one_logger_pytorch_lightning_integration
+  Downloading nv_one_logger_pytorch_lightning_integration-2.1.0-py3-none-any.whl.metadata (8.9 kB)
+Requirement already satisfied: StrEnum<0.5.0,>=0.4.0 in /usr/local/lib/python3.12/dist-packages (from nv_one_logger_pytorch_lightning_integration) (0.4.15)
+Requirement already satisfied: lightning>=2.2.0 in /opt/venv/lib/python3.12/site-packages (from nv_one_logger_pytorch_lightning_integration) (2.4.0)
+Requirement already satisfied: nv-one-logger-core<3.0.0,>=2.1.0 in /usr/local/lib/python3.12/dist-packages (from nv_one_logger_pytorch_lightning_integration) (2.1.0)
+Requirement already satisfied: nv-one-logger-training-telemetry<3.0.0,>=2.1.0 in /usr/local/lib/python3.12/dist-packages (from nv_one_logger_pytorch_lightning_integration) (2.1.0)
+Collecting setuptools>=80.9.0 (from nv_one_logger_pytorch_lightning_integration)
+  Downloading setuptools-80.9.0-py3-none-any.whl.metadata (6.6 kB)
+Requirement already satisfied: overrides<8.0.0,>=7.7.0 in /usr/local/lib/python3.12/dist-packages (from nv-one-logger-core<3.0.0,>=2.1.0->nv_one_logger_pytorch_lightning_integration) (7.7.0)
+Requirement already satisfied: pydantic<3.0.0,>=2.10.6 in /opt/venv/lib/python3.12/site-packages (from nv-one-logger-core<3.0.0,>=2.1.0->nv_one_logger_pytorch_lightning_integration) (2.12.0a1)
+Requirement already satisfied: toml<0.11.0,>=0.10.2 in /opt/venv/lib/python3.12/site-packages (from nv-one-logger-core<3.0.0,>=2.1.0->nv_one_logger_pytorch_lightning_integration) (0.10.2)
+Requirement already satisfied: typing-extensions<5.0.0,>=4.12.2 in /opt/venv/lib/python3.12/site-packages (from nv-one-logger-core<3.0.0,>=2.1.0->nv_one_logger_pytorch_lightning_integration) (4.15.0)
+Requirement already satisfied: annotated-types>=0.6.0 in /opt/venv/lib/python3.12/site-packages (from pydantic<3.0.0,>=2.10.6->nv-one-logger-core<3.0.0,>=2.1.0->nv_one_logger_pytorch_lightning_integration) (0.7.0)
+Requirement already satisfied: pydantic-core==2.37.2 in /opt/venv/lib/python3.12/site-packages (from pydantic<3.0.0,>=2.10.6->nv-one-logger-core<3.0.0,>=2.1.0->nv_one_logger_pytorch_lightning_integration) (2.37.2)
+Requirement already satisfied: typing-inspection>=0.4.0 in /opt/venv/lib/python3.12/site-packages (from pydantic<3.0.0,>=2.10.6->nv-one-logger-core<3.0.0,>=2.1.0->nv_one_logger_pytorch_lightning_integration) (0.4.1)
+Requirement already satisfied: PyYAML<8.0,>=5.4 in /opt/venv/lib/python3.12/site-packages (from lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (6.0.2)
+Requirement already satisfied: fsspec<2026.0,>=2022.5.0 in /opt/venv/lib/python3.12/site-packages (from fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (2024.9.0)
+Requirement already satisfied: lightning-utilities<2.0,>=0.10.0 in /opt/venv/lib/python3.12/site-packages (from lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (0.15.2)
+Collecting packaging<25.0,>=20.0 (from lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration)
+  Downloading packaging-24.2-py3-none-any.whl.metadata (3.2 kB)
+Requirement already satisfied: torch<4.0,>=2.1.0 in /usr/local/lib/python3.12/dist-packages (from lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (2.8.0a0+5228986c39.nv25.6)
+Requirement already satisfied: torchmetrics<3.0,>=0.7.0 in /opt/venv/lib/python3.12/site-packages (from lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (1.8.2)
+Requirement already satisfied: tqdm<6.0,>=4.57.0 in /opt/venv/lib/python3.12/site-packages (from lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (4.67.1)
+Requirement already satisfied: pytorch-lightning in /opt/venv/lib/python3.12/site-packages (from lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (2.5.5)
+Requirement already satisfied: aiohttp!=4.0.0a0,!=4.0.0a1 in /opt/venv/lib/python3.12/site-packages (from fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (3.12.15)
+Requirement already satisfied: filelock in /opt/venv/lib/python3.12/site-packages (from torch<4.0,>=2.1.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (3.19.1)
+Requirement already satisfied: sympy>=1.13.3 in /opt/venv/lib/python3.12/site-packages (from torch<4.0,>=2.1.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (1.14.0)
+Requirement already satisfied: networkx in /opt/venv/lib/python3.12/site-packages (from torch<4.0,>=2.1.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (3.5)
+Requirement already satisfied: jinja2 in /opt/venv/lib/python3.12/site-packages (from torch<4.0,>=2.1.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (3.1.6)
+Requirement already satisfied: numpy>1.20.0 in /opt/venv/lib/python3.12/site-packages (from torchmetrics<3.0,>=0.7.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (1.26.4)
+Requirement already satisfied: aiohappyeyeballs>=2.5.0 in /opt/venv/lib/python3.12/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (2.6.1)
+Requirement already satisfied: aiosignal>=1.4.0 in /opt/venv/lib/python3.12/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (1.4.0)
+Requirement already satisfied: attrs>=17.3.0 in /opt/venv/lib/python3.12/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (25.3.0)
+Requirement already satisfied: frozenlist>=1.1.1 in /opt/venv/lib/python3.12/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (1.7.0)
+Requirement already satisfied: multidict<7.0,>=4.5 in /opt/venv/lib/python3.12/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (6.6.4)
+Requirement already satisfied: propcache>=0.2.0 in /opt/venv/lib/python3.12/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (0.3.2)
+Requirement already satisfied: yarl<2.0,>=1.17.0 in /opt/venv/lib/python3.12/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (1.20.1)
+Requirement already satisfied: idna>=2.0 in /opt/venv/lib/python3.12/site-packages (from yarl<2.0,>=1.17.0->aiohttp!=4.0.0a0,!=4.0.0a1->fsspec[http]<2026.0,>=2022.5.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (3.10)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /opt/venv/lib/python3.12/site-packages (from sympy>=1.13.3->torch<4.0,>=2.1.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (1.3.0)
+Requirement already satisfied: MarkupSafe>=2.0 in /opt/venv/lib/python3.12/site-packages (from jinja2->torch<4.0,>=2.1.0->lightning>=2.2.0->nv_one_logger_pytorch_lightning_integration) (3.0.2)
+Downloading nv_one_logger_pytorch_lightning_integration-2.1.0-py3-none-any.whl (9.8 kB)
+Downloading packaging-24.2-py3-none-any.whl (65 kB)
+Downloading setuptools-80.9.0-py3-none-any.whl (1.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 54.4 MB/s eta 0:00:00
+Installing collected packages: setuptools, packaging, nv_one_logger_pytorch_lightning_integration
+  Attempting uninstall: setuptools
+    Found existing installation: setuptools 79.0.1
+    Uninstalling setuptools-79.0.1:
+      Successfully uninstalled setuptools-79.0.1
+  Attempting uninstall: packaging
+    Found existing installation: packaging 25.0
+    Uninstalling packaging-25.0:
+      Successfully uninstalled packaging-25.0
+
+Successfully installed nv_one_logger_pytorch_lightning_integration-2.1.0 packaging-24.2 setuptools-80.9.0

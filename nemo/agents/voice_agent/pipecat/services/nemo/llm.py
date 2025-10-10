@@ -301,8 +301,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         thinking_budget: int = 0,
         start_vllm_on_init: bool = False,
         vllm_server_params: Optional[str] = None,
-        vllm_server_max_wait_time: int = 1800,
-        vllm_server_check_interval: int = 5,
+        vllm_server_max_wait_time: int = 3600,  # 1 hour max wait time
+        vllm_server_check_interval: int = 5,  # check server every 5 seconds
         **kwargs,
     ):
         self._device = device
@@ -494,7 +494,7 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
             cmd_parts.extend(["--port", str(port)])
 
         logger.info(f"Starting vLLM server with command: {' '.join(cmd_parts)}")
-
+        logger.warning(f"It will take a while to download the model if it's not already downloaded.")
         # Set up environment variables for device configuration
         env = os.environ.copy()
         if self._device and self._device != "cpu":

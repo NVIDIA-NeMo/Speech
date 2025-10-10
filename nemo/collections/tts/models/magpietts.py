@@ -98,7 +98,9 @@ class MagpieTTSModel(ModelPT):
         codec_model_cfg = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), return_config=True)
         if "use_scl_loss" in codec_model_cfg:
             codec_model_cfg.use_scl_loss = False
-        codec_model = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), strict=False, override_config_path=codec_model_cfg)
+        codec_model = AudioCodecModel.restore_from(
+            cfg.get('codecmodel_path'), strict=False, override_config_path=codec_model_cfg
+        )
         self.sample_rate = codec_model.sample_rate
         self.codec_model_samples_per_frame = codec_model.samples_per_frame
         # del codec discriminator to free memory

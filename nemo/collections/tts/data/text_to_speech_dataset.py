@@ -552,7 +552,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
                 # @shehzeenh: Added this condition so that a batch does not have a mix of context_audio and context_audio_codes
                 # @blisc: Added a +1. If we send in exactly 882 samples, then a conv layer complains about padding.
                 #         Adding 883 works. This occurs when we use text context during inference.
-                context_audio = torch.zeros(self.codec_model_samples_per_frame+1, dtype=torch.float32)
+                context_audio = torch.zeros(self.codec_model_samples_per_frame + 1, dtype=torch.float32)
                 context_audio_len = context_audio.shape[0]
                 example['context_audio'] = context_audio
                 example['context_audio_len'] = context_audio_len

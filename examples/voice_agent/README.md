@@ -23,6 +23,7 @@ As of now, we only support English input and output, but more languages will be 
 
 
 ## Latest Updates
+- 2025-10-10: Added support for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) TTS model.
 - 2025-10-03: Add support for serving LLM with vLLM and auto-switch between vLLM and HuggingFace, add [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) as default LLM.
 - 2025-09-05: First release of NeMo Voice Agent.
 

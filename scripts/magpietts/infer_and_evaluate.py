@@ -295,6 +295,7 @@ def run_inference(
     violin_plot_metrics=['cer', 'pred_context_ssim'],
     eos_detection_method=None,
     ignore_finished_sentence_tracking=False,
+    with_utmosv2=True,
 ):
     # Load model
     if hparams_file is not None and checkpoint_file is not None:
@@ -388,7 +389,7 @@ def run_inference(
 
         if not os.path.exists(all_experiment_csv):
             with open(all_experiment_csv, "w") as f:
-                header = "checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative"
+                header = "checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,utmosv2,total_gen_audio_seconds"
                 if compute_fcd:
                     header += ",frechet_codec_distance"
                 header += "\n"
@@ -535,6 +536,7 @@ def run_inference(
                 sv_model_type=sv_model,
                 asr_model_name=asr_model_name,
                 codecmodel_path=codecmodel_path if compute_fcd else None,
+                with_utmosv2=with_utmosv2,
             )
             metrics_n_repeated.append(metrics)
             dataset_filewise_metrics_all_repeats.extend(
@@ -552,7 +554,7 @@ def run_inference(
                 json.dump(mean_rtf_metrics, f, indent=4)
 
             with open(all_experiment_csv, "a") as f:
-                data = f"{checkpoint_name},{dataset},{metrics['cer_filewise_avg']},{metrics['wer_filewise_avg']},{metrics['cer_cumulative']},{metrics['wer_cumulative']},{metrics['ssim_pred_gt_avg']},{metrics['ssim_pred_context_avg']},{metrics['ssim_gt_context_avg']},{metrics['ssim_pred_gt_avg_alternate']},{metrics['ssim_pred_context_avg_alternate']},{metrics['ssim_gt_context_avg_alternate']},{metrics['cer_gt_audio_cumulative']},{metrics['wer_gt_audio_cumulative']}"
+                data = f"{checkpoint_name},{dataset},{metrics['cer_filewise_avg']},{metrics['wer_filewise_avg']},{metrics['cer_cumulative']},{metrics['wer_cumulative']},{metrics['ssim_pred_gt_avg']},{metrics['ssim_pred_context_avg']},{metrics['ssim_gt_context_avg']},{metrics['ssim_pred_gt_avg_alternate']},{metrics['ssim_pred_context_avg_alternate']},{metrics['ssim_gt_context_avg_alternate']},{metrics['cer_gt_audio_cumulative']},{metrics['wer_gt_audio_cumulative']},{metrics['utmosv2_avg']},{metrics['total_gen_audio_seconds']}"
                 if compute_fcd:
                     data += f",{metrics['frechet_codec_distance']}"
                 data += "\n"
@@ -582,6 +584,8 @@ def run_inference(
             'ssim_gt_context_avg_alternate',
             'cer_gt_audio_cumulative',
             'wer_gt_audio_cumulative',
+            'utmosv2_avg',
+            'total_gen_audio_seconds',
         ]
         if compute_fcd:
             metric_keys.append('frechet_codec_distance')
@@ -591,13 +595,13 @@ def run_inference(
         all_experiment_csv_with_ci = os.path.join(out_dir, "all_experiment_metrics_with_ci.csv")
         if not os.path.exists(all_experiment_csv_with_ci):
             with open(all_experiment_csv_with_ci, "w") as f:
-                header = "checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative"
+                header = "checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,utmosv2_avg,total_gen_audio_seconds"
                 if compute_fcd:
                     header += ",frechet_codec_distance"
                 header += "\n"
                 f.write(header)
         with open(all_experiment_csv_with_ci, "a") as f:
-            data = f"{checkpoint_name},{dataset},{metrics_mean_ci['cer_filewise_avg']},{metrics_mean_ci['wer_filewise_avg']},{metrics_mean_ci['cer_cumulative']},{metrics_mean_ci['wer_cumulative']},{metrics_mean_ci['ssim_pred_gt_avg']},{metrics_mean_ci['ssim_pred_context_avg']},{metrics_mean_ci['ssim_gt_context_avg']},{metrics_mean_ci['ssim_pred_gt_avg_alternate']},{metrics_mean_ci['ssim_pred_context_avg_alternate']},{metrics_mean_ci['ssim_gt_context_avg_alternate']},{metrics_mean_ci['cer_gt_audio_cumulative']},{metrics_mean_ci['wer_gt_audio_cumulative']}"
+            data = f"{checkpoint_name},{dataset},{metrics_mean_ci['cer_filewise_avg']},{metrics_mean_ci['wer_filewise_avg']},{metrics_mean_ci['cer_cumulative']},{metrics_mean_ci['wer_cumulative']},{metrics_mean_ci['ssim_pred_gt_avg']},{metrics_mean_ci['ssim_pred_context_avg']},{metrics_mean_ci['ssim_gt_context_avg']},{metrics_mean_ci['ssim_pred_gt_avg_alternate']},{metrics_mean_ci['ssim_pred_context_avg_alternate']},{metrics_mean_ci['ssim_gt_context_avg_alternate']},{metrics_mean_ci['cer_gt_audio_cumulative']},{metrics_mean_ci['wer_gt_audio_cumulative']},{metrics_mean_ci['utmosv2_avg']},{metrics_mean_ci['total_gen_audio_seconds']}"
             if compute_fcd:
                 data += f",{metrics_mean_ci['frechet_codec_distance']}"
             data += "\n"
@@ -682,12 +686,13 @@ def main():
     parser.add_argument('--clean_up_disk', action='store_true')
     parser.add_argument('--cer_target', type=float, default=None)
     parser.add_argument('--ssim_target', type=float, default=None)
+    parser.add_argument('--no-utmosv2', action='store_true', help="Disable UTMOSv2 computation")
     parser.add_argument(
         '--log_exp_name',
         action='store_true',
         help="Include the experiment name (derived from the checkpoint path) in the output folder name.",
     )
-    parser.add_argument('--disable_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
+    parser.add_argument('--no_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
     parser.add_argument(
         '--violin_plot_metrics',
         type=str,
@@ -701,7 +706,7 @@ def main():
         args.datasets = EVALUATION_DATASETS
 
     # FCD computation is enabled by default, disabled only when --disable_fcd is specified
-    compute_fcd = not args.disable_fcd
+    compute_fcd = not args.no_fcd
 
     estimate_alignment_from_layers = None
     if args.estimate_alignment_from_layers is not None:
@@ -744,6 +749,7 @@ def main():
         violin_plot_metrics=args.violin_plot_metrics,
         eos_detection_method=args.eos_detection_method,
         ignore_finished_sentence_tracking=args.ignore_finished_sentence_tracking,
+        with_utmosv2=not args.no_utmosv2,
     )
 
     # Mode 1: Run inference from provided hparams and checkpoint files

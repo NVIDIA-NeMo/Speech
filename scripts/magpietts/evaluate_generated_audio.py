@@ -32,6 +32,7 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules.fcd_metric import FrechetCodecDistance
+from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
 
 def find_generated_files(audio_dir, prefix, extension):
@@ -51,6 +52,19 @@ def find_generated_audio_files(audio_dir):
 
 def find_generated_codec_files(audio_dir):
     return find_generated_files(audio_dir=audio_dir, prefix="predicted_codes", extension=".pt")
+
+
+def get_wav_file_duration(audio_path: str) -> float:
+    """
+    Get the duration of an WAV file in seconds.
+    """
+    # get extension of the file
+    extension = os.path.splitext(audio_path)[1]
+    if extension.lower() != ".wav":
+        raise ValueError(f"Audio path {audio_path} is not a WAV file")
+    info = sf.info(audio_path)
+    seconds = info.frames / info.samplerate
+    return seconds
 
 
 def read_manifest(manifest_path):
@@ -161,6 +175,7 @@ def evaluate(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     codecmodel_path=None,
+    with_utmosv2=True,
 ):
     audio_file_lists = find_generated_audio_files(generated_audio_dir)
     records = read_manifest(manifest_path)
@@ -216,10 +231,12 @@ def evaluate(
         print("No codec model provided, skipping FCD metric")
         fcd_metric = None
 
+    utmosv2_model = UTMOSv2Calculator()
     filewise_metrics = []
     pred_texts = []
     gt_texts = []
     gt_audio_texts = []
+    total_generated_audio_seconds = 0.0
     for ridx, record in enumerate(records):
         gt_audio_filepath = record['audio_filepath']
         context_audio_filepath = record.get('context_audio_filepath', None)
@@ -334,6 +351,11 @@ def evaluate(
                 gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
                     gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
                 ).item()
+            if with_utmosv2:
+                utmosv2_score = utmosv2_model(pred_audio_filepath)
+            else:
+                utmosv2_score = 0.0
+            total_generated_audio_seconds += get_wav_file_duration(pred_audio_filepath)
 
         filewise_metrics.append(
             {
@@ -353,6 +375,7 @@ def evaluate(
                 'gt_audio_filepath': gt_audio_filepath,
                 'pred_audio_filepath': pred_audio_filepath,
                 'context_audio_filepath': context_audio_filepath,
+                'utmosv2': utmosv2_score,
             }
         )
 
@@ -408,7 +431,8 @@ def evaluate(
         hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
     )[0]
     avg_metrics["frechet_codec_distance"] = fcd
-
+    avg_metrics["utmosv2_avg"] = sum([m['utmosv2'] for m in filewise_metrics]) / len(filewise_metrics)
+    avg_metrics["total_gen_audio_seconds"] = total_generated_audio_seconds
     pprint.pprint(avg_metrics)
 
     return avg_metrics, filewise_metrics

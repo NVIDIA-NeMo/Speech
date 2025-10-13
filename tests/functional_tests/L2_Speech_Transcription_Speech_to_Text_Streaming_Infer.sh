@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 # TODO(vbataev): fix decoding with CUDA graphs on CI for this test
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \

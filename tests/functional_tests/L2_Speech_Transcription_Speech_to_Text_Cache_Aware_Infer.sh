@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py \
     model_path="/home/TestData/asr/stt_en_fastconformer_hybrid_large_streaming_multi.nemo" \

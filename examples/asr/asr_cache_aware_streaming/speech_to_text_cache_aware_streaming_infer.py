@@ -471,9 +471,7 @@ def main(cfg: TranscriptionConfig):
 
         # stores the results including the transcriptions of the streaming inference in a json file
         if cfg.output_path is not None and len(all_refs_text) == len(all_streaming_tran):
-            fname = (
-                "streaming_out_" + os.path.splitext(os.path.basename(model_name))[0] + "_" + dataset_title + ".json"
-            )
+            fname = "streaming_out_" + os.path.splitext(os.path.basename(model_name))[0] + f"_{dataset_title}.json"
 
             hyp_json = os.path.join(cfg.output_path, fname)
             os.makedirs(cfg.output_path, exist_ok=True)

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import collections
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from tqdm import tqdm
@@ -98,7 +98,12 @@ def first_fit_shuffle(seqlens: List[int], pack_size: int) -> List[List[int]]:
     return first_fit(shuffled_seqlens, pack_size)
 
 
-def create_hist(dataset: np.array, truncate_seq_len: int):
+def next_multiple_of(n, m):
+    """Return the next multiple of m greater than or equal to n."""
+    return (n + m - 1) // m * m
+
+
+def create_hist(dataset: np.array, truncate_seq_len: int, divisibility_factor: Optional[int] = 16):
     """
     Creates a histogram of sequence lengths from a tokenized dataset.
 
@@ -116,16 +121,29 @@ def create_hist(dataset: np.array, truncate_seq_len: int):
     """
     logging.info("Creating histogram from tokenized dataset...")
 
+    if divisibility_factor is not None and truncate_seq_len % divisibility_factor:
+        raise ValueError(
+            f"{truncate_seq_len=} must be a multiple of {divisibility_factor=}"
+        )
+
     sequences = collections.defaultdict(list)
     counts = [0] * (truncate_seq_len + 1)
 
     for item_dict in dataset:
-        # Minus 1 here to account for the fact that transformer input and label
-        # have one less token than the full sequence.
-        # Input is missing the last token and label is missing the first token
-        # (this way the tokens are aligned for next token prediction).
-        # We want pack size to be the length of the actual input and label, hence minus 1.
+        # The data processing pipeline downstream is expected to be the following:
+        # - REMOVE THE LAST TOKEN -> the -1 here to account for the fact that
+        #   transformer input and labels have one less token than the full sequence:
+        #   input is missing the last token and label is missing the first token
+        #   (this way the tokens are aligned for next token prediction).
+        # - (POSSIBLY) PAD TO THE NEXT MULTIPLE OF `divisibility_factor` -> we
+        #   virtually pad the sequence length to the next multiple of this value (the
+        #   sequence is not modified, it is only assigned to a different length bin). If
+        #   the sequence is not padded downstream, nothing is impacted except the data
+        #   packing is slightly less optimal, since we may pack less sequences together.
+        # - PACKING -> concatenate the resulting sequences into a single packed one.
         seq_len = len(item_dict["input_ids"]) - 1
+        if divisibility_factor is not None:
+            seq_len = next_multiple_of(seq_len, divisibility_factor)
         sequences[seq_len].append(item_dict)
         counts[seq_len] += 1
 
@@ -222,15 +240,12 @@ def fill_packing_strategy(
         per_seq_data = sequences[seq_len]
         if len(per_seq_data) > 0:
             perm = np.random.permutation(len(per_seq_data))
-            input_ids = np.array([x["input_ids"] for x in per_seq_data])[perm].tolist()
+            input_ids = [per_seq_data[idx]["input_ids"] for idx in perm]
             try:
-                loss_mask = np.array([x["loss_mask"] for x in per_seq_data])[perm].tolist()
-                # roll loss mask by 1 to align with labels. We want to train on the output after the last context token
-                loss_mask = [x[1:] + [False] for x in loss_mask]
+                loss_mask = [per_seq_data[idx]["loss_mask"] for idx in perm]
             except KeyError:
                 try:
-                    loss_mask = np.array(
-                        [
+                    loss_mask = [
                             [
                                 # (x['answer_start_idx'] - 1) because we want to train on the output
                                 # after the last context token
@@ -239,7 +254,7 @@ def fill_packing_strategy(
                             ]
                             for x in per_seq_data
                         ]
-                    )[perm].tolist()
+                    loss_mask = [loss_mask[idx] for idx in perm]
                 except KeyError as err:
                     err_msg = "Key errors loss_mask and answer_start_idx missing in example - "
                     err_msg += f"{err} {per_seq_data[0]}"
@@ -248,25 +263,27 @@ def fill_packing_strategy(
 
             ifile_handles[seq_len] = (input_ids, loss_mask)
 
-    input_ids, loss_mask, seq_start_id = {}, {}, {}
-
-    for oindex, assignment in tqdm(enumerate(assignments), total=len(assignments)):
-        _input_ids, _loss_mask, _seq_start_id = [], [], [0]
-
-        for seq_length in assignment:
-            _input_ids.extend(ifile_handles[seq_length][0].pop())
-            _loss_mask.extend(ifile_handles[seq_length][1].pop())
-            _seq_start_id.append(len(_input_ids))
-
-        input_ids[oindex] = _input_ids
-        loss_mask[oindex] = _loss_mask
-        seq_start_id[oindex] = _seq_start_id[:-1]
+    input_ids = [[0] * len(assignment) for assignment in assignments]
+    loss_mask = [[0] * len(assignment) for assignment in assignments]
+    seq_start_id = [[0] * (len(assignment) + 1) for assignment in assignments]
+    for oindex, assignment in tqdm(
+        enumerate(assignments),
+        total=len(assignments),
+        desc="Creating packed sequences",
+    ):
+        seq_start_id[oindex][0] = 0
+        for j, seq_length in enumerate(assignment):
+            input_ids[oindex][j] = ifile_handles[seq_length][0].pop()
+            loss_mask[oindex][j] = ifile_handles[seq_length][1].pop()
+            seq_start_id[oindex][j + 1] = (
+                len(input_ids[oindex][j]) + seq_start_id[oindex][j]
+            )
 
     output_data = []
     for i in range(len(input_ids)):
         item_dict = {
-            "input_ids": input_ids[i],
-            "loss_mask": loss_mask[i],
+            "input_ids": np.concatenate([np.array(x) for x in input_ids[i]]).reshape(-1),
+            "loss_mask": np.concatenate([np.array(x) for x in loss_mask[i]]).reshape(-1),
             "seq_start_id": seq_start_id[i],
         }
         output_data.append(item_dict)

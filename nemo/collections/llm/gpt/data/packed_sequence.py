@@ -78,7 +78,9 @@ def prepare_packed_sequence_data(
     max_seq_length: int,
     seed: Optional[int] = 0,
     packing_algorithm: str = "first_fit_shuffle",
-    dataset_kwargs: dict = None,
+    chat: bool = False,
+    divisibility_factor: Optional[int] = 16,
+    dataset_kwargs: Optional[dict] = None,
 ):
     """
     Prepares a packed sequence dataset from a given input file and saves it to an output file.
@@ -92,14 +94,17 @@ def prepare_packed_sequence_data(
         seed (Optional[int]): Random seed for shuffling (optional).
         packing_algorithm (str): The algorithm used for packing sequences
                 currently supports "first_fit_shuffle" and "first_fit_decreasing".
+        chat (bool): Whether the dataset is a chat dataset. Defaults to False.
+        divisibility_factor (Optional[int]): If specified, each sequence length will be 
+            rounded to the next integer multiple of this factor. 
 
     Returns:
         None: Saves the packed sequence data to the specified output path.
     """
 
     logging.info(f"Preparing packed sequence from {input_path}")
-    dataset = tokenize_dataset(input_path, tokenizer, max_seq_length, seed, dataset_kwargs)
-    sequences, histogram = create_hist(dataset, max_seq_length)
+    dataset = tokenize_dataset(input_path, tokenizer, max_seq_length, seed, chat, dataset_kwargs)
+    sequences, histogram = create_hist(dataset, max_seq_length, divisibility_factor)
 
     assignments, packing_metadata = create_packing_strategy(histogram, packed_sequence_size, packing_algorithm)
     output_data = fill_packing_strategy(assignments, sequences, packed_sequence_size, tokenizer.eos_id)

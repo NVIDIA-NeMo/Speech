@@ -194,6 +194,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      # Temporarily install this manually until we add it to the docker image.
+      - name: Install UTMOSv2 # Needed by evaluate_generated_audio.py.
+        run: pip install git+https://github.com/sarulab-speech/UTMOSv2.git
       - name: main
         uses: ./.github/actions/test-template
         with:

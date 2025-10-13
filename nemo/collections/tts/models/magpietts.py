@@ -2951,13 +2951,13 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
             - self.attended_timestep_mapping: Dictionary for timestep mapping across chunks.
             - self.decoder_start_idx: Starting index for decoder processing (starts at 0).
             - self.encoder_start_idx: Starting index for encoder processing (starts at 0).
-            
+
             Also resets the encoder's KV cache if enabled.
 
         Note:
             Currently supports batch_size=1 only for streaming inference.
         """
-        
+
         # Window parameters for streaming inference
         self.true_window_size = true_window_size
         # Parameters for maintaining history

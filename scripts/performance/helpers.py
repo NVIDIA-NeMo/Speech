@@ -407,9 +407,7 @@ def set_perf_optimization_configs(
         recipe.trainer.strategy.ddp.nccl_ub = bool(use_user_buffer_registration)
         recipe.trainer.strategy.ddp.fsdp_double_buffer = bool(use_fsdp_double_buffer)
         try:
-            recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = bool(
-                keep_fsdp_fp8_transpose_cache
-            )
+            recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = bool(keep_fsdp_fp8_transpose_cache)
         except AttributeError:
             recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = bool(
                 keep_fsdp_fp8_transpose_cache

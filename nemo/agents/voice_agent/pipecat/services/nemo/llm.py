@@ -50,9 +50,12 @@ DEFAULT_GENERATION_KWARGS = {
 
 
 class LLMUtilsMixin:
+    """Utils for local LLM services."""
+
     def _maybe_add_user_message(self, messages: List[ChatCompletionMessageParam]) -> List[ChatCompletionMessageParam]:
         """
-        Some LLMs like "nvidia/Llama-3.1-Nemotron-Nano-8B-v1" requires a user turn after the system prompt, this function is used to add a dummy user turn if the system prompt is followed by an assistant turn.
+        Some LLMs like "nvidia/Llama-3.1-Nemotron-Nano-8B-v1" requires a user turn after the system prompt,
+        this function is used to add a dummy user turn if the system prompt is followed by an assistant turn.
         """
         if len(messages) > 1 and messages[0]["role"] == "system" and messages[1]["role"] == "assistant":
             message = {"role": "user", "content": "Hi"}
@@ -65,7 +68,8 @@ class LLMUtilsMixin:
         self, messages: List[ChatCompletionMessageParam]
     ) -> List[ChatCompletionMessageParam]:
         """
-        Merge consecutive turns of the same role into a single turn, since some LLMs like "nvidia/Llama-3.1-Nemotron-Nano-8B-v1" do not support consecutive turns of the same role.
+        Merge consecutive turns of the same role into a single turn,
+        since some LLMs like "nvidia/Llama-3.1-Nemotron-Nano-8B-v1" do not support consecutive turns of the same role.
         """
         if not messages:
             return messages
@@ -98,6 +102,10 @@ class LLMUtilsMixin:
 
 
 class HuggingFaceLLMLocalService(LLMUtilsMixin):
+    """
+    HuggingFace LLM local service.
+    """
+
     def __init__(
         self,
         model: str = "meta-llama/Meta-Llama-3-8B-Instruct",
@@ -122,7 +130,8 @@ class HuggingFaceLLMLocalService(LLMUtilsMixin):
         if "tokenize" in self.apply_chat_template_kwargs:
             if self.apply_chat_template_kwargs["tokenize"] is not False:
                 logger.warning(
-                    f"Found `tokenize=True` in apply_chat_template_kwargs, it will be ignored and forced to `False`"
+                    f"Found `tokenize=True` in apply_chat_template_kwargs={self.apply_chat_template_kwargs},"
+                    "it will be ignored and forced to `False`"
                 )
             self.apply_chat_template_kwargs.pop("tokenize")
 
@@ -172,7 +181,9 @@ class HuggingFaceLLMLocalService(LLMUtilsMixin):
     async def generate_stream(
         self, messages: List[ChatCompletionMessageParam], **kwargs
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
-
+        """
+        Generate a stream of chat completion chunks from the messages.
+        """
         # Convert messages to prompt format
         prompt = self._get_prompt_from_messages(messages)
 
@@ -209,6 +220,10 @@ class HuggingFaceLLMLocalService(LLMUtilsMixin):
 
 
 class HuggingFaceLLMService(OpenAILLMService):
+    """
+    LLM service that hosts a HuggingFace model.
+    """
+
     def __init__(
         self,
         *,
@@ -229,6 +244,9 @@ class HuggingFaceLLMService(OpenAILLMService):
         super().__init__(model=model, **kwargs)
 
     def create_client(self, api_key=None, base_url=None, **kwargs):
+        """
+        Create a HuggingFaceLLMLocalService client.
+        """
         return HuggingFaceLLMLocalService(
             model=self._model_name,
             device=self._device,
@@ -287,6 +305,10 @@ class HuggingFaceLLMService(OpenAILLMService):
 
 
 class VLLMService(OpenAILLMService, LLMUtilsMixin):
+    """
+    LLM service that hosts a vLLM server.
+    """
+
     def __init__(
         self,
         *,
@@ -301,8 +323,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         thinking_budget: int = 0,
         start_vllm_on_init: bool = False,
         vllm_server_params: Optional[str] = None,
-        vllm_server_max_wait_time: int = 1800,
-        vllm_server_check_interval: int = 5,
+        vllm_server_max_wait_time: int = 3600,  # 1 hour max wait time
+        vllm_server_check_interval: int = 5,  # check server every 5 seconds
         **kwargs,
     ):
         self._device = device
@@ -327,7 +349,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
 
         # TODO: handle thinking budget
         logger.info(
-            f"VLLMService initialized with model: {model}, api_key: {api_key}, base_url: {base_url}, params: {params}, thinking_budget: {thinking_budget}"
+            f"VLLMService initialized with model: {model}, api_key: {api_key}, base_url: {base_url},"
+            f"params: {params}, thinking_budget: {thinking_budget}"
         )
 
     def _start_vllm_server(
@@ -364,7 +387,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
                         else:
                             if param_port != requested_port:
                                 logger.warning(
-                                    f"Port {param_port} from vllm_server_params is different from base_url port {requested_port}, using new port {param_port}"
+                                    f"Port {param_port} from vllm_server_params is different from base_url port"
+                                    f"{requested_port}, using new port {param_port}"
                                 )
                                 requested_port = param_port
                         break
@@ -401,7 +425,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
                     pid = get_pid_on_port(port)
                     if pid is not None and verbose:
                         logger.warning(
-                            f"Found vLLM server process (PID: {pid}) on port {port}, you can use `lsof -i :{port}` to find the process and kill it if you want to start a new server."
+                            f"Found vLLM server process (PID: {pid}) on port {port}, you can use `lsof -i :{port}`"
+                            "to find the process and kill it if you want to start a new server."
                         )
                     models_data = response.json()
                     if "data" in models_data and models_data["data"]:
@@ -421,7 +446,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
                 return final_base_url
             else:
                 logger.warning(
-                    f"vLLM server on port {requested_port} is serving model '{served_model}' but we need '{model}'. Finding new port..."
+                    f"vLLM server on port {requested_port} is serving model '{served_model}' but we need '{model}'."
+                    "Finding new port..."
                 )
 
         # Find an available port for our model
@@ -450,7 +476,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
                             running_model = cmdline_parts[model_index]
                             if running_model == model:
                                 logger.info(
-                                    f"Found existing vLLM server process (PID: {proc.info['pid']}) on port {port} serving model {model}"
+                                    f"Found existing vLLM server process (PID: {proc.info['pid']}) on port {port}"
+                                    f"serving model {model}"
                                 )
                                 # Wait a bit and check if it's responding
                                 time.sleep(2)
@@ -462,11 +489,13 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
                                     return final_base_url
                                 else:
                                     logger.warning(
-                                        f"Existing vLLM process found on port {port} but not responding correctly, will start new server"
+                                        f"Existing vLLM process found on port {port} but not responding correctly,"
+                                        "will start new server"
                                     )
                             else:
                                 logger.info(
-                                    f"Found vLLM process on port {port} but serving different model '{running_model}' (need '{model}'). Will start new server."
+                                    f"Found vLLM process on port {port} but serving different model '{running_model}'"
+                                    f"(need '{model}'). Will start new server."
                                 )
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
@@ -494,7 +523,7 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
             cmd_parts.extend(["--port", str(port)])
 
         logger.info(f"Starting vLLM server with command: {' '.join(cmd_parts)}")
-
+        logger.warning("It will take a while to download the model if it's not already downloaded.")
         # Set up environment variables for device configuration
         env = os.environ.copy()
         if self._device and self._device != "cpu":
@@ -541,7 +570,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
                     return final_base_url
                 elif is_running and served_model != model:
                     logger.warning(
-                        f"vLLM server started but serving wrong model '{served_model}' instead of '{model}'. Continuing to wait..."
+                        f"vLLM server started but serving wrong model '{served_model}' instead of '{model}'."
+                        "Continuing to wait..."
                     )
 
                 # Check if process is still running
@@ -569,6 +599,7 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
             raise e
 
     def _stop_vllm_server(self):
+        """Stop the vLLM server process if it's running."""
         if hasattr(self, '_vllm_process') and self._vllm_process:
             logger.info(f"Stopping vLLM server process {self._vllm_process.pid}")
             self._vllm_process.terminate()
@@ -624,11 +655,13 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
     async def _get_response_from_client(
         self, messages: List[ChatCompletionMessageParam], params: dict
     ) -> AsyncStream[ChatCompletionChunk]:
+        """Get a response from the client."""
         try:
             chunks = await self._client.chat.completions.create(**params)
         except BadRequestError as e:
             logger.warning(
-                f"Error in get_chat_completions: {e}, trying to fix by adding dummy user message and merging consecutive turns if possible."
+                f"Error in get_chat_completions: {e}, trying to fix by adding dummy user message"
+                "and merging consecutive turns if possible."
             )
             logger.debug(f"LLM messages before fixing: {messages}")
             messages = self._maybe_add_user_message(messages)
@@ -640,6 +673,7 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
 
 
 def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
+    """Get an LLM service from the configuration."""
     backend = config.type
 
     # If backend is "auto", try to detect the best backend
@@ -654,7 +688,9 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
             logger.info(f"Auto-detected vLLM as the best backend for model {model_name}")
         except Exception as e:
             logger.info(
-                f"The LLM doesn't seem to be supported by vLLM yet (error: {e}), using HuggingFace as the best backend for model: {model_name}. If you are sure that the LLM is supported by vLLM, you can set `type: vllm` in the config file to force using vLLM."
+                f"The LLM doesn't seem to be supported by vLLM yet (error: {e}), using HuggingFace as the backend"
+                f"for model: {model_name}. If you are sure that the LLM is supported by vLLM, you can set `type: vllm`"
+                "in the config file to force using vLLM."
             )
             backend = "hf"
 

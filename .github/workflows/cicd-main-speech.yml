@@ -130,6 +130,8 @@ jobs:
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
           - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Canary_Streaming_Full_Manifest
+          - runner: self-hosted-azure
             script: L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir
           - runner: self-hosted-azure
             script: L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import collections
+import heapq
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -97,6 +98,57 @@ def first_fit_shuffle(seqlens: List[int], pack_size: int) -> List[List[int]]:
     shuffled_seqlens = seqlens[:]
     np.random.shuffle(shuffled_seqlens)
     return first_fit(shuffled_seqlens, pack_size)
+
+
+def first_fit_shuffle_with_heap(
+    seqlens: list[int], pack_size: int, shuffle: bool = True, seed: int | None = 234
+) -> list[list[int]]:
+    """A custom packing routine.
+    Packs sequences of varying lengths into bins using a First-Fit-like algorithm.
+    
+    This routine is similar in logic to First-Fit: for every new sequence, look for an 
+    existing bin that can fit it, otherwise open a new bin.
+    While the original First-Fit version uses a greedy function called
+    `find_first_bin_that_fits`, here we greedily look for an accomodating bin using a
+    continuously updated heap. For large datasets, this makes it 100x-1000x faster.
+
+    In this routine, seqlens can be shuffled before packing, which is necessary to
+    preserve the packing efficiency (i.e. the average number of sequences per pack).
+
+    It is recommended to use shuffle=True (default) to increase the packing efficiency.
+
+    Args:
+        seqlens: A list of integers, representing the lengths of the sequences to be packed.
+        pack_size: The maximum capacity of each bin.
+        shuffle: Whether to shuffle the sequence lengths before packing.
+        seed: Random seed for shuffling.
+
+    Returns:
+        A list of lists, similar to the output of the 'first_fit' function.
+    """
+
+    if not seqlens:
+        return []
+
+    if shuffle:
+        rng = np.random.default_rng(seed)
+        rng.shuffle(seqlens)
+
+    s = seqlens[0]
+    res = [(s, [s])]
+    for s in tqdm(seqlens[1:], desc="Creating packing strategy"):
+        # Check the first bin: it is the one with the smallest total sequence length.
+        # If it is possible to add the sequence to it without exceeding the pack size,
+        # then add the sequence to the bin. Otherwise, open a new bin.
+        first_bin_sum = res[0][0]
+        if first_bin_sum + s <= pack_size:
+            first_bin_sum, first_bin = heapq.heappop(res)
+            first_bin.append(s)
+            first_bin_sum += s
+            heapq.heappush(res, (first_bin_sum, first_bin))
+        else:
+            heapq.heappush(res, (s, [s]))
+    return [bin for _, bin in res]
 
 
 def next_multiple_of(n, m):

@@ -2346,6 +2346,73 @@ class MagpieTTSModel(ModelPT):
         # lines up with the codec's minimum frame requirement.
         min_generated_frames=4,
     ):
+        """
+        Performs batch inference for text-to-speech generation on complete text inputs.
+
+        This is the main inference method for non-streaming TTS generation where the entire text is
+        provided at once. It supports various generation modes including autoregressive sampling,
+        classifier-free guidance, attention priors for alignment control, and MaskGIT-style iterative
+        refinement.
+
+        Args:
+            batch (dict): Input batch dictionary containing:
+                - 'text': Text token tensor, shape (batch_size, text_length)
+                - 'text_lens': Length of each text sequence, shape (batch_size,)
+                - Other fields as required by prepare_context_tensors() (e.g., context audio, speaker info)
+            max_decoder_steps (int, optional): Maximum number of autoregressive audio generation steps.
+                Controls the maximum output audio length. Defaults to 500.
+            temperature (float, optional): Sampling temperature for audio code generation. Higher values
+                (>1.0) increase randomness and diversity, lower values (<1.0) make outputs more deterministic.
+                Defaults to 0.7.
+            topk (int, optional): Top-k sampling parameter. Only samples from the top k most likely tokens
+                at each step. Reduces low-probability token selection. Defaults to 80.
+            use_cfg (bool, optional): Whether to use classifier-free guidance (CFG) during generation.
+                CFG improves quality by combining conditional and unconditional predictions. Defaults to False.
+            cfg_scale (float, optional): Scale factor for classifier-free guidance. Higher values increase
+                the guidance strength and adherence to conditioning. Only used when use_cfg=True. Defaults to 1.0.
+            return_cross_attn_probs (bool, optional): Whether to return cross-attention probability distributions
+                between audio and text. Useful for alignment analysis. Defaults to False.
+            apply_attention_prior (bool, optional): Whether to apply attention prior to guide cross-attention
+                toward monotonic alignment. Helps prevent attention from wandering. Defaults to False.
+            prior_epsilon (float, optional): Small epsilon value used as base probability for non-targeted
+                positions in attention prior. Prevents zero probabilities. Defaults to 1e-5.
+            lookahead_window_size (int, optional): Size of the forward-looking window for attention prior
+                construction. Determines how many future text tokens can receive high prior probability.
+                Only used when apply_attention_prior=True. Defaults to 10.
+            estimate_alignment_from_layers (list, optional): List of transformer layer indices to use for
+                estimating text-audio alignment from cross-attention. If None, uses default layers. Example: [8, 9, 10].
+            apply_prior_to_layers (list, optional): List of transformer layer indices to apply attention prior to.
+                If None, applies to all cross-attention layers. Example: [0, 1, 2].
+            start_prior_after_n_audio_steps (int, optional): Number of initial audio generation steps before
+                applying attention prior. Allows the model to establish initial alignment freely. Defaults to 10.
+            compute_all_heads_attn_maps (bool, optional): Whether to compute and return attention maps for all
+                attention heads across all layers. Useful for detailed visualization but increases memory usage.
+                Defaults to False.
+            use_local_transformer_for_inference (bool, optional): Whether to use local (windowed) transformer
+                architecture during inference. Reduces computational complexity for long sequences. Defaults to False.
+            use_LT_kv_cache (bool, optional): Whether to use key-value caching for local transformer during
+                inference. Speeds up generation by caching past computations. Only relevant when
+                use_local_transformer_for_inference=True. Defaults to True.
+            maskgit_n_steps (int, optional): Number of iterative refinement steps for MaskGIT-style generation.
+                Higher values improve quality but increase computation time. Defaults to 3.
+            maskgit_noise_scale (float, optional): Scale of noise to add during MaskGIT sampling. Controls
+                randomness in the iterative refinement process. Defaults to 0.0.
+            maskgit_fixed_schedule (list, optional): Fixed masking schedule for MaskGIT iterations. If None,
+                uses default cosine schedule. Should be a list of masking ratios for each step.
+            maskgit_dynamic_cfg_scale (bool, optional): Whether to dynamically adjust CFG scale during MaskGIT
+                iterations. Can improve quality by varying guidance strength across refinement steps. Defaults to False.
+            maskgit_sampling_type (str, optional): Sampling strategy for MaskGIT generation. Options may include
+                'temperature', 'topk', 'nucleus', etc. If None, uses default sampling strategy.
+
+        Returns:
+            dict: Dictionary containing:
+                - 'audio_codes': Generated audio codes, shape (batch_size, num_codebooks, audio_length)
+                - 'audio_codes_lens': Length of generated audio for each batch item, shape (batch_size,)
+                - 'cross_attention_probs': (optional) Cross-attention probabilities if return_cross_attn_probs=True
+                - 'all_heads_attn_maps': (optional) Attention maps for all heads if compute_all_heads_attn_maps=True
+                - Other diagnostic information depending on configuration
+        """
+        
         eos_detection_method = EOSDetectionMethod(eos_detection_method)
         with torch.no_grad():
             start_time = time.time()
@@ -2854,6 +2921,43 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         super().__init__(cfg, trainer)
 
     def set_streaming_inference_variables(self, true_window_size):
+        """
+        Initializes and resets all internal state variables required for streaming inference.
+
+        This method prepares the model for streaming text-to-speech generation where text is provided
+        incrementally in chunks. It initializes history buffers for text tokens, encoder outputs, audio
+        codes, attention tracking, and chunk management. This must be called before starting a new
+        streaming inference session.
+
+        Args:
+            true_window_size (int): The maximum number of text tokens to maintain in the sliding window
+                during streaming inference. Controls memory usage and context size for incremental processing.
+
+        Details of what this method does:
+            Initializes/resets the following instance variables:
+            - self.true_window_size: Stores the rolling window size parameter.
+            - self.history_text: Text tokens history buffer (initialized to None), this is the text tokens that the model has seen so far.
+            - self.history_context_tensor: Text encoder output history (initialized to None), this is the enocder outputs that the model has seen so far.
+            - self.audio_codes_input: Audio codes tensor initialized with BOS token, shape (1, num_codebooks, 1), this is the audio codes that the model has generated so far.
+            - self.audio_codes_lens: Audio codes length tensor initialized to 1.
+            - self.history_attn_prior: Attention prior history (initialized to None), this is the attention prior that the model has seen in the previous generations.
+            - self.left_offset: Offset tracking how many tokens have been discarded from the left (starts at 0), this is the number of tokens that have been discarded from the left.
+            - self.overall_idx: Global index of audio codes generated (starts at 0).
+            - self.last_attended_timesteps: List tracking last attended text timestep per batch item.
+            - self.attended_timestep_counter: List of dictionaries counting timestep attendance frequency.
+            - self.unfinished_texts: Dictionary tracking which text chunks are incomplete.
+            - self.finished_texts_counter: Dictionary counting consecutive steps in text-ending region.
+            - self.end_indices: Dictionary tracking batch items that have reached EOS.
+            - self.attended_timestep_mapping: Dictionary for timestep mapping across chunks.
+            - self.decoder_start_idx: Starting index for decoder processing (starts at 0).
+            - self.encoder_start_idx: Starting index for encoder processing (starts at 0).
+            
+            Also resets the encoder's KV cache if enabled.
+
+        Note:
+            Currently supports batch_size=1 only for streaming inference.
+        """
+        
         # Window parameters for streaming inference
         self.true_window_size = true_window_size
         # Parameters for maintaining history
@@ -3051,6 +3155,17 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         This method is used for streaming inference. Method to do text to speech inference one chunk of text/words at a time.
         This method only works with batch size 1 right now. Before calling this method for the first time please call the method
         set_streaming_inference_variables()
+
+        Args that are not already part of infer_batch method:
+            end_of_text (bool): Flag indicating whether the entire text has been provided to the model.
+                If True, the model knows no more text chunks will arrive and can allow EOS prediction.
+                If False, more chunks are expected and the model should continue generating audio.
+            beginning_of_text (bool): Flag indicating if this is the first chunk of text in the streaming session.
+                If True, initializes fresh encoder state. If False, reuses encoder outputs from history buffer.
+            use_exponential_weight (bool, optional): Whether to use exponential decay weighting for past attended
+                positions in streaming attention prior. If True, applies exponential PDF to historical tokens.
+                If False, uses simpler discrete weighting. Only relevant when apply_attention_prior=True.
+                Defaults to False.
         """
         device = batch['text'].device
         with torch.no_grad():

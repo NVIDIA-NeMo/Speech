@@ -34,6 +34,7 @@ from nemo.collections.llm.gpt.data.utils import (
 )
 from nemo.core.classes import Dataset
 from nemo.lightning.base import NEMO_DATASETS_CACHE
+from nemo.utils.sequence_packing_utils import generate_positional_ids_for_cp, pad_thd_sequences_for_cp
 
 logger = logging.getLogger(__name__)
 
@@ -758,7 +759,30 @@ class GPTSFTPackedDataset(GPTSFTDataset):
     def _maybe_cast_to_list(self, x):
         return [item.tolist() if isinstance(item, np.ndarray) else item for item in x]
 
+    @staticmethod
+    def _remove_empty_sequences(batch):
+        # remove sequence boundaries relative to empty sequences
+        for idx, item in enumerate(batch):
+            total_seqlens = np.array(item["seq_boundaries"][1:]) - np.array(
+                item["seq_boundaries"][:-1]
+            )
+            if item["seq_boundaries"][0] != 0:
+                raise ValueError("First element of seq_boundaries must be 0")
+            if (total_seqlens < 0).any():
+                raise ValueError("seq_boundaries are not strictly increasing")
+            if (total_seqlens == 0).any():
+                new_seq_boundaries = np.concatenate(
+                    (
+                        np.array(item["seq_boundaries"][0:1]),
+                        np.array(item["seq_boundaries"][1:])[total_seqlens != 0],
+                    )
+                )
+                batch[idx]["seq_boundaries"] = new_seq_boundaries.tolist()
+        return batch
+
     def collate_fn(self, batch):
+        batch = self._remove_empty_sequences(batch)
+
         input_ids = [
             np.concatenate(
                 [
@@ -782,6 +806,47 @@ class GPTSFTPackedDataset(GPTSFTDataset):
 
         token_count = [item.shape[0] for item in input_ids]
 
+        cu_seqlens_unpadded = [torch.zeros(0)] * len(batch)  # will be overwritten below
+        cu_seqlens_padded = [torch.zeros(0)] * len(batch)  # will be overwritten below
+        position_ids = [torch.zeros(0)] * len(batch)  # will be overwritten below
+        for i, item in enumerate(batch):
+            input_ids[i] = torch.tensor(input_ids[i], dtype=torch.long)
+            labels[i] = torch.tensor(labels[i], dtype=torch.long)
+            loss_mask[i] = torch.tensor(loss_mask[i], dtype=torch.long)
+
+            _seqlens_item = (
+                np.array(item["seq_boundaries"][1:])
+                - np.array(item["seq_boundaries"][:-1])
+                - 1
+            )  # -1 because input_ids is truncated by 1 for labels, see above
+            cu_seqlens_unpadded[i] = torch.cat(
+                (torch.zeros(1), torch.cumsum(torch.tensor(_seqlens_item), 0))
+            ).to(torch.int32)
+
+            # Pad input_ids, labels, loss_mask so that every sequence in the pack
+            # reaches a length which is a multiple of self.pad_seq_length_to_mult.
+            # Generate position_ids for the padded sequences.
+            input_ids[i], labels[i], cu_seqlens_padded[i] = pad_thd_sequences_for_cp(
+                input_ids=input_ids[i],
+                labels=labels[i],
+                cu_seqlens=cu_seqlens_unpadded[i],
+                divisibility_factor=self.pad_seq_length_to_mult,
+                padding_token_id=self.tokenizer.eos_id,
+                padding_label_id=self.tokenizer.eos_id,
+            )
+            loss_mask[i], _, _ = pad_thd_sequences_for_cp(
+                input_ids=loss_mask[i],
+                labels=labels[i],  # not used
+                cu_seqlens=cu_seqlens_unpadded[i],
+                divisibility_factor=self.pad_seq_length_to_mult,
+                padding_token_id=0,
+                padding_label_id=-1,  # not used
+            )
+            position_ids[i] = generate_positional_ids_for_cp(
+                cu_seqlens=cu_seqlens_unpadded[i],
+                divisibility_factor=self.pad_seq_length_to_mult,
+            )
+
         if self.pad_to_max_length:
             max_length = self.max_seq_length
         else:
@@ -795,59 +860,41 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             )
         assert max_length <= self.max_seq_length
 
-        position_ids: List[List[int]] = []
-        cu_seqlens: List[List[int]] = []
-        cu_seqlens_unpadded: List[List[int]] = []
-        for item in batch:
-            position_ids.append([])
-            cu_seqlens.append([0])
-            cu_seqlens_unpadded.append([0])
-            seqlens = np.array(item["seq_boundaries"][1:]) - np.array(item["seq_boundaries"][:-1])
-            for length in seqlens:
-                # length minus 1 because input_ids is truncated by 1 for labels
-                position_ids[-1].extend(list(range(length - 1)))
-                cu_seqlens[-1].append(cu_seqlens[-1][-1] + length - 1)
+        # the last seq needs to be the max seq len because rope and attn kernels expect no padding.
+        assert all(x[-1] <= max_length for x in cu_seqlens_padded)
 
-            # the last seq needs to be the max seq len because rope and attn kernels expect no padding
-            assert cu_seqlens[-1][-1] <= max_length
-
-            # since data is prepadded when cp_size > 1, there may be some extra padding at the end
-            # of the packed sequence. In this case, we need to add the max seq len to the end.
-            if cu_seqlens[-1][-1] != max_length:
-                cu_seqlens[-1].append(max_length)
-
-            for i in range(len(item["seq_boundaries"]) - 1):
-                current_seq = item["input_ids"][item["seq_boundaries"][i] : item["seq_boundaries"][i + 1] - 1]
-
-                # since the data could be prepadded with tokenizer's eos_id,
-                # we can find out the index of all the eos_id
-                eos_idx = np.where(np.array(current_seq) == self.tokenizer.eos_id)
-
-                # The second eos_id index marks the length of the original unpadded sequence if the sequence is
-                # prepadded for cp_size > 1. Otherwise, there is no extra padding.
-                seqlen_unpadded = eos_idx[0][1] + 1 if eos_idx[0].shape[0] > 1 else len(current_seq)
-                cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1] + seqlen_unpadded)
-
-            # if extra paddings are added in the packed sequence, they can't be counted as
-            # actual tokens for training
-            if len(cu_seqlens[-1]) > len(cu_seqlens_unpadded[-1]):
-                cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1])
-
-            if self.pad_cu_seqlens:
-                # pad cu_seqlens to a constant shape with zero length sequences
-                max_samples_per_bin = max(p["max_samples_per_bin"] for p in self.pack_metadata)
-                # plus 2 since cu_seqlens additionally contains 0 and may append max_length
-                pad_num = max_samples_per_bin - len(cu_seqlens[-1]) + 2
-                cu_seqlens[-1].extend([max_length] * pad_num)
+        for i in range(len(cu_seqlens_padded)):
+            if cu_seqlens_padded[i][-1] != max_length:
+                cu_seqlens_padded[i] = torch.cat(
+                    (cu_seqlens_padded[i], torch.tensor([max_length]))
+                )
+                # Keep same number of elements in cu_seqlens_unpadded and cu_seqlens_padded.
+                # Simply add sequence with length 0, have the same element twice at the end
+                # of cu_seqlens_unpadded.
+                cu_seqlens_unpadded[i] = torch.cat(
+                    (cu_seqlens_unpadded[i], cu_seqlens_unpadded[i][-1:])
+                )
 
         assert len(input_ids[0]) == len(
             position_ids[0]
         ), "Dataset problem: input_ids and position_ids lengths don't match"
 
-        input_ids = self._collate_item(input_ids, max_length=max_length, pad_id=self.tokenizer.eos_id)
-        labels = self._collate_item(labels, max_length=max_length, pad_id=self.tokenizer.eos_id)
-        loss_mask = self._collate_item(loss_mask, max_length=max_length, pad_id=0)
-        position_ids = self._collate_item(position_ids, max_length=max_length, pad_id=0)
+        input_ids = self._collate_item(
+            [x.tolist() for x in input_ids],
+            max_length=max_length,
+            pad_id=self.tokenizer.eos_id,
+        )
+        labels = self._collate_item(
+            [x.tolist() for x in labels],
+            max_length=max_length,
+            pad_id=self.tokenizer.eos_id,
+        )
+        position_ids = self._collate_item(
+            [x.tolist() for x in position_ids], max_length=max_length, pad_id=0
+        )
+        loss_mask = self._collate_item(
+            [x.tolist() for x in loss_mask], max_length=max_length, pad_id=0
+        )
 
         processed_batch = {
             "tokens": torch.LongTensor(input_ids),
@@ -858,23 +905,26 @@ class GPTSFTPackedDataset(GPTSFTDataset):
         }
 
         if self.return_cu_seqlen:
-            cu_seqlens = self._collate_item(
-                cu_seqlens,
-                max_length=max(len(length) for length in cu_seqlens) + 1,
+            # Finalize the cu_seqlens values, add them to the batch. The cu_seqlens_padded
+            # and unpadded need to terminate with a -1 (NeMo processes them that way, no
+            # idea why).
+            cu_seqlens_padded = self._collate_item(
+                [x.tolist() for x in cu_seqlens_padded],
+                max_length=max(len(l) for l in cu_seqlens_padded) + 1,
                 pad_id=-1,
             )
+            cu_seqlens_padded = torch.IntTensor(cu_seqlens_padded)
+            cu_seqlens_padded_argmin = torch.argmin(cu_seqlens_padded, dim=1, keepdim=True)
+
             cu_seqlens_unpadded = self._collate_item(
-                cu_seqlens_unpadded,
-                max_length=max(len(length) for length in cu_seqlens_unpadded) + 1,
+                [x.tolist() for x in cu_seqlens_unpadded],
+                max_length=max(len(l) for l in cu_seqlens_unpadded) + 1,
                 pad_id=-1,
             )
-            # Pre-generate `cu_seqlens_argmin` and `max_seqlen` as CPU tensor to avoid device-to-host copies.
-            cu_seqlens = torch.IntTensor(cu_seqlens)
-            cu_seqlens_argmin = torch.argmin(cu_seqlens, dim=1, keepdim=True)
-            seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
-            max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
             cu_seqlens_unpadded = torch.IntTensor(cu_seqlens_unpadded)
-            cu_seqlens_unpadded_argmin = torch.argmin(cu_seqlens_unpadded, dim=1, keepdim=True)
+            cu_seqlens_unpadded_argmin = torch.argmin(
+                cu_seqlens_unpadded, dim=1, keepdim=True
+            )
 
             if self.pad_cu_seqlens:
                 # If padding, use the global max seqlen, so that 'pad_cu_seqlens' is the same
@@ -886,20 +936,20 @@ class GPTSFTPackedDataset(GPTSFTDataset):
 
                 # Use the larger of the two values to avoid NAN issues with attention kernel
                 safe_max_seqlen = max(dataset_max_seqlen, padding_gap)
-                max_seqlen = torch.IntTensor([safe_max_seqlen] * len(cu_seqlens))
+                max_seqlen_padded = torch.IntTensor([safe_max_seqlen] * len(cu_seqlens_padded))
             else:
-                seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
-                max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
+                seqlens_padded = cu_seqlens_padded[:, 1:] - cu_seqlens_padded[:, :-1]
+                max_seqlen_padded, _ = seqlens_padded.max(dim=1, keepdim=True)
             processed_batch.update(
                 {
                     "attention_mask": torch.LongTensor(
                         [1] * len(input_ids)
                     ),  # no attention mask is needed for packed seq
-                    "cu_seqlens": torch.IntTensor(cu_seqlens),  # cu_seqlens_q must be in dtype torch.int32
-                    "cu_seqlens_argmin": cu_seqlens_argmin,  # only required for perf
-                    "max_seqlen": max_seqlen,  # only required for perf
-                    "cu_seqlens_unpadded": torch.IntTensor(cu_seqlens_unpadded),
+                    "cu_seqlens": cu_seqlens_padded,
+                    "cu_seqlens_unpadded": cu_seqlens_unpadded,
+                    "cu_seqlens_argmin": cu_seqlens_padded_argmin,   # only required for perf
                     "cu_seqlens_unpadded_argmin": cu_seqlens_unpadded_argmin,
+                    "max_seqlen": max_seqlen_padded,   # only required for perf
                 }
             )
         else:

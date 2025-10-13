@@ -16,6 +16,7 @@ import collections
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 from tqdm import tqdm
 
 from nemo.utils import logging
@@ -291,3 +292,123 @@ def fill_packing_strategy(
     assert all(not seq[0] for seq in ifile_handles.values()), "Error: There are items left over from the assignment"
     assert all(not seq[1] for seq in ifile_handles.values()), "Error: There are items left over from the assignment"
     return output_data
+
+
+def pad_thd_sequences_for_cp(
+    input_ids: torch.Tensor,
+    labels: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    divisibility_factor: int,
+    padding_token_id: int = 0,
+    padding_label_id: int = -100,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pads sequences to be divisible by the divisibility factor.
+
+    Literally a copy-paste of the same function from transformer_engine.
+
+    Args:
+        input_ids: Tensor of shape (1, N) or (N,) containing concatenated sequences
+        labels: Tensor of shape (1, N) or (N,) containing labels for each token
+        cu_seqlens: Tensor of shape (M,) containing cumulative sequence lengths
+        divisibility_factor: Each sequence length must be divisible by this factor
+        padding_token_id: Token ID to use for padding (default: 0)
+        padding_label_id: Label ID to use for padding (default: -100)
+
+    Returns:
+        Tuple of:
+        - input_ids_padded: Padded input_ids tensor
+        - labels_padded: Padded labels tensor
+        - cu_seqlens_padded: Cumulative sequence lengths accounting for padding
+    """
+    # Flatten input_ids and labels if needed
+    if input_ids.dim() == 2:
+        input_ids = input_ids.squeeze(0)
+    if labels.dim() == 2:
+        labels = labels.squeeze(0)
+
+    # Compute the sequence lengths from cu_seqlens
+    seqlens = cu_seqlens[1:] - cu_seqlens[:-1]
+
+    # List: amount of padding needed for each sequence (make length a multiple of divisibility_factor)
+    padding_amounts = [
+        ((l.item() + divisibility_factor - 1) // divisibility_factor)
+        * divisibility_factor
+        - l.item()
+        for l in seqlens
+    ]
+
+    # Extract sequences and labels for each batch item
+    batch_sequences = [
+        input_ids[start.item() : end.item()]
+        for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
+    ]
+    batch_labels = [
+        labels[start.item() : end.item()]
+        for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
+    ]
+
+    # Pad sequences and labels to required length
+    input_ids_padded = torch.cat(
+        [
+            (
+                torch.cat([seq, torch.full((pad,), padding_token_id, dtype=seq.dtype)])
+                if pad > 0
+                else seq
+            )
+            for seq, pad in zip(batch_sequences, padding_amounts)
+        ]
+    )
+    labels_padded = torch.cat(
+        [
+            (
+                torch.cat([seq, torch.full((pad,), padding_label_id, dtype=seq.dtype)])
+                if pad > 0
+                else seq
+            )
+            for seq, pad in zip(batch_labels, padding_amounts)
+        ]
+    )
+
+    # Compute cumulative padded sequence lengths, starting from 0
+    padded_lengths = seqlens + torch.tensor(padding_amounts, dtype=seqlens.dtype)
+    cu_seqlens_padded = torch.cumsum(
+        torch.cat([torch.tensor([0], dtype=cu_seqlens.dtype), padded_lengths]), dim=0
+    )
+
+    return input_ids_padded, labels_padded, cu_seqlens_padded
+
+
+def generate_positional_ids_for_cp(
+    cu_seqlens: torch.Tensor,
+    divisibility_factor: int,
+    dtype: torch.dtype = torch.long,
+) -> torch.Tensor:
+    """Generate positional IDs for sequences padded to be divisible by divisibility_factor.
+    Literally a copy-paste of the same function from transformer_engine.
+
+    Args:
+        cu_seqlens: Tensor of shape (M,) containing cumulative sequence lengths
+        divisibility_factor: Each sequence length must be divisible by this factor
+        dtype: Data type for the generated positional IDs (default: torch.long)
+
+    Returns:
+        Generated positional_ids tensor where each sequence starts from 0 and continues through padding
+    """
+    # Compute the sequence lengths from cu_seqlens
+    seqlens = cu_seqlens[1:] - cu_seqlens[:-1]
+
+    # List: amount of padding needed for each sequence
+    padding_amounts = [
+        ((l.item() + divisibility_factor - 1) // divisibility_factor)
+        * divisibility_factor
+        - l.item()
+        for l in seqlens
+    ]
+
+    # Generate positional IDs for each padded sequence (each starts from 0)
+    padded_lengths = seqlens + torch.tensor(padding_amounts, dtype=seqlens.dtype)
+    positional_ids = torch.cat(
+        [torch.arange(0, int(length), dtype=dtype) for length in padded_lengths]
+    )
+
+    return positional_ids

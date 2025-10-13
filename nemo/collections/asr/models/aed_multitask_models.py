@@ -1048,7 +1048,9 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         )
         merge_to_be_done = trcfg.enable_chunking and len(hypotheses) > 1
         if trcfg.enable_chunking:
-            assert isinstance(batch, PromptedAudioToTextMiniBatch), "Chunking is only supported with Canary dataloaders"
+            assert isinstance(
+                batch, PromptedAudioToTextMiniBatch
+            ), "Chunking is only supported with Canary dataloaders"
 
         del enc_states, enc_mask, decoder_input_ids
 

@@ -358,8 +358,10 @@ class TranscriptionMixin(ABC):
                     dataloader = audio
                 assert isinstance(dataloader, DataLoader), "`dataloader` must be of type DataLoader at this point."
 
-                if (isinstance(audio, list) and isinstance(audio[0], (np.ndarray, torch.Tensor))) or isinstance(audio, (np.ndarray, torch.Tensor)):
-                    transcribe_cfg.enable_chunking = False # Can't chunk tensors (don't know cuts)
+                if (isinstance(audio, list) and isinstance(audio[0], (np.ndarray, torch.Tensor))) or isinstance(
+                    audio, (np.ndarray, torch.Tensor)
+                ):
+                    transcribe_cfg.enable_chunking = False  # Can't chunk tensors (don't know cuts)
 
                 if hasattr(transcribe_cfg, 'verbose'):
                     verbose = transcribe_cfg.verbose

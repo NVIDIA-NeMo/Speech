@@ -9,3 +9,5 @@ transformers==4.56.1
 uvicorn==0.34.3
 vllm==0.10.1.1
 websockets>=15.0.1
+kokoro==0.9.4
+espeakng==1.0.3

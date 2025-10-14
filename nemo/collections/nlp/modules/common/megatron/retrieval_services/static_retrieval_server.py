@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+# pylint: skip-file
+
 import base64
 import logging
 import pickle
@@ -26,7 +29,16 @@ from flask import Flask, jsonify, request
 from flask_restful import Api, Resource
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
-from nemo.collections.nlp.data.language_modeling.megatron.indexed_retrieval_dataset import MMapRetrievalIndexedDataset
+
+try:
+    from nemo.collections.nlp.data.language_modeling.megatron.indexed_retrieval_dataset import (
+        MMapRetrievalIndexedDataset,
+    )
+except (ImportError, ModuleNotFoundError):
+    from abc import ABC
+
+    MMapRetrievalIndexedDataset = ABC
+
 from nemo.collections.nlp.modules.common.megatron.retrieval_services.util import lock, request_data
 
 
@@ -37,7 +49,12 @@ class FaissRetrievalResource(Resource):
     """
 
     def __init__(
-        self, index, tokenizer, ds, query_bert_ip, query_bert_port,
+        self,
+        index,
+        tokenizer,
+        ds,
+        query_bert_ip,
+        query_bert_port,
     ):
         # server
         self.index = index

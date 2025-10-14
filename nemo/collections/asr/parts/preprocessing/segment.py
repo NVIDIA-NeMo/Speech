@@ -356,8 +356,8 @@ class AudioSegment(object):
         if samples is None:
             try:
                 dtype = 'int32' if int_values else 'float32'
-                lr_sr = None if target_sr is None else target_sr  
-                
+                lr_sr = None if target_sr is None else target_sr
+
                 y, sr = librosa.load(
                     audio_file,
                     sr=lr_sr,
@@ -373,16 +373,16 @@ class AudioSegment(object):
                     samples = y.T.astype('float32')
                 if int_values:
 
-                    samples = (samples * (2 ** 31)).astype('int32')
+                    samples = (samples * (2**31)).astype('int32')
                 sample_rate = sr
                 print("Loaded using librosa")
-            except Exception as e:  
+            except Exception as e:
                 logging.error(
                     f"Loading {audio_file} via librosa raised Exception: `{e}`. "
                     "NeMo will fallback to loading via pydub if available."
                 )
                 samples = None
-                    
+
         if HAVE_PYDUB and samples is None:
             try:
                 samples = Audio.from_file(audio_file, codec=ffmpeg_codecs.get(os.path.splitext(audio_file)[-1]))

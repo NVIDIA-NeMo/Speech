@@ -697,7 +697,7 @@ def main():
         '--violin_plot_metrics',
         type=str,
         nargs='*',
-        default=['cer', 'pred_context_ssim'],
+        default=['cer', 'pred_context_ssim', 'utmosv2'],
         help="Which metrics to add the violin plot.",
     )
     args = parser.parse_args()

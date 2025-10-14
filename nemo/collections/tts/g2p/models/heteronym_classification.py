@@ -28,15 +28,9 @@ from nemo.collections.nlp.parts.utils_funcs import tensor2list
 from nemo.collections.tts.g2p.data.heteronym_classification import HeteronymClassificationDataset
 from nemo.collections.tts.g2p.utils import get_heteronym_spans, get_wordid_to_phonemes, read_wordids
 from nemo.collections.tts.metrics.classification_report import ClassificationReport
+from nemo.collections.tts.models.language_modeling.nlp_model import NLPModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
-
-try:
-    from nemo.collections.nlp.models.nlp_model import NLPModel
-
-    NLP_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    NLP_AVAILABLE = False
 
 __all__ = ['HeteronymClassificationModel']
 

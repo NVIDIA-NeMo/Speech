@@ -355,7 +355,8 @@ def pad_thd_sequences_for_cp(
     padding_label_id: int = -100,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pads sequences to be divisible by the divisibility factor.
-    Literally a copy-paste of the same function from transformer_engine.
+    Literally a copy-paste of the same function from transformer_engine, see
+    https://github.com/NVIDIA/TransformerEngine/blob/dfacd9f76bcabcdd53cb30a17679ad6032cf54f4/transformer_engine/pytorch/attention/dot_product_attention/context_parallel.py
 
     Args:
         input_ids: Tensor of shape (1, N) or (N,) containing concatenated sequences
@@ -435,7 +436,8 @@ def generate_positional_ids_for_cp(
     dtype: torch.dtype = torch.long,
 ) -> torch.Tensor:
     """Generate positional IDs for sequences padded to be divisible by divisibility_factor.
-    Literally a copy-paste of the same function from transformer_engine.
+    Literally a copy-paste of the same function from transformer_engine, see
+    https://github.com/NVIDIA/TransformerEngine/blob/dfacd9f76bcabcdd53cb30a17679ad6032cf54f4/transformer_engine/pytorch/attention/dot_product_attention/context_parallel.py
 
     Args:
         cu_seqlens: Tensor of shape (M,) containing cumulative sequence lengths

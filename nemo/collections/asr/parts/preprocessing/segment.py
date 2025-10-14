@@ -60,7 +60,7 @@ except ModuleNotFoundError:
 
 available_formats = sf.available_formats()
 sf_supported_formats = ["." + i.lower() for i in available_formats.keys()]
-
+sf_supported_formats.append(".opus")
 
 ChannelSelectorType = Union[int, Iterable[int], str]
 

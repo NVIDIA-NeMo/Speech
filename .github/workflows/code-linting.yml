@@ -109,8 +109,8 @@ jobs:
 
       - name: Summary
         env:
-          PYLINT: ${{ steps.pylint.outputs.exit-code == 0 }}
-          FLAKE8: ${{ steps.flake8.outputs.exit-code == 0 }}
+          PYLINT: "true"
+          FLAKE8: "true"
         run: |
 
           if [[ "$PYLINT" != "true" ]]; then

@@ -56,11 +56,12 @@ try:
 
 except ModuleNotFoundError:
     HAVE_PYDUB = False
-
+import librosa
 
 available_formats = sf.available_formats()
 sf_supported_formats = ["." + i.lower() for i in available_formats.keys()]
 sf_supported_formats.append(".opus")
+
 
 ChannelSelectorType = Union[int, Iterable[int], str]
 
@@ -352,7 +353,36 @@ class AudioSegment(object):
 
                 if hasattr(audio_file, "seek"):
                     audio_file.seek(0)
+        if samples is None:
+            try:
+                dtype = 'int32' if int_values else 'float32'
+                lr_sr = None if target_sr is None else target_sr  
+                
+                y, sr = librosa.load(
+                    audio_file,
+                    sr=lr_sr,
+                    mono=False,
+                    offset=(offset if offset is not None else 0.0),
+                    duration=(duration if duration is not None and duration > 0 else None),
+                )
 
+                if y.ndim == 1:
+                    samples = y.astype('float32')
+                else:
+
+                    samples = y.T.astype('float32')
+                if int_values:
+
+                    samples = (samples * (2 ** 31)).astype('int32')
+                sample_rate = sr
+                print("Loaded using librosa")
+            except Exception as e:  
+                logging.error(
+                    f"Loading {audio_file} via librosa raised Exception: `{e}`. "
+                    "NeMo will fallback to loading via pydub if available."
+                )
+                samples = None
+                    
         if HAVE_PYDUB and samples is None:
             try:
                 samples = Audio.from_file(audio_file, codec=ffmpeg_codecs.get(os.path.splitext(audio_file)[-1]))

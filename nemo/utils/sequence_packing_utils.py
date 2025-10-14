@@ -355,7 +355,6 @@ def pad_thd_sequences_for_cp(
     padding_label_id: int = -100,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pads sequences to be divisible by the divisibility factor.
-
     Literally a copy-paste of the same function from transformer_engine.
 
     Args:

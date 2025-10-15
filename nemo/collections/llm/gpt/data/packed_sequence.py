@@ -95,8 +95,8 @@ def prepare_packed_sequence_data(
         packing_algorithm (str): The algorithm used for packing sequences
                 currently supports "first_fit_shuffle" and "first_fit_decreasing".
         chat (bool): Whether the dataset is a chat dataset. Defaults to False.
-        divisibility_factor (Optional[int]): If specified, each sequence length will be 
-            rounded to the next integer multiple of this factor. 
+        divisibility_factor (Optional[int]): If specified, each sequence length will be
+            rounded to the next integer multiple of this factor.
 
     Returns:
         None: Saves the packed sequence data to the specified output path.

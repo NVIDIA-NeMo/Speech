@@ -763,9 +763,7 @@ class GPTSFTPackedDataset(GPTSFTDataset):
     def _remove_empty_sequences(batch):
         # remove sequence boundaries relative to empty sequences
         for idx, item in enumerate(batch):
-            total_seqlens = np.array(item["seq_boundaries"][1:]) - np.array(
-                item["seq_boundaries"][:-1]
-            )
+            total_seqlens = np.array(item["seq_boundaries"][1:]) - np.array(item["seq_boundaries"][:-1])
             if item["seq_boundaries"][0] != 0:
                 raise ValueError("First element of seq_boundaries must be 0")
             if (total_seqlens < 0).any():
@@ -815,13 +813,11 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             loss_mask[i] = torch.tensor(loss_mask[i], dtype=torch.long)
 
             _seqlens_item = (
-                np.array(item["seq_boundaries"][1:])
-                - np.array(item["seq_boundaries"][:-1])
-                - 1
+                np.array(item["seq_boundaries"][1:]) - np.array(item["seq_boundaries"][:-1]) - 1
             )  # -1 because input_ids is truncated by 1 for labels, see above
-            cu_seqlens_unpadded[i] = torch.cat(
-                (torch.zeros(1), torch.cumsum(torch.tensor(_seqlens_item), 0))
-            ).to(torch.int32)
+            cu_seqlens_unpadded[i] = torch.cat((torch.zeros(1), torch.cumsum(torch.tensor(_seqlens_item), 0))).to(
+                torch.int32
+            )
 
             # Pad input_ids, labels, loss_mask so that every sequence in the pack
             # reaches a length which is a multiple of self.pad_seq_length_to_mult.
@@ -865,15 +861,11 @@ class GPTSFTPackedDataset(GPTSFTDataset):
 
         for i in range(len(cu_seqlens_padded)):
             if cu_seqlens_padded[i][-1] != max_length:
-                cu_seqlens_padded[i] = torch.cat(
-                    (cu_seqlens_padded[i], torch.tensor([max_length]))
-                )
+                cu_seqlens_padded[i] = torch.cat((cu_seqlens_padded[i], torch.tensor([max_length])))
                 # Keep same number of elements in cu_seqlens_unpadded and cu_seqlens_padded.
                 # Simply add sequence with length 0, have the same element twice at the end
                 # of cu_seqlens_unpadded.
-                cu_seqlens_unpadded[i] = torch.cat(
-                    (cu_seqlens_unpadded[i], cu_seqlens_unpadded[i][-1:])
-                )
+                cu_seqlens_unpadded[i] = torch.cat((cu_seqlens_unpadded[i], cu_seqlens_unpadded[i][-1:]))
 
         assert len(input_ids[0]) == len(
             position_ids[0]
@@ -889,12 +881,8 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             max_length=max_length,
             pad_id=self.tokenizer.eos_id,
         )
-        position_ids = self._collate_item(
-            [x.tolist() for x in position_ids], max_length=max_length, pad_id=0
-        )
-        loss_mask = self._collate_item(
-            [x.tolist() for x in loss_mask], max_length=max_length, pad_id=0
-        )
+        position_ids = self._collate_item([x.tolist() for x in position_ids], max_length=max_length, pad_id=0)
+        loss_mask = self._collate_item([x.tolist() for x in loss_mask], max_length=max_length, pad_id=0)
 
         processed_batch = {
             "tokens": torch.LongTensor(input_ids),
@@ -922,9 +910,7 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                 pad_id=-1,
             )
             cu_seqlens_unpadded = torch.IntTensor(cu_seqlens_unpadded)
-            cu_seqlens_unpadded_argmin = torch.argmin(
-                cu_seqlens_unpadded, dim=1, keepdim=True
-            )
+            cu_seqlens_unpadded_argmin = torch.argmin(cu_seqlens_unpadded, dim=1, keepdim=True)
 
             if self.pad_cu_seqlens:
                 # If padding, use the global max seqlen, so that 'pad_cu_seqlens' is the same
@@ -947,9 +933,9 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                     ),  # no attention mask is needed for packed seq
                     "cu_seqlens": cu_seqlens_padded,
                     "cu_seqlens_unpadded": cu_seqlens_unpadded,
-                    "cu_seqlens_argmin": cu_seqlens_padded_argmin,   # only required for perf
+                    "cu_seqlens_argmin": cu_seqlens_padded_argmin,  # only required for perf
                     "cu_seqlens_unpadded_argmin": cu_seqlens_unpadded_argmin,
-                    "max_seqlen": max_seqlen_padded,   # only required for perf
+                    "max_seqlen": max_seqlen_padded,  # only required for perf
                 }
             )
         else:

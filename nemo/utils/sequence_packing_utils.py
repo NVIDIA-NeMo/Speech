@@ -105,8 +105,8 @@ def first_fit_shuffle_with_heap(
 ) -> list[list[int]]:
     """A custom packing routine.
     Packs sequences of varying lengths into bins using a First-Fit-like algorithm.
-    
-    This routine is similar in logic to First-Fit: for every new sequence, look for an 
+
+    This routine is similar in logic to First-Fit: for every new sequence, look for an
     existing bin that can fit it, otherwise open a new bin.
     While the original First-Fit version uses a greedy function called
     `find_first_bin_that_fits`, here we greedily look for an accomodating bin using a
@@ -175,9 +175,7 @@ def create_hist(dataset: np.array, truncate_seq_len: int, divisibility_factor: O
     logging.info("Creating histogram from tokenized dataset...")
 
     if divisibility_factor is not None and truncate_seq_len % divisibility_factor:
-        raise ValueError(
-            f"{truncate_seq_len=} must be a multiple of {divisibility_factor=}"
-        )
+        raise ValueError(f"{truncate_seq_len=} must be a multiple of {divisibility_factor=}")
 
     sequences = collections.defaultdict(list)
     counts = [0] * (truncate_seq_len + 1)
@@ -299,14 +297,14 @@ def fill_packing_strategy(
             except KeyError:
                 try:
                     loss_mask = [
-                            [
-                                # (x['answer_start_idx'] - 1) because we want to train on the output
-                                # after the last context token
-                                idx >= (x["answer_start_idx"] - 1)
-                                for idx in range(len(x["input_ids"]))
-                            ]
-                            for x in per_seq_data
+                        [
+                            # (x['answer_start_idx'] - 1) because we want to train on the output
+                            # after the last context token
+                            idx >= (x["answer_start_idx"] - 1)
+                            for idx in range(len(x["input_ids"]))
                         ]
+                        for x in per_seq_data
+                    ]
                     loss_mask = [loss_mask[idx] for idx in perm]
                 except KeyError as err:
                     err_msg = "Key errors loss_mask and answer_start_idx missing in example - "
@@ -328,9 +326,7 @@ def fill_packing_strategy(
         for j, seq_length in enumerate(assignment):
             input_ids[oindex][j] = ifile_handles[seq_length][0].pop()
             loss_mask[oindex][j] = ifile_handles[seq_length][1].pop()
-            seq_start_id[oindex][j + 1] = (
-                len(input_ids[oindex][j]) + seq_start_id[oindex][j]
-            )
+            seq_start_id[oindex][j + 1] = len(input_ids[oindex][j]) + seq_start_id[oindex][j]
 
     output_data = []
     for i in range(len(input_ids)):
@@ -383,49 +379,30 @@ def pad_thd_sequences_for_cp(
 
     # List: amount of padding needed for each sequence (make length a multiple of divisibility_factor)
     padding_amounts = [
-        ((l.item() + divisibility_factor - 1) // divisibility_factor)
-        * divisibility_factor
-        - l.item()
-        for l in seqlens
+        ((l.item() + divisibility_factor - 1) // divisibility_factor) * divisibility_factor - l.item() for l in seqlens
     ]
 
     # Extract sequences and labels for each batch item
-    batch_sequences = [
-        input_ids[start.item() : end.item()]
-        for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
-    ]
-    batch_labels = [
-        labels[start.item() : end.item()]
-        for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])
-    ]
+    batch_sequences = [input_ids[start.item() : end.item()] for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
+    batch_labels = [labels[start.item() : end.item()] for start, end in zip(cu_seqlens[:-1], cu_seqlens[1:])]
 
     # Pad sequences and labels to required length
     input_ids_padded = torch.cat(
         [
-            (
-                torch.cat([seq, torch.full((pad,), padding_token_id, dtype=seq.dtype)])
-                if pad > 0
-                else seq
-            )
+            (torch.cat([seq, torch.full((pad,), padding_token_id, dtype=seq.dtype)]) if pad > 0 else seq)
             for seq, pad in zip(batch_sequences, padding_amounts)
         ]
     )
     labels_padded = torch.cat(
         [
-            (
-                torch.cat([seq, torch.full((pad,), padding_label_id, dtype=seq.dtype)])
-                if pad > 0
-                else seq
-            )
+            (torch.cat([seq, torch.full((pad,), padding_label_id, dtype=seq.dtype)]) if pad > 0 else seq)
             for seq, pad in zip(batch_labels, padding_amounts)
         ]
     )
 
     # Compute cumulative padded sequence lengths, starting from 0
     padded_lengths = seqlens + torch.tensor(padding_amounts, dtype=seqlens.dtype)
-    cu_seqlens_padded = torch.cumsum(
-        torch.cat([torch.tensor([0], dtype=cu_seqlens.dtype), padded_lengths]), dim=0
-    )
+    cu_seqlens_padded = torch.cumsum(torch.cat([torch.tensor([0], dtype=cu_seqlens.dtype), padded_lengths]), dim=0)
 
     return input_ids_padded, labels_padded, cu_seqlens_padded
 
@@ -452,16 +429,11 @@ def generate_positional_ids_for_cp(
 
     # List: amount of padding needed for each sequence
     padding_amounts = [
-        ((l.item() + divisibility_factor - 1) // divisibility_factor)
-        * divisibility_factor
-        - l.item()
-        for l in seqlens
+        ((l.item() + divisibility_factor - 1) // divisibility_factor) * divisibility_factor - l.item() for l in seqlens
     ]
 
     # Generate positional IDs for each padded sequence (each starts from 0)
     padded_lengths = seqlens + torch.tensor(padding_amounts, dtype=seqlens.dtype)
-    positional_ids = torch.cat(
-        [torch.arange(0, int(length), dtype=dtype) for length in padded_lengths]
-    )
+    positional_ids = torch.cat([torch.arange(0, int(length), dtype=dtype) for length in padded_lengths])
 
     return positional_ids

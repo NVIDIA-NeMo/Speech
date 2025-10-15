@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
 
 import fiddle as fdl
 import fiddle._src.experimental.dataclasses as fdl_dc
+import lightning.pytorch as pl
 from cloudpickle import dump
 from cloudpickle import load as pickle_load
 from fiddle._src import config as config_lib
@@ -188,6 +189,13 @@ class IOMixin:
 
     def __init_subclass__(cls):
         _io_register_serialization(cls)
+
+        # Add OneLogger timing hooks for data modules to enable telemetry tracking
+        if issubclass(cls, pl.LightningDataModule):
+            from nemo.lightning.callback_group import hook_class_init_with_callbacks
+
+            hook_class_init_with_callbacks(cls, "on_dataloader_init_start", "on_dataloader_init_end")
+        super().__init_subclass__()
 
     def io_transform_args(self, init_fn, *args, **kwargs) -> Dict[str, Any]:
         """

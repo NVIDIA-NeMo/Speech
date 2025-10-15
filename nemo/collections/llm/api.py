@@ -56,6 +56,7 @@ from nemo.lightning import (
     io,
 )
 from nemo.lightning.base import NEMO_MODELS_CACHE
+from nemo.lightning.callback_group import CallbackGroup
 from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.lightning.pytorch.callbacks import PEFT, JitTransform, ModelTransform
 from nemo.utils import logging
@@ -1261,11 +1262,19 @@ def _setup(
         resume_if_exists=getattr(resume, "resume_if_exists", False),
         task_config=getattr(train, "__io__", None),
     )
+
+    # Configure telemetry via CallbackGroup
+    CallbackGroup.get_instance().update_config(nemo_version='v2', trainer=trainer, data=data)
+
     if resume is not None:
+        CallbackGroup.get_instance().on_load_checkpoint_start()
         resume.setup(trainer, model)
+        CallbackGroup.get_instance().on_load_checkpoint_end()
 
     if optim:
+        CallbackGroup.get_instance().on_optimizer_init_start()
         optim.connect(model)
+        CallbackGroup.get_instance().on_optimizer_init_end()
     if tokenizer:  # TODO: Improve this
         _use_tokenizer(model, data, tokenizer)
 

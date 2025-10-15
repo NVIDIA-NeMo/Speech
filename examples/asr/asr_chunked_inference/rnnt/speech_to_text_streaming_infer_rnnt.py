@@ -74,7 +74,14 @@ from nemo.collections.asr.parts.utils.streaming_utils import (
     SimpleAudioDataset,
     StreamingBatchedAudioBuffer,
 )
-from nemo.collections.asr.parts.utils.transcribe_utils import compute_output_filename, setup_model, write_transcription
+from nemo.collections.asr.parts.utils.timestamp_utils import process_timestamp_outputs
+from nemo.collections.asr.parts.utils.transcribe_utils import (
+    compute_output_filename,
+    get_inference_device,
+    get_inference_dtype,
+    setup_model,
+    write_transcription,
+)
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -128,6 +135,8 @@ class TranscriptionConfig:
     # Decoding strategy for RNNT models
     decoding: RNNTDecodingConfig = field(default_factory=RNNTDecodingConfig)
 
+    timestamps: bool = False  # output timestamps
+
     # Config for word / character error rate calculation
     calculate_wer: bool = True
     clean_groundtruth_text: bool = False
@@ -161,34 +170,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         filepaths = list(glob.glob(os.path.join(cfg.audio_dir, f"**/*.{cfg.audio_type}"), recursive=True))
         manifest = None  # ignore dataset_manifest if audio_dir and dataset_manifest both presents
 
-    # setup GPU
-    if cfg.cuda is None:
-        if torch.cuda.is_available():
-            map_location = torch.device('cuda:0')  # use 0th CUDA device
-        elif cfg.allow_mps and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            logging.warning(
-                "MPS device (Apple Silicon M-series GPU) support is experimental."
-                " Env variable `PYTORCH_ENABLE_MPS_FALLBACK=1` should be set in most cases to avoid failures."
-            )
-            map_location = torch.device('mps')
-        else:
-            map_location = torch.device('cpu')
-    elif cfg.cuda < 0:
-        # negative number => inference on CPU
-        map_location = torch.device('cpu')
-    else:
-        map_location = torch.device(f'cuda:{cfg.cuda}')
-
-    compute_dtype: torch.dtype
-    if cfg.compute_dtype is None:
-        can_use_bfloat16 = map_location.type == "cuda" and torch.cuda.is_bf16_supported()
-        if can_use_bfloat16:
-            compute_dtype = torch.bfloat16
-        else:
-            compute_dtype = torch.float32
-    else:
-        assert cfg.compute_dtype in {"float32", "bfloat16", "float16"}
-        compute_dtype = getattr(torch, cfg.compute_dtype)
+    # setup device
+    map_location = get_inference_device(cuda=cfg.cuda, allow_mps=cfg.allow_mps)
+    compute_dtype = get_inference_dtype(cfg.compute_dtype, device=map_location)
 
     logging.info(f"Inference will be done on device : {map_location} with compute_dtype: {compute_dtype}")
 
@@ -227,7 +211,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             raise NotImplementedError(
                 "This script currently supports only `greedy_batch` strategy with Label-Looping algorithm"
             )
-        cfg.decoding.preserve_alignments = False
+        cfg.decoding.tdt_include_token_duration = cfg.timestamps
+        cfg.decoding.greedy.preserve_alignments = False
         cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
         cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
 
@@ -383,11 +368,19 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, None, batch_size=batch_size))
 
     # convert text
-    for hyp in all_hyps:
+    for i, hyp in enumerate(all_hyps):
         hyp.text = asr_model.tokenizer.ids_to_text(hyp.y_sequence.tolist())
+        if cfg.timestamps:
+            hyp = asr_model.decoding.compute_rnnt_timestamps(hyp)
+            hyp = process_timestamp_outputs(
+                hyp,
+                subsampling_factor=asr_model.encoder.subsampling_factor,
+                window_stride=asr_model.cfg['preprocessor']['window_stride'],
+            )
+            all_hyps[i] = hyp
 
     output_filename, pred_text_attr_name = write_transcription(
-        all_hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=False
+        all_hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=cfg.timestamps
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
 

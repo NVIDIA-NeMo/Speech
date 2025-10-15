@@ -45,7 +45,15 @@ def load_dcp(ckpt_dir):
 def compare_ckpts(a, b, key=''):
     if isinstance(a, dict):
         assert isinstance(b, dict)
-        for key in a.keys():
+        extra_a_keys = a.keys() - b.keys()
+        extra_b_keys = b.keys() - a.keys()
+        if extra_a_keys or extra_b_keys:
+            diff_msg = f"Extra left keys: {extra_a_keys}. Extra right keys: {extra_b_keys}."
+            if all(k.startswith("optimizer") for k in extra_a_keys | extra_b_keys):
+                print(f"Optimizer keys mismatch (most likely indicating different formats): {diff_msg}")
+            else:
+                raise RuntimeError(f"Checkpoint keys mismatch: {diff_msg}")
+        for key in a.keys() - extra_a_keys:
             compare_ckpts(a[key], b[key], key)
     elif isinstance(a, torch.Tensor):
         try:

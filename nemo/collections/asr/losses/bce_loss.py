@@ -77,7 +77,7 @@ class BCELoss(Loss, Typing):
         self.eps = 1e-6
 
     @typecheck()
-    def forward(self, probs, labels, target_lens):
+    def forward(self, probs, labels, target_lens, enable_autocast=False):
         """
         Calculate binary cross entropy loss based on probs, labels and target_lens variables.
 
@@ -123,13 +123,14 @@ class BCELoss(Loss, Typing):
             binary_weight = torch.ones_like(labels).detach().clone()
             norm_weight = torch.ones_like(labels).detach().clone()
 
-        if self.reduction == 'sum':
-            loss = self.loss_f(probs, labels)
-        elif self.reduction == 'mean':
-            loss = self.loss_f(probs, labels).mean()
-        elif self.reduction == 'none':
-            if self.class_normalization in ['class', 'class_binary', 'binary']:
-                loss = (binary_weight * norm_weight * self.loss_f(probs, labels)).sum()
-            else:
+        with torch.cuda.amp.autocast(enabled=enable_autocast):
+            if self.reduction == 'sum':
                 loss = self.loss_f(probs, labels)
+            elif self.reduction == 'mean':
+                loss = self.loss_f(probs, labels).mean()
+            elif self.reduction == 'none':
+                if self.class_normalization in ['class', 'class_binary', 'binary']:
+                    loss = (binary_weight * norm_weight * self.loss_f(probs, labels)).sum()
+                else:
+                    loss = self.loss_f(probs, labels)
         return loss

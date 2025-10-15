@@ -1500,9 +1500,7 @@ class MegatronStep(Generic[ModelT, DataT]):
         if getattr(self.trainer, "datamodule", None) is not None:
             use_global_batch_sampler = self.trainer.datamodule.data_sampler.dataloader_type == 'batch'
         elif getattr(self.trainer, "predict_dataloaders", None) is not None:
-            from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_samplers import (  # noqa: I001
-                MegatronPretrainingBatchSampler,
-            )
+            from nemo.collections.common.data.data_samplers import MegatronPretrainingBatchSampler  # noqa: I001
 
             # The batch_sampler gets injected into the dataloader by the data_sampler. When doing
             # predict without a datamodule we can look inside the dataloader's batch_sampler to see

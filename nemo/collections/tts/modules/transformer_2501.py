@@ -17,6 +17,8 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
+
+from nemo.collections.tts.modules.moe_modules import PositionwiseConvFFMoE
 from nemo.utils import logging
 
 # TODO: Move the cache implementation out of the Module class, and pass it as part of the forward so we can reset
@@ -82,15 +84,17 @@ class ConvolutionLayer(torch.nn.Module):
             bias=bias,
         )
 
-    def forward(self, signal, signal_mask):
+    def forward(self, signal, signal_mask=None):
         # signal: (B, C, T)
-        # signal_mask: (B, T)
-        signal = signal * signal_mask.unsqueeze(1)
+        # signal_mask: (B, T) or None (if None, assumes all positions are valid)
+        if signal_mask is not None:
+            signal = signal * signal_mask.unsqueeze(1)
         if self.is_causal:  # TODO: maybe replace with identify rather than keep conditional if in forward
             signal = F.pad(signal, self.causal_padding)
 
         conv_signal = self.conv(signal)
-        conv_signal = conv_signal * signal_mask.unsqueeze(1)
+        if signal_mask is not None:
+            conv_signal = conv_signal * signal_mask.unsqueeze(1)
 
         return conv_signal
 
@@ -445,6 +449,12 @@ class TransformerLayer(torch.nn.Module):
         max_length_causal_mask: int = 4096,
         conv_non_linearity: Callable = torch.nn.GELU(approximate="tanh"),
         make_prior_window_strict: bool = False,
+        # MoE parameters
+        use_moe: bool = False,
+        num_experts: int = 8,
+        top_k_experts: int = 2,
+        router_jitter_noise: float = 0.0,
+        routing_strategy: str = "top_k",
     ):
         """
         One layer of the Transformer.
@@ -463,10 +473,17 @@ class TransformerLayer(torch.nn.Module):
             max_length_causal_mask <int>: Maximum length of causal mask
             conv_non_linearity <Callable>: Convolution non-linearity
             make_prior_window_strict <bool>: Make attention scores lowest where prior is zero.
+            use_moe <bool>: Whether to use Mixture of Experts for FFN
+            num_experts <int>: Number of experts in MoE
+            top_k_experts <int>: Number of experts to use per token
+            router_jitter_noise <float>: Noise for router exploration
+            routing_strategy <str>: Routing strategy ("top_k" or "sinkhorn")
         """
         super().__init__()
         self.has_xattn = has_xattn
+        self.use_moe = use_moe
 
+        # TODO @xueyang: maybe we can replace LayerNorm with RMSNorm here for training efficiency?
         self.norm_self = torch.nn.LayerNorm(d_model, bias=False)
         self.self_attention = SelfAttention(
             n_heads=sa_n_heads,
@@ -492,9 +509,30 @@ class TransformerLayer(torch.nn.Module):
                 self.norm_xattn_memory = torch.nn.LayerNorm(xa_d_memory, bias=False)
 
         self.norm_pos_ff = torch.nn.LayerNorm(d_model, bias=False)
-        self.pos_ff = PositionwiseConvFF(
-            d_model, d_ffn, p_dropout, kernel_size=kernel_size, is_causal=is_causal, non_linearity=conv_non_linearity
-        )
+
+        # Use MoE or standard FFN based on configuration
+        if use_moe:
+            self.pos_ff = PositionwiseConvFFMoE(
+                d_model=d_model,
+                d_ffn=d_ffn,
+                p_dropout=p_dropout,
+                num_experts=num_experts,
+                top_k_experts=top_k_experts,
+                kernel_size=kernel_size,
+                is_causal=is_causal,
+                non_linearity=conv_non_linearity,
+                router_jitter_noise=router_jitter_noise,
+                routing_strategy=routing_strategy,
+            )
+        else:
+            self.pos_ff = PositionwiseConvFF(
+                d_model,
+                d_ffn,
+                p_dropout,
+                kernel_size=kernel_size,
+                is_causal=is_causal,
+                non_linearity=conv_non_linearity,
+            )
 
         self.use_cache = False
         self.cache = self._init_cache()
@@ -563,12 +601,24 @@ class TransformerLayer(torch.nn.Module):
             x = x + x_res
 
         # mlp final projection
-        x = x + self.pos_ff(self.norm_pos_ff(x), x_mask)
+        moe_routing_info = None
+        if self.use_moe:
+            ffn_out, router_logits, router_probs, expert_indices = self.pos_ff(self.norm_pos_ff(x), x_mask)
+            x = x + ffn_out
+            # Store routing information for loss computation and statistics in the model
+            moe_routing_info = {
+                'router_logits': router_logits,
+                'router_probs': router_probs,
+                'expert_indices': expert_indices,
+            }
+        else:
+            x = x + self.pos_ff(self.norm_pos_ff(x), x_mask)
         x = x * x_mask.unsqueeze(-1)
 
         return {
             'output': x,
             'attn_probabilities': {'self_attn_probabilities': s_attn_prob, 'cross_attn_probabilities': x_attn_prob},
+            'moe_routing_info': moe_routing_info,
         }
 
 
@@ -593,6 +643,12 @@ class Transformer(torch.nn.Module):
         use_learnable_pos_emb: bool = False,
         conv_non_linearity: Callable = torch.nn.GELU(approximate="tanh"),
         make_prior_window_strict: bool = False,
+        # MoE parameters
+        use_moe: bool = False,
+        num_experts: int = 8,
+        top_k_experts: int = 2,
+        router_jitter_noise: float = 0.0,
+        routing_strategy: str = "top_k",
     ):
         """
         Initializes a stack of transformer layers. Can be used for both encoder and decoder.
@@ -617,12 +673,20 @@ class Transformer(torch.nn.Module):
             use_learnable_pos_emb <bool>: Whether to add a learnable positionable embedding inside the class
             conv_non_linearity <Callable>: Convolution non-linearity
             make_prior_window_strict <bool>: Make attention scores lowest where prior is zero
+            use_moe <bool>: Whether to use Mixture of Experts for FFN layers
+            num_experts <int>: Number of experts in MoE
+            top_k_experts <int>: Number of experts to use per token
+            router_jitter_noise <float>: Noise for router exploration during training
+            routing_strategy <str>: Routing strategy ("top_k" or "sinkhorn")
         """
         if has_xattn and (xa_d_memory is None or xa_n_heads is None):
             raise ValueError("It requires that `xa_d_memory` and `xa_n_heads` are specified when `has_xattn` is True!")
 
         super().__init__()
         self.n_layers = n_layers
+        self.use_moe = use_moe
+        self.num_experts = num_experts
+        self.top_k_experts = top_k_experts
         self.dropout = torch.nn.Dropout(p_dropout)
         self.p_dropout_out = p_dropout_out
 
@@ -652,6 +716,11 @@ class Transformer(torch.nn.Module):
                     max_length_causal_mask=max_length_causal_mask,
                     conv_non_linearity=conv_non_linearity,
                     make_prior_window_strict=make_prior_window_strict,
+                    use_moe=use_moe,
+                    num_experts=num_experts,
+                    top_k_experts=top_k_experts,
+                    router_jitter_noise=router_jitter_noise,
+                    routing_strategy=routing_strategy,
                 )
             )
 
@@ -733,6 +802,8 @@ class Transformer(torch.nn.Module):
         Returns dict with keys:
             output <torch tensor> (B, T1, C): Output tensor
             attn_probabilities <list>: Attention probabilities of each layer
+            moe_routing_info <list>: List of MoE routing info dicts from each layer (if MoE enabled)
+                Each dict contains 'router_logits' and 'router_probs' for loss computation in the model
         """
         if isinstance(cond, list) and len(self.layers) < len(cond):
             raise ValueError(
@@ -745,6 +816,8 @@ class Transformer(torch.nn.Module):
             x = x + self.position_embeddings(positions)
 
         attn_probabilities = []
+        # Collect MoE routing information from all layers
+        moe_routing_info_all_layers = []
         x = self.dropout(x)
         for idx, layer in enumerate(self.layers):
             _cond, _cond_mask, _attn_prior = self._get_layer_inputs(
@@ -754,9 +827,17 @@ class Transformer(torch.nn.Module):
             x = out_dict['output']
             attn_probabilities.append(out_dict['attn_probabilities'])
 
+            # Collect MoE routing info for loss computation in the model
+            if self.use_moe and out_dict['moe_routing_info'] is not None:
+                moe_routing_info_all_layers.append(out_dict['moe_routing_info'])
+
             if max_layer_idx is not None and idx == max_layer_idx:
                 break
 
         x = self.norm_out(x)
         x = self.dropout_out(x)
-        return {'output': x, 'attn_probabilities': attn_probabilities}
+        return {
+            'output': x,
+            'attn_probabilities': attn_probabilities,
+            'moe_routing_info': moe_routing_info_all_layers if len(moe_routing_info_all_layers) > 0 else None,
+        }

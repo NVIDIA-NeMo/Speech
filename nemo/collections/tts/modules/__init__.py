@@ -13,3 +13,4 @@
 # limitations under the License.
 
 import nemo.collections.tts.modules.adapters
+import nemo.collections.tts.modules.moe_modules

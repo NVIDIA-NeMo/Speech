@@ -23,13 +23,82 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.tts.models import MagpieTTSModel
 from nemo.utils import logging
+
+
+def compute_ffn_flops_per_token(
+    d_model: int,
+    d_ffn: int,
+    is_moe: bool = False,
+    num_experts: Optional[int] = None,
+    top_k_experts: Optional[int] = None,
+    has_gated_linear: bool = False,
+) -> dict:
+    """Compute FLOPs per token for FFN layer (works for both dense and MoE).
+
+    Uses NeMo's standard FLOPs calculation formulas for consistency with other models.
+    Follows conventions from Switch Transformer, GShard, and Mixtral papers.
+
+    For complete model FLOPs (attention + FFN + embeddings), see:
+    - nemo.utils.flops_formulas (NeMo's built-in formulas)
+    - nemo.lightning.pytorch.callbacks.FLOPsMeasurementCallback
+
+    Args:
+        d_model: Model dimension (hidden_size).
+        d_ffn: FFN hidden dimension (per expert for MoE, total for dense).
+        is_moe: Whether this is an MoE layer.
+        num_experts: Number of experts (required if is_moe=True).
+        top_k_experts: Number of experts activated per token (required if is_moe=True).
+        has_gated_linear: Whether FFN uses gated linear units (SwiGLU).
+
+    Returns:
+        dict with FLOPs breakdown (inference FLOPs only, not training).
+    """
+    # For a linear layer (M, N): FLOPs = 2 * M * N (multiply-add counted as 2 ops)
+    # Note: NeMo's formulas multiply by 6 for training (forward + backward wgrad + backward dgrad)
+    # For inference, we only count forward pass, so we compute and don't multiply by 6
+
+    if is_moe:
+        # MoE FFN FLOPs (inference only)
+        # Each expert: d_model -> d_ffn -> d_model
+        gated_multiplier = 2 if has_gated_linear else 1
+        flops_fc1 = top_k_experts * d_model * d_ffn * gated_multiplier  # Projection (possibly gated)
+        flops_fc2 = top_k_experts * d_ffn * d_model  # Output projection
+        expert_flops = 2 * (flops_fc1 + flops_fc2)  # 2x for multiply-add
+
+        # Router FLOPs: d_model -> num_experts linear + top-k selection
+        router_flops = 2 * d_model * num_experts + num_experts  # Linear + topk overhead
+
+        total_flops = expert_flops + router_flops
+
+        return {
+            'ffn_type': 'MoE',
+            'expert_flops_per_token': expert_flops,
+            'router_flops_per_token': router_flops,
+            'total_flops_per_token': total_flops,
+            'num_experts': num_experts,
+            'active_experts_per_token': top_k_experts,
+            'has_gated_linear': has_gated_linear,
+        }
+    else:
+        # Dense FFN FLOPs (inference only)
+        # FFN: d_model -> d_ffn -> d_model
+        gated_multiplier = 2 if has_gated_linear else 1
+        flops_fc1 = d_model * d_ffn * gated_multiplier
+        flops_fc2 = d_ffn * d_model
+        total_flops = 2 * (flops_fc1 + flops_fc2)  # 2x for multiply-add
+
+        return {
+            'ffn_type': 'Dense',
+            'total_flops_per_token': total_flops,
+            'has_gated_linear': has_gated_linear,
+        }
 
 
 @dataclass
@@ -146,6 +215,15 @@ def update_config_for_inference(
             model_cfg.forced_context_audio_eos_id = num_audio_tokens - 1
             model_cfg.forced_context_audio_bos_id = num_audio_tokens - 2
 
+    # Ensure non-MoE checkpoints work seamlessly
+    for transformer_name in ['encoder', 'decoder', 'context_encoder']:
+        if hasattr(model_cfg, transformer_name):
+            transformer_cfg = getattr(model_cfg, transformer_name)
+            if not hasattr(transformer_cfg, 'use_moe'):
+                # Non-MoE checkpoint: set default to False
+                transformer_cfg.use_moe = False
+                logging.info(f"Setting use_moe=False for {transformer_name} (non-MoE checkpoint compatibility)")
+
     # Extract and remove sample_rate (now in model class)
     sample_rate = None
     if hasattr(model_cfg, 'sample_rate'):
@@ -178,7 +256,9 @@ def update_checkpoint_state_dict(state_dict: dict) -> dict:
     return new_state_dict
 
 
-def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[MagpieTTSModel, str]:
+def load_magpie_model(
+    config: ModelLoadConfig, device: str = "cuda"
+) -> Tuple[MagpieTTSModel, str, str, Dict[str, dict]]:
     """Load a MagpieTTS model from checkpoint or NeMo archive.
 
     Supports two loading modes:
@@ -190,7 +270,11 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
         device: Device to load the model onto ("cuda" or "cpu").
 
     Returns:
-        Tuple of (loaded model, checkpoint name for output labeling).
+        Tuple of:
+            - model: Loaded MagpieTTS model
+            - checkpoint_name: Name for output labeling
+            - moe_info: String for checkpoint naming (e.g., "MoE_8x2_d2048_softmax_"), empty for dense
+            - flops_per_component: Dict mapping component name (e.g., "decoder") to its FLOPs metrics
 
     Raises:
         ValueError: If configuration is invalid or sample rates don't match.
@@ -227,7 +311,7 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
         checkpoint_name = os.path.basename(config.checkpoint_file).replace(".ckpt", "")
 
     else:
-        if config.nemo_file.startswith("nvidia/"):
+        if config.nemo_file.startswith("nvidia/"):  # TODO @xueyang: why ignore `update_config_for_inference`?
             model = MagpieTTSModel.from_pretrained(config.nemo_file)
             model.use_kv_cache_for_inference = True
             checkpoint_name = config.nemo_file.split("/")[-1]
@@ -256,9 +340,147 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
     # Move to device and set to eval mode
     model.to(device)
     model.eval()
+
+    # Log architecture summary and get MoE info + FLOPs metrics
+    moe_info, flops_per_component = log_model_architecture_summary(model)
+
     logging.info("Model loaded and ready for inference.")
 
-    return model, checkpoint_name
+    return model, checkpoint_name, moe_info, flops_per_component
+
+
+def _log_transformer_component(name: str, cfg: DictConfig) -> dict:
+    """Log architecture info for a single transformer component and return its FLOPs metrics.
+
+    Args:
+        name: Component name (e.g., "encoder", "decoder", "context_encoder").
+        cfg: The transformer component's configuration.
+
+    Returns:
+        FLOPs metrics dict from compute_ffn_flops_per_token.
+    """
+    d_model = cfg.d_model
+    d_ffn = cfg.d_ffn
+
+    if hasattr(cfg, 'use_moe') and cfg.use_moe:
+        num_experts = cfg.num_experts
+        top_k_experts = cfg.top_k_experts
+        routing_strategy = cfg.routing_strategy
+
+        logging.info(f"{name.upper()}: MoE ENABLED")
+        logging.info(f"  - Experts: {num_experts}")
+        logging.info(f"  - Top-k: {top_k_experts}")
+        logging.info(f"  - d_model: {d_model}")
+        logging.info(f"  - d_ffn per expert: {d_ffn}")
+        logging.info(f"  - Routing strategy: {routing_strategy}")
+        if routing_strategy == 'sinkhorn':
+            logging.info("    (Note: Sinkhorn only used in training; inference uses softmax for speed)")
+
+        has_gated_linear = getattr(cfg, 'has_gated_linear', False)
+
+        flops_info = compute_ffn_flops_per_token(
+            d_model=d_model,
+            d_ffn=d_ffn,
+            is_moe=True,
+            num_experts=num_experts,
+            top_k_experts=top_k_experts,
+            has_gated_linear=has_gated_linear,
+        )
+
+        # Expert params: proj (d_model -> d_ffn) + o_net (d_ffn -> d_model), plus gate if gated
+        num_projections = 3 if has_gated_linear else 2
+        params_per_expert = num_projections * d_model * d_ffn
+        total_params_per_layer = num_experts * params_per_expert
+        active_params_per_token = top_k_experts * params_per_expert
+
+        logging.info(f"  - Params per expert: ~{params_per_expert:,} ({num_projections} projections)")
+        logging.info(f"  - Params per layer (all experts): ~{total_params_per_layer:,}")
+        logging.info(f"  - Active params per token (top-{top_k_experts}): ~{active_params_per_token:,}")
+        logging.info(f"  - FLOPs per token (experts): ~{flops_info['expert_flops_per_token']:,}")
+        logging.info(f"  - FLOPs per token (router): ~{flops_info['router_flops_per_token']:,}")
+        logging.info(f"  - FLOPs per token (total): ~{flops_info['total_flops_per_token']:,}")
+
+        # Compare to dense baseline (d_ffn=4*d_model)
+        dense_flops_info = compute_ffn_flops_per_token(d_model=d_model, d_ffn=4 * d_model, is_moe=False)
+        flops_reduction = dense_flops_info['total_flops_per_token'] / flops_info['total_flops_per_token']
+        logging.info(f"  - FLOPs reduction vs dense (d_ffn={4 * d_model}): ~{flops_reduction:.1f}x")
+
+        return flops_info
+    else:
+        has_gated_linear = getattr(cfg, 'has_gated_linear', False)
+
+        logging.info(f"{name.upper()}: Dense (no MoE)")
+        logging.info(f"  - d_model: {d_model}")
+        logging.info(f"  - d_ffn: {d_ffn}")
+
+        flops_info = compute_ffn_flops_per_token(
+            d_model=d_model, d_ffn=d_ffn, is_moe=False, has_gated_linear=has_gated_linear
+        )
+        logging.info(f"  - FLOPs per token: ~{flops_info['total_flops_per_token']:,}")
+
+        return flops_info
+
+
+def log_model_architecture_summary(model: MagpieTTSModel) -> Tuple[str, Dict[str, dict]]:
+    """Log model architecture summary including MoE configuration.
+
+    Detects and logs MoE configuration for each transformer component,
+    computing FLOPs metrics and parameter counts.
+
+    Args:
+        model: Loaded MagpieTTS model.
+
+    Returns:
+        Tuple of:
+            - moe_info: String for checkpoint naming (e.g., "MoE_8x2_d2048_softmax_"), empty for dense models
+            - flops_per_component: Dict mapping component name (e.g., "decoder") to its FLOPs metrics dict
+    """
+    logging.info("=" * 60)
+    logging.info("MODEL ARCHITECTURE SUMMARY")
+    logging.info("=" * 60)
+
+    flops_per_component: Dict[str, dict] = {}
+
+    # Log optional encoder if present
+    if hasattr(model.cfg, 'encoder'):
+        flops_per_component['encoder'] = _log_transformer_component('encoder', model.cfg.encoder)
+
+    # Log optional context_encoder if present
+    if hasattr(model.cfg, 'context_encoder'):
+        flops_per_component['context_encoder'] = _log_transformer_component(
+            'context_encoder', model.cfg.context_encoder
+        )
+
+    # Decoder is required - always present in MagpieTTS
+    flops_per_component['decoder'] = _log_transformer_component('decoder', model.cfg.decoder)
+
+    # Build MoE info string for checkpoint naming (includes all MoE components)
+    moe_parts = []
+    for component_name in ['encoder', 'context_encoder', 'decoder']:
+        if hasattr(model.cfg, component_name):
+            cfg = getattr(model.cfg, component_name)
+            if hasattr(cfg, 'use_moe') and cfg.use_moe:
+                moe_parts.append(
+                    f"{component_name}-MoE_{cfg.num_experts}x{cfg.top_k_experts}"
+                    f"_d{cfg.d_ffn}_{cfg.routing_strategy}"
+                )
+    moe_info = "_".join(moe_parts) + "_" if moe_parts else ""
+
+    # Log MoE inference notes if any component uses MoE
+    moe_components = {name: flops for name, flops in flops_per_component.items() if flops.get('ffn_type') == 'MoE'}
+    if moe_components:
+        logging.info("")
+        logging.info("INFERENCE MODE NOTES:")
+        for name, flops in moe_components.items():
+            logging.info(
+                f"  - {name}: only top-{flops['active_experts_per_token']} of "
+                f"{flops['num_experts']} experts activated per token"
+            )
+        logging.info("  - Sinkhorn routing falls back to softmax (no iterative balancing)")
+
+    logging.info("=" * 60)
+
+    return moe_info, flops_per_component
 
 
 def get_experiment_name_from_checkpoint_path(checkpoint_path: str) -> str:

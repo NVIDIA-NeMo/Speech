@@ -56,7 +56,7 @@ class HyenaLayer(MegatronModule):
         submodules: HyenaLayerSubmodules,
         layer_number: int = 1,
         residual_in_fp32=False,
-        model_comm_pgs=None,
+        pg_collection=None,
     ):
         """
         Top level Hyena Layer
@@ -91,7 +91,7 @@ class HyenaLayer(MegatronModule):
             eps=self.transformer_config.layernorm_epsilon,
         )
 
-        self.mlp = build_module(submodules.mlp, config=self.transformer_config, tp_group=model_comm_pgs.tp)
+        self.mlp = build_module(submodules.mlp, config=self.transformer_config, tp_group=pg_collection.tp)
         self.mlp_bda = build_module(submodules.mlp_bda)
 
         for layer in [self.mlp, self.mlp_bda, self.hyena_bda]:

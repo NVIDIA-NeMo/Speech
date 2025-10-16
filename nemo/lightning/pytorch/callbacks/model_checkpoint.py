@@ -27,6 +27,7 @@ from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint as PTLM
 from lightning.pytorch.callbacks.model_checkpoint import _is_local_file_protocol
 from lightning.pytorch.utilities import rank_zero_info
 
+from nemo.lightning.callback_group import CallbackGroup
 from nemo.lightning.ckpt_utils import ckpt_to_dir
 from nemo.lightning.io.pl import TrainerContext
 from nemo.utils import logging
@@ -390,9 +391,14 @@ class ModelCheckpoint(PTLModelCheckpoint):
                 else:
                     super()._save_last_checkpoint(trainer, monitor_candidates)
             if self.save_context_on_train_end and not self.always_save_context and is_global_rank_zero():
-                TrainerContext.from_trainer(trainer).io_dump(
-                    ckpt_to_dir(self.last_model_path) / "context", yaml_attrs=["model"]
-                )
+                try:
+                    TrainerContext.from_trainer(trainer).io_dump(
+                        ckpt_to_dir(self.last_model_path) / "context", yaml_attrs=["model"]
+                    )
+                except Exception as e:
+                    logging.warning(
+                        f"Failed to dump training context on train end for checkpoint {self.last_model_path}: {e}"
+                    )
         # Call parent on_train_end() to save the -last checkpoint
         super().on_train_end(trainer, pl_module)
 
@@ -567,6 +573,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
             ValueError: (mcore) async_save with EMA not supported
             ValueError: (mcore) Async save requires async compatible CheckpointIO
         """
+        # Notify callback group of checkpoint start for telemetry tracking and performance monitoring
+        CallbackGroup.get_instance().on_save_checkpoint_start(global_step=trainer.global_step)
 
         from nemo.utils.get_rank import is_global_rank_zero
 
@@ -598,6 +606,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
                     rank_zero_info(f"Saving EMA weights to separate checkpoint {filepath}")
                 super()._save_checkpoint(trainer, filepath)
             self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
+            # Notify callback group of successful EMA checkpoint completion
+            CallbackGroup.get_instance().on_save_checkpoint_success(global_step=trainer.global_step)
         else:
             # Determine whether to include optimizer states in the checkpoint
             # optimizer states are included when
@@ -625,13 +635,22 @@ class ModelCheckpoint(PTLModelCheckpoint):
             trainer.save_checkpoint(filepath, save_weights_only, storage_options=storage_options)
 
             if self.always_save_context and is_global_rank_zero():
-                TrainerContext.from_trainer(trainer).io_dump(ckpt_to_dir(filepath) / "context", yaml_attrs=["model"])
+                try:
+                    TrainerContext.from_trainer(trainer).io_dump(
+                        ckpt_to_dir(filepath) / "context", yaml_attrs=["model"]
+                    )
+                except Exception as e:
+                    logging.warning(f"Failed to dump training context for checkpoint {filepath}: {e}")
 
             if self.async_save:
                 self._last_checkpoint_saved = filepath
                 logging.info(f'Scheduled async checkpoint save for {filepath}')
             else:
                 finalize_fn()
+                # Notify callback group of successful sync checkpoint completion
+                CallbackGroup.get_instance().on_save_checkpoint_success(global_step=trainer.global_step)
+            # Always notify callback group that checkpointing phase is complete for consistent telemetry tracking
+            CallbackGroup.get_instance().on_save_checkpoint_end()
 
     def _get_finalize_save_checkpoint_callback(
         self, trainer: 'lightning.pytorch.Trainer', filepath: str, global_step: int
@@ -655,6 +674,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
                 return
 
             logging.info(f'Async checkpoint save for step {global_step} ({filepath}) finalized successfully.')
+            # Notify callback group of successful async checkpoint completion
+            CallbackGroup.get_instance().on_save_checkpoint_success(global_step=global_step)
 
             if str(filepath) in self.ckpts_to_link:
                 self._link_checkpoint(trainer, filepath, self.ckpts_to_link.pop(filepath), override_async=True)

@@ -165,6 +165,7 @@ def qwen3(config: FLOPSConfig):
     seq_len = config.enc_seq_len
     hidden_size = config.hs
     gated_linear_multiplier = 2
+    query_projection_to_hidden_size_ratio = config.kv_channels * config.attention_heads / hidden_size
 
     # attention flops for GQA
     attention_flops = (
@@ -175,12 +176,17 @@ def qwen3(config: FLOPSConfig):
         * seq_len
         * hidden_size
         * hidden_size
+        * query_projection_to_hidden_size_ratio
         * (
             (config.query_groups / config.attention_heads * 2 + 1)  # QKV gemm
             + (seq_len / hidden_size * 2 * (0.5 if causal_self_attn else 1))  # attention
             + 1  # attention proj gemm
         )
     )
+
+    mlp_ffn_hidden_size = config.ffn_hs
+    if hasattr(config, "moe_ffn_hidden_size") and config.moe_ffn_hidden_size is not None:
+        mlp_ffn_hidden_size = config.moe_ffn_hidden_size * config.moe_router_topk
 
     # mlp flops
     mlp_flops = (
@@ -191,7 +197,7 @@ def qwen3(config: FLOPSConfig):
         * seq_len
         * hidden_size
         * (1 + gated_linear_multiplier)
-        * (config.moe_ffn_hidden_size * config.moe_router_topk)  # MoE layers
+        * mlp_ffn_hidden_size
     )
 
     # vocab flops

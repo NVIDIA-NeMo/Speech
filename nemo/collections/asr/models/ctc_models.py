@@ -171,7 +171,6 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
                 return_hypotheses = True
                 with open_dict(self.cfg.decoding):
                     self.cfg.decoding.compute_timestamps = True
-                    self.cfg.decoding.preserve_alignments = True
                 self.change_decoding_strategy(self.cfg.decoding, verbose=False)
             else:  # This is done to ensure the state is preserved when decoding_strategy is set outside
                 with open_dict(self.cfg.decoding):

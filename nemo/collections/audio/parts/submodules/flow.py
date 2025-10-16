@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import Literal, Tuple
 
 import einops
 import torch
 
 from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.utils import logging
+
+ESTIMATOR_TARGET = Literal['conditional_vector_field', 'data']
 
 
 class ConditionalFlow(ABC):
@@ -211,6 +213,8 @@ class ConditionalFlowMatchingEulerSampler(ConditionalFlowMatchingSampler):
         num_steps: int = 5,
         time_min: float = 1e-8,
         time_max: float = 1.0,
+        estimator_target: ESTIMATOR_TARGET = 'conditional_vector_field',
+        flow: ConditionalFlow = None,
     ):
         super().__init__(
             estimator=estimator,
@@ -218,10 +222,17 @@ class ConditionalFlowMatchingEulerSampler(ConditionalFlowMatchingSampler):
             time_min=time_min,
             time_max=time_max,
         )
+        self.estimator_target = estimator_target
+        if self.estimator_target == 'data' and flow is None:
+            raise ValueError('Flow is required for estimator_target=data')
+        self.flow = flow
+
         logging.debug('Initialized %s with', self.__class__.__name__)
         logging.debug('\tnum_steps:      %s', self.num_steps)
         logging.debug('\ttime_min:       %s', self.time_min)
         logging.debug('\ttime_max:       %s', self.time_max)
+        logging.debug('\testimator_target: %s', self.estimator_target)
+        logging.debug('\tflow:           %s', self.flow)
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
@@ -235,6 +246,7 @@ class ConditionalFlowMatchingEulerSampler(ConditionalFlowMatchingSampler):
         if state_length is not None:
             state = mask_sequence_tensor(state, state_length)
 
+        init_state = state.clone()
         for t in time_steps[:-1]:
             time = t * torch.ones(state.shape[0], device=state.device)
 
@@ -243,9 +255,13 @@ class ConditionalFlowMatchingEulerSampler(ConditionalFlowMatchingSampler):
             else:
                 estimator_input = torch.cat([state, estimator_condition], dim=1)
 
-            vector_field, _ = self.estimator(input=estimator_input, input_length=state_length, condition=time)
-
-            state = state + vector_field * self.time_step
+            if self.estimator_target == 'conditional_vector_field':
+                vector_field, _ = self.estimator(input=estimator_input, input_length=state_length, condition=time)
+                state = state + vector_field * self.time_step
+            elif self.estimator_target == 'data':
+                endpoint, _ = self.estimator(input=estimator_input, input_length=state_length, condition=time)
+                vector_field = self.flow.vector_field(time=time, x_start=init_state, x_end=endpoint, point=state)
+                state = state + vector_field * self.time_step
 
             if state_length is not None:
                 state = mask_sequence_tensor(state, state_length)

@@ -1,8 +1,11 @@
-fastapi[all]
-huggingface-hub
-nemo-toolkit
-onnxruntime
-pipecat-ai
-python-dotenv
-uvicorn
-websockets
+fastapi[all]>=0.115.3
+huggingface-hub==0.34.0
+nemo-toolkit[all]
+onnxruntime>=1.22.0
+pipecat-ai==0.0.84  # Newer versions may be incompatible with the voice agent server
+python-dotenv>=1.1.0
+tokenizers==0.22.0
+transformers==4.56.1
+uvicorn==0.34.3
+vllm==0.10.1.1
+websockets>=15.0.1

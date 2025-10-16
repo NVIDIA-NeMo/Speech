@@ -427,6 +427,10 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
                 streaming_buffer.reset_buffer()
                 batch_samples = []
 
+    if len(seglst_dict_list) == 0:
+        logging.warning("No segmentation list dictionary found.")
+        return
+
     if cfg.output_path is not None and multispk_asr_streamer is not None:
         if cfg.parallel_speaker_strategy:
             write_seglst_file(seglst_dict_list=seglst_dict_list, output_path=cfg.output_path)

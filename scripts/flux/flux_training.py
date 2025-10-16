@@ -249,14 +249,14 @@ def configure_ddp(recipe) -> run.Partial:
 
 
 @run.cli.factory(target=llm.train)
-def unit_test(custom_fsdp=True) -> run.Partial:
+def unit_test(megatron_fsdp=True) -> run.Partial:
     '''
     Basic functional test, with mock dataset,
     text/vae encoders not initialized, ddp strategy,
     frozen and trainable layers both set to 1
     '''
     recipe = flux_training()
-    if custom_fsdp:
+    if megatron_fsdp:
         recipe = configure_custom_fsdp(recipe)
     else:
         recipe = configure_ddp(recipe)

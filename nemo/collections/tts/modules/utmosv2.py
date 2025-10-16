@@ -15,7 +15,7 @@ try:
     import utmosv2
 except ImportError:
     raise ImportError(
-        "UTMOSv2 is not installed. Please install it using `pip install git+https://github.com/sarulab-speech/UTMOSv2.git`."
+        "UTMOSv2 is not installed. Please install it using `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
     )
 import torch
 from threadpoolctl import threadpool_limits

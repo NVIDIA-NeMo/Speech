@@ -169,9 +169,7 @@ def run_inference_streaming(
     model.cuda()
     model.eval()
 
-    text_tokenizer = setup_tokenizers(
-        model.cfg.text_tokenizers, mode='test'
-    )
+    text_tokenizer = setup_tokenizers(model.cfg.text_tokenizers, mode='test')
 
     if log_exp_name:
         # the experiment name is the name of the directory two above the checkpoint path,

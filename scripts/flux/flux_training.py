@@ -145,7 +145,7 @@ def flux_training() -> run.Partial:
 
 
 @run.cli.factory(target=llm.train)
-def convergence_test(custom_fsdp=True) -> run.Partial:
+def convergence_test(megatron_fsdp=True) -> run.Partial:
     '''
     A convergence recipe with real data loader.
     Image and text embedding calculated on the fly.
@@ -160,8 +160,8 @@ def convergence_test(custom_fsdp=True) -> run.Partial:
     recipe.trainer.devices = 8
     recipe.data = flux_datamodule('/dataset/fill50k/fill50k_tarfiles/')
     recipe.trainer.max_steps = 30000
-    if custom_fsdp is True:
-        configure_custom_fsdp(recipe)
+    if megatron_fsdp is True:
+        configure_megatron_fsdp(recipe)
     else:
         configure_ddp(recipe)
 
@@ -188,7 +188,7 @@ def full_model_tp2_dp4_mock() -> run.Partial:
 
 
 @run.cli.factory(target=llm.train)
-def fp8_test(custom_fsdp=True) -> run.Partial:
+def fp8_test(megatron_fsdp=True) -> run.Partial:
     '''
     Basic functional test, with mock dataset,
     text/vae encoders not initialized, ddp strategy,
@@ -208,8 +208,8 @@ def fp8_test(custom_fsdp=True) -> run.Partial:
         num_single_layers=10,
     )
     recipe.data.global_batch_size = 8
-    if custom_fsdp:
-        configure_custom_fsdp(recipe)
+    if megatron_fsdp:
+        configure_megatron_fsdp(recipe)
     else:
         configure_ddp(recipe)
     recipe.trainer.plugins = run.Config(
@@ -225,14 +225,15 @@ def fp8_test(custom_fsdp=True) -> run.Partial:
     return recipe
 
 
-def configure_custom_fsdp(recipe) -> run.Partial:
+def configure_megatron_fsdp(recipe) -> run.Partial:
     recipe.trainer.strategy.ddp = run.Config(
         DistributedDataParallelConfig,
         data_parallel_sharding_strategy='optim_grads_params',  # Custom FSDP
         check_for_nan_in_grad=True,
         grad_reduce_in_fp32=True,
-        overlap_param_gather=True,  # Custom FSDP requires this
-        overlap_grad_reduce=True,  # Custom FSDP requires this
+        overlap_param_gather=True,  # Megatron FSDP requires this
+        overlap_grad_reduce=True,  # Megatron FSDP requires this
+        use_megatron_fsdp=True,
     )
     recipe.trainer.strategy.fsdp = 'megatron'
     return recipe
@@ -257,7 +258,7 @@ def unit_test(megatron_fsdp=True) -> run.Partial:
     '''
     recipe = flux_training()
     if megatron_fsdp:
-        recipe = configure_custom_fsdp(recipe)
+        recipe = configure_megatron_fsdp(recipe)
     else:
         recipe = configure_ddp(recipe)
     recipe.model.flux_params.t5_params = None  # run.Config(T5Config, version='/ckpts/text_encoder_2')

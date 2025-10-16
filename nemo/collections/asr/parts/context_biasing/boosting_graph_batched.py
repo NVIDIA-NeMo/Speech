@@ -41,7 +41,9 @@ class BoostingTreeModelConfig:
         None  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
     )
     context_score: float = 1.0  # The score for each arc transition in the context graph
-    depth_scaling: float = 1.0  # The scaling factor for the depth of the context graph
+    depth_scaling: float = (
+        2.0  # The scaling factor for the depth of the context graph (2.0 for CTC, RNN-T and TDT, 1.0 for Canary)
+    )
     unk_score: float = (
         0.0  # The score for unknown tokens (tokens that are not presented in the beginning of context-biasing phrases)
     )

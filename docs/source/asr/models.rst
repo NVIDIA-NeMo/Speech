@@ -24,6 +24,7 @@ Canary is the latest family of models from NVIDIA NeMo. Canary models are encode
 They are multi-lingual, multi-task model, supporting automatic speech-to-text recognition (ASR) in 25 EU languages as well as translation between English and the 24 other supported languages.
 
 Models:
+
 * `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`__ model card
 * `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`__ model card
 * `Canary-180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`__ model card
@@ -34,6 +35,11 @@ Spaces:
 * `Canary-1B V2 <https://huggingface.co/spaces/nvidia/canary-1b-v2>`__
 * `Canary-1B Flash <https://huggingface.co/spaces/nvidia/canary-1b-flash>`__
 * `Canary-1B <https://huggingface.co/spaces/nvidia/canary-1b>`__
+
+Canary models support the following decoding methods for chunked and streaming inference:
+
+* :ref:`Chunked Inference <canary_chunked_inference>`
+* :ref:`Streaming Inference <canary_streaming_inference>`
 
 
 Parakeet

@@ -443,8 +443,10 @@ class FabricMegatronStrategy(DDPStrategy):
     def sharded_state_dict_metadata(self):
         """Metadata used for sharded_state_dict generation during checkpoint save."""
         metadata = {}
+        metadata['singleton_local_shards'] = False
+        metadata['chained_optim_avoid_prefix'] = True
         if isinstance(self.ddp_config, DistributedDataParallelConfig) and self.ddp_config.use_distributed_optimizer:
-            metadata["distrib_optim_sharding_type"] = "fully_sharded_model_space"
+            metadata['distrib_optim_sharding_type'] = 'dp_reshardable'
         return metadata
 
     @contextmanager

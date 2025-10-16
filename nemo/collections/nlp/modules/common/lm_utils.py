@@ -13,6 +13,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# pylint: skip-file
+# flake8: noqa
+
 import os
 from typing import List, Optional, Union
 
@@ -103,13 +107,11 @@ def get_lm_model(
     if cfg.get('language_model') and cfg.language_model.get('pretrained_model_name', ''):
         pretrain_model_name = cfg.language_model.get('pretrained_model_name', '')
 
-    from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
+    from nemo.collections.nlp.modules.common.megatron.megatron_utils import list_available_models
 
     def get_megatron_pretrained_bert_models() -> List[str]:
 
-        all_pretrained_megatron_bert_models = [
-            model.pretrained_model_name for model in MegatronBertModel.list_available_models()
-        ]
+        all_pretrained_megatron_bert_models = [model.pretrained_model_name for model in list_available_models()]
         return all_pretrained_megatron_bert_models
 
     all_pretrained_megatron_bert_models = get_megatron_pretrained_bert_models()
@@ -120,7 +122,12 @@ def get_lm_model(
     ) or pretrain_model_name in all_pretrained_megatron_bert_models:
         import torch
 
-        from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
+        try:
+            from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
+        except (ImportError, ModuleNotFoundError):
+            from abc import ABC
+
+            MegatronBertModel = ABC
 
         class Identity(torch.nn.Module):
             def __init__(self):

@@ -67,7 +67,7 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts" "nlp" "lightning" "core"; do
+          for collection in "asr" "tts" "lightning" "core"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
 
@@ -126,7 +126,7 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts" "nlp" "lightning" "core"; do
+          for collection in "asr" "tts" "lightning" "core"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
 
@@ -185,6 +185,6 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts" "nlp" "lightning" "core"; do
+          for collection in "asr" "tts" "lightning" "core"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done

@@ -23,7 +23,13 @@ from tqdm import tqdm
 from nemo.collections.common.video_tokenizers.cosmos_tokenizer import CausalVideoTokenizer
 from nemo.collections.common.video_tokenizers.utils import numpy2tensor, pad_video_batch
 from nemo.collections.multimodal_autoregressive.tokenizer.cosmos_multimodal_tokenizer import CosmosMultiModalTokenizer
-from nemo.collections.nlp.data.language_modeling.megatron import indexed_dataset
+
+try:
+    from nemo.collections.nlp.data.language_modeling.megatron import indexed_dataset
+
+    HAVE_NLP = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_NLP = False
 
 """
 You can run this script as follows

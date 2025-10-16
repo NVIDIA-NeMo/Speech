@@ -17,7 +17,7 @@ from nemo.collections.tts.models.audio_codec import AudioCodecModel
 from nemo.collections.tts.models.fastpitch import FastPitchModel
 from nemo.collections.tts.models.fastpitch_ssl import FastPitchModel_SSL
 from nemo.collections.tts.models.hifigan import HifiGanModel
-from nemo.collections.tts.models.magpietts import MagpieTTSModel
+from nemo.collections.tts.models.magpietts import MagpieTTSModel, MagpieTTSStreamingInference
 from nemo.collections.tts.models.magpietts_preference_optimization import (
     MagpieTTSModelOfflinePO,
     MagpieTTSModelOfflinePODataGen,
@@ -45,6 +45,7 @@ __all__ = [
     "MixerTTSModel",
     "RadTTSModel",
     "MagpieTTSModel",
+    "MagpieTTSStreamingInference",
     "MagpieTTSModelOfflinePODataGen",
     "MagpieTTSModelOfflinePO",
     "MagpieTTSModelOnlinePO",

@@ -169,8 +169,8 @@ def run_inference_streaming(
     model.cuda()
     model.eval()
 
-    text_tokenizer, text_conditioning_tokenizer = setup_tokenizers(
-        model.cfg.text_tokenizers, model.cfg.use_text_conditioning_encoder, mode='test'
+    text_tokenizer = setup_tokenizers(
+        model.cfg.text_tokenizers, mode='test'
     )
 
     if log_exp_name:

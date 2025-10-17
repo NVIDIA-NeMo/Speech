@@ -19,6 +19,7 @@ except ImportError:
     )
 import torch
 from threadpoolctl import threadpool_limits
+from typing import Optional
 
 """
 Uses the UTMOSv2 model to estimate the MOS of a speech audio file.
@@ -28,10 +29,14 @@ Uses the UTMOSv2 model to estimate the MOS of a speech audio file.
 class UTMOSv2Calculator:
     """
     Wrapper around UTMOSv2 MOS estimator to make it easy to use.
+    Args:
+        device: The device to place the model on. If None, the best available device will be used.
+            Default is None.
     """
 
-    def __init__(self):
-        device = get_available_device()
+    def __init__(self, device: Optional[str] = None):
+        if device is None:
+            device = get_available_device()
         self.model = utmosv2.create_model()
         self.model.eval()
         self.model.to(torch.device(device))
@@ -41,7 +46,7 @@ class UTMOSv2Calculator:
         Estimate the MOS of the given speech audio file using UTMOSv2.
         """
         with torch.inference_mode():
-            # UTMOSv2 tends to launch many of OpenMP threads which can overload the machine's CPUs
+            # UTMOSv2 tends to launch many OpenMP threads which can overload the machine's CPUs
             # without actually speeding up prediction. Limit to 4 threads.
             with threadpool_limits(limits=4):
                 mos_score = self.model.predict(input_path=file_path, num_repetitions=1, num_workers=0)

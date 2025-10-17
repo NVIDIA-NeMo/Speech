@@ -201,7 +201,7 @@ mcore() {
   mkdir -p $WHEELS_DIR
 
   export CAUSAL_CONV1D_FORCE_BUILD=TRUE
-  export CAUSAL_CONV_TAG=v1.2.2.post1
+  export CAUSAL_CONV_TAG=v1.5.3
   CAUSAL_CONV1D_DIR="$INSTALL_DIR/causal-conv1d"
   if [ ! -d "$CAUSAL_CONV1D_DIR/.git" ]; then
     rm -rf "$CAUSAL_CONV1D_DIR"
@@ -214,7 +214,7 @@ mcore() {
   popd
 
   export MAMBA_FORCE_BUILD=TRUE
-  export MAMBA_TAG=2e16fc3062cdcd4ebef27a9aa4442676e1c7edf4
+  export MAMBA_TAG=6b32be06d026e170b3fdaf3ae6282c5a6ff57b06
   MAMBA_DIR="$INSTALL_DIR/mamba"
   if [ ! -d "$MAMBA_DIR/.git" ]; then
     rm -rf "$MAMBA_DIR"

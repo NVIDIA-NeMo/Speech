@@ -59,9 +59,6 @@ def get_one_logger_init_config() -> Dict[str, Any]:
         # Important fields with defaults - provide if available from config
         "enable_for_current_rank": _should_enable_for_current_rank(),
         "world_size_or_fn": world_size,
-        # Error handling strategy - use DISABLE_QUIETLY_AND_REPORT_METRIC_ERROR to prevent
-        # telemetry errors from crashing the training application
-        "error_handling_strategy": "propagate_exceptions",
     }
 
     return init_config

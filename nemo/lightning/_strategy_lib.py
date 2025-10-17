@@ -698,7 +698,7 @@ def setup_megatron_optimizer(
         ):
             mcore_optimizer_sig = inspect.signature(self.mcore_optimizer.sharded_state_dict).parameters
             distrib_optim_kwargs = {}
-            if "metadata" in mcore_optimizer_sig:
+            if "metadata" in mcore_optimizer_sig or "kwargs" in mcore_optimizer_sig:
                 distrib_optim_kwargs["metadata"] = metadata
             elif "sharding_type" in mcore_optimizer_sig:
                 distrib_optim_kwargs["sharding_type"] = sharding_type

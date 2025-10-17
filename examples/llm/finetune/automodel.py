@@ -12,6 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from nemo.utils.decorators import deprecated_warning
+
+deprecated_warning(
+    old_method="Automodel on NVIDIA/NeMo", new_method="https://github.com/NVIDIA-NeMo/Automodel repo", wait_seconds=2
+)
+
 import tempfile
 
 import fiddle as fdl

@@ -115,7 +115,7 @@ The TensorRT-LLM engine can be conveniently built and run using ``TensorRTLLM`` 
     )
     trt_llm_exporter.forward(["Hi, how are you?", "I am good, thanks, how about you?"])
 
-Alternatively, it can also be built directly using ``trtllm-build`` command, see `TensorRT-LLM documentation <https://nvidia.github.io/TensorRT-LLM/latest/architecture/checkpoint.html#build-checkpoint-into-tensorrt-engine>`_:
+Alternatively, it can also be built directly using ``trtllm-build`` command, see `TensorRT-LLM documentation <https://nvidia.github.io/TensorRT-LLM/latest/legacy/architecture/checkpoint.html#build-checkpoint-into-tensorrt-engine>`_:
 
 .. code-block:: bash
 

@@ -23,7 +23,6 @@ from nemo.collections.asr.modules.transformer.encoder_module import EncoderModul
 from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoder, TransformerDecoderAdapter
 from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
 from nemo.collections.asr.modules.transformer.transformer_modules import TransformerEmbedding
-from nemo.collections.asr.parts.submodules.adapters.attention_adapter_mixin import AttentionAdapterModuleMixin
 from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
@@ -226,7 +225,7 @@ class TransformerDecoderNM(DecoderModule, Exportable):
             decoder_mask = decoder_mask[:, -1:]
             decoder_mems = torch.transpose(decoder_mems, 0, 1)
         decoder_embeddings = self._embedding(input_ids=input_ids, start_pos=start_pos)
-        decoder_hidden_states = self._decoder(
+        decoder_hidden_states, xatt_scores_list = self._decoder(
             decoder_states=decoder_embeddings,
             decoder_mask=decoder_mask,
             encoder_states=encoder_embeddings,

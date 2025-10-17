@@ -83,6 +83,7 @@ class BaseNemoTTSService(TTSService):
         raise NotImplementedError("Subclass must implement _generate_audio")
 
     def can_generate_metrics(self) -> bool:
+        """If the TTS service can generate metrics."""
         return True
 
     async def start(self, frame: StartFrame):
@@ -183,32 +184,48 @@ class BaseNemoTTSService(TTSService):
     def _handle_think_tokens(self, text: str) -> Optional[str]:
         """
         Handle the thinking tokens for TTS.
-        If the thinking tokens are not provided, return the text as is.
-        If the thinking tokens are provided, and the LLM is thinking, return None.
-        If the thinking tokens are provided, and the LLM is done thinking, return the text after the end of thinking tokens.
-        If the thinking tokens are provided, and the LLM starts thinking, return the text before the start of thinking tokens.
-        If the thinking tokens are provided, and the LLM is not thinking, return the text as is.
+        If the thinking tokens are not provided, return the text as it is.
+        Otherwise:
+            If both thinking tokens appear in the text, return the text after the end of thinking tokens.
+            If the LLM is thinking, return None.
+            If the LLM is done thinking, return the text after the end of thinking tokens.
+            If the LLM starts thinking, return the text before the start of thinking tokens.
+            If the LLM is not thinking, return the text as is.
         """
         if not self._think_tokens:
+            return text
+        elif self._think_tokens[0] in text and self._think_tokens[1] in text:
+            # LLM finishes thinking in one chunk or outputs dummy thinking tokens
+            logger.debug(f"LLM finishes thinking: {text}")
+            idx = text.index(self._think_tokens[1])
+            # only return the text after the end of thinking tokens
+            text = text[idx + len(self._think_tokens[1]) :]
+            self._have_seen_think_tokens = False
+            logger.debug(f"Returning text after thinking: {text}")
             return text
         elif self._have_seen_think_tokens:
             # LLM is thinking
             if self._think_tokens[1] not in text:
+                logger.debug(f"LLM is still thinking: {text}")
                 # LLM is still thinking
                 return None
             else:
                 # LLM is done thinking
+                logger.debug(f"LLM is done thinking: {text}")
                 idx = text.index(self._think_tokens[1])
                 # only return the text after the end of thinking tokens
                 text = text[idx + len(self._think_tokens[1]) :]
                 self._have_seen_think_tokens = False
+                logger.debug(f"Returning text after thinking: {text}")
                 return text
         elif self._think_tokens[0] in text:
             # LLM now starts thinking
+            logger.debug(f"LLM starts thinking: {text}")
             self._have_seen_think_tokens = True
             # return text before the start of thinking tokens
             idx = text.index(self._think_tokens[0])
             text = text[:idx]
+            logger.debug(f"Returning text before thinking: {text}")
             return text
         else:
             # LLM is not thinking
@@ -343,6 +360,17 @@ class BaseNemoTTSService(TTSService):
 
 
 class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
+    """Text-to-Speech service using NeMo FastPitch-Hifigan model.
+
+    More info: https://huggingface.co/nvidia/tts_en_fastpitch
+
+    Args:
+        fastpitch_model: FastPitch model name
+        hifigan_model: Hifigan model name
+        device: Device to run on (default: 'cuda')
+        **kwargs: Additional arguments passed to BaseNemoTTSService
+    """
+
     def __init__(
         self,
         fastpitch_model: str = "nvidia/tts_en_fastpitch",
@@ -384,3 +412,76 @@ class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
             audio = self._hifigan_model.convert_spectrogram_to_audio(spec=spectrogram)
             audio = audio.detach().view(-1).cpu().numpy()
             yield audio
+
+
+class KokoroTTSService(BaseNemoTTSService):
+    """Text-to-Speech service using Kokoro-82M model.
+
+    Kokoro is an open-weight TTS model with 82 million parameters.
+    More info: https://huggingface.co/hexgrad/Kokoro-82M
+
+    Args:
+        lang_code: Language code for the model (default: 'a' for American English)
+        voice: Voice to use (default: 'af_heart')
+        device: Device to run on (default: 'cuda')
+        sample_rate: Audio sample rate in Hz (default: 24000 for Kokoro)
+        **kwargs: Additional arguments passed to BaseNemoTTSService
+    """
+
+    def __init__(
+        self,
+        lang_code: str = "a",
+        voice: str = "af_heart",
+        device: str = "cuda",
+        sample_rate: int = 24000,
+        speed: float = 1.0,
+        **kwargs,
+    ):
+        self._lang_code = lang_code
+        self._voice = voice
+        self._speed = speed
+        model_name = f"kokoro-{lang_code}-{voice}"
+        super().__init__(model=model_name, device=device, sample_rate=sample_rate, **kwargs)
+
+    def _setup_model(self):
+        """Initialize the Kokoro pipeline."""
+        try:
+            from kokoro import KPipeline
+        except ImportError:
+            raise ImportError(
+                "kokoro package is required for KokoroTTSService. " "Install it with: pip install kokoro>=0.9.2"
+            )
+
+        logger.info(f"Loading Kokoro TTS model with lang_code={self._lang_code}, voice={self._voice}")
+        pipeline = KPipeline(lang_code=self._lang_code)
+        return pipeline
+
+    def _generate_audio(self, text: str) -> Iterator[np.ndarray]:
+        """Generate audio using the Kokoro pipeline.
+
+        Args:
+            text: Text to convert to speech
+
+        Yields:
+            Audio data as numpy arrays
+        """
+        try:
+            # Generate audio using Kokoro pipeline
+            generator = self._model(text, voice=self._voice, speed=self._speed)
+
+            # The generator yields tuples of (gs, ps, audio)
+            # We only need the audio component
+            for i, (gs, ps, audio) in enumerate(generator):
+                logger.debug(
+                    f"Kokoro generated audio chunk {i}: gs={gs}, ps={ps},"
+                    f"audio_shape={audio.shape if hasattr(audio, 'shape') else len(audio)}"
+                )
+                if isinstance(audio, torch.Tensor):
+                    audio = audio.detach().cpu().numpy()
+                # Kokoro returns audio as numpy array in float32 format [-1, 1]
+                # The base class will handle conversion to int16 bytes
+                yield audio
+
+        except Exception as e:
+            logger.error(f"Error generating audio with Kokoro: {e}")
+            raise

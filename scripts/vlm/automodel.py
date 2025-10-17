@@ -16,7 +16,7 @@ Usage example:
     python scripts/vlm/gemma3_automodel.py --model llava-hf/llava-v1.6-mistral-7b-hf --data_path naver-clova-ix/cord-v2
 
 Used Automodel for training and finetuning HF models. More details can be found at:
-https://docs.nvidia.com/nemo-framework/user-guide/latest/automodel/index.html
+https://docs.nvidia.com/nemo/automodel/latest/index.html
 """
 
 

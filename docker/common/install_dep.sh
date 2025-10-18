@@ -178,6 +178,7 @@ te() {
       cd $TE_DIR
       git submodule init
       git submodule update
+      pip install nvidia-mathdx==25.1.1
       pip wheel --wheel-dir $WHEELS_DIR/  --no-build-isolation $TE_DIR
     fi
   }

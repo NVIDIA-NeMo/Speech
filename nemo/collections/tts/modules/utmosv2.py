@@ -20,7 +20,6 @@ except ImportError:
 from typing import Optional
 import torch
 from threadpoolctl import threadpool_limits
-from nemo.utils import logging
 
 """
 Uses the UTMOSv2 model to estimate the MOS of a speech audio file.

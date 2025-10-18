@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import time
 import json
 import logging
 import os
 import pprint
 import string
 import tempfile
+import time
 from contextlib import contextmanager
 from functools import partial
 

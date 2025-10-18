@@ -99,6 +99,8 @@ jobs:
           - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run_Speech_to_Text_WPE_-_Conformer
           - runner: self-hosted-azure-gpus-1
+            script: ASR_dev_run_Speech_to_Text_Hybrid_RNNT_CTC_Prompt
+          - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer
           - runner: self-hosted-azure-gpus-1
             script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader

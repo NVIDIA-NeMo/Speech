@@ -497,3 +497,51 @@ class TestTranscriptionMixin:
         # check timestamp
         assert output[0].timestamp['segment'][0]['start'] == pytest.approx(0.32)
         assert output[0].timestamp['segment'][0]['end'] == pytest.approx(0.72)
+
+    @pytest.mark.unit
+    def test_transcribe_return_nbest_hybrid_rnnt_ctc_prompt(self, audio_files, hybrid_rnnt_ctc_bpe_model_with_prompt):
+        """Test n-best hypothesis return for hybrid RNNT-CTC BPE model with prompts."""
+        hybrid_rnnt_ctc_bpe_model_with_prompt.eval()
+        audio1, audio2 = audio_files
+
+        orig_decoding_config = copy.deepcopy(hybrid_rnnt_ctc_bpe_model_with_prompt.cfg.decoding)
+
+        decoding_config = copy.deepcopy(hybrid_rnnt_ctc_bpe_model_with_prompt.cfg.decoding)
+        with open_dict(decoding_config):
+            decoding_config["strategy"] = "beam"
+            decoding_config["beam"]["beam_size"] = 4
+            decoding_config["beam"]["return_best_hypothesis"] = False
+
+        hybrid_rnnt_ctc_bpe_model_with_prompt.change_decoding_strategy(decoding_config)
+
+        # Transcribe audio with prompt parameters
+        hypotheses = hybrid_rnnt_ctc_bpe_model_with_prompt.transcribe(
+            [audio1, audio2], batch_size=2, return_hypotheses=True, target_lang="en-US"
+        )
+
+        # Check results
+        assert len(hypotheses) == 2
+        assert isinstance(hypotheses[0], list)  # n-best list
+        assert len(hypotheses[0]) > 0  # at least one hypothesis
+
+        # Restore original decoding config
+        hybrid_rnnt_ctc_bpe_model_with_prompt.change_decoding_strategy(orig_decoding_config)
+
+    @pytest.mark.unit
+    def test_timestamps_with_transcribe_hybrid_prompt(self, audio_files, hybrid_rnnt_ctc_bpe_model_with_prompt):
+        audio1, audio2 = audio_files
+
+        output = hybrid_rnnt_ctc_bpe_model_with_prompt.transcribe([audio1, audio2], timestamps=True)
+
+        # check len of output
+        assert len(output) == 2
+
+        # check hypothesis object
+        assert isinstance(output[0], Hypothesis)
+        # check transcript
+        assert output[0].text == 'Stop'
+        assert output[1].text == 'Start'
+
+        # check timestamp
+        assert output[0].timestamp['segment'][0]['start'] == pytest.approx(0.16)
+        assert output[0].timestamp['segment'][0]['end'] == pytest.approx(0.56)

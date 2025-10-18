@@ -109,6 +109,7 @@ def get_buffered_pred_feat_rnnt(
     batch_size: int,
     manifest: str = None,
     filepaths: List[list] = None,
+    target_lang_id: str = None,
     accelerator: Optional[str] = 'cpu',
 ) -> List[rnnt_utils.Hypothesis]:
     """
@@ -117,6 +118,7 @@ def get_buffered_pred_feat_rnnt(
     """
     hyps = []
     refs = []
+    lang_ids = []
 
     if filepaths and manifest:
         raise ValueError("Please select either filepaths or manifest")
@@ -137,22 +139,46 @@ def get_buffered_pred_feat_rnnt(
                 if 'text' in row:
                     refs.append(row['text'])
 
+                # Extract language from manifest
+                if 'target_lang' in row:
+                    lang_ids.append(row['target_lang'])
+                elif 'lang' in row:
+                    lang_ids.append(row['lang'])
+                else:
+                    # Use target_lang_id as fallback
+                    lang_ids.append(target_lang_id)
+    else:
+        # If filepaths are provided directly, use lang_id from config for all
+        lang_ids = [target_lang_id] * len(filepaths)
+        logging.info(f"filepaths are provided directly and target_lang_id: {target_lang_id}")
     with torch.inference_mode():
         with torch.amp.autocast('cpu' if accelerator == 'cpu' else 'cuda'):
             batch = []
+            batch_lang_ids = []
             asr.sample_offset = 0
             for idx in tqdm(range(len(filepaths)), desc='Sample:', total=len(filepaths)):
-                batch.append((filepaths[idx]))
+                batch.append(filepaths[idx])
+                batch_lang_ids.append(lang_ids[idx])
 
                 if len(batch) == batch_size:
                     audio_files = [sample for sample in batch]
 
+                    # Reset ASR for new batch
                     asr.reset()
+
+                    # Set the language ID if any valid language ID exists
+                    if any(lid is not None for lid in batch_lang_ids):
+                        # Find the first non-None language ID to use
+                        lang_id = next((lid for lid in batch_lang_ids if lid is not None), None)
+                        if lang_id is not None:
+                            asr.set_target_lang_id(lang_id)
+
                     asr.read_audio_file(audio_files, delay, model_stride_in_secs)
                     hyp_list = asr.transcribe(tokens_per_chunk, delay)
                     hyps.extend(hyp_list)
 
                     batch.clear()
+                    batch_lang_ids.clear()
                     asr.sample_offset += batch_size
 
             if len(batch) > 0:
@@ -160,12 +186,19 @@ def get_buffered_pred_feat_rnnt(
                 asr.frame_bufferer.batch_size = len(batch)
                 asr.reset()
 
+                # Set the language ID for the remaining batch
+                if any(lid is not None for lid in batch_lang_ids):
+                    lang_id = next((lid for lid in batch_lang_ids if lid is not None), None)
+                    if lang_id is not None:
+                        asr.set_target_lang_id(lang_id)
+
                 audio_files = [sample for sample in batch]
                 asr.read_audio_file(audio_files, delay, model_stride_in_secs)
                 hyp_list = asr.transcribe(tokens_per_chunk, delay)
                 hyps.extend(hyp_list)
 
                 batch.clear()
+                batch_lang_ids.clear()
                 asr.sample_offset += len(batch)
 
     if os.environ.get('DEBUG', '0') in ('1', 'y', 't'):
@@ -436,6 +469,7 @@ def restore_transcription_order(manifest_path: str, transcriptions: list) -> lis
     reordered = [None] * len(transcriptions)
     for new, old in enumerate(new2old):
         reordered[old] = transcriptions[new]
+
     if is_list:
         reordered = tuple(map(list, zip(*reordered)))
     return reordered

@@ -17,9 +17,10 @@ except ImportError:
     raise ImportError(
         "UTMOSv2 is not installed. Please install it using `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
     )
+from typing import Optional
 import torch
 from threadpoolctl import threadpool_limits
-from typing import Optional
+from nemo.utils import logging
 
 """
 Uses the UTMOSv2 model to estimate the MOS of a speech audio file.
@@ -51,6 +52,24 @@ class UTMOSv2Calculator:
             with threadpool_limits(limits=4):
                 mos_score = self.model.predict(input_path=file_path, num_repetitions=1, num_workers=0)
         return mos_score
+
+    def process_directory(self, input_dir: str, batch_size: int = 16) -> list[dict[str, str | float]]:
+        """
+        Computes UTMOSv2 scores for all `*.wav` files in the given directory.
+        Args:
+            input_dir: The directory containing the audio files.
+            batch_size: The number of audio files to process in parallel.
+        Returns:
+            A list of dictionaries, each containing the file path and the UTMOSv2 score.
+        """
+        with torch.inference_mode():
+            # UTMOSV2 tends to launch many of OpenMP threads which overloads the machine's CPUs
+            # while actually slowing down the prediction. Limit the number of threads here.
+            with threadpool_limits(limits=1):
+                results = self.model.predict(
+                    input_dir=input_dir, num_repetitions=1, num_workers=batch_size, batch_size=batch_size
+                )
+        return results
 
 
 def get_available_device():

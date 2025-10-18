@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import time
 import json
 import logging
 import os
@@ -167,6 +168,18 @@ def extract_embedding(model, extractor, audio_path, device, sv_model_type):
     return embeddings.squeeze()
 
 
+def compute_utmosv2_scores(audio_dir):
+    print(f"\nComputing UTMOSv2 scores for files in {audio_dir}...")
+    start_time = time.time()
+    utmosv2_calculator = UTMOSv2Calculator()
+    utmosv2_scores = utmosv2_calculator.process_directory(audio_dir)
+    # convert to to a dictionary indexed by file path
+    utmosv2_scores_dict = {item['file_path']: item['predicted_mos'] for item in utmosv2_scores}
+    end_time = time.time()
+    print(f"UTMOSv2 scores computed for {len(utmosv2_scores)} files in {end_time - start_time:.2f} seconds\n")
+    return utmosv2_scores_dict
+
+
 def evaluate(
     manifest_path,
     audio_dir,
@@ -231,7 +244,8 @@ def evaluate(
         print("No codec model provided, skipping FCD metric")
         fcd_metric = None
 
-    utmosv2_model = UTMOSv2Calculator()
+    if with_utmosv2:
+        utmosv2_scores = compute_utmosv2_scores(generated_audio_dir)
     filewise_metrics = []
     pred_texts = []
     gt_texts = []
@@ -251,6 +265,11 @@ def evaluate(
         pred_audio_filepath = audio_file_lists[ridx]
         if fcd_metric is not None:
             pred_codes_filepath = codes_file_lists[ridx]
+
+        if with_utmosv2:
+            utmosv2_score = utmosv2_scores[pred_audio_filepath]
+        else:
+            utmosv2_score = 0.0
 
         try:
             if language == "en":
@@ -351,10 +370,6 @@ def evaluate(
                 gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
                     gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
                 ).item()
-            if with_utmosv2:
-                utmosv2_score = utmosv2_model(pred_audio_filepath)
-            else:
-                utmosv2_score = 0.0
             total_generated_audio_seconds += get_wav_file_duration(pred_audio_filepath)
 
         filewise_metrics.append(

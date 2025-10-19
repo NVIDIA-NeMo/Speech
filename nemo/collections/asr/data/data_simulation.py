@@ -629,7 +629,7 @@ class MultiSpeakerSimulator(object):
         if num_missing != 0:
             warnings.warn(
                 f"{self._params.data_simulator.session_config.num_speakers - num_missing}"
-                f"speakers were included in the clip instead of the requested amount of "
+                "speakers were included in the clip instead of the requested amount of "
                 f"{self._params.data_simulator.session_config.num_speakers}"
             )
 
@@ -1117,7 +1117,7 @@ class MultiSpeakerSimulator(object):
             )
             self.annotator.annote_lists['json'].append(new_json_entry)
 
-            new_ctm_entries = self.annotator.create_new_ctm_entry(
+            new_ctm_entries, _ = self.annotator.create_new_ctm_entry(
                 words=self._words,
                 alignments=self._alignments,
                 session_name=filename,
@@ -1190,7 +1190,7 @@ class MultiSpeakerSimulator(object):
         Args:
             random_seed (int): random seed for reproducibility
         """
-        logging.info(f"Generating Diarization Sessions")
+        logging.info("Generating Diarization Sessions")
         if random_seed is None:
             random_seed = self._params.data_simulator.random_seed
         np.random.seed(random_seed)
@@ -1643,7 +1643,7 @@ class RIRMultiSpeakerSimulator(MultiSpeakerSimulator):
             )
             self.annotator.annote_lists['json'].append(new_json_entry)
 
-            new_ctm_entries = self.annotator.create_new_ctm_entry(
+            new_ctm_entries, _ = self.annotator.create_new_ctm_entry(
                 filename, speaker_ids[speaker_turn], start / self._params.data_simulator.sr
             )
             self.annotator.annote_lists['ctm'].extend(new_ctm_entries)

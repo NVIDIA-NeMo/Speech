@@ -99,6 +99,8 @@ jobs:
           - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run_Speech_to_Text_WPE_-_Conformer
           - runner: self-hosted-azure-gpus-1
+            script: ASR_dev_run_Speech_to_Text_Hybrid_RNNT_CTC_Prompt
+          - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer
           - runner: self-hosted-azure-gpus-1
             script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader
@@ -123,6 +125,10 @@ jobs:
             is-optional: true
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Speech_to_Text_Transcribe
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Speech_to_Text_Streaming_Infer
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Speech_to_Text_Cache_Aware_Infer
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
           - runner: self-hosted-azure

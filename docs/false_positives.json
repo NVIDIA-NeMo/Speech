@@ -155,11 +155,32 @@
   "lineno": 16,
   "status": "broken",
   "code": 0,
+  "uri": "https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/GLUE_Benchmark.ipynb",
+  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/GLUE_Benchmark.ipynb"
+}
+{
+  "filename": "tools/nemo_forced_aligner.rst",
+  "lineno": 16,
+  "status": "broken",
+  "code": 0,
   "uri": "https://nvidia.github.io/NeMo/blogs/2023/2023-08-forced-alignment/",
   "info": "404 Client Error: Not Found for url: https://nvidia.github.io/NeMo/blogs/2023/2023-08-forced-alignment/"
 }
 {
   "filename": "nlp/text_normalization/wfst/wfst_text_processing_deployment.rst",
+  "lineno": 10,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://www.openfst.org/",
+  "info": "HTTPSConnectionPool(host='www.openfst.org', port=443): Max retries exceeded with url: / (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1016)')))"
+}
+{
+  "filename": "nlp/text_normalization/wfst/wfst_text_processing_deployment.rst",
+  "lineno": 76,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://www.openfst.org/twiki/bin/view/GRM/Thrax",
+  "info": "HTTPSConnectionPool(host='www.openfst.org', port=443): Max retries exceeded with url: /twiki/bin/view/GRM/Thrax (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1016)')))"
   "lineno": 76,
   "status": "broken",
   "code": 0,

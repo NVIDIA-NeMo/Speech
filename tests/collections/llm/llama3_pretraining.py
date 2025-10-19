@@ -75,6 +75,9 @@ def get_args():
         action='store_true',
         help="Attach PytorchProfilerCallback and verify trace files after training",
     )
+    parser.add_argument(
+        '--ckpt-optim-fully-reshardable', action='store_true', help="Enable optimizer checkpoint fully-reshardability"
+    )
 
     return parser.parse_args()
 
@@ -108,6 +111,9 @@ def main():
     if args.early_stop:
         pretrain_recipe.trainer.callbacks.append(StopBeforeEnd(stop_on_step=args.early_stop))
     pretrain_recipe.trainer.callbacks.append(AssertOptimizerParamGroupsHaveAtLeastTwoWeightDecays())
+
+    if args.ckpt_optim_fully_reshardable:
+        pretrain_recipe.trainer.strategy.ckpt_optim_fully_reshardable = True
 
     if not args.precision == 'bf16' or args.fp8:  # default case is bf16 without fp8
         import llm.recipes.precision.mixed_precision as mp_recipes

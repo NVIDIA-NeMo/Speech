@@ -267,7 +267,12 @@ def evaluate(
             pred_codes_filepath = codes_file_lists[ridx]
 
         if with_utmosv2:
-            utmosv2_score = utmosv2_scores[pred_audio_filepath]
+            try:
+                utmosv2_score = utmosv2_scores[pred_audio_filepath]
+            except KeyError:
+                print(f"No UTMOSv2 score found for {pred_audio_filepath}")
+                print(f"UTMOSv2 scores: {utmosv2_scores.keys()}")
+                raise
         else:
             utmosv2_score = 0.0
 

@@ -24,4 +24,6 @@ coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/ne
     --legacy_text_conditioning \
     --apply_attention_prior \
     --clean_up_disk \
-    --disable_fcd
+    --disable_fcd \
+    --cer_target 0.3 \
+    --ssim_target 0.5

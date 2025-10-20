@@ -168,10 +168,10 @@ def extract_embedding(model, extractor, audio_path, device, sv_model_type):
     return embeddings.squeeze()
 
 
-def compute_utmosv2_scores(audio_dir):
+def compute_utmosv2_scores(audio_dir, device):
     print(f"\nComputing UTMOSv2 scores for files in {audio_dir}...")
     start_time = time.time()
-    utmosv2_calculator = UTMOSv2Calculator()
+    utmosv2_calculator = UTMOSv2Calculator(device=device)
     utmosv2_scores = utmosv2_calculator.process_directory(audio_dir)
     # convert to to a dictionary indexed by file path
     utmosv2_scores_dict = {os.path.normpath(item['file_path']): item['predicted_mos'] for item in utmosv2_scores}
@@ -245,7 +245,7 @@ def evaluate(
         fcd_metric = None
 
     if with_utmosv2:
-        utmosv2_scores = compute_utmosv2_scores(generated_audio_dir)
+        utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
     filewise_metrics = []
     pred_texts = []
     gt_texts = []

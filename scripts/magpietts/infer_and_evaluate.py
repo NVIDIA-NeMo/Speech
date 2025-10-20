@@ -376,14 +376,6 @@ def run_inference(
         print(f"Evaluating dataset {dataset}")
         metrics_n_repeated = []
         manifest_records = read_manifest(dataset_meta_info[dataset]['manifest_path'])
-        utmos_max_records = 200
-        if with_utmosv2 and len(manifest_records) > utmos_max_records:
-            use_utmosv2_for_dataset = False
-            print(
-                f"Skipping UTMOSv2 calculation for dataset {dataset} because it has more than {utmos_max_records} records"
-            )
-        else:
-            use_utmosv2_for_dataset = with_utmosv2
         language = dataset_meta_info[dataset].get('whisper_language', 'en')
         dataset_meta_for_dl = copy.deepcopy(dataset_meta_info[dataset])
         for key in ["whisper_language", "load_cached_codes_if_available"]:
@@ -546,7 +538,7 @@ def run_inference(
                 sv_model_type=sv_model,
                 asr_model_name=asr_model_name,
                 codecmodel_path=codecmodel_path if compute_fcd else None,
-                with_utmosv2=use_utmosv2_for_dataset,
+                with_utmosv2=with_utmosv2,
             )
             metrics_n_repeated.append(metrics)
             dataset_filewise_metrics_all_repeats.extend(
@@ -572,11 +564,7 @@ def run_inference(
                 print(f"Wrote metrics for {checkpoint_name} and {dataset} to {all_experiment_csv}")
 
             output_png_file = Path(eval_dir) / f"{dataset}_violin_{repeat_idx}.png"
-            violin_plot_metrics_current_dataset = violin_plot_metrics.copy()
-            if 'utmosv2' in violin_plot_metrics_current_dataset and not use_utmosv2_for_dataset:
-                # Don't include utmosv2 in the violin plot if it's not used for this dataset
-                violin_plot_metrics_current_dataset.remove('utmosv2')
-            create_violin_plots(filewise_metrics, violin_plot_metrics_current_dataset, output_png_file)
+            create_violin_plots(filewise_metrics, violin_plot_metrics, output_png_file)
 
             # Clean up temporary codec files
             for codes_file in codec_file_paths:

@@ -174,7 +174,7 @@ def compute_utmosv2_scores(audio_dir):
     utmosv2_calculator = UTMOSv2Calculator()
     utmosv2_scores = utmosv2_calculator.process_directory(audio_dir)
     # convert to to a dictionary indexed by file path
-    utmosv2_scores_dict = {item['file_path']: item['predicted_mos'] for item in utmosv2_scores}
+    utmosv2_scores_dict = {os.path.normpath(item['file_path']): item['predicted_mos'] for item in utmosv2_scores}
     end_time = time.time()
     print(f"UTMOSv2 scores computed for {len(utmosv2_scores)} files in {end_time - start_time:.2f} seconds\n")
     return utmosv2_scores_dict
@@ -268,7 +268,7 @@ def evaluate(
 
         if with_utmosv2:
             try:
-                utmosv2_score = utmosv2_scores[pred_audio_filepath]
+                utmosv2_score = utmosv2_scores[os.path.normpath(pred_audio_filepath)]
             except KeyError:
                 print(f"No UTMOSv2 score found for {pred_audio_filepath}")
                 print(f"UTMOSv2 scores: {utmosv2_scores.keys()}")

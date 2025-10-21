@@ -3414,9 +3414,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
 
                 all_predictions.append(audio_codes_next)
 
-                self.audio_codes_input = torch.cat(
-                    [self.audio_codes_input, audio_codes_next], dim=-1
-                )  # (B, C, T')
+                self.audio_codes_input = torch.cat([self.audio_codes_input, audio_codes_next], dim=-1)  # (B, C, T')
                 self.audio_codes_lens = self.audio_codes_lens + 1
                 audio_codes_mask = get_mask_from_lengths(self.audio_codes_lens)
                 if len(self.end_indices) == batch_size:

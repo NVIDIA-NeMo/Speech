@@ -3415,7 +3415,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                 all_predictions.append(audio_codes_next)
 
                 self.audio_codes_input = torch.cat(
-                    [self.audio_codes_input, audio_codes_next.unsqueeze(-1)], dim=-1
+                    [self.audio_codes_input, audio_codes_next], dim=-1
                 )  # (B, C, T')
                 self.audio_codes_lens = self.audio_codes_lens + 1
                 audio_codes_mask = get_mask_from_lengths(self.audio_codes_lens)
@@ -3430,6 +3430,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                     break
 
             predicted_codes = torch.stack(all_predictions, dim=-1)
+            predicted_codes = predicted_codes.squeeze(2)
             predicted_codes_lens = [predicted_codes.size(2)]
             torch.cuda.empty_cache()
             if return_cross_attn_probs:
@@ -3442,6 +3443,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         predicted_codes_lens,
                         batch_size,
                         compute_all_heads_attn_maps,
+                        self.last_attended_timesteps,
                     )
                     cross_attention_maps.extend(cross_attention_maps_current)
                 return predicted_codes, predicted_codes_lens, cross_attention_maps, headwise_cross_attention_maps

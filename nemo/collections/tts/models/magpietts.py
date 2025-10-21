@@ -2228,7 +2228,9 @@ class MagpieTTSModel(ModelPT):
         predicted_codes_lens,
         batch_size,
         compute_all_heads_attn_maps,
+        last_attended_timestep,
     ):
+        last_attended_timestep = np.array(last_attended_timestep).T
         cross_attention_scores_all_timesteps = torch.stack(
             cross_attention_scores_all_timesteps, dim=2
         )  # B, text_timesteps, T'

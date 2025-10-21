@@ -57,58 +57,17 @@ def setup_argument_parser():
     parser.add_argument('--out_dir', type=str, default="/datap/misc/Evals/LocalTransformerAblations2")
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--use_cfg', action='store_true')
-    parser.add_argument('--use_local_transformer', action='store_true', help="Enables use of local transformer for inference; applies to both Autoregressive and MaskGit sampling.")
-    parser.add_argument('--maskgit_n_steps', type=int, default=3)
-    parser.add_argument('--cfg_scale', type=float, default=2.5)
-    parser.add_argument('--apply_attention_prior', action='store_true')
-    parser.add_argument('--attention_prior_epsilon', type=float, default=0.1)
-    parser.add_argument('--attention_prior_lookahead_window', type=int, default=5)
-    parser.add_argument('--estimate_alignment_from_layers', type=str, default=None)
-    parser.add_argument('--apply_prior_to_layers', type=str, default=None)
-    parser.add_argument('--start_prior_after_n_audio_steps', type=int, default=0)
-    parser.add_argument('--topk', type=int, default=80)
-    parser.add_argument('--batch_size', type=int, default=32)
-    # Parameters for evaluation
-    parser.add_argument('--sv_model', type=str, default="titanet") # titanet, wavlm
-    parser.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b") # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
-    parser.add_argument('--num_repeats', type=int, default=1)
-    parser.add_argument('--confidence_level', type=float, default=0.95)
-    parser.add_argument('--legacy_codebooks', action='store_true')
-    parser.add_argument('--legacy_text_conditioning', action='store_true')
-    parser.add_argument('--clean_up_disk', action='store_true')
-    parser.add_argument('--cer_target', type=float, default=None)
-    parser.add_argument('--ssim_target', type=float, default=None)
-    parser.add_argument('--log_exp_name', action='store_true', help="Include the experiment name (derived from the checkpoint path) in the output folder name.")
-    parser.add_argument('--disable_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
-    parser.add_argument('--violin_plot_metrics', type=str, nargs='*', default=['cer','pred_context_ssim'], help="Which metrics to add the violin plot.")
-    return parser
-
-
-# EVALUATION_DATASETS is the full list of datasets for evaluation of a new model.
-EVALUATION_DATASETS = (
-    "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,vctk,libritts_seen,libritts_test_clean"
-)
-
-
-def setup_argument_parser():
-    """Setup and return the argument parser for the streaming inference script."""
-    parser = argparse.ArgumentParser(description='Experiment Evaluation')
-    parser.add_argument('--hparams_files', type=str, default=None)
-    parser.add_argument('--hparams_file_from_wandb', action='store_true')
-    parser.add_argument('--checkpoint_files', type=str, default=None)
-    parser.add_argument('--nemo_files', type=str, default=None)
-    parser.add_argument('--codecmodel_path', type=str, default=None, help="Path to codec model")
-    parser.add_argument('--datasets', type=str, default=None)
-    # Parameters for running inference experiments locally
-    parser.add_argument('--out_dir', type=str, default="/datap/misc/Evals/LocalTransformerAblations2")
-    parser.add_argument('--temperature', type=float, default=0.6)
-    parser.add_argument('--use_cfg', action='store_true')
     parser.add_argument(
         '--use_local_transformer',
         action='store_true',
         help="Enables use of local transformer for inference; applies to both Autoregressive and MaskGit sampling.",
     )
     parser.add_argument('--maskgit_n_steps', type=int, default=3)
+    parser.add_argument('--maskgit_noise_scale', type=float, default=0.0)
+    parser.add_argument('--maskgit_fixed_schedule', type=int, nargs='+', default=None)
+    parser.add_argument(
+        '--maskgit_sampling_type', default=None, choices=["default", "causal", "purity_causal", "purity_default"]
+    )
     parser.add_argument('--cfg_scale', type=float, default=2.5)
     parser.add_argument('--apply_attention_prior', action='store_true')
     parser.add_argument('--attention_prior_epsilon', type=float, default=0.1)
@@ -118,17 +77,33 @@ def setup_argument_parser():
     parser.add_argument('--start_prior_after_n_audio_steps', type=int, default=0)
     parser.add_argument('--topk', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument(
+        '--eos_detection_method',
+        type=str,
+        default="argmax_or_multinomial_any",
+        choices=[
+            "argmax_any",
+            "argmax_or_multinomial_any",
+            "argmax_all",
+            "argmax_or_multinomial_all",
+            "argmax_zero_cb",
+            "argmax_or_multinomial_zero_cb",
+        ],
+    )
     # Parameters for evaluation
-    parser.add_argument('--sv_model', type=str, default="titanet")  # titanet, wavlm
+    parser.add_argument('--sv_model', type=str, default="titanet") # titanet, wavlm
     parser.add_argument(
         '--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b"
-    )  # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
+    ) # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
     parser.add_argument('--num_repeats', type=int, default=1)
     parser.add_argument('--confidence_level', type=float, default=0.95)
     parser.add_argument('--legacy_codebooks', action='store_true')
+    parser.add_argument('--legacy_text_conditioning', action='store_true')
+    parser.add_argument('--ignore_finished_sentence_tracking', action='store_true')
     parser.add_argument('--clean_up_disk', action='store_true')
     parser.add_argument('--cer_target', type=float, default=None)
     parser.add_argument('--ssim_target', type=float, default=None)
+    parser.add_argument('--disable_utmosv2', action='store_true', help="Disable UTMOSv2 computation")
     parser.add_argument(
         '--log_exp_name',
         action='store_true',
@@ -139,7 +114,7 @@ def setup_argument_parser():
         '--violin_plot_metrics',
         type=str,
         nargs='*',
-        default=['cer', 'pred_context_ssim'],
+        default=['cer', 'pred_context_ssim', 'utmosv2'],
         help="Which metrics to add the violin plot.",
     )
     return parser
@@ -169,7 +144,6 @@ def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_tex
     model_cfg.train_ds = None
     model_cfg.validation_ds = None
     model_cfg.legacy_text_conditioning = legacy_text_conditioning
-    model_cfg.legacy_text_conditioning = legacy_text_conditioning
     if "t5_encoder" in model_cfg:
         model_cfg.encoder = model_cfg.t5_encoder
         del model_cfg.t5_encoder
@@ -183,10 +157,6 @@ def update_config(model_cfg, codecmodel_path, legacy_codebooks=False, legacy_tex
         # For older checkpoints trained with a different parameter name
         model_cfg.local_transformer_type = "autoregressive"
         del model_cfg.use_local_transformer
-    if hasattr(model_cfg, 'downsample_factor'):
-        # Backward compatibility for models trained with the config option`downsample_factor` which was later renamed to `frame_stacking_factor`
-        model_cfg.frame_stacking_factor = model_cfg.downsample_factor
-        del model_cfg.downsample_factor
     if hasattr(model_cfg, 'downsample_factor'):
         # Backward compatibility for models trained with the config option`downsample_factor` which was later renamed to `frame_stacking_factor`
         model_cfg.frame_stacking_factor = model_cfg.downsample_factor
@@ -242,7 +212,6 @@ def delete_old_generated_files(output_dir):
         os.remove(f)
 
 
-
 def create_violin_plots(metrics: List[dict], metric_keys: List[str], output_png: str):
     # Create dataframe from list of dicts
     df = pd.DataFrame(metrics)
@@ -282,6 +251,7 @@ def create_violin_plots(metrics: List[dict], metric_keys: List[str], output_png:
 def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], output_png: str):
     """
     Create box plots comparing multiple datasets for each metric in a single figure.
+
     Args:
         dataset_metrics: Dictionary where keys are dataset names and values are lists of metric dictionaries
         metric_keys: List of metric names to plot
@@ -335,90 +305,6 @@ def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], 
                 patch.set_facecolor(colors[i])
                 patch.set_alpha(0.7)
 
-            # Add mean labels for each dataset
-            for i, (data, pos) in enumerate(zip(all_data, positions)):
-                mean = data.mean()
-                sem = data.sem()
-
-                label_numeric = f"{mean:.3f}±{1.96 * sem:.3f}"
-                ax.text(pos + 0.1, mean, label_numeric, ha="left", va="center", fontsize=8)
-
-        # Set labels and title
-        ax.set_title(f"{metric.upper()}", fontsize=12, fontweight='bold')
-        ax.set_xticks(positions)
-        ax.set_xticklabels(dataset_labels, rotation=45, ha='right')
-        ax.grid(True, linestyle="dotted", alpha=0.7)
-        ax.set_xlabel("Dataset")
-        ax.set_ylabel(metric)
-
-        # Set y-axis limit for CER metrics
-        if 'cer' in metric.lower():
-            ax.set_ylim(0, 0.3)
-
-    # Add overall title
-    fig.suptitle("Performance Comparison Across Datasets", fontsize=14, fontweight='bold')
-
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(output_png, format="png", bbox_inches="tight", dpi=300)
-    plt.close()
-    print(f"Combined violin plot saved to: {output_png}")
-
-
-def create_combined_violin_plots(dataset_metrics: dict, metric_keys: List[str], output_png: str):
-    """
-    Create box plots comparing multiple datasets for each metric in a single figure.
-    Args:
-        dataset_metrics: Dictionary where keys are dataset names and values are lists of metric dictionaries
-        metric_keys: List of metric names to plot
-        output_png: Output file path for the combined plot
-    """
-    # Prepare data for plotting
-    datasets = list(dataset_metrics.keys())
-    num_datasets = len(datasets)
-    num_metrics = len(metric_keys)
-
-    # Create figure with subplots for each metric
-    fig, axs = plt.subplots(1, num_metrics, figsize=(num_metrics * 6, 6))
-
-    # Handle case where there's only one metric (axs won't be an array)
-    if num_metrics == 1:
-        axs = [axs]
-
-    # Define colors for different datasets
-    colors = plt.cm.Set3(np.linspace(0, 1, num_datasets))
-
-    for metric_idx, metric in enumerate(metric_keys):
-        ax = axs[metric_idx]
-
-        # Collect data for all datasets for this metric
-        all_data = []
-        positions = []
-        dataset_labels = []
-        for dataset_idx, dataset in enumerate(datasets):
-            df = pd.DataFrame(dataset_metrics[dataset])
-            if metric in df.columns:
-                data = df[metric].dropna()
-                all_data.append(data)
-                positions.append(dataset_idx + 1)
-                dataset_labels.append(dataset)
-
-        # Create box plots
-        if all_data:
-            bp = ax.boxplot(
-                all_data,
-                positions=positions,
-                widths=0.6,
-                patch_artist=True,
-                showmeans=True,
-                meanline=False,
-                meanprops={'marker': 'o', 'markerfacecolor': 'red', 'markeredgecolor': 'red', 'markersize': 6},
-            )
-
-            # Color the box plots
-            for i, patch in enumerate(bp['boxes']):
-                patch.set_facecolor(colors[i])
-                patch.set_alpha(0.7)
             # Add mean labels for each dataset
             for i, (data, pos) in enumerate(zip(all_data, positions)):
                 mean = data.mean()
@@ -591,7 +477,7 @@ def run_inference(
         context_duration_max = model.cfg.get('context_duration_max', 5.0)
         if context_duration_min < 5.0 and context_duration_max > 5.0:
             context_duration_min = 5.0
-            context_duration_max = 5.0 # @pneekhara - For multiencoder models, I want fixed size contexts for fair eval. Not too important though.
+            context_duration_max = 5.0  # @pneekhara - For multiencoder models, I want fixed size contexts for fair eval. Not too important though.
 
         dataset_filewise_metrics_all_repeats = []  # Store metrics for all repeats of this dataset
         for repeat_idx in range(num_repeats):

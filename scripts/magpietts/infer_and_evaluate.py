@@ -45,7 +45,7 @@ EVALUATION_DATASETS = (
 
 
 def setup_argument_parser():
-    """Setup and return the argument parser for the streaming inference script. """
+    """Setup and return the argument parser for the streaming inference script."""
     parser = argparse.ArgumentParser(description='Experiment Evaluation')
     parser.add_argument('--hparams_files', type=str, default=None)
     parser.add_argument('--hparams_file_from_wandb', action='store_true')
@@ -91,10 +91,10 @@ def setup_argument_parser():
         ],
     )
     # Parameters for evaluation
-    parser.add_argument('--sv_model', type=str, default="titanet") # titanet, wavlm
+    parser.add_argument('--sv_model', type=str, default="titanet")  # titanet, wavlm
     parser.add_argument(
         '--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b"
-    ) # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
+    )  # stt_en_conformer_transducer_large, nvidia/parakeet-ctc-0.6b
     parser.add_argument('--num_repeats', type=int, default=1)
     parser.add_argument('--confidence_level', type=float, default=0.95)
     parser.add_argument('--legacy_codebooks', action='store_true')
@@ -421,7 +421,7 @@ def run_inference(
         exp_name = f"{os.path.basename(os.path.dirname(os.path.dirname(checkpoint_file)))}__"
     else:
         exp_name = ""
-        
+
     # Build checkpoint name
     checkpoint_name = (
         f"{exp_name}{checkpoint_name}_Temp{temperature}_Topk{topk}_Cfg_{use_cfg}_{cfg_scale}_"

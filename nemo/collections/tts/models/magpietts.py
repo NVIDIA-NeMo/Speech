@@ -2414,7 +2414,7 @@ class MagpieTTSModel(ModelPT):
                 - 'all_heads_attn_maps': (optional) Attention maps for all heads if compute_all_heads_attn_maps=True
                 - Other diagnostic information depending on configuration
         """
-        
+
         eos_detection_method = EOSDetectionMethod(eos_detection_method)
         with torch.no_grad():
             start_time = time.time()
@@ -3447,5 +3447,3 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                 return predicted_codes, predicted_codes_lens, cross_attention_maps, headwise_cross_attention_maps
             else:
                 return predicted_codes, predicted_codes_lens
-                
-                

@@ -1,6 +1,51 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.5.1
+
+### Highlights
+
+- This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- Adds nv-one-logger
+- Adds fixes related to Megatron FSDP
+
+### Detailed Changelogs:
+
+#### ASR
+
+<details><summary>Changelog</summary>
+
+- Patch: r2.5.0 with onelogger changes. by @PeiyuanQi :: PR: #14811
+
+</details>
+
+#### TTS
+
+<details><summary>Changelog</summary>
+
+- Patch: r2.5.0 with onelogger changes. by @PeiyuanQi :: PR: #14811
+
+</details>
+
+#### NLP / NMT
+
+<details><summary>Changelog</summary>
+
+- Patch: r2.5.0 with onelogger changes. by @PeiyuanQi :: PR: #14811
+- Megatron FSDP r2.5.0 cherry-pick by @BoxiangW :: PR: #14922
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Bump to 2.5.1 by @chtruong814 :: PR: #14898
+- Cherry pick `Feat: Disk space management: for nemo install test (14822)` into `r2.5.0` by @chtruong814 :: PR: #14937
+- cp: `Fix the load checkpointing issue -- onelogger callback gets called multiple time in some case. (14945)` into `r2.5.0` by @chtruong814 :: PR: #14948
+
+</details>
+
 ## NVIDIA Neural Modules 2.5.0
 
 ### Highlights

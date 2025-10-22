@@ -39,7 +39,6 @@ from typing_extensions import Self, override
 from nemo.lightning.ckpt_utils import WEIGHTS_PATH, ckpt_to_dir
 from nemo.lightning.io.capture import IOProtocol
 from nemo.lightning.io.mixin import IOMixin
-from nemo.lightning.resume import AdapterPath
 from nemo.utils import logging
 
 try:
@@ -116,6 +115,8 @@ class TrainerContext(IOMixin, Generic[LightningModuleT]):
 def ckpt_to_weights_subdir(filepath: Union[str, Path], is_saving) -> Path:
     """Given an input checkpoint filepath, clean it using `ckpt_to_dir`
     and then return the weights subdirectory, if it exists."""
+    from nemo.lightning.resume import AdapterPath
+
     filepath = ckpt_to_dir(filepath=filepath)
     base_dir = filepath
     assert not isinstance(base_dir, str)

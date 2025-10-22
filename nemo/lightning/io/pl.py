@@ -115,6 +115,8 @@ class TrainerContext(IOMixin, Generic[LightningModuleT]):
 def ckpt_to_weights_subdir(filepath: Union[str, Path], is_saving) -> Path:
     """Given an input checkpoint filepath, clean it using `ckpt_to_dir`
     and then return the weights subdirectory, if it exists."""
+    from nemo.lightning.resume import AdapterPath
+
     filepath = ckpt_to_dir(filepath=filepath)
     base_dir = filepath
     assert not isinstance(base_dir, str)
@@ -122,6 +124,8 @@ def ckpt_to_weights_subdir(filepath: Union[str, Path], is_saving) -> Path:
         maybe_base_dir = base_dir / WEIGHTS_PATH
         if maybe_base_dir.is_dir() or is_saving:
             base_dir = maybe_base_dir
+            if isinstance(filepath, AdapterPath):
+                base_dir.base_model_path = filepath.base_model_path
     # handle adapter paths
     if hasattr(base_dir, "base_model_path") and base_dir.base_model_path.parts[-1] != WEIGHTS_PATH:
         maybe_base_model_path = base_dir.base_model_path / WEIGHTS_PATH

@@ -1371,7 +1371,7 @@ def configure_checkpointing(
     if params.dirpath is None:
         params.dirpath = Path(log_dir / 'checkpoints')
     if params.filename is None:
-        params.filename = f'{name}--{{{params.monitor}:.4f}}-{{epoch}}'
+        params.filename = f'{name}--{{{params.monitor}:.4f}}-{{step}}'
     if params.prefix is None:
         params.prefix = name
     if params.always_save_nemo:

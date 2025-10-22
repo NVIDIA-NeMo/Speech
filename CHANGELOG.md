@@ -3,6 +3,47 @@
 <!-- Next changelog -->
 ## NVIDIA Neural Modules 2.5.0
 
+### Detailed Changelogs:
+
+
+#### ASR
+
+<details><summary>Changelog</summary>
+
+- Patch: r2.5.0 with onelogger changes. by @PeiyuanQi :: PR: #14811
+
+</details>
+
+#### TTS
+
+<details><summary>Changelog</summary>
+
+- Patch: r2.5.0 with onelogger changes. by @PeiyuanQi :: PR: #14811
+
+</details>
+
+#### NLP / NMT
+
+<details><summary>Changelog</summary>
+
+- Patch: r2.5.0 with onelogger changes. by @PeiyuanQi :: PR: #14811
+- remove language_modeling (cherry-pick of #14192) by @dimapihtar :: PR: #14933
+- Megatron FSDP r2.5.0 cherry-pick by @BoxiangW :: PR: #14922
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Bump to 2.5.1 by @chtruong814 :: PR: #14898
+- cp: `Harden _is_target_allowed by adding runtime class validation on top of prefix checks to prevent unsafe target resolution (14540)` into `r2.5.0` by @chtruong814 :: PR: #14916
+- Cherry pick `Feat: Disk space management: for nemo install test (14822)` into `r2.5.0` by @chtruong814 :: PR: #14937
+- cp: `Fix the load checkpointing issue -- onelogger callback gets called multiple time in some case. (14945)` into `r2.5.0` by @chtruong814 :: PR: #14948
+
+</details>
+## NVIDIA Neural Modules 2.5.0
+
 ### Highlights
 
 - Collections:

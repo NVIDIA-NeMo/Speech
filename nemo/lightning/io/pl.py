@@ -39,6 +39,7 @@ from typing_extensions import Self, override
 from nemo.lightning.ckpt_utils import WEIGHTS_PATH, ckpt_to_dir
 from nemo.lightning.io.capture import IOProtocol
 from nemo.lightning.io.mixin import IOMixin
+from nemo.lightning.resume import AdapterPath
 from nemo.utils import logging
 
 try:
@@ -122,6 +123,8 @@ def ckpt_to_weights_subdir(filepath: Union[str, Path], is_saving) -> Path:
         maybe_base_dir = base_dir / WEIGHTS_PATH
         if maybe_base_dir.is_dir() or is_saving:
             base_dir = maybe_base_dir
+            if isinstance(filepath, AdapterPath):
+                base_dir.base_model_path = filepath.base_model_path
     # handle adapter paths
     if hasattr(base_dir, "base_model_path") and base_dir.base_model_path.parts[-1] != WEIGHTS_PATH:
         maybe_base_model_path = base_dir.base_model_path / WEIGHTS_PATH

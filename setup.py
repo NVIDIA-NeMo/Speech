@@ -115,7 +115,6 @@ extras_require['nlp'] = extras_require['nlp-only']
 extras_require['nlp'] = list(
     chain(
         extras_require['nlp'],
-        extras_require['eval'],
         extras_require['common'],
     )
 )

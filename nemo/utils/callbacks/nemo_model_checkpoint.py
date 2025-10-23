@@ -276,7 +276,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             if should_save_last_checkpoint:
                 monitor_candidates = self._monitor_candidates(trainer)
                 if self.last_model_path == self.format_checkpoint_name(monitor_candidates, self.CHECKPOINT_NAME_LAST):
-                    logging.warning(f'Last checkpoint {self.last_model_path} already saved')  # TODO remove this during PR
+                    logging.debug(f'Last checkpoint {self.last_model_path} already saved')
                 else:
                     super()._save_last_checkpoint(trainer, monitor_candidates)
         # Call parent on_train_end() to save the -last checkpoint

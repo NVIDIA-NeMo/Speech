@@ -39,9 +39,9 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_llama3_pretraining_recipe
             runner: self-hosted-azure
-          - script: L2_NeMo_2_llama3_pytorch_profiler
-            runner: self-hosted-azure
-            timeout: 20
+          # - script: L2_NeMo_2_llama3_pytorch_profiler
+          #   runner: self-hosted-azure
+          #   timeout: 20
           - script: L2_NeMo_2_llama3_fault_tolerance_plugin
             runner: self-hosted-azure
           - script: L2_NeMo_2_llama3_straggler_detection

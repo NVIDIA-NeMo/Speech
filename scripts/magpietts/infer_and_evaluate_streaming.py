@@ -325,7 +325,7 @@ def run_inference_streaming(
                 text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).cuda()
                 context_text_len = torch.tensor([text_context_tokens.shape[0]]).unsqueeze(0).cuda()
                 batch['context_text_tokens'] = text_context_tokens
-                batch['context_text_len'] = context_text_len
+                batch['context_text_tokens_lens'] = context_text_len
 
             model.set_streaming_inference_variables(true_window_size=true_window_size)
             predicted_codes = []

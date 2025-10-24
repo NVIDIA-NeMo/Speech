@@ -48,6 +48,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import Agg
 from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.models import MagpieTTSStreamingInference
+from nemo.collections.tts.parts.utils.tts_dataset_utils import _read_audio
 
 # EVALUATION_DATASETS is the full list of datasets for evaluation of a new model.
 EVALUATION_DATASETS = (
@@ -269,12 +270,29 @@ def run_inference_streaming(
                 model.eos_id,
             )  # List, List
 
-            assert (
-                'context_audio_codes_path' in entry
-            ), f"Context audio codes path not found in manifest entry: {entry}"
-
-            context_audio_codes_path = entry['context_audio_codes_path']
-            context_audio_codes = torch.load(context_audio_codes_path).long()  # (8, T)
+            if 'context_audio_codes_path' in entry:
+                context_audio_codes_path = entry['context_audio_codes_path']
+                context_audio_codes = torch.load(context_audio_codes_path).long()  # (8, T)
+            elif 'context_audio_filepath' in entry:
+                context_audio_filepath = entry['context_audio_filepath']
+                if dataset_meta[dataset]['audio_dir'] is not None:
+                    context_audio_filepath = os.path.join(dataset_meta[dataset]['audio_dir'], context_audio_filepath)
+                context_audio_duration = entry['context_audio_duration']
+                context_audio_array = _read_audio(
+                    audio_filepath=context_audio_filepath,
+                    sample_rate=sample_rate,
+                    offset=0,
+                    duration=context_audio_duration,
+                )
+                context_audio_array = context_audio_array.samples
+                context_audio_array = torch.tensor(context_audio_array).unsqueeze(0).cuda()
+                context_audio_len = torch.tensor(context_audio_array.shape[1]).unsqueeze(0).cuda()
+                context_audio_codes, _ = model.audio_to_codes(
+                    context_audio_array, context_audio_len, audio_type='context'
+                )
+                context_audio_codes = torch.tensor(context_audio_codes).squeeze(0).cpu()
+            else:
+                raise ValueError(f"Context audio codes path or filepath not found in manifest entry: {entry}")
             # Sample random duration between self.context_duration_min and self.context_duration_max
             _context_duration_to_slice = random.uniform(context_duration_min, context_duration_max)
             _num_frames_to_slice = int(_context_duration_to_slice * sample_rate / codec_model_downsample_factor)  # ???

@@ -318,6 +318,12 @@ def run_inference_streaming(
             batch['context_audio_codes'] = context_audio_codes.cuda()
             batch['context_audio_codes_lens'] = context_audio_codes_len.cuda()
             batch['has_text_context'] = torch.BoolTensor([False]).cuda()
+            if model.use_text_conditioning_encoder:
+                text_context_tokens = text_tokenizer.encode("[NO TEXT CONTEXT]", "english_phoneme" if tokenizer_name is None else tokenizer_name)
+                text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).cuda()
+                context_text_len = torch.tensor([text_context_tokens.shape[0]]).unsqueeze(0).cuda()
+                batch['context_text_tokens'] = text_context_tokens
+                batch['context_text_len'] = context_text_len
 
             model.set_streaming_inference_variables(true_window_size=true_window_size)
             predicted_codes = []

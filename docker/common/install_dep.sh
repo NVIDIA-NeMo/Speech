@@ -178,6 +178,7 @@ te() {
       cd $TE_DIR
       git submodule init
       git submodule update
+      pip install nvidia-mathdx==25.1.1
       pip wheel --wheel-dir $WHEELS_DIR/  --no-build-isolation $TE_DIR
     fi
   }
@@ -201,7 +202,7 @@ mcore() {
   mkdir -p $WHEELS_DIR
 
   export CAUSAL_CONV1D_FORCE_BUILD=TRUE
-  export CAUSAL_CONV_TAG=v1.2.2.post1
+  export CAUSAL_CONV_TAG=v1.5.3
   CAUSAL_CONV1D_DIR="$INSTALL_DIR/causal-conv1d"
   if [ ! -d "$CAUSAL_CONV1D_DIR/.git" ]; then
     rm -rf "$CAUSAL_CONV1D_DIR"
@@ -214,7 +215,7 @@ mcore() {
   popd
 
   export MAMBA_FORCE_BUILD=TRUE
-  export MAMBA_TAG=2e16fc3062cdcd4ebef27a9aa4442676e1c7edf4
+  export MAMBA_TAG=6b32be06d026e170b3fdaf3ae6282c5a6ff57b06
   MAMBA_DIR="$INSTALL_DIR/mamba"
   if [ ! -d "$MAMBA_DIR/.git" ]; then
     rm -rf "$MAMBA_DIR"
@@ -245,7 +246,7 @@ mcore() {
   build() {
     if [[ "${NVIDIA_PYTORCH_VERSION}" != "" ]]; then
       pip wheel --no-deps --no-cache-dir --no-build-isolation --wheel-dir $WHEELS_DIR $MAMBA_DIR
-      pip wheel --no-deps --no-cache-dir --wheel-dir $WHEELS_DIR $CAUSAL_CONV1D_DIR
+      pip wheel --no-deps --no-cache-dir --no-build-isolation --wheel-dir $WHEELS_DIR $CAUSAL_CONV1D_DIR
     fi
 
     pip wheel --no-deps --wheel-dir $WHEELS_DIR $MLM_DIR
@@ -304,7 +305,7 @@ extra() {
     "llama-index==0.10.43"                                                                     # incompatible with nvidia-pytriton
     "ctc_segmentation==1.7.1 ; (platform_machine == 'x86_64' and platform_system != 'Darwin')" # requires numpy<2.0.0 to be installed before
     "nemo_run"
-    "nvidia-modelopt==0.35.0"                                                                  # We want a specific version of nvidia-modelopt
+    "nvidia-modelopt==0.37.0"                                                                  # We want a specific version of nvidia-modelopt
   )
   if [[ "${NVIDIA_PYTORCH_VERSION}" != "" ]]; then
     DEPS+=(

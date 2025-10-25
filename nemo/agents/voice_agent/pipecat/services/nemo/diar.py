@@ -324,6 +324,7 @@ class NemoDiarService(STTService):
             self._audio_buffer = []
 
     def reset(self):
+        """Reset the diarization service."""
         self._current_speaker_id = None
         self._audio_buffer = []
         self._vad_user_speaking = False

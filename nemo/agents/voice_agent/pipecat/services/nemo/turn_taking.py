@@ -35,6 +35,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from nemo.agents.voice_agent.pipecat.frames.frames import DiarResultFrame
+from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
 
 
 class NeMoTurnTakingService(FrameProcessor):
@@ -48,6 +49,7 @@ class NeMoTurnTakingService(FrameProcessor):
         use_diar: bool = False,
         max_buffer_size: int = 3,
         bot_stop_delay: float = 0.5,
+        audio_logger: Optional[AudioLogger] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -69,6 +71,7 @@ class NeMoTurnTakingService(FrameProcessor):
         self._vad_user_speaking = False
         self._have_sent_user_started_speaking = False
         self._user_speaking_buffer = ""
+        self._audio_logger = audio_logger
         if not self.use_vad:
             # if vad is not used, we assume the user is always speaking
             self._vad_user_speaking = True
@@ -151,6 +154,20 @@ class NeMoTurnTakingService(FrameProcessor):
         else:
             await self.push_frame(frame, direction)
 
+    async def _handle_backchannel_text(self, text: str):
+        # ignore the backchannel string while bot is speaking
+        # push the backchannel string upstream, not downstream
+        await self.push_frame(
+            TranscriptionFrame(
+                text=f"({text})",
+                user_id="",
+                timestamp=time_now_iso8601(),
+                language=self.language if self.language else Language.EN_US,
+                result={"text": f"Backchannel detected: {text}"},
+            ),
+            direction=FrameDirection.UPSTREAM,
+        )
+
     async def _handle_transcription(
         self, frame: TranscriptionFrame | InterimTranscriptionFrame, direction: FrameDirection
     ):
@@ -163,29 +180,19 @@ class NeMoTurnTakingService(FrameProcessor):
                 # EOU detected, we assume the user is done speaking, so we push the completed text and interrupt the bot
                 logger.debug(f"<EOU> Detected: `{self._user_speaking_buffer}`")
                 completed_text = self._user_speaking_buffer[: -len(self.eou_string)].strip()
-                self._user_speaking_buffer = ""
                 if self._bot_speaking and self.is_backchannel(completed_text):
                     logger.debug(f"<EOU> detected for a backchannel phrase while bot is speaking: `{completed_text}`")
+                    await self._handle_backchannel_text(completed_text)
                 else:
                     await self._handle_completed_text(completed_text, direction)
                     await self._handle_user_interruption(UserStoppedSpeakingFrame())
+                self._user_speaking_buffer = ""
                 self._have_sent_user_started_speaking = False  # user is done speaking, so we reset the flag
             elif has_eob and self._bot_speaking:
-                # ignore the backchannel string while bot is speaking
-                logger.debug(f"Ignoring backchannel string while bot is speaking: `{self._user_speaking_buffer}`")
-                # push the backchannel string upstream, not downstream
-                await self.push_frame(
-                    TranscriptionFrame(
-                        text=f"({self._user_speaking_buffer})",
-                        user_id="",
-                        timestamp=time_now_iso8601(),
-                        language=self.language if self.language else Language.EN_US,
-                        result={"text": f"Backchannel detected: {self._user_speaking_buffer}"},
-                    ),
-                    direction=FrameDirection.UPSTREAM,
-                )
-                self._have_sent_user_started_speaking = False  # treat it as if the user is not speaking
-                self._user_speaking_buffer = ""  # discard backchannel string and reset the buffer
+                logger.debug(f"<EOB> detected while bot is speaking: `{self._user_speaking_buffer}`")
+                await self._handle_backchannel_text(str(self._user_speaking_buffer))
+                self._user_speaking_buffer = ""
+                self._have_sent_user_started_speaking = False  # user is done speaking, so we reset the flag
             else:
                 # if bot is not speaking, the backchannel string is not considered a backchannel phrase
                 # user is still speaking, so we append the text segment to the buffer
@@ -309,6 +316,8 @@ class NeMoTurnTakingService(FrameProcessor):
                 self._have_sent_user_started_speaking = False
         elif is_backchannel:
             logger.debug(f"Backchannel detected: `{self._user_speaking_buffer}`")
+            if self._audio_logger:
+                self._audio_logger.save_user_audio()
             # push the backchannel string upstream, not downstream
             await self.push_frame(
                 TranscriptionFrame(
@@ -331,6 +340,8 @@ class NeMoTurnTakingService(FrameProcessor):
             await self.push_frame(StartInterruptionFrame(), direction=FrameDirection.DOWNSTREAM)
         elif isinstance(frame, UserStoppedSpeakingFrame):
             logger.debug("User stopped speaking")
+            if self._audio_logger:
+                self._audio_logger.save_user_audio()
             await self.push_frame(frame)
         else:
             logger.debug(f"Unknown frame type for _handle_user_interruption: {type(frame)}")

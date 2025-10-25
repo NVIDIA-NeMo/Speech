@@ -32,6 +32,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.services.tts_service import TTSService
 
+from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
 from nemo.collections.tts.models import FastPitchModel, HifiGanModel
 
 
@@ -55,6 +56,8 @@ class BaseNemoTTSService(TTSService):
         device: str = "cuda",
         sample_rate: int = 22050,
         think_tokens: Optional[List[str]] = None,
+        record_audio_data: Optional[bool] = False,
+        audio_logger: Optional[AudioLogger] = None,
         **kwargs,
     ):
         super().__init__(sample_rate=sample_rate, **kwargs)
@@ -62,6 +65,8 @@ class BaseNemoTTSService(TTSService):
         self._device = device
         self._model = self._setup_model()
         self._think_tokens = think_tokens
+        self._record_audio_data = record_audio_data
+        self._audio_logger = audio_logger
         if think_tokens is not None:
             assert (
                 isinstance(think_tokens, list) and len(think_tokens) == 2
@@ -275,6 +280,9 @@ class BaseNemoTTSService(TTSService):
 
                 await self.start_tts_usage_metrics(text)
 
+                # Collect all audio for logging
+                all_audio_bytes = b""
+
                 # Process the audio result (same as before)
                 if (
                     inspect.isgenerator(audio_result)
@@ -292,6 +300,7 @@ class BaseNemoTTSService(TTSService):
                             break
 
                         audio_bytes = self._convert_to_bytes(audio_chunk)
+                        all_audio_bytes += audio_bytes
                         chunk_size = self.chunk_size
                         for i in range(0, len(audio_bytes), chunk_size):
                             audio_chunk_bytes = audio_bytes[i : i + chunk_size]
@@ -306,6 +315,7 @@ class BaseNemoTTSService(TTSService):
                     # Handle single result case
                     await self.stop_ttfb_metrics()
                     audio_bytes = self._convert_to_bytes(audio_result)
+                    all_audio_bytes = audio_bytes
 
                     chunk_size = self.chunk_size
                     for i in range(0, len(audio_bytes), chunk_size):
@@ -315,6 +325,21 @@ class BaseNemoTTSService(TTSService):
 
                         frame = TTSAudioRawFrame(audio=chunk, sample_rate=self.sample_rate, num_channels=1)
                         yield frame
+
+                # Log the complete audio if logger is available
+                if self._record_audio_data and self._audio_logger and all_audio_bytes:
+                    try:
+                        self._audio_logger.log_agent_audio(
+                            audio_data=all_audio_bytes,
+                            text=text,
+                            sample_rate=self.sample_rate,
+                            num_channels=1,
+                            additional_metadata={
+                                "model": self._model_name,
+                            },
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to log agent audio: {e}")
 
                 yield TTSStoppedFrame()
 
@@ -473,8 +498,12 @@ class KokoroTTSService(BaseNemoTTSService):
             # We only need the audio component
             for i, (gs, ps, audio) in enumerate(generator):
                 logger.debug(
+<<<<<<< HEAD
+                    f"Kokoro generated audio chunk {i}: gs={gs}, ps={ps}, audio_shape={audio.shape if hasattr(audio, 'shape') else len(audio)}"
+=======
                     f"Kokoro generated audio chunk {i}: gs={gs}, ps={ps},"
                     f"audio_shape={audio.shape if hasattr(audio, 'shape') else len(audio)}"
+>>>>>>> origin/heh/va_fix_misc
                 )
                 if isinstance(audio, torch.Tensor):
                     audio = audio.detach().cpu().numpy()

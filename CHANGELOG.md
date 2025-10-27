@@ -1,7 +1,7 @@
 # Changelog
 
 <!-- Next changelog -->
-## NVIDIA Neural Modules 2.5.0
+## NVIDIA Neural Modules 2.5.2
 
 ### Detailed Changelogs:
 
@@ -23,6 +23,7 @@
 - Bump to 2.5.2 by @chtruong814 :: PR: #14983
 
 </details>
+
 ## NVIDIA Neural Modules 2.5.1
 
 ### Highlights

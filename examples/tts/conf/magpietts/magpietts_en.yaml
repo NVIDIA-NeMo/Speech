@@ -184,5 +184,6 @@ exp_manager:
     save_top_k: 5
     save_best_model: true
     always_save_nemo: true
+    filename: "${name}--{${exp_manager.checkpoint_callback_params.monitor}:.4f}-{step}"
   resume_if_exists: true
   resume_ignore_no_checkpoint: true

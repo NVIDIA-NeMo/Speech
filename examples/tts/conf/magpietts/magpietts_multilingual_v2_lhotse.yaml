@@ -179,20 +179,6 @@ model:
     max_length_causal_mask: 2048
     use_learnable_pos_emb: true
 
-  context_encoder: # Only used for multi_encoder_context_tts and decoder_ce
-    n_layers: 1
-    d_model: 768
-    d_ffn: 3072
-    sa_n_heads: 12
-    kernel_size: 3
-    p_dropout: 0.1
-    p_dropout_out: 0.0
-    has_xattn: false
-    is_causal: false
-    apply_norm_out: true
-    max_length_causal_mask: 2048
-    use_learnable_pos_emb: true
-
   decoder:
     n_layers: 12
     d_model: 768
@@ -257,5 +243,6 @@ exp_manager:
     save_top_k: 5
     save_best_model: true
     always_save_nemo: true
+    filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.4f}-{step}'
   resume_if_exists: true
   resume_ignore_no_checkpoint: true

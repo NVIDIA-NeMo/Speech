@@ -322,8 +322,18 @@ def run_inference_streaming(
                 text_context_tokens = text_tokenizer.encode(
                     "[NO TEXT CONTEXT]", "english_phoneme" if tokenizer_name is None else tokenizer_name
                 )
-                text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).cuda()
-                context_text_len = torch.tensor([text_context_tokens.shape[0]]).unsqueeze(0).cuda()
+                if model.pad_context_text_to_max_duration:
+                    _required_len = (
+                        int(model.cfg.context_duration_max * sample_rate / model.codec_model_samples_per_frame) + 2
+                    )  # +2 for BOS and EOS
+                    if len(text_context_tokens) < _required_len:
+                        _pad_id = text_tokenizer.tokenizer_pad_ids["english_phoneme"]
+                        text_context_tokens += [_pad_id] * (_required_len - len(text_context_tokens))
+                    else:
+                        text_context_tokens = text_context_tokens[:_required_len]
+                        
+                text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).unsqueeze(0).cuda()
+                context_text_len = torch.tensor([text_context_tokens.shape[0]]).cuda()
                 batch['context_text_tokens'] = text_context_tokens
                 batch['context_text_tokens_lens'] = context_text_len
 

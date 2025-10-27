@@ -331,7 +331,7 @@ def run_inference_streaming(
                         text_context_tokens += [_pad_id] * (_required_len - len(text_context_tokens))
                     else:
                         text_context_tokens = text_context_tokens[:_required_len]
-                        
+
                 text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).unsqueeze(0).cuda()
                 context_text_len = torch.tensor([text_context_tokens.shape[0]]).cuda()
                 batch['context_text_tokens'] = text_context_tokens

@@ -181,8 +181,6 @@ jobs:
           - runner: self-hosted-azure
             script: L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference
           - runner: self-hosted-azure
-            script: L2_G2P_Models_HeteronymClassificationModel_training_evaluation_and_inference
-          - runner: self-hosted-azure
             script: SPEECHLM_HF_Training_DuplexS2S
           - runner: self-hosted-azure
             script: SPEECHLM_HF_Training_DuplexS2SSpeechDecoder

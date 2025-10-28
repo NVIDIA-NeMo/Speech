@@ -108,6 +108,11 @@ LOAD_ERROR = f"""
     (1) To resolve this issue, try to set `trainer.strategy.ckpt_load_strictness` to False. This setting enables loading older checkpoints.
     (2) For more details and troubleshooting guidance, please refer to the framework documentation: {URL}.
 """
+RESHARDING_LOAD_ERROR = """
+    Most likely the error is caused by the parallelism configuration mismatch.
+    To resolve this issue, re-save the checkpoint with `ckpt_optim_fully_reshardable=True` flag
+    in order to enable a fully-reshardable optimizer checkpoint format.
+"""
 
 
 @dataclass
@@ -1191,7 +1196,13 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                     checkpoint_path, sharded_state_dict=sharded_state_dict, strict=strict
                 )
         except CheckpointException as e:
-            error_message = f"{e}\n{LOAD_ERROR}"
+            if (
+                "optimizer.distributed.dp_group_idx_" in str(e)
+                and sharded_sd_metadata.get("distrib_optim_sharding_type") == "dp_reshardable"
+            ):
+                error_message = f"{e}\n{RESHARDING_LOAD_ERROR}"
+            else:
+                error_message = f"{e}\n{LOAD_ERROR}"
             raise RuntimeError(error_message)
 
         if selective_restore:

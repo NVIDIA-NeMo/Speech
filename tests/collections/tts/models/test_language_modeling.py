@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
 
-from .endpoint_interceptor import EndpointInterceptor  # noqa: F401
-from .logging_interceptor import RequestLoggingInterceptor, ResponseLoggingInterceptor  # noqa: F401
-from .reasoning_interceptor import ResponseReasoningInterceptor  # noqa: F401
-from .system_message_interceptor import SystemMessageInterceptor  # noqa: F401
-from .types import (  # noqa: F401
-    AdapterMetadata,
-    AdapterRequest,
-    AdapterResponse,
-    RequestInterceptor,
-    ResponseInterceptor,
-)
+from nemo.collections.tts.g2p.models.heteronym_classification import tensor2list
+
+
+class TestLanguageModeling:
+    def test_tensor2list():
+        lst = [1, 2, 3]
+        test_lst = tensor2list(torch.tensor(lst))
+
+        assert test_lst == lst

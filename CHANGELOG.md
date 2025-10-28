@@ -1,6 +1,29 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.5.2
+
+### Detailed Changelogs:
+
+
+</details>
+
+#### Text Normalization / Inverse Text Normalization
+
+<details><summary>Changelog</summary>
+
+- cp: `Add import guards for mcore lightning module` (#14970) into `r2.5.0` by @chtruong814 :: PR: #14982
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Bump to 2.5.2 by @chtruong814 :: PR: #14983
+
+</details>
+
 ## NVIDIA Neural Modules 2.5.1
 
 ### Highlights

@@ -15,6 +15,7 @@
 from nemo.lightning.pytorch.callbacks.ddp_parity_checker import DdpParityChecker
 from nemo.lightning.pytorch.callbacks.debugging import ModelTrainingStateCallback, ParameterDebugger
 from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
+from nemo.lightning.pytorch.callbacks.inference_reporter import InferenceReporter
 from nemo.lightning.pytorch.callbacks.jit_transform import JitConfig, JitTransform
 from nemo.lightning.pytorch.callbacks.memory_callback import MemoryMonitor
 from nemo.lightning.pytorch.callbacks.memory_profiler import MemoryProfileCallback
@@ -52,4 +53,5 @@ __all__ = [
     "OptimizerMonitor",
     "RuntimeEstimator",
     "SpeedMonitor",
+    "InferenceReporter",
 ]

@@ -97,9 +97,7 @@ def test_run_inference(callback, mock_pl_module):
     mock_result.logits = None
 
     mock_controller = Mock()
-    mock_controller.generate_all_output_tokens_static_batch.return_value = {
-        "0": mock_result
-    }
+    mock_controller.generate_all_output_tokens_static_batch.return_value = {"0": mock_result}
     callback.text_generation_controller = mock_controller
 
     tokens, logprobs, logits = callback._run_inference(mock_pl_module, [1, 2, 3])
@@ -115,9 +113,7 @@ def test_run_inference(callback, mock_pl_module):
 
 
 @patch(f"{inference_reporter.__name__}.parallel_state")
-def test_log_artifacts_skips_non_primary_ranks(
-    mock_parallel_state, callback, mock_trainer
-):
+def test_log_artifacts_skips_non_primary_ranks(mock_parallel_state, callback, mock_trainer):
     mock_parallel_state.get_tensor_model_parallel_rank.return_value = 1
     mock_parallel_state.get_data_parallel_rank.return_value = 0
 
@@ -127,9 +123,7 @@ def test_log_artifacts_skips_non_primary_ranks(
 
 
 @patch(f"{inference_reporter.__name__}.parallel_state")
-def test_log_artifacts_logs_on_primary_rank(
-    mock_parallel_state, callback, mock_trainer
-):
+def test_log_artifacts_logs_on_primary_rank(mock_parallel_state, callback, mock_trainer):
     mock_parallel_state.get_tensor_model_parallel_rank.return_value = 0
     mock_parallel_state.get_data_parallel_rank.return_value = 0
     callback.sample_idx = 5
@@ -154,9 +148,7 @@ def test_log_artifacts_logs_on_primary_rank(
 
 
 @patch(f"{inference_reporter.__name__}.parallel_state")
-def test_log_artifacts_saves_to_disk_without_logger(
-    mock_parallel_state, callback, mock_trainer, tmp_path
-):
+def test_log_artifacts_saves_to_disk_without_logger(mock_parallel_state, callback, mock_trainer, tmp_path):
     mock_parallel_state.get_tensor_model_parallel_rank.return_value = 0
     mock_parallel_state.get_data_parallel_rank.return_value = 0
     mock_trainer.logger = None
@@ -199,18 +191,14 @@ def test_on_validation_batch_end_integration(
     mock_result.logits = None
 
     mock_controller = Mock()
-    mock_controller.generate_all_output_tokens_static_batch.return_value = {
-        "0": mock_result
-    }
+    mock_controller.generate_all_output_tokens_static_batch.return_value = {"0": mock_result}
     callback.text_generation_controller = mock_controller
 
     batch = {"tokens": [torch.tensor([1, 2, 3])], "labels": [torch.tensor([4, 5, 6])]}
 
     with patch("torch.cuda.is_available", return_value=False):
         with patch("lightning.seed_everything"):
-            callback.on_validation_batch_end(
-                mock_trainer, mock_pl_module, None, batch, 0, 0
-            )
+            callback.on_validation_batch_end(mock_trainer, mock_pl_module, None, batch, 0, 0)
 
     assert callback.sample_idx == 1
     assert mock_trainer.logger.experiment.log_artifact.call_count > 0

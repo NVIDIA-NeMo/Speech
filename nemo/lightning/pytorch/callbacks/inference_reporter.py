@@ -18,16 +18,10 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 from megatron.core import parallel_state
 from megatron.core.inference.contexts import StaticInferenceContext
 from megatron.core.inference.inference_request import InferenceRequest, Status
-from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper import (
-    GPTInferenceWrapper,
-)
-from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import (
-    InferenceWrapperConfig,
-)
+from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper import GPTInferenceWrapper
+from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
 from megatron.core.inference.sampling_params import SamplingParams
-from megatron.core.inference.text_generation_controllers.text_generation_controller import (
-    TextGenerationController,
-)
+from megatron.core.inference.text_generation_controllers.text_generation_controller import TextGenerationController
 
 
 class InferenceReporter(L.Callback):
@@ -61,9 +55,7 @@ class InferenceReporter(L.Callback):
         self.checkpoint_name = checkpoint_name
         self.dataset_name = dataset_name
         self.output_dir = os.path.join(output_dir, f"{checkpoint_name}-{dataset_name}")
-        self.inference_batch_times_seqlen_threshold = (
-            inference_batch_times_seqlen_threshold
-        )
+        self.inference_batch_times_seqlen_threshold = inference_batch_times_seqlen_threshold
         self.inference_params_dtype = inference_params_dtype
         self.inference_max_seq_length = inference_max_seq_length
         self.max_batch_size = max_batch_size
@@ -72,9 +64,7 @@ class InferenceReporter(L.Callback):
         self.sample_idx = 0
         self.text_generation_controller: TextGenerationController | None = None
 
-    def setup(
-        self, trainer: L.Trainer, pl_module: L.LightningModule, stage: str
-    ) -> None:
+    def setup(self, trainer: L.Trainer, pl_module: L.LightningModule, stage: str) -> None:
         pl_module.tokenizer.detokenize = pl_module.tokenizer.ids_to_text
 
         # Add noop methods to avoid exceptions - we don't need text processing
@@ -93,9 +83,7 @@ class InferenceReporter(L.Callback):
         L.seed_everything(self.random_seed)
 
         prompt_tokens = self._get_prompt_tokens(batch)
-        generated_tokens, prompt_logprobs, prompt_logits = self._run_inference(
-            pl_module, prompt_tokens
-        )
+        generated_tokens, prompt_logprobs, prompt_logits = self._run_inference(pl_module, prompt_tokens)
 
         input_text = pl_module.tokenizer.detokenize(prompt_tokens)
         generated_text = pl_module.tokenizer.detokenize(generated_tokens)
@@ -113,21 +101,13 @@ class InferenceReporter(L.Callback):
         self.sample_idx += 1
 
     def _get_prompt_tokens(self, batch: Any) -> list[int]:
-        assert len(batch["tokens"]) == 1, (
-            "Only one sample at a time generation supported at the moment"
-        )
+        assert len(batch["tokens"]) == 1, "Only one sample at a time generation supported at the moment"
         tokens = batch["tokens"][0]
 
         # Add the label token (last token from original sequence) to prompt_tokens
-        if (
-            torch.distributed.get_rank() == 0
-            and "labels" in batch
-            and len(batch["labels"]) > 0
-        ):
+        if torch.distributed.get_rank() == 0 and "labels" in batch and len(batch["labels"]) > 0:
             last_label = batch["labels"][0][-1].item()
-            tokens = torch.cat(
-                [tokens, torch.tensor([last_label], device=tokens.device)]
-            )
+            tokens = torch.cat([tokens, torch.tensor([last_label], device=tokens.device)])
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         seq_len = torch.tensor(
@@ -145,9 +125,7 @@ class InferenceReporter(L.Callback):
         torch.distributed.broadcast(tokens, src=0)
         return tokens.cpu().tolist()
 
-    def _get_inference_engine(
-        self, pl_module: L.LightningModule
-    ) -> TextGenerationController:
+    def _get_inference_engine(self, pl_module: L.LightningModule) -> TextGenerationController:
         if self.text_generation_controller is not None:
             return self.text_generation_controller
 
@@ -162,9 +140,7 @@ class InferenceReporter(L.Callback):
         )
 
         inference_context = StaticInferenceContext.from_config(inference_wrapper_config)
-        inference_wrapped_model = GPTInferenceWrapper(
-            pl_module.module, inference_wrapper_config, inference_context
-        )
+        inference_wrapped_model = GPTInferenceWrapper(pl_module.module, inference_wrapper_config, inference_context)
 
         self.text_generation_controller = TextGenerationController(
             inference_wrapped_model=inference_wrapped_model,
@@ -184,9 +160,9 @@ class InferenceReporter(L.Callback):
             status=Status.ACTIVE_BUT_NOT_GENERATING_TOKENS,
         )
 
-        results = self._get_inference_engine(
-            pl_module
-        ).generate_all_output_tokens_static_batch({request_id: inference_request})
+        results = self._get_inference_engine(pl_module).generate_all_output_tokens_static_batch(
+            {request_id: inference_request}
+        )
 
         result = results[request_id]
         generated_tokens = result.generated_tokens.tolist()
@@ -213,9 +189,7 @@ class InferenceReporter(L.Callback):
         ):
             return
 
-        artifact_path = (
-            f"inference/validation/step_{trainer.global_step}/batch_{batch_idx}"
-        )
+        artifact_path = f"inference/validation/step_{trainer.global_step}/batch_{batch_idx}"
         data_map = {
             "token_ids": generated_tokens,
             "prompt_logprobs": prompt_logprobs,
@@ -232,21 +206,15 @@ class InferenceReporter(L.Callback):
         )
 
         ctx = (
-            tempfile.TemporaryDirectory()
-            if has_logger
-            else nullcontext(os.path.join(self.output_dir, artifact_path))
+            tempfile.TemporaryDirectory() if has_logger else nullcontext(os.path.join(self.output_dir, artifact_path))
         )
         with ctx as base_dir:
             for dir_name, data in data_map.items():
                 if data:
                     dir_path = os.path.join(base_dir, dir_name)
                     os.makedirs(dir_path, exist_ok=True)
-                    file_path = os.path.join(
-                        dir_path, f"{dir_name}_{self.sample_idx}.json"
-                    )
+                    file_path = os.path.join(dir_path, f"{dir_name}_{self.sample_idx}.json")
                     with open(file_path, "w") as f:
                         json.dump(data, f)
                     if has_logger:
-                        trainer.logger.experiment.log_artifact(
-                            file_path, f"{artifact_path}/{dir_name}"
-                        )
+                        trainer.logger.experiment.log_artifact(file_path, f"{artifact_path}/{dir_name}")

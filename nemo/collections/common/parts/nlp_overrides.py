@@ -1,4 +1,4 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -66,7 +66,6 @@ except ImportError:
 
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.transformer import AutocastTransformerLayer, ParallelTransformerLayer
-from nemo.collections.nlp.parts import utils_funcs
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import MainParamsOptimizerWrapper
 from nemo.core.optim.optimizers import init_optimizer_states
@@ -138,6 +137,21 @@ LOAD_ERROR = f"""
     (1) To resolve this issue, try to set `model.dist_ckpt_load_strictness` to `log_all`. This setting enables loading older checkpoints.
     (2) For more details and troubleshooting guidance, please refer to the framework documentation: {URL}.
 """
+
+
+def torch_dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Optional[bool] = None) -> torch.dtype:
+    """Mapping from PTL precision types to corresponding PyTorch parameter datatype."""
+    if megatron_amp_O2 is not None and megatron_amp_O2 is False:
+        return torch.float32
+
+    if precision in ['bf16', 'bf16-mixed']:
+        return torch.bfloat16
+    elif precision in [16, '16', '16-mixed']:
+        return torch.float16
+    elif precision in [32, '32', '32-true']:
+        return torch.float32
+    else:
+        raise ValueError(f"Could not parse the precision of `{precision}` to a valid torch.dtype")
 
 
 def init_model_parallel(
@@ -846,9 +860,9 @@ class NLPFSDPStrategy(FSDPStrategy):
             raise ValueError(f"Was unable to infer precision type, received {precision!r}.")
         # Over-write gradient reduction dtype to support bf16 computation with fp32 grad reduction
         if grad_reduce_dtype is not None:
-            reduce_dtype = utils_funcs.torch_dtype_from_precision(grad_reduce_dtype, None)
+            reduce_dtype = torch_dtype_from_precision(grad_reduce_dtype, None)
         if set_buffer_dtype is not None:
-            buffer_dtype = utils_funcs.torch_dtype_from_precision(buffer_dtype, None)
+            buffer_dtype = torch_dtype_from_precision(buffer_dtype, None)
         return MixedPrecision(
             param_dtype=param_dtype,
             reduce_dtype=reduce_dtype,

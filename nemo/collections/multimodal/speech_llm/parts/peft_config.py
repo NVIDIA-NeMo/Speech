@@ -1,4 +1,4 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,7 +37,6 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     LoraDenseAttentionAdapterConfig,
     LoraHto4HAdapterConfig,
     LoraKQVAdapterConfig,
-    LoraKQVAdapterWeightTyingConfig,
     LoraMoe4HtoHAdapterConfig,
     LoraMoeHto4HAdapterConfig,
     LoraUnfusedHto4HAdapterConfig,

@@ -25,7 +25,7 @@ except (ImportError, ModuleNotFoundError):
     NLPAdapterModelMixin = ABC
     MegatronGPTModel = ABC
 
-from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP, PEFTConfig
+from nemo.collections.multimodal.speech_llm.parts.peft_config import PEFT_CONFIG_MAP, PEFTConfig
 from nemo.utils import logging
 
 

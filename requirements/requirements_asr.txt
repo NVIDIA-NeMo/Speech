@@ -1,4 +1,5 @@
 braceexpand
+ctc_segmentation==1.7.4
 editdistance
 einops
 jiwer>=3.1.0,<4.0.0

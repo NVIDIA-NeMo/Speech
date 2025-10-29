@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # NOTE: Base image version must match requirements/manifest.json (ngc-pytorch)
-ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.09-py3
 
 # build an image that includes only the nemo dependencies, ensures that dependencies
 # are included first for optimal caching, and useful for building a development
@@ -69,8 +69,6 @@ WORKDIR /workspace/
 
 FROM nemo-deps AS te-wheel
 WORKDIR /tmp/NeMo
-ARG TE_REPO
-ARG TE_TAG
 RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh \
   --mount=type=bind,source=external/patches,target=/tmp/NeMo/external/patches <<"EOF" bash -ex
 
@@ -80,8 +78,6 @@ EOF
 
 FROM nemo-deps AS mcore-wheel
 WORKDIR /tmp/NeMo
-ARG MLM_REPO
-ARG MLM_TAG
 RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh <<"EOF" bash -ex
 
   bash /tmp/NeMo/install_dep.sh --library mcore --mode build
@@ -106,8 +102,6 @@ RUN \
   bash /tmp/NeMo/install_dep.sh --library te --mode install
   bash /tmp/NeMo/install_dep.sh --library mcore --mode install
   bash /tmp/NeMo/install_dep.sh --library extra --mode install
-  pip install --no-cache-dir ".[all]"
-  rm -rf $NEMO_DIR || true
 EOF
 
 ENV PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"

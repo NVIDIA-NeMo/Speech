@@ -14,16 +14,15 @@
 coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/magpietts/infer_and_evaluate_streaming.py \
     --codecmodel_path /home/TestData/tts/AudioCodec_21Hz_no_eliz_without_wavlm_disc.nemo \
     --datasets an4_val_ci \
-    --out_dir ./mps_ss_0 \
+    --out_dir ./mps_zs_0 \
     --batch_size 1 \
     --use_cfg \
     --cfg_scale 2.5 \
-    --hparams_files /home/TestData/tts/2506_SeenSpeaker/hparams.yaml \
-    --checkpoint_files /home/TestData/tts/2506_SeenSpeaker/T5TTS--val_loss=0.3125-epoch=8.ckpt \
+    --hparams_files /home/TestData/tts/2506_ZeroShot/lrhm_short_yt_prioralways_alignement_0.002_priorscale_0.1.yaml \
+    --checkpoint_files /home/TestData/tts/2506_ZeroShot/dpo-T5TTS--val_loss=0.4513-epoch=3.ckpt \
     --legacy_codebooks \
-    --legacy_text_conditioning \
     --apply_attention_prior \
     --clean_up_disk \
     --disable_fcd \
-    --cer_target 0.3 \
-    --ssim_target 0.5
+    --cer_target 0.8 \
+    --ssim_target 0.3

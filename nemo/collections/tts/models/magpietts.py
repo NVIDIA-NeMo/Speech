@@ -2108,7 +2108,6 @@ class MagpieTTSModel(ModelPT):
                 # This is probably an attention sink! Move to the next timestep
                 last_attended_timestep += 1
             last_attended_timestep_in_this_window = last_attended_timestep - left_offset
-            last_attended_timestep_in_this_window = last_attended_timestep - left_offset
             window_size = lookahead_window_size
             window_end = min(
                 last_attended_timestep_in_this_window + window_size, text_lens[bidx] - 3
@@ -2119,8 +2118,6 @@ class MagpieTTSModel(ModelPT):
                 attended_timestep = text_lens[bidx] - 1 + left_offset
             else:
                 attended_timestep = item_attention_scores.argmax().item() + last_attended_timestep
-            if not isinstance(attended_timestep, int):
-                attended_timestep = attended_timestep.item()
             if not isinstance(attended_timestep, int):
                 attended_timestep = attended_timestep.item()
             text_time_step_attended.append(attended_timestep)

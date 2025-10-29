@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:experimental
+# syntax=docker/dockerfile:1-labs
 
 # Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
 #

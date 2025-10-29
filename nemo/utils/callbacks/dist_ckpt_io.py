@@ -92,6 +92,9 @@ class AsyncFinalizableCheckpointIO(_WrappingCheckpointIO):
     AsyncCheckpointIO does). Allows to perform a (synchronous) finalization
     function after all ranks finish checkpoint saving.
 
+    This wrapper always creates the AsyncCallsQueue with persistent workers. This is known
+    to increase memory usage, and sometimes leads to out of memory errors.
+
     NOTE: for correctness, this plugin must be used together with the
     AsyncFinalizerCallback callback which performs the finalization checks.
 
@@ -102,14 +105,14 @@ class AsyncFinalizableCheckpointIO(_WrappingCheckpointIO):
     Requires the underlying checkpoint_io.save_checkpoint to return save_fn, save_args, finalize_fn.
     """
 
-    def __init__(self, checkpoint_io: AsyncCompatibleCheckpointIO, persistent_workers: bool = False) -> None:
+    def __init__(self, checkpoint_io: AsyncCompatibleCheckpointIO) -> None:
         if not HAVE_MEGATRON_CORE:
             raise ImportError(IMPORT_ERROR)
         if not isinstance(checkpoint_io, AsyncCompatibleCheckpointIO):
             raise ValueError(f'Incompatible wrapped checkpoint_io type: {type(checkpoint_io)}')
 
         super().__init__(checkpoint_io)
-        self.async_calls_queue = AsyncCallsQueue(persistent=persistent_workers)
+        self.async_calls_queue = AsyncCallsQueue(persistent=True)
 
     def save_checkpoint(self, checkpoint: Dict[str, Any], path: _PATH, storage_options: Optional[Any] = None) -> None:
         """Executes async request returned from the underlying checkpoint_io asynchronously.

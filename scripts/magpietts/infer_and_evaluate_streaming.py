@@ -286,7 +286,8 @@ def run_inference_streaming(
                 raise ValueError(f"Context audio codes path or filepath not found in manifest entry: {entry}")
             # Sample random duration between self.context_duration_min and self.context_duration_max
             _context_duration_to_slice = random.uniform(context_duration_min, context_duration_max)
-            _num_frames_to_slice = int(_context_duration_to_slice * sample_rate / codec_model_downsample_factor)  # ???
+            # Calculate the number of codec frames to slice based on the randomly sampled duration, sample rate, and codec model downsample factor
+            _num_frames_to_slice = int(_context_duration_to_slice * sample_rate / codec_model_downsample_factor)
             if _num_frames_to_slice < context_audio_codes.shape[1]:
                 start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
                 context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]

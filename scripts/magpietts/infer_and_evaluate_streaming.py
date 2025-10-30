@@ -38,7 +38,6 @@ from scripts.magpietts.infer_and_evaluate import (
 )
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.models import MagpieTTSStreamingInference
 from nemo.collections.tts.parts.utils.tts_dataset_utils import _read_audio

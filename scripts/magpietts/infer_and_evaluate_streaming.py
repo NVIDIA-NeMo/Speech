@@ -11,9 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import argparse
 import copy
-import glob
 import json
 import os
 import random
@@ -23,16 +21,12 @@ from functools import partial
 from pathlib import Path
 from typing import List
 
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import scipy.stats as stats
 import scripts.magpietts.evalset_config as evalset_config
 import scripts.magpietts.evaluate_generated_audio as evaluate_generated_audio
 import soundfile as sf
 import torch
 from omegaconf.omegaconf import OmegaConf, open_dict
-from PIL import Image
 from scripts.magpietts.infer_and_evaluate import (
     compute_mean_and_confidence_interval,
     create_combined_violin_plots,
@@ -45,7 +39,6 @@ from scripts.magpietts.infer_and_evaluate import (
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
-from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.models import MagpieTTSStreamingInference
 from nemo.collections.tts.parts.utils.tts_dataset_utils import _read_audio
@@ -123,7 +116,6 @@ def run_inference_streaming(
     tokenizer_name=None,
 ):
     num_chunk_per_window = 2
-    num_audio_tokens_per_text = 1
     true_window_size = 200
     text_chunk_size = 5
     # Load model
@@ -343,7 +335,6 @@ def run_inference_streaming(
             input_len = 0
             model.decoder.reset_cache(use_cache=False)
             torch.cuda.empty_cache()
-            import time
 
             st = time.time()
 

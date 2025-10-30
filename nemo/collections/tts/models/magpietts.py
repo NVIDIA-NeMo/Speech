@@ -3380,20 +3380,20 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                 finished_items = {
                     k: v for k, v in self.finished_texts_counter.items() if v >= 15
                 }  # Items that have been close to the end for at least 15 timesteps
-                unifinished_items = {k: v for k, v in self.unfinished_texts.items() if v}
+                unfinished_items = {k: v for k, v in self.unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
                 audio_codes_next = self.sample_codes_from_logits(
                     all_code_logits_t,
                     temperature=temperature,
                     topk=topk,
-                    unfinished_items=unifinished_items,
+                    unfinished_items=unfinished_items,
                     finished_items=finished_items,
                 )  # (B, num_codebooks)
                 all_codes_next_argmax = self.sample_codes_from_logits(
                     all_code_logits_t,
                     temperature=0.01,
-                    unfinished_items=unifinished_items,
+                    unfinished_items=unfinished_items,
                     finished_items=finished_items,
                 )  # (B, num_codebooks)
 

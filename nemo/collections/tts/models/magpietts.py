@@ -3379,7 +3379,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
 
                 finished_items = {
                     k: v for k, v in self.finished_texts_counter.items() if v >= 15
-                }  # Items that have been close to the end for atleast 20 timesteps
+                }  # Items that have been close to the end for at least 15 timesteps
                 unifinished_items = {k: v for k, v in self.unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)

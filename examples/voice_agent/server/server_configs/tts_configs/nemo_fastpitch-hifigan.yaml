@@ -1,0 +1,11 @@
+# This is an example config for setting up a NeMo FastPitch-Hifigan TTS model for a NeMo Voice Agent server.
+# Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
+
+main_model_id: "nvidia/tts_en_fastpitch"
+sub_model_id: "nvidia/tts_hifigan"
+device: "cuda"
+extra_separator:  # a list of additional punctuations to chunk LLM response into segments for faster TTS output, e.g., ",". Set to `null` to use default behavior 
+  - ","
+  - "?"
+  - "!"
+think_tokens: ["<think>", "</think>"]  # specify them to avoid TTS for thinking process, set to `null` to allow thinking out loud

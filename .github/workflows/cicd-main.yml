@@ -62,7 +62,7 @@ jobs:
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
           else
-            echo '["nemo2", "automodel", "export-deploy", "speech"]' | tee -a test_modules.json
+            echo '["nemo2", "export-deploy", "speech"]' | tee -a test_modules.json
           fi
 
           components_to_run=$(cat test_modules.json)
@@ -183,7 +183,7 @@ jobs:
           echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout NeMo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
@@ -205,7 +205,6 @@ jobs:
 
             # Basic Import Checks
             python tests/core_ptl/check_imports.py --domain asr
-            python tests/core_ptl/check_imports.py --domain nlp
             python tests/core_ptl/check_imports.py --domain tts
           '
 
@@ -272,14 +271,15 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-automodel:
+  cicd-main-nemo2:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-automodel.yml
+    uses: ./.github/workflows/cicd-main-nemo2.yml
     if: |
       (
         needs.pre-flight.outputs.test_to_run != '[]'
         && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'automodel')
+          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
+          || needs.pre-flight.outputs.components_to_run == '["all"]'
         )
       )
       && (
@@ -293,28 +293,6 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  # cicd-main-nemo2:  disabled for magpie dev banch - no L0s and skipping L2s
-  #   needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-  #   uses: ./.github/workflows/cicd-main-nemo2.yml
-  #   if: |
-  #     (
-  #       needs.pre-flight.outputs.test_to_run != '[]'
-  #       && (
-  #         contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
-  #         || needs.pre-flight.outputs.components_to_run == '["all"]'
-  #       )
-  #     )
-  #     && (
-  #       success()
-  #       || (
-  #         needs.cicd-wait-in-queue.result == 'skipped'
-  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
-  #       )
-  #     )
-  #     && !cancelled()
-  #   with:
-  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
-
   Nemo_CICD_Test:
     needs:
       - pre-flight
@@ -322,8 +300,7 @@ jobs:
       - cicd-import-tests
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
-      # - cicd-main-nemo2. not needed for magpie dev branch
-      - cicd-main-automodel
+      - cicd-main-nemo2
       - cicd-main-speech
     if: always()
     runs-on: ubuntu-latest
@@ -420,53 +397,53 @@ jobs:
             exit 1
           fi
 
-  # Coverage:
-  #   runs-on: ubuntu-latest
-  #   needs: [pre-flight, Nemo_CICD_Test]
-  #   if: |
-  #     needs.pre-flight.outputs.test_to_run != '[]'
-  #     && needs.pre-flight.outputs.components_to_run != '[]'
-  #     && (
-  #       success()
-  #       || needs.Nemo_CICD_Test.result == 'success'
-  #     )
-  #     && !cancelled()
-  #   strategy:
-  #     matrix:
-  #       flag: [unit-test, e2e]
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
+  Coverage:
+    runs-on: ubuntu-latest
+    needs: [pre-flight, Nemo_CICD_Test]
+    if: |
+      needs.pre-flight.outputs.test_to_run != '[]'
+      && needs.pre-flight.outputs.components_to_run != '[]'
+      && (
+        success()
+        || needs.Nemo_CICD_Test.result == 'success'
+      )
+      && !cancelled()
+    strategy:
+      matrix:
+        flag: [unit-test, e2e]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  #     - name: Download coverage reports of current branch
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         pattern: coverage-${{ matrix.flag }}-*
+      - name: Download coverage reports of current branch
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-${{ matrix.flag }}-*
 
-  #     - name: Get total coverage of current branch
-  #       shell: bash -x -e -u -o pipefail {0}
-  #       if: always()
-  #       run: |
-  #         pip install coverage
+      - name: Get total coverage of current branch
+        shell: bash -x -e -u -o pipefail {0}
+        if: always()
+        run: |
+          pip install coverage
 
-  #         ls -al .
-  #         ls -al coverage-*/
-  #         coverage combine --keep $(ls coverage-*/.coverage)
-  #         coverage report -i
-  #         rm -rf coverage-*
-  #         ls -al
+          ls -al .
+          ls -al coverage-*/
+          coverage combine --keep $(ls coverage-*/.coverage)
+          coverage report -i
+          rm -rf coverage-*
+          ls -al
 
-  #     - name: Upload coverage reports to Codecov
-  #       uses: codecov/codecov-action@v5
-  #       with:
-  #         token: ${{ secrets.CODECOV_TOKEN }}
-  #         verbose: true
-  #         flags: ${{ matrix.flag }}
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+          flags: ${{ matrix.flag }}
 
-  #     - name: Upload artifacts
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: coverage-${{ matrix.flag }}-aggregated
-  #         path: |
-  #           .coverage
-  #         include-hidden-files: true
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.flag }}-aggregated
+          path: |
+            .coverage
+          include-hidden-files: true

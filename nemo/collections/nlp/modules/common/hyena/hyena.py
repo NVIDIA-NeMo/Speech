@@ -31,8 +31,11 @@
 # https://github.com/HazyResearch/safari/blob/flashfftconv/src/models/sequence/hyena.py
 # https://github.com/athms/mad-lab/blob/main/mad/model/layers/hyena.py
 
+# flake8: noqa
+# pylint: skip-file
+
 from dataclasses import dataclass
-from typing import Union
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
@@ -57,7 +60,6 @@ except (ImportError, ModuleNotFoundError):
 
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.collections.nlp.modules.common.hyena.hyena_filter import HyenaFilter, HyenaFilterSubmodules
-from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.utils.metaclasses import Singleton
 
 try:
@@ -100,6 +102,21 @@ class HyenaOperatorSubmodules:
 def auto_assign_attrs(cls, **kwargs):
     for k, v in kwargs.items():
         setattr(cls, k, v)
+
+
+def torch_dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Optional[bool] = None) -> torch.dtype:
+    """Mapping from PTL precision types to corresponding PyTorch parameter datatype."""
+    if megatron_amp_O2 is not None and megatron_amp_O2 is False:
+        return torch.float32
+
+    if precision in ['bf16', 'bf16-mixed']:
+        return torch.bfloat16
+    elif precision in [16, '16', '16-mixed']:
+        return torch.float16
+    elif precision in [32, '32', '32-true']:
+        return torch.float32
+    else:
+        raise ValueError(f"Could not parse the precision of `{precision}` to a valid torch.dtype")
 
 
 class CausalDepthWiseConv1d(nn.Module):

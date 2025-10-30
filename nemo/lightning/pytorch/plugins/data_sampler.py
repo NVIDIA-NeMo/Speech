@@ -17,23 +17,40 @@ import logging
 from typing import List, Literal, Optional
 
 import lightning.pytorch as pl
+import torch
 from torch.utils.data import DataLoader
 
 from nemo.lightning.megatron_parallel import MegatronStep
 
 
 class DataSampler:
+    """Abstract interface for data sampling and dataloader transformation.
+
+    Implementations can prepare state in ``setup`` and wrap/transform a
+    ``torch.utils.data.DataLoader`` in ``transform_dataloader`` to inject the
+    appropriate sampler for the active strategy.
+    """
+
     def connect(self, trainer: pl.Trainer):
+        """Attach the Lightning ``trainer`` to this sampler instance."""
         self.trainer = trainer
 
     def setup(self, global_rank: int) -> None:
+        """Initialize any sampler-related state for the given ``global_rank``."""
         raise NotImplementedError()
 
     def transform_dataloader(self, dataloader: DataLoader, consumed_samples: int = 0) -> DataLoader:
+        """Transform the dataloader."""
         raise NotImplementedError()
 
 
 class MegatronDataSampler(DataSampler):
+    """Megatron-LM data sampler.
+
+    Handles batch ramp-up, logging of consumed samples, and wiring Megatron's
+    microbatch/global-batch calculations into NeMo Lightning training.
+    """
+
     def __init__(
         self,
         seq_len: int,
@@ -60,11 +77,17 @@ class MegatronDataSampler(DataSampler):
         self.init_global_step = init_global_step
 
     def setup(self, global_rank: int) -> None:
+        """Initialize Megatron microbatch calculator for this process."""
         from nemo.lightning.data import setup_microbatch_calculator
 
         setup_microbatch_calculator(global_rank, self.micro_batch_size, self.global_batch_size, self.rampup_batch_size)
 
     def transform_dataloader(self, dataloader: DataLoader, consumed_samples: int = 0) -> DataLoader:
+        """Wrap the dataloader with a Megatron-aware sampler.
+
+        The sampler accounts for data-parallel rank/size, ramp-up schedule, and
+        train/validation/test modes.
+        """
         from megatron.core import parallel_state
 
         from nemo.lightning.data import add_megatron_sampler
@@ -87,6 +110,13 @@ class MegatronDataSampler(DataSampler):
         )
 
     def compute_consumed_samples(self, steps_since_resume=0) -> int:
+        """Compute the number of consumed samples since training start or resume.
+
+        If a ramp-up schedule is active, the value uses the previous and current
+        global batch sizes. Otherwise it is derived from
+        ``data_parallel_size * micro_batch_size * num_microbatches`` times the
+        number of steps since resume.
+        """
         from nemo.lightning.pytorch.strategies import MegatronStrategy
         from nemo.utils import AppState
 
@@ -107,6 +137,7 @@ class MegatronDataSampler(DataSampler):
     # Megatron callbacks
 
     def on_megatron_step_start(self, step: MegatronStep) -> MegatronStep:
+        """Inject Megatron step configuration such as sequence length and batch sizes."""
         return dataclasses.replace(
             step,
             seq_length=self.seq_len,
@@ -116,6 +147,11 @@ class MegatronDataSampler(DataSampler):
         )
 
     def on_megatron_microbatches_start(self, step: MegatronStep) -> None:
+        """Trigger a validation/checkpoint boundary when global batch size changes.
+
+        During batch-size ramp-up we stop the trainer at the boundary so that a
+        checkpoint can be saved and validation can run with the new batch size.
+        """
         if not step.trainer:
             return
 
@@ -128,6 +164,11 @@ class MegatronDataSampler(DataSampler):
             step.trainer.should_stop = True
 
     def on_megatron_step_end(self, step: MegatronStep) -> None:
+        """Log training metrics and update Megatron's microbatch calculator.
+
+        Logs ``consumed_samples`` and ``global_batch_size`` (GPU-friendly) and
+        updates Megatron's internal number of microbatches for the next step.
+        """
         trainer = step.trainer
         pl_module = step.pl_module
 
@@ -144,6 +185,12 @@ class MegatronDataSampler(DataSampler):
             consumed_samples = self.compute_consumed_samples(step.step_i + 1 - self.init_global_step)
             if self.output_log and trainer and getattr(trainer, "training", False):
                 # You may need to turn off logging, for example when doing trainer.predict(model, data)
+                # pl_module.log () will trigger pageable H2D Memcpy which stalls CPU. Use pin_memory=True to avoid it
+                consumed_samples = (
+                    consumed_samples
+                    if (torch.is_tensor(consumed_samples) and consumed_samples.is_cuda)
+                    else torch.tensor(consumed_samples, pin_memory=True).to("cuda", non_blocking=True)
+                )
                 pl_module.log(
                     'consumed_samples',
                     consumed_samples,
@@ -159,9 +206,14 @@ class MegatronDataSampler(DataSampler):
             )
         if self.output_log and trainer:
             # You may need to turn off logging, for example when doing trainer.predict(model, data)
+            current_global_batch_size = (
+                self.current_global_batch_size
+                if (torch.is_tensor(self.current_global_batch_size) and self.current_global_batch_size.is_cuda)
+                else torch.tensor(self.current_global_batch_size, pin_memory=True).to("cuda", non_blocking=True)
+            )
             pl_module.log(
                 "global_batch_size",
-                self.current_global_batch_size,
+                current_global_batch_size,
                 prog_bar=True,
                 batch_size=1,
             )
@@ -169,6 +221,7 @@ class MegatronDataSampler(DataSampler):
 
     @property
     def num_microbatches(self) -> int:
+        """Return the current number of microbatches from Megatron."""
         try:
             from megatron.core.num_microbatches_calculator import get_num_microbatches
 
@@ -180,6 +233,7 @@ class MegatronDataSampler(DataSampler):
 
     @property
     def current_global_batch_size(self) -> int:
+        """Return the current effective global batch size (fallback to 1)."""
         try:
             from megatron.core.num_microbatches_calculator import get_current_global_batch_size
 

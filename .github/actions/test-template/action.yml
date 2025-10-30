@@ -79,7 +79,9 @@ runs:
         echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
     - name: Checkout NeMo
-      uses: actions/checkout@v5
+      uses: actions/checkout@v4
+      env:
+        DIR: ${{ github.run_id }}
       with:
         path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
@@ -201,20 +203,20 @@ runs:
 
         exit $EXIT_CODE
 
-    # - name: Test coverage
-    #   shell: bash -x -e -u -o pipefail {0}
-    #   run: |
-    #     docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} coverage report -i
+    - name: Test coverage
+      shell: bash -x -e -u -o pipefail {0}
+      run: |
+        docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} coverage report -i
 
-    # - name: Upload artifacts
-    #   uses: actions/upload-artifact@v4
-    #   if: ${{ steps.check.outputs.coverage_report != 'none' }}
-    #   with:
-    #     name: ${{ steps.check.outputs.coverage_report }}
-    #     path: |
-    #       ${{ github.run_id }}/coverage.xml
-    #       ${{ github.run_id }}/.coverage
-    #     include-hidden-files: true
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      if: ${{ steps.check.outputs.coverage_report != 'none' }}
+      with:
+        name: ${{ steps.check.outputs.coverage_report }}
+        path: |
+          ${{ github.run_id }}/coverage.xml
+          ${{ github.run_id }}/.coverage
+        include-hidden-files: true
 
     - name: Container shutdown
       if: always()

@@ -89,7 +89,7 @@ class HyenaStack(MegatronModule):
         pre_process: bool = True,
         post_process: bool = True,
         post_layer_norm: bool = False,
-        model_comm_pgs=None,
+        pg_collection=None,
     ) -> None:
 
         super().__init__(config=transformer_config)
@@ -101,7 +101,7 @@ class HyenaStack(MegatronModule):
         self.pre_process = pre_process
         self.post_process = post_process
         self.post_layer_norm = post_layer_norm
-        self.model_comm_pgs = model_comm_pgs
+        self.pg_collection = pg_collection
 
         # Required for pipeline parallel schedules
         self.input_tensor = None
@@ -122,7 +122,7 @@ class HyenaStack(MegatronModule):
                     operator_type=HYENA_LAYER_MAP.get(layer_type),
                     max_sequence_length=max_sequence_length,
                     layer_number=i + 1 + pp_layer_offset,
-                    model_comm_pgs=self.model_comm_pgs,
+                    pg_collection=self.pg_collection,
                 )
             elif layer_type == LayerSymbols.ATTENTION:
                 # Transformer layers apply their own pp_layer_offset
@@ -130,7 +130,7 @@ class HyenaStack(MegatronModule):
                     submodules.attention_layer,
                     config=self.transformer_config,
                     layer_number=i + 1,
-                    model_comm_pgs=self.model_comm_pgs,
+                    pg_collection=self.pg_collection,
                 )
             else:
                 assert True, "unexpected layer_type"

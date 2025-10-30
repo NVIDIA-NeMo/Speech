@@ -20,6 +20,7 @@ from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParall
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
+from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
@@ -36,6 +37,13 @@ try:
         TERowParallelLinear,
     )
 
+    from nemo.collections.llm.gpt.model.megatron.hyena.te_compat import (
+        Linear,
+        RMSNormLinear,
+        RMSNormTELinearFp8,
+        TELayerNormColumnParallelLinearFp8,
+    )
+
     HAVE_TE = True
 except ImportError:
     HAVE_TE = False
@@ -49,9 +57,40 @@ except ImportError:
     TERowParallelLinear = _raise_te_import_error
     TEDotProductAttention = _raise_te_import_error
 
-# Layer spec with TE modules
-if HAVE_TE:
-    hyena_stack_spec = ModuleSpec(
+
+def get_hyena_stack_spec(
+    use_te=HAVE_TE,
+    vortex_style_fp8=False,
+    unfused_rmsnorm=False,
+    plain_row_linear=False,
+):
+    """Construct desired Hyena stack spec based on given parameters."""
+    if use_te:
+        row_linear = TERowParallelLinear
+        col_linear = TELayerNormColumnParallelLinear
+        pre_layernorm = IdentityOp  # fused Norm+Linear, so no pre norm
+        core_attention = TEDotProductAttention
+    else:
+        row_linear = RowParallelLinear
+        col_linear = ColumnParallelLinear
+        pre_layernorm = TENorm  # would raise error if attempt to use
+        core_attention = DotProductAttention
+
+    if unfused_rmsnorm:
+        col_linear = RMSNormLinear
+
+    if vortex_style_fp8:
+        if unfused_rmsnorm:
+            dense_projection = RMSNormTELinearFp8
+        else:
+            dense_projection = TELayerNormColumnParallelLinearFp8
+    else:
+        dense_projection = col_linear
+
+    if plain_row_linear:
+        row_linear = Linear
+
+    return ModuleSpec(
         module=HyenaStack,
         submodules=HyenaStackSubmodules(
             hyena_layer=ModuleSpec(
@@ -59,16 +98,13 @@ if HAVE_TE:
                 submodules=HyenaLayerSubmodules(
                     mixer=ModuleSpec(
                         module=HyenaMixer,
-                        submodules=HyenaMixerSubmodules(
-                            dense_projection=TELayerNormColumnParallelLinear, dense=TERowParallelLinear
-                        ),
+                        submodules=HyenaMixerSubmodules(dense_projection=dense_projection, dense=row_linear),
                     ),
                     hyena_bda=get_bias_dropout_add,
+                    pre_mlp_layernorm=pre_layernorm,
                     mlp=ModuleSpec(
                         module=MLP,
-                        submodules=MLPSubmodules(
-                            linear_fc1=TELayerNormColumnParallelLinear, linear_fc2=TERowParallelLinear
-                        ),
+                        submodules=MLPSubmodules(linear_fc1=col_linear, linear_fc2=row_linear),
                     ),
                     mlp_bda=get_bias_dropout_add,
                 ),
@@ -76,73 +112,27 @@ if HAVE_TE:
             attention_layer=ModuleSpec(
                 module=TransformerLayer,
                 submodules=TransformerLayerSubmodules(
+                    input_layernorm=pre_layernorm,
                     self_attention=ModuleSpec(
                         module=SelfAttention,
                         params={"attn_mask_type": AttnMaskType.causal},
                         submodules=SelfAttentionSubmodules(
-                            linear_qkv=TELayerNormColumnParallelLinear,
-                            core_attention=TEDotProductAttention,
-                            linear_proj=TERowParallelLinear,
+                            linear_qkv=col_linear,
+                            core_attention=core_attention,
+                            linear_proj=row_linear,
                         ),
                     ),
                     self_attn_bda=get_bias_dropout_add,
+                    pre_mlp_layernorm=pre_layernorm,
                     mlp=ModuleSpec(
                         module=MLP,
-                        submodules=MLPSubmodules(
-                            linear_fc1=TELayerNormColumnParallelLinear, linear_fc2=TERowParallelLinear
-                        ),
+                        submodules=MLPSubmodules(linear_fc1=col_linear, linear_fc2=row_linear),
                     ),
                     mlp_bda=get_bias_dropout_add,
                 ),
             ),
         ),
     )
-else:
-    hyena_stack_spec = ModuleSpec(module=None)
 
-# Layer spec without TE modules, for debugging
 
-hyena_stack_spec_no_te = ModuleSpec(
-    module=HyenaStack,
-    submodules=HyenaStackSubmodules(
-        hyena_layer=ModuleSpec(
-            module=HyenaLayer,
-            submodules=HyenaLayerSubmodules(
-                norm=TENorm,
-                mixer=ModuleSpec(
-                    module=HyenaMixer,
-                    submodules=HyenaMixerSubmodules(dense_projection=ColumnParallelLinear, dense=RowParallelLinear),
-                ),
-                hyena_bda=get_bias_dropout_add,
-                pre_mlp_layernorm=TENorm,
-                mlp=ModuleSpec(
-                    module=MLP,
-                    submodules=MLPSubmodules(linear_fc1=ColumnParallelLinear, linear_fc2=RowParallelLinear),
-                ),
-                mlp_bda=get_bias_dropout_add,
-            ),
-        ),
-        attention_layer=ModuleSpec(
-            module=TransformerLayer,
-            submodules=TransformerLayerSubmodules(
-                input_layernorm=TENorm,
-                self_attention=ModuleSpec(
-                    module=SelfAttention,
-                    params={"attn_mask_type": AttnMaskType.causal},
-                    submodules=SelfAttentionSubmodules(
-                        linear_qkv=ColumnParallelLinear,
-                        core_attention=DotProductAttention,
-                        linear_proj=RowParallelLinear,
-                    ),
-                ),
-                self_attn_bda=get_bias_dropout_add,
-                pre_mlp_layernorm=TENorm,
-                mlp=ModuleSpec(
-                    module=MLP,
-                    submodules=MLPSubmodules(linear_fc1=ColumnParallelLinear, linear_fc2=RowParallelLinear),
-                ),
-                mlp_bda=get_bias_dropout_add,
-            ),
-        ),
-    ),
-)
+hyena_stack_spec_no_te = get_hyena_stack_spec(use_te=False)  # for tests/debugging

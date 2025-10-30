@@ -21,6 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
 
+import modelopt.torch.export as mte
+import modelopt.torch.opt as mto
+import modelopt.torch.quantization as mtq
 import torch
 from datasets import load_dataset
 from megatron.core.inference.common_inference_params import CommonInferenceParams
@@ -37,7 +40,6 @@ from nemo.lightning.io.api import load_connector_from_trainer_ckpt
 from nemo.lightning.io.pl import TrainerContext, ckpt_to_weights_subdir
 from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
-from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
 
 if TYPE_CHECKING:
@@ -46,10 +48,6 @@ if TYPE_CHECKING:
     from nemo.lightning import Trainer
     from nemo.lightning.megatron_parallel import MegatronParallel
 
-mte, HAVE_MODELOPT_MTE = safe_import("modelopt.torch.export")
-mtq, HAVE_MODELOPT_MTQ = safe_import("modelopt.torch.quantization")
-mto, HAVE_MODELOPT_MTO = safe_import("modelopt.torch.opt")
-HAVE_MODELOPT = HAVE_MODELOPT_MTQ and HAVE_MODELOPT_MTE and HAVE_MODELOPT_MTO
 
 QUANT_CFG_CHOICES = get_quant_cfg_choices()
 SUPPORTED_DTYPE = [16, "16", "bf16"]  # Default precision for non-quantized layers
@@ -121,8 +119,6 @@ class Quantizer:
 
     def __init__(self, quantization_config: QuantizationConfig, export_config: ExportConfig):
         """Initialize Quantizer with quantization and export configurations."""
-        if not HAVE_MODELOPT:
-            raise RuntimeError("nvidia-modelopt is needed to use Quantizer")
         if not torch.cuda.is_available():
             raise EnvironmentError("GPU is required for the quantization.")
 

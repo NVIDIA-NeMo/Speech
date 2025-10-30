@@ -91,7 +91,7 @@ class ConformerEncoderUNet(ConformerEncoder):
         new_layers = nn.ModuleList()
         mid = len(self.layers) // 2
         for idx, layer in enumerate(self.layers):
-            has_skip = idx > mid
+            has_skip = idx >= mid
             combiner = nn.Linear(self.d_model * 2, self.d_model) if has_skip else None
             new_layers.append(nn.ModuleList([combiner, layer]))
         self.layers = new_layers

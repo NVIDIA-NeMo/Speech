@@ -191,6 +191,13 @@ def pretrain_l() -> run.Partial:
     return recipe
 
 
+def set_use_megatron_fsdp(recipe):
+    try:
+        recipe.trainer.strategy.ddp.use_megatron_fsdp = True
+    except AttributeError:
+        recipe.trainer.strategy.ddp.use_custom_fsdp = True
+
+
 @run.cli.factory(target=llm.train)
 def train_mock() -> run.Partial:
     """DiT Mock Pretraining Recipe"""
@@ -210,7 +217,7 @@ def train_mock() -> run.Partial:
     recipe.data.model_config = recipe.model.config
     recipe.log.log_dir = 'nemo_experiments/train_mock'
 
-    recipe.trainer.strategy.ddp.use_custom_fsdp = True
+    set_use_megatron_fsdp(recipe=recipe)
     recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = 'optim_grads_params'
     recipe.trainer.strategy.ddp.overlap_param_gather = True
     recipe.trainer.strategy.ddp.overlap_grad_reduce = True
@@ -236,7 +243,7 @@ def mock_ditllama5b_8k() -> run.Partial:
     recipe.data.model_config = recipe.model.config
     recipe.log.log_dir = 'nemo_experiments/mock_ditllama5b_8k'
     recipe.model.config.attn_mask_type = AttnMaskType.no_mask
-    recipe.trainer.strategy.ddp.use_custom_fsdp = True
+    set_use_megatron_fsdp(recipe=recipe)
     recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = 'optim_grads_params'
     recipe.trainer.strategy.ddp.overlap_param_gather = True
     recipe.trainer.strategy.ddp.overlap_grad_reduce = True
@@ -360,7 +367,7 @@ def pretrain_ditllama30b() -> run.Partial:
     recipe.data.task_encoder.seq_length = 256
     recipe.data.virtual_epoch_length = 0
     recipe.log.log_dir = 'nemo_experiments/ditllama30b_stage1_mock'
-    recipe.trainer.strategy.ddp.use_custom_fsdp = True
+    set_use_megatron_fsdp(recipe=recipe)
     recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = 'optim_grads_params'
     recipe.trainer.strategy.ddp.overlap_param_gather = True
     recipe.trainer.strategy.ddp.overlap_grad_reduce = True
@@ -386,7 +393,7 @@ def pretrain_ditllama30b_stage2_mock() -> run.Partial:
     recipe.trainer.val_check_interval = 1.0
     recipe.data.model_config = recipe.model.config
     recipe.log.log_dir = 'nemo_experiments/ditllama30b_stage2_mock'
-    recipe.trainer.strategy.ddp.use_custom_fsdp = True
+    set_use_megatron_fsdp(recipe=recipe)
     recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = 'optim_grads_params'
     recipe.trainer.strategy.ddp.overlap_param_gather = True
     recipe.trainer.strategy.ddp.overlap_grad_reduce = True
@@ -412,7 +419,7 @@ def pretrain_ditllama30b_stage3_mock() -> run.Partial:
     recipe.trainer.val_check_interval = 1.0
     recipe.data.model_config = recipe.model.config
     recipe.log.log_dir = 'nemo_experiments/ditllama30b_stage3_mock'
-    recipe.trainer.strategy.ddp.use_custom_fsdp = True
+    set_use_megatron_fsdp(recipe=recipe)
     recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = 'optim_grads_params'
     recipe.trainer.strategy.ddp.overlap_param_gather = True
     recipe.trainer.strategy.ddp.overlap_grad_reduce = True
@@ -512,7 +519,7 @@ def pretrain_ecditllama1b() -> run.Partial:
     recipe.log.log_dir = 'nemo_experiments/ecditllama1b'
     recipe.trainer.val_check_interval = 3000
 
-    recipe.trainer.strategy.ddp.use_custom_fsdp = True
+    set_use_megatron_fsdp(recipe=recipe)
     recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = 'optim_grads_params'
     recipe.trainer.strategy.ddp.overlap_param_gather = True
     recipe.trainer.strategy.ddp.overlap_grad_reduce = True

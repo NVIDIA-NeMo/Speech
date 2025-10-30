@@ -159,12 +159,8 @@ if __name__ == "__main__":
         chat_template = _read_chat_template(args.chat_template_path)
         tokenizer = get_tokenizer(args.tokenizer, chat_template=chat_template)
         if '{% generation %}' not in tokenizer.tokenizer.chat_template:
-            if not args.chat_template_path:
-                raise ValueError(
-                    "Tokenizer does not contain the '{% generation %}' keyword. Please provide a chat template path using --chat-template-path."
-                )
-            raise ValueError(
-                "Please ensure the chat template includes a '{% generation %}' keyword for proper assistant mask during training. See https://github.com/huggingface/transformers/pull/30650"
+            logging.warning(
+                "The chat template does not contain a '{% generation %}' keyword, which will not produce proper assistant mask during training. Instead no tokens will be masked (all tokens contribute to the loss). See https://github.com/huggingface/transformers/pull/30650"
             )
         data = ChatDataModule(
             dataset_root=args.data_paths[0],

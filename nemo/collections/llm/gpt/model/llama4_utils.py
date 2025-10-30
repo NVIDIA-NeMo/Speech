@@ -180,6 +180,7 @@ class Llama4SelfAttention(MCoreSelfAttention):
         sequence_len_offset: Optional[int] = None,
         *,
         inference_params: Optional[BaseInferenceContext] = None,
+        **kwargs,
     ) -> Tuple[Tensor, Tensor]:
         """
         Perform a forward pass through the attention module.
@@ -333,11 +334,11 @@ class Llama4SelfAttention(MCoreSelfAttention):
                         q_pos_emb,
                         config=self.config,
                         cu_seqlens=cu_seqlens_q,
-                        cp_group=self.model_comm_pgs.cp,
+                        cp_group=self.pg_collection.cp,
                     )
                 else:
                     query = inference_context.apply_rotary_emb_query(
-                        query, q_pos_emb, self.config, cu_seqlens_q, self.model_comm_pgs.cp
+                        query, q_pos_emb, self.config, cu_seqlens_q, self.pg_collection.cp
                     )
             if k_pos_emb is not None:
                 key = apply_rotary_pos_emb(
@@ -345,7 +346,7 @@ class Llama4SelfAttention(MCoreSelfAttention):
                     k_pos_emb,
                     config=self.config,
                     cu_seqlens=cu_seqlens_kv,
-                    cp_group=self.model_comm_pgs.cp,
+                    cp_group=self.pg_collection.cp,
                 )
 
             # TODO, can apply positional embedding to value_layer so it has

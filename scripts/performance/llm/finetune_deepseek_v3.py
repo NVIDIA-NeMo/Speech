@@ -24,7 +24,7 @@ from nemo.lightning.pytorch.callbacks.megatron_enable_experimental_callback impo
 from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
-from ..argument_parser import parse_cli_args
+from ..argument_parser import parse_additional_slurm_params, parse_cli_args
 from ..executors import slurm_executor
 from ..helpers import args_sanity_check, build_perf_env_plugin, get_user_configs, set_primary_perf_configs
 from ..utils import hf_tokenizer, import_ckpt_experiment, isfile_train_pack_metadata
@@ -105,6 +105,8 @@ def override_recipe_configs(
         nccl_communicator_config_path=args.nccl_communicator_config_path,
         use_user_buffer_registration=args.use_user_buffer_registration,
         use_sharp=args.use_sharp,
+        use_te_act_func=args.use_te_act_func,
+        act_func_fp8_input_store=args.act_func_fp8_input_store,
     )
 
     # disable HF ckpt loading
@@ -139,6 +141,10 @@ def override_recipe_configs(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
     args_sanity_check(args)
+    # Parse additional SLURM parameters if provided
+    additional_slurm_params = None
+    if hasattr(args, 'additional_slurm_params') and args.additional_slurm_params:
+        additional_slurm_params = parse_additional_slurm_params(args.additional_slurm_params)
 
     kwargs = get_user_configs(args.gpu.lower(), args.finetuning, "deepseek", "v3", args)
     num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _, enable_cuda_graphs = kwargs[:10]
@@ -165,6 +171,7 @@ if __name__ == "__main__":
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,
         network='sharp' if args.use_sharp else None,
+        additional_slurm_params=additional_slurm_params,
     )
 
     plugins = [build_perf_env_plugin(args, pp_size=pp_size)]
@@ -186,6 +193,6 @@ if __name__ == "__main__":
         )
 
         if not args.dryrun:
-            exp.run(sequential=True, detach=True)
+            exp.run(sequential=True, detach=args.detach)
         else:
             exp.dryrun()

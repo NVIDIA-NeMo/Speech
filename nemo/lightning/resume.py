@@ -231,13 +231,14 @@ class AutoResume:
 
         if not checkpoint_dir.exists() or (not len(end_checkpoints) > 0 and not len(last_checkpoints) > 0):
             if self.resume_ignore_no_checkpoint:
-                warn = (
+                message = (
                     f"There were no checkpoints found in checkpoint_dir or no checkpoint folder at checkpoint_dir "
                     f":{checkpoint_dir}. "
                 )
-                if checkpoint is None:
-                    warn += "Training from scratch."
-                logging.warning(warn)
+                if not self.restore_config:
+                    logging.warning(message + "Training from scratch.")
+                else:
+                    logging.info(message + "Trying to resume from RestoreConfig.")
             else:
                 if self.restore_config:
                     # resume_if_exists is True but run is not resumable. Do not fail and try to do selective restore

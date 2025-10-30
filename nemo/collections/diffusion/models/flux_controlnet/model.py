@@ -435,8 +435,8 @@ class MegatronFluxControlNetModel(MegatronFluxModel):
             image.
     """
 
-    def __init__(self, flux_params: FluxModelParams, flux_controlnet_config: FluxControlNetConfig):
-        super().__init__(flux_params)
+    def __init__(self, flux_params: FluxModelParams, flux_controlnet_config: FluxControlNetConfig, seed: int = 42):
+        super().__init__(flux_params, seed=seed)
         self.flux_controlnet_config = flux_controlnet_config
         self.optim.connect(self)
 

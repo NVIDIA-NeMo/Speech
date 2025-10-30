@@ -17,6 +17,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import lightning.pytorch as pl
 import pytest
@@ -26,7 +27,7 @@ from lightning.pytorch.loops import _TrainingEpochLoop
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
+from nemo.collections.common.parts.nlp_overrides import NLPDDPStrategy
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
 from nemo.utils.app_state import AppState
@@ -144,6 +145,11 @@ class DoNothingModel(ExampleModel):
 
 
 class TestExpManager:
+    @pytest.fixture(autouse=True, scope="class")
+    def _mock_onelogger_update_config(self):
+        with patch('nemo.lightning.callback_group.CallbackGroup.update_config', return_value=None):
+            yield
+
     @pytest.mark.unit
     def test_omegaconf(self):
         """Ensure omegaconf raises an error when an unexcepted argument is passed"""

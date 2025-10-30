@@ -44,7 +44,6 @@ from nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils import (
 logger = logging.getLogger(__name__)
 
 try:
-    import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
 except ImportError:
 
@@ -67,7 +66,7 @@ except ImportError:
     logger.warning("WARNING: transformer_engine not installed. Using default recipe.")
 
 try:
-    from subquadratic_ops.rearrange import rearrange as subquadratic_ops_rearrange
+    from subquadratic_ops_torch.rearrange import rearrange as subquadratic_ops_rearrange
 except ImportError:
 
     def subquadratic_ops_rearrange(*args, **kwargs):
@@ -237,6 +236,12 @@ class HyenaMixer(MegatronModule):
         self.dropout_p = self.transformer_config.attention_dropout
         self.attention_dropout = nn.Dropout(self.dropout_p)
 
+        # When using non-parallel row linears, we allow PyTorch's Linear to
+        # add bias: this is faster for TP=1 inference. For other cases (and
+        # training), a more complex path is used, where bias is added as a
+        # separate step.
+        dense_skip_bias_add = not self.transformer_config.plain_row_linear
+
         self.dense = build_module(
             submodules.dense,
             self.hidden_size,
@@ -245,7 +250,7 @@ class HyenaMixer(MegatronModule):
             init_method=self.transformer_config.output_layer_init_method,
             bias=True,
             input_is_parallel=True,
-            skip_bias_add=True,
+            skip_bias_add=dense_skip_bias_add,
             is_expert=False,
             tp_comm_buffer_name='fc2',
         )
@@ -261,12 +266,6 @@ class HyenaMixer(MegatronModule):
                 sharded_state_dict.update(module_sharded_sd)
 
         return sharded_state_dict
-
-    def _maybe_use_fp8(self, func, *args, **kwargs):
-        if self.transformer_config.vortex_style_fp8:
-            with te.fp8_autocast(enabled=True, fp8_recipe=set_format_recipe()):
-                return func(*args, **kwargs)
-        return func(*args, **kwargs)
 
     def forward(self, x, layer_past=None, inference_context=None, _hyena_use_cp=True):
         """Applies the Hyena sequence mixing operation to input embeddings.
@@ -290,31 +289,8 @@ class HyenaMixer(MegatronModule):
             _proj_use_cp = True
         else:
             _proj_use_cp = False
-        # Handle padding for FP8 if enabled
-        if self.transformer_config.vortex_style_fp8:
 
-            def pad_to_multiple(x, multiple=16):
-                """Pad tensor to make sequence length divisible by multiple."""
-                seq_len = x.size(0)
-                if seq_len % multiple == 0:
-                    return x
-
-                pad_len = multiple - (seq_len % multiple)
-                pad_tensor = torch.zeros(pad_len, *x.shape[1:], device=x.device, dtype=x.dtype)
-                return torch.cat([x, pad_tensor], dim=0)
-
-            # Direct padding without rearrange
-            L = x.shape[0]
-            x = pad_to_multiple(x)
-            features, _ = self._maybe_use_fp8(self.dense_projection, x)
-
-            # Slice back to original sequence length if padding was added
-
-            if features.shape[0] > L:
-                features = features[:L, :, :]
-        else:
-            features, _ = self.dense_projection(x)
-
+        features, _ = self.dense_projection(x)
         if self.use_subquadratic_ops:
             features = subquadratic_ops_rearrange(features, bhl_to_lbh=False)
         else:

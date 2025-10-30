@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, List, Literal, Optional, Tuple, Union
 
 import torch
-from megatron.core.transformer.enums import AttnBackend
 from safetensors import safe_open
 from torch import nn
 from transformers import AutoModelForCausalLM, GenerationConfig
@@ -35,9 +34,11 @@ from nemo.utils import logging
 from nemo.utils.import_utils import safe_import_from
 
 if TYPE_CHECKING:
+    from peft import AutoPeftModelForCausalLM, PeftConfig
+
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
-quick_gelu, HAVE_QUICK_GELU = safe_import_from("megatron.core.fusions.fused_bias_geglu", "quick_gelu", alt=object)
+quick_gelu, HAVE_QUICK_GELU = safe_import_from("megatron.core.activations", "quick_gelu", alt=object)
 
 
 @dataclass
@@ -61,11 +62,13 @@ class GPTOSSConfig(GPTConfig):
 
     position_embedding_type: str = "yarn"
     rotary_base: int = 150000
-    rotary_scaling_factor: float = 32.0
-    yarn_original_max_position_embeddings: int = 131072
+    yarn_rotary_scaling_factor: float = 32.0
+    yarn_original_max_position_embeddings: int = 4096
     yarn_beta_fast: float = 32.0
     yarn_beta_slow: float = 1.0
     yarn_correction_range_round_to_int: bool = False
+    yarn_mscale: float = 1.0
+    yarn_mscale_all_dim: float = 1.0
 
     moe_router_topk: int = 4
     moe_router_pre_softmax: bool = False
@@ -81,7 +84,6 @@ class GPTOSSConfig(GPTConfig):
     glu_linear_offset: float = 1.0
     bias_activation_fusion: bool = True
     window_attn_skip_freq: Optional[Union[int, List[int]]] = 2  # alternative SWA/full
-    attention_backend: AttnBackend = AttnBackend.local  # currently only "local" is supported
     activation_func_clamp_value: Optional[float] = 7.0
 
 
@@ -513,6 +515,180 @@ class HFGPTOSSExporter(io.ModelConnector[GPTOSSModel, "AutoModelForCausalLM"]):
         return HFGptOssConfig(
             num_hidden_layers=source.num_layers,
             num_local_experts=source.num_moe_experts,
+        )
+
+
+@io.model_exporter(GPTOSSModel, "hf-peft")
+class HFGPTOSSPEFTExporter(HFGPTOSSExporter):
+    """Exporter for converting NeMo GPT-OSS models with PEFT adapters to Hugging Face format.
+
+    This class extends HFLlamaExporter to handle Parameter-Efficient Fine-Tuning (PEFT)
+    adapters, specifically LoRA and DoRA adapters.
+    """
+
+    def init(self, dtype=torch.bfloat16) -> "AutoPeftModelForCausalLM":
+        """Initialize a HF PEFT model.
+
+        Args:
+            dtype: Data type for model parameters
+
+        Returns:
+            AutoPeftModelForCausalLM: Initialized HF PEFT model
+        """
+        from peft import get_peft_model
+
+        from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME
+        from nemo.lightning.io.pl import ckpt_to_weights_subdir
+
+        model = super().init(dtype=dtype)
+
+        # Infer base model checkpoint from checkpoint metadata file
+        adapter_meta_path = ckpt_to_weights_subdir(str(self), is_saving=False) / ADAPTER_META_FILENAME
+        with open(adapter_meta_path, "r") as f:
+            model_ckpt_path = json.load(f)['model_ckpt_path']
+        model.name_or_path = os.path.join(model_ckpt_path.split("/")[-2:])
+        return get_peft_model(model, self.peft_config, autocast_adapter_dtype=False)
+
+    def apply(self, output_path: Path) -> Path:
+        """Apply the conversion from NeMo PEFT model to HF format.
+
+        Args:
+            output_path: Path where the converted model will be saved
+
+        Returns:
+            Path: Path to the saved HF PEFT model
+        """
+        from nemo.collections.llm.peft import CanonicalLoRA, DoRA, LoRA
+
+        self.peft_obj: Union[LoRA, DoRA, CanonicalLoRA] = io.load_context(str(self), subpath="model.model_transform")
+
+        source, _ = self.nemo_load(str(self))
+        target = self.init(torch_dtype_from_mcore_config(source.config))
+        target = self.convert_state(source, target)
+        target = target.cpu()
+        target.save_pretrained(output_path, save_embedding_layers=False)
+
+        return output_path
+
+    def convert_state(self, source, target):
+        """Convert state dict from NeMo PEFT model to HF PEFT format.
+
+        Maps the weights from the NeMo model to the HF model according to
+        the appropriate mapping scheme for PEFT adapters.
+
+        Args:
+            source: Source NeMo model with PEFT adapters
+            target: Target HF model
+
+        Returns:
+            The target model with weights transferred from source
+        """
+        from nemo.collections.llm.peft import CanonicalLoRA
+
+        # nemo and HF prefixes
+        pn = "decoder.layers."
+        ph = "base_model.model.model.layers."
+
+        p_proj = "self_attention.linear_proj.adapter"
+        p_qkv = "self_attention.linear_qkv.adapter"
+
+        mapping = {
+            # linear_proj
+            f"{pn}*.{p_proj}.linear_in.weight": f"{ph}*.self_attn.o_proj.lora_A.default.weight",
+            f"{pn}*.{p_proj}.linear_out.weight": f"{ph}*.self_attn.o_proj.lora_B.default.weight",
+        }
+        transforms = []
+
+        if isinstance(self.peft_obj, CanonicalLoRA):
+            mapping.update(
+                {
+                    # linear_qkv for canonical lora
+                    f"{pn}*.{p_qkv}.adapter_q.linear_in.weight": f"{ph}*.self_attn.q_proj.lora_A.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_q.linear_out.weight": f"{ph}*.self_attn.q_proj.lora_B.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_k.linear_in.weight": f"{ph}*.self_attn.k_proj.lora_A.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_k.linear_out.weight": f"{ph}*.self_attn.k_proj.lora_B.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_v.linear_in.weight": f"{ph}*.self_attn.v_proj.lora_A.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_v.linear_out.weight": f"{ph}*.self_attn.v_proj.lora_B.default.weight",
+                }
+            )
+        else:
+            transforms.extend(
+                [
+                    # linear_qkv for performant lora
+                    io.state_transform(
+                        source_key=f"{pn}*.self_attention.linear_qkv.adapter.linear_in.weight",
+                        target_key=(
+                            f"{ph}*.self_attn.q_proj.lora_A.default.weight",
+                            f"{ph}*.self_attn.k_proj.lora_A.default.weight",
+                            f"{ph}*.self_attn.v_proj.lora_A.default.weight",
+                        ),
+                        fn=TransformFns.duplicate3,
+                    ),
+                    io.state_transform(
+                        source_key=f"{pn}*.self_attention.linear_qkv.adapter.linear_out.weight",
+                        target_key=(
+                            f"{ph}*.self_attn.q_proj.lora_B.default.weight",
+                            f"{ph}*.self_attn.k_proj.lora_B.default.weight",
+                            f"{ph}*.self_attn.v_proj.lora_B.default.weight",
+                        ),
+                        fn=TransformFns.split_qkv,
+                    ),
+                ]
+            )
+
+        return io.apply_transforms(
+            source,
+            target,
+            mapping=mapping,
+            transforms=transforms,
+        )
+
+    @property
+    def peft_config(self) -> "PeftConfig":
+        """Create a PEFT config for the HF model.
+
+        Translates the NeMo PEFT configuration to the equivalent HF PEFT
+        configuration.
+
+        Returns:
+            PeftConfig: HF PEFT configuration
+        """
+        from peft import LoraConfig
+
+        from nemo.collections.llm.peft import DoRA
+
+        assert (
+            not self.peft_obj.dropout or self.peft_obj.dropout_position == 'pre'
+        ), "LoRA dropout_position must be 'pre' to convert to HF."
+
+        NEMO2HF = {
+            'linear_q': ['q_proj'],
+            'linear_k': ['k_proj'],
+            'linear_v': ['v_proj'],
+            'linear_qkv': ['q_proj', 'k_proj', 'v_proj'],
+            'linear_proj': ['o_proj'],
+            'linear_fc1': ['gate_up_proj'],  # unlike llama, gpt-oss has gate up proj as one weight
+            'linear_fc2': ['down_proj'],
+        }
+
+        # Infer HF target modules from NeMo target modules
+        hf_target_modules = []
+        for tm in self.peft_obj.target_modules:
+            if tm in ('linear_fc1', 'linear_fc2'):
+                raise ValueError(
+                    f"target module {tm} is not supported in LoRA export because the"
+                    f"NeMo implementation is not interchangeable with the HF "
+                    f"implementation."
+                )
+            else:
+                hf_target_modules.extend(NEMO2HF[tm])
+
+        return LoraConfig(
+            r=self.peft_obj.dim,
+            target_modules=hf_target_modules,
+            lora_alpha=self.peft_obj.alpha,
+            lora_dropout=self.peft_obj.dropout,
+            use_dora=isinstance(self.peft_obj, DoRA),
         )
 
 

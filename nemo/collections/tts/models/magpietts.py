@@ -2985,7 +2985,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         ]  # Maintain a list of count of attended timesteps as we predict audio for each batch item
         self.unfinished_texts = (
             {}
-        )  # Maintains the unfinished texts .i.e. all of the text tokens have not been provided to the model yet
+        )  # Maintains the unfinished texts i.e. all of the text tokens have not been provided to the model yet
         self.finished_texts_counter = {}
         self.end_indices = {}
         self.attended_timestep_mapping = {}

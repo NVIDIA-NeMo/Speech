@@ -292,7 +292,7 @@ def run_inference_streaming(
                 start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
                 context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
             else:
-                # Repeaet the audio if it is shorter than the desired duration
+                # Repeat the audio if it is shorter than the desired duration
                 _num_repeats = int(np.ceil(_num_frames_to_slice / context_audio_codes.shape[1]))
                 # context_audio_codes is a tensor of shape (num_codebooks, T)
                 context_audio_codes_repeated = context_audio_codes.repeat(1, _num_repeats)

@@ -2961,9 +2961,9 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         self.true_window_size = true_window_size
         # Parameters for maintaining history
         self.history_text = (
-            None  # Maintains the history of text tokens the model looks at to generate audio in the current step
+            None  # Maintains the history of text tokens the model processes to generate audio in the current step
         )
-        self.history_context_tensor = None  # Maintains the history of text encoder output the model looks at to generate audio in the current step
+        self.history_context_tensor = None  # Maintains the history of text encoder output the model processes to generate audio in the current step
         num_audio_codebooks = (
             self.cfg.num_audio_codebooks if "num_audio_codebooks" in self.cfg else self.num_audio_codebooks
         )

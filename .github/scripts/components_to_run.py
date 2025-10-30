@@ -69,7 +69,7 @@ def main(source_sha: str, target_sha: str):
     # Build dependency graph
     dependencies = nemo_dependencies.build_dependency_graph(nemo_root)
 
-    test_modules: List[str] = ["speech"]  # Always run speech in magpie branch
+    test_modules: List[str] = []
     for changed_file in changed_files:
         if changed_file in dependencies:
             test_modules.extend(dependencies[changed_file])

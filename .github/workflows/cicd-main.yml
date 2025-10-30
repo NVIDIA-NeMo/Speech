@@ -20,7 +20,6 @@ on:
       - main
       - r**
       - weekly-bump*
-      - magpietts_2508
     types: [labeled]
   workflow_dispatch:
     inputs:
@@ -225,9 +224,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
 
       - name: main
-        uses: ./.github/actions/test-template
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
         with:
           runner: ${{ runner.name }}
           script: L0_Setup_Test_Data_And_Models

@@ -2,8 +2,8 @@ name: CI-Install-Check
 
 on:
   pull_request:
-    branches:
-      - main
+    paths:
+      - "**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

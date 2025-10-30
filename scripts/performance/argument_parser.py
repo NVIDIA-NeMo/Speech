@@ -533,7 +533,7 @@ def parse_cli_args():
         required=False,
         default=0,
     )
-    
+
     parser.add_argument(
         "--enable_isolation",
         help="Activate isolation test with noisy neighbors. Disabled by default",

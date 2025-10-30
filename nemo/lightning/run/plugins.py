@@ -144,6 +144,7 @@ class FaultTolerancePlugin(run.Plugin):
 
         _merge_callbacks(task, callbacks=callbacks)
 
+
 @dataclass(kw_only=True)
 class IsolationTestPlugin(run.Plugin):
     """
@@ -156,6 +157,7 @@ class IsolationTestPlugin(run.Plugin):
         extra_nodes_to_allocate: Extra nodes to allocate for the job to increase the chance of having enough nodes under single leaf switch
         isolation_container_image: Container image to use for isolation test
     """
+
     num_of_noise_pairs: int = 1
     min_victims_nodes: int = 1
     extra_nodes_to_allocate: int = 0
@@ -241,11 +243,11 @@ echo "Launching workload with noise"
 
         if isinstance(executor, run.SlurmExecutor):
             if not executor.additional_parameters:
-                executor.additional_parameters={}
+                executor.additional_parameters = {}
             if not executor.srun_args:
-                executor.srun_args=[]
+                executor.srun_args = []
             if not executor.env_vars:
-                executor.env_vars={}
+                executor.env_vars = {}
 
             # add node numbers to srun args and requirements for workload and noise
             self.update_number_of_nodes_for_workload_and_noise(executor)

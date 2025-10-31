@@ -11,11 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
+
 import lhotse.serialization
 import pytest
 from lhotse import CutSet, SupervisionSegment
 from lhotse.cut import Cut
-from lhotse.testing.dummies import dummy_cut
+from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.common.data.lhotse import (
     NeMoSFTExample,
@@ -94,6 +96,82 @@ def nemo_sft_example(tmp_path_factory):
         tmp_path,
     )
     return tmp_path
+
+
+@pytest.fixture
+def multi_speaker_simulator_example(tmp_path_factory):
+    tmp_path = tmp_path_factory.getbasetemp()
+
+    # 1. Generate a wav file using lhotse dummy_recording with actual audio data
+    wav_path = tmp_path / "wav.wav"
+
+    # Create dummy recordings with actual audio data and save to wav files
+    dummy_recording(0, duration=2.0, with_data=True).to_cut().save_audio(wav_path)
+
+    # For type lsmix
+    lsmix_manifest_path = tmp_path / "lsmix_manifest.jsonl"
+
+    lsmix_manifest_data = [
+        {
+            "audio_filepath": str(wav_path),
+            "session_id": "session1",
+            "duration": 1.0,
+            "speaker_id": "speaker1",
+            "text": "session1 speaker1 dummy text",
+        },
+        {
+            "audio_filepath": str(wav_path),
+            "session_id": "session2",
+            "duration": 2.0,
+            "speaker_id": "speaker2",
+            "text": "session2 speaker2 dummy text",
+        },
+    ]
+    with open(lsmix_manifest_path, 'w') as f:
+        for item in lsmix_manifest_data:
+            f.write(json.dumps(item) + '\n')
+
+    # For type mixture_loader
+    # Generate corresponding seglst files (segment list files)
+    mixture_seglst_path = tmp_path / "mixture_seglst.json"
+
+    # Create seglst files with segment information
+    mixture_seglst_data = [
+        {
+            "session_id": "session1",
+            "start_time": "0.0",
+            "end_time": "1.0",
+            "speaker": "speaker1",
+            "words": "session1 speaker1 dummy text",
+        },
+        {
+            "session_id": "session1",
+            "start_time": "0.5",
+            "end_time": "2.0",
+            "speaker": "speaker2",
+            "words": "session1 speaker2 dummy text",
+        },
+    ]
+    with open(mixture_seglst_path, 'w') as f:
+        f.write(json.dumps(mixture_seglst_data))
+
+    # Generate manifest file
+    mixture_manifest_path = tmp_path / "mixture_manifest.jsonl"
+    mixture_manifest_data = [
+        {
+            "audio_filepath": str(wav_path),
+            "session_id": "session1",
+            "offset": 0.0,
+            "duration": 2.0,
+            "seglst_filepath": str(mixture_seglst_path),
+        },
+    ]
+
+    with open(mixture_manifest_path, 'w') as f:
+        for item in mixture_manifest_data:
+            f.write(json.dumps(item) + '\n')
+
+    return [lsmix_manifest_path, mixture_manifest_path]
 
 
 class Identity:
@@ -294,3 +372,63 @@ def test_prompt_format_nemo_sft_filtered_out(nemo_sft_example, tokenizer):
     )
     with pytest.raises(StopIteration):
         batch = next(iter(dl))
+
+
+def test_prompt_format_multi_speaker_simulator(multi_speaker_simulator_example, tokenizer):
+    lsmix_manifest_path, mixture_manifest_path = multi_speaker_simulator_example
+    # For type lsmix
+    dl = get_lhotse_dataloader_from_config(
+        {
+            "input_cfg": [
+                {
+                    "type": "multi_speaker_simulator",
+                    "manifest_filepath": lsmix_manifest_path,
+                    "simulator_type": "lsmix",
+                    "num_speakers": 2,
+                    "min_delay": 0.5,
+                }
+            ],
+            "batch_size": 1,
+            "min_duration": 0,
+            "max_duration": 10,
+        },
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+        tokenizer=tokenizer,
+    )
+    batch = next(iter(dl))
+    ex = batch[0]
+    assert isinstance(ex, Cut)
+    assert len(ex.tracks) == 2
+    texts = sorted([track.cut.supervisions[0].text for track in ex.tracks])
+    assert texts == ["session1 speaker1 dummy text", "session2 speaker2 dummy text"]
+
+    # For type mixture_loader
+    dl = get_lhotse_dataloader_from_config(
+        {
+            "input_cfg": [
+                {
+                    "type": "multi_speaker_simulator",
+                    "manifest_filepath": mixture_manifest_path,
+                    "simulator_type": "mixture_loader",
+                }
+            ],
+            "batch_size": 1,
+            "min_duration": 0,
+            "max_duration": 10,
+        },
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+        tokenizer=tokenizer,
+    )
+    batch = next(iter(dl))
+    ex = batch[0]
+    assert isinstance(ex, Cut)
+    assert len(ex.supervisions) in [1, 2]
+    if len(ex.supervisions) == 1:
+        assert ex.supervisions[0].text == "session1 speaker1 dummy text"
+    else:
+        assert ex.supervisions[0].text == "session1 speaker1 dummy text"
+        assert ex.supervisions[1].text == "session1 speaker2 dummy text"

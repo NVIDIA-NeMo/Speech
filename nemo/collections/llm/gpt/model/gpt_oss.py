@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, List, Literal, Optional, Tuple, Union
 
 import torch
-from megatron.core.transformer.enums import AttnBackend
 from safetensors import safe_open
 from torch import nn
 from transformers import AutoModelForCausalLM, GenerationConfig
@@ -63,11 +62,13 @@ class GPTOSSConfig(GPTConfig):
 
     position_embedding_type: str = "yarn"
     rotary_base: int = 150000
-    rotary_scaling_factor: float = 32.0
+    yarn_rotary_scaling_factor: float = 32.0
     yarn_original_max_position_embeddings: int = 4096
     yarn_beta_fast: float = 32.0
     yarn_beta_slow: float = 1.0
     yarn_correction_range_round_to_int: bool = False
+    yarn_mscale: float = 1.0
+    yarn_mscale_all_dim: float = 1.0
 
     moe_router_topk: int = 4
     moe_router_pre_softmax: bool = False
@@ -83,7 +84,6 @@ class GPTOSSConfig(GPTConfig):
     glu_linear_offset: float = 1.0
     bias_activation_fusion: bool = True
     window_attn_skip_freq: Optional[Union[int, List[int]]] = 2  # alternative SWA/full
-    attention_backend: AttnBackend = AttnBackend.local  # currently only "local" is supported
     activation_func_clamp_value: Optional[float] = 7.0
 
 

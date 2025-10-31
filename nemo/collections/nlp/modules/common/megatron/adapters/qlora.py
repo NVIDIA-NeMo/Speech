@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+# pylint: skip-file
+
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Dict, Optional
 
@@ -20,7 +23,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from nemo.collections.nlp.parts.peft_config import LORA_CONFIG_TO_MCORE_MAP, get_target_modules
+from nemo.collections.multimodal.speech_llm.parts.peft_config import LORA_CONFIG_TO_MCORE_MAP, get_target_modules
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import_from
 

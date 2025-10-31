@@ -24,6 +24,7 @@ import omegaconf
 from lhotse import CutSet, Features, Recording
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
+from lhotse.serialization import load_yaml
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.nemo_adapters import (
@@ -346,12 +347,11 @@ def parse_and_combine_datasets(
     tarred_status = []
 
     if isinstance(config_list, (str, Path)):
-        # Resolve /path/to/input_cfg.yaml into config contents if needed.
-        config_list = OmegaConf.load(config_list)
+        # Resolve local filepath /path/to/input_cfg.yaml or remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
+        config_list = OmegaConf.create(load_yaml(config_list))
     assert len(config_list) > 0, "Empty group in dataset config list."
 
     for item in config_list:
-
         # Check if we have any attributes that are propagated downwards to each item in the group.
         # If a key already exists in the item, it takes precedence (we will not overwrite);
         # otherwise we will assign it.
@@ -813,6 +813,28 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
             force_finite=force_finite or metadata_only,
         )
     return cuts, is_tarred
+
+
+@data_type_parser("multi_speaker_simulator")
+def read_multi_speaker_simulator(config: DictConfig) -> tuple[CutSet, bool]:
+    # Import here to avoid circular dependency
+    from nemo.collections.asr.parts.utils.asr_multispeaker_utils import MultiSpeakerMixtureGenerator
+
+    multi_speaker_cuts = CutSet(
+        MultiSpeakerMixtureGenerator(
+            manifest_filepath=config.manifest_filepath,
+            simulator_type=config.simulator_type,
+            sample_rate=config.get("sample_rate", 16000),
+            min_delay=config.get("min_delay", 0.5),
+            min_duration=config.get("min_duration", 0.1),
+            max_duration=config.get("max_duration", 60),
+            num_speakers=config.get("num_speakers", 2),
+            global_rank=config.get("global_rank", 0),
+            world_size=config.get("world_size", 1),
+        )
+    )
+    is_tarred = config.get("is_tarred", False)
+    return multi_speaker_cuts, is_tarred
 
 
 def mux(

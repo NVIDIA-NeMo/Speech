@@ -17,6 +17,7 @@
 import itertools
 import json
 import os
+from abc import ABC
 from functools import partial
 from typing import List, Optional, Union
 
@@ -46,16 +47,21 @@ from nemo.collections.multimodal.speech_llm.modules.perception_modules import (
 )
 from nemo.collections.multimodal.speech_llm.parts.mixins.adapter_mixin import SpeechLLMAdapterMixin
 from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import get_nested_dict_value
-from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
-from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
+
+try:
+    from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
+    from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
+except (ImportError, ModuleNotFoundError):
+    MegatronGPTModel = ABC
+    MegatronGPTSFTModel = ABC
+
+from nemo.collections.multimodal.speech_llm.parts.peft_config import PEFT_CONFIG_MAP
 from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     build_position_ids,
     get_iterator_k_split,
 )
 from nemo.collections.nlp.modules.common.text_generation_utils import get_computeprob_response
-from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP
-from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import adapter_mixins
@@ -91,6 +97,10 @@ __all__ = ["ModularAudioGPTModel", "CrossAttendModularAudioGPTModel"]
 
 
 default_inference_config = {'tokens_to_generate': 30}
+
+
+def get_last_rank():
+    return torch.distributed.get_world_size() - 1
 
 
 class ModularAudioGPTModel(SpeechLLMAdapterMixin, MegatronGPTSFTModel):

@@ -169,28 +169,23 @@ def run_inference_streaming(
     else:
         exp_name = ""
 
-    checkpoint_name = "{}{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_LT_{}_MGsteps_{}_ST_{}_sched_{}".format(
-        exp_name,
-        checkpoint_name,
-        temperature,
-        topk,
-        use_cfg,
-        cfg_scale,
-        apply_attention_prior,
-        attention_prior_epsilon,
-        attention_prior_lookahead_window,
-        start_prior_after_n_audio_steps,
-        (
-            "".join([str(l) for l in estimate_alignment_from_layers])
-            if estimate_alignment_from_layers is not None
-            else "None"
-        ),
-        "".join([str(l) for l in apply_prior_to_layers]) if apply_prior_to_layers is not None else "None",
-        use_local_transformer,
-        maskgit_n_steps,
-        sv_model,
+    # Build checkpoint name
+    checkpoint_name = (
+        f"{exp_name}{checkpoint_name}_Temp{temperature}_Topk{topk}_Cfg_{use_cfg}_{cfg_scale}_"
+        f"Prior_{apply_attention_prior}_"
     )
-
+    if apply_attention_prior:
+        # Only add prior config details if prior is enabled (to avoid super long checkpoint names)
+        checkpoint_name += (
+            f"{attention_prior_epsilon}_{attention_prior_lookahead_window}_{start_prior_after_n_audio_steps}_"
+            f"{''.join([str(l) for l in estimate_alignment_from_layers]) if estimate_alignment_from_layers is not None else 'None'}_"
+            f"{''.join([str(l) for l in apply_prior_to_layers]) if apply_prior_to_layers is not None else 'None'}_"
+        )
+    checkpoint_name += (
+        f"LT_{use_local_transformer}"
+        f"SV_{sv_model}"
+    )
+    
     dataset_meta_info = evalset_config.dataset_meta_info
     ssim_per_dataset = []
     cer_per_dataset = []

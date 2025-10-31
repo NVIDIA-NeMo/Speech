@@ -181,11 +181,8 @@ def run_inference_streaming(
             f"{''.join([str(l) for l in estimate_alignment_from_layers]) if estimate_alignment_from_layers is not None else 'None'}_"
             f"{''.join([str(l) for l in apply_prior_to_layers]) if apply_prior_to_layers is not None else 'None'}_"
         )
-    checkpoint_name += (
-        f"LT_{use_local_transformer}"
-        f"SV_{sv_model}"
-    )
-    
+    checkpoint_name += f"LT_{use_local_transformer}" f"SV_{sv_model}"
+
     dataset_meta_info = evalset_config.dataset_meta_info
     ssim_per_dataset = []
     cer_per_dataset = []

@@ -14,7 +14,9 @@
 # NOTE: This file will be deprecated in the future, as the new inference pipeline will replace it.
 
 import math
-from typing import List
+import time
+from dataclasses import dataclass
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -26,7 +28,18 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
 
 
-class NemoLegacyASRService:
+@dataclass
+class ASRResult:
+    text: str
+    is_final: bool
+    eou_prob: Optional[float] = None
+    eob_prob: Optional[float] = None
+    eou_latency: Optional[float] = None
+    eob_latency: Optional[float] = None
+    processing_time: Optional[float] = None
+
+
+class NemoStreamingASRService:
     def __init__(
         self,
         model: str = "nvidia/stt_en_fastconformer_hybrid_large_streaming_multi",
@@ -53,7 +66,7 @@ class NemoLegacyASRService:
         self.shift_size = shift_size
         self.left_chunks = left_chunks
         self.asr_model = self._load_model(model)
-        self.tokenizer = self.asr_model.tokenizer  # type: SentencePieceTokenizer
+        self.tokenizer: SentencePieceTokenizer = self.asr_model.tokenizer
         self.use_amp = use_amp
         self.pad_and_drop_preencoded = False
         self.blank_id = self.get_blank_id()
@@ -98,6 +111,7 @@ class NemoLegacyASRService:
         )
         self._reset_cache()
         self._previous_hypotheses = self._get_blank_hypothesis()
+        self._last_transcript_timestamp = time.time()
 
     def _reset_cache(self):
         (
@@ -194,23 +208,36 @@ class NemoLegacyASRService:
             raise ValueError("Decoder type not supported for this model.")
         return best_hyp
 
-    def _get_tokens_from_alignments(self, alignments):
+    def _get_tokens_and_probs_from_alignments(self, alignments):
         tokens = []
+        probs = []
         if self.decoder_type == "ctc":
-            tokens = alignments[1]
-            tokens = [int(t) for t in tokens if t != self.blank_id]
+            all_logits = alignments[0]
+            all_tokens = alignments[1]
+            for i in range(len(all_tokens)):
+                token_id = int(all_tokens[i])
+                if token_id != self.blank_id:
+                    tokens.append(token_id)
+                    logits = all_logits[i]  # shape (vocab_size,)
+                    probs_i = torch.softmax(logits, dim=-1)[token_id].item()
+                    probs.append(probs_i)
         elif self.decoder_type == "rnnt":
             for t in range(len(alignments)):
                 for u in range(len(alignments[t])):
-                    logprob, token_id = alignments[t][u]  # (logprob, token_id)
+                    logits, token_id = alignments[t][u]  # (logits, token_id)
                     token_id = int(token_id)
                     if token_id != self.blank_id:
                         tokens.append(token_id)
+                        probs_i = torch.softmax(logits, dim=-1)[token_id].item()
+                        probs.append(probs_i)
         else:
             raise ValueError("Decoder type not supported for this model.")
-        return tokens
 
-    def transcribe(self, audio: bytes, stream_id: str = "default") -> str:
+        return tokens, probs
+
+    def transcribe(self, audio: bytes, stream_id: str = "default") -> ASRResult:
+        start_time = time.time()
+
         # Convert bytes to numpy array
         audio_array = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
 
@@ -244,17 +271,50 @@ class NemoLegacyASRService:
         self._cache_last_time = cache_last_time
         self._cache_last_channel_len = cache_last_channel_len
 
-        tokens = self._get_tokens_from_alignments(best_hyp[0].alignments)
+        tokens, probs = self._get_tokens_and_probs_from_alignments(best_hyp[0].alignments)
 
         text = self.get_text_from_tokens(tokens)
 
         is_final = False
+        eou_latency = None
+        eob_latency = None
+        eou_prob = None
+        eob_prob = None
+        current_timestamp = time.time()
         if self.eou_string in text or self.eob_string in text:
             is_final = True
+            if self.eou_string in text:
+                eou_latency = (
+                    current_timestamp - self._last_transcript_timestamp if text.strip() == self.eou_string else 0.0
+                )
+                eou_prob = self.get_eou_probability(tokens, probs, self.eou_string)
+            if self.eob_string in text:
+                eob_latency = (
+                    current_timestamp - self._last_transcript_timestamp if text.strip() == self.eob_string else 0.0
+                )
+                eob_prob = self.get_eou_probability(tokens, probs, self.eob_string)
             self.reset_state(stream_id=stream_id)
-        return text, is_final
+        if text.strip():
+            self._last_transcript_timestamp = current_timestamp
+
+        processing_time = time.time() - start_time
+        return ASRResult(
+            text=text,
+            is_final=is_final,
+            eou_latency=eou_latency,
+            eob_latency=eob_latency,
+            eou_prob=eou_prob,
+            eob_prob=eob_prob,
+            processing_time=processing_time,
+        )
 
     def reset_state(self, stream_id: str = "default"):
         self._audio_buffer.reset()
         self._reset_cache()
         self._previous_hypotheses = self._get_blank_hypothesis()
+        self._last_transcript_timestamp = time.time()
+
+    def get_eou_probability(self, tokens: List[int], probs: List[float], eou_string: str = "<EOU>") -> float:
+        text_tokens = self.tokenizer.ids_to_tokens(tokens)
+        eou_index = text_tokens.index(eou_string)
+        return probs[eou_index]

@@ -1452,11 +1452,6 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
         """Returns the size of the codebook for each group."""
         return self.fsqs[0].codebook_size
 
-    # @property
-    # def codebook_size(self):
-    #    """Returns the size of the implicit codebook."""
-    #    return self.codebook_size_per_group**self.num_groups
-
     @property
     def codebook_dim(self):
         """Input vector dimension."""

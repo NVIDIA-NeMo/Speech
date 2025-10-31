@@ -172,7 +172,6 @@ class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
 
             for idx in range(predicted_audio.size(0)):
                 if not batch_invalid:
-                    audio_path = predicted_audio_paths[idx]
                     item_idx = batch_idx * test_dl_batch_size + idx
                     pred_transcript = pred_transcripts[idx]
                     gt_transcript = process_text_for_cer(batch['raw_texts'][idx])

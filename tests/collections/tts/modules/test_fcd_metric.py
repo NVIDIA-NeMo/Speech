@@ -113,7 +113,7 @@ class TestFrechetCodecDistance:
 
     @pytest.mark.unit
     def test_codebooks_mismatch_update(self, metric, device, codec):
-        """Test that the FCD metric doesn't crash when provided with incorrect number ofcodebooks."""
+        """Test that the FCD metric doesn't crash when provided with incorrect number of codebooks."""
         B = 2
         C = codec.num_codebooks - 1  # intentionally missing one codebook
         T = 10

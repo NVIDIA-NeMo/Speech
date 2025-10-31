@@ -12,24 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import csv
 import json
 import os
-import shutil
 from pathlib import Path
 
 ### from nemo.collections.tts.models import AudioCodecModel
-import librosa
-import numpy as np
-import soundfile as sf
-import torch
-from lhotse import AudioSource, CutSet, Recording, SupervisionSegment
-from lhotse.array import Array, TemporalArray
+from lhotse import CutSet, Recording, SupervisionSegment
 from lhotse.audio import RecordingSet
-from lhotse.cut.base import Cut
-from lhotse.features.base import Features, FeatureSet
 from lhotse.shar.writers import AudioTarWriter
-from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 
@@ -118,7 +108,6 @@ def create_shar_from_manifest(manifest, audio_root_path, out_shar_dir, shard_siz
     print("...Making Shars")
     out_shar_dir = Path(out_shar_dir)
     out_shar_dir.mkdir(parents=True, exist_ok=True)
-    shard_size = shard_size
     assert len(user_recordings) % shard_size != 0, "Lhotse breaks if feat_list is a multiple of shard_size"
     exported = cuts.to_shar(out_shar_dir, fields={"recording": "wav"}, num_jobs=4, shard_size=shard_size)
     print(f"...share created")

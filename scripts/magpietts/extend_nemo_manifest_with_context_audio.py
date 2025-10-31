@@ -18,7 +18,6 @@ import logging
 import os
 import random
 import re
-import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -98,7 +97,7 @@ Output manifest example entry:
     "context_audio_filepath": "NVYT_40K_audios_wav/_8Kirz57BTY.wav",
     "context_audio_offset": 5.6,
     "context_audio_duration": 6.0,
-    "context_audio_text": "would you mind..", 
+    "context_audio_text": "would you mind..",
     "context_audio_normalized_text": "would you mind..",
     "context_audio_speaker_similarity": 0.85
 }

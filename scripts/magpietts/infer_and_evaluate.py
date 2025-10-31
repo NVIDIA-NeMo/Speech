@@ -774,7 +774,6 @@ def main():
                 checkpoint_file=checkpoint_file,
                 nemo_file=None,
             )
-        return
     # Mode 2: Run inference from a .nemo file
     elif args.nemo_files:
         print(f"Running inference for nemo file: {args.nemo_files}")

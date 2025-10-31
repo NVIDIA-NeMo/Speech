@@ -202,4 +202,5 @@ jobs:
           script: ${{ matrix.script }}
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ inputs.image-name }}
+          timeout: ${{ matrix.timeout || 10 }}
           is_optional: ${{ matrix.is-optional || false }}

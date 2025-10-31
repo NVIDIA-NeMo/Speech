@@ -8,6 +8,6 @@ torchmetrics>=0.11.0
 transformers~=4.53.0
 wandb
 webdataset>=0.2.86
-nv_one_logger_core>=2.3.0
-nv_one_logger_training_telemetry>=2.3.0
-nv_one_logger_pytorch_lightning_integration>=2.3.0
+nv_one_logger_core>=2.3.1
+nv_one_logger_training_telemetry>=2.3.1
+nv_one_logger_pytorch_lightning_integration>=2.3.1

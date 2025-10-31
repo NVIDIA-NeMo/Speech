@@ -52,11 +52,20 @@ from lightning.pytorch.plugins.io.wrapper import _WrappingCheckpointIO
 from lightning.pytorch.strategies.ddp import DDPStrategy
 from lightning.pytorch.trainer.states import RunningStage, TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from megatron.core import Timers
-from megatron.core.dist_checkpointing.validation import StrictHandling
-from megatron.core.distributed import DistributedDataParallelConfig
-from megatron.core.optimizer import OptimizerConfig
-from megatron.core.utils import get_torch_version, is_torch_min_version
+
+try:
+    from megatron.core import Timers
+    from megatron.core.dist_checkpointing.validation import StrictHandling
+    from megatron.core.distributed import DistributedDataParallelConfig
+    from megatron.core.optimizer import OptimizerConfig
+    from megatron.core.utils import get_torch_version, is_torch_min_version
+
+    HAVE_MEGATRON_CORE = True
+except (ImportError, ModuleNotFoundError):
+
+    DistributedDataParallelConfig = object
+    HAVE_MEGATRON_CORE = False
+
 from torch import nn
 from torch.distributed.algorithms.ddp_comm_hooks.debugging_hooks import noop_hook
 from torch.distributed.checkpoint.utils import CheckpointException
@@ -98,6 +107,11 @@ URL = "https://docs.nvidia.com/nemo-framework/user-guide/latest/knownissues.html
 LOAD_ERROR = f"""
     (1) To resolve this issue, try to set `trainer.strategy.ckpt_load_strictness` to False. This setting enables loading older checkpoints.
     (2) For more details and troubleshooting guidance, please refer to the framework documentation: {URL}.
+"""
+RESHARDING_LOAD_ERROR = """
+    Most likely the error is caused by the parallelism configuration mismatch.
+    To resolve this issue, re-save the checkpoint with `ckpt_optim_fully_reshardable=True` flag
+    in order to enable a fully-reshardable optimizer checkpoint format.
 """
 
 
@@ -1182,7 +1196,13 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                     checkpoint_path, sharded_state_dict=sharded_state_dict, strict=strict
                 )
         except CheckpointException as e:
-            error_message = f"{e}\n{LOAD_ERROR}"
+            if (
+                "optimizer.distributed.dp_group_idx_" in str(e)
+                and sharded_sd_metadata.get("distrib_optim_sharding_type") == "dp_reshardable"
+            ):
+                error_message = f"{e}\n{RESHARDING_LOAD_ERROR}"
+            else:
+                error_message = f"{e}\n{LOAD_ERROR}"
             raise RuntimeError(error_message)
 
         if selective_restore:

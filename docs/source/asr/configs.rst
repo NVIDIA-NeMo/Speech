@@ -1024,6 +1024,87 @@ FastEmit Regularization is supported for the default Numba based WarpRNNT loss. 
 Refer to the above paper for results and recommendations of ``fastemit_lambda``.
 
 
+.. _Hybrid-Transducer-CTC-Prompt_model__Config:
+
+Hybrid-Transducer-CTC with Prompt Conditioning Configuration
+------------------------------------------------------------
+
+The :ref:`Hybrid-Transducer-CTC model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model>` 
+(``EncDecHybridRNNTCTCBPEModelWithPrompt``) extends the base hybrid model to support prompt-based multilingual ASR/AST.
+
+**Key Configuration Parameters:**
+
+The model introduces several prompt-specific configuration parameters in the ``model_defaults`` section:
+
+.. code-block:: yaml
+
+  model:
+    model_defaults:
+      # Prompt Feature Configuration
+      initialize_prompt_feature: true  # Enable prompt conditioning
+      num_prompts: 128                 # Number of supported prompt categories
+      prompt_dictionary: {             # Mapping from identifiers to prompt indices
+        # Language prompts (0-99)
+        'en-US': 0,
+        'de-DE': 1,
+        'fr-FR': 2,
+        'es-ES': 3,
+        # Task/domain prompts (100-127)
+        'pnc': 100,                    # Punctuation mode
+        'no_pnc': 101,                 # No punctuation mode
+      }
+
+**Dataset Configuration:**
+
+The model requires training data with prompt annotations when using Lhotse datasets:
+
+.. code-block:: yaml
+
+  model:
+    train_ds:
+      use_lhotse: true
+      initialize_prompt_feature: true
+      prompt_field: "target_lang"     # Field name for prompt extraction
+      prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+      num_prompts: ${model.model_defaults.num_prompts}
+      
+    validation_ds:
+      use_lhotse: true
+      initialize_prompt_feature: true
+      prompt_field: "target_lang"
+      prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+      num_prompts: ${model.model_defaults.num_prompts}
+
+**Manifest Format:**
+
+Training manifests should include prompt information:
+
+.. code-block:: json
+
+  {
+    "audio_filepath": "/path/to/audio.wav",
+    "text": "transcription text",
+    "duration": 10.5,
+    "target_lang": "en-US"
+  }
+
+**Example Configuration:**
+
+A complete example configuration can be found at:
+``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml``
+
+**Training Command:**
+
+.. code-block:: bash
+
+  python <NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe_prompt.py \
+      --config-path=<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/ \
+      --config-name=fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml \
+      model.train_ds.manifest_filepath=<path_to_train_manifest> \
+      model.validation_ds.manifest_filepath=<path_to_val_manifest> \
+      model.tokenizer.dir=<path_to_tokenizer> \
+      model.test_ds.manifest_filepath=<path_to_test_manifest>
+
 .. _Hybrid-ASR-TTS_model__Config:
 
 Hybrid ASR-TTS Model Configuration

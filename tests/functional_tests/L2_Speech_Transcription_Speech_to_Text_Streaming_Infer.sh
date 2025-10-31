@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO(vbataev): fix decoding with CUDA graphs on CI for this test
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \
     model_path="/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo" \
@@ -21,5 +20,4 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     left_context_secs=10.0 \
     right_context_secs=2.0 \
     timestamps=true \
-    decoding.greedy.use_cuda_graph_decoder=false \
     output_filename="/tmp/stt_streaming_test_res.json"

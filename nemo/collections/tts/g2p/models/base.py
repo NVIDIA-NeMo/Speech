@@ -14,7 +14,6 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional
-from nemo.utils import logging
 
 
 class BaseG2p(ABC):
@@ -36,34 +35,7 @@ class BaseG2p(ABC):
         self.word_tokenize_func = word_tokenize_func
         self.apply_to_oov_word = apply_to_oov_word
         self.mapping_file = mapping_file
-        self.heteronym_model = None  # heteronym classification model
 
     @abstractmethod
     def __call__(self, text: str) -> str:
         pass
-
-    # TODO @xueyang: replace `wordid_to_phonemes_file` default variable with a global variable defined in util file.
-    def setup_heteronym_model(
-        self,
-        heteronym_model,
-        wordid_to_phonemes_file: str = "../../../scripts/tts_dataset_files/wordid_to_ipa-0.7b_nv22.10.tsv",
-    ):
-        """
-        Add heteronym classification model to TTS preprocessing pipeline to disambiguate heteronyms.
-            Heteronym model has a list of supported heteronyms but only heteronyms specified in
-            wordid_to_phonemes_file will be converted to phoneme form during heteronym model inference;
-            the rest will be left in grapheme form.
-
-        Args:
-            heteronym_model: Initialized HeteronymClassificationModel
-            wordid_to_phonemes_file: Path to a file with mapping from wordid predicted by heteronym model to phonemes
-        """
-
-        try:
-            from nemo.collections.tts.g2p.models.heteronym_classification import HeteronymClassificationModel
-
-            self.heteronym_model = heteronym_model
-            self.heteronym_model.set_wordid_to_phonemes(wordid_to_phonemes_file)
-        except ImportError as e:
-            logging.warning("Heteronym model setup will be skipped")
-            logging.error(e)

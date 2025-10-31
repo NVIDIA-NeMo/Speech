@@ -220,6 +220,8 @@ class SpeechToTextLLMConfig(TransformerConfig, io.IOMixin):
 
         load_path = ckpt_to_weights_subdir(ckpt_path, is_saving=False)
         sharded_sd_metadata = dist_checkpointing.load_content_metadata(load_path)
+        if sharded_sd_metadata is None:
+            sharded_sd_metadata = {}  # backward-compatibility
         sharded_state_dict = dict(state_dict=model.sharded_state_dict(prefix="module.", metadata=sharded_sd_metadata))
 
         loaded_state_dict = dist_checkpointing.load(

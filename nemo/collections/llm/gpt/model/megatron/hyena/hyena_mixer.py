@@ -66,7 +66,7 @@ except ImportError:
     logger.warning("WARNING: transformer_engine not installed. Using default recipe.")
 
 try:
-    from subquadratic_ops.rearrange import rearrange as subquadratic_ops_rearrange
+    from subquadratic_ops_torch.rearrange import rearrange as subquadratic_ops_rearrange
 except ImportError:
 
     def subquadratic_ops_rearrange(*args, **kwargs):

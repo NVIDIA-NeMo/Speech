@@ -26,10 +26,11 @@ from examples.nlp.language_modeling.megatron_gpt_eval import (
 )
 from pytorch_lightning.trainer.trainer import Trainer
 
+from nemo.collections.common.parts.nlp_overrides import CustomProgressBar, NLPDDPStrategy
+
 # pylint: disable=line-too-long
 from nemo.collections.common.video_tokenizers.cosmos_tokenizer import CausalVideoTokenizer
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
-from nemo.collections.nlp.parts.nlp_overrides import CustomProgressBar, NLPDDPStrategy
 from nemo.core.config import hydra_runner
 
 """

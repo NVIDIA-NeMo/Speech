@@ -22,17 +22,26 @@ import torch
 from lightning.fabric.plugins import CheckpointIO
 from lightning.fabric.utilities.cloud_io import get_filesystem
 from lightning.fabric.utilities.types import _PATH
-from megatron.core.dist_checkpointing.serialization import (
-    get_default_load_sharded_strategy,
-    get_default_save_sharded_strategy,
-)
-from megatron.core.dist_checkpointing.strategies.base import SaveShardedStrategy
-from megatron.core.dist_checkpointing.strategies.fully_parallel import (
-    FullyParallelLoadStrategyWrapper,
-    FullyParallelSaveStrategyWrapper,
-)
-from megatron.core.dist_checkpointing.strategies.torch import TorchDistSaveShardedStrategy
-from megatron.core.parallel_state import get_data_parallel_group
+
+try:
+    from megatron.core.dist_checkpointing.serialization import (
+        get_default_load_sharded_strategy,
+        get_default_save_sharded_strategy,
+    )
+    from megatron.core.dist_checkpointing.strategies.base import SaveShardedStrategy
+    from megatron.core.dist_checkpointing.strategies.fully_parallel import (
+        FullyParallelLoadStrategyWrapper,
+        FullyParallelSaveStrategyWrapper,
+    )
+    from megatron.core.dist_checkpointing.strategies.torch import TorchDistSaveShardedStrategy
+    from megatron.core.parallel_state import get_data_parallel_group
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 from torch import nn
 from typing_extensions import Self, override
 
@@ -115,6 +124,8 @@ class TrainerContext(IOMixin, Generic[LightningModuleT]):
 def ckpt_to_weights_subdir(filepath: Union[str, Path], is_saving) -> Path:
     """Given an input checkpoint filepath, clean it using `ckpt_to_dir`
     and then return the weights subdirectory, if it exists."""
+    from nemo.lightning.resume import AdapterPath
+
     filepath = ckpt_to_dir(filepath=filepath)
     base_dir = filepath
     assert not isinstance(base_dir, str)
@@ -122,6 +133,8 @@ def ckpt_to_weights_subdir(filepath: Union[str, Path], is_saving) -> Path:
         maybe_base_dir = base_dir / WEIGHTS_PATH
         if maybe_base_dir.is_dir() or is_saving:
             base_dir = maybe_base_dir
+            if isinstance(filepath, AdapterPath):
+                base_dir.base_model_path = filepath.base_model_path
     # handle adapter paths
     if hasattr(base_dir, "base_model_path") and base_dir.base_model_path.parts[-1] != WEIGHTS_PATH:
         maybe_base_model_path = base_dir.base_model_path / WEIGHTS_PATH
@@ -408,7 +421,14 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
         sharded_state_dict_metadata = dist_checkpointing.load_content_metadata(
             path, preloaded_state_dict=preloaded_state_dict
         )
-        logging.info(f'Loaded sharded_state_dict_metadata from checkpoint: {sharded_state_dict_metadata}')
+        if sharded_state_dict_metadata is None:
+            sharded_state_dict_metadata = {"distrib_optim_sharding_type": "fully_sharded_model_space"}
+            logging.info(
+                f"No content metadata in the checkpoint."
+                f" Assuming backward compatibility metadata: {sharded_state_dict_metadata}"
+            )
+        else:
+            logging.info(f'Loaded sharded_state_dict_metadata from checkpoint: {sharded_state_dict_metadata}')
         return sharded_state_dict_metadata
 
     def adjust_non_strict_load(self, path: _PATH, sharded_state_dict: Dict[str, Any]):

@@ -83,7 +83,6 @@ extras_require = {
     'multimodal-only': req_file("requirements_multimodal.txt"),
     'audio': req_file("requirements_audio.txt"),
     'deploy': req_file("requirements_deploy.txt"),
-    'eval': req_file("requirements_eval.txt"),
 }
 
 
@@ -117,7 +116,6 @@ extras_require['nlp'] = extras_require['nlp-only']
 extras_require['nlp'] = list(
     chain(
         extras_require['nlp'],
-        extras_require['eval'],
         extras_require['common'],
     )
 )

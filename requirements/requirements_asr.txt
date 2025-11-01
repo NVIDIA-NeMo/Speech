@@ -21,3 +21,4 @@ soundfile
 sox<=1.5.0
 kaldialign<=0.9.1
 whisper_normalizer
+diskcache

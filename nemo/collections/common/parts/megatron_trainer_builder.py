@@ -1,4 +1,4 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,12 +17,11 @@ from typing import Optional, Union
 
 from lightning.fabric.utilities.exceptions import MisconfigurationException
 from lightning.pytorch import Trainer
-from lightning.pytorch.callbacks import ModelSummary
 from lightning.pytorch.plugins.environments import TorchElasticEnvironment
 from omegaconf import DictConfig, open_dict
 
 from nemo.collections.common.metrics.perf_metrics import FLOPsMeasurementCallback
-from nemo.collections.nlp.parts.nlp_overrides import (
+from nemo.collections.common.parts.nlp_overrides import (
     CustomProgressBar,
     FSDPMixedPrecisionPlugin,
     GradScaler,
@@ -171,7 +170,8 @@ class MegatronTrainerBuilder:
         """
         if callbacks is None:
             callbacks = []
-        # enable_progress_bar is True by default. If cfg.trainer.enable_progress_bar=False, CustomProgressBar is not appended to callbacks
+        # enable_progress_bar is True by default. If cfg.trainer.enable_progress_bar=False,
+        # CustomProgressBar is not appended to callbacks
         if 'enable_progress_bar' not in self.cfg.trainer or self.cfg.trainer.enable_progress_bar:
             callbacks.append(CustomProgressBar())
 
@@ -186,6 +186,7 @@ class MegatronTrainerBuilder:
         return callbacks
 
     def create_trainer(self, callbacks=None) -> Trainer:
+        """ """
         # Make a dummy train step if skip_train
         if self.cfg.model.get("skip_train", False):
             self.cfg.trainer.max_steps = 1
@@ -195,7 +196,8 @@ class MegatronTrainerBuilder:
                 self.cfg.trainer.num_sanity_val_steps = 0
             self.cfg.exp_manager.create_checkpoint_callback = False
 
-        # cfg.trainer.precision becomes None in Trainer if precision_plugins exist since both precision plugins and precision
+        # cfg.trainer.precision becomes None in Trainer if precision_plugins exist
+        # since both precision plugins and precision
         precision = self.cfg.trainer.precision
         strategy = self._training_strategy()
         plugins = self._plugins()
@@ -204,54 +206,6 @@ class MegatronTrainerBuilder:
         # Restore the precision value after Trainer is built.
         self.cfg.trainer.precision = precision
         return trainer
-
-
-class MegatronBertTrainerBuilder(MegatronTrainerBuilder):
-    """Builder for BERT model Trainer with overrides."""
-
-    def _grad_scaler(self) -> GradScaler:
-        return GradScaler(
-            init_scale=self.cfg.model.get('native_amp_init_scale', 2**32),
-            growth_interval=self.cfg.model.get('native_amp_growth_interval', 1000),
-        )
-
-
-class MegatronT5TrainerBuilder(MegatronTrainerBuilder):
-    """Builder for T5 model Trainer with overrides."""
-
-    def _callbacks(self, callbacks: Optional[list]) -> list:
-        callbacks = super()._callbacks(callbacks)
-        callbacks.append(ModelSummary(max_depth=3))
-        return callbacks
-
-    def create_trainer(self, callbacks=None) -> Trainer:
-        strategy = self._training_strategy()
-        plugins = self._plugins()
-        callbacks = self._callbacks(callbacks)
-        return Trainer(plugins=plugins, strategy=strategy, **self.cfg.trainer, callbacks=callbacks)
-
-
-class MegatronStableDiffusionTrainerBuilder(MegatronTrainerBuilder):
-    """Builder for SD model Trainer with overrides."""
-
-    def _training_strategy(self) -> NLPDDPStrategy:
-        """
-        Returns a ddp strategy passed to Trainer.strategy.
-        """
-        ddp_overlap = self.cfg.model.get("ddp_overlap", True)
-        if ddp_overlap:
-            return NLPDDPStrategy(
-                no_ddp_communication_hook=False,
-                gradient_as_bucket_view=self.cfg.model.gradient_as_bucket_view,
-                find_unused_parameters=True,
-                bucket_cap_mb=256,
-            )
-        else:
-            return NLPDDPStrategy(
-                no_ddp_communication_hook=True,
-                gradient_as_bucket_view=self.cfg.model.gradient_as_bucket_view,
-                find_unused_parameters=False,
-            )
 
 
 class MegatronLMPPTrainerBuilder(MegatronTrainerBuilder):

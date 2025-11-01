@@ -43,7 +43,7 @@ class DiarizationConfig:
     chunk_right_context: int = 7
 
 
-class NeMoLegacyDiarService:
+class NeMoStreamingDiarService:
     def __init__(
         self,
         cfg: DiarizationConfig,

@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 try:
-    from cuda import cudart
+    from cuda.bindings import runtime as cudart
 
     HAVE_CUDA_PYTHON = True
 except ImportError:

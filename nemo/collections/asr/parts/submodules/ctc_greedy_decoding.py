@@ -38,7 +38,7 @@ from nemo.utils import logging, logging_mode
 from nemo.utils.enum import PrettyStrEnum
 
 try:
-    from cuda import cudart
+    from cuda.bindings import runtime as cudart
 
     HAVE_CUDA_PYTHON = True
 except ImportError:

@@ -38,7 +38,7 @@ from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
 
 try:
-    from cuda import cudart
+    from cuda.bindings import runtime as cudart
 
     HAVE_CUDA_PYTHON = True
 except ImportError:
@@ -726,9 +726,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         """
         kernel_string = r"""\
         typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
-    
+
         extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
-    
+
         extern "C" __global__
         void loop_conditional(cudaGraphConditionalHandle handle, const bool *active_mask_any)
         {

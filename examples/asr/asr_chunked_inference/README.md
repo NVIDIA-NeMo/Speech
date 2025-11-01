@@ -13,3 +13,4 @@ On the other hand, if you increase your chunk size, then the delay between spoke
 ## Chunked Inference
 
 For MultitaskAED models, we provide a script to perform chunked inference. This script will split the input audio into non-overlapping chunks and perform inference on each chunk. The script will then concatenate the results to provide the final transcript.
+

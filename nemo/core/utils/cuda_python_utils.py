@@ -72,7 +72,9 @@ def assert_drv(err):
     """
     Throws an exception if the return value of a cuda-python call is not success.
     """
-    from cuda.bindings import driver as cuda, runtime as cudart, nvrtc
+    from cuda.bindings import driver as cuda
+    from cuda.bindings import nvrtc
+    from cuda.bindings import runtime as cudart
 
     if isinstance(err, cuda.CUresult):
         if err != cuda.CUresult.CUDA_SUCCESS:
@@ -112,7 +114,8 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     execute the next iteration of the loop).
     """
     from cuda.bindings import __version__ as cuda_python_version
-    from cuda.bindings import driver as cuda, runtime as cudart
+    from cuda.bindings import driver as cuda
+    from cuda.bindings import runtime as cudart
 
     capture_status, _, graph, _, _ = cu_call(
         cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
@@ -194,7 +197,8 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
 
 
 def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
-    from cuda.bindings import driver as cuda, nvrtc
+    from cuda.bindings import driver as cuda
+    from cuda.bindings import nvrtc
 
     err, prog = nvrtc.nvrtcCreateProgram(str.encode(kernel_string), program_name, 0, [], [])
     assert_drv(err)

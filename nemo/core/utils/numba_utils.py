@@ -126,6 +126,7 @@ def numba_cuda_is_supported(min_version: str) -> bool:
     # If numba version is installed and available
     if module_available is True:
         from numba import cuda
+
         try:
             cuda_available = cuda.is_available()
             if cuda_available:

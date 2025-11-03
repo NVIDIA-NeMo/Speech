@@ -680,6 +680,7 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
 
     @contextmanager
     def set_phone_prob(self, prob):
+        """Updates the phone probability inside context"""
         if hasattr(self.g2p, "phoneme_probability"):
             self.g2p.phoneme_probability = prob
         try:
@@ -854,6 +855,7 @@ class IPATokenizer(BaseTokenizer):
 
     @contextmanager
     def set_phone_prob(self, prob):
+        """Updates the phone probability inside context"""
         if hasattr(self.g2p, "phoneme_probability"):
             self.g2p.phoneme_probability = prob
         try:
@@ -1147,10 +1149,12 @@ class AggregatedTTSTokenizer:
             raise ValueError("AggregatedTTSTokenizer could not find a padding token in the first tokenizer")
 
     def encode(self, text: str, tokenizer_name: str = None) -> List[int]:
+        """Tokenizer encode from text to tokens"""
         tokenizer = self.tokenizers[tokenizer_name]
         tokens = tokenizer.encode(text)
         return [self.tokenizer_offsets[tokenizer_name] + token for token in tokens]
 
     def decode(self, tokens: List[int], tokenizer_name: str = None) -> str:
+        """Tokernizer decoder from tokens to text"""
         tokenizer = self.tokenizers[tokenizer_name]
         return tokenizer.decode([token - self.tokenizer_offsets[tokenizer_name] for token in tokens])

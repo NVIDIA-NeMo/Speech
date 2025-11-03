@@ -42,7 +42,6 @@ from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, 
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
-from nemo.utils.decorators import experimental
 
 try:
     import torchaudio

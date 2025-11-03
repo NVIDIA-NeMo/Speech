@@ -37,7 +37,6 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     vietnamese_text_preprocessing,
 )
 from nemo.utils import logging
-from nemo.utils.decorators import experimental
 
 
 class BaseTokenizer(ABC):

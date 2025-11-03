@@ -59,7 +59,6 @@ from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, Index, LengthsType, LossType, VoidType
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
-from nemo.utils.decorators import experimental
 
 
 class SEANetResnetBlock(NeuralModule):

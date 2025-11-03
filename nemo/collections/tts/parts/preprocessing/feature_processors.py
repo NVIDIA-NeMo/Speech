@@ -19,8 +19,6 @@ from typing import Optional
 
 import torch
 
-from nemo.utils.decorators import experimental
-
 
 class FeatureProcessor(ABC):
     @abstractmethod

@@ -36,7 +36,6 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.utils import logging
 from nemo.utils import webdataset as wds
-from nemo.utils.decorators import experimental
 from nemo.utils.distributed import webdataset_split_by_workers
 
 VALID_FILE_FORMATS = ';'.join(['wav', 'mp3', 'flac', 'opus'] + [fmt.lower() for fmt in valid_sf_formats.keys()])

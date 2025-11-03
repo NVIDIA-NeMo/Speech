@@ -50,6 +50,7 @@ class BaseTokenizer(ABC):
         add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
             if None then no blank in labels.
     """
+
     PAD, BLANK, OOV = '<pad>', '<blank>', '<oov>'
 
     def __init__(self, tokens, *, pad=PAD, blank=BLANK, oov=OOV, sep='', add_blank_at=None):
@@ -105,6 +106,7 @@ class BaseCharsTokenizer(BaseTokenizer):
         non_default_punct_list: List of punctuation marks which will be used instead default.
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
     """
+
     # fmt: off
     # TODO @xueyang: unify definition of the default PUNCT_LIST and import from ipa_lexicon.py
     PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
@@ -185,6 +187,7 @@ class EnglishCharsTokenizer(BaseCharsTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
             Basically, it replaces all non-unicode characters with unicode ones and apply lower() function.
     """
+
     def __init__(
         self,
         punct=True,
@@ -358,6 +361,7 @@ class ItalianCharsTokenizer(BaseCharsTokenizer):
         pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
         non_default_punct_list: List of punctuation marks which will be used instead default.
     """
+
     PUNCT_LIST = get_ipa_punctuation_list("it-IT")
 
     def __init__(
@@ -388,6 +392,7 @@ class GermanPhonemesTokenizer(BaseCharsTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
             Currently, it only applies lower() function.
     """
+
     # fmt: off
     PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
         ',', '.', '!', '?', '-',
@@ -459,6 +464,7 @@ class ItalianPhonemesTokenizer(BaseCharsTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
             Currently, it only applies lower() function.
     """
+
     # fmt: off
     PUNCT_LIST = (
         ',', '.', '!', '?', '-',
@@ -543,6 +549,7 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
             Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
             handled by g2p).
     """
+
     # fmt: off
     PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
         ',', '.', '!', '?', '-',
@@ -706,6 +713,7 @@ class IPATokenizer(BaseTokenizer):
             if None then no blank in labels.
         pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
     """
+
     def __init__(
         self,
         g2p,
@@ -875,6 +883,7 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
             handled by g2p).
     """
+
     # fmt: off
     PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
         ',', '.', '!', '?', '-',
@@ -951,8 +960,9 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             if p == space and len(ps) > 0 and ps[-1] != space:
                 ps.append(p)
             # Add next phoneme or tone or ascii letter or apostrophe.
-            elif ((p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list) and
-                   p in tokens):
+            elif (
+                p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list
+            ) and p in tokens:
                 ps.append(p)
             # Add punctuation
             elif (p in self.PUNCT_LIST) and self.punct:
@@ -1094,6 +1104,7 @@ class AggregatedTTSTokenizer:
         tokenizers: List of tokenizers to aggregate.
         tokenizer_names: List of names for each tokenizer (usually the language identifier).
     """
+
     def __init__(self, tokenizers: List[Union[BaseTokenizer, PreTrainedTokenizerBase]], tokenizer_names: List[str]):
         assert len(tokenizers) == len(tokenizer_names), "Number of tokenizers and tokenizer names must be the same."
         tokens = []

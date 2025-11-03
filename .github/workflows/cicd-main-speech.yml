@@ -41,7 +41,7 @@ jobs:
           - script: L0_Unit_Tests_CPU_ASR
             runner: azure-gpu-vm-runner1-cpu
             cpu-only: true
-            timeout: 20
+            timeout: 30
           - script: L0_Unit_Tests_GPU_TTS
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_TTS
@@ -129,6 +129,8 @@ jobs:
             script: L2_Speech_Transcription_Speech_to_Text_Streaming_Infer
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Speech_to_Text_Cache_Aware_Infer
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Streaming_Inference
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
           - runner: self-hosted-azure

@@ -160,7 +160,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     # Use driver API here because of bug in cuda-python runtime API: https://github.com/NVIDIA/cuda-python/issues/55
     # TODO: Change call to this after fix goes in (and we bump minimum cuda-python version to 12.4.0):
     # node, = cu_call(cudart.cudaGraphAddNode(graph, dependencies, len(dependencies), driver_params))
-    (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, len(dependencies), driver_params))
+    (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
     body_graph = driver_params.conditional.phGraph_out[0]
 
     cu_call(

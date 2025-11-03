@@ -52,7 +52,6 @@ except ModuleNotFoundError:
     HAVE_TORCHAUDIO = False
 
 
-@experimental
 class AudioCodecModel(ModelPT):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Convert to Hydra 1.0 compatible DictConfig

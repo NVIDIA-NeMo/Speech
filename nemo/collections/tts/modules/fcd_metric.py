@@ -47,7 +47,7 @@ class CodecEmbedder(nn.Module):
         """
         Embeds a batch of audio codec codes into the codec's continuous embedding space.
         """
-        # x: (B, C, T
+        # x: (B, C, T)
         # x_len: (B,)
         return self.codec.dequantize(tokens=x, tokens_len=x_len)
 
@@ -76,7 +76,7 @@ class FrechetCodecDistance(Metric):
 
     """
     Parts of this are based on the following implementation of FID (Frechet Inception Distance) on images:
-    
+
         https://github.com/pytorch/torcheval/blob/main/torcheval/metrics/image/fid.py
 
         # Copyright (c) Meta Platforms, Inc. and affiliates.
@@ -88,14 +88,14 @@ class FrechetCodecDistance(Metric):
     Contents of original LICENSE file:
 
         #  BSD License
-        #                
+        #
         #  For torcheval software
         #
         #  Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
         #
         #  Redistribution and use in source and binary forms, with or without modification,
         #  are permitted provided that the following conditions are met:
-        #         
+        #
         #  * Redistributions of source code must retain the above copyright notice, this
         #  list of conditions and the following disclaimer.
         #
@@ -170,12 +170,12 @@ class FrechetCodecDistance(Metric):
         assert codes.ndim == 3
 
         if codes.numel() == 0:
-            logging.warning(f"\nFCD metric received an empty batch of codes - skipping update\n")
+            logging.warning("FCD metric received an empty batch of codes - skipping update")
             return
 
         if codes.shape[1] != self.model.codec.num_codebooks:
             logging.warning(
-                f"\nFCD metric received a batch of codes of shape {codes.shape}, but the model has {self.model.codec.num_codebooks} codebooks - skipping update\n"
+                f"FCD metric received a batch of codes of shape {codes.shape}, but the model has {self.model.codec.num_codebooks} codebooks - skipping update"
             )
             return
 

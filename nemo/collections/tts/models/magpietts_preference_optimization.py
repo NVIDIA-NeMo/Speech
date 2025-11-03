@@ -38,7 +38,13 @@ try:
 except ImportError:
     HAVE_TORCHAUDIO = False
 
-from nemo_text_processing.text_normalization.normalize import Normalizer
+try:
+    from nemo_text_processing.text_normalization.normalize import Normalizer
+
+    PYNINI_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    Normalizer = None
+    PYNINI_AVAILABLE = False
 
 from nemo.collections.tts.models import MagpieTTSModel
 
@@ -69,7 +75,7 @@ class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
             self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
             self.whisper_model.eval()
             self._normalize_whisper_transcript = cfg.get('normalize_whisper_transcript', True)
-            if self._normalize_whisper_transcript:
+            if self._normalize_whisper_transcript and PYNINI_AVAILABLE:
                 self._normalizer_cache = {}
                 # Pre-create normalizer for the configured language
                 lang = cfg.get('pref_set_language', 'en')
@@ -77,6 +83,8 @@ class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
 
     def _get_cached_normalizer(self, lang_key):
         """Get or create a cached normalizer for the given language."""
+        if not PYNINI_AVAILABLE:
+            return None
         lang_key = lang_key if lang_key else "en"
         if lang_key not in self._normalizer_cache:
             logging.info(f"Creating normalizer for language: {lang_key}")
@@ -541,6 +549,8 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
 
     def _get_cached_normalizer(self, lang_key):
         """Get or create a cached normalizer for the given language."""
+        if not PYNINI_AVAILABLE:
+            return None
         lang_key = lang_key if lang_key else "en"
         if lang_key not in self._normalizer_cache:
             logging.info(f"Creating normalizer for language: {lang_key}")

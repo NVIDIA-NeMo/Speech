@@ -22,7 +22,6 @@ import torch
 from nemo.utils.decorators import experimental
 
 
-@experimental
 class FeatureProcessor(ABC):
     @abstractmethod
     def process(self, training_example: dict) -> None:

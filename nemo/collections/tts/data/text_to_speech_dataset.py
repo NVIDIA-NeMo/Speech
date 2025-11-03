@@ -61,7 +61,6 @@ class DatasetSample:
     tokenizer_names: List[str] = None
 
 
-@experimental
 class TextToSpeechDataset(Dataset):
     """
     Class for processing and loading text to speech training examples.

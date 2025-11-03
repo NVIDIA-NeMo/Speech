@@ -127,7 +127,6 @@ class ArtifactGenerator(ABC):
         """
 
 
-@experimental
 class LoggingCallback(Callback):
     """
     Callback which can log artifacts (eg. model predictions, graphs) to local disk, Tensorboard, and/or WandB.

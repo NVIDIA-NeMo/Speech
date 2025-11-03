@@ -28,7 +28,6 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import get_audio_filepat
 from nemo.utils.decorators import experimental
 
 
-@experimental
 class Featurizer(ABC):
     @abstractmethod
     def save(self, manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path, overwrite: bool = True) -> None:

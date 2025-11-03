@@ -111,7 +111,6 @@ def preprocess_manifest(
     return samples, sample_weights
 
 
-@experimental
 class VocoderDataset(Dataset):
     """
     Class for processing and loading Vocoder training examples.

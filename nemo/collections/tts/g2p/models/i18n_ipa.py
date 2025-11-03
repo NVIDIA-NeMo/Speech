@@ -31,7 +31,6 @@ from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
 
-@experimental
 class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]

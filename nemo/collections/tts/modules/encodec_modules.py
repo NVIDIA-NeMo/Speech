@@ -537,7 +537,6 @@ def _mask_3d(tensor: Tensor, lengths: Tensor):
     return tensor * mask
 
 
-@experimental
 class EuclideanCodebook(NeuralModule):
     """
     Codebook with Euclidean distance.

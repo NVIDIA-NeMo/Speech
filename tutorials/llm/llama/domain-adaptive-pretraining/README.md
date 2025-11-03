@@ -17,9 +17,9 @@ Here, we share a tutorial with best practices on custom tokenization and DAPT (D
 
 * In this tutorial, we will leverage chip domain/hardware datasets from open-source GitHub repositories, wiki URLs, and academic papers. Therefore, as a pre-requisite the user should curate the domain specific and general purpose data using the NeMo Curator and place them in the directories mentioned below. 
 
-* `./code/data` should contain curated data from chip domain after processing with NeMo Curator. Playbook for DAPT data curation can be found [here](https://github.com/NVIDIA/NeMo-Curator/tree/main/tutorials/dapt-curation)
+* `./code/data` should contain curated data from chip domain after processing with NeMo Curator. Playbook for DAPT data curation can be found [here](https://github.com/NVIDIA-NeMo/Curator/tree/dask/tutorials/dapt-curation). Please note that this tutorial uses NeMo Curator version 0.9.0 or lower.
 
-* `./code/general_data` should contain open-source general purpose data that llama-2 was trained on. This data will help idenitfy token/vocabulary differences between general purpose and domain-specific datasets. Data can be downloaded from [Wikepedia](https://huggingface.co/datasets/legacy-datasets/wikipedia), [CommonCrawl](https://data.commoncrawl.org/) etc. and curated with [NeMo Curator](https://github.com/NVIDIA/NeMo-Curator/tree/main/tutorials/single_node_tutorial)
+* `./code/general_data` should contain open-source general purpose data that llama-2 was trained on. This data will help idenitfy token/vocabulary differences between general purpose and domain-specific datasets. Data can be downloaded from [Wikepedia](https://huggingface.co/datasets/legacy-datasets/wikipedia), [CommonCrawl](https://data.commoncrawl.org/) etc. and curated with [NeMo Curator](https://github.com/NVIDIA-NeMo/Curator/tree/dask/tutorials/single_node_tutorial). Please note that this tutorial uses NeMo Curator version 0.9.0 or lower.
 
 
 ## Custom Tokenization for DAPT

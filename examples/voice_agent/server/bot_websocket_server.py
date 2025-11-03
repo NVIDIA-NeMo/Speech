@@ -28,12 +28,13 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIObserver, RTVIProcessor
+from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
-from nemo.agents.voice_agent.pipecat.services.nemo.diar import NeMoDiarInputParams, NemoDiarService
+from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
+from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
 from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config
-from nemo.agents.voice_agent.pipecat.services.nemo.stt import NeMoSTTInputParams, NemoSTTService
+from nemo.agents.voice_agent.pipecat.services.nemo.stt import NemoSTTService
 from nemo.agents.voice_agent.pipecat.services.nemo.tts import KokoroTTSService, NeMoFastPitchHiFiGANTTSService
 from nemo.agents.voice_agent.pipecat.services.nemo.turn_taking import NeMoTurnTakingService
 from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import (
@@ -243,7 +244,9 @@ async def run_bot_websocket_server():
             assistant_context_aggregator.reset()
             user_context_aggregator.set_messages(copy.deepcopy(original_messages))
             assistant_context_aggregator.set_messages(copy.deepcopy(original_messages))
-
+            text_aggregator.reset()
+            if diar is not None:
+                diar.reset()
             logger.info("Conversation context reset successfully")
             return True
         except Exception as e:
@@ -276,6 +279,7 @@ async def run_bot_websocket_server():
 
     pipeline = Pipeline(pipeline)
 
+    rtvi_text_aggregator = SimpleSegmentedTextAggregator("\n?!.", min_sentence_length=5)
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
@@ -286,7 +290,7 @@ async def run_bot_websocket_server():
             report_only_initial_ttfb=True,
             idle_timeout=None,  # Disable idle timeout
         ),
-        observers=[RTVIObserver(rtvi)],
+        observers=[RTVIObserver(rtvi, text_aggregator=rtvi_text_aggregator)],
         idle_timeout_secs=None,
         cancel_on_idle_timeout=False,
     )

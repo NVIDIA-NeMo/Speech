@@ -15,12 +15,13 @@
 
 import os
 import shutil
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import torch
 import wget
 from torch.hub import _get_torch_home
 
+from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 
 __all__ = [
@@ -120,11 +121,8 @@ def get_megatron_pretrained_bert_models() -> List[str]:
     Returns:
         List[str]: A list of pretrained Megatron-BERT model names.
     """
-    from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
 
-    all_pretrained_megatron_bert_models = [
-        model.pretrained_model_name for model in MegatronBertModel.list_available_models()
-    ]
+    all_pretrained_megatron_bert_models = [model.pretrained_model_name for model in list_available_models()]
     return all_pretrained_megatron_bert_models
 
 
@@ -259,3 +257,43 @@ def get_megatron_tokenizer(pretrained_model_name: str):
     """
     _check_megatron_name(pretrained_model_name)
     return MEGATRON_CONFIG_MAP[pretrained_model_name]["tokenizer_name"]
+
+
+def list_available_models() -> Optional[PretrainedModelInfo]:
+    """
+    This function returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
+    Returns:
+        List of available pre-trained models.
+    """
+    result = []
+    for vocab in ['cased', 'uncased']:
+        result.append(
+            PretrainedModelInfo(
+                pretrained_model_name=f"megatron_bert_345m_{vocab}",
+                # pylint: disable=C0301
+                location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/megatron_bert_345m_{vocab}/versions/1/files/megatron_bert_345m_{vocab}.nemo",
+                description=f"345M parameter BERT Megatron model with {vocab} vocab.",
+            )
+        )
+    for vocab_size in ['50k', '30k']:
+        for vocab in ['cased', 'uncased']:
+            result.append(
+                PretrainedModelInfo(
+                    pretrained_model_name=f"biomegatron345m_biovocab_{vocab_size}_{vocab}",
+                    # pylint: disable=C0301
+                    location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/biomegatron345m_biovocab_{vocab_size}_{vocab}/versions/1/files/BioMegatron345m-biovocab-{vocab_size}-{vocab}.nemo",
+                    # pylint: disable=C0301
+                    description="Megatron 345m parameters model with biomedical vocabulary ({vocab_size} size) {vocab}, pre-trained on PubMed biomedical text corpus.",
+                )
+            )
+    for vocab in ['cased', 'uncased']:
+        result.append(
+            PretrainedModelInfo(
+                pretrained_model_name=f"biomegatron-bert-345m-{vocab}",
+                # pylint: disable=C0301
+                location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/biomegatron345m{vocab}/versions/1/files/BioMegatron345m{vocab.capitalize()}.nemo",
+                # pylint: disable=C0301
+                description=f"Megatron pretrained on {vocab} biomedical dataset PubMed with 345 million parameters.",
+            )
+        )
+    return result

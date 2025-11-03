@@ -204,7 +204,6 @@ jobs:
 
             # Basic Import Checks
             python tests/core_ptl/check_imports.py --domain asr
-            python tests/core_ptl/check_imports.py --domain nlp
             python tests/core_ptl/check_imports.py --domain tts
           '
 

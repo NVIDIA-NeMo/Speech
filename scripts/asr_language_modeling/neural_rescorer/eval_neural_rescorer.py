@@ -42,6 +42,7 @@ https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/asr_langua
 import contextlib
 import inspect
 import json
+from abc import ABC
 from argparse import ArgumentParser
 
 import editdistance
@@ -52,7 +53,11 @@ import torch
 import tqdm
 from transformers import AutoModelForCausalLM
 
-from nemo.collections.nlp.models.language_modeling import TransformerLMModel
+try:
+    from nemo.collections.nlp.models.language_modeling import TransformerLMModel
+except (ImportError, ModuleNotFoundError):
+    TransformerLMModel = ABC
+
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
 from nemo.utils import logging
 

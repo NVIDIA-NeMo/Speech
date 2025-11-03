@@ -55,6 +55,26 @@ class StreamingSortformerState:
     mean_sil_emb = None
     n_sil_frames = None
 
+    def to(self, device):
+        if self.spkcache is not None:
+            self.spkcache = self.spkcache.to(device)
+        if self.spkcache_lengths is not None:
+            self.spkcache_lengths = self.spkcache_lengths.to(device)
+        if self.spkcache_preds is not None:
+            self.spkcache_preds = self.spkcache_preds.to(device)
+        if self.fifo is not None:
+            self.fifo = self.fifo.to(device)
+        if self.fifo_lengths is not None:
+            self.fifo_lengths = self.fifo_lengths.to(device)
+        if self.fifo_preds is not None:
+            self.fifo_preds = self.fifo_preds.to(device)
+        if self.spk_perm is not None:
+            self.spk_perm = self.spk_perm.to(device)
+        if self.mean_sil_emb is not None:
+            self.mean_sil_emb = self.mean_sil_emb.to(device)
+        if self.n_sil_frames is not None:
+            self.n_sil_frames = self.n_sil_frames.to(device)
+
 
 class SortformerModules(NeuralModule, Exportable):
     """

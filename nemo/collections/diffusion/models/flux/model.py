@@ -393,6 +393,8 @@ class Flux(VisionModule):
             from megatron.core import dist_checkpointing
 
             sharded_sd_metadata = dist_checkpointing.load_content_metadata(ckpt_path)
+            if sharded_sd_metadata is None:
+                sharded_sd_metadata = {}  # backward-compatibility
             sharded_state_dict = dict(
                 state_dict=self.sharded_state_dict(prefix="module.", metadata=sharded_sd_metadata)
             )

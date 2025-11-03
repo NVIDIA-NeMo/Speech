@@ -252,7 +252,7 @@ jobs:
   #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
   cicd-main-speech:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-speech.yml
     if: |
       (

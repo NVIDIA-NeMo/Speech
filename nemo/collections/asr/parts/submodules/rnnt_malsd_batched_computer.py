@@ -893,7 +893,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
         ):
             self._before_loop()
-            capture_status, _, graph, _, _ = cu_call(
+            capture_status, _, graph, _, _, _ = cu_call(
                 cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
             )
 

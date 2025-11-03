@@ -132,8 +132,9 @@ python speech_to_text_llm_train.py \
     ++data.validation_ds.seed=10 \
     ++data.validation_ds.shard_seed="randomized" \
     ++data.validation_ds.shuffle=false \
-    data.validation_ds.metric.name='loss' \ # set to `loss` to only calculate validation loss w/o LLM decoding for faster validation
-    ++data.validation_ds.force_iterable_dataset=true \  # set to true for mixing tarred and non-tarred data
+    ++data.validation_ds.metric.name='loss' \ # set to `loss` to only calculate validation loss w/o LLM decoding for faster validation
+    ++model.data.validation_ds.force_finite=true  \
+    ++model.data.validation_ds.force_map_dataset=true  \
     ++trainer.use_distributed_sampler=false \
     ++trainer.limit_train_batches=2000 \
     trainer.val_check_interval=2000 \ # set to same value as limit_train_batches
@@ -178,6 +179,8 @@ python speech_to_text_llm_validate.py \
     ++data.validation_ds.quadratic_duration=null \
     ++data.validation_ds.bucket_duration_bins=null \
     ++data.validation_ds.shuffle=false \
+    ++model.data.validation_ds.force_finite=true  \
+    ++model.data.validation_ds.force_map_dataset=true  \
     ++trainer.use_distributed_sampler=false \
     ++resume.resume_from_path=$CKPT_PATH \  # path to the checkpoint to load
     ++data.validation_ds.write_predictions_to_file=true \

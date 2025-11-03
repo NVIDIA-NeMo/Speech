@@ -167,6 +167,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
         cudart.cudaStreamUpdateCaptureDependencies(
             torch.cuda.current_stream(device=device).cuda_stream,
             [node],
+            None,
             1,
             cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
         )

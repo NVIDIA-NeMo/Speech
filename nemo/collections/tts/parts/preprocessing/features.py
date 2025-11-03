@@ -77,7 +77,10 @@ def _get_feature_filepath(
 
 
 def _features_exists(
-    feature_names: List[Optional[str]], manifest_entry: Dict[str, Any], audio_dir: Path, feature_dir: Path,
+    feature_names: List[Optional[str]],
+    manifest_entry: Dict[str, Any],
+    audio_dir: Path,
+    feature_dir: Path,
 ) -> bool:
     for feature_name in feature_names:
         if feature_name is None:

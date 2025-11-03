@@ -32,7 +32,7 @@ from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMeth
 from nemo.core.utils.cuda_python_utils import cu_call, run_nvrtc, with_conditional_node
 
 try:
-    from cuda import cudart
+    from cuda.bindings import runtime as cudart
 
     HAVE_CUDA_PYTHON = True
 except ImportError:
@@ -767,9 +767,9 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         """
         kernel_string = r"""\
         typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
-    
+
         extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
-    
+
         extern "C" __global__
         void outer_label_looping_conditional(cudaGraphConditionalHandle handle, const bool *active_mask_any)
         {
@@ -786,9 +786,9 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         """
         kernel_string = r"""\
         typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
-    
+
         extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
-    
+
         extern "C" __global__
         void inner_find_non_blank_conditional(cudaGraphConditionalHandle handle, const bool *advance_mask_any)
         {
@@ -943,7 +943,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         ):
             self._before_outer_loop()
 
-            capture_status, _, graph, _, _ = cu_call(
+            capture_status, _, graph, _, _, _ = cu_call(
                 cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
             )
             assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive

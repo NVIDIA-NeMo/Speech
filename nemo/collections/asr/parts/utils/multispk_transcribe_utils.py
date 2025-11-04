@@ -29,11 +29,7 @@ from omegaconf import DictConfig
 from nemo.collections.asr.data.audio_to_diar_label import extract_frame_info_from_rttm, get_frame_targets_from_rttm
 from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
 from nemo.collections.asr.modules.sortformer_modules import StreamingSortformerState
-from nemo.collections.asr.parts.utils.diarization_utils import (
-    get_color_palette,
-    print_sentences,
-    write_txt,
-)
+from nemo.collections.asr.parts.utils.diarization_utils import get_color_palette, print_sentences, write_txt
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map as get_audio_rttm_map
 from nemo.collections.asr.parts.utils.speaker_utils import get_uniqname_from_filepath

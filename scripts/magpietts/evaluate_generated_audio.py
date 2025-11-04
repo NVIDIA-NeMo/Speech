@@ -199,6 +199,8 @@ def evaluate(
 
     device = "cuda"
 
+    whisper_processor = None  # Address CodeQL issue even though this varibable is only used when language != "en"
+    utmosv2_scores = None  # Address CodeQL issue even though this varibable is only used when with_utmosv2 is true
     if language == "en":
         if asr_model_name.startswith("nvidia/") or asr_model_name in ["stt_en_conformer_transducer_large"]:
             asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=asr_model_name)

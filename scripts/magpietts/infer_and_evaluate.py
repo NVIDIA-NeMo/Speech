@@ -292,11 +292,14 @@ def run_inference(
     hparams_file_from_wandb=False,
     log_exp_name=False,
     compute_fcd=False,
-    violin_plot_metrics=['cer', 'pred_context_ssim'],
+    violin_plot_metrics=None,
     eos_detection_method=None,
     ignore_finished_sentence_tracking=False,
     with_utmosv2=True,
 ):
+    # Avoid lists as default values and apply default value in function
+    if violin_plot_metrics is None:
+        violin_plot_metrics = ['cer', 'pred_context_ssim', 'utmosv2']
     # Load model
     if hparams_file is not None and checkpoint_file is not None:
         model_cfg = OmegaConf.load(hparams_file)
@@ -754,6 +757,7 @@ def main():
         with_utmosv2=not args.disable_utmosv2,
     )
 
+    cer, ssim = None, None
     # Mode 1: Run inference from provided hparams and checkpoint files
     if (
         (args.hparams_files is not None)
@@ -789,9 +793,9 @@ def main():
             "1. --hparams_files and --checkpoint_files\n"
             "2. --nemo_file\n"
         )
-    if args.cer_target is not None and cer > float(args.cer_target):
+    if cer is not None and args.cer_target is not None and cer > float(args.cer_target):
         raise ValueError()
-    if args.ssim_target is not None and ssim < float(args.ssim_target):
+    if ssim is not None and args.ssim_target is not None and ssim < float(args.ssim_target):
         raise ValueError()
 
 

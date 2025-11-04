@@ -663,6 +663,12 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
                     )
                     pred_transcripts.append(transcript)
                 pred_transcripts = [process_text_for_cer(transcript) for transcript in pred_transcripts]
+            else:
+                # Address CodeQL issue where pred_transcripts might be undefined for future code
+                raise ValueError(
+                    f"{self} received a value of {self.cfg.get("reward_asr_model", "nemo")} in cfg.reward_asr_model "
+                    "but this class only supports 'nemo' or 'whisper'."
+                )
 
             pred_speaker_embeddings = get_speaker_embeddings_from_filepaths(
                 predicted_audio_paths, self.eval_speaker_verification_model, self.device
@@ -888,6 +894,7 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
 
         policy_model_outputs = self.process_batch(batch_repeated)
 
+        reference_model_output = None  # Address CodeQL issue even though this varibable is only used not self.reference_free
         if not self.reference_free:
             with torch.no_grad():
                 reference_model_output = self._reference_model.process_batch(batch_repeated)

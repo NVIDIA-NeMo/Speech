@@ -637,7 +637,9 @@ def build_torch_profiler_plugin(args):
         return PyTorchProfilerPlugin(
             start_step=start_iter,
             end_step=end_iter,
-            output_path=os.environ.get('TORCH_PROFILES_DIR', args.torch_profile_out_path),  # a subdir torch_profiles will be created here.
+            output_path=os.environ.get(
+                'TORCH_PROFILES_DIR', args.torch_profile_out_path
+            ),  # a subdir torch_profiles will be created here.
             profiler_kwargs={
                 "with_stack": os.environ.get('TORCH_PROFILER_WITH_STACK', '0') == '1',
             },

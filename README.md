@@ -9,7 +9,7 @@
 
 # **NVIDIA NeMo Framework**
 
-## Latest News
+## Latest News 
 
 <!-- markdownlint-disable -->
 <details open>

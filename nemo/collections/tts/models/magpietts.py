@@ -71,10 +71,6 @@ class MagpieTTSModel(ModelPT):
 
     Supports multiple model types:
 
-    - single_encoder_sv_tts: Transcript goes into the encoder and target audio goes to the decoder. Additionally,
-    speaker_embedding of target audio (or context audio if provided) from TitaNet gets added to encoder
-    output(all timesteps).
-
     - multi_encoder_context_tts: Transcript and context audio go to different encoders. Transcript encoding feeds to
     layers given by cfg.model.transcript_decoder_layers and the context encoding feeds into the layers given by
     context_decoder_layers .Also supports text context which gets encoded by the same encoder as context audio.
@@ -85,8 +81,8 @@ class MagpieTTSModel(ModelPT):
     value (5 seconds). Text context, which is usually shorter than number of codec frames of 5 second of audio, is
     padded to the max context duration in this model.
 
-    - decoder_pretrain_synthesizer: This is the model type used for pretraining the decoder only on audio data using
-    next frame prediction loss.
+    - decoder_ce: Same as decoder_context_tts except there is a small neural network between the context tensors and
+    the decoder input.
     """
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
@@ -203,7 +199,6 @@ class MagpieTTSModel(ModelPT):
         self.eos_id = num_tokens - 1
 
         self.model_type = cfg.get('model_type', None)
-
         self.pad_context_text_to_max_duration = self.model_type in ['decoder_context_tts', 'decoder_ce']
         self.use_kv_cache_for_inference = cfg.get('use_kv_cache_for_inference', False)
 
@@ -237,33 +232,29 @@ class MagpieTTSModel(ModelPT):
             audio_embeddings.append(nn.Embedding(self.num_all_tokens_per_codebook, cfg.embedding_dim))
         self.audio_embeddings = nn.ModuleList(audio_embeddings)
 
-        if self.model_type != 'decoder_pretrain_synthesizer':
-            # Decoder pretrain synthesizer doesn't have transcript encoder/text embeddings
+        if self.use_bpe_char_tokenizer:
+            # BPE char tokenizer
+            assert len(self.tokenizer.tokenizers) == 1, "BPE char tokenizer should only be used with one tokenizer"
+            tokenizer_name = self.tokenizer.tokenizer_names[0]
+            tokenizer = self.tokenizer.tokenizers[tokenizer_name]
+            subword_vocab = tokenizer.get_vocab()
+            # special tokens will be stored as it is in the char_vocab
+            # Each special token will only be mapped to one char id
+            special_vocab = {
+                '<BOS>': self.bos_id,
+                '<EOS>': self.eos_id,
+            }
+            self.cas_encoder = CharAwareSubwordEncoder(
+                d_embed=cfg.embedding_dim,
+                llm_tokenizer_vocab=subword_vocab,
+                subword_padding_idx=self.tokenizer.pad,
+                special_vocab=special_vocab,
+            )
+        else:
+            # Regular text embedding
+            self.text_embedding = nn.Embedding(num_tokens, cfg.embedding_dim)
 
-            if self.use_bpe_char_tokenizer:
-                # BPE char tokenizer
-                assert len(self.tokenizer.tokenizers) == 1, "BPE char tokenizer should only be used with one tokenizer"
-                tokenizer_name = self.tokenizer.tokenizer_names[0]
-                tokenizer = self.tokenizer.tokenizers[tokenizer_name]
-                subword_vocab = tokenizer.get_vocab()
-                # special tokens will be stored as it is in the char_vocab
-                # Each special token will only be mapped to one char id
-                special_vocab = {
-                    '<BOS>': self.bos_id,
-                    '<EOS>': self.eos_id,
-                }
-                self.cas_encoder = CharAwareSubwordEncoder(
-                    d_embed=cfg.embedding_dim,
-                    llm_tokenizer_vocab=subword_vocab,
-                    subword_padding_idx=self.tokenizer.pad,
-                    special_vocab=special_vocab,
-                )
-            else:
-                # Regular text embedding
-                self.text_embedding = nn.Embedding(num_tokens, cfg.embedding_dim)
-
-            self.encoder = transformer_2501.Transformer(**dict(cfg.encoder))
-
+        self.encoder = transformer_2501.Transformer(**dict(cfg.encoder))
         self.decoder = transformer_2501.Transformer(**dict(cfg.decoder))
         self.final_proj = nn.Linear(
             cfg.decoder.d_model,
@@ -304,18 +295,9 @@ class MagpieTTSModel(ModelPT):
                 temperature=15.0,
             )
 
-        if self.model_type == 'single_encoder_sv_tts':
-            # Context audio goes through Titanet to get speaker embedding
-            # Speaker embedding is added to the transcript encoder output
-            self._speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
-                model_name='titanet_large'
-            )
-            self._speaker_verification_model.freeze()  # Lightning does requires_grad = False and self.eval()
-            self.speaker_projection_layer = nn.Linear(cfg.speaker_emb_dim, cfg.embedding_dim)
-            self.transcript_decoder_layers = [
-                idx for idx in range(self.decoder.n_layers)
-            ]  # All layers are used for text
-        elif self.model_type == 'multi_encoder_context_tts':
+        if self.model_type == 'multi_encoder_context_tts':
+            logging.warning(f"The multi_encoder_context_tts model type for {self} is deprecated.")
+
             # Transcript and context audio/text go to different encoders.
             # Output of the encoders goes to the decoder through the cross-attention layers
             self.transcript_decoder_layers = cfg.get('transcript_decoder_layers', [3, 4, 5, 6, 7, 8])
@@ -341,10 +323,6 @@ class MagpieTTSModel(ModelPT):
             self.transcript_decoder_layers = [
                 idx for idx in range(cfg.decoder.n_layers)
             ]  # All layers are used for text
-
-        elif self.model_type == 'decoder_pretrain_synthesizer':
-            # This is for pretraining the decoder only on audio data using next frame prediction loss
-            assert cfg.alignment_loss_scale == 0.0, "Alignment loss is not supported for decoder pretrain synthesizer"
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
@@ -385,6 +363,9 @@ class MagpieTTSModel(ModelPT):
         """
         Only used for saving checkpoints. On save, we remove _speaker_verification_model and _codec_model
         from the checkpoint. The codec model is saved in a separate checkpoint.
+
+        _speaker_verification_model is only included in older checkpoints with the older single_encoder_sv_tts
+        model_type that is no longer supported and can likely be removed in a future version.
         """
         if hasattr(self, '_no_state_dict') and self._no_state_dict:
             return {}
@@ -439,6 +420,9 @@ class MagpieTTSModel(ModelPT):
         strict is True.
         When strict is False, we can call pytorch's load_state_dict.
         When strict is True, we loop through all parameters and rename them to enable loading.
+
+        _speaker_verification_model is only included in older checkpoints with the older single_encoder_sv_tts
+        model_type that is no longer supported and can likely be removed in a future version.
         """
         state_dict = self.update_ckpt(state_dict)
         if strict == False:
@@ -533,16 +517,6 @@ class MagpieTTSModel(ModelPT):
         audio_embedding = audio_embedding / (C * self.frame_stacking_factor)
         return audio_embedding
 
-    def get_speaker_embeddings(self, audio_16khz, audio_len_16khz):
-        # audio_16khz: (B, T)
-        # audio_len_16khz: (B,)
-        self._speaker_verification_model.eval()
-        with torch.no_grad():
-            _, speaker_embeddings = self._speaker_verification_model.forward(
-                input_signal=audio_16khz, input_signal_length=audio_len_16khz
-            )
-            return speaker_embeddings
-
     def compute_local_transformer_logits(self, dec_out, audio_codes_target, targets_offset_by_one=False):
         """
         Predicts the logits for all codebooks using the local transformer. Used in both autoregressive (AR) and MaskGit (MG) modes.
@@ -624,8 +598,6 @@ class MagpieTTSModel(ModelPT):
         frac_masked = cosine_schedule(rand_values)
         # how many positions to mask
         n_masked = torch.ceil(frac_masked * C).long()  # B,T
-        # start from all unmasked
-        mask = torch.zeros_like(codes, dtype=torch.bool)
         # The code further below is the vectorized version of this:
         #  for b in range(B):
         #      for t in range(T):
@@ -1416,27 +1388,16 @@ class MagpieTTSModel(ModelPT):
         text = None
         text_lens = None
 
-        # self.model_type must be one of
-        # [single_encoder_sv_tts, multi_encoder_context_tts, decoder_context_tts, decoder_ce, decoder_pretrain_synthesizer]
-        if self.model_type != 'decoder_pretrain_synthesizer':
-            text = batch['text']
-            text_lens = batch['text_lens']
-            text_mask = get_mask_from_lengths(text_lens)  # (B, T)
-            text_embedded = self.embed_text(text, text_mask)  # (B, T, E)
-            text_encoder_out = self.encoder(text_embedded, text_mask, cond=None, cond_mask=None)['output']  # (B, T, E)
-            _attn_prior = batch.get('align_prior_matrix', None)
-            _attn_prior = self.scale_prior(_attn_prior, self.global_step)
+        # self.model_type must be one of [multi_encoder_context_tts, decoder_context_tts, decoder_ce]
+        text = batch['text']
+        text_lens = batch['text_lens']
+        text_mask = get_mask_from_lengths(text_lens)  # (B, T)
+        text_embedded = self.embed_text(text, text_mask)  # (B, T, E)
+        text_encoder_out = self.encoder(text_embedded, text_mask, cond=None, cond_mask=None)['output']  # (B, T, E)
+        _attn_prior = batch.get('align_prior_matrix', None)
+        _attn_prior = self.scale_prior(_attn_prior, self.global_step)
 
-        if self.model_type == 'single_encoder_sv_tts':
-            target_audio_16khz = batch['audio_16khz']
-            target_audio_lens_16khz = batch['audio_lens_16khz']
-            speaker_embeddings = self.get_speaker_embeddings(target_audio_16khz, target_audio_lens_16khz)
-            speaker_embeddings_projected = self.speaker_projection_layer(speaker_embeddings)
-            cond = text_encoder_out + speaker_embeddings_projected.unsqueeze(1)
-            cond_mask = text_mask
-            multi_encoder_mapping = None
-            attn_prior = _attn_prior
-        elif self.model_type in ['multi_encoder_context_tts', 'decoder_context_tts', 'decoder_ce']:
+        if self.model_type in ['multi_encoder_context_tts', 'decoder_context_tts', 'decoder_ce']:
             if 'context_audio_codes' in batch:
                 context_audio_codes = batch['context_audio_codes']
                 context_audio_codes_lens = batch['context_audio_codes_lens']
@@ -1519,8 +1480,6 @@ class MagpieTTSModel(ModelPT):
                 multi_encoder_mapping = None
                 additional_decoder_input = context_embeddings
                 additional_decoder_mask = context_mask
-        elif self.model_type == 'decoder_pretrain_synthesizer':
-            pass
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
@@ -1971,10 +1930,7 @@ class MagpieTTSModel(ModelPT):
             )
 
             # Get attention image data for logging
-            if (
-                self.model_type != 'decoder_pretrain_synthesizer'
-                and len(attn_info[self.transcript_decoder_layers[0]]['cross_attn_probabilities']) > 1
-            ):
+            if len(attn_info[self.transcript_decoder_layers[0]]['cross_attn_probabilities']) > 1:
                 # cross_attn_probabilities only returned when not using flash attention
                 cross_attention_probs = [
                     attn['cross_attn_probabilities'][0]
@@ -2674,7 +2630,7 @@ class MagpieTTSModel(ModelPT):
             text_context_remapping=self.text_context_remapping,
             text_context_remapping_prob=self.text_context_remapping_prob,
         )
-        dataset.load_16khz_audio = self.model_type == 'single_encoder_sv_tts'
+        dataset.load_16khz_audio = False
         dataset.tokenizer_config = (
             self.cfg.text_tokenizers
         )  # This will be used in worker_init_fn for instantiating tokenizer
@@ -2695,7 +2651,7 @@ class MagpieTTSModel(ModelPT):
             prior_scaling_factor=self.cfg.prior_scaling_factor,
             load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
             dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
-            load_16khz_audio=(self.model_type == 'single_encoder_sv_tts'),
+            load_16khz_audio=False,
             pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
             context_duration_min=self.cfg.context_duration_min,
             context_duration_max=self.cfg.context_duration_max,

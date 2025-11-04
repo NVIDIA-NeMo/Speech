@@ -11,6 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""
+Inference and Evaluation script used for CI and NeMo model evaluation on custom datasets.
+Please use this script as an example of how to do inference with MagpieTTS, but this script is otherwise unsupported
+for general use cases.
+"""
 import argparse
 import copy
 import glob

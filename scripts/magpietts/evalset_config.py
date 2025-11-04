@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""
+Used as a datafile for infer_and_evaluate.py
+"""
 dataset_meta_info = {
     'riva_hard_digits': {
         'manifest_path': '/Data/evaluation_manifests/hard-digits-path-corrected.ndjson',

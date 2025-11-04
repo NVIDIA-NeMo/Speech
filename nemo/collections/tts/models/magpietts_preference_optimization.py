@@ -666,7 +666,7 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             else:
                 # Address CodeQL issue where pred_transcripts might be undefined for future code
                 raise ValueError(
-                    f"{self} received a value of {self.cfg.get("reward_asr_model", "nemo")} in cfg.reward_asr_model "
+                    f"{self} received a value of {self.cfg.get('reward_asr_model', 'nemo')} in cfg.reward_asr_model "
                     "but this class only supports 'nemo' or 'whisper'."
                 )
 

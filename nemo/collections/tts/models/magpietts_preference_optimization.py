@@ -894,7 +894,9 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
 
         policy_model_outputs = self.process_batch(batch_repeated)
 
-        reference_model_output = None  # Address CodeQL issue even though this varibable is only used not self.reference_free
+        reference_model_output = (
+            None  # Address CodeQL issue even though this varibable is only used not self.reference_free
+        )
         if not self.reference_free:
             with torch.no_grad():
                 reference_model_output = self._reference_model.process_batch(batch_repeated)

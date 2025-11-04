@@ -27,7 +27,7 @@ from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
 
-@hydra_runner(config_path="conf/magpietts", config_name="magpietts_en")
+@hydra_runner(config_path="conf/magpietts", config_name="magpietts_lhotse")
 def main(cfg):
     logging.info('\nConfig Params:\n%s', OmegaConf.to_yaml(cfg, resolve=True))
 

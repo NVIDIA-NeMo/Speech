@@ -32,7 +32,7 @@ Next, we can generate audios from a base TTS checkpoint using the following comm
 
 ```
 python examples/tts/magpietts.py \
---config-name=magpietts_inference_en \
+--config-name=magpietts_po_inference \
 mode=test \
 batch_size=64 \
 +init_from_ptl_ckpt=<PATH_TO_MAGPIE_CKPT> \
@@ -56,7 +56,7 @@ Next, we go through the generated audio directory and create chosen-rejected pai
 ```
 python scripts/magpietts/dpo/create_preference_pairs.py \
 --input_manifest <OUTPUT_MANIFEST_FROM_STEP_1> \
---generated_audio_dir <PO_EXP_DIR>/Magpie-TTS-EN-Infer/version_0/audio \
+--generated_audio_dir <PO_EXP_DIR>/MagpieTTS-PO-Infer/version_0/audio \
 --group_size 6 \
 --cer_threshold 0.01 \
 --val_size 256 ;
@@ -64,7 +64,7 @@ python scripts/magpietts/dpo/create_preference_pairs.py \
 
 `cer_threshold=0.01` means that filter out pairs in which the chosen CER > 0.01.
 
-This command should save train and val manifests for DPO finetuning in the base directory of the generated_audio_dir, that is, `<PO_EXP_DIR>/Magpie-TTS-EN-Infer/version_0/manifests/`
+This command should save train and val manifests for DPO finetuning in the base directory of the generated_audio_dir, that is, `<PO_EXP_DIR>/MagpieTTS-PO-Infer/version_0/manifests/`
 
 #### 4. DPO Finetuning Command
 
@@ -80,10 +80,10 @@ exp_manager.exp_dir=<PO_EXP_DIR> \
 exp_manager.checkpoint_callback_params.always_save_nemo=false \
 model.train_ds.dataset._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
 model.validation_ds.dataset._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
-+train_ds_meta.dpopreftrain.manifest_path="<PO_EXP_DIR>/Magpie-TTS-EN-Infer/version_0/manifests/" \
++train_ds_meta.dpopreftrain.manifest_path="<PO_EXP_DIR>/MagpieTTS-PO-Infer/version_0/manifests/" \
 +train_ds_meta.dpopreftrain.audio_dir="/" \
 +train_ds_meta.dpopreftrain.feature_dir="/" \
-+val_ds_meta.dpoprefval.manifest_path="<PO_EXP_DIR>/Magpie-TTS-EN-Infer/version_0/manifests/dpo_val_manifest.json" \
++val_ds_meta.dpoprefval.manifest_path="<PO_EXP_DIR>/MagpieTTS-PO-Infer/version_0/manifests/dpo_val_manifest.json" \
 +val_ds_meta.dpoprefval.audio_dir="/" \
 +val_ds_meta.dpoprefval.feature_dir="/" \
 +model.dpo_beta=0.01 \

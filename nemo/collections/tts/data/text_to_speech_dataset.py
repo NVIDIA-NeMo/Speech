@@ -193,8 +193,8 @@ class TextToSpeechDataset(Dataset):
             sample = DatasetSample(
                 dataset_name=dataset_name,
                 manifest_entry=entry,
-                audio_dir=dataset.audio_dir,
-                feature_dir=dataset.feature_dir,
+                audio_dir=Path(dataset.audio_dir),
+                feature_dir=Path(dataset.feature_dir),
                 text=text,
                 speaker=speaker,
                 speaker_index=speaker_index,

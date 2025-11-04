@@ -30,7 +30,6 @@ from nemo.collections.asr.data.audio_to_diar_label import extract_frame_info_fro
 from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
 from nemo.collections.asr.modules.sortformer_modules import StreamingSortformerState
 from nemo.collections.asr.parts.utils.diarization_utils import (
-    OnlineEvaluation,
     get_color_palette,
     print_sentences,
     read_seglst,
@@ -535,7 +534,7 @@ class SpeakerTaggedASR:
         self._frame_len_sec = 0.08
         self._initial_steps = cfg.ignored_initial_frame_steps
         self._stt_words = []
-        self._init_evaluator()
+        self._init_transcript_sessions()
         self._frame_hop_length = self.asr_model.encoder.streaming_cfg.valid_out_len
 
         # Multi-instance configs
@@ -562,9 +561,9 @@ class SpeakerTaggedASR:
         )
         self.n_active_speakers_per_stream = self.cfg.max_num_of_spks
 
-    def _init_evaluator(self):
+    def _init_transcript_sessions(self):
         """
-        Initialize the evaluator for the offline STT and speaker diarization.
+        Initialize the word and time-stamp sequence for each session.
         """
         self.online_evaluators, self._word_and_ts_seq = [], {}
         for _, (uniq_id, data_dict) in enumerate(self.test_manifest_dict.items()):
@@ -584,26 +583,6 @@ class SpeakerTaggedASR:
                 "speaker_count_buffer": [],
                 "sentence_memory": {},
             }
-
-            if 'seglst_filepath' in data_dict and data_dict['seglst_filepath'] is not None:
-                ref_seglst = read_seglst(data_dict['seglst_filepath'])
-            else:
-                ref_seglst = None
-
-            if 'rttm_filepath' in data_dict and data_dict['rttm_filepath'] is not None:
-                ref_rttm_labels = rttm_to_labels(data_dict['rttm_filepath'])
-            else:
-                ref_rttm_labels = None
-
-            eval_instance = OnlineEvaluation(
-                ref_seglst=ref_seglst,
-                ref_rttm_labels=ref_rttm_labels,
-                hyp_seglst=None,
-                collar=0.25,
-                ignore_overlap=False,
-                verbose=True,
-            )
-            self.online_evaluators.append(eval_instance)
 
     def _get_offset_sentence(self, session_trans_dict: Dict[str, Any], offset: int) -> Dict[str, Any]:
         """

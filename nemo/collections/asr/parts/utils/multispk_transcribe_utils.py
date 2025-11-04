@@ -32,12 +32,11 @@ from nemo.collections.asr.modules.sortformer_modules import StreamingSortformerS
 from nemo.collections.asr.parts.utils.diarization_utils import (
     get_color_palette,
     print_sentences,
-    read_seglst,
     write_txt,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map as get_audio_rttm_map
-from nemo.collections.asr.parts.utils.speaker_utils import get_uniqname_from_filepath, rttm_to_labels
+from nemo.collections.asr.parts.utils.speaker_utils import get_uniqname_from_filepath
 from nemo.utils import logging
 
 

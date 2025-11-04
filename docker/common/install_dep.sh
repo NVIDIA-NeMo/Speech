@@ -245,7 +245,7 @@ mcore() {
   build() {
     if [[ "${NVIDIA_PYTORCH_VERSION}" != "" ]]; then
       pip wheel --no-deps --no-cache-dir --no-build-isolation --wheel-dir $WHEELS_DIR $MAMBA_DIR
-      pip wheel --no-deps --no-cache-dir --wheel-dir $WHEELS_DIR $CAUSAL_CONV1D_DIR
+      pip wheel --no-deps --no-cache-dir --no-build-isolation --wheel-dir $WHEELS_DIR $CAUSAL_CONV1D_DIR
     fi
 
     pip wheel --no-deps --wheel-dir $WHEELS_DIR $MLM_DIR
@@ -302,7 +302,6 @@ extra() {
   local mode="$1"
   DEPS=(
     "llama-index==0.10.43"                                                                     # incompatible with nvidia-pytriton
-    "ctc_segmentation==1.7.1 ; (platform_machine == 'x86_64' and platform_system != 'Darwin')" # requires numpy<2.0.0 to be installed before
     "nemo_run"
     "nvidia-modelopt==0.35.0"                                                                  # We want a specific version of nvidia-modelopt
   )

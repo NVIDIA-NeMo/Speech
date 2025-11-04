@@ -528,13 +528,17 @@ class SpeakerTaggedASR:
                 raise ValueError("One of the audio_file and manifest_file should be non-empty!")
         else:
             self.test_manifest_dict = {
-                "streaming_session": {'audio_filepath': 'streaming_session.wav', 'seglst_filepath': None, 'rttm_filepath': None}
+                "streaming_session": {
+                    'audio_filepath': 'streaming_session.wav',
+                    'seglst_filepath': None,
+                    'rttm_filepath': None,
+                }
             }
         self.transcribed_speaker_texts = [None] * len(self.test_manifest_dict)
 
         self.asr_model = asr_model
         self.diar_model = diar_model
-        
+
         # ASR speaker tagging configs
         self._fix_prev_words_count = cfg.fix_prev_words_count
         self._sentence_render_length = int(self._fix_prev_words_count + cfg.update_prev_words_sentence)
@@ -1345,7 +1349,8 @@ class SpeakerTaggedASR:
                 )
                 if not self.cfg.deploy_mode:
                     write_txt(
-                        f'{self.cfg.print_path.replace(".sh", f"_{session_idx}.sh")}', self.transcribed_speaker_texts[session_idx].strip()
+                        f'{self.cfg.print_path.replace(".sh", f"_{session_idx}.sh")}',
+                        self.transcribed_speaker_texts[session_idx].strip(),
                     )
         return self.transcribed_speaker_texts
 

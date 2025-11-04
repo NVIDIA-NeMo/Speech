@@ -19,7 +19,7 @@ import nemo_run as run
 
 from nemo.collections.llm.recipes.nemotronh_56b import pretrain_recipe
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
-from nemo.lightning.run.plugins import NsysPlugin
+from nemo.lightning.run.plugins import NsysPlugin, IsolationTestPlugin
 
 from ..argument_parser import parse_additional_slurm_params, parse_cli_args
 from ..executors import slurm_executor

@@ -180,6 +180,7 @@ jobs:
             script: SPEECHLM_HF_Training_DuplexS2SSpeechDecoder
           - runner: self-hosted-azure
             script: SPEECHLM_HF_Training_SALM
+            timeout: 20
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}

@@ -29,7 +29,6 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from torch import nn
 from torch.utils.data import get_worker_info
 
-import nemo.collections.asr as nemo_asr
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
 from nemo.collections.tts.losses.aligner_loss import ForwardSumLoss
@@ -1462,6 +1461,7 @@ class MagpieTTSModel(ModelPT):
 
             elif self.model_type in ['decoder_context_tts', 'decoder_ce']:
                 dec_context_size = context_mask.size(1)
+                context_embeddings = None  # Address CodeQL
                 if self.model_type == 'decoder_context_tts':
                     context_embeddings = context_input_embedded
                 elif self.model_type == 'decoder_ce':

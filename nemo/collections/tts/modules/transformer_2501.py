@@ -581,6 +581,7 @@ class Transformer(torch.nn.Module):
         use_learnable_pos_emb: bool = False,
         conv_non_linearity: Callable = torch.nn.GELU(approximate="tanh"),
         make_prior_window_strict: bool = False,
+        sample_last_layer: bool = False,
     ):
         """
         Initializes a stack of transformer layers. Can be used for both encoder and decoder.
@@ -620,7 +621,7 @@ class Transformer(torch.nn.Module):
 
         self.norm_out = torch.nn.Identity()
         if apply_norm_out:
-            self.norm_out = torch.nn.LayerNorm(d_model, bias=False)
+            self.norm_out = torch.nn.LayerNorm(d_model * 2 if sample_last_layer else d_model, bias=False)
 
         self.layers = torch.nn.ModuleList()
         for _ in range(self.n_layers):
@@ -642,6 +643,10 @@ class Transformer(torch.nn.Module):
                     make_prior_window_strict=make_prior_window_strict,
                 )
             )
+
+        self.sample_last_layer = sample_last_layer
+        if sample_last_layer:
+            self.sample_layer = torch.nn.Linear(d_model, d_model * 2, bias=False)
 
         self.use_learnable_pos_emb = use_learnable_pos_emb
         self.position_embeddings = None
@@ -744,7 +749,20 @@ class Transformer(torch.nn.Module):
 
             if max_layer_idx is not None and idx == max_layer_idx:
                 break
+        # Apply the final linear layer if sample_last_layer is enabled
+        if self.sample_last_layer:
+            x = self.sample_layer(x)
 
         x = self.norm_out(x)
         x = self.dropout_out(x)
+        if self.sample_last_layer:
+            # Split the tensor: first 768 dimensions + random(0,1) * remaining 768 dimensions
+            x_base = x[..., :x.size(-1)//2]  # First 768 dimensions [B, L, :768]
+            x_sample = x[..., x.size(-1)//2:]  # Remaining 768 dimensions [B, L, 768:]
+            
+            # Generate random factor from normal distribution
+            random_factor = torch.randn_like(x_sample)
+            
+            # Combine: base + random * sample
+            x = x_base + random_factor * x_sample
         return {'output': x, 'attn_probabilities': attn_probabilities}

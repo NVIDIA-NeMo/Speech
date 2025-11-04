@@ -32,7 +32,7 @@ from nemo.collections.tts.losses.audio_codec_loss import (
     SISDRLoss,
     TimeDomainLoss,
 )
-from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncoder
+from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncoder, default_precision
 from nemo.collections.tts.modules.common import GaussianDropout
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
@@ -42,7 +42,6 @@ from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, 
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
-from nemo.utils.decorators import experimental
 
 try:
     import torchaudio
@@ -52,7 +51,6 @@ except ModuleNotFoundError:
     HAVE_TORCHAUDIO = False
 
 
-@experimental
 class AudioCodecModel(ModelPT):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Convert to Hydra 1.0 compatible DictConfig
@@ -143,6 +141,22 @@ class AudioCodecModel(ModelPT):
         self.gen_loss_fn = instantiate(cfg.generator_loss)
         self.disc_loss_fn = instantiate(cfg.discriminator_loss)
 
+        self.mmd_loss_start_epoch = cfg.get("mmd_loss_start_epoch", 0)
+
+        if "mmd_loss" in cfg:
+            self.mmd_loss_fn = instantiate(cfg.mmd_loss)
+            self.mmd_loss_scale = cfg.get("mmd_loss_scale", 1.0)
+        else:
+            self.mmd_loss_fn = None
+            self.mmd_loss_scale = None
+
+        if "mmd_time_loss" in cfg:
+            self.mmd_time_loss_fn = instantiate(cfg.mmd_time_loss)
+            self.mmd_time_loss_scale = cfg.get("mmd_time_loss_scale", 1.0)
+        else:
+            self.mmd_time_loss_fn = None
+            self.mmd_time_loss_scale = None
+
         feature_loss_type = cfg.get("feature_loss_type", "relative")
         if feature_loss_type == "relative":
             self.feature_loss_fn = RelativeFeatureMatchingLoss()
@@ -190,6 +204,24 @@ class AudioCodecModel(ModelPT):
         # Optimizer setup
         self.lr_schedule_interval = None
         self.automatic_optimization = False
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
+    @property
+    def num_codebooks(self):
+        if self.vector_quantizer is None:
+            raise ValueError("This AudioCodecModel does not have a vector quantizer.")
+
+        return self.vector_quantizer.num_codebooks
+
+    @property
+    def codebook_size(self):
+        if self.vector_quantizer is None:
+            raise ValueError("This AudioCodecModel does not have a vector quantizer.")
+
+        return self.vector_quantizer.codebook_size
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         if hasattr(self, '_no_state_dict') and self._no_state_dict:
@@ -307,7 +339,9 @@ class AudioCodecModel(ModelPT):
             raise ValueError("Cannot quantize without quantizer")
 
         # vector quantizer is returning [C, B, T], where C is the number of codebooks
-        tokens = self.vector_quantizer.encode(inputs=encoded, input_len=encoded_len)
+        with default_precision(torch.float32):
+            # vector quantizer is returning [C, B, T], where C is the number of codebooks
+            tokens = self.vector_quantizer.encode(inputs=encoded, input_len=encoded_len)
         # use batch first for the output
         tokens = rearrange(tokens, 'C B T -> B C T')
         return tokens
@@ -336,7 +370,9 @@ class AudioCodecModel(ModelPT):
 
         # vector quantizer is using [C, B, T], where C is the number of codebooks
         tokens = rearrange(tokens, 'B C T -> C B T')
-        dequantized = self.vector_quantizer.decode(indices=tokens, input_len=tokens_len)
+        with default_precision(torch.float32):
+            dequantized = self.vector_quantizer.decode(indices=tokens, input_len=tokens_len)
+        dequantized = dequantized.to(self.dtype)  # make sure dequantized is in the right dtype
         return dequantized
 
     @typecheck(
@@ -389,6 +425,7 @@ class AudioCodecModel(ModelPT):
         """
         # Convert a discrete representation to a dequantized vector for each frame
         dequantized = self.dequantize(tokens=tokens, tokens_len=tokens_len)
+        dequantized = dequantized.to(self.dtype)  # make sure that the dequantized is in the model dtype
         # Apply decoder to obtain time-domain audio for each frame
         audio, audio_len = self.decode_audio(inputs=dequantized, input_len=tokens_len)
 
@@ -459,18 +496,22 @@ class AudioCodecModel(ModelPT):
             encoded = self.encoder_noise(encoded)
 
         if self.vector_quantizer:
-            if self.vector_quantizer_has_commit_loss:
-                encoded, _, commit_loss = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
-            else:
-                encoded, _ = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
-                commit_loss = 0.0
+            with default_precision(torch.float32):
+                if self.vector_quantizer_has_commit_loss:
+                    encoded, _, commit_loss = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
+                else:
+                    encoded, _ = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
+                    commit_loss = 0.0
+
+            encoded = encoded.to(encoded.dtype)  # make sure encoded is converted to the right dtype
         else:
             commit_loss = 0.0
 
         # [B, T]
+        encoded = encoded.to(self.dtype)  # make sure vector quantizer output is in the model dtype
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
 
-        return audio, audio_len, audio_gen, commit_loss
+        return audio, audio_len, audio_gen, commit_loss, encoded
 
     @property
     def disc_update_prob(self) -> float:
@@ -487,7 +528,7 @@ class AudioCodecModel(ModelPT):
     def training_step(self, batch, batch_idx):
         optim_gen, optim_disc = self.optimizers()
 
-        audio, audio_len, audio_gen, commit_loss = self._process_batch(batch)
+        audio, audio_len, audio_gen, commit_loss, codes = self._process_batch(batch)
 
         metrics = {
             "global_step": self.global_step,
@@ -508,7 +549,11 @@ class AudioCodecModel(ModelPT):
 
         generator_losses = []
 
-        loss_mel_l1, loss_mel_l2 = self.mel_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+        # stft does not support bf16, so make it run in fp32
+        loss_mel_l1, loss_mel_l2 = self.mel_loss_fn(
+            audio_real=audio.float(), audio_gen=audio_gen.float(), audio_len=audio_len
+        )
+
         if self.mel_loss_l1_scale:
             metrics["g_loss_mel_l1"] = loss_mel_l1
             generator_losses.append(self.mel_loss_l1_scale * loss_mel_l1)
@@ -517,7 +562,7 @@ class AudioCodecModel(ModelPT):
             generator_losses.append(self.mel_loss_l2_scale * loss_mel_l2)
 
         if self.stft_loss_scale:
-            loss_stft = self.stft_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+            loss_stft = self.stft_loss_fn(audio_real=audio.float(), audio_gen=audio_gen.float(), audio_len=audio_len)
             metrics["g_loss_stft"] = loss_stft
             generator_losses.append(self.stft_loss_scale * loss_stft)
 
@@ -546,6 +591,19 @@ class AudioCodecModel(ModelPT):
         if self.commit_loss_scale:
             metrics["g_loss_commit"] = commit_loss
             generator_losses.append(self.commit_loss_scale * commit_loss)
+
+        if self.mmd_loss_scale:
+            loss_mmd = self.mmd_loss_fn(inputs=codes)
+            metrics["g_loss_mmd"] = loss_mmd
+
+            if self.current_epoch >= self.mmd_loss_start_epoch:
+                generator_losses.append(self.mmd_loss_scale * loss_mmd)
+
+        if self.mmd_time_loss_scale:
+            loss_mmd_time = self.mmd_time_loss_fn(inputs=codes)
+            metrics["g_loss_mmd_time"] = loss_mmd_time
+            if self.current_epoch >= self.mmd_loss_start_epoch:
+                generator_losses.append(self.mmd_time_loss_scale * loss_mmd_time)
 
         # compute embeddings for speaker consistency loss
         if self.use_scl_loss:
@@ -592,10 +650,12 @@ class AudioCodecModel(ModelPT):
         self.update_lr("epoch")
 
     def validation_step(self, batch, batch_idx):
-        audio, audio_len, audio_gen, _ = self._process_batch(batch)
+        audio, audio_len, audio_gen, _, _ = self._process_batch(batch)
 
-        loss_mel_l1, loss_mel_l2 = self.mel_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
-        loss_stft = self.stft_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+        loss_mel_l1, loss_mel_l2 = self.mel_loss_fn(
+            audio_real=audio.float(), audio_gen=audio_gen.float(), audio_len=audio_len
+        )
+        loss_stft = self.stft_loss_fn(audio_real=audio.float(), audio_gen=audio_gen.float(), audio_len=audio_len)
         loss_time_domain = self.time_domain_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
         loss_si_sdr = self.si_sdr_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
 

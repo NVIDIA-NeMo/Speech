@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts.py \
-    --config-name magpietts_en \
+    --config-name magpietts \
+    model.model_type=multi_encoder_context_tts \
+    +model.transcript_decoder_layers=[3,4,5,6,7] \
+    +model.context_decoder_layers=[8,9] \
     +train_ds_meta.an4.manifest_path="/home/TestData/an4_dataset/an4_train_context_v1.json" \
     +train_ds_meta.an4.audio_dir="/" \
     +train_ds_meta.an4.tokenizer_names="[english_phoneme]" \

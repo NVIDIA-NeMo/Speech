@@ -552,7 +552,7 @@ def parse_cli_args():
     parser.add_argument(
         "--isolation_noise_pairs",
         type=int,
-        help="Container image to use for isolation test",
+        help="Number of noisy neighbor pairs to run isolation test with",
         required=False,
         default=1,
     )

@@ -349,6 +349,7 @@ class BasePipeline(PipelineInterface):
         check_existance_of_required_attributes(
             self,
             [
+                'num_slots',
                 'use_feat_cache',
                 'chunk_size_in_secs',
                 'buffer_size_in_secs',
@@ -366,6 +367,7 @@ class BasePipeline(PipelineInterface):
             chunk_size_for_feature_buffer = self.buffer_size_in_secs
 
         self.bufferer = BatchedCacheFeatureBufferer(
+            num_slots=self.num_slots,
             sample_rate=self.sample_rate,
             buffer_size_in_secs=self.buffer_size_in_secs,
             chunk_size_in_secs=chunk_size_for_feature_buffer,

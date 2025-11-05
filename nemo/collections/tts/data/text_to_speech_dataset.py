@@ -52,8 +52,8 @@ class DatasetMeta:
 class DatasetSample:
     dataset_name: str
     manifest_entry: Dict[str, Any]
-    audio_dir: Path
-    feature_dir: Path
+    audio_dir: Optional[Path]
+    feature_dir: Optional[Path]
     text: str
     speaker: str
     speaker_index: int = None
@@ -193,8 +193,8 @@ class TextToSpeechDataset(Dataset):
             sample = DatasetSample(
                 dataset_name=dataset_name,
                 manifest_entry=entry,
-                audio_dir=Path(dataset.audio_dir),
-                feature_dir=Path(dataset.feature_dir),
+                audio_dir=None if dataset.audio_dir is None else Path(dataset.audio_dir),
+                feature_dir=None if dataset.feature_dir is None else Path(dataset.feature_dir),
                 text=text,
                 speaker=speaker,
                 speaker_index=speaker_index,

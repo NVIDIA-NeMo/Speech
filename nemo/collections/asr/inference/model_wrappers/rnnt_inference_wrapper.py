@@ -71,12 +71,15 @@ class RNNTInferenceWrapper(ASRInferenceWrapper):
         """
         return self.asr_model.encoder.subsampling_factor
 
-    def encode(self, processed_signal: Tensor, processed_signal_length: Tensor) -> tuple[Tensor, Tensor]:
+    def encode(
+        self, processed_signal: Tensor, processed_signal_length: Tensor, prompt_vectors: Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
         """
         Get encoder output from the model. It is used for streaming inference.
         Args:
             processed_signal: (Tensor) processed signal. Shape is torch.Size([B, C, T]).
             processed_signal_length: (Tensor) processed signal length. Shape is torch.Size([B]).
+            prompt_vectors: (Tensor | None) Optional prompt vectors for multilingual models. Shape is torch.Size([B, num_prompts]).
         Returns:
             (tuple[Tensor, Tensor]) encoder output and encoder output length of shape torch.Size([B, T, D]), torch.Size([B]).
         """
@@ -92,9 +95,15 @@ class RNNTInferenceWrapper(ASRInferenceWrapper):
             torch.no_grad(),
         ):
 
-            forward_outs = self.asr_model(
-                processed_signal=processed_signal.to(self.cast_dtype), processed_signal_length=processed_signal_length
-            )
+            # Prepare model arguments
+            model_args = {
+                'processed_signal': processed_signal.to(self.cast_dtype),
+                'processed_signal_length': processed_signal_length,
+            }
+            if prompt_vectors is not None:
+                model_args['prompt'] = prompt_vectors
+
+            forward_outs = self.asr_model(**model_args)
 
         encoded, encoded_len = forward_outs
         return encoded, encoded_len
@@ -113,3 +122,35 @@ class RNNTInferenceWrapper(ASRInferenceWrapper):
             encoded.to(self.cast_dtype), encoded_len, return_hypotheses=True, partial_hypotheses=partial_hypotheses
         )
         return best_hyp
+
+    def encode_with_prompts(
+        self, processed_signal: Tensor, processed_signal_length: Tensor, prompt_vectors: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Convenience wrapper for prompt-enabled encoding.
+        Expands prompt vectors across the time dimension before calling encode.
+        Args:
+            processed_signal: (Tensor) processed signal. Shape is torch.Size([B, C, T]).
+            processed_signal_length: (Tensor) processed signal length. Shape is torch.Size([B]).
+            prompt_vectors: (Tensor) prompt vectors. Shape is torch.Size([B, num_prompts]).
+        Returns:
+            (tuple[Tensor, Tensor]) encoder output and encoder output length.
+        """
+        encoder_time_steps = self._estimate_encoder_time_steps(processed_signal.shape[2])
+        # Expand prompts: [B, num_prompts] -> [B, T_enc, num_prompts]
+        prompt_vectors = prompt_vectors.unsqueeze(1).expand(-1, encoder_time_steps, -1)
+        return self.encode(
+            processed_signal=processed_signal,
+            processed_signal_length=processed_signal_length,
+            prompt_vectors=prompt_vectors,
+        )
+
+    def _estimate_encoder_time_steps(self, input_time_steps: int) -> int:
+        """
+        Estimate encoder output time steps from input time steps.
+        Args:
+            input_time_steps: (int) Number of time steps in the input signal.
+        Returns:
+            (int) Estimated number of time steps in encoder output.
+        """
+        return input_time_steps // self.get_subsampling_factor()

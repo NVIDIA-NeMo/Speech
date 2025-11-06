@@ -29,6 +29,7 @@ class ASRRequestOptions:
     enable_pnc: bool = None
     stop_history_eou: int = None
     asr_output_granularity: ASROutputGranularity | str = None
+    language_code: str | None = None
 
     def __post_init__(self) -> None:
         """
@@ -56,6 +57,7 @@ class ASRRequestOptions:
         default_enable_pnc: bool,
         default_stop_history_eou: int,
         default_asr_output_granularity: ASROutputGranularity | str,
+        default_language_code: str | None = None,
     ) -> "ASRRequestOptions":
         """
         Augment the options with the default values.
@@ -64,6 +66,7 @@ class ASRRequestOptions:
             default_enable_pnc (bool): Default enable PNC.
             default_stop_history_eou (int): Default stop history EOU.
             default_asr_output_granularity (ASROutputGranularity | str): Default output granularity.
+            default_language_code (str | None): Default language code for prompt-enabled models.
         Returns:
             ASRRequestOptions: Augmented options.
         """
@@ -76,6 +79,7 @@ class ASRRequestOptions:
             asr_output_granularity=(
                 default_asr_output_granularity if self.asr_output_granularity is None else self.asr_output_granularity
             ),
+            language_code=default_language_code if self.language_code is None else self.language_code,
         )
 
 

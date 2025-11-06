@@ -70,6 +70,7 @@ class BufferedRNNTPipeline(BasePipeline):
         self.init_bpe_decoder()
         self.init_decoding_computer()
         self.init_text_processor(cfg, itn_model)
+        self.init_prompt_support()
         super().__init__()
 
     def init_parameters(self, cfg: DictConfig) -> None:
@@ -174,6 +175,82 @@ class BufferedRNNTPipeline(BasePipeline):
         if self.stateful:
             self.decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
 
+    def init_prompt_support(self) -> None:
+        """Initialize prompt support for multilingual models."""
+        self.prompt_enabled = hasattr(self.asr_model.asr_model, 'concat') and self.asr_model.asr_model.concat
+
+        if self.prompt_enabled:
+            self._prompt_config = self._load_prompt_config()
+            self._prompt_matrix_cache = {}
+
+    def _load_prompt_config(self) -> dict:
+        """
+        Load and cache prompt configuration once at initialization.
+        Returns:
+            (dict) Prompt configuration containing num_prompts, prompt_dict, and compute_dtype.
+        """
+        cfg = self.asr_model.asr_model.cfg
+        if cfg and hasattr(cfg, 'model_defaults'):
+            model_defaults = cfg.model_defaults
+            num_prompts = model_defaults.get('num_prompts', None)
+            prompt_dict = model_defaults.get('prompt_dictionary', None)
+
+            # Validate and convert types once
+            num_prompts_int = int(num_prompts) if num_prompts is not None else 0
+
+            is_dict_like = isinstance(prompt_dict, dict) or (
+                hasattr(prompt_dict, 'get') and hasattr(prompt_dict, '__contains__')
+            )
+
+            if num_prompts_int > 0 and is_dict_like:
+                return {
+                    'num_prompts': num_prompts_int,
+                    'prompt_dict': prompt_dict,
+                    'compute_dtype': getattr(self.asr_model.asr_model, 'dtype', torch.float32),
+                }
+
+        return {}
+
+    def _resolve_prompt_index(self, language_code: str) -> int:
+        """
+        Resolve language_code to a strict prompt index; raise if invalid.
+        Args:
+            language_code: (str) Language code to resolve (e.g., "en-US", "es-ES").
+        Returns:
+            (int) Prompt index corresponding to the language code.
+        Raises:
+            RuntimeError: If prompt configuration is missing.
+            ValueError: If language_code is not found in prompt dictionary.
+        """
+        if not hasattr(self, '_prompt_config') or not self._prompt_config:
+            raise RuntimeError("Prompt configuration is missing for a prompt-enabled model.")
+        prompt_dict = self._prompt_config['prompt_dict']
+        lang_index = prompt_dict.get(language_code, None)
+        if lang_index is None:
+            raise ValueError(
+                f"Language code '{language_code}' not found in prompt dictionary. "
+                f"Available languages: {list(prompt_dict.keys())}"
+            )
+        return lang_index
+
+    def _get_prompt_matrix(self) -> Tensor:
+        """
+        Return cached identity matrix [num_prompts, num_prompts] on device/dtype.
+        Returns:
+            (Tensor) Identity matrix for prompt selection.
+        """
+        if not hasattr(self, '_prompt_config') or not self._prompt_config:
+            raise RuntimeError("Prompt configuration is missing for a prompt-enabled model.")
+        key = (self.device, self._prompt_config['compute_dtype'])
+        cached = self._prompt_matrix_cache.get(key)
+        if cached is not None:
+            return cached
+        num_prompts = self._prompt_config['num_prompts']
+        compute_dtype = self._prompt_config['compute_dtype']
+        eye = torch.eye(num_prompts, device=self.device, dtype=compute_dtype)
+        self._prompt_matrix_cache[key] = eye
+        return eye
+
     def init_zero_enc(self) -> Tensor:
         """
         Initialize the encoder output for the zero buffer.
@@ -212,6 +289,15 @@ class BufferedRNNTPipeline(BasePipeline):
             default_asr_output_granularity=self.asr_output_granularity,
         )
         state.set_options(new_options)
+
+        # Create per-stream prompt index for prompt-enabled models
+        if self.prompt_enabled:
+            lang_code = getattr(new_options, "language_code", None)
+            if not isinstance(lang_code, str) or len(lang_code) == 0:
+                raise ValueError("Prompt-enabled model requires a valid language_code in request options.")
+            prompt_idx = self._resolve_prompt_index(lang_code)
+            state.set_prompt_index(prompt_idx)
+
         return state
 
     def get_sep(self) -> str:
@@ -295,9 +381,27 @@ class BufferedRNNTPipeline(BasePipeline):
             expected_feature_buffer_len=self.expected_feature_buffer_len,
         )
 
-        encoded, encoded_len = self.asr_model.encode(
-            processed_signal=feature_buffers, processed_signal_length=feature_buffer_lens
-        )
+        # Build prompt vectors if prompts are enabled
+        if self.prompt_enabled:
+            requests_states = [self.get_state(f.stream_id) for f in frames]
+            indices = torch.tensor([s.prompt_idx for s in requests_states], device=self.device, dtype=torch.long)
+            # Validate indices
+            num_prompts = self._prompt_config['num_prompts']
+            if torch.any((indices < 0) | (indices >= num_prompts)):
+                raise ValueError("Found out-of-range prompt index in batch.")
+            prompt_matrix = self._get_prompt_matrix()
+            prompt_vectors = prompt_matrix.index_select(0, indices)  # [B, num_prompts]
+            
+            # Use encode_with_prompts which handles dimension expansion
+            encoded, encoded_len = self.asr_model.encode_with_prompts(
+                processed_signal=feature_buffers,
+                processed_signal_length=feature_buffer_lens,
+                prompt_vectors=prompt_vectors
+            )
+        else:
+            encoded, encoded_len = self.asr_model.encode(
+                processed_signal=feature_buffers, processed_signal_length=feature_buffer_lens
+            )
         encoded = encoded.clone()
         encoded_len = encoded_len.clone()
 
@@ -331,9 +435,26 @@ class BufferedRNNTPipeline(BasePipeline):
         processed_signals = normalize_features(processed_signals, processed_signal_lengths)
         processed_signal_lengths = processed_signal_lengths.clamp(max=processed_signals.shape[2])
 
-        encoded, encoded_len = self.asr_model.encode(
-            processed_signal=processed_signals, processed_signal_length=processed_signal_lengths
-        )
+        # Build prompt vectors if prompts are enabled
+        if self.prompt_enabled:
+            requests_states = [self.get_state(f.stream_id) for f in fbuffers]
+            indices = torch.tensor([s.prompt_idx for s in requests_states], device=self.device, dtype=torch.long)
+            num_prompts = self._prompt_config['num_prompts']
+            if torch.any((indices < 0) | (indices >= num_prompts)):
+                raise ValueError("Found out-of-range prompt index in batch.")
+            prompt_matrix = self._get_prompt_matrix()
+            prompt_vectors = prompt_matrix.index_select(0, indices)  # [B, num_prompts]
+            
+            # Use encode_with_prompts which handles dimension expansion
+            encoded, encoded_len = self.asr_model.encode_with_prompts(
+                processed_signal=processed_signals,
+                processed_signal_length=processed_signal_lengths,
+                prompt_vectors=prompt_vectors
+            )
+        else:
+            encoded, encoded_len = self.asr_model.encode(
+                processed_signal=processed_signals, processed_signal_length=processed_signal_lengths
+            )
         encoded = encoded.clone()
         encoded_len = encoded_len.clone()
 

@@ -65,11 +65,13 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     model.encoder.is_causal=false \
     model.use_text_conditioning_encoder=true \
     +model.legacy_text_conditioning=True \
+    ~model.text_conditioning_tokenizer_name \
     +model.forced_num_all_tokens_per_codebook=2048 \
     +model.forced_audio_eos_id=2047 \
     +model.forced_audio_bos_id=2046 \
     +model.forced_context_audio_eos_id=2045 \
     +model.forced_context_audio_bos_id=2044 \
+    model.local_transformer_n_layers=3 \
     model.codecmodel_path="/home/TestData/tts/AudioCodec_21Hz_no_eliz_without_wavlm_disc.nemo" \
     model.alignment_loss_scale=0.0 \
     model.prior_scaling_factor=null \

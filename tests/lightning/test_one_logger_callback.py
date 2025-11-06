@@ -80,7 +80,6 @@ class TestOneLoggerNeMoCallback:
             "session_tag_or_fn": "test-session",
             "enable_for_current_rank": True,
             "world_size_or_fn": 1,
-            "error_handling_strategy": "propagate_exceptions",
         }
         mock_get_config.return_value = mock_init_config
 
@@ -119,7 +118,6 @@ class TestOneLoggerCallback:
             assert config["session_tag_or_fn"] == "test_job"
             assert "enable_for_current_rank" in config
             assert config["world_size_or_fn"] == 4
-            assert config["error_handling_strategy"] == "propagate_exceptions"
 
     @pytest.mark.unit
     def test_get_one_logger_init_config_no_slurm(self):

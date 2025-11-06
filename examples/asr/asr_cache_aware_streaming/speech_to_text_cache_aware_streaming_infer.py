@@ -97,6 +97,7 @@ python speech_to_text_cache_aware_streaming_infer.py \
 """
 
 
+import glob
 import json
 import os
 import time
@@ -128,7 +129,8 @@ class TranscriptionConfig:
     # Required configs
     model_path: Optional[str] = None  # Path to a .nemo file
     pretrained_name: Optional[str] = None  # Name of a pretrained model
-    # audio_dir: Optional[str] = None  # Path to a directory which contains audio files
+    audio_dir: Optional[str] = None  # Path to a directory which contains audio files
+    audio_type: str = "wav"  # type of audio file if audio_dir passed
     audio_file: Optional[str] = None  # Path to an audio file to perform streaming
     dataset_manifest: Optional[str] = None  # Path to dataset's JSON manifest
     output_path: Optional[str] = None  # Path to output file when manifest is used as input
@@ -329,10 +331,8 @@ def main(cfg: TranscriptionConfig):
             f"Compute dtype {compute_dtype} is not yet supported for cache-aware models, use float32 instead"
         )
 
-    if (cfg.audio_file is None and cfg.dataset_manifest is None) or (
-        cfg.audio_file is not None and cfg.dataset_manifest is not None
-    ):
-        raise ValueError("One of the audio_file and dataset_manifest should be non-empty!")
+    if sum((cfg.audio_file is not None, cfg.dataset_manifest is not None, cfg.audio_dir is not None)) != 1:
+        raise ValueError("Exactly one of the `audio_file`, `dataset_manifest` or `audio_dir` should be non-empty!")
 
     asr_model, model_name = setup_model(cfg=cfg, map_location=device)
 
@@ -414,15 +414,26 @@ def main(cfg: TranscriptionConfig):
             all_refs_text = []
             batch_size = cfg.batch_size
 
-            manifest_dir = Path(cfg.dataset_manifest).parent
-            samples = read_manifest(cfg.dataset_manifest)
-            # fix relative paths
-            for item in samples:
-                audio_filepath = Path(item["audio_filepath"])
-                if not audio_filepath.is_absolute():
-                    item["audio_filepath"] = str(manifest_dir / audio_filepath)
+            if cfg.dataset_manifest is not None:
+                manifest_dir = Path(cfg.dataset_manifest).parent
+                samples = read_manifest(cfg.dataset_manifest)
+                # fix relative paths
+                for item in samples:
+                    audio_filepath = Path(item["audio_filepath"])
+                    if not audio_filepath.is_absolute():
+                        item["audio_filepath"] = str(manifest_dir / audio_filepath)
 
-            logging.info(f"Loaded {len(samples)} from the manifest at {cfg.dataset_manifest}.")
+                logging.info(f"Loaded {len(samples)} from the manifest at {cfg.dataset_manifest}.")
+                dataset_title = os.path.splitext(os.path.basename(cfg.dataset_manifest))[0]
+            else:
+                assert cfg.audio_dir is not None
+                samples = [
+                    {"audio_filepath": audio_filepath}
+                    for audio_filepath in (
+                        glob.glob(os.path.join(cfg.audio_dir, f"**/*.{cfg.audio_type}"), recursive=True)
+                    )
+                ]
+                dataset_title = os.path.basename(cfg.audio_dir)
 
             start_time = time.time()
             for sample_idx, sample in enumerate(samples):
@@ -460,13 +471,7 @@ def main(cfg: TranscriptionConfig):
 
         # stores the results including the transcriptions of the streaming inference in a json file
         if cfg.output_path is not None and len(all_refs_text) == len(all_streaming_tran):
-            fname = (
-                "streaming_out_"
-                + os.path.splitext(os.path.basename(model_name))[0]
-                + "_"
-                + os.path.splitext(os.path.basename(cfg.dataset_manifest))[0]
-                + ".json"
-            )
+            fname = "streaming_out_" + os.path.splitext(os.path.basename(model_name))[0] + f"_{dataset_title}.json"
 
             hyp_json = os.path.join(cfg.output_path, fname)
             os.makedirs(cfg.output_path, exist_ok=True)

@@ -1,10 +1,10 @@
 # This is an example config for setting up Qwen2.5-7B model for a NeMo Voice Agent server.
 # Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
 
-type: auto  # choices in ['auto', 'hf', 'vllm']
+# type: auto  # choices in ['auto', 'hf', 'vllm']
+# model: meta-llama/Llama-3.1-8B-Instruct
+# device: "cuda"
 dtype: bfloat16  # torch.dtype for LLM
-model: meta-llama/Llama-3.1-8B-Instruct
-device: "cuda"
 system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
 system_prompt_suffix: null  # a string that would be appended to the system prompt, used to enable/disable thinking
 

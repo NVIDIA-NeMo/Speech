@@ -24,8 +24,6 @@ The models can be trained using words or sentences as input.
 If trained with sentence-level input, the models can handle out-of-vocabulary (OOV) and heteronyms along with unambiguous words in a single pass.
 See :ref:`Sentence-level Dataset Preparation Pipeline <sentence_level_dataset_pipeline>` on how to label data for G2P model training.
 
-Additionally, we support a purpose-built BERT-based classification model for heteronym disambiguation, see :ref:`this <bert_heteronym_cl>` for details.
-
 Model Training, Evaluation and Inference
 ----------------------------------------
 
@@ -125,116 +123,10 @@ Finally, we mask-out OOV words with a special masking token, “<unk>” in the 
 Using this unknown token forces a G2P model to produce the same masking token as a phonetic representation during training. During inference, the model generates phoneme predictions for OOV words without emitting the masking token as long as this token is not included in the grapheme input.
 
 
-
-.. _bert_heteronym_cl:
-
-Purpose-built BERT-based classification model for heteronym disambiguation
---------------------------------------------------------------------------
-
-HeteronymClassificationModel is a BERT-based :cite:`g2p--devlin2018bert` model represents a token classification model and can handle multiple heteronyms at once. The model takes a sentence as an input, and then for every word, it selects a heteronym option out of the available forms.
-We mask irrelevant forms to disregard the model’s predictions for non-ambiguous words. E.g., given  the input “The Poems are simple to read and easy to comprehend.” the model scores possible {READ_PRESENT and READ_PAST} options for the word “read”.
-Possible heteronym forms are extracted from the WikipediaHomographData :cite:`g2p--gorman2018improving`.
-
-The model expects input to be in `.json` manifest format, where is line contains at least the following fields:
-
-.. code::
-
-  {"text_graphemes": "Oxygen is less able to diffuse into the blood, leading to hypoxia.", "start_end": [23, 30], "homograph_span": "diffuse", "word_id": "diffuse_vrb"}
-
-Manifest fields:
-
-* `text_graphemes` - input sentence
-
-* `start_end` - beginning and end of the heteronym span in the input sentence
-
-* `homograph_span` - heteronym word in the sentence
-
-* `word_id` - heteronym label, e.g., word `diffuse` has the following possible labels: `diffuse_vrb` and `diffuse_adj`. See `https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv <https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv>`__ for more details.
-
-To convert the WikipediaHomographData to `.json` format suitable for the HeteronymClassificationModel training, run:
-
-.. code-block::
-
-    # WikipediaHomographData could be downloaded from `https://github.com/google-research-datasets/WikipediaHomographData <https://github.com/google-research-datasets/WikipediaHomographData>`__.
-
-    python NeMo/scripts/dataset_processing/g2p/export_wikihomograph_data_to_manifest.py \
-            --data_folder=<Path to WikipediaHomographData>/WikipediaHomographData-master/data/eval/
-            --output=eval.json
-    python NeMo/scripts/dataset_processing/g2p/export_wikihomograph_data_to_manifest.py \
-            --data_folder=<Path to WikipediaHomographData>/WikipediaHomographData-master/data/train/
-            --output=train.json
-
-To train the model, run:
-
-.. code-block::
-
-    python g2p_heteronym_classification_train_and_evaluate.py \
-        train_manifest=<Path to train manifest file>" \
-        validation_manifest=<Path to validation manifest file>" \
-        model.wordids=<Path to wordids.tsv file, similar to https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv> \
-        do_training=True \
-        do_testing=False
-
-To train the model and evaluate it when the training is complete, run:
-
-.. code-block::
-
-    python g2p_heteronym_classification_train_and_evaluate.py \
-        train_manifest=<Path to train manifest file>" \
-        validation_manifest=<Path to validation manifest file>" \
-        model.test_ds.dataset.manifest=<Path to test manifest file>" \
-        model.wordids="<Path to wordids.tsv file>" \
-        do_training=True \
-        do_testing=True
-
-To evaluate pretrained model, run:
-
-.. code-block::
-
-    python g2p_heteronym_classification_train_and_evaluate.py \
-        do_training=False \
-        do_testing=True \
-        model.test_ds.dataset.manifest=<Path to test manifest file>"  \
-        pretrained_model=<Path to pretrained .nemo model or from list_available_models()>
-
-To run inference with a pretrained HeteronymClassificationModel, run:
-
-.. code-block::
-
-    python g2p_heteronym_classification_inference.py \
-        manifest="<Path to .json manifest>" \
-        pretrained_model="<Path to .nemo file or pretrained model name from list_available_models()>" \
-        output_file="<Path to .json manifest to save prediction>"
-
-Note, if the input manifest contains target "word_id", evaluation will be also performed. During inference, the model predicts heteronym `word_id` and saves predictions in `"pred_text"` field of the `output_file`:
-
-.. code::
-
-  {"text_graphemes": "Oxygen is less able to diffuse into the blood, leading to hypoxia.", "pred_text": "diffuse_vrb", "start_end": [23, 30], "homograph_span": "diffuse", "word_id": "diffuse_vrb"}
-
-To train a model with `Chinese Polyphones with Pinyin (CPP) <https://github.com/kakaobrain/g2pM/tree/master/data>`__ dataset, run:
-
-.. code-block::
-
-    # prepare CPP manifest
-    mkdir -p ./cpp_manifest
-    git clone https://github.com/kakaobrain/g2pM.git
-    python3 export_zh_cpp_data_to_manifest.py --data_folder g2pM/data/ --output_folder ./cpp_manifest
-    
-    # model training and evaluation
-    python3 heteronym_classification_train_and_evaluate.py \
-        --config-name "heteronym_classification_zh.yaml" \
-        train_manifest="./cpp_manifest/train.json" \
-        validation_manifest="./cpp_manifest/dev.json" \
-        model.test_ds.dataset.manifest="./cpp_manifest/test.json" \
-        model.wordids="./cpp_manifest/wordid.tsv" \
-        do_training=False \
-        do_testing=True
-
 Requirements
 ------------
 
-G2P requires NeMo NLP and ASR collections installed. See `Installation instructions <https://docs.nvidia.com/nemo-framework/user-guide/latest/installation.html>`__ for more details.
+G2P requires the NeMo ASR collection to be installed. See `Installation instructions <https://docs.nvidia.com/nemo-framework/user-guide/latest/installation.html>`__ for more details.
 
 
 References

@@ -478,9 +478,6 @@ class ModelPT(LightningModule, Model):
         Returns:
             An instance of type cls or its underlying config (if return_config is set).
         """
-        # Notify OneLogger of checkpoint loading start for telemetry tracking
-        CallbackGroup.get_instance().on_load_checkpoint_start()
-
         if save_restore_connector is None:
             save_restore_connector = SaveRestoreConnector()
 
@@ -513,9 +510,6 @@ class ModelPT(LightningModule, Model):
         )
         if isinstance(instance, ModelPT):
             instance._save_restore_connector = save_restore_connector
-
-        # Notify OneLogger of checkpoint loading completion for telemetry tracking
-        CallbackGroup.get_instance().on_load_checkpoint_end()
 
         return instance
 

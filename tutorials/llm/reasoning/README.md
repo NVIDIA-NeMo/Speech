@@ -8,7 +8,7 @@ This recipe is inspired by the [Llama Nemotron family of models](https://www.nvi
 
 Checkout the following resources that are used in this tutorial.
 * [Llama-Nemotron-Post-Training-Data](https://huggingface.co/datasets/nvidia/Llama-Nemotron-Post-Training-Dataset), an open source dataset for instilling reasoning behavior in large language models.
-* The tutorial on [curating the Llama Nemotron Reasoning Dataset with NVIDIA NeMo Curator](https://github.com/NVIDIA/NeMo-Curator/tree/main/tutorials/llama-nemotron-data-curation).
+* The tutorial on [curating the Llama Nemotron Reasoning Dataset with NVIDIA NeMo Curator](https://github.com/NVIDIA-NeMo/Curator/tree/main/tutorials/text/llama-nemotron-data-curation).
 You will need the output from that tutorial for training a reasoning model.
 
 ## Hardware Requirements

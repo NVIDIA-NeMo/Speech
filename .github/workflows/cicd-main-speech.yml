@@ -39,9 +39,9 @@ jobs:
             runner: self-hosted-azure-gpus-1
             timeout: 30
           - script: L0_Unit_Tests_CPU_ASR
-            runner: self-hosted-azure-cpu
+            runner: azure-gpu-vm-runner1-cpu
             cpu-only: true
-            timeout: 20
+            timeout: 30
           - script: L0_Unit_Tests_GPU_TTS
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_TTS
@@ -99,6 +99,8 @@ jobs:
           - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run_Speech_to_Text_WPE_-_Conformer
           - runner: self-hosted-azure-gpus-1
+            script: ASR_dev_run_Speech_to_Text_Hybrid_RNNT_CTC_Prompt
+          - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer
           - runner: self-hosted-azure-gpus-1
             script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader
@@ -124,11 +126,19 @@ jobs:
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Speech_to_Text_Transcribe
           - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Speech_to_Text_Streaming_Infer
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Speech_to_Text_Cache_Aware_Infer
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Streaming_Inference
+          - runner: self-hosted-azure
             script: L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Canary_Transcribe_With_Prompt
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Canary_Streaming_Full_Manifest
           - runner: self-hosted-azure
             script: L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir
           - runner: self-hosted-azure
@@ -173,13 +183,12 @@ jobs:
           - runner: self-hosted-azure
             script: L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference
           - runner: self-hosted-azure
-            script: L2_G2P_Models_HeteronymClassificationModel_training_evaluation_and_inference
-          - runner: self-hosted-azure
             script: SPEECHLM_HF_Training_DuplexS2S
           - runner: self-hosted-azure
             script: SPEECHLM_HF_Training_DuplexS2SSpeechDecoder
           - runner: self-hosted-azure
             script: SPEECHLM_HF_Training_SALM
+            timeout: 20
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
@@ -195,4 +204,5 @@ jobs:
           script: ${{ matrix.script }}
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ inputs.image-name }}
+          timeout: ${{ matrix.timeout || 10 }}
           is_optional: ${{ matrix.is-optional || false }}

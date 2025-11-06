@@ -29,7 +29,10 @@ from nemo.collections.asr.models import ASRModel
 class BatchedCacheFeatureBufferer:
     """
     Batched cache feature bufferer class
-    It buffers the feature chunks from multiple streams and maintains the buffers.
+    Buffers feature chunks from multiple audio streams and manages their storage.
+    Maintains a tensor of shape (num_slots, n_feat, feature_buffer_len), where each slot
+    corresponds to a single audio stream. The number of slots equals the number of
+    active (or open) audio streams.
     """
 
     def __init__(
@@ -45,7 +48,7 @@ class BatchedCacheFeatureBufferer:
     ):
         """
         Args:
-            num_slots (int): number of slots
+            num_slots (int): number of slots, where each slot contains feature buffer for a single audio stream
             sample_rate (int): sample rate
             buffer_size_in_secs (float): buffer size in seconds
             chunk_size_in_secs (float): chunk size in seconds

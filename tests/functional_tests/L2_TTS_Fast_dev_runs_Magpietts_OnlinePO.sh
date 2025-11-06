@@ -52,8 +52,8 @@ coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/ne
     model.local_transformer_type="none" \
     model.cfg_unconditional_prob=0.0 \
     model.model_type="multi_encoder_context_tts" \
-    model.transcript_decoder_layers="[0,2,4,6,8,10]" \
-    model.context_decoder_layers="[1,3,5,7,9,11]" \
+    +model.transcript_decoder_layers="[0,2,4,6,8,10]" \
+    +model.context_decoder_layers="[1,3,5,7,9,11]" \
     model.context_duration_min=3.0 \
     model.context_duration_max=8.0 \
     model.decoder.p_dropout=0.0 \

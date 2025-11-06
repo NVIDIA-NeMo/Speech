@@ -799,9 +799,9 @@ def main():
             "2. --nemo_file\n"
         )
     if cer is not None and args.cer_target is not None and cer > float(args.cer_target):
-        raise ValueError()
+        raise ValueError(f"cer_cumulative was {cer} which is higher than the target of {args.cer_target}")
     if ssim is not None and args.ssim_target is not None and ssim < float(args.ssim_target):
-        raise ValueError()
+        raise ValueError(f"ssim_pred_context_avg was {ssim} which is slower than the target of {args.ssim_target}")
 
 
 if __name__ == '__main__':

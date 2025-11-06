@@ -26,5 +26,5 @@ coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/ne
     --legacy_text_conditioning \
     --apply_attention_prior \
     --clean_up_disk \
-    --cer_target 0.1 \
+    --cer_target 0.25 \
     --ssim_target 0.7

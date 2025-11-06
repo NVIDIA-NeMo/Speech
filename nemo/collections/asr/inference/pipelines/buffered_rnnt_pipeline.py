@@ -391,12 +391,12 @@ class BufferedRNNTPipeline(BasePipeline):
                 raise ValueError("Found out-of-range prompt index in batch.")
             prompt_matrix = self._get_prompt_matrix()
             prompt_vectors = prompt_matrix.index_select(0, indices)  # [B, num_prompts]
-            
+
             # Use encode_with_prompts which handles dimension expansion
             encoded, encoded_len = self.asr_model.encode_with_prompts(
                 processed_signal=feature_buffers,
                 processed_signal_length=feature_buffer_lens,
-                prompt_vectors=prompt_vectors
+                prompt_vectors=prompt_vectors,
             )
         else:
             encoded, encoded_len = self.asr_model.encode(
@@ -444,12 +444,12 @@ class BufferedRNNTPipeline(BasePipeline):
                 raise ValueError("Found out-of-range prompt index in batch.")
             prompt_matrix = self._get_prompt_matrix()
             prompt_vectors = prompt_matrix.index_select(0, indices)  # [B, num_prompts]
-            
+
             # Use encode_with_prompts which handles dimension expansion
             encoded, encoded_len = self.asr_model.encode_with_prompts(
                 processed_signal=processed_signals,
                 processed_signal_length=processed_signal_lengths,
-                prompt_vectors=prompt_vectors
+                prompt_vectors=prompt_vectors,
             )
         else:
             encoded, encoded_len = self.asr_model.encode(

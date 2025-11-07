@@ -40,7 +40,7 @@ def get_train_ds_config(manifest_filepath, batch_size, num_workers) -> DictConfi
             'shuffle': True,
             'num_workers': num_workers,
             'validation_mode': False,
-            'use_lhotse': config.get('use_lhotse', True),
+            'use_lhotse': True,
             'use_bucketing': True,
             'num_buckets': 10,
             'bucket_duration_bins': [10, 20, 30, 40, 50, 60, 70, 80, 90],

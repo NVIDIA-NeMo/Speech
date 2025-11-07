@@ -266,7 +266,7 @@ class TestAudioDatasets:
             # Prepare lhotse dataset
             config_lhotse = {
                 'cuts_path': cuts_path,
-                'use_lhotse': config.get('use_lhotse', True),
+                'use_lhotse': True,
                 'sample_rate': sample_rate,
                 'batch_size': 1,
             }
@@ -323,7 +323,7 @@ class TestAudioDatasets:
             # Prepare lhotse dataset
             config_lhotse = {
                 'cuts_path': cuts_path,
-                'use_lhotse': config.get('use_lhotse', True),
+                'use_lhotse': True,
                 'min_duration': min_duration,
                 'max_duration': max_duration,
                 'sample_rate': sample_rate,
@@ -404,7 +404,7 @@ class TestAudioDatasets:
                 # Prepare lhotse dataset
                 config_lhotse = {
                     'cuts_path': cuts_path,
-                    'use_lhotse': config.get('use_lhotse', True),
+                    'use_lhotse': True,
                     'min_duration': audio_duration,
                     'truncate_duration': audio_duration,
                     'truncate_offset_type': 'random' if random_offset else 'start',
@@ -612,7 +612,7 @@ class TestAudioDatasets:
             # Prepare lhotse dataset
             config_lhotse = {
                 'cuts_path': cuts_path,
-                'use_lhotse': config.get('use_lhotse', True),
+                'use_lhotse': True,
                 'sample_rate': sample_rate,
                 'batch_size': 1,
             }
@@ -763,7 +763,7 @@ class TestAudioDatasets:
             # Prepare lhotse dataset
             config_lhotse = {
                 'cuts_path': cuts_path,
-                'use_lhotse': config.get('use_lhotse', True),
+                'use_lhotse': True,
                 'sample_rate': sample_rate,
                 'batch_size': 1,
             }

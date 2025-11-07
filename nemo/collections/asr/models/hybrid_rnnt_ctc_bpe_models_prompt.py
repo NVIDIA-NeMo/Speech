@@ -36,7 +36,7 @@ from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, C
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
-from nemo.core.classes.common import typecheck
+from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.neural_types import (
     AcousticEncodedRepresentation,
@@ -46,7 +46,6 @@ from nemo.core.neural_types import (
     NeuralType,
     SpectrogramType,
 )
-from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging, model_utils
 
 

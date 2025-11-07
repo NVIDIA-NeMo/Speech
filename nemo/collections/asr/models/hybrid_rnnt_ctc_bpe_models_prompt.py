@@ -46,6 +46,7 @@ from nemo.core.neural_types import (
     NeuralType,
     SpectrogramType,
 )
+from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging, model_utils
 
 
@@ -1000,3 +1001,13 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         # preserve config
         self._update_dataset_config(dataset_name='test', config=test_data_config)
         self._test_dl = self._setup_dataloader_from_config(config=test_data_config)
+
+    @classmethod
+    def list_available_models(cls) -> List[PretrainedModelInfo]:
+        """
+        This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
+
+        Returns:
+            List of available pre-trained models.
+        """
+        return None

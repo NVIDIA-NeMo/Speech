@@ -359,6 +359,19 @@ class ModelCheckpoint(PTLModelCheckpoint):
             torch.distributed.barrier()
 
         self.async_save = getattr(trainer.strategy, "async_save", False)
+        
+        # Ensure AsyncFinalizerCallback is registered when async_save is enabled
+        if self.async_save:
+            from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizerCallback
+            
+            has_async_finalizer = any(isinstance(cb, AsyncFinalizerCallback) for cb in trainer.callbacks)
+            if not has_async_finalizer:
+                logging.warning(
+                    "async_save is enabled but AsyncFinalizerCallback is not registered. "
+                    "Adding AsyncFinalizerCallback to ensure proper checkpoint finalization."
+                )
+                trainer.callbacks.append(AsyncFinalizerCallback())
+        
         super().setup(trainer, *args, **kwargs)
 
     def on_train_end(self, trainer, pl_module):
@@ -376,6 +389,23 @@ class ModelCheckpoint(PTLModelCheckpoint):
 
         if trainer.fast_dev_run:
             return None
+
+        # If async_save is enabled, ensure all pending async saves are finalized before proceeding
+        if self.async_save:
+            try:
+                from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
+                
+                checkpoint_io = trainer.strategy.checkpoint_io
+                if isinstance(checkpoint_io, AsyncFinalizableCheckpointIO):
+                    num_pending = checkpoint_io.async_calls_queue.get_num_unfinalized_calls()
+                    if num_pending > 0:
+                        logging.info(
+                            f'Finalizing {num_pending} pending async checkpoint save(s) before train_end...'
+                        )
+                        checkpoint_io.maybe_finalize_save_checkpoint(blocking=True)
+                        logging.info('All pending async checkpoint saves finalized successfully.')
+            except Exception as e:
+                logging.warning(f'Error finalizing pending async checkpoints on train_end: {e}')
 
         # check if we need to save a last checkpoint manually as validation isn't always run based on the interval
         if self.save_last and trainer.val_check_interval != 0:
@@ -517,8 +547,22 @@ class ModelCheckpoint(PTLModelCheckpoint):
             if is_global_rank_zero():
                 marker_path = ModelCheckpoint.format_checkpoint_unfinished_marker_path(checkpoint_path)
                 if marker_path.exists():
-                    marker_path.unlink()
-        except:
+                    try:
+                        marker_path.unlink()
+                        logging.debug(f'Successfully removed unfinished marker: {marker_path}')
+                    except OSError as e:
+                        logging.warning(f'Failed to remove unfinished marker {marker_path}: {e}')
+                        # Retry once after a brief moment
+                        import time
+                        time.sleep(0.1)
+                        try:
+                            if marker_path.exists():
+                                marker_path.unlink()
+                                logging.debug(f'Successfully removed unfinished marker on retry: {marker_path}')
+                        except OSError as e2:
+                            logging.error(f'Failed to remove unfinished marker on retry {marker_path}: {e2}')
+        except Exception as e:
+            logging.warning(f'Unexpected error removing unfinished checkpoint marker for {checkpoint_path}: {e}')
             return
 
     def file_exists(self, filepath: str, trainer: "lightning.pytorch.Trainer", check_dist_ckpt: bool = True) -> bool:
@@ -661,32 +705,56 @@ class ModelCheckpoint(PTLModelCheckpoint):
             logging.debug(f'Finalize callback called for step {global_step}, filepath {filepath}')
             self._last_checkpoint_saved = filepath
 
-            # notify loggers
-            if trainer.is_global_zero:
-                for logger in trainer.loggers:
-                    logger.after_save_checkpoint(proxy(self))
+            try:
+                # notify loggers
+                if trainer.is_global_zero:
+                    for logger in trainer.loggers:
+                        logger.after_save_checkpoint(proxy(self))
+            except Exception as e:
+                logging.warning(f'Error notifying loggers after checkpoint save: {e}')
 
             # barrier_before=True, so all ranks synchronize before removing the unfinished checkpoint marker
             # we don't want to remove the marker until all checkpointing is done.
-            self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
+            # This should always execute, even if there are errors above
+            try:
+                self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
+            except Exception as e:
+                logging.error(f'Failed to remove unfinished checkpoint marker for {filepath}: {e}')
+                # Try one more time without barrier in case distributed is not available
+                try:
+                    self.remove_checkpoint_unfinished_marker(filepath, barrier_before=False)
+                except Exception as e2:
+                    logging.error(f'Second attempt to remove unfinished marker also failed: {e2}')
 
             if not self.async_save:
                 return
 
             logging.info(f'Async checkpoint save for step {global_step} ({filepath}) finalized successfully.')
             # Notify callback group of successful async checkpoint completion
-            CallbackGroup.get_instance().on_save_checkpoint_success(global_step=global_step)
+            try:
+                CallbackGroup.get_instance().on_save_checkpoint_success(global_step=global_step)
+            except Exception as e:
+                logging.warning(f'Error notifying callback group of checkpoint success: {e}')
 
-            if str(filepath) in self.ckpts_to_link:
-                self._link_checkpoint(trainer, filepath, self.ckpts_to_link.pop(filepath), override_async=True)
+            try:
+                if str(filepath) in self.ckpts_to_link:
+                    self._link_checkpoint(trainer, filepath, self.ckpts_to_link.pop(filepath), override_async=True)
+            except Exception as e:
+                logging.warning(f'Error creating checkpoint link: {e}')
 
             # Remove checkpoints marked for removal by `self._remove_checkpoint`
             # For each finalization there is exactly one entry in self.deferred_ckpts_to_remove
-            assert self.deferred_ckpts_to_remove
-            ckpts_to_remove = self.deferred_ckpts_to_remove.pop(0)
-            logging.debug(f'Checkpoints to remove: {ckpts_to_remove}')
-            for ckpt_to_remove in ckpts_to_remove:
-                self._remove_checkpoint(trainer, ckpt_to_remove, override_async=True)
+            try:
+                if self.deferred_ckpts_to_remove:
+                    ckpts_to_remove = self.deferred_ckpts_to_remove.pop(0)
+                    logging.debug(f'Checkpoints to remove: {ckpts_to_remove}')
+                    for ckpt_to_remove in ckpts_to_remove:
+                        try:
+                            self._remove_checkpoint(trainer, ckpt_to_remove, override_async=True)
+                        except Exception as e:
+                            logging.warning(f'Error removing checkpoint {ckpt_to_remove}: {e}')
+            except Exception as e:
+                logging.warning(f'Error during deferred checkpoint removal: {e}')
 
         return _cb
 

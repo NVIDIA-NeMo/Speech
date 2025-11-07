@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -104,7 +104,6 @@ class TaskEncoder(BaseTaskEncoder):
         batch_data["media"] = batch_data["media"].reshape(-1, *batch_data["media"].shape[2:])
         return batch_data
 
-
     def encode_vqa_sample_multi_turns(self, input_sample: VQASample):
         images = input_sample.image if isinstance(input_sample.image, list) else [input_sample.image]
 
@@ -116,10 +115,12 @@ class TaskEncoder(BaseTaskEncoder):
             messages.append(context)
 
         # Apply chat template and process with HF processor
-        #`add_generation_prompt=False` because we're providing the full ground truth sequence
+        # `add_generation_prompt=False` because we're providing the full ground truth sequence
         # We remove the <bos> token using removeprefix('<bos>') since we're finetuning.
         # The Processor will add this token before training and the model expects only one.
-        converted_messages = self.hf_processor.apply_chat_template(messages, add_generation_prompt=False, tokenize=False).removeprefix('<bos>')
+        converted_messages = self.hf_processor.apply_chat_template(
+            messages, add_generation_prompt=False, tokenize=False
+        ).removeprefix('<bos>')
         outputs = self.hf_processor(
             images=images,
             text=converted_messages,
@@ -140,7 +141,9 @@ class TaskEncoder(BaseTaskEncoder):
             if context['role'] != 'assistant':
                 continue
             # Tokenize the answer, including the stop string if provided
-            answer_with_stop = context['content'][0]['text'].rstrip().lstrip() + "<end_of_turn>" + (self.config.stop_string or "")
+            answer_with_stop = (
+                context['content'][0]['text'].rstrip().lstrip() + "<end_of_turn>" + (self.config.stop_string or "")
+            )
             answer_with_stop = answer_with_stop.rstrip().lstrip()
             answer_tokens = self.tokenizer.tokenizer(answer_with_stop, add_special_tokens=False)["input_ids"]
             answer_tokens_tensor = torch.tensor(answer_tokens, device=tokens.device)  # Ensure same device
@@ -170,7 +173,6 @@ class TaskEncoder(BaseTaskEncoder):
                 )
                 break
         return tokens, labels, images
-
 
     def encode_vqa_sample(self, input_sample: VQASample) -> DataSample:
         """Encode a VQA sample into a DataSample format.
@@ -228,4 +230,3 @@ class TaskEncoder(BaseTaskEncoder):
         )
 
         return sample
-

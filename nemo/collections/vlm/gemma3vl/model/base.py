@@ -26,7 +26,6 @@ from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.inference_params import InferenceParams
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.parallel_state import get_context_parallel_group
-from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import IGNORE_INDEX
 from megatron.core.tensor_parallel import scatter_to_sequence_parallel_region
 from megatron.core.transformer import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -38,10 +37,10 @@ from nemo.collections.llm.gpt.model.base import get_packed_seq_params
 from nemo.collections.llm.gpt.model.gemma3 import Gemma3Config
 from nemo.collections.vlm.gemma3vl.model.vision import Gemma3VLMultimodalProjectorConfig, Gemma3VLVisionConfig
 from nemo.collections.vlm.neva.model.base import MODEL_CONFIG_ATTR, NevaModel, restore_model_weights
+from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import IGNORE_INDEX
 from nemo.lightning import io
 from nemo.lightning.pytorch.optim import OptimizerModule
 from nemo.utils.import_utils import safe_import_from
-
 
 TENorm, _ = safe_import_from("megatron.core.extensions.transformer_engine", "TENorm")
 

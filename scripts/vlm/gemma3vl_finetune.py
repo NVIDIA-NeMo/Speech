@@ -20,34 +20,35 @@ torchrun --nproc_per_node=1 gemma3vl_finetune.py --data_type=energon \
 --data_dir=<YOUR DATA DIR>
 """
 from scripts.vlm import gemma3vl_utils as train_utils
+
 # Need to run these filters before importing nemo.
 train_utils.filter_warnings()
 train_utils.filter_grad_bucket_logs()
 
 import argparse
 import time
+
 import torch
+
 torch.autograd.set_detect_anomaly(True)
 import os
-from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.loggers import TensorBoardLogger
+
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
+from transformers import Gemma3ImageProcessor, Gemma3Processor
+
 from nemo import lightning as nl
 from nemo.collections import llm, vlm
-
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.multimodal.data.energon import EnergonMultiModalDataModule
 from nemo.collections.vlm.gemma3vl.data.mock import Gemma3VLMockDataModule
+from nemo.collections.vlm.gemma3vl.data.task_encoder import TaskEncoder as Gemma3VLTaskEncoder
+from nemo.collections.vlm.gemma3vl.data.task_encoder import TaskEncoderConfig as Gemma3VLTaskEncoderConfig
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
-from nemo.utils.exp_manager import TimingCallback
 from nemo.utils import logging
-from nemo.collections.vlm.gemma3vl.data.task_encoder import (
-    TaskEncoder as Gemma3VLTaskEncoder,
-    TaskEncoderConfig as Gemma3VLTaskEncoderConfig,
-)
-from transformers import Gemma3ImageProcessor, Gemma3Processor
+from nemo.utils.exp_manager import TimingCallback
 
 
 def main(args):
@@ -149,18 +150,14 @@ def main(args):
         name=args.exp_name,
         ckpt=checkpoint_callback,
         tensorboard=TensorBoardLogger(save_dir="tensorboard", name=""),
-        wandb=WandbLogger(project=args.wandb_project, name=args.exp_name)
-        if args.wandb_project is not None
-        else None,
+        wandb=WandbLogger(project=args.wandb_project, name=args.exp_name) if args.wandb_project is not None else None,
     )
 
     # Auto resume setup
     resume = nl.AutoResume(
         resume_if_exists=False,
         resume_ignore_no_checkpoint=True,
-        restore_config=nl.RestoreConfig(path=args.resume_from_ckpt)
-        if args.resume_from_ckpt is not None
-        else None,
+        restore_config=nl.RestoreConfig(path=args.resume_from_ckpt) if args.resume_from_ckpt is not None else None,
     )
 
     # Optimizer and scheduler setup
@@ -205,7 +202,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--restore_path", type=str, required=False, default=None, help="Path to restore model from checkpoint"
     )
-    parser.add_argument("--log_dir",   type=str, required=False,  default="/logs",   help="Path to the log folder")
+    parser.add_argument("--log_dir", type=str, required=False, default="/logs", help="Path to the log folder")
     parser.add_argument("--tp_size", type=int, required=False, default=1)
     parser.add_argument("--pp_size", type=int, required=False, default=1)
     parser.add_argument("--num_nodes", type=int, required=False, default=1)
@@ -216,14 +213,20 @@ if __name__ == "__main__":
     parser.add_argument("--val_check_interval", type=int, required=False, default=10)
     parser.add_argument("--limit_val_batches", type=float, required=False, default=1.0)
     parser.add_argument("--lr", type=float, required=False, default=2.0e-06, help="Learning rate")
-    parser.add_argument("--hf_model_id", type=str, required=False, default="google/gemma-3-4b-it", help="HuggingFace Gemma3VL model ids")
+    parser.add_argument(
+        "--hf_model_id",
+        type=str,
+        required=False,
+        default="google/gemma-3-4b-it",
+        help="HuggingFace Gemma3VL model ids",
+    )
     parser.add_argument("--gbs", type=int, required=False, default=32, help="Global batch size")
     parser.add_argument("--mbs", type=int, required=False, default=1, help="Micro batch size")
     parser.add_argument("--save_top_k", type=int, required=False, default=1, help="Save top k")
-    parser.add_argument("--num_workers", type=int, required=False, default=2, help="The num of workers for data loader")
     parser.add_argument(
-        "--max_sequence_length", type=int, required=False, default=512, help="Maximum sequence length"
+        "--num_workers", type=int, required=False, default=2, help="The num of workers for data loader"
     )
+    parser.add_argument("--max_sequence_length", type=int, required=False, default=512, help="Maximum sequence length")
     parser.add_argument(
         "--resume_from_ckpt",
         type=str,
@@ -232,9 +235,7 @@ if __name__ == "__main__":
         help="Path to restore model from checkpoint",
     )
     parser.add_argument("--wandb_project", type=str, required=False, default=None)
-    parser.add_argument(
-        "--exp_name", type=str, required=False, default="gemma3vl_finetune"
-    )
+    parser.add_argument("--exp_name", type=str, required=False, default="gemma3vl_finetune")
 
     args = parser.parse_args()
     main(args)

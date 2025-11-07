@@ -21,6 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, Optional, Tuple, Union
 
+import torch
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
@@ -30,8 +31,6 @@ from megatron.core.transformer import ModuleSpec, TransformerConfig, Transformer
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.enums import AttnBackend, AttnMaskType
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
-
-import torch
 from torch import Tensor, nn
 
 from nemo.collections.llm.fn.activation import openai_gelu

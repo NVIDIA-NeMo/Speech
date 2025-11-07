@@ -30,6 +30,8 @@ from megatron.core.transformer import ModuleSpec, TransformerConfig, Transformer
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.enums import AttnBackend, AttnMaskType
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
+
+import torch
 from torch import Tensor, nn
 
 from nemo.collections.llm.fn.activation import openai_gelu
@@ -146,9 +148,10 @@ class Gemma3Config(GPTConfig):
     attention_backend: AttnBackend = AttnBackend.flash
 
     # mlp
+    bias_activation_fusion: bool = True
     gated_linear_unit: bool = True
     add_bias_linear: bool = False
-    activation_func: Callable = openai_gelu
+    activation_func: Callable = torch.nn.functional.gelu
 
     # Do not change
     is_vision_language: bool = False
@@ -156,6 +159,8 @@ class Gemma3Config(GPTConfig):
     gradient_accumulation_fusion: bool = False
     transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = gemma3_layer_spec
     scatter_embedding_sequence_parallel: bool = True
+    apply_rope_fusion: bool = True
+    cross_entropy_fusion_impl: str = 'te'
 
     def configure_model(
         self,
@@ -338,7 +343,12 @@ class Gemma3RotaryEmbedding(RotaryEmbedding):
         """Get global and local rope embedding"""
         rope_global = super().forward(max_seq_len, offset, packed_seq)
         rope_local = self.rope_local.forward(max_seq_len, offset, packed_seq)
-        return rope_local, rope_global
+        # when using recompute_granularity is full, save_for_backward is called
+        # to save all variables in a layer. It can only save variables but not
+        # tuples.
+        # Stack rope_local and rope_global into a single tensor to avoid the
+        # error.
+        return torch.stack((rope_local, rope_global), dim=0)
 
 
 def _is_local_attn_layer(
@@ -372,7 +382,6 @@ class Gemma3SelfAttention(SelfAttention):
         inference_params: Optional[BaseInferenceContext] = None,
     ) -> Tuple[Tensor, Tensor]:
         """Switch to either local or global rope embedding before forward"""
-        assert isinstance(rotary_pos_emb, tuple)
         assert rotary_pos_cos is None and rotary_pos_sin is None
 
         if _is_local_attn_layer(self.layer_number, self.config.interleaved_attn_pattern):
@@ -614,6 +623,7 @@ class HFGemma3Exporter(io.ModelConnector[Gemma3Model, "Gemma3ForCausalLM"]):
             architectures=["Gemma3ForCausalLM"],
             num_hidden_layers=source.num_layers,
             hidden_size=source.hidden_size,
+            sliding_window=source.window_size,
             intermediate_size=source.ffn_hidden_size,
             num_attention_heads=source.num_attention_heads,
             head_dim=source.kv_channels,

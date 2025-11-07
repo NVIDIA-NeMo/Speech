@@ -359,11 +359,11 @@ class ModelCheckpoint(PTLModelCheckpoint):
             torch.distributed.barrier()
 
         self.async_save = getattr(trainer.strategy, "async_save", False)
-        
+
         # Ensure AsyncFinalizerCallback is registered when async_save is enabled
         if self.async_save:
             from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizerCallback
-            
+
             has_async_finalizer = any(isinstance(cb, AsyncFinalizerCallback) for cb in trainer.callbacks)
             if not has_async_finalizer:
                 logging.warning(
@@ -371,7 +371,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
                     "Adding AsyncFinalizerCallback to ensure proper checkpoint finalization."
                 )
                 trainer.callbacks.append(AsyncFinalizerCallback())
-        
+
         super().setup(trainer, *args, **kwargs)
 
     def on_train_end(self, trainer, pl_module):
@@ -394,14 +394,12 @@ class ModelCheckpoint(PTLModelCheckpoint):
         if self.async_save:
             try:
                 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
-                
+
                 checkpoint_io = trainer.strategy.checkpoint_io
                 if isinstance(checkpoint_io, AsyncFinalizableCheckpointIO):
                     num_pending = checkpoint_io.async_calls_queue.get_num_unfinalized_calls()
                     if num_pending > 0:
-                        logging.info(
-                            f'Finalizing {num_pending} pending async checkpoint save(s) before train_end...'
-                        )
+                        logging.info(f'Finalizing {num_pending} pending async checkpoint save(s) before train_end...')
                         checkpoint_io.maybe_finalize_save_checkpoint(blocking=True)
                         logging.info('All pending async checkpoint saves finalized successfully.')
             except Exception as e:
@@ -554,6 +552,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
                         logging.warning(f'Failed to remove unfinished marker {marker_path}: {e}')
                         # Retry once after a brief moment
                         import time
+
                         time.sleep(0.1)
                         try:
                             if marker_path.exists():

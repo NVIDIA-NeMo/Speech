@@ -179,7 +179,7 @@ def mock_dataset_config(tmp_path, request):
 
             return {
                 'cuts_path': str(tmp_path / "cuts.jsonl"),
-                'use_lhotse': True,
+                'use_lhotse': config.get('use_lhotse', True),
                 'batch_size': 2,
                 'num_workers': 1,
             }

@@ -18,7 +18,6 @@ torchrun --nproc_per_node=1 gemma3vl_finetune.py --data_type=mock
 
 torchrun --nproc_per_node=1 gemma3vl_finetune.py --data_type=energon \
 --data_dir=<YOUR DATA DIR>
-
 """
 from scripts.vlm import gemma3vl_utils as train_utils
 # Need to run these filters before importing nemo.
@@ -80,6 +79,8 @@ def main(args):
     image_processor = Gemma3ImageProcessor()
     # Data setup
     if args.data_type == "energon":
+        if args.data_dir is None:
+            raise ValueError("data_dir is required for energon data type.")
         # Initialize the data module
         use_packed_sequence = False
         hf_processor = Gemma3Processor.from_pretrained(args.hf_model_id)
@@ -200,11 +201,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemma3VL Model Training Script")
 
     parser.add_argument("--data_type", type=str, required=False, default="energon", help="mock | energon")
-    parser.add_argument("--data_dir", type=str, required=True, default=None, help="Path to the dataset folder")
+    parser.add_argument("--data_dir", type=str, required=False, default=None, help="Path to the dataset folder")
     parser.add_argument(
         "--restore_path", type=str, required=False, default=None, help="Path to restore model from checkpoint"
     )
-    parser.add_argument("--log_dir",   type=str, required=True,  default=None,   help="Path to the log folder")
+    parser.add_argument("--log_dir",   type=str, required=False,  default="/logs",   help="Path to the log folder")
     parser.add_argument("--tp_size", type=int, required=False, default=1)
     parser.add_argument("--pp_size", type=int, required=False, default=1)
     parser.add_argument("--num_nodes", type=int, required=False, default=1)
@@ -214,10 +215,6 @@ if __name__ == "__main__":
     parser.add_argument("--max_steps", type=int, required=False, default=10)
     parser.add_argument("--val_check_interval", type=int, required=False, default=10)
     parser.add_argument("--limit_val_batches", type=float, required=False, default=1.0)
-    parser.add_argument("--every_n_train_steps", type=int, required=False, default=100)
-    parser.add_argument(
-        "--monitor_metric", type=str, required=False, default="val_loss"
-    )
     parser.add_argument("--lr", type=float, required=False, default=2.0e-06, help="Learning rate")
     parser.add_argument("--hf_model_id", type=str, required=False, default="google/gemma-3-4b-it", help="HuggingFace Gemma3VL model ids")
     parser.add_argument("--gbs", type=int, required=False, default=32, help="Global batch size")

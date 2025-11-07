@@ -17,11 +17,10 @@ import math
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Annotated, Callable, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
-import yaml
 from torch import nn
 
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config

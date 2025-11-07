@@ -16,11 +16,10 @@ import re
 from dataclasses import asdict, dataclass, field
 from functools import cached_property, partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
-import yaml
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.transformer_config import MLATransformerConfig

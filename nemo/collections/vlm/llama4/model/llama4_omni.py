@@ -14,10 +14,9 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Tuple
+from typing import TYPE_CHECKING
 
 import torch
-import yaml
 from torch import nn
 
 from nemo.collections.common.tokenizers import TokenizerSpec

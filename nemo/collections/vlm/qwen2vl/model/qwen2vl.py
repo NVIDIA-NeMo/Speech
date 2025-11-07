@@ -14,7 +14,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Tuple, Union
+from typing import TYPE_CHECKING, Union
 
 import torch
 import transformers
@@ -47,7 +47,6 @@ from nemo.collections.vlm.qwen2vl.model.base import (
 )
 from nemo.collections.vlm.vision import MultimodalProjectorConfig
 from nemo.lightning import io, teardown
-from nemo.lightning.io.state import _ModelState
 from nemo.lightning.pytorch.utils import dtype_from_hf
 from nemo.utils import logging
 

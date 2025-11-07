@@ -15,7 +15,7 @@
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
 import torch.distributed

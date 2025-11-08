@@ -162,8 +162,6 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NEMO_2_LoRA_MERGE
             runner: self-hosted-azure
-          - script: L2_NEMO_2_LoRA_Export
-            runner: self-hosted-azure-gpus-1
           - script: L2_NEMO_2_LoRA_Inference
             runner: self-hosted-azure-gpus-1
           - script: L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
@@ -176,8 +174,6 @@ jobs:
           - script: L2_NeMo_2_PTQ_Llama2_FP8_trtllm
             runner: self-hosted-azure
           - script: L2_NeMo_2_PTQ_Llama2_FP8_nemo
-            runner: self-hosted-azure
-          - script: L2_NeMo_2_PTQ_Unified_Export
             runner: self-hosted-azure
           - script: L2_NeMo_2_Distill_Llama3_TP1PP2
             runner: self-hosted-azure

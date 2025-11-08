@@ -14,9 +14,10 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Tuple
 
 import torch
+import yaml
 from torch import nn
 
 from nemo.collections.common.tokenizers import TokenizerSpec
@@ -26,6 +27,7 @@ from nemo.collections.vlm.llama4.model.base import Llama4OmniConfig, Llama4OmniM
 from nemo.collections.vlm.llama4.model.vision import Llama4VisionConfig
 from nemo.collections.vlm.neva.model.llava import export_qkv, export_qkv_bias, import_qkv
 from nemo.collections.vlm.vision.base import MultimodalProjectorConfig
+from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import load_distributed_model_weights
 from nemo.lightning import io, teardown
 from nemo.lightning.io.state import TransformFns, _ModelState
 from nemo.utils import logging
@@ -621,6 +623,42 @@ class HFLlama4OmniExporter(io.ModelConnector[Llama4OmniModel, "Llama4ForConditio
             TokenizerSpec: Tokenizer from the NeMo model
         """
         return io.load_context(str(self), subpath="model").tokenizer
+
+    def ckpt_load(self, path: Path) -> Tuple[Dict, Dict]:
+        """
+        This function loads the state dict directly from a distributed checkpoint, and modify the state dict
+        so that it is consistent with the key names you would get from loading the checkpoint into a model.
+        This is a more memory-efficient method to obtain a state dict without initializing the nemo model.
+
+        Args:
+            path (Path): The path from which the model will be loaded.
+
+        Returns
+        -------
+            Tuple[Dict, Dict]: The loaded state dict and the yaml config dict.
+        """
+        model_yaml = path / "context" / "model.yaml"
+        if not model_yaml.exists():
+            raise FileNotFoundError("model.yaml is not found in the context folder of the checkpoint.")
+        with open(model_yaml, 'r') as stream:
+            config = yaml.safe_load(stream)
+
+        dist_ckpt_folder = path / "weights"
+        state_dict = {}
+
+        langauge_layers = config['config']['language_transformer_config']['num_layers']
+        vision_layers = config['config']['vision_transformer_config']['num_layers']
+        distributed_model_weights = load_distributed_model_weights(dist_ckpt_folder, True).items()
+        for k, v in distributed_model_weights:
+            if '_extra_state' in k:
+                continue
+            new_k = k.replace("module.", "")
+            if 'layers' in new_k and (v.size(0) == langauge_layers or v.size(0) == vision_layers):
+                # Only split layers
+                for i in range(v.size(0)):
+                    state_dict[new_k.replace('layers', f'layers.{str(i)}')] = v[i]
+            state_dict[new_k] = v
+        return state_dict, config['config']
 
     def _modify_llama4_source_state(self, state_dict, source_config):
         """

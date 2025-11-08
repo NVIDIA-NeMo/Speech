@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,15 +17,17 @@ import math
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Callable, List, Optional, Union
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
+import yaml
 from torch import nn
 
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
 from nemo.collections.llm.gpt.model.llama4_utils import get_llama4_layer_spec
 from nemo.collections.llm.utils import Config
+from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import load_distributed_model_weights
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME
 from nemo.lightning.io.pl import ckpt_to_weights_subdir
@@ -77,7 +79,6 @@ class LlamaConfig(GPTConfig):
     persist_layer_norm: bool = True
     bias_dropout_fusion: bool = True
     apply_rope_fusion: bool = True
-    use_transformer_engine_op_fuser: Optional[bool] = None
 
 
 @dataclass
@@ -168,7 +169,7 @@ class Llama31Config(Llama3Config):
     old_context_len: int = 8192
     init_method_std: float = 0.02
 
-    def configure_model(self, tokenizer, pre_process=None, post_process=None, vp_stage=None) -> "MCoreGPTModel":
+    def configure_model(self, tokenizer, pre_process=None, post_process=None) -> "MCoreGPTModel":
         """Configure and instantiate a Megatron Core Llama 3.1 model.
 
         Extends the base configuration with Llama 3.1 specific RoPE scaling.
@@ -181,7 +182,7 @@ class Llama31Config(Llama3Config):
         Returns:
             MCoreGPTModel: Configured Megatron Core GPT model instance
         """
-        model = super().configure_model(tokenizer, pre_process, post_process, vp_stage)
+        model = super().configure_model(tokenizer, pre_process, post_process)
         # Apply rope scaling for Llama3.1 model
         model.rotary_pos_emb.inv_freq = apply_rope_scaling(
             model.rotary_pos_emb.inv_freq,
@@ -291,7 +292,6 @@ class Llama32Config1B(Llama31Config):
     scale_factor: float = 32.0
     share_embeddings_and_output_weights: bool = True
     rotary_base: int = 500_000
-    seq_length: int = 131072
     num_layers: int = 16
     hidden_size: int = 2048
     ffn_hidden_size: int = 8192
@@ -311,7 +311,6 @@ class Llama32Config3B(Llama31Config):
     scale_factor: int = 32
     share_embeddings_and_output_weights: bool = True
     rotary_base: int = 500_000
-    seq_length: int = 131072
     num_layers: int = 28
     hidden_size: int = 3072
     ffn_hidden_size: int = 8192
@@ -766,7 +765,7 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
             params_dtype=dtype_from_hf(source),
             generation_config=generation_config,
             vocab_size=source.vocab_size,
-            kv_channels=getattr(source, "head_dim", None),
+            kv_channels=getattr(source, "head_dim"),
             **args,
         )
 
@@ -901,13 +900,6 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
                     "decoder.layers.*.mlp.experts.linear_fc1.weight": "model.layers.*.feed_forward.experts.gate_up_proj",
                 }
             )
-
-            # Remove the transform with source_key "decoder.layers.*.mlp.linear_fc1.weight" from transforms
-            # Llama4's HF model has a different mapping for the MLP weights (map to feed_forward instead of mlp)
-            transforms = [
-                t for t in transforms if getattr(t, "source_key", None) != "decoder.layers.*.mlp.linear_fc1.weight"
-            ]
-
             transforms.extend(
                 [
                     io.state_transform(
@@ -1055,6 +1047,46 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
         )
         return config
 
+    def ckpt_load(self, path: Path) -> Tuple[Dict, Any]:
+        """
+        This function loads the state dict directly from a distributed checkpoint, and modify the state dict
+        so that it is consistent with the key names you would get from loading the checkpoint into a model.
+        This is a more memory-efficient method to obtain a state dict without initializing the nemo model.
+
+        Args:
+            path (Path): The path from which the model will be loaded.
+
+        Returns
+        -------
+            Tuple[Dict, Any]: The loaded state dict and the yaml config object.
+        """
+        model_yaml = path / "context" / "model.yaml"
+        if not model_yaml.exists():
+            raise FileNotFoundError("model.yaml is not found in the context folder of the checkpoint.")
+        with open(model_yaml, 'r') as stream:
+            config = yaml.safe_load(stream)
+
+        dist_ckpt_folder = path / "weights"
+        state_dict = {}
+
+        dict_to_obj = lambda d: (
+            type('Config', (), {kk: dict_to_obj(vv) for kk, vv in d.items()}) if isinstance(d, dict) else d
+        )
+        config_obj = dict_to_obj(config['config'])
+        langauge_layers = config_obj.num_layers
+        distributed_model_weights = load_distributed_model_weights(dist_ckpt_folder, True).items()
+        for k, v in distributed_model_weights:
+            if '_extra_state' in k:
+                continue
+            new_k = k.replace("module.", "")
+            if 'layers' in new_k and v.size(0) == langauge_layers:
+                # Only split layers
+                for i in range(v.size(0)):
+                    state_dict[new_k.replace('layers', f'layers.{str(i)}')] = v[i]
+            state_dict[new_k] = v
+
+        return state_dict, config_obj
+
     def _modify_llama4_source_state(self, state_dict, source_config):
         """
         For MoE layer, we transpose the gate_up_proj and down_proj to match HF implementation.
@@ -1128,7 +1160,7 @@ class HFLlamaPEFTExporter(HFLlamaExporter):
         """
         from nemo.collections.llm.peft import CanonicalLoRA, DoRA, LoRA
 
-        self.peft_obj: Union[LoRA, DoRA, CanonicalLoRA] = io.load_context(str(self), subpath="model.model_transform")
+        self.peft_obj: Union[LoRA, DoRA, CanonicalLoRA] = io.load_context(str(self)).model.model_transform
 
         source, _ = self.nemo_load(str(self))
         target = self.init(torch_dtype_from_mcore_config(source.config))

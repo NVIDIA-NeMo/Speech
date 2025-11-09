@@ -25,3 +25,12 @@ __all__ = [
     "AVLMModel",
     "avlm_8b",
 ]
+
+
+import warnings
+
+warnings.warn(
+    "nemo.collections.avlm is deprecated and will be removed in the next major NeMo FW container release.",
+    DeprecationWarning,
+    stacklevel=2,
+)

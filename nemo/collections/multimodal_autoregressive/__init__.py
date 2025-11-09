@@ -15,7 +15,7 @@
 import warnings
 
 warnings.warn(
-    "nemo.collections.multimodal_autoregressive is deprecated and will be removed in the next major NeMo FW container release."
+    "nemo.collections.multimodal_autoregressive is deprecated and will be removed in the next major NeMo FW container release.",
     DeprecationWarning,
     stacklevel=2,
 )

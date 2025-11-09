@@ -194,7 +194,7 @@ except ImportError as error:
 import warnings
 
 warnings.warn(
-    "nemo.collections.vlm is deprecated and will be removed in the next major NeMo FW container release."
+    "nemo.collections.vlm is deprecated and will be removed in the next major NeMo FW container release.",
     DeprecationWarning,
     stacklevel=2,
 )

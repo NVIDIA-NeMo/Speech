@@ -82,7 +82,7 @@ __all__ = [
 import warnings
 
 warnings.warn(
-    "nemo.lightning is deprecated and will be removed in the next major NeMo FW container release."
+    "nemo.lightning is deprecated and will be removed in the next major NeMo FW container release.",
     DeprecationWarning,
     stacklevel=2,
 )

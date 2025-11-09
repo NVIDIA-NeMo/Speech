@@ -29,7 +29,7 @@ __description__ = "Natural Language Processing collection"
 import warnings
 
 warnings.warn(
-    "nemo.collections.nlp is deprecated and will be removed in the next major NeMo FW container release."
+    "nemo.collections.nlp is deprecated and will be removed in the next major NeMo FW container release.",
     DeprecationWarning,
     stacklevel=2,
 )

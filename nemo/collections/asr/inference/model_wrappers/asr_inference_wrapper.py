@@ -140,8 +140,6 @@ class ASRInferenceWrapper:
         Returns:
             (bool) True if the ASR model supports capitalization, False otherwise.
         """
-        if not hasattr(self, "asr_model") or self.asr_model is None:
-            raise ValueError("ASR model is not initialized.")
         return self.tokenizer.supports_capitalization
 
     def supports_punctuation(self) -> bool:
@@ -150,8 +148,6 @@ class ASRInferenceWrapper:
         Returns:
             (bool) True if the ASR model supports punctuation, False otherwise.
         """
-        if not hasattr(self, "asr_model") or self.asr_model is None:
-            raise ValueError("ASR model is not initialized.")
         return self.supported_punctuation() != set()
 
     def supported_punctuation(self) -> set:

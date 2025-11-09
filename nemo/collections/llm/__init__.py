@@ -449,3 +449,13 @@ try:
     __all__.append("evaluate")
 except ImportError as error:
     logging.warning(f"The evaluate module could not be imported: {error}")
+
+
+import warnings
+
+
+warnings.warn(
+    "nemo.collections.llm is deprecated and will be removed in the next major NeMo FW container release."
+    DeprecationWarning,
+    stacklevel=2,
+)

@@ -190,3 +190,11 @@ except ImportError as error:
     from nemo.utils import logging
 
     logging.warning(f"Failed to import nemo.collections.vlm.api: {error}")
+
+import warnings
+
+warnings.warn(
+    "nemo.collections.vlm is deprecated and will be removed in the next major NeMo FW container release."
+    DeprecationWarning,
+    stacklevel=2,
+)

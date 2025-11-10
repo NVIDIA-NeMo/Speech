@@ -82,12 +82,10 @@ extras_require = {
     'slu': req_file("requirements_slu.txt"),
     'multimodal-only': req_file("requirements_multimodal.txt"),
     'audio': req_file("requirements_audio.txt"),
-    'deploy': req_file("requirements_deploy.txt"),
-    'eval': req_file("requirements_eval.txt"),
 }
 
 
-extras_require['all'] = list(chain(val for key, val in extras_require.items() if key != 'deploy'))
+extras_require['all'] = list(chain(val for key, val in extras_require.items()))
 
 # Add lightning requirements as needed
 extras_require['common'] = extras_require['common-only']
@@ -147,14 +145,6 @@ extras_require['slu'] = list(
     chain(
         extras_require['slu'],
         extras_require['asr'],
-    )
-)
-extras_require['deploy'] = list(
-    chain(
-        extras_require['nlp'],
-        extras_require['multimodal'],
-        extras_require['tts'],
-        extras_require['deploy'],
     )
 )
 

@@ -1,7 +1,13 @@
 # Changelog
 
 <!-- Next changelog -->
-## NVIDIA Neural Modules 2.5.0
+## NVIDIA Neural Modules 2.5.3
+
+### Highlights
+
+- This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- Update nv-one-logger
+- Update ctc-segmentation
 
 ### Detailed Changelogs:
 
@@ -22,9 +28,9 @@
 
 - cp: `Update ctc-segmentation (14991)` into `r2.5.0` by @chtruong814 :: PR: #15020
 - Bump to 2.5.3 by @chtruong814 :: PR: #15022
-- cp: `check asr models (14989)` into `r2.5.0` by @chtruong814 :: PR: #15017
 
 </details>
+
 ## NVIDIA Neural Modules 2.5.2
 
 ### Detailed Changelogs:

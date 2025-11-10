@@ -74,7 +74,6 @@ def ptq(
 
     quantizer = Quantizer(quantization_config, export_config)
     assert Path(model_path).exists(), f"Path {model_path} does not exist"
-    is_automodel = (Path(model_path) / 'config.json').exists()
 
     trainer = None
     assert export_config.export_format != "hf", "Automodel PTQ does not support export format hf"

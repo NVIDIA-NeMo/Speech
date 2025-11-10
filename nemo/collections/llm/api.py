@@ -545,7 +545,6 @@ def ptq(
 
     quantizer = Quantizer(quantization_config, export_config)
     assert Path(model_path).exists(), f"Path {model_path} does not exist"
-    is_automodel = (Path(model_path) / 'config.json').exists()
 
     trainer = None
     model, trainer = setup_trainer_and_restore_model_with_modelopt_spec(

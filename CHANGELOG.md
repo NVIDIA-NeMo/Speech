@@ -1,6 +1,36 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.5.3
+
+### Highlights
+
+- This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- Update nv-one-logger
+- Update ctc-segmentation
+
+### Detailed Changelogs:
+
+
+</details>
+
+#### Text Normalization / Inverse Text Normalization
+
+<details><summary>Changelog</summary>
+
+- chore: update Lightning requirement by @liquor233 :: PR: #15005
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- cp: `Update ctc-segmentation (14991)` into `r2.5.0` by @chtruong814 :: PR: #15020
+- Bump to 2.5.3 by @chtruong814 :: PR: #15022
+
+</details>
+
 ## NVIDIA Neural Modules 2.5.2
 
 ### Detailed Changelogs:

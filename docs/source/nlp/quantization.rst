@@ -19,7 +19,7 @@ The quantization process consists of the following steps:
 2. Calibrating the model to obtain appropriate algorithm-specific scaling factors
 3. Producing an output directory or .qnemo tarball with model config (json), quantized weights (safetensors) and tokenizer config (yaml).
 
-Loading models requires using an ModelOpt spec defined in `nemo.collections.nlp.models.language_modeling.megatron.gpt_layer_modelopt_spec <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/language_modeling/megatron/gpt_layer_modelopt_spec.py>`_ module. Typically the calibration step is lightweight and uses a small dataset to obtain appropriate statistics for scaling tensors. The output directory produced (or a .qnemo tarball) is ready to be used to build a serving engine with the Nvidia TensorRT-LLM library. The engine build step is also available in NeMo project in ``nemo.deploy`` and ``nemo.export`` modules.
+Loading models requires using an ModelOpt spec defined in `nemo.collections.nlp.models.language_modeling.megatron.gpt_layer_modelopt_spec <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/language_modeling/megatron/gpt_layer_modelopt_spec.py>`_ module. Typically the calibration step is lightweight and uses a small dataset to obtain appropriate statistics for scaling tensors. The output directory produced (or a .qnemo tarball) is ready to be used to build a serving engine with the Nvidia TensorRT-LLM library. The engine build step is also available in the `Export-Deploy repository <https://github.com/NVIDIA-NeMo/Export-Deploy>`_.
 
 Quantization algorithm can also be conveniently set to ``"null"`` to perform only the weights export step using default precision for TensorRT-LLM deployment. This is useful to obtain baseline performance and accuracy results for comparison.
 
@@ -103,19 +103,11 @@ The output directory stores the following files:
     ├── tokenizer.model
     └── tokenizer_config.yaml
 
-The TensorRT-LLM engine can be conveniently built and run using ``TensorRTLLM`` class available in ``nemo.export`` submodule:
+.. note::
+   The export and deployment functionality has been moved to a separate repository.
+   Install with: ``pip install git+https://github.com/NVIDIA-NeMo/Export-Deploy.git``
 
-.. code-block:: python
-
-    from nemo.export.tensorrt_llm import TensorRTLLM
-    trt_llm_exporter = TensorRTLLM(model_dir="/path/to/trt_llm_engine_folder")
-    trt_llm_exporter.export(
-        nemo_checkpoint_path="llama3-70b-base-fp8-qnemo",
-        model_type="llama",
-    )
-    trt_llm_exporter.forward(["Hi, how are you?", "I am good, thanks, how about you?"])
-
-Alternatively, it can also be built directly using ``trtllm-build`` command, see `TensorRT-LLM documentation <https://nvidia.github.io/TensorRT-LLM/latest/legacy/architecture/checkpoint.html#build-checkpoint-into-tensorrt-engine>`_:
+The TensorRT-LLM engine can be built directly using ``trtllm-build`` command, see `TensorRT-LLM documentation <https://nvidia.github.io/TensorRT-LLM/latest/legacy/architecture/checkpoint.html#build-checkpoint-into-tensorrt-engine>`_:
 
 .. code-block:: bash
 
@@ -129,7 +121,7 @@ Alternatively, it can also be built directly using ``trtllm-build`` command, see
 
 Known issues
 ^^^^^^^^^^^^
-* Currently with ``nemo.export`` module building TensorRT-LLM engines for quantized "qnemo" models is limited to single-node deployments.
+* Building TensorRT-LLM engines for quantized "qnemo" models is limited to single-node deployments.
 
 
 Quantization-Aware Training (QAT)
@@ -183,25 +175,11 @@ Note that you may tweak the QAT trainer steps and learning rate if needed to ach
 NeMo checkpoints trained in FP8 with `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_
 ----------------------------------------------------------------------------------------------------------------
 
-If you have an FP8-quantized checkpoint, produced during pre-training or fine-tuning with Transformer Engine, you can convert it to a FP8 TensorRT-LLM engine directly using ``nemo.export``.
-The API is the same as with regular ``.nemo`` and ``.qnemo`` checkpoints:
+If you have an FP8-quantized checkpoint, produced during pre-training or fine-tuning with Transformer Engine, you can convert it to a FP8 TensorRT-LLM engine directly using the Export-Deploy repository.
 
-.. code-block:: python
-
-    from nemo.export.tensorrt_llm import TensorRTLLM
-    trt_llm_exporter = TensorRTLLM(model_dir="/path/to/trt_llm_engine_folder")
-    trt_llm_exporter.export(
-        nemo_checkpoint_path="/path/to/llama2-7b-base-fp8.nemo",
-        model_type="llama",
-    )
-    trt_llm_exporter.forward(["Hi, how are you?", "I am good, thanks, how about you?"])
-
-The export settings for quantization can be adjusted via ``trt_llm_exporter.export`` arguments:
-
-* ``fp8_quantized: Optional[bool] = None``: manually enables/disables FP8 quantization
-* ``fp8_kvcache: Optional[bool] = None``: manually enables/disables FP8 quantization for KV-cache
-
-By default quantization settings are auto-detected from the NeMo checkpoint.
+.. note::
+   Export and deployment functionality is available in the Export-Deploy repository.
+   See: https://github.com/NVIDIA-NeMo/Export-Deploy
 
 
 References

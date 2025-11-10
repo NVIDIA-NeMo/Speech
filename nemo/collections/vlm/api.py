@@ -45,8 +45,8 @@ def ptq(
     specified quantization and export configs.
     It runs calibration for a small dataset to collect scaling factors low-precision
     GEMMs used by desired quantization method.
-    By default, this function produces TensorRT-LLM checkpoint ready for deployment using nemo.export and nemo.deploy
-    modules or directly using TensorRT-LLM library.
+    By default, this function produces TensorRT-LLM checkpoint ready for deployment using the Export-Deploy repository
+    (https://github.com/NVIDIA-NeMo/Export-Deploy) or directly using TensorRT-LLM library.
 
     Args:
         model_path (str): The path to model to be quantized.

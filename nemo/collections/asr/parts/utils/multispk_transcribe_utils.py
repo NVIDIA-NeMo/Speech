@@ -29,16 +29,10 @@ from omegaconf import DictConfig
 from nemo.collections.asr.data.audio_to_diar_label import extract_frame_info_from_rttm, get_frame_targets_from_rttm
 from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
 from nemo.collections.asr.modules.sortformer_modules import StreamingSortformerState
-from nemo.collections.asr.parts.utils.diarization_utils import (
-    OnlineEvaluation,
-    get_color_palette,
-    print_sentences,
-    read_seglst,
-    write_txt,
-)
+from nemo.collections.asr.parts.utils.diarization_utils import get_color_palette, print_sentences, write_txt
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map as get_audio_rttm_map
-from nemo.collections.asr.parts.utils.speaker_utils import get_uniqname_from_filepath, rttm_to_labels
+from nemo.collections.asr.parts.utils.speaker_utils import get_uniqname_from_filepath
 from nemo.utils import logging
 
 
@@ -100,7 +94,7 @@ def add_delay_for_real_time(
         loop_end_time (float): The loop end time in seconds.
         loop_start_time (float): The loop start time in seconds.
     """
-    time_diff = max(0, (time.time() - session_start_time) - feat_frame_count * cfg.feat_len_sec)
+    time_diff = max(0, (time.time() - session_start_time) - feat_frame_count * cfg.get("feat_len_sec", 0.01))
     eta_min_sec = format_time(time.time() - session_start_time)
     logging.info(
         f"[   REAL TIME MODE   ] min:sec - {eta_min_sec} "
@@ -109,9 +103,9 @@ def add_delay_for_real_time(
     time.sleep(
         max(
             0,
-            (chunk_audio.shape[-1] - cfg.discarded_frames) * cfg.feat_len_sec
+            (chunk_audio.shape[-1] - cfg.get("discarded_frames", 8)) * cfg.get("feat_len_sec", 0.01)
             - (loop_end_time - loop_start_time)
-            - time_diff * cfg.finetune_realtime_ratio,
+            - time_diff * cfg.get("finetune_realtime_ratio", 0.01),
         )
     )
 
@@ -136,7 +130,7 @@ def write_seglst_file(seglst_dict_list: List[Dict[str, Any]], output_path: str):
     """
     if len(seglst_dict_list) == 0:
         raise ValueError("seglst_dict_list is empty. No transcriptions were generated.")
-    with open(output_path, 'w') as f:
+    with open(output_path, 'w', encoding='utf-8') as f:
         f.write(json.dumps(seglst_dict_list, indent=4) + '\n')
     logging.info(f"Saved the transcriptions of the streaming inference in\n:{output_path}")
 
@@ -165,7 +159,7 @@ def get_multi_talker_samples_from_manifest(cfg, manifest_file: str, feat_per_sec
             if 'duration' not in item:
                 raise KeyError(f"Line {line_num}: 'duration' missing")
             samples.append(item)
-            if cfg.spk_supervision == "rttm":
+            if cfg.get("spk_supervision", "diar") == "rttm":
                 rttm_path = samples[-1]['rttm_filepath']
                 if not rttm_path:
                     raise ValueError(f"Line {line_num}: rttm_filepath required when spk_supervision='rttm'")
@@ -231,6 +225,7 @@ def get_new_sentence_dict(
     end_time: float,
     text: str,
     session_id: Optional[str] = None,
+    decimal: int = 3,
 ) -> dict:
     """
     Get a new SegLST style sentence dictionary variable.
@@ -245,10 +240,15 @@ def get_new_sentence_dict(
     Returns:
         Dict[str, Any]: A new SegLST style sentence dictionary variable.
     """
+    # If start_time or end_time is a torch tensor, convert it to a float and round it to 3 decimal places
+    if isinstance(start_time, torch.Tensor):
+        start_time = start_time.item()
+    if isinstance(end_time, torch.Tensor):
+        end_time = end_time.item()
     return {
         'speaker': speaker,
-        'start_time': start_time,
-        'end_time': end_time,
+        'start_time': round(start_time, decimal),
+        'end_time': round(end_time, decimal),
         'words': text.lstrip(),
         'session_id': session_id,
     }
@@ -285,7 +285,7 @@ def fix_frame_time_step(cfg: Any, new_tokens: List[str], new_words: List[str], f
         elif len(frame_inds_seq) < len(new_tokens):
             deficit = len(new_tokens) - len(frame_inds_seq)
             frame_inds_seq = [frame_inds_seq[0]] * deficit + frame_inds_seq
-        if cfg.log:
+        if cfg.get("log", True):
             logging.warning(
                 f"Length of new token sequence ({len(new_tokens)}) does not match"
                 f"the length of frame indices sequence ({len(frame_inds_seq)}). Skipping this chunk."
@@ -306,10 +306,12 @@ def get_simulated_softmax(cfg, speaker_sigmoid: torch.Tensor) -> torch.Tensor:
     """
     if speaker_sigmoid.ndim != 1:
         raise ValueError(f"Expected 1D tensor for speaker_sigmoid, got shape {speaker_sigmoid.shape}")
-    if speaker_sigmoid.shape[0] < cfg.max_num_of_spks:
-        raise ValueError(f"speaker_sigmoid size {speaker_sigmoid.shape[0]} < max_num_of_spks {cfg.max_num_of_spks}")
+    if speaker_sigmoid.shape[0] < cfg.get("max_num_of_spks", 4):
+        raise ValueError(
+            f"speaker_sigmoid size {speaker_sigmoid.shape[0]} < max_num_of_spks {cfg.get('max_num_of_spks', 4)}"
+        )
 
-    speaker_sigmoid = torch.clamp(speaker_sigmoid, min=cfg.min_sigmoid_val, max=1)
+    speaker_sigmoid = torch.clamp(speaker_sigmoid, min=cfg.get("min_sigmoid_val", 1e-2), max=1)
     sigmoid_sum = speaker_sigmoid.sum()
     if sigmoid_sum == 0:
         logging.warning("speaker_sigmoid sum is zero, returning uniform distribution")
@@ -317,7 +319,7 @@ def get_simulated_softmax(cfg, speaker_sigmoid: torch.Tensor) -> torch.Tensor:
     else:
         speaker_softmax = speaker_sigmoid / sigmoid_sum
     speaker_softmax = speaker_softmax.cpu()
-    speaker_softmax[cfg.max_num_of_spks :] = 0.0
+    speaker_softmax[cfg.get("max_num_of_spks", 4) :] = 0.0
     return speaker_softmax
 
 
@@ -357,11 +359,11 @@ def get_word_dict_content_offline(
             frame_end = frame_stt + 1
 
     # Get the speaker based on the frame-wise softmax probabilities.
-    stt_p, end_p = max((frame_stt + cfg.left_frame_shift), 0), (frame_end + cfg.right_frame_shift)
+    stt_p, end_p = max((frame_stt + cfg.get("left_frame_shift", -1)), 0), (frame_end + cfg.get("right_frame_shift", 0))
     speaker_sigmoid = diar_pred_out[stt_p:end_p, :].mean(dim=0)
     speaker_softmax = get_simulated_softmax(cfg, speaker_sigmoid)
 
-    speaker_softmax[cfg.max_num_of_spks :] = 0.0
+    speaker_softmax[cfg.get("max_num_of_spks", 4) :] = 0.0
     spk_id = speaker_softmax.argmax().item()
     stt_sec, end_sec = frame_stt * frame_len, frame_end * frame_len
     word_dict = {
@@ -424,11 +426,11 @@ def get_word_dict_content_online(
             frame_end = frame_stt + 1
 
     # Get the speaker based on the frame-wise softmax probabilities.
-    stt_p, end_p = max((frame_stt + cfg.left_frame_shift), 0), (frame_end + cfg.right_frame_shift)
+    stt_p, end_p = max((frame_stt + cfg.get("left_frame_shift", -1)), 0), (frame_end + cfg.get("right_frame_shift", 0))
     speaker_sigmoid = diar_pred_out_stream[stt_p:end_p, :].mean(dim=0)
     speaker_softmax = get_simulated_softmax(cfg, speaker_sigmoid)
 
-    speaker_softmax[cfg.max_num_of_spks :] = 0.0
+    speaker_softmax[cfg.get("max_num_of_spks", 4) :] = 0.0
     spk_id = speaker_softmax.argmax().item()
     stt_sec, end_sec = frame_stt * frame_len, frame_end * frame_len
     word_dict = {
@@ -516,15 +518,25 @@ class SpeakerTaggedASR:
     ):
         # Required configs, models and datasets for inference
         self.cfg = cfg
-        if self.cfg.manifest_file:
-            self.test_manifest_dict = get_audio_rttm_map(self.cfg.manifest_file)
-        elif self.cfg.audio_file is not None:
-            uniq_id = get_uniqname_from_filepath(filepath=self.cfg.audio_file)
-            self.test_manifest_dict = {
-                uniq_id: {'audio_filepath': self.cfg.audio_file, 'seglst_filepath': None, 'rttm_filepath': None}
-            }
+        if not self.cfg.get("deploy_mode", False):
+            if self.cfg.manifest_file:
+                self.test_manifest_dict = get_audio_rttm_map(self.cfg.manifest_file)
+            elif self.cfg.audio_file is not None:
+                uniq_id = get_uniqname_from_filepath(filepath=self.cfg.audio_file)
+                self.test_manifest_dict = {
+                    uniq_id: {'audio_filepath': self.cfg.audio_file, 'seglst_filepath': None, 'rttm_filepath': None}
+                }
+            else:
+                raise ValueError("One of the audio_file and manifest_file should be non-empty!")
         else:
-            raise ValueError("One of the audio_file and manifest_file should be non-empty!")
+            self.test_manifest_dict = {
+                "streaming_session": {
+                    'audio_filepath': 'streaming_session.wav',
+                    'seglst_filepath': None,
+                    'rttm_filepath': None,
+                }
+            }
+        self.transcribed_speaker_texts = [None] * len(self.test_manifest_dict)
 
         self.asr_model = asr_model
         self.diar_model = diar_model
@@ -534,9 +546,10 @@ class SpeakerTaggedASR:
         self._sentence_render_length = int(self._fix_prev_words_count + cfg.update_prev_words_sentence)
         self._frame_len_sec = 0.08
         self._initial_steps = cfg.ignored_initial_frame_steps
+        self._word_and_ts_seq = {}
         self._stt_words = []
-        self._init_evaluator()
         self._frame_hop_length = self.asr_model.encoder.streaming_cfg.valid_out_len
+        self._init_transcript_sessions()
 
         # Multi-instance configs
         self._max_num_of_spks = cfg.get("max_num_of_spks", 4)
@@ -562,12 +575,11 @@ class SpeakerTaggedASR:
         )
         self.n_active_speakers_per_stream = self.cfg.max_num_of_spks
 
-    def _init_evaluator(self):
+    def _init_transcript_sessions(self):
         """
-        Initialize the evaluator for the offline STT and speaker diarization.
+        Initialize the word and time-stamp sequence for each session.
         """
-        self.online_evaluators, self._word_and_ts_seq = [], {}
-        for _, (uniq_id, data_dict) in enumerate(self.test_manifest_dict.items()):
+        for uniq_id in self.test_manifest_dict.keys():
             uniq_id = uniq_id.split(".")[0]  # Make sure there is no "." in the uniq_id
             self._word_and_ts_seq[uniq_id] = {
                 "words": [],
@@ -584,26 +596,6 @@ class SpeakerTaggedASR:
                 "speaker_count_buffer": [],
                 "sentence_memory": {},
             }
-
-            if 'seglst_filepath' in data_dict and data_dict['seglst_filepath'] is not None:
-                ref_seglst = read_seglst(data_dict['seglst_filepath'])
-            else:
-                ref_seglst = None
-
-            if 'rttm_filepath' in data_dict and data_dict['rttm_filepath'] is not None:
-                ref_rttm_labels = rttm_to_labels(data_dict['rttm_filepath'])
-            else:
-                ref_rttm_labels = None
-
-            eval_instance = OnlineEvaluation(
-                ref_seglst=ref_seglst,
-                ref_rttm_labels=ref_rttm_labels,
-                hyp_seglst=None,
-                collar=0.25,
-                ignore_overlap=False,
-                verbose=True,
-            )
-            self.online_evaluators.append(eval_instance)
 
     def _get_offset_sentence(self, session_trans_dict: Dict[str, Any], offset: int) -> Dict[str, Any]:
         """
@@ -698,7 +690,6 @@ class SpeakerTaggedASR:
             transcribed_speaker_texts (List[str]): List of transcribed speaker texts.
             self._word_and_ts_seq (Dict[str, Dict[str, Any]]): Dictionary of word-level dictionaries with uniq_id as key.
         """
-        transcribed_speaker_texts = [None] * len(test_manifest_dict)
 
         for idx, (uniq_id, _) in enumerate(test_manifest_dict.items()):
             uniq_id = uniq_id.split(".")[0]  # Make sure there is no "." in the uniq_id
@@ -716,16 +707,17 @@ class SpeakerTaggedASR:
                         sentence_render_length=self._sentence_render_length,
                     )
                     if self.cfg.generate_realtime_scripts:
-                        transcribed_speaker_texts[idx] = print_sentences(
+                        self.transcribed_speaker_texts[idx] = print_sentences(
                             sentences=self._word_and_ts_seq[uniq_id]["sentences"],
                             color_palette=get_color_palette(),
                             params=self.cfg,
                         )
-                        write_txt(
-                            f'{self.cfg.print_path}'.replace(".sh", f"_{idx}.sh"),
-                            transcribed_speaker_texts[idx].strip(),
-                        )
-        return transcribed_speaker_texts, self._word_and_ts_seq
+                        if not self.cfg.get("deploy_mode", False):
+                            write_txt(
+                                f'{self.cfg.print_path}'.replace(".sh", f"_{idx}.sh"),
+                                self.transcribed_speaker_texts[idx].strip(),
+                            )
+        return self.transcribed_speaker_texts, self._word_and_ts_seq
 
     def get_frame_and_words_offline(
         self,
@@ -920,7 +912,6 @@ class SpeakerTaggedASR:
         Args:
             samples (List[Dict[str, Any]]): List of samples.
         """
-        # for _, word_ts_and_seq in enumerate(self._word_and_ts_seq):
         for sample in samples:
             uniq_id = get_uniqname_from_filepath(sample['audio_filepath']).split('.')[0]
             word_ts_and_seq_dict = self._word_and_ts_seq[uniq_id]
@@ -934,6 +925,7 @@ class SpeakerTaggedASR:
                     session_id=session_id,
                 )
                 self.instance_manager.seglst_dict_list.append(seglst_dict)
+        return self.instance_manager.seglst_dict_list
 
     def generate_seglst_dicts_from_parallel_streaming(self, samples: List[Dict[str, Any]]):
         """
@@ -960,6 +952,7 @@ class SpeakerTaggedASR:
             ]
             seglsts = sorted(seglsts, key=lambda x: x['start_time'])
             self.instance_manager.seglst_dict_list.extend(seglsts)
+        return self.instance_manager.seglst_dict_list
 
     def _find_active_speakers(self, diar_preds: torch.Tensor, n_active_speakers_per_stream: int) -> List[List[int]]:
         """
@@ -1040,10 +1033,12 @@ class SpeakerTaggedASR:
         mask = mask.unsqueeze(-1).repeat(1, 1, 8).flatten(1, 2)
 
         if mask.shape[1] > chunk_audio.shape[2]:
-            logging.warning(f"Mask shape {mask.shape} is greater than chunk_audio shape {chunk_audio.shape}")
+            if self.cfg.get("log", False):
+                logging.warning(f"Mask shape {mask.shape} is greater than chunk_audio shape {chunk_audio.shape}")
             mask = mask[:, : chunk_audio.shape[2]]
         elif mask.shape[1] < chunk_audio.shape[2]:
-            logging.warning(f"Mask shape {mask.shape} is less than chunk_audio shape {chunk_audio.shape}")
+            if self.cfg.get("log", False):
+                logging.warning(f"Mask shape {mask.shape} is less than chunk_audio shape {chunk_audio.shape}")
             mask = torch.nn.functional.pad(mask, (chunk_audio.shape[2] - mask.shape[1], 0), mode='constant', value=0)
 
         masked_chunk_audio = chunk_audio * mask.unsqueeze(1)
@@ -1164,7 +1159,6 @@ class SpeakerTaggedASR:
             _, new_chunk_preds = self.get_diar_pred_out_stream(step_num)
             diar_pred_out_stream = new_chunk_preds
 
-        transcribed_speaker_texts = [None] * len(self.test_manifest_dict)
         for idx, (uniq_id, _) in enumerate(self.test_manifest_dict.items()):
             if not (len(previous_hypotheses[idx].text) == 0 and step_num <= self._initial_steps):
                 # Get the word-level dictionaries for each word in the chunk
@@ -1180,16 +1174,17 @@ class SpeakerTaggedASR:
                         session_trans_dict=self._word_and_ts_seq[uniq_id],
                         sentence_render_length=self._sentence_render_length,
                     )
-                    if self.cfg.generate_realtime_scripts:
-                        transcribed_speaker_texts[idx] = print_sentences(
+                    if self.cfg.get("generate_realtime_scripts", True):
+                        self.transcribed_speaker_texts[idx] = print_sentences(
                             sentences=self._word_and_ts_seq[uniq_id]["sentences"],
                             color_palette=get_color_palette(),
                             params=self.cfg,
                         )
-                        write_txt(
-                            f'{self.cfg.print_path}'.replace(".sh", f"_{idx}.sh"),
-                            transcribed_speaker_texts[idx].strip(),
-                        )
+                        if not self.cfg.get("deploy_mode", False):
+                            write_txt(
+                                f'{self.cfg.get("print_path", "./print_script.sh")}'.replace(".sh", f"_{idx}.sh"),
+                                self.transcribed_speaker_texts[idx].strip(),
+                            )
 
         for batch_idx in range(chunk_audio.shape[0]):
             self.instance_manager.update_asr_state(
@@ -1201,6 +1196,7 @@ class SpeakerTaggedASR:
                 previous_hypotheses=previous_hypotheses[batch_idx],
                 previous_pred_out=asr_pred_out_stream[batch_idx],
             )
+        return self.transcribed_speaker_texts
 
     @measure_eta
     def perform_parallel_streaming_stt_spk(
@@ -1349,15 +1345,18 @@ class SpeakerTaggedASR:
         self.instance_manager.update_seglsts(offset=self._offset_chunk_start_time)
         self._offset_chunk_start_time += self._nframes_per_chunk * self._frame_len_sec
 
-        if self.cfg.generate_realtime_scripts:
-            for session_idx in self.cfg.print_sample_indices:
+        if self.cfg.get("generate_realtime_scripts", True):
+            for session_idx in self.cfg.get("print_sample_indices", [0]):
                 asr_state = self.instance_manager.batch_asr_states[session_idx]
-                transcribed_speaker_texts = print_sentences(
+                self.transcribed_speaker_texts[session_idx] = print_sentences(
                     sentences=asr_state.seglsts, color_palette=get_color_palette(), params=self.cfg
                 )
-                write_txt(
-                    f'{self.cfg.print_path.replace(".sh", f"_{session_idx}.sh")}', transcribed_speaker_texts.strip()
-                )
+                if not self.cfg.get("deploy_mode", False):
+                    write_txt(
+                        f'{self.cfg.get("print_path", "./print_script.sh").replace(".sh", f"_{session_idx}.sh")}',
+                        self.transcribed_speaker_texts[session_idx].strip(),
+                    )
+        return self.transcribed_speaker_texts
 
 
 class MultiTalkerInstanceManager:
@@ -1778,7 +1777,7 @@ class MultiTalkerInstanceManager:
         Args:
             device (torch.device): The device to move the ASR and Diar states to.
         """
-        for batch_idx in range(self.batch_size):
+        for batch_idx in range(len(self.batch_asr_states)):
             self.batch_asr_states[batch_idx].to(device)
         self.diar_states.to(device)
 

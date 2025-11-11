@@ -16,13 +16,12 @@ from collections import defaultdict
 import torch
 from whisper_normalizer.english import EnglishTextNormalizer
 
+from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_nemo
 from nemo.utils import logging
-
-from nemo.collections.asr.metrics.wer import word_error_rate
 
 
 class Intelligibility:
@@ -31,7 +30,14 @@ class Intelligibility:
     By default, uses Whisper's EnglishTextNormalizer on hypotheses and references.
     """
 
-    def __init__(self, pretrained_asr: str, normalize: bool = True, normalizer=None, verbose: bool = True, reuse_asr_hyps: bool = False) -> None:
+    def __init__(
+        self,
+        pretrained_asr: str,
+        normalize: bool = True,
+        normalizer=None,
+        verbose: bool = True,
+        reuse_asr_hyps: bool = False,
+    ) -> None:
         self.asr = None  # load into memory on reset()
         self.pretrained_asr_name = pretrained_asr
         self.verbose = verbose
@@ -59,7 +65,12 @@ class Intelligibility:
         return self
 
     def update(
-        self, name: str, refs: list[str], pred_audio: torch.Tensor, pred_audio_lens: torch.Tensor = None, asr_hyps: list[str] = None
+        self,
+        name: str,
+        refs: list[str],
+        pred_audio: torch.Tensor,
+        pred_audio_lens: torch.Tensor = None,
+        asr_hyps: list[str] = None,
     ) -> list[str]:
         if self.asr is None and not self.reuse_asr_hyps:
             self.reset()
@@ -96,7 +107,7 @@ class Intelligibility:
             corpus_metric[f"wer_{name}"] = wer
             corpus_metric["cer"].append(cer)
             corpus_metric["wer"].append(wer)
-    
+
         corpus_metric["cer"] = torch.stack(corpus_metric["cer"]).mean()
         corpus_metric["wer"] = torch.stack(corpus_metric["wer"]).mean()
         self._refs.clear()

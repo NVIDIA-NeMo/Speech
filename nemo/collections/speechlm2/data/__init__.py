@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .datamodule import DataModule
-from .s2s_dataset import DuplexS2SDataset
 from .duplex_ear_tts_dataset import DuplexEARTTSDataset
+from .s2s_dataset import DuplexS2SDataset
 from .salm_dataset import SALMDataset
 
 __all__ = [

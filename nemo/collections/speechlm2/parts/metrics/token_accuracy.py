@@ -19,13 +19,13 @@ from nemo.utils import logging
 def compute_token_accuracy_with_tolerance(target, pred, token, tolerance=1):
     """
     Computes the accuracy of `token` in `target` vs `pred` within a ±`tolerance` window.
-    
+
     Args:
         target (torch.Tensor): Batch of target sequences (batch_size, seq_len)
         pred (torch.Tensor): Batch of predicted sequences (batch_size, seq_len)
         token (int): The token to compute accuracy for
         tolerance (int): Allowed index difference (window) for correct predictions
-    
+
     Returns:
         float: Accuracy as correct / total occurrences of `token` in target
     """
@@ -85,4 +85,3 @@ class TokenAccuracy:
             corpus_metric[f"token_acc_{self.token_name}_{name}"] = metric
         self.scores.clear()
         return corpus_metric
-

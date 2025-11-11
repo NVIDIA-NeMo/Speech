@@ -7,39 +7,28 @@ import os
 import re
 import shutil
 import sys
+import unicodedata
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field, fields
 from typing import Any
-import unicodedata
-from nemo.collections.speechlm2.parts.precision import fp32_precision
-from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 
 import torch
+import transformers
+from safetensors import safe_open
 from torch import Tensor, nn
 from torch.nn import functional as F
-import transformers
-from transformers import (
-    AutoConfig,
-    AutoModel,
-    AutoModelForTextEncoding,
-    AutoTokenizer,
-    Cache,
-)
-from transformers.generation.logits_process import (
-    TopKLogitsWarper,
-    TopPLogitsWarper,
-)
-from safetensors import safe_open
+from transformers import AutoConfig, AutoModel, AutoModelForTextEncoding, AutoTokenizer, Cache
+from transformers.generation.logits_process import TopKLogitsWarper, TopPLogitsWarper
 
+from nemo.collections.speechlm2.modules.ear_tts_commons import Config, PreTrainedModel
+from nemo.collections.speechlm2.parts.precision import fp32_precision
+from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
-from nemo.collections.speechlm2.modules.ear_tts_commons import (
-    Config,
-    PreTrainedModel
-)
 
 # ==============================================================================
 # MLP module and Norm
 # ==============================================================================
+
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -329,9 +318,9 @@ def get_mask(
     if validate:
         # Reconstruct the expected contiguous mask and assert equality.
         expected_mask = sequence_mask(num_valid.view(-1), depth).view_as(code_mask)
-        assert torch.equal(code_mask, expected_mask), (
-            "Input `code_mask` must have contiguous `True` values at the beginning."
-        )
+        assert torch.equal(
+            code_mask, expected_mask
+        ), "Input `code_mask` must have contiguous `True` values at the beginning."
 
     # Calculate the target number of valid tokens.
     if not unmasking:
@@ -343,7 +332,6 @@ def get_mask(
 
     # Generate the new mask using the final number of tokens to keep.
     return sequence_mask(num_to_keep.view(-1), depth).view_as(code_mask)
-
 
 
 @dataclass
@@ -542,6 +530,7 @@ def build_vocabs(
     subword_id_to_char_ids[subword_padding_idx] = (len(char_vocab),)
     return subword_id_to_char_ids, char_vocab, subword_padding_idx
 
+
 def _split_ipa_symbols(text: str) -> list[str]:
     """
     Split IPA text into grapheme clusters (true phoneme symbols)
@@ -561,6 +550,7 @@ def _split_ipa_symbols(text: str) -> list[str]:
     if cluster:
         phonemes.append(cluster)
     return phonemes
+
 
 def build_phoneme_vocabs(
     pretrained_tokenizer_name: str,
@@ -583,6 +573,7 @@ def build_phoneme_vocabs(
             - subword_padding_idx: int
     """
     from phonemizer import phonemize
+
     tokenizer = AutoTokenizer.from_pretrained(pretrained_tokenizer_name)
 
     def _phonemize_all_subwords() -> dict[str, list[str]]:
@@ -592,7 +583,7 @@ def build_phoneme_vocabs(
             phoneme_strings = phonemize(
                 subwords,
                 language=language,
-                backend="espeak",      # use espeak-ng
+                backend="espeak",  # use espeak-ng
                 strip=True,
                 njobs=1,
                 preserve_punctuation=True,
@@ -671,6 +662,7 @@ def depthsum_encoding_step(
     return code
 """
 
+
 @torch.compile
 def depthsum_encoding_step(
     embs: Tensor,
@@ -690,9 +682,10 @@ def depthsum_encoding_step(
         r = r - emb_i
 
         # FIX: assign correctly without shape mismatch
-        code[..., i] = idx_sel  
+        code[..., i] = idx_sel
 
     return code
+
 
 class MoGHead(nn.Module):
     """
@@ -771,7 +764,7 @@ class MoGHead(nn.Module):
 
         # Apply top-p or top-k filtering to the mixture logits
         if top_p_or_k is not None:
-        
+
             logits = (
                 TopPLogitsWarper(top_p_or_k)(
                     None,
@@ -858,7 +851,9 @@ class MoGHead(nn.Module):
                     x,
                     low_mat_sq.to(x),
                 )
-            ).sum(-1)  # [b, t, n]
+            ).sum(
+                -1
+            )  # [b, t, n]
             y_sq = y.pow(2).sum(-1, keepdim=True)  # [b, t, 1]
             xwy = (x * torch.einsum("bti,nij->btnj", y, self.low_mat.to(y))).sum(
                 -1
@@ -874,11 +869,13 @@ class NeMoSubwordFlagEmbedding(nn.Module):
     (subwords that do NOT start with Ġ or the word-boundary marker).
     Compatible with NeMo AutoTokenizer.
     """
+
     def __init__(self, model_name: str, d_model: int):
         super().__init__()
         # Load tokenizer from NeMo
         # self.tokenizer_hf = AutoTokenizer.from_pretrained(model_name)
         from nemo.collections.common.tokenizers import AutoTokenizer as NeMoAutoTokenizer
+
         self.tokenizer = NeMoAutoTokenizer(model_name, use_fast=True, trust_remote_code=True)
         self.vocab_size = self.tokenizer.vocab_size
         self.d_model = d_model
@@ -887,12 +884,13 @@ class NeMoSubwordFlagEmbedding(nn.Module):
         tokens = [self.tokenizer.ids_to_tokens(i) for i in range(self.vocab_size)]
         self.register_buffer(
             'is_continuation',
-            torch.tensor([1 if not (tok.startswith("Ġ") or tok.startswith("▁")) else 0 for tok in tokens],
-                         dtype=torch.long)
+            torch.tensor(
+                [1 if not (tok.startswith("Ġ") or tok.startswith("▁")) else 0 for tok in tokens], dtype=torch.long
+            ),
         )
 
         # Tiny embedding table: 0 = word-start, 1 = continuation
-        init_std = self.d_model ** -0.5
+        init_std = self.d_model**-0.5
         self.cont_emb = nn.Embedding(2, self.d_model)
         nn.init.normal_(self.cont_emb.weight, mean=0.0, std=init_std)
 
@@ -914,6 +912,7 @@ class SubwordFlagEmbedding(nn.Module):
     Automatically adds a custom padding token at index vocab_size.
     Ignores special tokens (starting with '<') when computing continuation flags.
     """
+
     def __init__(self, model_name: str, d_model: int):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -928,28 +927,26 @@ class SubwordFlagEmbedding(nn.Module):
         # Precompute continuation flags
         tokens = [self.tokenizer.convert_ids_to_tokens(i) for i in range(self.vocab_size)]
         cont_flags = [
-            1 if not (tok.startswith("Ġ") or tok.startswith("▁") or tok.startswith("<")) else 0
-            for tok in tokens
+            1 if not (tok.startswith("Ġ") or tok.startswith("▁") or tok.startswith("<")) else 0 for tok in tokens
         ]
         cont_flags.append(0)  # for the custom pad token
         self.register_buffer("is_continuation", torch.tensor(cont_flags, dtype=torch.long))
 
         # Continuation embedding
-        init_std = self.d_model ** -0.5
+        init_std = self.d_model**-0.5
         self.cont_emb = nn.Embedding(2, self.d_model)
         nn.init.normal_(self.cont_emb.weight, mean=0.0, std=init_std)
         self.cont_emb.weight.data[0].zero_()
 
     def forward(self, subword_embeds: torch.Tensor, token_ids: torch.LongTensor):
         # Replace OOV token IDs with pad_id safely
-        token_ids_clamped = torch.where(token_ids >= self.vocab_size,
-                                        self.pad_tensor,
-                                        token_ids)
+        token_ids_clamped = torch.where(token_ids >= self.vocab_size, self.pad_tensor, token_ids)
         # Continuation flags
         cont_flags = self.is_continuation[token_ids_clamped]
         # Add continuation embedding
         cont_emb = self.cont_emb(cont_flags)
         return subword_embeds + cont_emb
+
 
 class BOSEOSEmbedding(nn.Module):
     """
@@ -957,6 +954,7 @@ class BOSEOSEmbedding(nn.Module):
     Index 0 = regular token (ignored), 1 = BOS, 2 = EOS.
     Compatible with Hugging Face tokenizers that may or may not have BOS/EOS.
     """
+
     def __init__(self, model_name: str, d_model: int):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -990,7 +988,7 @@ class BOSEOSEmbedding(nn.Module):
         special_flags.append(0)  # for custom pad token
         self.register_buffer("special_flags", torch.tensor(special_flags, dtype=torch.long))
         # Embedding table: 0 = regular, 1 = BOS, 2 = EOS
-        init_std = self.d_model ** -0.5
+        init_std = self.d_model**-0.5
         self.special_emb = nn.Embedding(3, d_model)
         nn.init.normal_(self.special_emb.weight, mean=0.0, std=init_std)
         self.special_emb.weight.data[0].zero_()  # regular tokens ignored
@@ -1007,11 +1005,13 @@ class BOSEOSEmbedding(nn.Module):
         flags = self.special_flags[safe_ids]
         return token_embeds + self.special_emb(flags)
 
+
 class SubwordEmbedding(nn.Module):
     """
     Produces subword embeddings from a Hugging Face tokenizer vocabulary.
     No special handling for OOVs or padding — assumes token_ids are valid.
     """
+
     def __init__(self, model_name: str, d_model: int):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -1022,7 +1022,7 @@ class SubwordEmbedding(nn.Module):
         self.d_model = d_model
 
         # Subword embedding table
-        init_std = d_model ** -0.5
+        init_std = d_model**-0.5
         self.subword_emb = nn.Embedding(self.vocab_size, d_model)
         nn.init.normal_(self.subword_emb.weight, mean=0.0, std=init_std)
 
@@ -1073,7 +1073,8 @@ class CharAwareSubwordEncoder(nn.Module):
 
         # 1. Build or load the character vocabulary
         self.subword_id_to_char_ids, self.char_vocab, self.subword_padding_idx = build_vocabs(
-            pretrained_tokenizer_name, vocab_dir,
+            pretrained_tokenizer_name,
+            vocab_dir,
         )
 
         self.char_padding_idx = len(self.char_vocab)
@@ -1174,7 +1175,7 @@ class CharAwareSubwordEncoder(nn.Module):
         subword_embeds[subword_mask] = out_emb
 
         if self.use_subword_flag_emb:
-            subword_embeds = self.subword_flag_emb(subword_embeds, subword_ids) 
+            subword_embeds = self.subword_flag_emb(subword_embeds, subword_ids)
 
         if self.use_bos_eos_emb:
             subword_embeds = self.bos_eos_emb(subword_embeds, subword_ids)
@@ -1183,13 +1184,12 @@ class CharAwareSubwordEncoder(nn.Module):
 
 
 class GatedProjectedSumRMSNorm(nn.Module):
-    def __init__(self, audio_dim, text_dim, hidden_dim,
-                 final_norm=True, num_codebooks=31, init_residual_scale=0.5):
+    def __init__(self, audio_dim, text_dim, hidden_dim, final_norm=True, num_codebooks=31, init_residual_scale=0.5):
         super().__init__()
         self.num_codebooks = num_codebooks
 
         self.audio_proj = nn.Linear(audio_dim, hidden_dim)
-        self.text_proj  = nn.Linear(text_dim, hidden_dim)
+        self.text_proj = nn.Linear(text_dim, hidden_dim)
 
         nn.init.normal_(self.audio_proj.weight, mean=0.0, std=0.015)
         nn.init.zeros_(self.audio_proj.bias)
@@ -1207,19 +1207,20 @@ class GatedProjectedSumRMSNorm(nn.Module):
 
         # projections run in model dtype (BF16)
         audio_h = self.audio_proj(audio_emb)
-        text_h  = self.text_proj(text_emb)
+        text_h = self.text_proj(text_emb)
 
         dtype = audio_h.dtype
 
         with fp32_precision():
-            gate = torch.sigmoid(self.gate)                 # FP32
-            res  = torch.sigmoid(self.residual_scale)       # FP32
+            gate = torch.sigmoid(self.gate)  # FP32
+            res = torch.sigmoid(self.residual_scale)  # FP32
 
         h = gate.to(dtype) * audio_h + (1 - gate).to(dtype) * text_h
         h = res.to(dtype) * h
         h = self.final_norm(h.float()).to(dtype)
 
         return h
+
 
 class RVQEARTTSModel(PreTrainedModel):
     """
@@ -1243,6 +1244,7 @@ class RVQEARTTSModel(PreTrainedModel):
         if self.config.get("pretrained_text_name", None):
             # Load pretrained backbone from huggingface
             from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf
+
             llm = load_pretrained_hf(self.config.pretrained_text_name, pretrained_weights=True).train()
             self.backbone = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
         else:
@@ -1277,13 +1279,20 @@ class RVQEARTTSModel(PreTrainedModel):
         )
 
         self.embed_subword = (
-            CharAwareSubwordEncoder(out_size=self.hidden_size, use_subword_flag_emb=self.config.use_subword_flag_emb, use_bos_eos_emb=self.config.use_bos_eos_emb, **self.config.cas_config)
+            CharAwareSubwordEncoder(
+                out_size=self.hidden_size,
+                use_subword_flag_emb=self.config.use_subword_flag_emb,
+                use_bos_eos_emb=self.config.use_bos_eos_emb,
+                **self.config.cas_config,
+            )
             if self.config.cas_config
             else None
         )
 
         if self.config.use_gated_fusion_for_text_audio:
-            self.gated_fusion_audio_text = GatedProjectedSumRMSNorm(self.hidden_size, self.hidden_size, self.hidden_size, self.config.num_quantizers)
+            self.gated_fusion_audio_text = GatedProjectedSumRMSNorm(
+                self.hidden_size, self.hidden_size, self.hidden_size, self.config.num_quantizers
+            )
 
         # Prediction Heads
         if not self.config.disable_eos_prediction:
@@ -1531,7 +1540,13 @@ class RVQEARTTSModel(PreTrainedModel):
             uncond_dec_flag = torch.cat([uncond_dec_flag, torch.ones_like(uncond_dec_flag)], 0)
 
         # Prepare conditioning
-        cond = self._prepare_conditioning(context_hidden_state, subword_ids, subword_mask, uncond_dec_flag, asr_speech_tokens_emb=asr_speech_tokens_emb)
+        cond = self._prepare_conditioning(
+            context_hidden_state,
+            subword_ids,
+            subword_mask,
+            uncond_dec_flag,
+            asr_speech_tokens_emb=asr_speech_tokens_emb,
+        )
 
         if self.config.use_gated_fusion_for_text_audio:
             inputs_embeds = self.gated_fusion_audio_text(code_embeds, cond)
@@ -1566,7 +1581,9 @@ class RVQEARTTSModel(PreTrainedModel):
             )
             total_loss = lm_loss + c_loss + k_loss
 
-            return RVQEARTTSOutput(loss=total_loss, lm_loss=lm_loss, c_loss=c_loss, k_loss=k_loss, hidden_states=hidden_states)
+            return RVQEARTTSOutput(
+                loss=total_loss, lm_loss=lm_loss, c_loss=c_loss, k_loss=k_loss, hidden_states=hidden_states
+            )
         else:  # Inference
             if not generation_config:
                 return RVQEARTTSOutput(
@@ -1575,9 +1592,13 @@ class RVQEARTTSModel(PreTrainedModel):
                 )
             else:
                 if teacher_forcing_inference:
-                    generated_codes, lm_logits, eos_flag = self.generate_teacher_forcing(hidden_states, generation_config)
+                    generated_codes, lm_logits, eos_flag = self.generate_teacher_forcing(
+                        hidden_states, generation_config
+                    )
                 else:
-                    generated_codes, lm_logits, eos_flag = self.generate_step(hidden_states, ignore_eos_flag_stop=ignore_eos_flag_stop, **generation_config)
+                    generated_codes, lm_logits, eos_flag = self.generate_step(
+                        hidden_states, ignore_eos_flag_stop=ignore_eos_flag_stop, **generation_config
+                    )
                 return RVQEARTTSOutput(
                     past_key_values=backbone_outputs.past_key_values,
                     codes=generated_codes,
@@ -1591,11 +1612,11 @@ class RVQEARTTSModel(PreTrainedModel):
         """
         Teacher-forcing wrapper for generate_step, processing all frames in parallel
         using a per-frame loop internally.
-        
+
         Args:
             hidden_states: [B, T, H] hidden states
             generation_config: kwargs for self.generate_step()
-        
+
         Returns:
             generated_codes: [B, T, ...] generated codes per frame
             lm_logits: [B, T, vocab_size] language model logits
@@ -1615,8 +1636,7 @@ class RVQEARTTSModel(PreTrainedModel):
 
             # call original generate_step
             generated_codes, lm_logits, eos_flag = self.generate_step(
-                frame_hidden.unsqueeze(1),  # keep batch dim + frame dim
-                **generation_config
+                frame_hidden.unsqueeze(1), **generation_config  # keep batch dim + frame dim
             )
             if generated_codes is not None:
                 # store in cache
@@ -1627,8 +1647,8 @@ class RVQEARTTSModel(PreTrainedModel):
         # Stack results along time dimension
         generated_codes = torch.stack(generated_codes_cache, dim=1)  # [B, T, ...]
         if not self.config.disable_eos_prediction:
-            lm_logits = torch.stack(lm_logits_cache, dim=1)             # [B, T, vocab_size]
-            eos_flag = torch.stack(eos_flag_cache, dim=1)               # [B, T]
+            lm_logits = torch.stack(lm_logits_cache, dim=1)  # [B, T, vocab_size]
+            eos_flag = torch.stack(eos_flag_cache, dim=1)  # [B, T]
         else:
             lm_logits = None
             eos_flag = None
@@ -1765,7 +1785,7 @@ class RVQEARTTSModel(PreTrainedModel):
             code = depthsum_encoding_step(self.rvq_embs, z, code, cnt, k[0].item())
             cnt += k[0].item()
         return code, lm_logits, eos_flag
-    
+
     def load_state_dict(self, state_dict, strict: bool = True):
         try:
             super().load_state_dict(state_dict, strict=strict)

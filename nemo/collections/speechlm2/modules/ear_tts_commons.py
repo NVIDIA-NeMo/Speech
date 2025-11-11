@@ -1,19 +1,19 @@
 # Standard library
+import argparse
 import glob
+import importlib.machinery
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import importlib.machinery
 from collections.abc import Mapping, MutableMapping
 from typing import Any
-import argparse
 
 import torch
-from torch import nn
 from safetensors import safe_open
+from torch import nn
 
 from nemo.utils import logging
 
@@ -174,9 +174,9 @@ def get_config_from_file(config_path: str) -> Config:
             config = json.load(f)
     else:
         config_module = importlib.machinery.SourceFileLoader("_config", config_path).load_module()
-        assert hasattr(config_module, PYTHON_CONFIG_GETTER_NAME), (
-            f"Python config file must define a `{PYTHON_CONFIG_GETTER_NAME}` function."
-        )
+        assert hasattr(
+            config_module, PYTHON_CONFIG_GETTER_NAME
+        ), f"Python config file must define a `{PYTHON_CONFIG_GETTER_NAME}` function."
         config = getattr(config_module, PYTHON_CONFIG_GETTER_NAME)(py_config_name)
         assert isinstance(config, Mapping), f"`{PYTHON_CONFIG_GETTER_NAME}` must return a dictionary-like object."
     cfg = Config(**config)
@@ -242,11 +242,10 @@ def get_config_from_dir(workdir_path: str) -> Config:
     return cfg
 
 
-
-
 # ==============================================================================
 # Base Model Classes
 # ==============================================================================
+
 
 class PreTrainedModel(nn.Module):
     config_class = Config
@@ -368,6 +367,7 @@ class PreTrainedModel(nn.Module):
             {"params": params_w_decay, "weight_decay": weight_decay},
             {"params": params_wo_decay, "weight_decay": 0.0},
         ]
+
 
 # ==============================================================================
 # IO and Checkpointing Utilities

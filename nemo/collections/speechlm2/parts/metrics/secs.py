@@ -17,8 +17,7 @@ import sacrebleu
 import torch
 from whisper_normalizer.english import EnglishTextNormalizer
 
-from nemo.collections.asr.models import ASRModel
-from nemo.collections.asr.models import EncDecSpeakerLabelModel
+from nemo.collections.asr.models import ASRModel, EncDecSpeakerLabelModel
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_nemo
@@ -46,7 +45,12 @@ class SECS:
         return self
 
     def update(
-        self, name: str, target_audio: torch.Tensor, target_audio_lens: torch.Tensor, pred_audio: torch.Tensor, pred_audio_lens: torch.Tensor
+        self,
+        name: str,
+        target_audio: torch.Tensor,
+        target_audio_lens: torch.Tensor,
+        pred_audio: torch.Tensor,
+        pred_audio_lens: torch.Tensor,
     ) -> None:
         if self.speaker_encoder is None:
             self.reset()
@@ -56,7 +60,6 @@ class SECS:
                 _, t_g = self.speaker_encoder(input_signal=target_audio, input_signal_length=target_audio_lens.long())
                 _, s_g = self.speaker_encoder(input_signal=pred_audio, input_signal_length=pred_audio_lens.long())
             secs = torch.nn.functional.cosine_similarity(t_g, s_g, dim=-1).mean()
-
 
         self._secs[name].append(secs)
 
@@ -74,4 +77,3 @@ class SECS:
         self.speaker_encoder = None  # free up GPU memory
         torch.cuda.memory.empty_cache()
         return corpus_metric
-

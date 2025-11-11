@@ -2,6 +2,7 @@
 import functools
 import math
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Concatenate, Literal, overload
 
@@ -12,12 +13,8 @@ from torch.nn import functional as F
 from torchaudio import functional as ta_F
 
 # Project
-from nemo.collections.speechlm2.modules.ear_tts_commons import (
-    Config,
-    PreTrainedModel
-)
+from nemo.collections.speechlm2.modules.ear_tts_commons import Config, PreTrainedModel
 
-from contextlib import contextmanager
 
 @contextmanager
 def disable_tf32():
@@ -27,6 +24,7 @@ def disable_tf32():
         yield
     finally:
         torch.backends.cudnn.allow_tf32 = prev
+
 
 @dataclass
 class RVQVAEConfig(Config):
@@ -893,6 +891,7 @@ class Latent2Wav(nn.Module):
 
         return x
 
+
 class RVQVAEModel(PreTrainedModel):
     """
     Residual Vector-Quantized Variational Autoencoder (RVQ-VAE) model.
@@ -1076,7 +1075,7 @@ class RVQVAEModel(PreTrainedModel):
         Returns:
             Tensor: The reconstructed waveform. Shape: `[batch, 1, time]`.
         """
-        
+
         with torch.no_grad():
             z_e = self.ae_encode(x)
             code = self.quantize(z_e)

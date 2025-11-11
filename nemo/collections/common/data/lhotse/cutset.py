@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import KeysView, Mapping, Sequence, Tuple, Union
 
 import omegaconf
-from lhotse import CutSet, Features, Recording
+from lhotse import CutSet, Features, Recording, MonoCut, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
 from lhotse.serialization import load_yaml
@@ -534,6 +534,64 @@ def cut_to_conversation(
         custom=cut.custom,
     )
 
+
+
+@data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
+def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
+    def filter_cuts_starting_with_agent(cuts: CutSet, agent_roles=("agent", "assistant", "Assistant")) -> CutSet:
+        def filter_cut_fn(cut):
+            # sort supervisions by start
+            cut.supervisions = sorted(cut.supervisions, key=lambda s: s.start)
+            if len(cut.supervisions):
+                return cut.supervisions[0].speaker not in agent_roles
+            else:
+                return False # filter emptly supervisions
+
+        return cuts.filter(filter_cut_fn)
+
+    def convert_overlap_cut(cut):
+        agent_segments = []
+        for seg in cut.agent_segments:
+            ss = SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.id,
+                start=seg["start"] - move_agent_text_back_by,
+                duration=seg["end"]-seg["start"] + move_agent_text_back_by,
+                text=seg["text"],
+                speaker="agent",
+            )
+            agent_segments.append(ss)
+
+        user_segments = []
+        for seg in cut.user_segments:
+            ss = SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.id,
+                start=seg["start"],
+                duration=seg["end"]-seg["start"],
+                text=seg["text"],
+                speaker="user",
+            )
+            user_segments.append(ss)
+
+        cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
+        cut.formatter = "s2s_duplex_overlap_as_s2s_duplex"
+        return cut
+
+    # load lhotse cuts
+    cuts, is_tarred = read_cutset_from_config(config)
+    move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
+    filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
+    agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
+
+    # convert cuts
+    cuts = cuts.map(convert_overlap_cut)
+
+    # Filter cuts where the first supervision is agent
+    if filter_samples_starting_with_agent:
+        cuts = filter_cuts_starting_with_agent(cuts, agent_roles)
+
+    return cuts, is_tarred
 
 @data_type_parser(["lhotse_magpietts_data_as_continuation"])
 def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:

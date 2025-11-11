@@ -46,7 +46,7 @@ from transformers import AutoModelForCausalLM
 from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.core.classes.module import NeuralModule
 from nemo.collections.common.tokenizers import AutoTokenizer
-from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
+from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
@@ -68,16 +68,12 @@ from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralT
 from nemo.utils import logging
 
 from nemo.collections.tts.modules import transformer_2501
-from nemo.collections.tts.modules.mimi_codec_modules import ReshapeTransformerEncoder
 from nemo.collections.speechlm2.modules.ear_tts_commons import SCRIPT_PLACEHOLDER
-
-from nemo.collections.speechlm2.modules.cfm import MatchaTTSCFM
 from types import SimpleNamespace
 
 
-from nemo.collections.speechlm2.modules.rvq_ear_tts_model import RVQEARTTSModel, RVQEARTTSConfig, build_vocabs, SubwordFlagEmbedding, RMSNorm
+from nemo.collections.speechlm2.modules.rvq_ear_tts_model import RVQEARTTSModel, RVQEARTTSConfig
 from nemo.collections.speechlm2.modules.rvq_ear_tts_vae import RVQVAEModel
-from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import normalize_text_fn
 
 import torch
 import torch.nn as nn
@@ -258,13 +254,10 @@ def make_tts_model_mixed_precision_definite(model, inputs,
         "safety_factor": safety_factor,
     }
 
-    # print("Num. BF16/FP16 activations:", num_bf16_fp16)
-    # print("Num. FP32 activations:", num_fp32)
     print("Num. BF16/FP16 candidate layers:", len(bf16_layers))
     print("Num. FP32 layers (sensitive + propagated):", len(fp32_layers))
 
     return model_patched, summary
-    
 
 
 def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int = 0, eos_token_id: int = 1):
@@ -337,80 +330,6 @@ def get_mask_from_lengths(
     mask = ids < lengths.unsqueeze(1)
     return mask
 
-
-from transformers import MimiModel, AutoFeatureExtractor
-class MimiCodec(NeuralModule):
-    def __init__(self, model_path_or_name="kyutai/mimi", num_codebooks=12):
-        super().__init__()
-        self.codec = MimiModel.from_pretrained(model_path_or_name)
-        self.feature_extractor = AutoFeatureExtractor.from_pretrained(model_path_or_name)
-        self.num_codebooks = num_codebooks
-
-    @property
-    def device(self):
-        return next(self.codec.parameters()).device
-
-    @property
-    def _codebook_size(self):
-        return self.codec.config.codebook_size
-
-    @property
-    def _num_codebooks(self):
-        return self.num_codebooks
-
-    @property
-    def samples_per_frame(self):
-        return int(self.feature_extractor.sampling_rate // self.codec.config.frame_rate)
-
-    def encode(self, audio, audio_len):
-        audio = audio.squeeze(1)
-        with fp32_precision():
-            # make the audio divisible by frame rate and also by self.frame_stacking_factor with extra frames of 1 to avoid issues because we are removing a audio frame to shift target and input for TF
-            audio, audio_len = self.pad_audio_to_factor(audio, audio_len, self.samples_per_frame, extra_frames=0)
-            # explicitly encode then decode the audio inputs
-            encoder_outputs = self.codec.encode(audio.unsqueeze(1).to(self.device), num_quantizers=self.num_codebooks)
-            codes = encoder_outputs.audio_codes
-            tokens_len = audio_len // self.samples_per_frame
-            return codes.transpose(1, 2), tokens_len
-
-    def decode(self, tokens, tokens_len):
-        with fp32_precision():
-            tokens = tokens.transpose(1, 2)
-            # tokens: B, T', C'
-            audio = self.codec.decode(tokens).audio_values.squeeze(1)
-            audio_len = tokens_len * self.samples_per_frame
-        return audio, audio_len
-
-    def forward(self, audio, audio_len):
-        tokens, tokens_len = self.encode(audio, audio_len)
-        audio, audio_len = self.decode(tokens, tokens_len)
-        return audio, audio_len
-
-
-    def pad_audio_to_factor(self, audio, audio_len, samples_per_frame, extra_frames: int = 0):
-        """
-        Zero pad the end of the audio so that we do not have a partial end frame.
-        The output will be zero-padded to have an integer number of frames of
-        length `samples_per_frame * frame_stacking_factor`.
-
-        Args:
-            audio: input time-domain signal (B, T)
-            audio_len: valid length for each example in the batch (B,)
-            samples_per_frame: number of samples per frame
-
-        Returns:
-            padded_audio: Padded time-domain signal (B, T')
-            padded_len: Adjusted valid lengths (B,)
-        """
-        with fp32_precision():
-            padded_len = (samples_per_frame * torch.ceil(audio_len / samples_per_frame).int()) + (extra_frames * samples_per_frame)
-        max_len = padded_len.max().int().item()
-        num_padding = (max_len - audio.shape[1])
-        padded_audio = F.pad(audio, (0, num_padding))   
-        return padded_audio, padded_len
-
-
-
 def setup_rvq_audio_codec(model):
     """
     Sets up an ``AudioCodecModel``, initializing it from pretrained weights.
@@ -433,799 +352,6 @@ def setup_audio_codec(self):
     # compute target fps
     self.target_fps = self.target_sample_rate / self.audio_codec.config.wav_to_token_ratio
     self.target_samples_per_frame = self.audio_codec.config.wav_to_token_ratio
-
-def subwords_to_chars(subword_ids: torch.Tensor,
-                                 subword_id_to_char_ids: dict[int, tuple[int, ...]],
-                                 bos_id: int,
-                                 eos_id: int,
-                                 pad_id: int):
-    """
-    Fully vectorized subword->char expansion across all BOS..EOS spans:
-    - Handles multiple spans per batch
-    - Preserves BOS/EOS
-    - Truncates expansions to fit each span
-    - Very fast on GPU
-    """
-    device = subword_ids.device
-    B, T = subword_ids.shape
-
-    # Build LUT
-    max_subword_id = int(subword_ids.max().item())
-    max_chars = max(len(v) for v in subword_id_to_char_ids.values()) if subword_id_to_char_ids else 0
-    if max_chars == 0:
-        return subword_ids.clone()
-
-    char_expansion = torch.full((max_subword_id + 1, max_chars),
-                                fill_value=pad_id, device=device, dtype=subword_ids.dtype)
-    expansion_len = torch.zeros(max_subword_id + 1, dtype=torch.long, device=device)
-    for k, v in subword_id_to_char_ids.items():
-        if k <= max_subword_id:
-            v_t = torch.tensor(v, device=device, dtype=subword_ids.dtype)
-            char_expansion[k, :len(v_t)] = v_t
-            expansion_len[k] = len(v_t)
-
-    # Output initialized with PAD
-    output = torch.full_like(subword_ids, fill_value=pad_id)
-    special_mask = (subword_ids == bos_id) | (subword_ids == eos_id)
-    output[special_mask] = subword_ids[special_mask]
-
-    # Find next EOS for each position
-    pos = torch.arange(T, device=device)
-    bos_mask = (subword_ids == bos_id)
-    eos_mask = (subword_ids == eos_id)
-    eos_pos_tensor = torch.where(eos_mask, pos.unsqueeze(0).expand(B, T),
-                                 torch.full((B, T), T, device=device))
-    next_eos_idx = torch.flip(torch.cummin(torch.flip(eos_pos_tensor, [1]), dim=1).values, [1])
-
-    # Collect all BOS coordinates
-    bos_coords = torch.nonzero(bos_mask, as_tuple=False)
-    if bos_coords.numel() == 0:
-        return output
-
-    batch_ids = bos_coords[:, 0]
-    span_starts = bos_coords[:, 1] + 1
-    span_ends = next_eos_idx[batch_ids, bos_coords[:, 1]]
-    span_lens = (span_ends - span_starts).clamp(min=0)
-    S = span_lens.numel()
-    if S == 0:
-        return output
-
-    # Max span length
-    max_span_len = int(span_lens.max().item())
-
-    # Gather subwords for all spans [S, max_span_len]
-    rel = torch.arange(max_span_len, device=device).unsqueeze(0).expand(S, -1)
-    span_idx = span_starts.unsqueeze(1) + rel
-    span_idx_clamped = span_idx.clamp(0, T-1)
-    batch_idx_expand = batch_ids.unsqueeze(1).expand(-1, max_span_len)
-    sub_span = subword_ids[batch_idx_expand, span_idx_clamped]
-
-    # Mask positions beyond actual span length
-    valid_pos_mask = rel < span_lens.unsqueeze(1)
-    sub_span = torch.where(valid_pos_mask, sub_span, torch.full_like(sub_span, pad_id))
-
-    # Expand subwords -> chars
-    expanded = char_expansion[sub_span]  # [S, max_span_len, max_chars]
-    S_len = max_span_len * max_chars
-    expanded_flat = expanded.view(S, S_len)
-    valid_char_mask = expanded_flat != pad_id
-    valid_cumsum = torch.cumsum(valid_char_mask.long(), dim=1)
-    span_lens_exp = span_lens.unsqueeze(1).expand(-1, S_len)
-    keep_mask = valid_char_mask & (valid_cumsum <= span_lens_exp)
-
-    # Compute flattened indices to scatter
-    rank_flat = (valid_cumsum - 1).clamp(min=0).view(-1)
-    values_flat = expanded_flat.view(-1)
-    keep_flat = keep_mask.view(-1)
-    kept_values = values_flat[keep_flat]
-
-    target_positions = (span_starts.unsqueeze(1).repeat(1, S_len).view(-1))[keep_flat] + rank_flat[keep_flat]
-    target_batches = batch_ids.unsqueeze(1).repeat(1, S_len).view(-1)[keep_flat]
-
-    # Safety clamp
-    within_T = target_positions < T
-    kept_values = kept_values[within_T]
-    target_positions = target_positions[within_T]
-    target_batches = target_batches[within_T]
-
-    # Scatter in one shot
-    output[target_batches, target_positions] = kept_values
-
-    return output
-
-
-def subwords_to_chars_batched(subword_ids: torch.Tensor,
-                              subword_id_to_char_ids: dict[int, tuple[int, ...]],
-                              bos_id: int,
-                              eos_id: int,
-                              pad_id: int,
-                              silence_id: int = 0):
-    """
-    Batched subword->char expansion per BOS..EOS span.
-    - Multiple spans per batch
-    - Fully vectorized (no Python loop over spans)
-    - BOS/EOS exact
-    - Silences between spans
-    """
-    B, T = subword_ids.shape
-    device = subword_ids.device
-
-    # Build LUT
-    max_subword_id = int(subword_ids.max().item())
-    max_chars = max(len(v) for v in subword_id_to_char_ids.values()) if subword_id_to_char_ids else 0
-    if max_chars == 0:
-        return subword_ids.clone()
-
-    char_expansion = torch.full((max_subword_id + 1, max_chars),
-                                fill_value=pad_id, device=device, dtype=subword_ids.dtype)
-    expansion_len = torch.zeros(max_subword_id + 1, dtype=torch.long, device=device)
-    for k, v in subword_id_to_char_ids.items():
-        if k <= max_subword_id:
-            v_t = torch.tensor(v, device=device, dtype=subword_ids.dtype)
-            char_expansion[k, :len(v_t)] = v_t
-            expansion_len[k] = len(v_t)
-
-    # Output initialized with PAD
-    output = torch.full_like(subword_ids, fill_value=pad_id)
-    special_mask = (subword_ids == bos_id) | (subword_ids == eos_id)
-    output[special_mask] = subword_ids[special_mask]
-
-    # Masks
-    bos_mask = (subword_ids == bos_id)
-    eos_mask = (subword_ids == eos_id)
-
-    # Compute next EOS per position
-    pos = torch.arange(T, device=device)
-    eos_pos_tensor = torch.where(eos_mask, pos.unsqueeze(0).expand(B, T),
-                                 torch.full((B, T), T, device=device))
-    next_eos_idx = torch.flip(torch.cummin(torch.flip(eos_pos_tensor, [1]), dim=1).values, [1])
-
-    # Collect all spans
-    bos_coords = torch.nonzero(bos_mask, as_tuple=False)
-    if bos_coords.numel() == 0:
-        return output
-
-    batch_ids = bos_coords[:, 0]
-    span_starts = bos_coords[:, 1] + 1
-    span_ends = next_eos_idx[batch_ids, bos_coords[:, 1]]
-    span_lens = (span_ends - span_starts).clamp(min=0)
-    S = span_lens.numel()
-    if S == 0:
-        return output
-
-    # Gather subwords for all spans
-    max_span_len = int(span_lens.max().item())
-    rel = torch.arange(max_span_len, device=device).unsqueeze(0).expand(S, -1)
-    span_idx = span_starts.unsqueeze(1) + rel
-    span_idx_clamped = span_idx.clamp(0, T - 1)
-    batch_idx_expand = batch_ids.unsqueeze(1).expand(-1, max_span_len)
-    sub_span = subword_ids[batch_idx_expand, span_idx_clamped]
-
-    # Mask positions beyond actual span length
-    valid_pos_mask = rel < span_lens.unsqueeze(1)
-    sub_span = torch.where(valid_pos_mask, sub_span, torch.full_like(sub_span, pad_id))
-
-    # Expand subwords -> chars
-    expanded = char_expansion[sub_span]                 # [S, max_span_len, max_chars]
-    S_len = max_span_len * max_chars
-    expanded_flat = expanded.view(S, S_len)
-    valid_char_mask = expanded_flat != pad_id
-    valid_cumsum = torch.cumsum(valid_char_mask.long(), dim=1)
-    span_lens_exp = span_lens.unsqueeze(1).expand(-1, S_len)
-    keep_mask = valid_char_mask & (valid_cumsum <= span_lens_exp)
-
-    # Compute target positions
-    rank_flat = (valid_cumsum - 1).clamp(min=0).view(-1)
-    values_flat = expanded_flat.view(-1)
-    keep_flat = keep_mask.view(-1)
-    kept_values = values_flat[keep_flat]
-
-    target_positions = (span_starts.unsqueeze(1).repeat(1, S_len).view(-1))[keep_flat] + rank_flat[keep_flat]
-    target_batches = batch_ids.unsqueeze(1).repeat(1, S_len).view(-1)[keep_flat]
-
-    # Safety clamp
-    within_T = target_positions < T
-    kept_values = kept_values[within_T]
-    target_positions = target_positions[within_T]
-    target_batches = target_batches[within_T]
-
-    # Scatter in one shot
-    output[target_batches, target_positions] = kept_values
-
-    return output
-
-
-def build_char_expansion_lut(subword_id_to_char_ids: dict[int, tuple[int, ...]],
-                             pad_id: int,
-                             device: str = "cuda"):
-    """
-    Prebuild the LUT once for training.
-    Returns:
-        char_expansion: [max_subword_id+1, max_chars]
-        expansion_len: number of chars per subword
-    """
-    if not subword_id_to_char_ids:
-        return None, None
-
-    max_subword_id = max(subword_id_to_char_ids.keys())
-    max_chars = max(len(v) for v in subword_id_to_char_ids.values())
-    char_expansion = torch.full((max_subword_id + 1, max_chars),
-                                fill_value=pad_id, device=device, dtype=torch.long)
-    expansion_len = torch.zeros(max_subword_id + 1, device=device, dtype=torch.long)
-
-    for k, v in subword_id_to_char_ids.items():
-        if k <= max_subword_id:
-            v_t = torch.tensor(v, device=device, dtype=torch.long)
-            char_expansion[k, :len(v_t)] = v_t
-            expansion_len[k] = len(v_t)
-
-    return char_expansion, expansion_len
-
-
-def subwords_to_chars_batched_fast(subword_ids: torch.Tensor,
-                                   char_expansion: torch.Tensor,
-                                   expansion_len: torch.Tensor,
-                                   bos_id: int,
-                                   eos_id: int,
-                                   pad_id: int):
-    """
-    Fast batched subword->char expansion using prebuilt LUT.
-    Fully vectorized, multiple spans per batch, no autograd overhead.
-    """
-    with torch.no_grad():
-        if char_expansion is None:
-            return subword_ids.clone()
-
-        B, T = subword_ids.shape
-        device = subword_ids.device
-
-        # Initialize output
-        output = torch.full_like(subword_ids, pad_id)
-        special_mask = (subword_ids == bos_id) | (subword_ids == eos_id)
-        output[special_mask] = subword_ids[special_mask]
-
-        # Masks
-        bos_mask = (subword_ids == bos_id)
-        eos_mask = (subword_ids == eos_id)
-
-        # Next EOS per position
-        pos = torch.arange(T, device=device)
-        eos_pos_tensor = torch.where(eos_mask, pos.unsqueeze(0).expand(B, T),
-                                    torch.full((B, T), T, device=device))
-        next_eos_idx = torch.flip(torch.cummin(torch.flip(eos_pos_tensor, [1]), dim=1).values, [1])
-
-        # Collect all spans
-        bos_coords = torch.nonzero(bos_mask, as_tuple=False)
-        if bos_coords.numel() == 0:
-            return output
-
-        batch_ids = bos_coords[:, 0]
-        span_starts = bos_coords[:, 1] + 1
-        span_ends = next_eos_idx[batch_ids, bos_coords[:, 1]]
-        span_lens = (span_ends - span_starts).clamp(min=0)
-        S = span_lens.numel()
-        if S == 0:
-            return output
-
-        # Gather subwords
-        max_span_len = int(span_lens.max().item())
-        rel = torch.arange(max_span_len, device=device).unsqueeze(0).expand(S, -1)
-        span_idx = span_starts.unsqueeze(1) + rel
-        span_idx_clamped = span_idx.clamp(0, T-1)
-        batch_idx_expand = batch_ids.unsqueeze(1).expand(-1, max_span_len)
-        sub_span = subword_ids[batch_idx_expand, span_idx_clamped]
-
-        valid_pos_mask = rel < span_lens.unsqueeze(1)
-        sub_span = torch.where(valid_pos_mask, sub_span, torch.full_like(sub_span, pad_id))
-
-        # Expand using prebuilt LUT
-        expanded = char_expansion[sub_span]                # [S, max_span_len, max_chars]
-        S_len = max_span_len * char_expansion.shape[1]
-        expanded_flat = expanded.view(S, S_len)
-
-        valid_char_mask = expanded_flat != pad_id
-        valid_cumsum = torch.cumsum(valid_char_mask.long(), dim=1)
-        span_lens_exp = span_lens.unsqueeze(1).expand(-1, S_len)
-        keep_mask = valid_char_mask & (valid_cumsum <= span_lens_exp)
-
-        rank_flat = (valid_cumsum - 1).clamp(min=0).view(-1)
-        values_flat = expanded_flat.view(-1)
-        keep_flat = keep_mask.view(-1)
-        kept_values = values_flat[keep_flat]
-
-        target_positions = (span_starts.unsqueeze(1).repeat(1, S_len).view(-1))[keep_flat] + rank_flat[keep_flat]
-        target_batches = batch_ids.unsqueeze(1).repeat(1, S_len).view(-1)[keep_flat]
-
-        within_T = target_positions < T
-        kept_values = kept_values[within_T]
-        target_positions = target_positions[within_T]
-        target_batches = target_batches[within_T]
-
-        output[target_batches, target_positions] = kept_values
-
-    return output
-
-
-class WordSepTokenizer(AutoTokenizer):
-    """
-    Tokenizer wrapper that inserts a special word-separator token before each token 
-    that starts a new word. This is useful for Speech-LLM and TTS pipelines 
-    that require explicit word boundaries in the token sequence.
-
-    Supported models:
-        - LLaMA-3.1-family
-        - NVIDIA Nemotron Nano-9B-v2
-
-    Attributes:
-        word_sep_token (str): The special token used to mark word boundaries.
-        word_boundary_prefix (str): The token prefix indicating a word boundary.
-        word_sep_id (int): The token ID corresponding to `word_sep_token`.
-    """
-
-    def __init__(self, model_name: str, *args, **kwargs):
-        """
-        Initializes the WordSepTokenizer.
-
-        Args:
-            model_name (str): Name of the model to load. Determines the special 
-                              word-separator token and word boundary prefix.
-            *args: Additional positional arguments passed to the base `AutoTokenizer`.
-            **kwargs: Additional keyword arguments passed to the base `AutoTokenizer`.
-
-        Raises:
-            ValueError: If `model_name` is not supported.
-        """
-        super().__init__(model_name, *args, **kwargs)
-
-        model_name_lower = model_name.lower()
-        if "llama-3.1" in model_name_lower:
-            self.word_sep_token = "<|reserved_special_token_0|>"
-            self.word_boundary_prefix = "Ġ"
-        elif "qwen2.5" in model_name_lower:
-            self.word_sep_token = "<|box_start|>"
-            self.word_boundary_prefix = "Ġ"
-        elif "nvidia-nemotron-nano-9b-v2" in model_name_lower:
-            self.word_sep_token = "<SPECIAL_10>"
-            self.word_boundary_prefix = "Ġ"
-        else:
-            raise ValueError(
-                f"WordSepTokenizer does not support model '{model_name}'. "
-                "Supported: LLaMA-3.1-family, NVIDIA Nemotron Nano-9B-v2."
-            )
-
-        self.word_sep_id = self.tokenizer.convert_tokens_to_ids(self.word_sep_token)
-
-    def text_to_ids(self, text: str):
-        """
-        Converts input text into token IDs, inserting the word-separator ID 
-        before tokens that start a new word.
-
-        Args:
-            text (str): Input string to tokenize.
-
-        Returns:
-            List[int]: Token IDs with word-separator IDs inserted.
-
-        Notes:
-            - If `text` is empty or tokenization returns no tokens, returns an empty list.
-            - The first token separator (if any) is removed to avoid leading separators.
-        """
-        if not text:
-            return []
-
-        # ensures that first word has a space to avoid different tokens for the first word
-        if text[0] != " ":
-            text = " " + text
-
-        # Original token IDs
-        ids = super().text_to_ids(text)
-        if not ids:
-            return []
-
-        # Convert IDs to tokens safely (must be CPU Python list, no separator IDs yet)
-        tokens = self.tokenizer.convert_ids_to_tokens(list(ids))
-
-        # Mask for tokens starting with word boundary
-        mask = [t.startswith(self.word_boundary_prefix) for t in tokens]
-
-        # Prepare result
-        result = []
-        for tid, m in zip(ids, mask):
-            if m:
-                result.append(self.word_sep_id)
-            result.append(tid)
-
-        # Remove leading separator if present
-        if result and result[0] == self.word_sep_id:
-            result = result[1:]
-
-        return result
-
-    def ids_to_text(self, ids):
-        """
-        Converts token IDs back to text, replacing word-separator tokens with spaces.
-
-        Args:
-            ids (List[int]): List of token IDs.
-
-        Returns:
-            str: Decoded text with word separators converted to spaces.
-        """
-        text = super().ids_to_text(ids)
-        return text.replace(self.word_sep_token, " ")
-
-
-class NeMoGroupedCodec(NeuralModule):
-    def __init__(self, codec, frame_stacking_factor=1):
-        super().__init__()
-        self.codec = codec
-        self.frame_stacking_factor = frame_stacking_factor
-
-    @property
-    def device(self):
-        return self.codec.device
-
-    @property
-    def _codebook_size(self):
-        return self.codec.vector_quantizer.codebook_size_per_group
-
-    @property
-    def _num_codebooks(self):
-        return self.codec.vector_quantizer.num_groups * self.frame_stacking_factor
-
-    @property
-    def samples_per_frame(self):
-        return self.codec.samples_per_frame * self.frame_stacking_factor
-
-    def encode(self, audio, audio_len):
-        audio = audio.squeeze(1)
-        with fp32_precision():
-            # make the audio divisible by frame rate and also by self.frame_stacking_factor with extra frames of 1 to avoid issues because we are removing a audio frame to shift target and input for TF
-            audio, audio_len = self.pad_audio_to_factor(audio, audio_len, self.samples_per_frame, extra_frames=0)
-            # encodes audio using the codec
-            tokens, tokens_len = self.codec.encode(audio=audio, audio_len=audio_len)  # B, C, T
-            tokens = tokens.transpose(1, 2)  # → B, T, C
-            B, T, C = tokens.shape
-            assert T % self.frame_stacking_factor == 0
-            grouped = tokens.reshape(B, T // self.frame_stacking_factor, C * self.frame_stacking_factor)
-            tokens_len = tokens_len // self.frame_stacking_factor
-            # grouped = grouped.transpose(1, 2)
-
-            return grouped, tokens_len
-
-    def decode(self, tokens, tokens_len):
-        with fp32_precision():
-            # tokens = tokens.transpose(1, 2)
-            # tokens: B, T', C'
-            B, T, Cg = tokens.shape
-            assert Cg % self.frame_stacking_factor == 0
-            C = Cg // self.frame_stacking_factor
-            ungrouped = tokens.reshape(B, T * self.frame_stacking_factor, C)  # → [B, T, C]
-            ungrouped = ungrouped.transpose(1, 2)      # → [B, C, T] for decode
-            tokens_len = torch.ceil(tokens_len * self.frame_stacking_factor).to(tokens_len.dtype)
-            audio, audio_len = self.codec.decode(tokens=ungrouped, tokens_len=tokens_len)
-        return audio, audio_len
-
-    def decode_audio(self, inputs: torch.Tensor, input_len: torch.Tensor):
-        """Apply decoder on the input. Note that the input is a non-quantized encoder output or a dequantized representation.
-
-        Args:
-            inputs: encoded signal
-            input_len: valid length for each example in the batch
-
-        Returns:
-            Decoded output `audio` in the time domain and its length in number of samples `audio_len`.
-            Note that `audio_len` will be a multiple of `self.samples_per_frame`.
-        """
-        with fp32_precision():
-            if self.frame_stacking_factor > 1:
-                inputs = inputs.transpose(1, 2)
-                B, T, Cg = inputs.shape
-                C = Cg // self.frame_stacking_factor
-                inputs = inputs.reshape(B, T * self.frame_stacking_factor, C)  # → [B, T, C]
-                input_len = torch.ceil(input_len * self.frame_stacking_factor).to(input_len.dtype)
-                inputs = inputs.transpose(1, 2)
-
-            audio, audio_len = self.codec.audio_decoder(inputs=inputs, input_len=input_len)
-        return audio, audio_len
-
-    def dequantize(self, tokens: torch.Tensor, tokens_len: torch.Tensor) -> torch.Tensor:
-        """Convert the discrete tokens into a continuous encoded representation.
-
-        Args:
-            tokens: discrete tokens for each codebook for each time frame
-            tokens_len: valid length of each example in the batch
-
-        Returns:
-            Continuous encoded representation of the discrete input representation.
-        """
-        with fp32_precision():
-            # reshape to dequantize
-            if self.frame_stacking_factor > 1:
-                tokens = tokens.transpose(1, 2)
-                # tokens: B, T', C'
-                B, T, Cg = tokens.shape
-                assert Cg % self.frame_stacking_factor == 0
-                C = Cg // self.frame_stacking_factor
-                tokens = tokens.reshape(B, T * self.frame_stacking_factor, C)  # → [B, T, C]
-                tokens = tokens.transpose(1, 2)      # → [B, C, T] for decode
-                tokens_len = torch.ceil(tokens_len * self.frame_stacking_factor).to(tokens_len.dtype)
-            dequantized = self.codec.dequantize(tokens=tokens, tokens_len=tokens_len)
-            # reshape back to the compress form if needed
-            if self.frame_stacking_factor > 1:
-                dequantized = dequantized.transpose(1, 2)  # → B, T, C
-                B, T, C = dequantized.shape
-                assert T % self.frame_stacking_factor == 0
-                dequantized = dequantized.reshape(B, T // self.frame_stacking_factor, C * self.frame_stacking_factor)
-                dequantized = dequantized.transpose(1, 2)  # → B, C, T
-
-        return dequantized
-
-    def forward(self, audio, audio_len):
-        tokens, tokens_len = self.encode(audio, audio_len)
-        audio, audio_len = self.decode(tokens, tokens_len)
-        return audio, audio_len
-
-    def pad_audio_to_factor(self, audio, audio_len, samples_per_frame, extra_frames: int = 0):
-        """
-        Zero pad the end of the audio so that we do not have a partial end frame.
-        The output will be zero-padded to have an integer number of frames of
-        length `samples_per_frame * frame_stacking_factor`.
-
-        Args:
-            audio: input time-domain signal (B, T)
-            audio_len: valid length for each example in the batch (B,)
-            samples_per_frame: number of samples per frame
-
-        Returns:
-            padded_audio: Padded time-domain signal (B, T')
-            padded_len: Adjusted valid lengths (B,)
-        """
-        with fp32_precision():
-            padded_len = (samples_per_frame * torch.ceil(audio_len / samples_per_frame).int()) + (extra_frames * samples_per_frame)
-        max_len = padded_len.max().int().item()
-        num_padding = (max_len - audio.shape[1])
-        padded_audio = F.pad(audio, (0, num_padding))   
-        return padded_audio, padded_len
-
-import math
-
-def compare_dicts(dict_a, dict_b):
-    all_keys = set(dict_a.keys()).union(dict_b.keys())
-    equal = True
-    differing_keys = []
-
-    for key in sorted(all_keys):
-        a_val = dict_a.get(key, None)
-        b_val = dict_b.get(key, None)
-
-        # Skip if value is None in either dict
-        if a_val is None or b_val is None:
-            continue
-
-        # Handle both being NaN (float)
-        if (isinstance(a_val, float) and math.isnan(a_val)) and \
-           (isinstance(b_val, float) and math.isnan(b_val)):
-            continue
-
-        # Handle both being tensors
-        if isinstance(a_val, torch.Tensor) and isinstance(b_val, torch.Tensor):
-            # Shape mismatch
-            if a_val.shape != b_val.shape:
-                print(f"❌ Shape mismatch at key '{key}': {a_val.shape} vs {b_val.shape}")
-                equal = False
-                differing_keys.append(key)
-                continue
-
-            # Compare tensors elementwise (treating NaNs as equal)
-            diff_mask = ~(torch.isclose(a_val, b_val, equal_nan=True))
-            if diff_mask.any():
-                equal = False
-                differing_keys.append(key)
-                idx = torch.nonzero(diff_mask, as_tuple=False)
-                print(f"❌ Tensor mismatch at key '{key}': {idx.shape[0]} differing positions, shape: ", a_val.shape, b_val.shape)
-                # Print up to first 10 differences
-                for i, pos in enumerate(idx[:10]):
-                    pos_tuple = tuple(pos.tolist())
-                    a_item = a_val[pos_tuple].item()
-                    b_item = b_val[pos_tuple].item()
-                    print(f"    Position {pos_tuple}: {a_item} vs {b_item}")
-                if idx.shape[0] > 10:
-                    print(f"    ... and {idx.shape[0] - 10} more differences")
-            continue
-
-        # Fallback: direct comparison
-        if a_val != b_val:
-            print(f"❌ Value mismatch at key '{key}': {a_val} vs {b_val}")
-            equal = False
-            differing_keys.append(key)
-
-    if equal:
-        print("✅ All comparable keys and values match!")
-    else:
-        print("⚠️ Some keys/values differ (see above).")
-
-    return equal, differing_keys
-
-import copy
-def extract_first_tensor(x):
-    """Recursively find the first tensor in nested structures."""
-    if isinstance(x, torch.Tensor):
-        return x
-    if isinstance(x, (list, tuple)):
-        for v in x:
-            t = extract_first_tensor(v)
-            if t is not None:
-                return t
-    if isinstance(x, dict):
-        for v in x.values():
-            t = extract_first_tensor(v)
-            if t is not None:
-                return t
-    return None
-
-def compare_tts_model_fp32_bf16_old(tts_model, inputs, atol=1e-3, topk=15):
-    model_fp32 = copy.deepcopy(tts_model).eval().to(torch.float32)
-    model_bf16 = copy.deepcopy(tts_model).eval().to(torch.bfloat16)
-
-    diffs = {}
-
-    def make_hook(name, tag):
-        def hook_fn(module, inp, out):
-            tensor = extract_first_tensor(out)
-            if tensor is not None:
-                tensor = tensor.detach().float().cpu()
-                if name not in diffs:
-                    diffs[name] = {}
-                diffs[name][tag] = tensor
-        return hook_fn
-
-    # Register hooks independently
-    hooks_fp32 = []
-    for name, module in model_fp32.named_modules():
-        hooks_fp32.append(module.register_forward_hook(make_hook(name, "fp32")))
-
-    hooks_bf16 = []
-    for name, module in model_bf16.named_modules():
-        hooks_bf16.append(module.register_forward_hook(make_hook(name, "bf16")))
-
-    def maybe_to(x, dtype):
-        if x is None:
-            return None
-        if isinstance(x, torch.Tensor) and torch.is_floating_point(x):
-            return x.to(dtype)
-        return x
-
-    with torch.no_grad():
-        # BF16 forward
-        with torch.autocast('cuda', dtype=torch.bfloat16):
-            _ = model_bf16(
-                code=maybe_to(inputs["code"], torch.bfloat16),
-                audio_mask=inputs["audio_mask"],
-                attention_mask=inputs["attention_mask"],
-                position_ids=inputs["position_ids"],
-                context_hidden_state=maybe_to(inputs["context_hidden_state"], torch.bfloat16),
-                subword_ids=inputs["subword_ids"],
-                subword_mask=inputs["subword_mask"],
-                non_prompt_mask=inputs["non_prompt_mask"]
-            )
-
-        # FP32 forward
-        _ = model_fp32(
-            code=maybe_to(inputs["code"], torch.float32),
-            audio_mask=inputs["audio_mask"],
-            attention_mask=inputs["attention_mask"],
-            position_ids=inputs["position_ids"],
-            context_hidden_state=maybe_to(inputs["context_hidden_state"], torch.float32),
-            subword_ids=inputs["subword_ids"],
-            subword_mask=inputs["subword_mask"],
-            non_prompt_mask=inputs["non_prompt_mask"]
-        )
-
-    # Compute diffs for matching layers
-    diff_list = []
-    for name, val in diffs.items():
-        if "fp32" in val and "bf16" in val:
-            delta = (val["fp32"] - val["bf16"]).abs().mean().item()
-            diff_list.append((name, delta))
-
-    diff_list.sort(key=lambda x: x[1], reverse=True)
-
-    print(f"\nTop {topk} layers with largest FP32 vs BF16 diff:")
-    if not diff_list:
-        print("⚠️ No matching tensor outputs found. Try increasing atol or check nested outputs.")
-    else:
-        for name, delta in diff_list[:topk]:
-            print(f"{name:<60} mean abs diff = {delta:.6f}")
-
-    for h in hooks_fp32 + hooks_bf16:
-        h.remove()
-
-    return diff_list
-
-def compare_tts_model_fp32_bf16_mixed(tts_model, inputs, topk=15):
-    """
-    Compare FP32 vs BF16-safe (with fp32_precision layers) outputs.
-    tts_model can have patched FP32 layers; these will run in FP32.
-    """
-    import copy
-    diffs = {}
-
-    def extract_first_tensor(x):
-        if isinstance(x, (tuple, list)):
-            for y in x:
-                if torch.is_tensor(y):
-                    return y
-            return None
-        if torch.is_tensor(x):
-            return x
-        return None
-
-    def make_hook(name, tag):
-        def hook_fn(module, inp, out):
-            tensor = extract_first_tensor(out)
-            if tensor is not None:
-                tensor = tensor.detach().float().cpu()
-                if name not in diffs:
-                    diffs[name] = {}
-                diffs[name][tag] = tensor
-        return hook_fn
-
-    # FP32 reference model
-    model_fp32 = copy.deepcopy(tts_model).eval().to(torch.float32)
-
-    hooks_fp32 = [m.register_forward_hook(make_hook(n, "fp32")) for n, m in model_fp32.named_modules()]
-    hooks_bf16 = [m.register_forward_hook(make_hook(n, "bf16")) for n, m in tts_model.named_modules()]
-
-    def maybe_to(x, dtype):
-        if x is None:
-            return None
-        if isinstance(x, torch.Tensor) and torch.is_floating_point(x):
-            return x.to(dtype)
-        return x
-
-    with torch.no_grad():
-        # BF16-safe forward (patched FP32 layers run in FP32)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            _ = tts_model(
-                code=maybe_to(inputs["code"], torch.bfloat16),
-                audio_mask=inputs["audio_mask"],
-                attention_mask=inputs["attention_mask"],
-                position_ids=inputs["position_ids"],
-                context_hidden_state=maybe_to(inputs["context_hidden_state"], torch.bfloat16),
-                subword_ids=inputs["subword_ids"],
-                subword_mask=inputs["subword_mask"],
-                non_prompt_mask=inputs["non_prompt_mask"]
-            )
-
-        # FP32 forward
-        _ = model_fp32(
-            code=maybe_to(inputs["code"], torch.float32),
-            audio_mask=inputs["audio_mask"],
-            attention_mask=inputs["attention_mask"],
-            position_ids=inputs["position_ids"],
-            context_hidden_state=maybe_to(inputs["context_hidden_state"], torch.float32),
-            subword_ids=inputs["subword_ids"],
-            subword_mask=inputs["subword_mask"],
-            non_prompt_mask=inputs["non_prompt_mask"]
-        )
-
-    # Compute diffs
-    diff_list = []
-    for name, val in diffs.items():
-        if "fp32" in val and "bf16" in val:
-            delta = (val["fp32"] - val["bf16"]).abs().mean().item()
-            diff_list.append((name, delta))
-
-    diff_list.sort(key=lambda x: x[1], reverse=True)
-    print(f"\nTop {topk} layers with largest FP32 vs BF16 diff:")
-    for name, delta in diff_list[:topk]:
-        print(f"{name:<60} mean abs diff = {delta:.6f}")
-
-    for h in hooks_fp32 + hooks_bf16:
-        h.remove()
-
-    return diff_list
 
 def rescale_state_dict(
     state_dict,
@@ -1332,8 +458,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             self.embed_tokens = self._load_embed_tokens(self.cfg)
             # delete llm because we use it only to get the  embbeding tokens
             del self.language_model
-            if self.cfg.tts_config.get("use_subword_flag_emb", False):
-                self.subword_flag_emb = SubwordFlagEmbedding(self.cfg.pretrained_lm_name, self.cfg.tts_config.context_hidden_size)
 
         # instanciate eartts model and codec
         self._load_tts_model(self.cfg)
@@ -1573,117 +697,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
     def prepare_inputs(self, batch: dict):
         """
         """
-        """
-        import hashlib
-        import torch
-
-        def hash_texts(text_list):
-            hashes = []
-            for t in text_list:
-                norm = t.strip().lower()
-                h = hashlib.sha256(norm.encode("utf-8")).hexdigest()
-                hashes.append(h)
-            return hashes
-
-        # --- Safe batch filtering function ---
-        def filter_batch_by_indices(batch, keep_indices):
-            if not keep_indices:
-                # No common samples: empty all fields
-                new_batch = {}
-                for k, v in batch.items():
-                    if isinstance(v, list):
-                        new_batch[k] = []
-                    elif hasattr(v, "__getitem__") and not isinstance(v, str):
-                        try:
-                            new_batch[k] = v[0:0]  # empty tensor
-                        except Exception:
-                            new_batch[k] = v
-                    else:
-                        new_batch[k] = v
-                return new_batch
-
-            new_batch = {}
-            for k, v in batch.items():
-                try:
-                    if isinstance(v, list):
-                        new_batch[k] = [v[i] for i in keep_indices if i < len(v)]
-                    elif hasattr(v, "__getitem__") and not isinstance(v, str):
-                        slices = [i for i in keep_indices if i < v.shape[0]]
-                        if slices:
-                            new_batch[k] = v[slices]
-                        else:
-                            new_batch[k] = v[0:0]  # empty tensor
-                    else:
-                        new_batch[k] = v  # keep metadata as-is
-                except Exception:
-                    new_batch[k] = v  # fallback if indexing fails
-            return new_batch
-
-        # --- Compute sample IDs ---
-        target_texts = batch["target_texts"]
-        batch["sample_id"] = target_texts  # using text itself as unique ID
-        print("Sample ids:", batch["sample_id"])
-
-        if self.training:
-            # --- Track sample IDs and store full batch ---
-            if not hasattr(self, "train_sample_ids"):
-                self.train_sample_ids = set(batch["sample_id"])
-                self.train_batches_by_hash = dict()
-            else:
-                self.train_sample_ids.update(batch["sample_id"])
-
-            # Save the full batch per sample
-            for i, sid in enumerate(batch["sample_id"]):
-                self.train_batches_by_hash[sid] = {
-                    k: (v[i] if isinstance(v, list) else v[i:i+1])
-                    for k, v in batch.items()
-                }
-
-        else:
-            # --- Validation: keep only common samples ---
-            if not hasattr(self, "eval_common_ids"):
-                self.eval_common_ids = set()
-
-            # Only consider validation samples that exist in training
-            keep_indices = [i for i, sid in enumerate(batch["sample_id"])
-                            if sid in self.train_batches_by_hash]
-
-            # Safe filtering
-            batch = filter_batch_by_indices(batch, keep_indices)
-
-            if keep_indices:
-                print(f"Keeping only {len(keep_indices)} common samples from validation!")
-                # Update eval_common_ids
-                self.eval_common_ids.update(batch["sample_id"])
-                print(
-                    f"total_common={len(self.eval_common_ids)}, "
-                    f"train_total={len(self.train_sample_ids)}"
-                )
-
-                # --- Compare the first common sample ---
-                first_sid = batch["sample_id"][0]
-                train_sample = self.train_batches_by_hash[first_sid]
-                val_sample = {k: (v[0] if isinstance(v, list) else v[0:1])
-                            for k, v in batch.items()}
-
-                # --- Slice tensors to minimal overlapping shape ---
-                for k in val_sample.keys():
-                    t_val = val_sample[k]
-                    t_train = train_sample.get(k, t_val)
-                    if isinstance(t_val, torch.Tensor) and isinstance(t_train, torch.Tensor):
-                        min_shape = tuple(min(s1, s2) for s1, s2 in zip(t_val.shape, t_train.shape))
-                        if all(s > 0 for s in min_shape):
-                            slices = tuple(slice(0, s) for s in min_shape)
-                            val_sample[k] = t_val[slices]
-                            train_sample[k] = t_train[slices]
-
-                print(f"Comparing first common sample (sid={first_sid})")
-                compare_dicts(train_sample, val_sample)
-                exit()
-            else:
-                print("No common samples found in this validation batch!")
-
-        """
         # check if audios has the same batch size
         assert batch["source_audio"].size(0) == batch["target_audio"].size(0)
         assert batch["speaker_reference_audio"].size(0) == batch["target_audio"].size(0)
@@ -1691,7 +704,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         target_audio = batch["target_audio"]
         target_audio_lens = batch["target_audio_lens"]
         input_text_tokens = batch["input_text_tokens"]
-        audio_mask = batch["audio_mask"]
         desc_mask = batch["desc_mask"]
         non_prompt_mask = batch["non_prompt_mask"]
         aligned_attention_mask = batch["aligned_attention_mask"]
@@ -1735,7 +747,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 return x  # leave others for now
 
             input_text_tokens = pad_or_truncate(input_text_tokens, pad_value=self.text_pad_id)
-            audio_mask = pad_or_truncate(audio_mask, pad_value=0)
             desc_mask = pad_or_truncate(desc_mask, pad_value=0)
             non_prompt_mask = pad_or_truncate(non_prompt_mask, pad_value=0)
             aligned_position_ids = pad_or_truncate(aligned_position_ids, pad_value=0)
@@ -1750,27 +761,19 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             elif L1 > new_len or L2 > new_len:
                 aligned_attention_mask = aligned_attention_mask[:, :, :new_len, :new_len]
 
-        if self.cfg.get("disable_speech_pad", False):
-            target_codes_aligned = target_codes
-        else:
-            # ToDo: desc_mask is one for the end of the sequence, this is what cause the artifact issue in the end, fix it.
-            # set the pad token when there is desc as in https://gitlab-master.nvidia.com/jaehyeonk/easy-ar-tts/-/blame/simple-bq/scripts/train_tts_with_rvqvae.py#L69
-            target_codes_aligned = torch.where(
-                desc_mask.unsqueeze(-1),                    # (B, T, 1) for broadcasting
-                torch.full_like(target_codes, self.speech_pad_id),  # fill with pad id
-                target_codes
-            )
+        # ToDo: desc_mask is one for the end of the sequence, this is what cause the artifact issue in the end, fix it.
+        # set the pad token when there is desc
+        target_codes_aligned = torch.where(
+            desc_mask.unsqueeze(-1),                    # (B, T, 1) for broadcasting
+            torch.full_like(target_codes, self.speech_pad_id),  # fill with pad id
+            target_codes
+        )
 
-        if self.cfg.get("ignore_audio_prompt_on_loss", False):
-            # set audio_mask as non_prompt_mask to avoid the audio prompt in loss computation
-            audio_mask = non_prompt_mask
-
-        if self.cfg.get("add_pad_speech_token_in_last_prompt_frame", False) and not self.cfg.get("disable_speech_pad", False):
-            # set special token in the last audio prompt (it will works as a BOS token)
-            pos = non_prompt_mask.float().argmax(dim=1)  # shape: [B]
-            row_idx = torch.arange(B, device=self.device)
-            # set the extra self.speech_pad_id at first 1 position in non_prompt_mask
-            target_codes_aligned[row_idx, pos] = self.speech_pad_id
+        # set special token in the last audio prompt (it will works as a BOS token)
+        pos = non_prompt_mask.float().argmax(dim=1)  # shape: [B]
+        row_idx = torch.arange(B, device=self.device)
+        # set the extra self.speech_pad_id at first 1 position in non_prompt_mask
+        target_codes_aligned[row_idx, pos] = self.speech_pad_id
 
         B, T = input_text_tokens.shape
 
@@ -1779,12 +782,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # note that we are using a text mask where we are ignoring the desc + audio prompt but we are keeping 1 until the audio ends to support duplex
         subword_mask = F.pad(non_prompt_mask[:, 1:], [0, 1])
 
-        # ToDo: implement context from the llm
         # detach embedding as in eartts
         if self.cfg.tts_config.context_hidden_size is not None:
             context_hidden_state = self.embed_tokens(input_text_tokens).detach()
-            if self.cfg.tts_config.get("use_subword_flag_emb", False):
-                context_hidden_state = self.subword_flag_emb(context_hidden_state, input_text_tokens)
         else:
             context_hidden_state = None
 
@@ -1794,14 +794,13 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 input_text_tokens = input_text_tokens[:, :-remainder]
                 target_codes_aligned = target_codes_aligned[:, :-remainder]
                 target_codes_aligned = target_codes_aligned[:, :-remainder]
-                audio_mask = audio_mask[:, :-remainder]
                 desc_mask = desc_mask[:, :-remainder]
                 subword_ids = subword_ids[:, :-remainder]
                 subword_mask = subword_mask[:, :-remainder]
 
         return {
             "code": target_codes_aligned,
-            "audio_mask": audio_mask,
+            "audio_mask": non_prompt_mask, # set audio_mask as non_prompt_mask to avoid the audio prompt in loss computation
             "attention_mask": aligned_attention_mask,
             "position_ids": aligned_position_ids,
             "subword_ids": subword_ids,
@@ -1960,6 +959,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         }
 
     def offline_inference_with_custom_sentences(self, test_sentences: torch.Tensor, inference_speaker_reference: torch.Tensor, speech_text_ratio: float = 3.5):
+        # ToDo: split it in multiples batches to support long list of sentences
         B = len(test_sentences)
         # load and get speaker reference
         speaker_audio, sr = torchaudio.load(inference_speaker_reference)
@@ -1969,16 +969,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long().repeat(B)
 
         # Tokenize sentences
-        if self.normalize_text:
-            tokenized = [
-                torch.as_tensor([self.tokenizer.bos] + self.tokenizer.text_to_ids(normalize_text_fn(text)), dtype=torch.long, device=self.device)
-                for text in test_sentences
-            ]
-        else:
-            tokenized = [
-                torch.as_tensor([self.tokenizer.bos] + self.tokenizer.text_to_ids(text), dtype=torch.long, device=self.device)
-                for text in test_sentences
-            ]
+        tokenized = [
+            torch.as_tensor([self.tokenizer.bos] + self.tokenizer.text_to_ids(text), dtype=torch.long, device=self.device)
+            for text in test_sentences
+        ]
 
         # Get max length and target length
         max_len = max(len(t) for t in tokenized)
@@ -2009,13 +1003,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # exit()
         # first evaluation, make the model bf16 safe
         if not self.model_16_precision_safe and self.cfg.get("ensures_16_safe", False) and str(self.trainer_config.precision) != str(32):
+            # ToDo: move it to a method
             self.tts_model, summary = make_tts_model_mixed_precision_definite(self.tts_model, inputs, safety_factor=1.0, mixed_dtype=torch.float16 if str(self.trainer_config.precision) == str(16) else torch.bfloat16)
             # self.tts_model, summary = make_tts_model_mixed_precision_safe(self.tts_model, inputs, safety_factor=1.0)
             self.model_16_precision_safe = True
-
             print("Current FP32 layers:", summary["fp32_layers"])
-            # compare_tts_model_fp32_bf16_mixed(self.tts_model, inputs)
-            # exit()
 
         results["audio_tf"], results["audio_tf_len"] = self.get_teacher_force_inference_audio(dataset_batch)
         if use_dataloader_init:
@@ -2035,32 +1027,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                         init_inputs[key][i, :l]
                         for i, l in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])
                     ])
-
-        # drop items without description to avoid issues
-        """
-        lens = dataset_batch["desc_plus_audio_prompt_lens"]  # list of lengths
-
-        # Example condition: keep only those with the maximum length
-        max_len = max(lens)
-        keep_indices = [i for i, l in enumerate(lens) if l == max_len]
-
-        # Convert indices to tensor for indexing torch tensors
-        keep_indices  = torch.tensor(keep_indices, dtype=torch.long)
-
-        # Now filter every key in dataset_batch
-        for k, v in dataset_batch.items():
-            if isinstance(v, torch.Tensor):
-                dataset_batch[k] = v[keep_indices]
-            elif isinstance(v, list):
-                dataset_batch[k] = [v[i] for i in keep_indices]
-
-        # Do the same for inputs
-        for k, v in inputs.items():
-            if isinstance(v, torch.Tensor):
-                inputs[k] = v[keep_indices]
-            elif isinstance(v, list):
-                inputs[k] = [v[i] for i in keep_indices]
-        """
 
         # remove the prompt from the input_text_tokens to emulate S2S connected inference
         next_subword_ids = torch.stack([
@@ -2411,8 +1377,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # get context hidden
         if self.cfg.tts_config.context_hidden_size is not None:
             context_hidden_state = self.embed_tokens(input_text_tokens)
-            if self.cfg.tts_config.get("use_subword_flag_emb", False):
-                context_hidden_state = self.subword_flag_emb(context_hidden_state, input_text_tokens)
         else:
             context_hidden_state = None
 
@@ -2422,9 +1386,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         non_prompt_mask[:, -2:] = 1 # set last valid prompt frame as 1 to allow the addition of BOS in the right place
         subword_mask = torch.zeros_like(input_text_tokens) # subword_mask is almost all zeros because on the warmup there is only the prompt
         subword_mask[:, -3:] = 1 # -3 because of the it start right after the first valid prompt token and it is shifted by 1
-        # audio mask is all ones except for description
-        audio_mask = torch.ones_like(input_text_tokens) 
-        audio_mask[:, :desc_tokens_ids.size(-1)] = 0
         # desc mask is all zeros except the description
         desc_mask = torch.zeros_like(input_text_tokens)
         desc_mask[:, :desc_tokens_ids.size(-1)] = 1
@@ -2439,23 +1400,17 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             )
 
         # shift subword_ids
-        # subword_ids = F.pad(input_text_tokens[:, 1:], [0, 1], value=current_subword_id)
         subword_ids = F.pad(input_text_tokens[:, 1:], [0, 1], value=0.0)
 
-        if self.cfg.get("ignore_audio_prompt_on_loss", False):
-            # set audio_mask as non_prompt_mask to avoid the audio prompt in loss computation
-            audio_mask = non_prompt_mask
-
-        if self.cfg.get("add_pad_speech_token_in_last_prompt_frame", False) and not self.cfg.get("disable_speech_pad", False):
-            # set special token in the last audio prompt (it will works as a BOS token)
-            pos = non_prompt_mask.float().argmax(dim=1)  # shape: [B]
-            row_idx = torch.arange(B, device=self.device)
-            # set the extra self.speech_pad_id at first 1 position in non_prompt_mask
-            code[row_idx, pos] = self.speech_pad_id
+        # set special token in the last audio prompt (it will works as a BOS token)
+        pos = non_prompt_mask.float().argmax(dim=1)  # shape: [B]
+        row_idx = torch.arange(B, device=self.device)
+        # set the extra self.speech_pad_id at first 1 position in non_prompt_mask
+        code[row_idx, pos] = self.speech_pad_id
 
         init_inputs = {
             "code": code[:, :-1],
-            "audio_mask": audio_mask.bool()[:, :-1],
+            "audio_mask": non_prompt_mask.bool()[:, :-1], # set audio_mask as non_prompt_mask to avoid the audio prompt in loss computation
             "context_hidden_state": context_hidden_state[:, :-1] if context_hidden_state is not None else None,
             "subword_ids": subword_ids[:, :-1],
             "subword_mask": subword_mask.bool()[:, :-1],
@@ -2551,10 +1506,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # get first context subword_id, that is the last subword_ids from the warmup
         first_context_subword_id = init_inputs["subword_ids"][:, -1].unsqueeze(-1)
 
-        # reset cache of cumulative_word_emb
-        if self.cfg.tts_config.get("use_cumulative_word_emb", False):
-            self.tts_model.embed_subword.cumulative_word_emb.reset(B)
-
         for i in range(max_steps-1):
             step_start = time.time()
             # current subword id is always seem
@@ -2569,8 +1520,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     context_subword_id = next_subword_ids[:, i-1].unsqueeze(-1)
 
                 context_hidden_state = self.embed_tokens(context_subword_id)
-                if self.cfg.tts_config.get("use_subword_flag_emb", False):
-                    context_hidden_state = self.subword_flag_emb(context_hidden_state, context_subword_id)
             else:
                 context_hidden_state = None
 
@@ -2608,7 +1557,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 cur_asr_speech_tokens = logits.argmax(dim=-1)[:, -1].unsqueeze(-1)
 
             # force silence as next token 
-            if self.cfg.get('inference_force_speech_silence_on_eos', None):
+            if self.cfg.get('inference_force_speech_silence_on_eos', True):
                 silence_codes = self.codec_silence_tokens.view(1, 1, -1).expand(code.shape)
                 code = torch.where(
                     current_subword_id.unsqueeze(-1) == self.text_eos_id,

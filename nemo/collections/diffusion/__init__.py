@@ -16,7 +16,7 @@ import warnings
 
 
 warnings.warn(
-    "nemo.collections.diffusion is deprecated and will be removed in the next major NeMo FW container release."
+    "nemo.collections.diffusion is deprecated and will be removed in the next major NeMo FW container release.",
     DeprecationWarning,
     stacklevel=2,
 )

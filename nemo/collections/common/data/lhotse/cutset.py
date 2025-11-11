@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import KeysView, Mapping, Sequence, Tuple, Union
 
 import omegaconf
-from lhotse import CutSet, Features, Recording, MonoCut, SupervisionSegment
+from lhotse import CutSet, Features, MonoCut, Recording, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
 from lhotse.serialization import load_yaml
@@ -535,7 +535,6 @@ def cut_to_conversation(
     )
 
 
-
 @data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
 def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
     def filter_cuts_starting_with_agent(cuts: CutSet, agent_roles=("agent", "assistant", "Assistant")) -> CutSet:
@@ -545,7 +544,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
             if len(cut.supervisions):
                 return cut.supervisions[0].speaker not in agent_roles
             else:
-                return False # filter emptly supervisions
+                return False  # filter emptly supervisions
 
         return cuts.filter(filter_cut_fn)
 
@@ -556,7 +555,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
                 id=cut.id,
                 recording_id=cut.id,
                 start=seg["start"] - move_agent_text_back_by,
-                duration=seg["end"]-seg["start"] + move_agent_text_back_by,
+                duration=seg["end"] - seg["start"] + move_agent_text_back_by,
                 text=seg["text"],
                 speaker="agent",
             )
@@ -568,7 +567,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
                 id=cut.id,
                 recording_id=cut.id,
                 start=seg["start"],
-                duration=seg["end"]-seg["start"],
+                duration=seg["end"] - seg["start"],
                 text=seg["text"],
                 speaker="user",
             )
@@ -592,6 +591,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
         cuts = filter_cuts_starting_with_agent(cuts, agent_roles)
 
     return cuts, is_tarred
+
 
 @data_type_parser(["lhotse_magpietts_data_as_continuation"])
 def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
@@ -617,7 +617,7 @@ def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
             supervisions=[],
         )
 
-        # create silence audio 
+        # create silence audio
         num_samples = int(total_duration * sample_rate)
         zero_audio = np.zeros((1, num_samples), dtype=np.float32)
         source_recording = create_recording_from_array(
@@ -643,7 +643,7 @@ def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
         user_sup = fastcopy(
             orig_agent_sup,
             start=0.0,
-            duration=0.08, # keep only on frame to the user
+            duration=0.08,  # keep only on frame to the user
             speaker="user",
             text="dummy text",
         )
@@ -655,7 +655,7 @@ def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
             speaker="agent",
         )
 
-        # Add extra sil in the end of the audio to force the model to produce silence if it receives zeros and the was all processed        
+        # Add extra sil in the end of the audio to force the model to produce silence if it receives zeros and the was all processed
         if ADD_EXTRA_END_SIL:
             sil_duration = random.uniform(*SILENCE_RANGE)
             # pad audios
@@ -664,8 +664,10 @@ def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
             # Save both to memory
             cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')
             cut_target = cut_target.to_mono().move_to_memory(audio_format='wav')
-            agent_sup.duration = agent_sup.duration +  sil_duration + 1.0 # added here 1.0 seconds to not have text EOS for this dataset to avoid conflicts with S2S, text EOS is the interruption token on duplex
-            user_sup.duration = user_sup.duration +  sil_duration
+            agent_sup.duration = (
+                agent_sup.duration + sil_duration + 1.0
+            )  # added here 1.0 seconds to not have text EOS for this dataset to avoid conflicts with S2S, text EOS is the interruption token on duplex
+            user_sup.duration = user_sup.duration + sil_duration
 
         # Assemble final cut
         cut_source.supervisions = [user_sup, agent_sup]
@@ -683,13 +685,21 @@ def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
             return True
 
     def filter_val_flag(example):
-        if isinstance(example, Cut) and example.has_custom("validation_status") and example.validation_status != KEEP_FLAG:
+        if (
+            isinstance(example, Cut)
+            and example.has_custom("validation_status")
+            and example.validation_status != KEEP_FLAG
+        ):
             return False
         else:
             return True
 
     def filter_secs(example):
-        if isinstance(example, Cut) and len(example.supervisions) > 0 and example.supervisions[0].has_custom("context_speaker_similarity"):
+        if (
+            isinstance(example, Cut)
+            and len(example.supervisions) > 0
+            and example.supervisions[0].has_custom("context_speaker_similarity")
+        ):
             return example.supervisions[0].context_speaker_similarity >= MIN_SECS
         else:
             return True

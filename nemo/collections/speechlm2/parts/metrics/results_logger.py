@@ -84,7 +84,7 @@ class ResultsLogger:
                 ],
                 dim=0,
             ).squeeze()
-            
+
         else:
             combined_wav = pred_audio.unsqueeze(0).detach().cpu()
 
@@ -119,15 +119,33 @@ class ResultsLogger:
             # save audio
             sample_id = samples_id[i][:150]  # make sure that sample id is not too big
             out_audio_path = os.path.join(self.audio_save_path, f"{name}_{sample_id}.wav")
-            self.merge_and_save_audio(out_audio_path, pred_audio[i], pred_audio_sr, user_audio[i] if user_audio is not None else None, user_audio_sr)
+            self.merge_and_save_audio(
+                out_audio_path,
+                pred_audio[i],
+                pred_audio_sr,
+                user_audio[i] if user_audio is not None else None,
+                user_audio_sr,
+            )
 
             if pred_audio_tf is not None:
                 out_audio_path_tf = out_audio_path.replace(".wav", "_tf.wav")
-                self.merge_and_save_audio(out_audio_path_tf, pred_audio_tf[i], pred_audio_sr, user_audio[i] if user_audio is not None else None, user_audio_sr)
+                self.merge_and_save_audio(
+                    out_audio_path_tf,
+                    pred_audio_tf[i],
+                    pred_audio_sr,
+                    user_audio[i] if user_audio is not None else None,
+                    user_audio_sr,
+                )
 
             if target_audio is not None:
                 out_audio_path_gt = out_audio_path.replace(".wav", "_GT.wav")
-                self.merge_and_save_audio(out_audio_path_gt, target_audio[i], pred_audio_sr, user_audio[i] if user_audio is not None else None, user_audio_sr)
+                self.merge_and_save_audio(
+                    out_audio_path_gt,
+                    target_audio[i],
+                    pred_audio_sr,
+                    user_audio[i] if user_audio is not None else None,
+                    user_audio_sr,
+                )
 
             # create a wav with eou prediction for debug purposes
             if eou_pred is not None:
@@ -142,11 +160,15 @@ class ResultsLogger:
 
             if pre_audio_trimmed is not None:
                 out_audio_path_trimmed = os.path.join(self.audio_save_path, f"{name}_{sample_id}_pred_trimmed.wav")
-                torchaudio.save(out_audio_path_trimmed, pre_audio_trimmed[i].squeeze().unsqueeze(0).detach().cpu(), pred_audio_sr)
+                torchaudio.save(
+                    out_audio_path_trimmed, pre_audio_trimmed[i].squeeze().unsqueeze(0).detach().cpu(), pred_audio_sr
+                )
 
             if reference_audio is not None:
                 out_audio_path_ref = os.path.join(self.audio_save_path, f"{name}_{sample_id}_spk_reference.wav")
-                torchaudio.save(out_audio_path_ref, reference_audio[i].squeeze().unsqueeze(0).detach().cpu(), pred_audio_sr)
+                torchaudio.save(
+                    out_audio_path_ref, reference_audio[i].squeeze().unsqueeze(0).detach().cpu(), pred_audio_sr
+                )
 
             # cache metadata
             out_dict = {

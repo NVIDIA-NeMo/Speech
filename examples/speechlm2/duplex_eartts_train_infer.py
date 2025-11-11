@@ -26,6 +26,7 @@ from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
+
 @hydra_runner(config_path="conf", config_name="s2s_duplex_speech_decoder")
 def inference(cfg):
     OmegaConf.resolve(cfg)
@@ -51,7 +52,7 @@ def inference(cfg):
         add_text_bos_and_eos_in_each_turn=cfg.data.get("add_text_bos_and_eos_in_each_turn", True),
         add_audio_prompt_after_description=cfg.data.add_audio_prompt_after_description,
         audio_prompt_duration=cfg.data.audio_prompt_duration,
-        num_delay_speech_tokens=cfg.model.get("num_delay_speech_tokens", 2)
+        num_delay_speech_tokens=cfg.model.get("num_delay_speech_tokens", 2),
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

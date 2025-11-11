@@ -26,6 +26,7 @@ from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
 
+
 def load_pretrained_nemo(cls, model_path_or_name: str):
     """
     Load pretrained NeMo 1.0 model (inheriting from ModelPT). Works with ASR, TTS, codec models.
@@ -100,12 +101,13 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
     else:
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
 
+
 def set_model_dict_for_partial_init(pretrained_dict, model_dict):
     # 1. filter out different size layers
     for k, v in list(pretrained_dict.items()):
         if k in model_dict and hasattr(model_dict[k], "numel") and v.numel() != model_dict[k].numel():
             del pretrained_dict[k]
-            logging.info(" | > Layer with shape mismatach in the model definition: {}".format(k)) 
+            logging.info(" | > Layer with shape mismatach in the model definition: {}".format(k))
     # 2. filter out unnecessary keys
     pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
     # 3. overwrite entries in the existing state dict

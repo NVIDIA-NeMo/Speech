@@ -114,7 +114,7 @@ def slurm_executor(
     if num_gpus_per_node == 4:
         if nodes <= 18:
             segment = nodes
-        else: # nodes > 18
+        else:  # nodes > 18
             for segment_candidate in range(18, 0, -1):
                 if nodes % segment_candidate == 0:
                     segment = segment_candidate

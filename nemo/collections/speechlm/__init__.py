@@ -12,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.speechlm.models import HFAutoModelForSpeechSeq2Seq
 from nemo.collections.speechlm.recipes.pipeline import speech_to_text_llm_train, speech_to_text_llm_validate
 from nemo.utils import logging
 
 __all__ = [
-    "HFAutoModelForSpeechSeq2Seq",
     "speech_to_text_llm_train",
     "speech_to_text_llm_validate",
 ]

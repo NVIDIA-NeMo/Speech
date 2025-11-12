@@ -14,6 +14,10 @@
 
 import logging
 import re
+import io
+import random
+import numpy as np
+import soundfile as sf
 import warnings
 from functools import partial
 from itertools import repeat
@@ -25,6 +29,7 @@ from lhotse import CutSet, Features, MonoCut, Recording, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
 from lhotse.serialization import load_yaml
+from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.nemo_adapters import (
@@ -43,7 +48,6 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     TextTurn,
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
-
 
 def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bool]:
     """
@@ -595,6 +599,11 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
 
 @data_type_parser(["lhotse_magpietts_data_as_continuation"])
 def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
+    def create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
+        with io.BytesIO() as buffer:
+            sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
+            buffer.seek(0)
+            return Recording.from_bytes(buffer.read(), recording_id=recording_id)
     def convert_lhotse_magpietts_data_as_cont(cut):
         # create a copy of agent supervision and original duration
         orig_agent_sup = fastcopy(cut.supervisions[0])

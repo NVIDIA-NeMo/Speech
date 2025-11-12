@@ -21,10 +21,10 @@ __all__ = [
 ]
 
 try:
-    import nemo_run as run # noqa: F401
+    import nemo_run as run  # noqa: F401
 
-    from nemo.collections.speechlm.api import finetune, generate, pretrain, train, validate # noqa: F401
-    from nemo.collections.speechlm.recipes.optim import adam # noqa
+    from nemo.collections.speechlm.api import finetune, generate, pretrain, train, validate  # noqa: F401
+    from nemo.collections.speechlm.recipes.optim import adam  # noqa
 
     __all__.extend(
         [

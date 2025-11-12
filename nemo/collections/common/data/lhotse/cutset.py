@@ -12,19 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-import re
 import io
+import logging
 import random
-import numpy as np
-import soundfile as sf
+import re
 import warnings
 from functools import partial
 from itertools import repeat
 from pathlib import Path
 from typing import KeysView, Mapping, Sequence, Tuple, Union
 
+import numpy as np
 import omegaconf
+import soundfile as sf
 from lhotse import CutSet, Features, MonoCut, Recording, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
@@ -48,6 +48,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     TextTurn,
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
+
 
 def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bool]:
     """
@@ -604,6 +605,7 @@ def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
             sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
             buffer.seek(0)
             return Recording.from_bytes(buffer.read(), recording_id=recording_id)
+
     def convert_lhotse_magpietts_data_as_cont(cut):
         # create a copy of agent supervision and original duration
         orig_agent_sup = fastcopy(cut.supervisions[0])

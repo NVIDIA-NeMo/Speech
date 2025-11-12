@@ -1475,7 +1475,14 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
     def get_init_inputs(
         self,
         B: int,
-        init_inputs_names=["code", "audio_mask", "context_hidden_state", "subword_ids", "subword_mask", "non_prompt_mask"],
+        init_inputs_names=[
+            "code",
+            "audio_mask",
+            "context_hidden_state",
+            "subword_ids",
+            "subword_mask",
+            "non_prompt_mask",
+        ],
     ):
         if init_inputs_names is None:
             init_inputs_names = [
@@ -1504,7 +1511,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 init_inputs[name] = buf[:1].expand(B, *buf.shape[1:])
 
         return init_inputs
-        
+
     @torch.no_grad()
     def offline_inference(
         self,

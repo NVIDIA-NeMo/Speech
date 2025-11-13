@@ -16,6 +16,8 @@ import glob
 import os
 import tempfile
 import time
+from collections import Counter
+from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
@@ -52,9 +54,6 @@ from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, set_model_dict_for_partial_init
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
-
-from collections import Counter
-from contextlib import contextmanager
 
 
 def maybe_to(x, dtype):
@@ -870,7 +869,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.log("weights/max_abs", max_abs_w, on_epoch=True, sync_dist=True)
         self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True)
 
-
     def on_validation_epoch_start(self) -> None:
         setup_audio_codec(self)
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
@@ -1019,7 +1017,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             for key in init_inputs:
                 if init_inputs[key] is not None:
                     init_inputs[key] = torch.stack(
-                        [init_inputs[key][i, :plen] for i, plen in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])]
+                        [
+                            init_inputs[key][i, :plen]
+                            for i, plen in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])
+                        ]
                     )
         else:
             # set init inputs and get it

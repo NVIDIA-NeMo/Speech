@@ -29,6 +29,7 @@ from nemo.collections.speechlm2.modules.ear_tts_commons import Config, PreTraine
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
+
 # ==============================================================================
 # MLP module and Norm
 # ==============================================================================
@@ -498,6 +499,7 @@ def build_vocabs(
     # 1. Load or build the character vocabulary
     if vocab_dir:
         from filelock import FileLock
+
         char_vocab_file = os.path.join(vocab_dir, "char_vocab.json")
         os.makedirs(vocab_dir, exist_ok=True)
         with FileLock(char_vocab_file + ".lock", timeout=60):

@@ -288,7 +288,6 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             source_audio = F.pad(source_audio, (0, extra_frames))
             source_audio_lens = source_audio_lens + extra_frames
 
-       
         text_pad_id = get_pad_id(self.tokenizer)
         input_text_tokens_ = []
         source_tokens_ = []
@@ -325,9 +324,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                 desc_tokens_ids = torch.cat(
                     [
                         desc_tokens_ids,
-                        torch.tensor(
-                            [self.tokenizer.eos], dtype=desc_tokens_ids.dtype, device=desc_tokens_ids.device
-                        ),
+                        torch.tensor([self.tokenizer.eos], dtype=desc_tokens_ids.dtype, device=desc_tokens_ids.device),
                     ]
                 )
                 # Add padding equivalent to the audio prompt size in number of tokens
@@ -412,9 +409,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         # Segment IDs per sequence (padded)
         aligned_segment_ids = torch.stack(
             [
-                torch.nn.functional.pad(
-                    torch.full((seq_len,), i), (0, max_len - seq_len), value=-1
-                )  # -1 for padding
+                torch.nn.functional.pad(torch.full((seq_len,), i), (0, max_len - seq_len), value=-1)  # -1 for padding
                 for i, seq_len in enumerate(target_token_lens)
             ],
             dim=0,

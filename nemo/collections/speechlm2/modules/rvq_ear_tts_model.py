@@ -1,20 +1,13 @@
 # Standard library
-import argparse
-import glob
 import json
 import math
 import os
-import re
-import shutil
-import sys
 import unicodedata
-from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field, fields
 from typing import Any
 
 import torch
 import transformers
-from safetensors import safe_open
 from torch import Tensor, nn
 from torch.nn import functional as F
 from transformers import AutoConfig, AutoModel, AutoModelForTextEncoding, AutoTokenizer, Cache
@@ -1789,7 +1782,7 @@ class RVQEARTTSModel(PreTrainedModel):
     def load_state_dict(self, state_dict, strict: bool = True):
         try:
             super().load_state_dict(state_dict, strict=strict)
-        except RuntimeError as e:
-            logging.info(f"Error loading model state_dict !! Retrying with partial initialization!")
+        except RuntimeError:
+            logging.info("Error loading model state_dict !! Retrying with partial initialization!")
             model_dict = set_model_dict_for_partial_init(state_dict, self.state_dict())
             super().load_state_dict(model_dict, strict=False)

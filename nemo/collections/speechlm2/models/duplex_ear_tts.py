@@ -13,23 +13,17 @@
 # limitations under the License.
 import copy
 import glob
-import math
 import os
-import random
 import tempfile
 import time
-from types import SimpleNamespace
 
-import numpy as np
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 from lightning import LightningModule
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from peft import PeftModel
-from torch import Tensor, nn
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
@@ -40,33 +34,25 @@ from torch.distributed.tensor.parallel import (
     loss_parallel,
     parallelize_module,
 )
-from transformers import AutoModelForCausalLM, DynamicCache
 
 from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
 from nemo.collections.speechlm2.modules.ear_tts_commons import SCRIPT_PLACEHOLDER
 from nemo.collections.speechlm2.modules.rvq_ear_tts_model import RVQEARTTSConfig, RVQEARTTSModel
 from nemo.collections.speechlm2.modules.rvq_ear_tts_vae import RVQVAEConfig, RVQVAEModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
-from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
-from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.metrics.intelligibility import Intelligibility
 from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
-from nemo.collections.speechlm2.parts.metrics.token_accuracy import TokenAccuracy
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     set_model_dict_for_partial_init,
-    setup_speech_encoder,
 )
-from nemo.collections.tts.modules import transformer_2501
-from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
@@ -82,7 +68,6 @@ def maybe_to(x, dtype):
 from collections import Counter
 from contextlib import contextmanager
 
-import torch
 
 
 @contextmanager
@@ -1008,7 +993,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             speaker_audio=speaker_audio,
             speaker_audio_lens=speaker_audio_lens,
         )
-        init_inputs = self.get_init_inputs(B=inputs["subword_ids"].size(0))
+        init_inputs = self.get_init_inputs(B=next_subword_ids.size(0))
 
         audio, audio_len = self.offline_inference(
             next_subword_ids=next_subword_ids,
@@ -1769,7 +1754,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
     def load_state_dict(self, state_dict, strict: bool = True):
         try:
             return super().load_state_dict(state_dict, strict=strict)
-        except RuntimeError as e:
-            logging.info(f"Error loading model state_dict !! Retrying with partial initialization!")
+        except RuntimeError:
+            logging.info("Error loading model state_dict !! Retrying with partial initialization!")
             model_dict = set_model_dict_for_partial_init(state_dict, self.state_dict())
             return super().load_state_dict(model_dict, strict=False)

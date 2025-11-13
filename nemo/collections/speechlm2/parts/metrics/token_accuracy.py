@@ -13,7 +13,6 @@
 # limitations under the License.
 from collections import defaultdict
 import torch
-from nemo.utils import logging
 
 
 def compute_token_accuracy_with_tolerance(target, pred, token, tolerance=1):

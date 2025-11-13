@@ -21,7 +21,6 @@ from nemo.collections.asr.models import ASRModel
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_nemo
-from nemo.utils import logging
 
 
 class Intelligibility:

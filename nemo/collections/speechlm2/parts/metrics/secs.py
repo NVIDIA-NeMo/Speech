@@ -13,15 +13,10 @@
 # limitations under the License.
 from collections import defaultdict
 
-import sacrebleu
 import torch
-from whisper_normalizer.english import EnglishTextNormalizer
 
-from nemo.collections.asr.models import ASRModel, EncDecSpeakerLabelModel
-from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
+from nemo.collections.asr.models import EncDecSpeakerLabelModel
 from nemo.collections.speechlm2.parts.precision import fp32_precision
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_nemo
-from nemo.utils import logging
 
 
 class SECS:

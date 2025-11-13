@@ -163,11 +163,6 @@ class CacheAwareCTCPipeline(BasePipeline):
             residue_tokens_at_end=self.residue_tokens_at_end,
         )
 
-    def reset_session(self) -> None:
-        """Reset the context manager."""
-        self.context_manager.reset()
-        super().reset_session()
-
     def create_state(self, options: ASRRequestOptions) -> CacheAwareCTCStreamingState:
         """
         Create new empty state.

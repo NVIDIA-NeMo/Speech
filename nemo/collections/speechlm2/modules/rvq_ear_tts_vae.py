@@ -677,12 +677,6 @@ class PreTrainedProbabilisticVQ(nn.Module):
     def log_std(self) -> Tensor:
         return torch.log(self._variance_list[-1]()) * 0.5
 
-    @overload
-    def encode(self, z: Tensor, return_z_q: Literal[False]) -> list[Tensor]: ...
-
-    @overload
-    def encode(self, z: Tensor, return_z_q: Literal[True]) -> tuple[list[Tensor], Tensor]: ...
-
     def encode(self, z: Tensor, return_z_q: bool = False) -> list[Tensor] | tuple[list[Tensor], Tensor]:
         r = z
         ids_sel = []

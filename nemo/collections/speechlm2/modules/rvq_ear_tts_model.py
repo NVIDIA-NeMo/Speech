@@ -376,8 +376,8 @@ class RVQEARTTSConfig(Config):
     codebook_size: int = 1024
     num_quantizers: int = 72
     context_hidden_size: int = 4096
-    cas_config: CASConfig | None = field(default_factory=lambda: CASConfig())
-    mog_head_config: MoGHeadConfig = field(default_factory=lambda: MoGHeadConfig())
+    cas_config: CASConfig | None = field(default_factory=CASConfig)
+    mog_head_config: MoGHeadConfig = field(default_factory=MoGHeadConfig)
 
     # extra parameters used for compatibility with S2S
     disable_eos_prediction: bool = False
@@ -714,7 +714,6 @@ class MoGHead(nn.Module):
         else:
             low_mat_sq = self.low_mat.transpose(-1, -2) @ self.low_mat
             x, y = mus, mu
-            b, t, n, d_l = x.size()
             wx_sq = (
                 x
                 * torch.einsum(

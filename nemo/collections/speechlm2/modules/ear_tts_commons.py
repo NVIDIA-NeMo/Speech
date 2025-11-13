@@ -43,7 +43,6 @@ SCRIPT_PLACEHOLDER = "[[[<<<SCRIPT_PLACEHOLDER>>>]]]"
 # Configuration Class and Utilities
 # ==============================================================================
 
-
 class Config(MutableMapping):
     """
     A dictionary-like configuration class that uses attributes for storage
@@ -147,6 +146,12 @@ class Config(MutableMapping):
     def __hash__(self):
         """Makes the object hashable if its contents are hashable."""
         return hash(tuple(sorted(self.items())))
+
+    def __eq__(self, other):
+        """Compares two Config objects for equality based on their contents."""
+        if not isinstance(other, Config):
+            return NotImplemented
+        return dict(self.items()) == dict(other.items())
 
 
 def get_config_from_file(config_path: str) -> Config:

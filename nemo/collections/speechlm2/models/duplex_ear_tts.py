@@ -1063,8 +1063,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             )
             * self.target_samples_per_frame
         )
-        # for i, l in enumerate(dataset_batch["desc_plus_audio_prompt_lens"]):
-        #    results["audio_tf"][i, :l*self.target_samples_per_frame] = 0.0
 
         with fp32_precision():  # resample is fragile to bfloat16 default dtype
             metric_audio_pred = results["audio"]

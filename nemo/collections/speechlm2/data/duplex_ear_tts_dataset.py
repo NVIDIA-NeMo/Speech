@@ -288,6 +288,10 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             source_audio = F.pad(source_audio, (0, extra_frames))
             source_audio_lens = source_audio_lens + extra_frames
 
+<<<<<<< HEAD
+=======
+        # Add audio and text prompts       
+>>>>>>> e5cc7fb09 (Fix code scanning issues)
         text_pad_id = get_pad_id(self.tokenizer)
         input_text_tokens_ = []
         source_tokens_ = []
@@ -379,30 +383,25 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                 desc_lens.append(len(desc_tokens_ids))
                 desc_plus_audio_prompt_lens.append(len(desc_tokens_ids))
 
-            # collate tensors
-            input_text_tokens = collate_vectors(input_text_tokens_, padding_value=text_pad_id)
-            source_tokens = collate_vectors(source_tokens_, padding_value=text_pad_id)
-            source_audio = collate_vectors(source_audio_, padding_value=0)
-            target_audio = collate_vectors(target_audio_, padding_value=0)
+        # collate tensors
+        input_text_tokens = collate_vectors(input_text_tokens_, padding_value=text_pad_id)
+        source_tokens = collate_vectors(source_tokens_, padding_value=text_pad_id)
+        source_audio = collate_vectors(source_audio_, padding_value=0)
+        target_audio = collate_vectors(target_audio_, padding_value=0)
 
-            # recreate audio mask
-            non_desc_mask = get_mask_from_lengths(target_token_lens)
-            # ignore desc len in audio mask
-            for i, frame in enumerate(desc_lens):
-                non_desc_mask[i, :frame] = 0.0
+        # recreate audio mask
+        non_desc_mask = get_mask_from_lengths(target_token_lens)
+        # ignore desc len in audio mask
+        for i, frame in enumerate(desc_lens):
+            non_desc_mask[i, :frame] = 0.0
 
-            # desc mask is totally the oposite of audio mask
-            desc_mask = ~non_desc_mask
+        # desc mask is totally the oposite of audio mask
+        desc_mask = ~non_desc_mask
 
-            # create non_prompt_mask that should mask desc plus audio prompt if used
-            non_prompt_mask = get_mask_from_lengths(target_token_lens)
-            for i, frame in enumerate(desc_plus_audio_prompt_lens):
-                non_prompt_mask[i, : frame - 1] = 0.0
-        else:
-            # create a mask for audio using target tokens that suppose to have the same size of the tokenized audio
-            non_prompt_mask = get_mask_from_lengths(target_token_lens)
-            # create a full zero desc mask
-            desc_mask = torch.zeros_like(non_prompt_mask)
+        # create non_prompt_mask that should mask desc plus audio prompt if used
+        non_prompt_mask = get_mask_from_lengths(target_token_lens)
+        for i, frame in enumerate(desc_plus_audio_prompt_lens):
+            non_prompt_mask[i, : frame - 1] = 0.0
 
         max_len = max(target_token_lens)
 

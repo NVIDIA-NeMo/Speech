@@ -2,7 +2,6 @@
 import json
 import math
 import os
-import unicodedata
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -17,7 +16,6 @@ from nemo.collections.speechlm2.modules.ear_tts_commons import Config, PreTraine
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
-
 # ==============================================================================
 # MLP module and Norm
 # ==============================================================================
@@ -487,11 +485,8 @@ def build_vocabs(
     # 1. Load or build the character vocabulary
     if vocab_dir:
         from filelock import FileLock
-
         char_vocab_file = os.path.join(vocab_dir, "char_vocab.json")
-
         os.makedirs(vocab_dir, exist_ok=True)
-
         with FileLock(char_vocab_file + ".lock", timeout=60):
             if not os.path.exists(char_vocab_file):
                 char_vocab = _build_char_vocab()
@@ -522,138 +517,6 @@ def build_vocabs(
     # The padding subword maps to a new character padding ID
     subword_id_to_char_ids[subword_padding_idx] = (len(char_vocab),)
     return subword_id_to_char_ids, char_vocab, subword_padding_idx
-
-
-def _split_ipa_symbols(text: str) -> list[str]:
-    """
-    Split IPA text into grapheme clusters (true phoneme symbols)
-    without using regex. Combines base characters with diacritics.
-    """
-    phonemes = []
-    cluster = ""
-    for char in text:
-        if unicodedata.combining(char) == 0:
-            # Start a new cluster
-            if cluster:
-                phonemes.append(cluster)
-            cluster = char
-        else:
-            # Diacritic, append to current cluster
-            cluster += char
-    if cluster:
-        phonemes.append(cluster)
-    return phonemes
-
-
-def build_phoneme_vocabs(
-    pretrained_tokenizer_name: str,
-    vocab_dir: str | None = None,
-    language: str = "en-us",
-) -> tuple[dict[int, tuple[int, ...]], dict[str, int], int]:
-    """
-    Build or load a phoneme-level vocabulary derived from a subword tokenizer,
-    using phonemizer with espeak-ng backend and IPA transcription.
-
-    Args:
-        pretrained_tokenizer_name (str): Hugging Face tokenizer name or path.
-        vocab_dir (str | None, optional): Directory for saving/loading vocab.
-        language (str, optional): Language code for phonemizer (default: "en-us").
-
-    Returns:
-        tuple:
-            - subword_id_to_phoneme_ids: dict[int, tuple[int, ...]]
-            - phoneme_vocab: dict[str, int]
-            - subword_padding_idx: int
-    """
-    from phonemizer import phonemize
-
-    tokenizer = AutoTokenizer.from_pretrained(pretrained_tokenizer_name)
-
-    def _phonemize_all_subwords() -> dict[str, list[str]]:
-        """Phonemize all subwords once and return mapping {subword → [IPA phonemes]}."""
-        subwords = list(tokenizer.vocab.keys())
-        try:
-            phoneme_strings = phonemize(
-                subwords,
-                language=language,
-                backend="espeak",  # use espeak-ng
-                strip=True,
-                njobs=1,
-                preserve_punctuation=True,
-                with_stress=True,
-            )
-            # split each string into grapheme clusters (IPA symbols)
-            phoneme_lists = [_split_ipa_symbols(s) for s in phoneme_strings]
-            return {sw: phs for sw, phs in zip(subwords, phoneme_lists) if phs}
-        except Exception as e:
-            logging.error(f"[PHONEME-VOCAB] Failed to phonemize subwords: {e}")
-            return {}
-
-    def _build_phoneme_vocab(subword_to_phonemes: dict[str, list[str]]) -> dict[str, int]:
-        phoneme_set = {p for phs in subword_to_phonemes.values() for p in phs}
-        sorted_phonemes = sorted(phoneme_set)
-        return {p: i for i, p in enumerate(sorted_phonemes)}
-
-    # --- Load or build vocab ---
-    vocab_file_name = "phoneme_vocab.json"
-    if vocab_dir:
-        os.makedirs(vocab_dir, exist_ok=True)
-        vocab_file = os.path.join(vocab_dir, vocab_file_name)
-
-        with FileLock(vocab_file + ".lock", timeout=60):
-            if not os.path.exists(vocab_file):
-                subword_to_phonemes = _phonemize_all_subwords()
-                phoneme_vocab = _build_phoneme_vocab(subword_to_phonemes)
-                cache = {"phoneme_vocab": phoneme_vocab, "subword_to_phonemes": subword_to_phonemes}
-                logging.info(f"[PHONEME-VOCAB] Saving → {vocab_file}")
-                with open(vocab_file, "w", encoding="utf-8") as f:
-                    json.dump(cache, f, ensure_ascii=False, indent=2)
-
-        logging.info(f"[PHONEME-VOCAB] Loading from {vocab_file}")
-        with open(vocab_file, encoding="utf-8") as f:
-            cache = json.load(f)
-            phoneme_vocab = cache["phoneme_vocab"]
-            subword_to_phonemes = cache["subword_to_phonemes"]
-    else:
-        logging.info(f"[PHONEME-VOCAB] Building from tokenizer '{pretrained_tokenizer_name}'")
-        subword_to_phonemes = _phonemize_all_subwords()
-        phoneme_vocab = _build_phoneme_vocab(subword_to_phonemes)
-
-    # --- Build subword → phoneme ID mapping ---
-    subword_id_to_phoneme_ids = {}
-    for subword, subword_id in tokenizer.vocab.items():
-        phonemes = subword_to_phonemes.get(subword, [])
-        phoneme_ids = [phoneme_vocab[p] for p in phonemes if p in phoneme_vocab]
-        if phoneme_ids:
-            subword_id_to_phoneme_ids[subword_id] = tuple(phoneme_ids)
-
-    # Define a padding index for subwords
-    subword_padding_idx = len(tokenizer.vocab)
-    # The padding subword maps to a new phoneme padding ID
-    subword_id_to_phoneme_ids[subword_padding_idx] = (len(phoneme_vocab),)
-
-    return subword_id_to_phoneme_ids, phoneme_vocab, subword_padding_idx
-
-
-"""@torch.compile
-def depthsum_encoding_step(
-    embs: Tensor,
-    r: Tensor,
-    code: Tensor,
-    depth_str: int = 0,
-    k: int = 72,
-) -> Tensor:
-    for i in range(depth_str, depth_str + k):
-        idx_sel = (
-            embs[i].pow(2).sum(-1)  # [g?, v]
-            - 2
-            * (r.unsqueeze(-2) @ embs[i].transpose(-1, -2)).squeeze(-2)  # [b, ?, g?, h] , [g?, h, v] -> [b, ?, g?, v]
-        ).argmin(-1)
-        emb_i = F.embedding(idx_sel, embs[i])
-        r = r - emb_i
-        code[..., i : i + 1] = idx_sel
-    return code
-"""
 
 
 @torch.compile

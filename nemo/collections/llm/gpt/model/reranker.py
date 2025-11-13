@@ -31,7 +31,7 @@ from nemo.collections.llm.gpt.model.llama_embedding import LlamaEmbeddingExporte
 from nemo.collections.llm.gpt.model.llama_embedding import (
     get_nv_embedding_layer_spec as bidirectional_attention_layer_spec,
 )
-from nemo.collections.llm.utils import Config
+from nemo.collections.llm.utils import Config, is_safe_repo
 from nemo.lightning import OptimizerModule, io
 from nemo.lightning.io.state import TransformFns
 from nemo.lightning.megatron_parallel import DDP, MegatronLossReduction
@@ -326,7 +326,12 @@ class ReRankerImporter(io.ModelConnector["AutoModelForSequenceClassification", R
         target = self.init()
         trainer = self.nemo_setup(target)
         source = AutoModelForSequenceClassification.from_pretrained(
-            str(self), torch_dtype='auto', trust_remote_code=True
+            str(self),
+            torch_dtype='auto',
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
         )
 
         self.convert_state(source, target)
@@ -338,7 +343,13 @@ class ReRankerImporter(io.ModelConnector["AutoModelForSequenceClassification", R
         """Create a NeMo ReRankerBaseConfig from the HF model config."""
         from transformers import AutoConfig
 
-        source = AutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        source = AutoConfig.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         return Llama32Reranker1BConfig(
             fp16=(dtype_from_hf(source) == torch.float16),
             bf16=(dtype_from_hf(source) == torch.bfloat16),

@@ -24,7 +24,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.llm.gpt.model.base import GPTModel, gpt_data_step, torch_dtype_from_mcore_config
-from nemo.collections.llm.utils import Config
+from nemo.collections.llm.utils import Config, is_safe_repo
 from nemo.lightning import OptimizerModule, get_vocab_size, io, teardown
 from nemo.lightning.io.state import _ModelState
 from nemo.utils import logging
@@ -484,7 +484,13 @@ class HFNemotronHImporter(io.ModelConnector["AutoModelForCausalLM", MambaModel])
         Returns:
             output_path (Path): The path to the saved model.
         """
-        source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True)
+        source = AutoModelForCausalLM.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         target = self.init()
         trainer = self.nemo_setup(target)
         source = source.to(self.config.params_dtype)
@@ -548,7 +554,13 @@ class HFNemotronHImporter(io.ModelConnector["AutoModelForCausalLM", MambaModel])
         """
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
-        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)), trust_remote_code=True)
+        return AutoTokenizer(
+            self.save_hf_tokenizer_assets(str(self)),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
 
     @property
     def config(self) -> SSMConfig:
@@ -558,7 +570,13 @@ class HFNemotronHImporter(io.ModelConnector["AutoModelForCausalLM", MambaModel])
             SSMConfig: The model configuration object.
         """
 
-        source = AutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        source = AutoConfig.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         source.torch_dtype = torch.bfloat16
 
         def make_vocab_size_divisible_by(vocab_size):
@@ -602,7 +620,13 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights():
-            return AutoModelForCausalLM.from_config(self.config, trust_remote_code=True)
+            return AutoModelForCausalLM.from_config(
+                self.config,
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+            )
 
     def apply(self, output_path: Path) -> Path:
         """
@@ -679,7 +703,13 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
             AutoTokenizer: The tokenizer object.
         """
 
-        return AutoTokenizer.from_pretrained("nvidia/Nemotron-H-8B-Base-8K", trust_remote_code=True)
+        return AutoTokenizer.from_pretrained(
+            "nvidia/Nemotron-H-8B-Base-8K",
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path="nvidia/Nemotron-H-8B-Base-8K",
+            ),
+        )
 
     @property
     def config(self):
@@ -708,7 +738,13 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
             model_path = local_model_path if local_model_path else "nvidia/NVIDIA-Nemotron-Nano-12B-v2-Base"
         else:
             raise ValueError(f"Unsupported model size: {source}")
-        hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        hf_config = AutoConfig.from_pretrained(
+            model_path,
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=model_path,
+            ),
+        )
         return hf_config
 
 

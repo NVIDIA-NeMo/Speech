@@ -36,7 +36,7 @@ from nemo.collections.llm.gpt.model.llama import (
     LlamaConfig,
     LlamaModel,
 )
-from nemo.collections.llm.utils import Config
+from nemo.collections.llm.utils import Config, is_safe_repo
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
@@ -314,9 +314,23 @@ class LlamaEmbeddingImporter(HFLlamaImporter):
         from transformers import AutoModel, AutoModelForCausalLM
 
         try:
-            source = AutoModelForCausalLM.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+            source = AutoModelForCausalLM.from_pretrained(
+                str(self),
+                torch_dtype='auto',
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+            )
         except:
-            source = AutoModel.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+            source = AutoModel.from_pretrained(
+                str(self),
+                torch_dtype='auto',
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+            )
 
             # Wrap the source in a model for causal LM
             class ModelWrapper(nn.Module):

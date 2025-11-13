@@ -18,6 +18,7 @@ import torch
 import transformers
 
 from nemo.collections import llm
+from nemo.collections.llm.utils import is_safe_repo
 
 
 def get_parser():
@@ -49,8 +50,14 @@ if __name__ == '__main__':
     )
 
     hf_target_class = getattr(transformers, args.hf_target_class)
-    original_hf = hf_target_class.from_pretrained(args.original_hf_path, trust_remote_code=True)
-    converted_hf = hf_target_class.from_pretrained(args.output_path, trust_remote_code=True)
+    original_hf = hf_target_class.from_pretrained(
+        args.original_hf_path,
+        trust_remote_code=is_safe_repo(hf_path=args.original_hf_path),
+    )
+    converted_hf = hf_target_class.from_pretrained(
+        args.output_path,
+        trust_remote_code=is_safe_repo(hf_path=args.original_hf_path),
+    )
 
     for (name1, parameter1), (name2, parameter2) in zip(
         converted_hf.named_parameters(), original_hf.named_parameters()

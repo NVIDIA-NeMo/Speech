@@ -33,7 +33,7 @@ from nemo.collections.llm.gpt.model.llama_nemotron_config import (
     LLAMA_31_NEMOTRON_ULTRA_253B_HETEROGENEOUS_CONFIG,
     LLAMA_33_NEMOTRON_SUPER_49B_HETEROGENEOUS_CONFIG,
 )
-from nemo.collections.llm.utils import Config
+from nemo.collections.llm.utils import Config, is_safe_repo
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME
 from nemo.lightning.io.pl import ckpt_to_weights_subdir
@@ -159,7 +159,14 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
         if 'Nano' in str(self):
             source = LlamaForCausalLM.from_pretrained(str(self), torch_dtype='auto')
         else:
-            source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True, torch_dtype='auto')
+            source = AutoModelForCausalLM.from_pretrained(
+                str(self),
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+                torch_dtype='auto',
+            )
         logging.info('Initialize NeMo Nemotron-Llama model')
         target = self.init()
         trainer = self.nemo_setup(target)
@@ -225,7 +232,13 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
         """
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
-        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)), trust_remote_code=True)
+        return AutoTokenizer(
+            self.save_hf_tokenizer_assets(str(self)),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
 
     @property
     def config(self) -> LlamaConfig:
@@ -239,7 +252,13 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
         """
         from transformers import AutoConfig, GenerationConfig
 
-        source = AutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        source = AutoConfig.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         try:
             generation_config = GenerationConfig.from_pretrained(str(self))
         except Exception:
@@ -353,10 +372,19 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
             # Since Llama-Nemotron Super/Ultra is not importable from transformers, we can only initialize the HF model
             # from a known checkpoint folder containing the config file and modeling files.
             # The model_name will need to be passed in.
-            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            config = AutoConfig.from_pretrained(
+                model_name,
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=model_name,
+                ),
+            )
             hf_model = AutoModelForCausalLM.from_config(
                 config,
-                trust_remote_code=True,
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=model_name,
+                ),
                 torch_dtype=dtype,
             )
             # Register the AutoModel Hook so that the custom modeling files are saved during save_pretrained()

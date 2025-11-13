@@ -43,6 +43,21 @@ except ImportError:
         pass
 
 
+SAFE_REPOS = [
+    "nvidia",
+    "Qwen",
+    "deepseek-ai",
+    "meta-llama",
+    "google",
+    "openai",
+    "mistralai",
+    "moonshotai",
+    "llava-hf",
+    "gpt2",
+    "baichuan-inc",
+]
+
+
 def task(*args: Any, **kwargs: Any) -> Callable[[T], T]:
     """ """
 
@@ -105,3 +120,23 @@ def barrier():
     """Waits for all processes."""
     if dist.is_initialized():
         dist.barrier()
+
+
+def is_safe_repo(trust_remote_code: bool = None, hf_path: str = None) -> bool:
+    """
+    Determine whether remote code execution should be trusted for a given
+    Hugging Face repository path.
+    Args:
+        trust_remote_code (bool): whther to define repo as safe w/o checking SAFE_REPOS.
+        hf_path (str): path to HF's model or dataset.
+    Returns:
+        True if remote code execution is allowed; False otherwise.
+    """
+    if trust_remote_code is not None:
+        return trust_remote_code
+
+    hf_repo = hf_path.split("/")[0]
+    if hf_repo in SAFE_REPOS:
+        return True
+
+    return False

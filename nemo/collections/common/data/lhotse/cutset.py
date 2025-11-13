@@ -739,7 +739,7 @@ def read_lhotse_magpietts_data_as_continuation(config) -> tuple[CutSet, bool]:
     # filter based on context speaker similarity
     MIN_SECS = config.get("min_context_speaker_similarity", 0.6)
     cuts = cuts.filter(filter_secs)
-    
+
     # filter speaker
     TARGET_SPEAKER = config.get("target_speaker", None)
     cuts = cuts.filter(filter_target_speaker)

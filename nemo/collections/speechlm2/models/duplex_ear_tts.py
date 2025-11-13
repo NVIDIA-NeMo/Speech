@@ -84,6 +84,7 @@ from contextlib import contextmanager
 
 import torch
 
+
 @contextmanager
 def ensures_16_precision(mixed_dtype):
     """
@@ -347,9 +348,7 @@ def setup_rvq_audio_codec(model):
             )
         else:
             # init codec from config
-            model.audio_codec = (
-                RVQVAEModel(RVQVAEConfig(**model.cfg.codec_config))
-            )
+            model.audio_codec = RVQVAEModel(RVQVAEConfig(**model.cfg.codec_config))
 
     for p in model.audio_codec.parameters():
         p.requires_grad = False

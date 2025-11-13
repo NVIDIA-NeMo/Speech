@@ -314,10 +314,12 @@ class NemoDiarService(STTService):
 
         await super().process_frame(frame, direction)
         if isinstance(frame, VADUserStartedSpeakingFrame):
+            await self.push_frame(frame, direction)
             self._vad_user_speaking = True
             self._audio_buffer = []
             logger.debug("VADUserStartedSpeakingFrame received")
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            await self.push_frame(frame, direction)
             self._vad_user_speaking = False
             logger.debug("VADUserStoppedSpeakingFrame received")
             self._current_speaker_id = None

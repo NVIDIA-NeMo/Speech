@@ -148,7 +148,7 @@ A lot of LLMs support thinking/reasoning mode, which is useful for complex tasks
 
 Different models may have different ways to support thinking/reasoning mode, please refer to the model's homepage for details on their thinking/reasoning mode support. Meanwhile, in many cases, they support enabling thinking/reasoning can be achieved by adding `/think` or `/no_think` to the end of the system prompt, and the thinking/reasoning content is wrapped by the tokens `["<think>", "</think>"]`. Some models may also support enabling thinking/reasoning by setting `llm.apply_chat_template_kwargs.enable_thinking=true/false` in the server config when `llm.type=hf`.
 
-If thinking/reasoning mode is enabled (e.g., in `server/server_configs/qwen3-8B_think.yaml`), the voice agnet server will print out the thinking/reasoning content so that you can see the process of the LLM thinking and still have a smooth conversation experience. The thinking/reasoning content will not go through the TTS process, so you will only hear the final answer, and this is achieved by specifying the pair of thinking tokens `tts.think_tokens=["<think>", "</think>"]` in the server config.
+If thinking/reasoning mode is enabled (e.g., in `server/server_configs/qwen3-8B_think.yaml`), the voice agent server will print out the thinking/reasoning content so that you can see the process of the LLM thinking and still have a smooth conversation experience. The thinking/reasoning content will not go through the TTS process, so you will only hear the final answer, and this is achieved by specifying the pair of thinking tokens `tts.think_tokens=["<think>", "</think>"]` in the server config.
 
 For vLLM server, if you specify `--reasoning_parser` in `vllm_server_params`, the thinking/reasoning content will be filtered out and does not show up in the output.
 
@@ -187,7 +187,7 @@ We will support more TTS models in the future.
 
 As the new turn-taking prediction model is not yet released, we use the VAD-based turn-taking prediction for now. You can set the `vad.stop_secs` to the desired value in `server/server_configs/default.yaml` to control the amount of silence needed to indicate the end of a user's turn.
 
-Additionally, the voice agent support ignoring back-channel phrases while the bot is talking, which it means phrases such as "uh-huh", "yeah", "okay"  will not interrupt the bot while it's talking. To control the backchannel phrases to be used, you can set the `turn_taking.backchannel_phrases` in the server config to the desired list of phrases or a file path to a yaml file containing the list of phrases. By default, it will use the phrases in `server/backchannel_phrases.yaml`. Setting it to `null` will disable detecting backchannel phrases, and that the VAD will interrupt the bot immediately when the user starts speaking.
+Additionally, the voice agent supports ignoring back-channel phrases while the bot is talking, which it means phrases such as "uh-huh", "yeah", "okay"  will not interrupt the bot while it's talking. To control the backchannel phrases to be used, you can set the `turn_taking.backchannel_phrases` in the server config to the desired list of phrases or a file path to a yaml file containing the list of phrases. By default, it will use the phrases in `server/backchannel_phrases.yaml`. Setting it to `null` will disable detecting backchannel phrases, and that the VAD will interrupt the bot immediately when the user starts speaking.
 
 
 ## 📝 Notes & FAQ

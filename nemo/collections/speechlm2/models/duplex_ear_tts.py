@@ -49,10 +49,7 @@ from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogge
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
-from nemo.collections.speechlm2.parts.pretrained import (
-    load_pretrained_hf,
-    set_model_dict_for_partial_init,
-)
+from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, set_model_dict_for_partial_init
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
@@ -67,7 +64,6 @@ def maybe_to(x, dtype):
 
 from collections import Counter
 from contextlib import contextmanager
-
 
 
 @contextmanager

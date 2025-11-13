@@ -13,3 +13,7 @@
 # limitations under the License.
 
 from nemo.collections.speechlm.models.speech_to_text_llm_model import SpeechToTextLLM
+
+__all__ = [
+    "SpeechToTextLLM"
+]

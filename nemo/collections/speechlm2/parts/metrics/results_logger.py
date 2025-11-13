@@ -22,10 +22,7 @@ from nemo.utils import logging
 
 
 def safe_remove_path(path):
-    try:
-        shutil.rmtree(path)
-    except:
-        pass  # File was already deleted by another thread
+    shutil.rmtree(path, ignore_errors=True)
 
 
 class ResultsLogger:

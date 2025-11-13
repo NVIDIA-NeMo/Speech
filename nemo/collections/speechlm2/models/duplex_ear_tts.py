@@ -53,6 +53,9 @@ from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, set_
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
+from collections import Counter
+from contextlib import contextmanager
+
 
 def maybe_to(x, dtype):
     if x is None:
@@ -60,10 +63,6 @@ def maybe_to(x, dtype):
     if isinstance(x, torch.Tensor) and torch.is_floating_point(x):
         return x.to(dtype)
     return x
-
-
-from collections import Counter
-from contextlib import contextmanager
 
 
 @contextmanager
@@ -126,7 +125,6 @@ def make_tts_model_mixed_precision_definite(
     bf16_layers, fp32_layers = [], []
 
     all_modules = list(model_patched.named_modules())
-    num_modules = len(all_modules)
 
     # flag to propagate FP32 to next safe layers
     propagate_fp32 = False
@@ -460,12 +458,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.codec_silence_tokens = self.get_codec_silence_frame()
 
         # Load tokenizer
-        if self.cfg.get("use_word_sep_tokenizer", False):
-            self.tokenizer = WordSepTokenizer(self.cfg.pretrained_lm_name, use_fast=True, trust_remote_code=True)
-        else:
-            self.tokenizer = AutoTokenizer(
-                self.cfg.pretrained_lm_name, use_fast=True, trust_remote_code=True
-            )  # Note that we are using fast tokenizer
+        self.tokenizer = AutoTokenizer(
+            self.cfg.pretrained_lm_name, use_fast=True, trust_remote_code=True
+        )  # Note that we are using fast tokenizer
 
         if 'Qwen2.5' in self.cfg.pretrained_lm_name:
             # For Qwen, '<|im_start|>' is a common choice for a BOS token.
@@ -812,7 +807,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             non_prompt_mask=inputs["non_prompt_mask"],
         )
         loss_dict = {"lm_loss": tts_output.lm_loss, "c_loss": tts_output.c_loss, "k_loss": tts_output.k_loss}
-        backbone_out = tts_output.hidden_states
         loss = sum(loss_dict.values())
 
         num_frames = inputs["output_lens"].sum()
@@ -867,11 +861,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         # L2 norms
         weight_l2 = (total_w_sq**0.5) if total_w_sq > 0 else 0.0
-        grad_l2 = (total_g_sq**0.5) if total_g_sq > 0 else 0.0
 
         # RMS (global)
         weight_rms = ((total_w_sq / total_w_params) ** 0.5) if total_w_params > 0 else 0.0
-        grad_rms = ((total_g_sq / total_g_params) ** 0.5) if total_g_params > 0 else 0.0
 
         # Mean
         weight_mean = sum_w / total_w_params if total_w_params > 0 else 0.0
@@ -882,9 +874,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.log("weights/max_abs", max_abs_w, on_epoch=True, sync_dist=True)
         self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True)
 
-        # ignore the grads stats for now
-        # self.log("grads/L2",       grad_l2,    on_epoch=True, sync_dist=True)
-        # self.log("grads/RMS",      grad_rms,   on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_start(self) -> None:
         setup_audio_codec(self)
@@ -1034,7 +1023,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             for key in init_inputs:
                 if init_inputs[key] is not None:
                     init_inputs[key] = torch.stack(
-                        [init_inputs[key][i, :l] for i, l in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])]
+                        [init_inputs[key][i, :plen] for i, plen in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])]
                     )
         else:
             # set init inputs and get it
@@ -1047,8 +1036,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # remove the prompt from the input_text_tokens to emulate S2S connected inference
         next_subword_ids = torch.stack(
             [
-                inputs["subword_ids"][i, l:]  # slice each element
-                for i, l in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])
+                inputs["subword_ids"][i, plen:]  # slice each element
+                for i, plen in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])
             ]
         )
 

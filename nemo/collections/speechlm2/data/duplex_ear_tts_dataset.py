@@ -414,8 +414,10 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         # Segment IDs per sequence (padded)
         aligned_segment_ids = torch.stack(
             [
-                torch.nn.functional.pad(torch.full((l,), i), (0, max_len - l), value=-1)  # -1 for padding
-                for i, l in enumerate(target_token_lens)
+                torch.nn.functional.pad(
+                    torch.full((seq_len,), i), (0, max_len - seq_len), value=-1
+                )  # -1 for padding
+                for i, seq_len in enumerate(target_token_lens)
             ],
             dim=0,
         )  # [B, max_len]
@@ -429,13 +431,13 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
 
         aligned_attention_mask = aligned_attention_mask.unsqueeze(1)  # [B, 1, max_len, max_len]
 
-        # create pos ids from the aligned lenght
+        # create position IDs from the aligned length
         aligned_position_ids = torch.stack(
             [
                 torch.nn.functional.pad(
-                    torch.arange(l), (0, max(target_token_lens) - l), value=0
+                    torch.arange(seq_len), (0, max(target_token_lens) - seq_len), value=0
                 )  # value=0 is safe for padding
-                for l in target_token_lens
+                for seq_len in target_token_lens
             ],
             dim=0,
         )

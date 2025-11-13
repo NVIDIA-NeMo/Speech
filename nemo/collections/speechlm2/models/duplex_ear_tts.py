@@ -252,7 +252,6 @@ def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int 
 
     Note BOS is considered as speaking (1) and EOS as non speaking 0
     """
-    B, T = input_ids.shape
     device = input_ids.device
     bos_mask = (input_ids == bos_token_id).to(torch.int32).to(device)
     eos_mask = (input_ids == eos_token_id).to(torch.int32).to(device)
@@ -753,8 +752,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # set the extra self.speech_pad_id at first 1 position in non_prompt_mask
         target_codes_aligned[row_idx, pos] = self.speech_pad_id
 
-        B, T = input_text_tokens.shape
-
         # shift text tokens
         subword_ids = F.pad(input_text_tokens[:, 1:], [0, 1])
         # note that we are using a text mask where we are ignoring the desc + audio prompt but we are keeping 1 until the audio ends to support duplex
@@ -772,7 +769,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 input_text_tokens = input_text_tokens[:, :-remainder]
                 target_codes_aligned = target_codes_aligned[:, :-remainder]
                 target_codes_aligned = target_codes_aligned[:, :-remainder]
-                desc_mask = desc_mask[:, :-remainder]
                 subword_ids = subword_ids[:, :-remainder]
                 subword_mask = subword_mask[:, :-remainder]
 

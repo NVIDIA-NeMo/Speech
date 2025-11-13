@@ -173,7 +173,6 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         target_sample_rate: int,
         input_roles: list[str] = None,
         output_roles: list[str] = None,
-        add_description: bool = True,
         p_drop_description: float = 0.0,
         add_text_bos_and_eos_in_each_turn: bool = False,
         add_audio_prompt_after_description: bool = False,
@@ -186,7 +185,6 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         self.target_sample_rate = target_sample_rate
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
-        self.add_description = add_description
         self.p_drop_description = p_drop_description
         self.add_text_bos_and_eos_in_each_turn = add_text_bos_and_eos_in_each_turn
         self.add_audio_prompt_after_description = add_audio_prompt_after_description
@@ -290,99 +288,99 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             source_audio = F.pad(source_audio, (0, extra_frames))
             source_audio_lens = source_audio_lens + extra_frames
 
-        if self.add_description:
-            text_pad_id = get_pad_id(self.tokenizer)
-            input_text_tokens_ = []
-            source_tokens_ = []
-            source_audio_ = []
-            target_audio_ = []
-            desc_lens = []
-            desc_plus_audio_prompt_lens = []
-            # for each sample in the batch
-            for i in range(input_text_tokens.size(0)):
-                desc_tokens_ids = self.generate_prompt_description(device=input_text_tokens[i].device).squeeze(0)
-                if self.add_audio_prompt_after_description:
-                    prompt_audio_size = int(
-                        ((self.audio_prompt_duration * self.target_sample_rate) // target_samples_per_frame)
-                        * target_samples_per_frame
-                    )
-                    prompt_audio = sample_audio_segments_repeat(
-                        speaker_reference_audio, speaker_reference_audio_lens, prompt_audio_size, sample=True
-                    )
-                    # add a silence in the end to smooth the transition between prompt and audio tokens, keep one extra pad token due shift on subword_ids
-                    prompt_audio[:, -int(target_samples_per_frame * 2) :] = 0
+       
+        text_pad_id = get_pad_id(self.tokenizer)
+        input_text_tokens_ = []
+        source_tokens_ = []
+        source_audio_ = []
+        target_audio_ = []
+        desc_lens = []
+        desc_plus_audio_prompt_lens = []
+        # for each sample in the batch
+        for i in range(input_text_tokens.size(0)):
+            desc_tokens_ids = self.generate_prompt_description(device=input_text_tokens[i].device).squeeze(0)
+            if self.add_audio_prompt_after_description:
+                prompt_audio_size = int(
+                    ((self.audio_prompt_duration * self.target_sample_rate) // target_samples_per_frame)
+                    * target_samples_per_frame
+                )
+                prompt_audio = sample_audio_segments_repeat(
+                    speaker_reference_audio, speaker_reference_audio_lens, prompt_audio_size, sample=True
+                )
+                # add a silence in the end to smooth the transition between prompt and audio tokens, keep one extra pad token due shift on subword_ids
+                prompt_audio[:, -int(target_samples_per_frame * 2) :] = 0
 
-                    # create tensor to pad text channels with the same amount of frames added in audio channel (audio prompt)
-                    prompt_audio_text_pad_size = prompt_audio_size // target_samples_per_frame
-                    prompt_audio_text_pad = (
-                        torch.ones(
-                            prompt_audio_text_pad_size, device=input_text_tokens.device, dtype=input_text_tokens.dtype
-                        )
-                        * text_pad_id
+                # create tensor to pad text channels with the same amount of frames added in audio channel (audio prompt)
+                prompt_audio_text_pad_size = prompt_audio_size // target_samples_per_frame
+                prompt_audio_text_pad = (
+                    torch.ones(
+                        prompt_audio_text_pad_size, device=input_text_tokens.device, dtype=input_text_tokens.dtype
                     )
-                    # set last prompt frame with eos in text channel
-                    prompt_audio_text_pad[-1] = self.tokenizer.eos
+                    * text_pad_id
+                )
+                # set last prompt frame with eos in text channel
+                prompt_audio_text_pad[-1] = self.tokenizer.eos
 
-                    # Add eos to simulate the end of a turn as in EAR-TTS inference
-                    desc_tokens_ids = torch.cat(
-                        [
-                            desc_tokens_ids,
-                            torch.tensor(
-                                [self.tokenizer.eos], dtype=desc_tokens_ids.dtype, device=desc_tokens_ids.device
-                            ),
-                        ]
-                    )
-                    # Add padding equivalent to the audio prompt size in number of tokens
-                    new_input_text_tokens = torch.cat(
-                        [
-                            desc_tokens_ids.to(input_text_tokens.dtype),
-                            prompt_audio_text_pad.to(input_text_tokens.dtype),
-                            input_text_tokens[i],
-                        ]
-                    )
-                    # append to list and update lens
-                    input_text_tokens_.append(new_input_text_tokens)
-                    target_token_lens[i] = target_token_lens[i] + len(desc_tokens_ids) + prompt_audio_text_pad_size
+                # Add eos to simulate the end of a turn as in EAR-TTS inference
+                desc_tokens_ids = torch.cat(
+                    [
+                        desc_tokens_ids,
+                        torch.tensor(
+                            [self.tokenizer.eos], dtype=desc_tokens_ids.dtype, device=desc_tokens_ids.device
+                        ),
+                    ]
+                )
+                # Add padding equivalent to the audio prompt size in number of tokens
+                new_input_text_tokens = torch.cat(
+                    [
+                        desc_tokens_ids.to(input_text_tokens.dtype),
+                        prompt_audio_text_pad.to(input_text_tokens.dtype),
+                        input_text_tokens[i],
+                    ]
+                )
+                # append to list and update lens
+                input_text_tokens_.append(new_input_text_tokens)
+                target_token_lens[i] = target_token_lens[i] + len(desc_tokens_ids) + prompt_audio_text_pad_size
 
-                    # add description to source text tokens
-                    source_tokens_.append(torch.cat([desc_tokens_ids, prompt_audio_text_pad, source_tokens[i]]))
-                    source_token_lens[i] = source_token_lens[i] + len(desc_tokens_ids) + prompt_audio_text_pad_size
-                    # add silence in the source audio while the prompt is being processed
-                    pad_size = (len(desc_tokens_ids) * source_samples_per_frame) + prompt_audio.size(1)
-                    pad_audio = torch.zeros(pad_size, device=source_audio.device, dtype=source_audio.dtype)
-                    source_audio_.append(torch.cat([pad_audio, source_audio[i]]))
-                    source_audio_lens[i] = source_audio_lens[i] + pad_size
-                    # add silence in the target audio while the prompt is being processed
-                    pad_size = len(desc_tokens_ids) * target_samples_per_frame
-                    pad_audio = torch.zeros(pad_size, device=target_audio.device, dtype=target_audio.dtype)
-                    target_audio_.append(torch.cat([pad_audio, prompt_audio[i], target_audio[i]]))
-                    target_audio_lens[i] = target_audio_lens[i] + pad_size + prompt_audio.size(1)
-                    # desc duration
-                    desc_lens.append(len(desc_tokens_ids))
-                    desc_plus_audio_prompt_lens.append(
-                        len(desc_tokens_ids) + prompt_audio_text_pad_size - 1
-                    )  # -1 due the shift done in subword_ids
-                else:
-                    # add description to target text tokens
-                    input_text_tokens_.append(torch.cat([desc_tokens_ids, input_text_tokens[i]]))
-                    target_token_lens[i] = target_token_lens[i] + len(desc_tokens_ids)
-                    # add description to source text tokens
-                    source_tokens_.append(torch.cat([desc_tokens_ids, source_tokens[i]]))
-                    source_token_lens[i] = source_token_lens[i] + len(desc_tokens_ids)
-                    # add silence in the source audio while the prompt is being processed
-                    pad_size = len(desc_tokens_ids) * source_samples_per_frame
-                    pad_audio = torch.zeros(pad_size, device=source_audio.device, dtype=source_audio.dtype)
-                    source_audio_.append(torch.cat([pad_audio, source_audio[i]]))
-                    source_audio_lens[i] = source_audio_lens[i] + pad_size
-                    # add silence in the target audio while the prompt is being processed
-                    pad_size = len(desc_tokens_ids) * target_samples_per_frame
-                    pad_audio = torch.zeros(pad_size, device=target_audio.device, dtype=target_audio.dtype)
-                    target_audio_.append(torch.cat([pad_audio, target_audio[i]]))
-                    target_audio_lens[i] = target_audio_lens[i] + pad_size
+                # add description to source text tokens
+                source_tokens_.append(torch.cat([desc_tokens_ids, prompt_audio_text_pad, source_tokens[i]]))
+                source_token_lens[i] = source_token_lens[i] + len(desc_tokens_ids) + prompt_audio_text_pad_size
+                # add silence in the source audio while the prompt is being processed
+                pad_size = (len(desc_tokens_ids) * source_samples_per_frame) + prompt_audio.size(1)
+                pad_audio = torch.zeros(pad_size, device=source_audio.device, dtype=source_audio.dtype)
+                source_audio_.append(torch.cat([pad_audio, source_audio[i]]))
+                source_audio_lens[i] = source_audio_lens[i] + pad_size
+                # add silence in the target audio while the prompt is being processed
+                pad_size = len(desc_tokens_ids) * target_samples_per_frame
+                pad_audio = torch.zeros(pad_size, device=target_audio.device, dtype=target_audio.dtype)
+                target_audio_.append(torch.cat([pad_audio, prompt_audio[i], target_audio[i]]))
+                target_audio_lens[i] = target_audio_lens[i] + pad_size + prompt_audio.size(1)
+                # desc duration
+                desc_lens.append(len(desc_tokens_ids))
+                desc_plus_audio_prompt_lens.append(
+                    len(desc_tokens_ids) + prompt_audio_text_pad_size - 1
+                )  # -1 due the shift done in subword_ids
+            else:
+                # add description to target text tokens
+                input_text_tokens_.append(torch.cat([desc_tokens_ids, input_text_tokens[i]]))
+                target_token_lens[i] = target_token_lens[i] + len(desc_tokens_ids)
+                # add description to source text tokens
+                source_tokens_.append(torch.cat([desc_tokens_ids, source_tokens[i]]))
+                source_token_lens[i] = source_token_lens[i] + len(desc_tokens_ids)
+                # add silence in the source audio while the prompt is being processed
+                pad_size = len(desc_tokens_ids) * source_samples_per_frame
+                pad_audio = torch.zeros(pad_size, device=source_audio.device, dtype=source_audio.dtype)
+                source_audio_.append(torch.cat([pad_audio, source_audio[i]]))
+                source_audio_lens[i] = source_audio_lens[i] + pad_size
+                # add silence in the target audio while the prompt is being processed
+                pad_size = len(desc_tokens_ids) * target_samples_per_frame
+                pad_audio = torch.zeros(pad_size, device=target_audio.device, dtype=target_audio.dtype)
+                target_audio_.append(torch.cat([pad_audio, target_audio[i]]))
+                target_audio_lens[i] = target_audio_lens[i] + pad_size
 
-                    # des duration
-                    desc_lens.append(len(desc_tokens_ids))
-                    desc_plus_audio_prompt_lens.append(len(desc_tokens_ids))
+                # des duration
+                desc_lens.append(len(desc_tokens_ids))
+                desc_plus_audio_prompt_lens.append(len(desc_tokens_ids))
 
             # collate tensors
             input_text_tokens = collate_vectors(input_text_tokens_, padding_value=text_pad_id)

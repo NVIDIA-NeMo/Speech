@@ -79,6 +79,10 @@ class TranscribeStepOutput:
         """
         final_transcript = state.final_transcript.strip()
         final_segments = [seg.copy() for seg in state.final_segments]
+        if len(final_segments) > 0:
+            final_segments[0].text = final_segments[0].text.lstrip(sep)
+            final_segments[-1].text = final_segments[-1].text.rstrip(sep)
+
         if final_transcript:
             separator = ''
             if not request.is_first and state.concat_with_space:
@@ -185,11 +189,12 @@ class BasePipeline(PipelineInterface):
 
         # Create current step output for each request
         outputs = []
+        sep = self.get_sep()
         for request in requests:
 
             # Extract current step output from the state
             state = self.get_state(request.stream_id)
-            step_output = TranscribeStepOutput.from_state(state=state, request=request, sep=self.get_sep())
+            step_output = TranscribeStepOutput.from_state(state=state, request=request, sep=sep)
             outputs.append(step_output)
 
             # Cleanup the state after the response is sent
@@ -344,6 +349,7 @@ class BasePipeline(PipelineInterface):
         check_existance_of_required_attributes(
             self,
             [
+                'num_slots',
                 'use_feat_cache',
                 'chunk_size_in_secs',
                 'buffer_size_in_secs',
@@ -361,6 +367,7 @@ class BasePipeline(PipelineInterface):
             chunk_size_for_feature_buffer = self.buffer_size_in_secs
 
         self.bufferer = BatchedCacheFeatureBufferer(
+            num_slots=self.num_slots,
             sample_rate=self.sample_rate,
             buffer_size_in_secs=self.buffer_size_in_secs,
             chunk_size_in_secs=chunk_size_for_feature_buffer,
@@ -406,6 +413,7 @@ class BasePipeline(PipelineInterface):
         request_generator.set_progress_bar(progress_bar)
 
         pipeline_output = {}
+        sep = self.get_sep()
         self.open_session()
         for requests in request_generator:
             step_outputs = self.transcribe_step(requests)
@@ -417,7 +425,18 @@ class BasePipeline(PipelineInterface):
                         "segments": [],
                         "audio_filepath": request_generator.get_audio_filepath(stream_id),
                     }
-                pipeline_output[stream_id]["text"] += step_output.final_transcript
-                pipeline_output[stream_id]["segments"].extend(step_output.final_segments)
+
+                accumulated_text = pipeline_output[stream_id]["text"]
+                final_transcript = step_output.final_transcript
+                final_segments = step_output.final_segments
+                if not accumulated_text:
+                    final_transcript = final_transcript.lstrip(sep)
+                    if len(final_segments) > 0:
+                        first_segment = final_segments[0]
+                        first_segment.text = first_segment.text.lstrip(sep)
+
+                accumulated_text += final_transcript
+                pipeline_output[stream_id]["text"] = accumulated_text
+                pipeline_output[stream_id]["segments"].extend(final_segments)
         self.close_session()
         return pipeline_output

@@ -49,7 +49,7 @@ from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
 from nemo.collections.speechlm2.modules.ear_tts_commons import SCRIPT_PLACEHOLDER
 from nemo.collections.speechlm2.modules.rvq_ear_tts_model import RVQEARTTSConfig, RVQEARTTSModel
-from nemo.collections.speechlm2.modules.rvq_ear_tts_vae import RVQVAEModel
+from nemo.collections.speechlm2.modules.rvq_ear_tts_vae import RVQVAEConfig, RVQVAEModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
@@ -83,7 +83,6 @@ from collections import Counter
 from contextlib import contextmanager
 
 import torch
-
 
 @contextmanager
 def ensures_16_precision(mixed_dtype):
@@ -340,10 +339,18 @@ def setup_rvq_audio_codec(model):
     """
     if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == torch.float:
         return  # skip if already set up and has the right dtype
+
     with fp32_precision():
-        model.audio_codec = (
-            RVQVAEModel.from_pretrained(model.cfg.pretrained_ae_dir, strict=False).eval().to(model.device)
-        )
+        if model.cfg.get("pretrained_ae_dir", None):
+            model.audio_codec = (
+                RVQVAEModel.from_pretrained(model.cfg.pretrained_ae_dir, strict=False).eval().to(model.device)
+            )
+        else:
+            # init codec from config
+            model.audio_codec = (
+                RVQVAEModel(RVQVAEConfig(**model.cfg.codec_config))
+            )
+
     for p in model.audio_codec.parameters():
         p.requires_grad = False
 

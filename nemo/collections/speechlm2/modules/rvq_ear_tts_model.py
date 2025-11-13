@@ -15,7 +15,7 @@
 import json
 import math
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from typing import Any
 
 import torch
@@ -25,10 +25,11 @@ from torch.nn import functional as F
 from transformers import AutoConfig, AutoModel, AutoModelForTextEncoding, AutoTokenizer, Cache
 from transformers.generation.logits_process import TopKLogitsWarper, TopPLogitsWarper
 
-from nemo.collections.speechlm2.modules.ear_tts_commons import Config, PreTrainedModel
+from nemo.collections.speechlm2.modules.ear_tts_commons import PreTrainedModel
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
+from omegaconf import DictConfig, OmegaConf
 
 # ==============================================================================
 # MLP module and Norm
@@ -337,66 +338,6 @@ def get_mask(
 
     # Generate the new mask using the final number of tokens to keep.
     return sequence_mask(num_to_keep.view(-1), depth).view_as(code_mask)
-
-
-@dataclass
-class CASConfig(Config):
-    pretrained_tokenizer_name: str = "meta-llama/Llama-3.1-8B-Instruct"
-    vocab_dir: str | None = None
-
-    # transformer backbone
-    backbone_type: str | None = "t5gemma"
-    backbone_model_class: str | None = None
-    backbone_config_class: str | None = None
-    backbone_config: Config | None = None
-
-
-@dataclass
-class MoGHeadConfig(Config):
-    intermediate_size: int = 4608
-    num_layers: int = 3
-    low_rank: int | None = 64
-    num_predictions: int = 1024
-    min_log_std: float = -4.0
-    eps: float = 1e-6
-
-
-@dataclass
-class RVQEARTTSConfig(Config):
-    model_type = "rvq_ear_tts"
-
-    # transformer backbone
-    backbone_type: str | None = "gemma3_text"
-    backbone_model_class: str | None = None
-    backbone_config_class: str | None = None
-    backbone_config: Config | None = None
-
-    # model specific configs
-    latent_size: int = 512
-    codebook_size: int = 1024
-    num_quantizers: int = 72
-    context_hidden_size: int = 4096
-    cas_config: CASConfig | None = field(default_factory=CASConfig)
-    mog_head_config: MoGHeadConfig = field(default_factory=MoGHeadConfig)
-
-    # extra parameters used for compatibility with S2S
-    disable_eos_prediction: bool = False
-    use_subword_flag_emb: bool = True
-    use_bos_eos_emb: bool = True
-    pretrained_text_name: str | None = None
-    use_gated_fusion_for_text_audio: bool = True
-
-    p_uncond: float = 0.1
-    label_smoothing: float = 0.01
-    max_training_rate: float = 0.8
-    quantizer_dropout: float = 0.5
-    random_target_masking: bool = False
-    exponent: float = 3.0
-
-    def __post_init__(self):
-        if self.cas_config is not None:
-            self.cas_config = CASConfig(**self.cas_config)
-        self.mog_head_config = MoGHeadConfig(**self.mog_head_config)
 
 
 # ==============================================================================
@@ -923,7 +864,7 @@ class CharAwareSubwordEncoder(nn.Module):
         backbone_type (str | None): The type of backbone model from Hugging Face (e.g., "t5gemma").
         backbone_model_class (str | None): The class name of the backbone model if not using AutoModel.
         backbone_config_class (str | None): The class name of the backbone config.
-        backbone_config (Config | None): A configuration for the backbone model.
+        backbone_config (DictConfig | None): A configuration for the backbone model.
     """
 
     def __init__(
@@ -934,7 +875,7 @@ class CharAwareSubwordEncoder(nn.Module):
         backbone_type: str | None = "t5gemma",
         backbone_model_class: str | None = None,
         backbone_config_class: str | None = None,
-        backbone_config: Config | None = None,
+        backbone_config: DictConfig | None = None,
         use_subword_flag_emb: bool = True,
         use_bos_eos_emb: bool = True,
         use_cumulative_word_emb: bool = False,
@@ -953,13 +894,13 @@ class CharAwareSubwordEncoder(nn.Module):
 
         # 2. Initialize the backbone model
         if backbone_type:
-            config = AutoConfig.for_model(backbone_type, **(backbone_config.to_dict() if backbone_config else {}))
+            config = AutoConfig.for_model(backbone_type, **(OmegaConf.to_container(backbone_config, resolve=True) if backbone_config else {}))
             self.backbone = AutoModelForTextEncoding.from_config(config)
         else:
             assert backbone_model_class and backbone_config_class
             config_class = getattr(transformers, backbone_config_class)
             model_class = getattr(transformers, backbone_model_class)
-            config = config_class(**(backbone_config.to_dict() if backbone_config else {}))
+            config = config_class(**(OmegaConf.to_container(backbone_config, resolve=True) if backbone_config else {}))
             self.backbone = model_class(config)
 
         self.hidden_size = self.backbone.get_input_embeddings().weight.size(-1)
@@ -1101,14 +1042,13 @@ class RVQEARTTSModel(PreTrainedModel):
     autoregressive inference.
 
     Args:
-        config (RVQEARTTSConfig | dict[str, Any]): The configuration object for the model.
+        config (DictConfig | dict[str, Any]): The configuration object for the model.
     """
-
-    config_class: type[Config] = RVQEARTTSConfig
     rvq_embs: Tensor
 
-    def __init__(self, config: RVQEARTTSConfig | dict[str, Any]):
+    def __init__(self, config: DictConfig | dict[str, Any]):
         super().__init__(config)
+
 
         # Backbone module
         if self.config.get("pretrained_text_name", None):
@@ -1118,16 +1058,16 @@ class RVQEARTTSModel(PreTrainedModel):
             llm = load_pretrained_hf(self.config.pretrained_text_name, pretrained_weights=True).train()
             self.backbone = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
         else:
-            if self.config.backbone_type is None:
-                assert self.config.backbone_model_class is not None and self.config.backbone_config_class is not None
+            if self.config.get("backbone_type", None) is None:
+                assert self.config.get("backbone_model_class", None) is not None and self.config.get("backbone_config_class", None) is not None
                 backbone_config = getattr(transformers, self.config.backbone_config_class)(
-                    **(self.config.backbone_config.to_dict() if self.config.backbone_config else {}),
+                    **(OmegaConf.to_container(self.config.backbone_config, resolve=True) if self.config.backbone_config else {}),
                 )
                 self.backbone = getattr(transformers, self.config.backbone_model_class)(backbone_config)
             else:
                 backbone_config = AutoConfig.for_model(
                     self.config.backbone_type,
-                    **(self.config.backbone_config.to_dict() if self.config.backbone_config else {}),
+                    **(OmegaConf.to_container(self.config.backbone_config, resolve=True) if self.config.backbone_config else {}),
                 )
                 self.backbone = AutoModel.from_config(backbone_config)
 

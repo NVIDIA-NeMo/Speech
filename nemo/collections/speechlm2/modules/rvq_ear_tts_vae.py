@@ -16,7 +16,6 @@ import functools
 import math
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from typing import Any, Concatenate
 
 # Third-party
@@ -26,8 +25,8 @@ from torch.nn import functional as F
 from torchaudio import functional as ta_F
 
 # Project
-from nemo.collections.speechlm2.modules.ear_tts_commons import Config, PreTrainedModel
-
+from nemo.collections.speechlm2.modules.ear_tts_commons import PreTrainedModel
+from omegaconf import DictConfig
 
 @contextmanager
 def disable_tf32():
@@ -37,33 +36,6 @@ def disable_tf32():
         yield
     finally:
         torch.backends.cudnn.allow_tf32 = prev
-
-
-@dataclass
-class RVQVAEConfig(Config):
-    model_type: str = "rvqvae"
-
-    # model specific configs
-    latent_size: int = 512
-    wav_to_token_ratio: int = field(init=False)
-
-    n_fft: int = 32
-    hop_length: int = 8
-    base_hidden_size: int = 384
-    channel_mult: tuple[int, ...] = (1, 2, 4)
-    rates: tuple[int, ...] = (8, 8, 8)
-    num_blocks: int = 3
-    kernel_size: int = 7
-    groups: int = 1
-
-    # quantization
-    codebook_size: int = 1024
-    num_quantizers: int = 72
-    quantizer_dropout: float = 0.5
-
-    def __post_init__(self):
-        self.wav_to_token_ratio = self.hop_length * math.prod(self.rates)
-
 
 # ==============================================================================
 # Utility Functions
@@ -908,12 +880,12 @@ class RVQVAEModel(PreTrainedModel):
     It consists of an encoder, a quantizer, and a decoder.
 
     Args:
-        config (RVQVAEConfig | dict[str, Any]): A configuration object with model hyperparameters.
+        config (DictConfig | dict[str, Any]): A configuration object with model hyperparameters.
     """
 
-    config_class: type[Config] = RVQVAEConfig
+    config_class: type[DictConfig] = DictConfig
 
-    def __init__(self, config: RVQVAEConfig | dict[str, Any]):
+    def __init__(self, config: DictConfig | dict[str, Any]):
         super().__init__(config)
 
         self.encoder = Wav2Latent(

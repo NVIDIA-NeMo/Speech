@@ -42,8 +42,8 @@ from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.modules.ear_tts_commons import SCRIPT_PLACEHOLDER
-from nemo.collections.speechlm2.modules.rvq_ear_tts_model import RVQEARTTSConfig, RVQEARTTSModel
-from nemo.collections.speechlm2.modules.rvq_ear_tts_vae import RVQVAEConfig, RVQVAEModel
+from nemo.collections.speechlm2.modules.rvq_ear_tts_model import RVQEARTTSModel
+from nemo.collections.speechlm2.modules.rvq_ear_tts_vae import RVQVAEModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.intelligibility import Intelligibility
@@ -321,11 +321,11 @@ def setup_rvq_audio_codec(model):
     with fp32_precision():
         if model.cfg.get("pretrained_ae_dir", None):
             model.audio_codec = (
-                RVQVAEModel.from_pretrained(model.cfg.pretrained_ae_dir, strict=False).eval().to(model.device)
+                RVQVAEModel.from_pretrained(model.cfg.pretrained_ae_dir, cfg=DictConfig(model.cfg.codec_config) if model.cfg.get("codec_config", None) else None, strict=False).eval().to(model.device)
             )
         else:
             # init codec from config
-            model.audio_codec = RVQVAEModel(RVQVAEConfig(**model.cfg.codec_config))
+            model.audio_codec = RVQVAEModel(DictConfig(model.cfg.codec_config))
 
     for p in model.audio_codec.parameters():
         p.requires_grad = False
@@ -537,11 +537,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         """Load TTS model for RVQ-EAR-TTS."""
         if self.cfg.get("pretrained_tts_model", None):
             self.tts_model = RVQEARTTSModel.from_pretrained(
-                cfg.pretrained_tts_model, RVQEARTTSConfig(**cfg.tts_config), strict=False
+                cfg.pretrained_tts_model, DictConfig(cfg.tts_config), strict=False
             )
         else:
             # start the model from scratch
-            self.tts_model = RVQEARTTSModel(RVQEARTTSConfig(**cfg.tts_config))
+            self.tts_model = RVQEARTTSModel(DictConfig(cfg.tts_config))
 
         setup_audio_codec(self)
 

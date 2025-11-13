@@ -21,13 +21,14 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping
 from typing import Any
 
 from safetensors import safe_open
 from torch import nn
 
 from nemo.utils import logging
+from omegaconf import DictConfig
 
 # ==============================================================================
 # Contants
@@ -42,120 +43,7 @@ SCRIPT_PLACEHOLDER = "[[[<<<SCRIPT_PLACEHOLDER>>>]]]"
 # ==============================================================================
 # Configuration Class and Utilities
 # ==============================================================================
-
-
-class Config(MutableMapping):
-    """
-    A dictionary-like configuration class that uses attributes for storage
-    and supports both attribute and item-style access.
-
-    This class inherits from `collections.abc.MutableMapping` and stores all
-    key-value pairs as instance attributes in its internal `__dict__`.
-
-    Nested dictionaries are recursively converted into Config objects upon being set.
-    """
-
-    def __init__(self, **kwargs):
-        """
-        Initializes the Config object from keyword arguments.
-        """
-        # __setattr__ will handle the recursive conversion for each item
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-    def to_dict(self):
-        """
-        Recursively converts the Config object back into a standard dictionary.
-
-        Returns:
-            dict: A standard dictionary representation of the configuration.
-        """
-        result = {}
-        for key, value in self.items():
-            if isinstance(value, Config):
-                # If the value is a Config object, recursively call to_dict()
-                result[key] = value.to_dict()
-            else:
-                result[key] = value
-        return result
-
-    def to_json(self, indent=2):
-        """
-        Serializes the configuration object to a formatted JSON string.
-
-        Args:
-            indent (int, optional): The indentation level for the JSON output.
-                Defaults to 2.
-
-        Returns:
-            str: The configuration as a JSON-formatted string.
-        """
-        # Leverage the to_dict() method for clean serialization
-        return json.dumps(self.to_dict(), indent=indent)
-
-    # --- Core MutableMapping Methods ---
-
-    def __setattr__(self, key, value):
-        """
-        Sets an attribute. Recursively converts dicts to Config objects.
-        This is the primary method for adding/modifying data.
-        """
-        if isinstance(value, Mapping):
-            value = Config(**value)
-        # Use object's __setattr__ to avoid infinite recursion
-        object.__setattr__(self, key, value)
-
-    def __setitem__(self, key, value):
-        """Allows setting items using dictionary syntax (e.g., `config['key'] = value`)."""
-        setattr(self, key, value)
-
-    def __getattr__(self, key):
-        """Allows accessing items as attributes (e.g., `config.key`)."""
-        # This method is only called for attributes that don't already exist.
-        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{key}'")
-
-    def __getitem__(self, key):
-        """Allows accessing items using dictionary syntax (e.g., `config['key']`)."""
-        try:
-            return getattr(self, key)
-        except AttributeError as e:
-            # Convert AttributeError to KeyError for dict-like behavior
-            raise KeyError(key) from e
-
-    def __delitem__(self, key):
-        """Allows deleting items using dictionary syntax (e.g., `del config['key']`)."""
-        try:
-            delattr(self, key)
-        except AttributeError as e:
-            # Convert AttributeError to KeyError for dict-like behavior
-            raise KeyError(key) from e
-
-    def __iter__(self):
-        """Returns an iterator over the keys (attributes) of the object."""
-        return iter(self.__dict__)
-
-    def __len__(self):
-        """Returns the number of items (attributes) in the object."""
-        return len(self.__dict__)
-
-    # --- Utility Methods ---
-
-    def __repr__(self):
-        """Returns an informative string representation of the Config object."""
-        return f"{self.__class__.__name__}({self.__dict__!r})"
-
-    def __hash__(self):
-        """Makes the object hashable if its contents are hashable."""
-        return hash(tuple(sorted(self.items())))
-
-    def __eq__(self, other):
-        """Compares two Config objects for equality based on their contents."""
-        if not isinstance(other, Config):
-            return NotImplemented
-        return dict(self.items()) == dict(other.items())
-
-
-def get_config_from_file(config_path: str) -> Config:
+def get_config_from_file(config_path: str) -> DictConfig:
     """
     Loads a configuration from a JSON or Python file.
 
@@ -197,11 +85,11 @@ def get_config_from_file(config_path: str) -> Config:
         ), f"Python config file must define a `{PYTHON_CONFIG_GETTER_NAME}` function."
         config = getattr(config_module, PYTHON_CONFIG_GETTER_NAME)(py_config_name)
         assert isinstance(config, Mapping), f"`{PYTHON_CONFIG_GETTER_NAME}` must return a dictionary-like object."
-    cfg = Config(**config)
+    cfg = DictConfig(config)
     return cfg
 
 
-def get_config() -> Config:
+def get_config() -> DictConfig:
     """
     Parses command-line arguments to load the main configuration for a training run.
 
@@ -244,7 +132,7 @@ def get_config() -> Config:
     return cfg
 
 
-def get_config_from_dir(workdir_path: str) -> Config:
+def get_config_from_dir(workdir_path: str) -> DictConfig:
     """
     A simple utility to load the configuration directly from a work directory.
 
@@ -252,7 +140,7 @@ def get_config_from_dir(workdir_path: str) -> Config:
         workdir_path (str): The path to the work directory containing a `config.json`.
 
     Returns:
-        Config: The loaded configuration object.
+        DictConfig: The loaded configuration object.
     """
     config_save_path = os.path.join(workdir_path, CONFIG_NAME)
     cfg = get_config_from_file(config_save_path)
@@ -264,9 +152,8 @@ def get_config_from_dir(workdir_path: str) -> Config:
 # Base Model Classes
 # ==============================================================================
 
-
 class PreTrainedModel(nn.Module):
-    config_class = Config
+    config_class = DictConfig
 
     """
     A base class for models to handle loading from pretrained checkpoints.
@@ -276,18 +163,18 @@ class PreTrainedModel(nn.Module):
     like Hugging Face's Transformers.
 
     Args:
-        config (Config | dict[str, Any]): A configuration object containing model hyperparameters.
+        config (DictConfig | dict[str, Any]): A configuration object containing model hyperparameters.
     """
 
-    def __init__(self, config: Config | dict[str, Any], *args, **kwargs):
+    def __init__(self, config: DictConfig | dict[str, Any], *args, **kwargs):
         super().__init__()
-        self.config = config if isinstance(config, self.config_class) else self.config_class(**config)
+        self.config = config if isinstance(config, self.config_class) else self.config_class(config)
 
     @classmethod
     def from_pretrained(
         cls,
         pretrained_dir: str,
-        cfg: Config | dict[str, Any] | None = None,
+        cfg: DictConfig | dict[str, Any] | None = None,
         checkpoint_regex: str = "checkpoint_*/ema.safetensors",
         strict: bool = False,
         **model_kwargs,
@@ -303,7 +190,7 @@ class PreTrainedModel(nn.Module):
             cls (type): The model class to instantiate.
             pretrained_dir (str): The directory containing the pretrained model
                                   config and checkpoint files.
-            cfg (Config | dict[str, Any] | None, optional): An optional config object to override
+            cfg (DictConfig | dict[str, Any] | None, optional): An optional config object to override
                                            the loaded config. Defaults to None.
             checkpoint_regex (str, optional): A regex pattern to find the checkpoint
                                               file. Defaults to "checkpoint_*/ema.safetensors".

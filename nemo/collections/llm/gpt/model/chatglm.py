@@ -250,15 +250,15 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
             config = AutoConfig.from_pretrained(
                 model_name,
                 trust_remote_code=is_safe_repo(
-                   trust_remote_code=self.trust_remote_code,
-                   hf_path=model_name, 
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=model_name,
                 ),
             )
             hf_model = AutoModelForCausalLM.from_config(
                 config,
                 trust_remote_code=is_safe_repo(
-                   trust_remote_code=self.trust_remote_code,
-                   hf_path=model_name, 
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=model_name,
                 ),
                 torch_dtype=dtype,
             )

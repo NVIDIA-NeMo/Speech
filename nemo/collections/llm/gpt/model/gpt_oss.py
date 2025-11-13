@@ -444,7 +444,7 @@ class HFGPTOSSExporter(io.ModelConnector[GPTOSSModel, "AutoModelForCausalLM"]):
                     trust_remote_code=self.trust_remote_code,
                     hf_path=str(self),
                 ),
-                torch_dtype=dtype
+                torch_dtype=dtype,
             )
 
     def apply(self, output_path: Path) -> Path:

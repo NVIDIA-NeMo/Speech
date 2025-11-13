@@ -276,8 +276,8 @@ class HFQwen3Importer(io.ModelConnector["AutoModelForCausalLM", Qwen3Model]):
         return AutoTokenizer(
             self.save_hf_tokenizer_assets(str(self)),
             trust_remote_code=is_safe_repo(
-               trust_remote_code=self.trust_remote_code,
-               hf_path=str(self),
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
             ),
         )
 
@@ -289,8 +289,8 @@ class HFQwen3Importer(io.ModelConnector["AutoModelForCausalLM", Qwen3Model]):
         source = HFAutoConfig.from_pretrained(
             str(self),
             trust_remote_code=is_safe_repo(
-               trust_remote_code=self.trust_remote_code,
-               hf_path=str(self),
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
             ),
         )
         generation_config = GenerationConfig.from_pretrained(str(self))

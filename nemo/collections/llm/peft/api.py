@@ -77,7 +77,7 @@ def merge_lora(
     lora_checkpoint_path: str,
     output_path: str,
     legacy_ckpt: bool = False,
-    trust_remote_code: bool = False, 
+    trust_remote_code: bool = False,
 ) -> None:
     """
     Merges the LoRA adapter weights into the base model's weights.

@@ -95,7 +95,6 @@ model:
         tags:
           tokenizer_names: ["english_phoneme"]
 
-
   validation_ds:
     use_lhotse: ${model.use_lhotse}
     volume_norm: true

@@ -20,6 +20,7 @@ from typing import Any
 
 import torch
 import transformers
+from omegaconf import DictConfig, OmegaConf
 from torch import Tensor, nn
 from torch.nn import functional as F
 from transformers import AutoConfig, AutoModel, AutoModelForTextEncoding, AutoTokenizer, Cache
@@ -29,7 +30,6 @@ from nemo.collections.speechlm2.modules.ear_tts_commons import PreTrainedModel
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
-from omegaconf import DictConfig, OmegaConf
 
 # ==============================================================================
 # MLP module and Norm
@@ -894,7 +894,9 @@ class CharAwareSubwordEncoder(nn.Module):
 
         # 2. Initialize the backbone model
         if backbone_type:
-            config = AutoConfig.for_model(backbone_type, **(OmegaConf.to_container(backbone_config, resolve=True) if backbone_config else {}))
+            config = AutoConfig.for_model(
+                backbone_type, **(OmegaConf.to_container(backbone_config, resolve=True) if backbone_config else {})
+            )
             self.backbone = AutoModelForTextEncoding.from_config(config)
         else:
             assert backbone_model_class and backbone_config_class
@@ -1044,11 +1046,11 @@ class RVQEARTTSModel(PreTrainedModel):
     Args:
         config (DictConfig | dict[str, Any]): The configuration object for the model.
     """
+
     rvq_embs: Tensor
 
     def __init__(self, config: DictConfig | dict[str, Any]):
         super().__init__(config)
-
 
         # Backbone module
         if self.config.get("pretrained_text_name", None):
@@ -1059,15 +1061,26 @@ class RVQEARTTSModel(PreTrainedModel):
             self.backbone = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
         else:
             if self.config.get("backbone_type", None) is None:
-                assert self.config.get("backbone_model_class", None) is not None and self.config.get("backbone_config_class", None) is not None
+                assert (
+                    self.config.get("backbone_model_class", None) is not None
+                    and self.config.get("backbone_config_class", None) is not None
+                )
                 backbone_config = getattr(transformers, self.config.backbone_config_class)(
-                    **(OmegaConf.to_container(self.config.backbone_config, resolve=True) if self.config.backbone_config else {}),
+                    **(
+                        OmegaConf.to_container(self.config.backbone_config, resolve=True)
+                        if self.config.backbone_config
+                        else {}
+                    ),
                 )
                 self.backbone = getattr(transformers, self.config.backbone_model_class)(backbone_config)
             else:
                 backbone_config = AutoConfig.for_model(
                     self.config.backbone_type,
-                    **(OmegaConf.to_container(self.config.backbone_config, resolve=True) if self.config.backbone_config else {}),
+                    **(
+                        OmegaConf.to_container(self.config.backbone_config, resolve=True)
+                        if self.config.backbone_config
+                        else {}
+                    ),
                 )
                 self.backbone = AutoModel.from_config(backbone_config)
 

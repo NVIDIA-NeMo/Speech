@@ -20,13 +20,14 @@ from typing import Any, Concatenate
 
 # Third-party
 import torch
+from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.nn import functional as F
 from torchaudio import functional as ta_F
 
 # Project
 from nemo.collections.speechlm2.modules.ear_tts_commons import PreTrainedModel
-from omegaconf import DictConfig
+
 
 @contextmanager
 def disable_tf32():
@@ -36,6 +37,7 @@ def disable_tf32():
         yield
     finally:
         torch.backends.cudnn.allow_tf32 = prev
+
 
 # ==============================================================================
 # Utility Functions

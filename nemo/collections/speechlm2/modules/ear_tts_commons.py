@@ -24,11 +24,11 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
+from omegaconf import DictConfig
 from safetensors import safe_open
 from torch import nn
 
 from nemo.utils import logging
-from omegaconf import DictConfig
 
 # ==============================================================================
 # Contants
@@ -151,6 +151,7 @@ def get_config_from_dir(workdir_path: str) -> DictConfig:
 # ==============================================================================
 # Base Model Classes
 # ==============================================================================
+
 
 class PreTrainedModel(nn.Module):
     config_class = DictConfig

@@ -321,7 +321,13 @@ def setup_rvq_audio_codec(model):
     with fp32_precision():
         if model.cfg.get("pretrained_ae_dir", None):
             model.audio_codec = (
-                RVQVAEModel.from_pretrained(model.cfg.pretrained_ae_dir, cfg=DictConfig(model.cfg.codec_config) if model.cfg.get("codec_config", None) else None, strict=False).eval().to(model.device)
+                RVQVAEModel.from_pretrained(
+                    model.cfg.pretrained_ae_dir,
+                    cfg=DictConfig(model.cfg.codec_config) if model.cfg.get("codec_config", None) else None,
+                    strict=False,
+                )
+                .eval()
+                .to(model.device)
             )
         else:
             # init codec from config

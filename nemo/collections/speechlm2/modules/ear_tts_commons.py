@@ -11,7 +11,6 @@ import sys
 from collections.abc import Mapping, MutableMapping
 from typing import Any
 
-import torch
 from safetensors import safe_open
 from torch import nn
 

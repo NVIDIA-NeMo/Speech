@@ -17,8 +17,7 @@ import re
 import torch
 import torch.nn.functional as F
 import torch.utils.data
-import torchaudio
-from lhotse import CutSet, MonoCut, Recording, Seconds, SupervisionSegment, compute_num_frames
+from lhotse import CutSet, Seconds, compute_num_frames
 from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_audio, collate_vectors
 from lhotse.utils import ifnone
@@ -410,7 +409,6 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             # create a full zero desc mask
             desc_mask = torch.zeros_like(non_prompt_mask)
 
-        batch_size = len(target_token_lens)
         max_len = max(target_token_lens)
 
         # Segment IDs per sequence (padded)

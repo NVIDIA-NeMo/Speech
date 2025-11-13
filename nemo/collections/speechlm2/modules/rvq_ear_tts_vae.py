@@ -17,7 +17,7 @@ import math
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Concatenate, Literal, overload
+from typing import Any, Concatenate
 
 # Third-party
 import torch

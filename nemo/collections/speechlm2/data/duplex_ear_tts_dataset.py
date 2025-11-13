@@ -288,10 +288,6 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             source_audio = F.pad(source_audio, (0, extra_frames))
             source_audio_lens = source_audio_lens + extra_frames
 
-<<<<<<< HEAD
-=======
-        # Add audio and text prompts       
->>>>>>> e5cc7fb09 (Fix code scanning issues)
         text_pad_id = get_pad_id(self.tokenizer)
         input_text_tokens_ = []
         source_tokens_ = []

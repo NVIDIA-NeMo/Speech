@@ -9,20 +9,20 @@ As of now, we only support English input and output, but more languages will be 
 
 - Open-source, local deployment, and flexible customization.
 - Allow users to talk to most LLMs from HuggingFace with configurable prompts. 
-- Streaming speech recognition with low latency.
+- Streaming speech recognition with low latency and end-of-utterance detection.
 - Low latency TTS for fast audio response generation.
 - Speaker diarization up to 4 speakers in different user turns.
 - WebSocket server for easy deployment.
 
 
 ## 💡 Upcoming Next
-- Joint ASR and EOU detection in the same model.
 - Accuracy and robustness ASR model improvements.
 - Better TTS with more natural voice (e.g., [Magpie-TTS](https://build.nvidia.com/nvidia/magpie-tts-multilingual)).
 - Combine ASR and speaker diarization model to handle overlapping speech.
 
 
 ## Latest Updates
+- 2025-11-14: Added support for joint ASR and EOU detection with [Parakeet-realtime-eou-120m](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) model.
 - 2025-10-10: Added support for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) TTS model.
 - 2025-10-03: Add support for serving LLM with vLLM and auto-switch between vLLM and HuggingFace, add [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) as default LLM.
 - 2025-09-05: First release of NeMo Voice Agent.
@@ -155,8 +155,10 @@ For vLLM server, if you specify `--reasoning_parser` in `vllm_server_params`, th
 ### 🎤 ASR 
 
 We use [cache-aware streaming FastConformer](https://arxiv.org/abs/2312.17279) to transcribe the user's speech into text. While new models will be released soon, we use the existing English models for now:
-- [stt_en_fastconformer_hybrid_large_streaming_80ms](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_en_fastconformer_hybrid_large_streaming_80ms)  (default)
+- [nvidia/parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) (default)
+- [stt_en_fastconformer_hybrid_large_streaming_80ms](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_en_fastconformer_hybrid_large_streaming_80ms)
 - [nvidia/stt_en_fastconformer_hybrid_large_streaming_multi](https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_large_streaming_multi)
+
 
 ### 💬 Speaker Diarization
 
@@ -173,11 +175,10 @@ Please note that in some circumstances, the diarization model might not work wel
 ### 🔉 TTS
 
 Here are the supported TTS models:
-- [FastPitch-HiFiGAN](https://huggingface.co/nvidia/tts_en_fastpitch) is an NVIDIA-NeMo TTS model. It only supports English output. 
-    - Please use `server/server_configs/tts_configs/nemo_fastpitch-hifigan.yaml` as the server config.
-
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) is a lightweight TTS model. This model is the default speech generation backend.
     - Please use `server/server_configs/tts_configs/kokoro_82M.yaml` as the server config.
+- [FastPitch-HiFiGAN](https://huggingface.co/nvidia/tts_en_fastpitch) is an NVIDIA-NeMo TTS model. It only supports English output. 
+    - Please use `server/server_configs/tts_configs/nemo_fastpitch-hifigan.yaml` as the server config.
 
 We will support more TTS models in the future.
 

@@ -563,14 +563,14 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
     def init_model_from_another_checkpoint(self, checkpoint_path):
         """
-            Loads model weights and config from another checkpoint file, supporting .nemo and PyTorch formats.
-        
-            Args:
-                checkpoint_path (str): Path to checkpoint file.
-        
-            Returns:
-                None. The model is updated in-place.
-            """
+        Loads model weights and config from another checkpoint file, supporting .nemo and PyTorch formats.
+
+        Args:
+            checkpoint_path (str): Path to checkpoint file.
+
+        Returns:
+            None. The model is updated in-place.
+        """
         if checkpoint_path is not None:
             if '.nemo' in checkpoint_path:
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -677,7 +677,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         return padded_audio, padded_len
 
     def prepare_inputs(self, batch: dict):
-        """ 
+        """
         Prepare inputs, extracting audio tokens and padding if needed.
         """
         # check if audios has the same batch size
@@ -990,16 +990,16 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
     def run_evaluation_one_batch(self, name, dataset_batch, use_dataloader_init=False):
         """
-            Runs evaluation and scoring for a single data batch, logging metrics and updating result buffers.
-        
-            Args:
-                name (str): Name/id for the batch (for logging).
-                dataset_batch (dict): Batch of data inputs, supports batched text/audio/etc.
-                use_dataloader_init (bool, optional): If True, use dataloader initialization for prompts.
-        
-            Returns:
-                None. Outputs are logged and stored in result buffers.
-            """
+        Runs evaluation and scoring for a single data batch, logging metrics and updating result buffers.
+
+        Args:
+            name (str): Name/id for the batch (for logging).
+            dataset_batch (dict): Batch of data inputs, supports batched text/audio/etc.
+            use_dataloader_init (bool, optional): If True, use dataloader initialization for prompts.
+
+        Returns:
+            None. Outputs are logged and stored in result buffers.
+        """
         results = {}
         inputs = self.prepare_inputs(dataset_batch)
 
@@ -1283,15 +1283,15 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
     def get_system_prompt(self, system_prompt=None, user_prompt=None):
         """
-            Constructs a prompt message pair (system, user, assistant) formatted for chat inference.
-        
-            Args:
-                system_prompt (str, optional): System message describing conversational policy.
-                user_prompt (str, optional): User message/content.
-        
-            Returns:
-                torch.Tensor: Tokenized prompt IDs, shape (1, T).
-            """
+        Constructs a prompt message pair (system, user, assistant) formatted for chat inference.
+
+        Args:
+            system_prompt (str, optional): System message describing conversational policy.
+            user_prompt (str, optional): User message/content.
+
+        Returns:
+            torch.Tensor: Tokenized prompt IDs, shape (1, T).
+        """
         messages = []
         if system_prompt is None:
             system_prompt = (
@@ -1338,17 +1338,17 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
     def set_init_inputs(self, speaker_audio, speaker_audio_lens, system_prompt=None, user_prompt=None):
         """
-            Registers and prepares initial input buffers for text/audio prompt and context, to warm up AR inference.
-        
-            Args:
-                speaker_audio (torch.Tensor): Batch of prompt audio, (B, T).
-                speaker_audio_lens (torch.Tensor): Lengths for each sample in speaker_audio, (B,).
-                system_prompt (str, optional): System prompt for context.
-                user_prompt (str, optional): User message for context.
-        
-            Returns:
-                dict: Dictionary of input tensors to be passed to inference, with registered buffers.
-            """
+        Registers and prepares initial input buffers for text/audio prompt and context, to warm up AR inference.
+
+        Args:
+            speaker_audio (torch.Tensor): Batch of prompt audio, (B, T).
+            speaker_audio_lens (torch.Tensor): Lengths for each sample in speaker_audio, (B,).
+            system_prompt (str, optional): System prompt for context.
+            user_prompt (str, optional): User message for context.
+
+        Returns:
+            dict: Dictionary of input tensors to be passed to inference, with registered buffers.
+        """
         # compute prompt audio size and slice it
         with fp32_precision():
             # compute the exact number of samples for the prompt duration
@@ -1391,7 +1391,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         with fp32_precision():
             prompt_audio_text_pad_size = int(prompt_audio_size // self.target_samples_per_frame)
 
-        # get description tokens 
+        # get description tokens
         # ToDo: Consider remove the prompt description, given that NanoV2 does not support it and curently it is only a single eos text token
         desc_tokens_ids = self.get_system_prompt(system_prompt=system_prompt, user_prompt=user_prompt)
 
@@ -1500,18 +1500,18 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         ],
     ):
         """
-            Returns a dictionary of initial inputs for inference, using registered buffers.
-        
-            Args:
-                B (int): Required batch size.
-                init_inputs_names (List[str], optional): Names of input buffers to fetch.
-        
-            Returns:
-                dict: Each key is name from init_inputs_names, and value is tensor of appropriate shape (B, ...).
-        
-            Notes:
-                Expands batch-1 buffers to B if necessary.
-            """
+        Returns a dictionary of initial inputs for inference, using registered buffers.
+
+        Args:
+            B (int): Required batch size.
+            init_inputs_names (List[str], optional): Names of input buffers to fetch.
+
+        Returns:
+            dict: Each key is name from init_inputs_names, and value is tensor of appropriate shape (B, ...).
+
+        Notes:
+            Expands batch-1 buffers to B if necessary.
+        """
         if init_inputs_names is None:
             init_inputs_names = [
                 "code",
@@ -1541,25 +1541,35 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         return init_inputs
 
     @torch.no_grad()
-    def infer_codes_one_step(self, current_subword_id, prev_subword_id, current_subword_mask, prev_audio_tokens, past_key_values, guidance_enabled=True, generation_config=None, ignore_eos_flag_stop=True):
+    def infer_codes_one_step(
+        self,
+        current_subword_id,
+        prev_subword_id,
+        current_subword_mask,
+        prev_audio_tokens,
+        past_key_values,
+        guidance_enabled=True,
+        generation_config=None,
+        ignore_eos_flag_stop=True,
+    ):
         """
-            Runs a single autoregressive prediction step to infer audio codec codes.
-        
-            Args:
-                current_subword_id (torch.Tensor): Current text token IDs, shape (B, 1).
-                prev_subword_id (torch.Tensor): Previous text token IDs, shape (B, 1).
-                current_subword_mask (torch.Tensor): Current mask, shape (B, 1).
-                prev_audio_tokens (torch.Tensor): Previously generated audio tokens, shape (B, 1, C).
-                past_key_values: Key-value cache for transformer decoder state.
-                guidance_enabled (bool, optional): Enables classifier-free guidance.
-                generation_config (dict, optional): Generation hyperparameters.
-                ignore_eos_flag_stop (bool): If True, ignore EOS flag for stopping.
-        
-            Returns:
-                Tuple[torch.Tensor, Any]:
-                    - Predicted audio codec token(s), shape (B, 1, C)
-                    - Updated past_key_values for the next step.
-            """
+        Runs a single autoregressive prediction step to infer audio codec codes.
+
+        Args:
+            current_subword_id (torch.Tensor): Current text token IDs, shape (B, 1).
+            prev_subword_id (torch.Tensor): Previous text token IDs, shape (B, 1).
+            current_subword_mask (torch.Tensor): Current mask, shape (B, 1).
+            prev_audio_tokens (torch.Tensor): Previously generated audio tokens, shape (B, 1, C).
+            past_key_values: Key-value cache for transformer decoder state.
+            guidance_enabled (bool, optional): Enables classifier-free guidance.
+            generation_config (dict, optional): Generation hyperparameters.
+            ignore_eos_flag_stop (bool): If True, ignore EOS flag for stopping.
+
+        Returns:
+            Tuple[torch.Tensor, Any]:
+                - Predicted audio codec token(s), shape (B, 1, C)
+                - Updated past_key_values for the next step.
+        """
 
         if self.cfg.tts_config.context_hidden_size is not None:
             # get context_hidden_state it is always one step behind current_subword_id
@@ -1597,30 +1607,33 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
     @torch.no_grad()
     def decode_one_audio_step(self, gen_audio_codes_history, number_prev_tokens=None):
         """
-            Decodes one step of generated audio codec tokens to raw waveform.
-        
-            Args:
-                gen_audio_codes_history (torch.Tensor): Audio tokens history, shape (B, T, C).
-                number_prev_tokens (int, optional): Number of previous tokens to decode, for incremental decoding.
-        
-            Returns:
-                Tuple[torch.Tensor, torch.Tensor]:
-                    - audio_pred_cur_step: Latest decoded waveform chunk, shape (B, wav_to_token_ratio).
-                    - audio_len: Lengths (number of samples), shape (B,).
-            """
+        Decodes one step of generated audio codec tokens to raw waveform.
+
+        Args:
+            gen_audio_codes_history (torch.Tensor): Audio tokens history, shape (B, T, C).
+            number_prev_tokens (int, optional): Number of previous tokens to decode, for incremental decoding.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]:
+                - audio_pred_cur_step: Latest decoded waveform chunk, shape (B, wav_to_token_ratio).
+                - audio_len: Lengths (number of samples), shape (B,).
+        """
         with fp32_precision(), torch.no_grad():
             if number_prev_tokens:
                 gen_audio_codes_history = gen_audio_codes_history[:, -number_prev_tokens:]
-    
-            gen_audio_codes_history = replace_control_speech_codes(gen_audio_codes_history, self._control_codes, self.codec_silence_tokens)
-            gen_audio_codes_lens = torch.tensor([gen_audio_codes_history.size(1)]*gen_audio_codes_history.size(0), device=self.device)
+
+            gen_audio_codes_history = replace_control_speech_codes(
+                gen_audio_codes_history, self._control_codes, self.codec_silence_tokens
+            )
+            gen_audio_codes_lens = torch.tensor(
+                [gen_audio_codes_history.size(1)] * gen_audio_codes_history.size(0), device=self.device
+            )
             audio_pred, audio_len = self.audio_codec.decode(gen_audio_codes_history, gen_audio_codes_lens)
 
         # return only the current/lastest audio chunk
-        audio_pred_cur_step = audio_pred.squeeze(1)[:, -self.audio_codec.config.wav_to_token_ratio:]
+        audio_pred_cur_step = audio_pred.squeeze(1)[:, -self.audio_codec.config.wav_to_token_ratio :]
         audio_len[:] = self.audio_codec.config.wav_to_token_ratio
         return audio_pred_cur_step, audio_len
-
 
     @torch.no_grad()
     def offline_inference(
@@ -1648,12 +1661,12 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 Dictionary of prompt-dependent initial states produced by
                 ``get_init_inputs()``. May include:
 
-                    • "code"                 — initial audio tokens (e.g., prompt audio)  
-                    • "audio_mask"           — mask for prompt audio positions  
-                    • "context_hidden_state" — decoder hidden state at t = 0  
-                    • "subword_ids"          — prompt text tokens  
-                    • "subword_mask"         — mask for prompt text  
-                    • "non_prompt_mask"      — mask marking positions to be generated  
+                    • "code"                 — initial audio tokens (e.g., prompt audio)
+                    • "audio_mask"           — mask for prompt audio positions
+                    • "context_hidden_state" — decoder hidden state at t = 0
+                    • "subword_ids"          — prompt text tokens
+                    • "subword_mask"         — mask for prompt text
+                    • "non_prompt_mask"      — mask marking positions to be generated
 
                 ``get_init_inputs()`` automatically expands batch-1 buffers to
                 batch size B.
@@ -1674,18 +1687,18 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
             incremental_audio_decoding (bool, optional):
                 If True, codec-to-waveform decoding is performed incrementally during
-                autoregressive generation.  
+                autoregressive generation.
                 If False, waveform decoding occurs only after all audio tokens are produced.
 
         Returns:
             dict[str, torch.Tensor]:
                 Contains:
 
-                • **"audio"**:  
+                • **"audio"**:
                 Generated waveform of shape ``(B, T_audio)``, obtained via
                 ``audio_pred.squeeze(1)``.
 
-                • **"audio_len"**:  
+                • **"audio_len"**:
                 Length of each generated waveform in samples, shape ``(B,)``.
         """
         B = next_subword_ids.size(0)
@@ -1713,7 +1726,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         gen_audio_codes = torch.zeros(
             B, max_steps, self.tts_model.config.num_quantizers, device=self.device, dtype=torch.long
         )
-        
+
         # init subwork as all ones
         subword_mask = torch.ones(B, max_steps, device=self.device, dtype=torch.bool)
         # get first context subword_id, that is the last subword_ids from the warmup
@@ -1727,7 +1740,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             step_start = time.time()
             # current subword id is always seem
             current_subword_id = next_subword_ids[:, i].unsqueeze(-1)
-    
+
             if i == 0:
                 prev_subword_id = first_context_subword_id
             else:
@@ -1736,26 +1749,40 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             # create subword_mask
             current_subword_mask = subword_mask[:, i].unsqueeze(-1)
 
-            code, past_key_values = self.infer_codes_one_step(current_subword_id=current_subword_id, prev_subword_id=prev_subword_id, current_subword_mask=current_subword_mask, prev_audio_tokens=code, past_key_values=past_key_values, guidance_enabled=guidance_enabled, generation_config=generation_config, ignore_eos_flag_stop=True)
+            code, past_key_values = self.infer_codes_one_step(
+                current_subword_id=current_subword_id,
+                prev_subword_id=prev_subword_id,
+                current_subword_mask=current_subword_mask,
+                prev_audio_tokens=code,
+                past_key_values=past_key_values,
+                guidance_enabled=guidance_enabled,
+                generation_config=generation_config,
+                ignore_eos_flag_stop=True,
+            )
 
             # cache audio tokens
             gen_audio_codes[:, i] = code.squeeze(1)
 
             if incremental_audio_decoding:
-                audio_pred_i, audio_pred_i_len = self.decode_one_audio_step(gen_audio_codes[:, :i+1], number_prev_tokens=self.cfg.get("inference_codec_decoding_prev_tokens_number", None))
+                audio_pred_i, audio_pred_i_len = self.decode_one_audio_step(
+                    gen_audio_codes[:, : i + 1],
+                    number_prev_tokens=self.cfg.get("inference_codec_decoding_prev_tokens_number", None),
+                )
                 if audio_pred is None:
                     audio_pred = audio_pred_i
                 else:
                     audio_pred = torch.cat([audio_pred, audio_pred_i], dim=1)
-                audio_pred_len += audio_pred_i_len 
-    
+                audio_pred_len += audio_pred_i_len
+
             step_time = time.time() - step_start
             logging.info(f"Autoregressive inference step: {i} of {max_steps} take around {step_time}s")
 
         if not incremental_audio_decoding:
             gen_audio_codes_lens = torch.tensor([gen_audio_codes.shape[1]] * gen_audio_codes.shape[0]).to(self.device)
             # decode audio. Note that it is not necessary because the prompt is removed, so no special token should be on the output, but lets do it for safety
-            gen_audio_codes = replace_control_speech_codes(gen_audio_codes, self._control_codes, self.codec_silence_tokens)
+            gen_audio_codes = replace_control_speech_codes(
+                gen_audio_codes, self._control_codes, self.codec_silence_tokens
+            )
             with fp32_precision(), torch.no_grad():
                 audio_pred, audio_pred_len = self.audio_codec.decode(gen_audio_codes, gen_audio_codes_lens)
 

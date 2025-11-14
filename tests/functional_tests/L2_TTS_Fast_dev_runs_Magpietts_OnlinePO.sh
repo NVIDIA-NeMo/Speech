@@ -34,7 +34,7 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     +model.text_tokenizers.german_phoneme.g2p.use_chars=true \
     +model.text_tokenizers.german_phoneme.g2p.grapheme_case=mixed \
     +model.text_tokenizers.german_phoneme.g2p.grapheme_prefix=# \
-    +model.text_tokenizers.mandarin_phoneme._target_=nnemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ChinesePhonemesTokenizer \
+    +model.text_tokenizers.mandarin_phoneme._target_=nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ChinesePhonemesTokenizer \
     +model.text_tokenizers.mandarin_phoneme.pad_with_space=true \
     +model.text_tokenizers.mandarin_phoneme.g2p._target_=emo.collections.tts.g2p.models.zh_cn_pinyin.ChineseG2p \
     +model.text_tokenizers.mandarin_phoneme.g2p.phoneme_dict="scripts/tts_dataset_files/zh/36finals/ipa_dict_nv23.05.txt" \

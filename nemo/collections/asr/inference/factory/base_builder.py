@@ -35,6 +35,7 @@ from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
+    from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
 
 
 class BaseBuilder:
@@ -43,6 +44,30 @@ class BaseBuilder:
     Builds the ASR/ITN components.
     Derived classes should implement the `build` method which should include the logic of creating concrete pipeline.
     """
+
+    @classmethod
+    def _build_nmt(cls, cfg: DictConfig) -> LLMTranslator:
+        """
+        Build the NMT model based on the config.
+        Args:
+            cfg: (DictConfig) Config
+        Returns:
+            (LLMTranslator) NMT model
+        """
+        nmt_model = None
+        if cfg.enable_nmt:
+            from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
+
+            nmt_model = LLMTranslator(
+                model_name=cfg.nmt.model_name,
+                source_language=cfg.nmt.source_language,
+                target_language=cfg.nmt.target_language,
+                max_tokens=cfg.nmt.max_tokens,
+                temperature=cfg.nmt.temperature,
+                waitk=cfg.nmt.waitk,
+            )
+        logging.info(f"NMT model `{cfg.nmt.model_name}` loaded")
+        return nmt_model
 
     @classmethod
     def _build_asr(cls, cfg: DictConfig, decoding_cfg: CTCDecodingConfig | RNNTDecodingConfig) -> ASRInferenceWrapper:

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
+    from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
 
 
 @dataclass
@@ -57,14 +59,16 @@ class TranscribeStepOutput:
     # Final transcript is the transcript generated started from the previous EoU to the current EoU
     # It is finilized transcript, optionally punctuated and ITN-normalized. It's not subject to further modifications.
     # Final segments contains metadata for each word/segment in the final transcript.
-    final_transcript: str | None = None
+    final_transcript: str = ""
     final_segments: list[TextSegment] | None = None
+    final_translation: str = ""
     # Partial transcript is the transcript generated started from the previous EoU up to the current frame
     # It is not finilized transcript, it may be subject to further modifications.
     # It can also contain transcript from future frames.
-    partial_transcript: str | None = None
+    partial_transcript: str = ""
+    partial_translation: str = ""
     # Current step transcript is the transcript generated from the current frame
-    current_step_transcript: str | None = None
+    current_step_transcript: str = ""
 
     @classmethod
     def from_state(cls, state: StreamingState, request: Request, sep: str = ' ') -> 'TranscribeStepOutput':
@@ -97,6 +101,19 @@ class TranscribeStepOutput:
             partial_transcript=state.partial_transcript,
             current_step_transcript=state.current_step_transcript,
         )
+
+    def __str__(self) -> str:
+        """
+        Return a string representation of the TranscribeStepOutput
+        """
+        info = {
+            "final_transcript": self.final_transcript,
+            "final_translation": self.final_translation,
+            "partial_transcript": self.partial_transcript,
+            "partial_translation": self.partial_translation,
+            "current_step_transcript": self.current_step_transcript,
+        }
+        return json.dumps(info, indent=4, ensure_ascii=False)
 
 
 class BasePipeline(PipelineInterface):
@@ -165,9 +182,65 @@ class BasePipeline(PipelineInterface):
         """Return the separator for the text postprocessor."""
         pass
 
+    def translate_step(self, states: list[StreamingState], step_outputs: list[TranscribeStepOutput]) -> None:
+        """
+        Translate step
+        Args:
+            states (list[StreamingState]): List of StreamingState objects.
+            step_outputs (list[TranscribeStepOutput]): List of TranscribeStepOutput objects.
+        """
+        states_to_translate = []
+        for i, state in enumerate(states):
+            if state.options.enable_nmt:
+                src_lang = state.options.source_language
+                tgt_lang = state.options.target_language
+                if tgt_lang is None or src_lang is None:
+                    raise ValueError("Source and target languages must be set when NMT is enabled")
+
+                final_transcript = step_outputs[i].final_transcript.strip()
+                partial_transcript = step_outputs[i].partial_transcript.strip()
+                if len(final_transcript) + len(partial_transcript) == 0:
+                    continue
+                states_to_translate.append(i)
+
+        if len(states_to_translate) == 0:
+            return
+
+        src_langs, tgt_langs = [], []
+        asr_transcripts, current_prefixes, previous_translations = [], [], []
+        final_transcript_mask = {i: False for i in states_to_translate}
+        for i in states_to_translate:
+            state, step_output = states[i], step_outputs[i]
+            prev_translation, current_prefix = state.previous_translation_info
+
+            current_prefixes.append(current_prefix)
+            previous_translations.append(prev_translation)
+            src_langs.append(state.options.source_language)
+            tgt_langs.append(state.options.target_language)
+
+            if step_output.final_transcript:
+                final_transcript_mask[i] = True
+                asr_transcripts.append(step_output.final_transcript)
+            else:
+                asr_transcripts.append(step_output.partial_transcript)
+
+        translations = self.nmt_model.translate(asr_transcripts, current_prefixes, src_langs, tgt_langs)
+        new_prefixes = self.nmt_model.get_nmt_prefixes(asr_transcripts, translations, previous_translations)
+        for i, step_output, translation, new_prefix in zip(
+            states_to_translate, step_outputs, translations, new_prefixes
+        ):
+            if final_transcript_mask[i]:
+                step_output.final_translation = translation
+                step_output.partial_translation = ""
+                states[i].cleanup_translation_info_after_eou()
+            else:
+                step_output.partial_translation = translation
+                step_output.final_translation = ""
+                states[i].set_translation_info(translation, new_prefix)
+
     def transcribe_step(self, requests: list[Request]) -> list[TranscribeStepOutput]:
         """
-        Transcribe a step
+        Transcribe step
         Args:
             requests (list[Request]): List of Request objects.
         Returns:
@@ -175,9 +248,11 @@ class BasePipeline(PipelineInterface):
         """
 
         # Initialize the state if it is the first request for the stream
+        states = []
         for request in requests:
             if request.is_first:
                 self.init_state(request.stream_id, request.options)
+            states.append(self.get_state(request.stream_id))
 
         # Perform the transcribe step for the frames or feature buffers
         if isinstance(requests[0], Frame):
@@ -190,17 +265,18 @@ class BasePipeline(PipelineInterface):
         # Create current step output for each request
         outputs = []
         sep = self.get_sep()
-        for request in requests:
-
-            # Extract current step output from the state
-            state = self.get_state(request.stream_id)
+        for request, state in zip(requests, states):
             step_output = TranscribeStepOutput.from_state(state=state, request=request, sep=sep)
             outputs.append(step_output)
 
-            # Cleanup the state after the response is sent
-            state.cleanup_after_response()
+        # Perform the translation step
+        if self.nmt_model is not None:
+            self.translate_step(states=states, step_outputs=outputs)
 
-            # If last request, delete state from the state pool to free memory
+        # Cleanup the states after the response is sent
+        # If last request, delete state from the state pool to free memory
+        for state, request in zip(states, requests):
+            state.cleanup_after_response()
             if request.is_last:
                 self.delete_state(request.stream_id)
         return outputs
@@ -315,6 +391,15 @@ class BasePipeline(PipelineInterface):
             enable_itn=cfg.enable_itn,
         )
 
+    def init_nmt_model(self, nmt_model: LLMTranslator | None) -> None:
+        """
+        Initialize the Translation model.
+        Args:
+            nmt_model: (LLMTranslator | None) LLM based translation model.
+        """
+        self.nmt_model = nmt_model
+        self.nmt_enabled = (nmt_model is not None)
+
     def init_bufferer_for_buffered_streaming(self) -> None:
         """Initialize the bufferer."""
         check_existance_of_required_attributes(
@@ -422,12 +507,15 @@ class BasePipeline(PipelineInterface):
                 if stream_id not in pipeline_output:
                     pipeline_output[stream_id] = {
                         "text": "",
+                        "translation": "",
                         "segments": [],
                         "audio_filepath": request_generator.get_audio_filepath(stream_id),
                     }
 
                 accumulated_text = pipeline_output[stream_id]["text"]
+                accumulated_translation = pipeline_output[stream_id]["translation"]
                 final_transcript = step_output.final_transcript
+                final_translation = step_output.final_translation
                 final_segments = step_output.final_segments
                 if not accumulated_text:
                     final_transcript = final_transcript.lstrip(sep)
@@ -436,7 +524,10 @@ class BasePipeline(PipelineInterface):
                         first_segment.text = first_segment.text.lstrip(sep)
 
                 accumulated_text += final_transcript
+                accumulated_translation = sep.join([accumulated_translation, final_translation]).strip()
                 pipeline_output[stream_id]["text"] = accumulated_text
+                pipeline_output[stream_id]["translation"] = accumulated_translation
                 pipeline_output[stream_id]["segments"].extend(final_segments)
+
         self.close_session()
         return pipeline_output

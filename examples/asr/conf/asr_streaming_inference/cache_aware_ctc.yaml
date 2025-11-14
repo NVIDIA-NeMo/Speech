@@ -22,6 +22,18 @@ itn:
   n_jobs: 16                                    # Number of parallel jobs for ITN processing
 
 
+# ================================
+# Neural Machine Translation Configuration
+# ================================
+nmt:
+  model_name: "utter-project/EuroLLM-1.7B-Instruct"  # vLLM-supported model name
+  source_language: "English"                         # Source language code
+  target_language: "Russian"                         # Target language code
+  max_tokens: 100                                    # Maximum number of tokens to generate with LLM
+  temperature: 0.0                                   # LLM sampling temperature, default for translation is 0 (greedy)
+  waitk: -1                                          # Parameter that controls latency of translation
+
+
 # ========================
 # Confidence estimation
 # ========================
@@ -74,6 +86,7 @@ output_filename: null                         # Path to output transcription JSO
 output_dir: null                              # Directory to save time-aligned output
 enable_pnc: false                             # Whether to apply punctuation & capitalization
 enable_itn: false                             # Whether to apply inverse text normalization
+enable_nmt: false                             # Whether to apply neural machine translation
 asr_output_granularity: segment               # Output granularity: word or segment
 cache_dir: null                               # Directory to store cache (e.g., .far files)
 lang: null                                    # Language code for ASR model

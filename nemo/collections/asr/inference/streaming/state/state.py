@@ -76,6 +76,9 @@ class StreamingState:
         self.concat_with_space = True
         self.final_segments = []
 
+        # Translation attributes
+        self.previous_translation_info = ("", "")
+
         # Word-level ASR output attributes (cleared after cleanup_after_response):
         # - words: Raw word-level ASR output
         # - pnc_words: Words with punctuation and capitalization applied
@@ -223,6 +226,21 @@ class StreamingState:
         """
         self.decoder_start_idx = start_idx
         self.decoder_end_idx = end_idx
+
+    def cleanup_translation_info_after_eou(self) -> None:
+        """
+        Cleanup the translation info after an EOU is detected
+        """
+        self.previous_translation_info = ("", "")
+
+    def set_translation_info(self, translation: str, prefix: str) -> None:
+        """
+        Set the translation info
+        Args:
+            translation: (str) The translation to store in the state
+            prefix: (str) The prefix to store in the state
+        """
+        self.previous_translation_info = (translation, prefix)
 
     def cleanup_after_eou(self) -> None:
         """

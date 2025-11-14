@@ -97,6 +97,7 @@ def dump_output(output: dict, output_filename: str, output_dir: str | None = Non
         for stream_id, data in sorted(output.items(), key=lambda x: x[0]):
             audio_filepath = data["audio_filepath"]
             text = data["text"]
+            translation = data["translation"]
             segments = data["segments"]
             stem = get_stem(audio_filepath)
             stem = os.path.splitext(stem)[0]
@@ -107,7 +108,12 @@ def dump_output(output: dict, output_filename: str, output_dir: str | None = Non
                     json_line = json.dumps(segment.to_dict(), ensure_ascii=False)
                     json_fout.write(f"{json_line}\n")
 
-            item = {"audio_filepath": audio_filepath, "text": text, "json_filepath": json_filepath}
+            item = {
+                "audio_filepath": audio_filepath,
+                "text": text,
+                "translation": translation,
+                "json_filepath": json_filepath,
+            }
             json.dump(item, fout, ensure_ascii=False)
             fout.write('\n')
             fout.flush()

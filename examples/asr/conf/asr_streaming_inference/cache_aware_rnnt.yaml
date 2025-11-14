@@ -4,7 +4,7 @@
 asr:
   model_name: stt_en_fastconformer_hybrid_large_streaming_multi         # Pre-trained CTC/hybrid model from NGC/HuggingFace or local .nemo file path
   device: cuda                                                          # Device for inference: 'cuda' or 'cpu'
-  device_id: 0                                                          # GPU device ID
+  device_id: 1                                                          # GPU device ID
   compute_dtype: bfloat16                                               # Compute precision: 'bfloat16' for Ampere+, 'float16' for older GPUs, or 'float32'               
   use_amp: true                                                         # Enable Automatic Mixed Precision
 
@@ -20,6 +20,18 @@ itn:
   left_padding_size: 4                          # Padding size (#spans) for ITN context
   batch_size: 32                                # Batch size for ITN inference
   n_jobs: 16                                    # Number of parallel jobs for ITN processing
+
+
+# ================================
+# Neural Machine Translation Configuration
+# ================================
+nmt:
+  model_name: "utter-project/EuroLLM-1.7B-Instruct"  # vLLM-supported model name
+  source_language: "English"                         # Source language code
+  target_language: "Russian"                         # Target language code
+  max_tokens: 100                                    # Maximum number of tokens to generate with LLM
+  temperature: 0.0                                   # LLM sampling temperature, default for translation is 0 (greedy)
+  waitk: -1                                          # Parameter that controls latency of translation
 
 
 # ========================
@@ -68,13 +80,14 @@ asr_decoding_type: rnnt                       # Decoding method: ctc or rnnt
 
 
 # ========================
-# Runtime arguments defined at runtime   via command line
+# Runtime arguments defined at runtime via command line
 # ========================
 audio_file: null                              # Path to audio file, directory, or manifest JSON
 output_filename: null                         # Path to output transcription JSON file
 output_dir: null                              # Directory to save time-aligned output
 enable_pnc: false                             # Whether to apply punctuation & capitalization
 enable_itn: false                             # Whether to apply inverse text normalization
+enable_nmt: false                             # Whether to apply neural machine translation
 asr_output_granularity: segment               # Output granularity: word or segment
 cache_dir: null                               # Directory to store cache (e.g., .far files)
 lang: null                                    # Language code for ASR model

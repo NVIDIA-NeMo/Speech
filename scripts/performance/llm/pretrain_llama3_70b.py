@@ -187,6 +187,7 @@ if __name__ == "__main__":
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,
         network='sharp' if use_sharp else None,
+        custom_srun_args=['--task-prolog=${HOME}/NeMo/prolog.sh','--label', '--gres=gpu:4'],
     )
 
     plugins = [

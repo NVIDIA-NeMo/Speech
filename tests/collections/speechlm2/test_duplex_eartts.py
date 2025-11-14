@@ -31,24 +31,18 @@ test_eartts_config = {
         "pretrained_ae_dir": None,
         "pretrained_tts_model": None,
         "scoring_asr": "stt_en_fastconformer_transducer_large",
-
         "freeze_params": [
             r"^audio_codec\..+$",  # Keep audio codec frozen as it only provides supervision for training.
             r"^embed_tokens\..+$",  # Keep embed_tokens frozen as done in eartts
         ],
-
         "prevent_freeze_params": [],
-
         "audio_save_path": "",
-
         "inference_guidance_scale": 0.5,
         "inference_noise_scale": 0.8,
         "inference_top_p_or_k": 0.8,
         "inference_guidance_enabled": False,
-
         "subword_mask_exactly_as_eartts": False,
         "context_hidden_mask_exactly_as_eartts": False,
-
         "optimizer": {
             "_target_": "torch.optim.AdamW",
             "lr": 4e-5,
@@ -56,14 +50,12 @@ test_eartts_config = {
             "weight_decay": 0,
             "foreach": True,
         },
-
         "lr_scheduler": {
             "_target_": "nemo.core.optim.lr_scheduler.InverseSquareRootAnnealing",
             "warmup_steps": 2500,
             "min_lr": 1e-6,
             "max_steps": 100_000_000,
         },
-
         "codec_config": {
             "latent_size": 512,
             "n_fft": 16,
@@ -78,14 +70,12 @@ test_eartts_config = {
             "num_quantizers": 31,
             "wav_to_token_ratio": 1764,
         },
-
         "tts_config": {
             "use_gated_fusion_for_text_audio": True,
             "disable_eos_prediction": True,
             "use_bos_eos_emb": True,
             "use_subword_flag_emb": True,
             "num_delay_speech_tokens": 2,
-
             "backbone_type": "gemma3_text",
             "backbone_model_class": None,
             "backbone_config_class": None,
@@ -99,12 +89,10 @@ test_eartts_config = {
                 "attention_dropout": 0.1,
                 "use_cache": False,
             },
-
             "latent_size": 512,
             "codebook_size": 1024,
             "num_quantizers": 31,
             "context_hidden_size": None,
-
             "cas_config": {
                 "pretrained_tokenizer_name": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
                 "backbone_type": "t5gemma",
@@ -124,7 +112,6 @@ test_eartts_config = {
                     },
                 },
             },
-
             "mog_head_config": {
                 "intermediate_size": 4608,
                 "num_layers": 3,
@@ -133,7 +120,6 @@ test_eartts_config = {
                 "min_log_std": -4.0,
                 "eps": 1e-6,
             },
-
             "p_uncond": 0.1,
             "label_smoothing": 0.01,
             "max_training_rate": 0.8,
@@ -142,7 +128,6 @@ test_eartts_config = {
             "exponent": 3.0,
         },
     },
-
     "trainer": {
         "devices": -1,
         "accelerator": "gpu",
@@ -165,7 +150,6 @@ test_eartts_config = {
             "find_unused_parameters": True,
         },
     },
-
     "data": {
         "add_text_bos_and_eos_in_each_turn": True,
         "add_audio_prompt_after_description": True,
@@ -176,7 +160,6 @@ test_eartts_config = {
         "input_roles": ["user", "User"],
         "output_roles": ["agent", "Assistant", "assistant", "Agent"],
     },
-
     "exp_manager": {
         "exp_dir": None,
         "explicit_log_dir": "",
@@ -323,18 +306,117 @@ def test_eartts_dataset(dataset, training_cutset_batch):
     assert batch["target_texts"] == ["hello okay"]
 
     # Token checks (same content as your old test)
-    assert batch["source_tokens"].tolist() == [[   2,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,
-           12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,
-           12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,
-           12,    2,    1,    2,   12,   12,   12,   12,    1, 1662,    2,   12,
-           12,   12,   12
-        ]]
+    assert batch["source_tokens"].tolist() == [
+        [
+            2,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            2,
+            1,
+            2,
+            12,
+            12,
+            12,
+            12,
+            1,
+            1662,
+            2,
+            12,
+            12,
+            12,
+            12,
+        ]
+    ]
 
-    assert batch["input_text_tokens"].tolist() == [[   2,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,
-           12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,
-           12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,   12,
-           12,    2,   12,   12,   12,   12,    1,    2,   12,   12,    1, 1662,
-         1417,   12,   12]]
+    assert batch["input_text_tokens"].tolist() == [
+        [
+            2,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            2,
+            12,
+            12,
+            12,
+            12,
+            1,
+            2,
+            12,
+            12,
+            1,
+            1662,
+            1417,
+            12,
+            12,
+        ]
+    ]
 
     # Check formatter
     assert batch["formatter"] == ["s2s_duplex"]

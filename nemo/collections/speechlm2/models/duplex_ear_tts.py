@@ -1229,7 +1229,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     ):
                         if not os.path.isfile(inference_speaker_reference):
                             continue
-                        print("Generating sample for speaker refernce:", inference_speaker_reference)
+
                         new_dataset_batch = copy.deepcopy(dataset_batch)
                         # Get only the file name
                         ref_name = os.path.basename(inference_speaker_reference)
@@ -1243,6 +1243,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                         new_dataset_batch["speaker_reference_audio"] = speaker_audio
                         new_dataset_batch["speaker_reference_audio_lens"] = speaker_audio_lens
                         self.run_evaluation_one_batch(name, new_dataset_batch, use_dataloader_init=False)
+
                 # run inference for a custom speaker reference
                 elif self.cfg.get("inference_speaker_reference", None):
                     new_dataset_batch = copy.deepcopy(dataset_batch)
@@ -1254,6 +1255,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     new_dataset_batch["speaker_reference_audio"] = speaker_audio
                     new_dataset_batch["speaker_reference_audio_lens"] = speaker_audio_lens
                     self.run_evaluation_one_batch(name, new_dataset_batch, use_dataloader_init=False)
+
                 # run inference using dataloader speaker references
                 else:
                     self.run_evaluation_one_batch(name, dataset_batch, use_dataloader_init=False)
@@ -1355,7 +1357,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         with fp32_precision():
             prompt_audio_text_pad_size = int(prompt_audio_size // self.target_samples_per_frame)
 
-        # get description tokens
+        # get description tokens 
+        # ToDo: Consider remove the prompt description, given that NanoV2 does not support it and curently it is only a single eos text token
         desc_tokens_ids = self.get_system_prompt(system_prompt=system_prompt, user_prompt=user_prompt)
 
         # create a padding tensor
@@ -1491,30 +1494,122 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         return init_inputs
 
     @torch.no_grad()
+    def infer_codes_one_step(self, current_subword_id, prev_subword_id, current_subword_mask, prev_audio_tokens, past_key_values, guidance_enabled=True, generation_config=None, ignore_eos_flag_stop=True):
+
+        if self.cfg.tts_config.context_hidden_size is not None:
+            # get context_hidden_state it is always one step behind current_subword_id
+            # for the first step uses the last step from warmup
+            context_hidden_state = self.embed_tokens(prev_subword_id)
+        else:
+            context_hidden_state = None
+
+        # force silence as next token
+        if self.cfg.get('inference_force_speech_silence_on_eos', True):
+            silence_codes = self.codec_silence_tokens.view(1, 1, -1).expand(prev_audio_tokens.shape)
+            prev_audio_tokens = torch.where(
+                current_subword_id.unsqueeze(-1) == self.text_eos_id,
+                silence_codes,  # silence
+                prev_audio_tokens,  # keep original
+            )
+
+        # get subword_ids
+        inputs = {
+            "code": prev_audio_tokens,
+            "context_hidden_state": context_hidden_state,
+            "subword_ids": current_subword_id,
+            "subword_mask": current_subword_mask,
+            "past_key_values": past_key_values,
+            "use_cache": True,
+            "guidance_enabled": guidance_enabled,
+            "generation_config": generation_config,
+            "ignore_eos_flag_stop": ignore_eos_flag_stop,
+        }
+
+        outputs = self.tts_model(**inputs)
+
+        return outputs["codes"], outputs["past_key_values"]
+
+    @torch.no_grad()
+    def decode_one_audio_step(self, gen_audio_codes_history, number_prev_tokens=None):
+        with fp32_precision(), torch.no_grad():
+            if number_prev_tokens:
+                gen_audio_codes_history = gen_audio_codes_history[:, -number_prev_tokens:]
+    
+            gen_audio_codes_history = replace_control_speech_codes(gen_audio_codes_history, self._control_codes, self.codec_silence_tokens)
+            gen_audio_codes_lens = torch.tensor([gen_audio_codes_history.size(1)]*gen_audio_codes_history.size(0), device=self.device)
+            audio_pred, audio_len = self.audio_codec.decode(gen_audio_codes_history, gen_audio_codes_lens)
+
+        # return only the current/lastest audio chunk
+        audio_pred_cur_step = audio_pred.squeeze(1)[:, -self.audio_codec.config.wav_to_token_ratio:]
+        audio_len[:] = self.audio_codec.config.wav_to_token_ratio
+        return audio_pred_cur_step, audio_len
+
+
+    @torch.no_grad()
     def offline_inference(
         self,
         next_subword_ids: torch.Tensor,
+        init_inputs: dict,
         formatter: str = "",
         guidance_enabled: bool = True,
         generation_config: dict = None,
-        init_inputs: dict = None,
+        incremental_audio_decoding: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
-        Autoregressive prediction.
+        Runs offline autoregressive inference for the Duplex EAR-TTS speech decoder.
+
+        This method performs **text-to-speech (TTS)** generation: given subword/text
+        tokens and prompt-initialization states, it autoregressively generates
+        audio codec tokens and decodes them into a waveform.
 
         Args:
-            input_signal: a batch of waveforms with shape (B, T) with source sampling rate.
-            input_signal_lens: example lengths as number of samples of shape (B,).
-            decode_audio: bool, whether to decode audio codes to waveform.
+            next_subword_ids (torch.Tensor):
+                Conditioning subword/text token IDs for the speech decoder.
+                Shape: (B, T_text).
+
+            init_inputs (dict):
+                Dictionary of prompt-dependent initial states produced by
+                ``get_init_inputs()``. May include:
+
+                    • "code"                 — initial audio tokens (e.g., prompt audio)  
+                    • "audio_mask"           — mask for prompt audio positions  
+                    • "context_hidden_state" — decoder hidden state at t = 0  
+                    • "subword_ids"          — prompt text tokens  
+                    • "subword_mask"         — mask for prompt text  
+                    • "non_prompt_mask"      — mask marking positions to be generated  
+
+                ``get_init_inputs()`` automatically expands batch-1 buffers to
+                batch size B.
+
+            formatter (str, optional):
+                Optional formatter identifier used to customize the prompt structure.
+
+            guidance_enabled (bool, optional):
+                Whether classifier-free guidance (CFG) is enabled.
+                If enabled and ``generation_config`` is ``None``, guidance parameters
+                are taken from ``_get_generation_config()``.
+
+            generation_config (dict, optional):
+                Settings controlling autoregressive generation, including sampling
+                strategy, noise scale, refinement iterations, and EOS rules.
+                If ``None``, defaults are taken from
+                ``_get_generation_config(guidance_enabled)``.
+
+            incremental_audio_decoding (bool, optional):
+                If True, codec-to-waveform decoding is performed incrementally during
+                autoregressive generation.  
+                If False, waveform decoding occurs only after all audio tokens are produced.
 
         Returns:
-            A dict with keys:
-                * "text": generated text, de-tokenized to strings, properly skipping text_pad_id; list of length B.
-                * "tokens_text": generated text tokens of shape (B, T2).
-                * "tokens_audio": generated audio codes of shape (B, T2, K) where `K=num_codebooks`.
-                * "tokens_len" output lengths as number of tokens of shape (B,).
-                * "audio": generated waveform of shape (B, T3) (`decode_audio=True`).
-                * "audio_len" output lengths as number of waveform samples of shape (B,) (when `decode_audio=True`).
+            dict[str, torch.Tensor]:
+                Contains:
+
+                • **"audio"**:  
+                Generated waveform of shape ``(B, T_audio)``, obtained via
+                ``audio_pred.squeeze(1)``.
+
+                • **"audio_len"**:  
+                Length of each generated waveform in samples, shape ``(B,)``.
         """
         B = next_subword_ids.size(0)
 
@@ -1541,71 +1636,53 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         gen_audio_codes = torch.zeros(
             B, max_steps, self.tts_model.config.num_quantizers, device=self.device, dtype=torch.long
         )
-
+        
         # init subwork as all ones
         subword_mask = torch.ones(B, max_steps, device=self.device, dtype=torch.bool)
         # get first context subword_id, that is the last subword_ids from the warmup
         first_context_subword_id = init_inputs["subword_ids"][:, -1].unsqueeze(-1)
 
-        for i in range(max_steps - 1):
+        # initialize variables used to save the output audio
+        audio_pred = None
+        audio_pred_len = torch.zeros(B, device=self.device, dtype=torch.long)
+
+        for i in range(max_steps):
             step_start = time.time()
             # current subword id is always seem
             current_subword_id = next_subword_ids[:, i].unsqueeze(-1)
-
-            if self.cfg.tts_config.context_hidden_size is not None:
-                # get context_hidden_state it is always one step behind current_subword_id
-                # for the first step uses the last step from warmup
-                if i == 0:
-                    context_subword_id = first_context_subword_id
-                else:
-                    context_subword_id = next_subword_ids[:, i - 1].unsqueeze(-1)
-
-                context_hidden_state = self.embed_tokens(context_subword_id)
+    
+            if i == 0:
+                prev_subword_id = first_context_subword_id
             else:
-                context_hidden_state = None
+                prev_subword_id = next_subword_ids[:, i - 1].unsqueeze(-1)
 
             # create subword_mask
             current_subword_mask = subword_mask[:, i].unsqueeze(-1)
 
-            # get subword_ids
-            inputs = {
-                "code": code,
-                "context_hidden_state": context_hidden_state,
-                "subword_ids": current_subword_id,
-                "subword_mask": current_subword_mask,
-                "past_key_values": past_key_values,
-                "use_cache": True,
-                "guidance_enabled": guidance_enabled,
-                "generation_config": generation_config,
-                "ignore_eos_flag_stop": True,
-            }
+            code, past_key_values = self.infer_codes_one_step(current_subword_id=current_subword_id, prev_subword_id=prev_subword_id, current_subword_mask=current_subword_mask, prev_audio_tokens=code, past_key_values=past_key_values, guidance_enabled=guidance_enabled, generation_config=generation_config, ignore_eos_flag_stop=True)
 
-            outputs = self.tts_model(**inputs)
+            # cache audio tokens
+            gen_audio_codes[:, i] = code.squeeze(1)
 
-            code = outputs["codes"]
-            past_key_values = outputs["past_key_values"]
-            # ToDo: check why it is -1
-            gen_audio_codes[:, i - 1] = code.squeeze(1)
-
-            # force silence as next token
-            if self.cfg.get('inference_force_speech_silence_on_eos', True):
-                silence_codes = self.codec_silence_tokens.view(1, 1, -1).expand(code.shape)
-                code = torch.where(
-                    current_subword_id.unsqueeze(-1) == self.text_eos_id,
-                    silence_codes,  # silence
-                    code,  # keep original
-                )
-
+            if incremental_audio_decoding:
+                audio_pred_i, audio_pred_i_len = self.decode_one_audio_step(gen_audio_codes[:, :i+1], number_prev_tokens=self.cfg.get("inference_codec_decoding_prev_tokens_number", None))
+                if audio_pred is None:
+                    audio_pred = audio_pred_i
+                else:
+                    audio_pred = torch.cat([audio_pred, audio_pred_i], dim=1)
+                audio_pred_len += audio_pred_i_len 
+    
             step_time = time.time() - step_start
             logging.info(f"Autoregressive inference step: {i} of {max_steps} take around {step_time}s")
 
-        gen_audio_codes_lens = torch.tensor([gen_audio_codes.shape[1]] * gen_audio_codes.shape[0]).to(self.device)
-        # decode audio. Note that it is not necessary because the prompt is removed, so no special token should be on the output, but lets do it for safety
-        gen_audio_codes = replace_control_speech_codes(gen_audio_codes, self._control_codes, self.codec_silence_tokens)
-        with fp32_precision(), torch.no_grad():
-            audio_pred, audio_len = self.audio_codec.decode(gen_audio_codes, gen_audio_codes_lens)
+        if not incremental_audio_decoding:
+            gen_audio_codes_lens = torch.tensor([gen_audio_codes.shape[1]] * gen_audio_codes.shape[0]).to(self.device)
+            # decode audio. Note that it is not necessary because the prompt is removed, so no special token should be on the output, but lets do it for safety
+            gen_audio_codes = replace_control_speech_codes(gen_audio_codes, self._control_codes, self.codec_silence_tokens)
+            with fp32_precision(), torch.no_grad():
+                audio_pred, audio_pred_len = self.audio_codec.decode(gen_audio_codes, gen_audio_codes_lens)
 
-        return audio_pred.squeeze(1), audio_len
+        return audio_pred.squeeze(1), audio_pred_len
 
     def backward(self, *args, **kwargs):
         with loss_parallel():

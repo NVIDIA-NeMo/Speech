@@ -443,6 +443,7 @@ def test_eartts_validation_step(model, dataset, training_cutset_batch):
 
 
 def test_eartts_offline_generation(model):
+    model.eval()
     # generate random subword_ids
     subword_ids = torch.ones(2, 10).long()
 
@@ -452,10 +453,33 @@ def test_eartts_offline_generation(model):
         speaker_audio_lens=torch.tensor([22050]),
     )
     init_inputs = model.get_init_inputs(B=subword_ids.size(0))
-    model.eval()
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+
     gen_audio, gen_audio_len = model.offline_inference(
         next_subword_ids=subword_ids,
         init_inputs=init_inputs,
+    )
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+
+    gen_audio_inc, gen_audio_len_inc = model.offline_inference(
+        next_subword_ids=subword_ids,
+        init_inputs=init_inputs,
+        incremental_audio_decoding=True
+    )
+
+    assert torch.equal(gen_audio_len, gen_audio_len_inc), \
+       "Audio lengths differ between incremental and non-incremental decoding."
+
+    # compare waveform
+    torch.testing.assert_close(
+        gen_audio,
+        gen_audio_inc,
+        atol=1e-1, 
+        rtol=0,
     )
 
     assert gen_audio.shape == (2, 17640)

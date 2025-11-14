@@ -297,6 +297,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         desc_plus_audio_prompt_lens = []
         # for each sample in the batch
         for i in range(input_text_tokens.size(0)):
+            # ToDo: Consider remove the prompt description, given that NanoV2 does not support it and curently it is only a single eos text token
             desc_tokens_ids = self.generate_prompt_description(device=input_text_tokens[i].device).squeeze(0)
             if self.add_audio_prompt_after_description:
                 prompt_audio_size = int(

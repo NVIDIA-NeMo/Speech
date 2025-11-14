@@ -491,7 +491,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self._use_fsdp = False
         self._use_tp = False
         if self.cfg.get("pretrained_model", None):
-            self.init_model_from_another_checkpoint(self.cfg.pretrained_model)
+            self.restore_from_pretrained_checkpoint(self.cfg.pretrained_model)
 
     def get_codec_silence_frame_last_one(self):
         audio = torch.zeros(1, 10 * self.target_sample_rate).float().to(self.device)
@@ -564,9 +564,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             language_model = None
         return language_model
 
-    def init_model_from_another_checkpoint(self, checkpoint_path):
+    def restore_from_pretrained_checkpoint(self, checkpoint_path):
         """
-        Loads model weights and config from another checkpoint file, supporting .nemo and PyTorch formats.
+        Loads model weights a pretrained checkpoint file, supporting partial loading from .nemo and PyTorch formats.
 
         Args:
             checkpoint_path (str): Path to checkpoint file.

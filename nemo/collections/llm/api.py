@@ -471,6 +471,7 @@ def ptq(
     export_config: ExportConfig,
     calibration_tp: int = 1,
     calibration_pp: int = 1,
+    calibration_ep: int = 1,
     num_layers_in_first_pipeline_stage: int | None = None,
     num_layers_in_last_pipeline_stage: int | None = None,
     devices: int | None = None,
@@ -484,8 +485,8 @@ def ptq(
     """
     Applies Post-Training Quantization (PTQ) for a model using the specified quantization and export configs. It runs
     calibration for a small dataset to collect scaling factors low-precision GEMMs used by desired quantization method.
-    By default, this function produces TensorRT-LLM checkpoint ready for deployment using nemo.export and nemo.deploy
-    modules or direcly using TensorRT-LLM library.
+    By default, this function produces TensorRT-LLM checkpoint ready for deployment using the Export-Deploy repository
+    (https://github.com/NVIDIA-NeMo/Export-Deploy) or directly using TensorRT-LLM library.
 
     The function can be used through the NeMo CLI in the following way:
     ```bash
@@ -558,6 +559,7 @@ def ptq(
             pipeline_model_parallel_size=calibration_pp,
             num_layers_in_first_pipeline_stage=num_layers_in_first_pipeline_stage,
             num_layers_in_last_pipeline_stage=num_layers_in_last_pipeline_stage,
+            expert_model_parallel_size=calibration_ep,
             devices=devices,
             num_nodes=num_nodes,
             inference_only=True,

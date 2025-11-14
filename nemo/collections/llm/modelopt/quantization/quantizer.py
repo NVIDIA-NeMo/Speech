@@ -113,7 +113,8 @@ class Quantizer:
         3. Producing an output directory with a quantized checkpoint and a tokenizer
 
     By default, the output directory produced is intended to be consumed by TensorRT-LLM toolbox
-    for efficient inference. This can be achieved using nemo.export.tensorrt_llm module.
+    for efficient inference. This can be achieved using the Export-Deploy repository
+    (https://github.com/NVIDIA-NeMo/Export-Deploy).
     This can be changed to export a standard NeMo 2.0 checkpoint instead using `ExportConfig`.
     """
 
@@ -401,8 +402,7 @@ class Quantizer:
             ):
                 model.tokenizer.tokenizer.save_pretrained(str(export_dir))
             else:
-                # Save the model context in order to restore its tokenizer later. The destination
-                # path is "nemo_context" as this name is used in nemo.export to setup tokenizer.
+                # Save the model context in order to restore its tokenizer later.
                 shutil.copytree(
                     ckpt_to_context_subdir(model_dir), os.path.join(export_dir, "nemo_context"), dirs_exist_ok=True
                 )

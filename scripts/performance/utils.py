@@ -44,7 +44,7 @@ def hf_tokenizer(model_name: str) -> run.Config[AutoTokenizer]:
         f"`AutoTokenizer` first searches for tokenizer files locally stored in {DEFAULT_NEMO_HOME}.",
         "(from env var `NEMO_HOME`- can be changed using '-nh/--nemo_home' CLI arg).",
         "If files are missing locally, `AutoTokenizer` will try downloading from HuggingFace. In this case-",
-        "make sure env vars 'TRANSFORMERS_OFFLINE':'0' and 'HF_TOKEN':'<token_value>' are set in your sbatch script.",
+        "make sure env vars 'HF_HUB_OFFLINE':'0' and 'HF_TOKEN':'<token_value>' are set in your sbatch script.",
         "Both of these will be set automatically if you provide '-hf/--hf_token' CLI arg.",
     ]
     logging.warning(" ".join(log_msg))

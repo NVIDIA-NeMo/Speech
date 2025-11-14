@@ -1,9 +1,9 @@
 # This is an example config for setting up nemotron_nano_v2 model for a NeMo Voice Agent server.
 # Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
 
-type: auto  # choices in ['auto', 'hf', 'vllm']
+# type: auto  # choices in ['auto', 'hf', 'vllm']
+# model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
 dtype: bfloat16  # torch.dtype for LLM
-model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
 device: "cuda"
 system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
 system_prompt_suffix: "/no_think"  # a string that would be appended to the system prompt, used to enable/disable thinking

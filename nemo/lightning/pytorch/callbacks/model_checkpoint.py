@@ -709,7 +709,13 @@ class ModelCheckpoint(PTLModelCheckpoint):
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
         try:
             if self.async_save:
-                threading.Thread(target=super()._remove_checkpoint, args=(trainer, filepath,)).start()
+                threading.Thread(
+                    target=super()._remove_checkpoint,
+                    args=(
+                        trainer,
+                        filepath,
+                    ),
+                ).start()
             else:
                 super()._remove_checkpoint(trainer, filepath)
         except Exception as e:
@@ -723,7 +729,13 @@ class ModelCheckpoint(PTLModelCheckpoint):
             filepath = self._ema_format_filepath(filepath)
             try:
                 if self.async_save:
-                    threading.Thread(target=super()._remove_checkpoint, args=(trainer, filepath,)).start()
+                    threading.Thread(
+                        target=super()._remove_checkpoint,
+                        args=(
+                            trainer,
+                            filepath,
+                        ),
+                    ).start()
                 else:
                     super()._remove_checkpoint(trainer, filepath)
             except Exception as e:

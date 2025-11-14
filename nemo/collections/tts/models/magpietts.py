@@ -2961,9 +2961,9 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         self.true_window_size = true_window_size
         # Parameters for maintaining history
         self.history_text = (
-            None  # Maintains the history of text tokens the model processes to generate audio in the current step
+            None  # Maintains the history of text tokens the model looks at to generate audio in the current step
         )
-        self.history_context_tensor = None  # Maintains the history of text encoder output the model processes to generate audio in the current step
+        self.history_context_tensor = None  # Maintains the history of text encoder output the model looks at to generate audio in the current step
         num_audio_codebooks = (
             self.cfg.num_audio_codebooks if "num_audio_codebooks" in self.cfg else self.num_audio_codebooks
         )
@@ -2985,13 +2985,20 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         ]  # Maintain a list of count of attended timesteps as we predict audio for each batch item
         self.unfinished_texts = (
             {}
-        )  # Maintains the unfinished texts i.e. all of the text tokens have not been provided to the model yet
+        )  # Maintains the unfinished texts .i.e. all of the text tokens have not been provided to the model yet
         self.finished_texts_counter = {}
         self.end_indices = {}
         self.attended_timestep_mapping = {}
         self.decoder_start_idx = 0
         self.encoder_start_idx = 0
+        
+        # Track current text position for shifting
+        if not hasattr(self, 'current_text_position'):
+            self.current_text_position = 0
+        self.text_window_start_idx = 0
+        self.previous_attn_len = 0
         self.encoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
+        self.decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
 
     def construct_streaming_inference_prior(
         self,
@@ -3465,7 +3472,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         batch,
         end_of_text,
         beginning_of_text,
-        max_decoder_steps=500,
+        max_decoder_steps=2000,
         temperature=0.7,
         topk=80,
         use_cfg=True,
@@ -3480,7 +3487,6 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         return_cross_attn_probs=False,
         use_exponential_weight=False,
         eos_detection_method="argmax_or_multinomial_any",
-        max_decoder_steps_in_each_session=300,
     ):
         """
         Generates speech for long-form text by progressively shifting through text tokens.
@@ -3507,8 +3513,6 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
             compute_all_heads_attn_maps (bool): Whether to compute all attention head maps.
             return_cross_attn_probs (bool): Whether to return cross-attention probabilities.
             use_exponential_weight (bool): Whether to use exponential weighting in prior.
-            max_decoder_steps_in_each_session (int): Number of audio tokens to generate before
-                shifting text by one token. Controls granularity of text-audio alignment.
         
         Returns:
             tuple: (predicted_codes, predicted_codes_lens) or 
@@ -3518,13 +3522,8 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         eos_detection_method = EOSDetectionMethod(eos_detection_method)
         device = batch['text'].device
         with torch.no_grad():
-            self.audio_codes_input = self.audio_codes_input.to(device) # Already produced from previous iterations
-            self.audio_codes_lens = self.audio_codes_lens.to(device)
             current_chunk_len = batch['text_lens']  # Length of the current chunk of text
             batch_size = batch["text"].size(0)
-            
-            # Track audio tokens generated in current session
-            audio_tokens_in_current_session = 0
 
             # Next section is for processing text through encoder.
             current_text = (
@@ -3532,10 +3531,12 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                 if self.history_text is not None
                 else batch["text"]
             )
+
+            # Set true window size of text tokens
             history_len = min(current_chunk_len, 20)
-            self.true_window_size = current_chunk_len + history_len
+            true_window_size = current_chunk_len + history_len
             if not beginning_of_text:
-                current_text = current_text[:, max(0, current_text.shape[1] - self.true_window_size) :]
+                current_text = current_text[:, max(0, current_text.shape[1] - true_window_size) :]
             current_text_lens = current_text.shape[1]
             self.history_text = current_text
             batch['text'] = current_text
@@ -3543,21 +3544,18 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
             context_tensors = self.prepare_context_tensors(batch)
 
             # Update text encoder output based on the window size
-            # print(f"beginning_of_text {beginning_of_text}")
             if not beginning_of_text:
                 context_tensors['cond'][:, :-current_chunk_len] = self.history_context_tensor[
                     :, -(context_tensors['cond'].size(1) - current_chunk_len) :
                 ]
             self.history_context_tensor = context_tensors['cond']
             # text tokens that have been slid.
-            # Sliding window for Audio codes - keeping the history
-            temp_start_idx = self.text_window_start_idx - self.num_text_tokens_slid_in_current_session
-            audio_codes_to_shift = sum([self.audio_tokens_per_text_token[i] for i in range(temp_start_idx, self.text_window_start_idx+1) if i in self.audio_tokens_per_text_token])
-            self.audio_codes_input = torch.full(
-                (1, self.num_audio_codebooks, 1), self.audio_bos_id
+
+            audio_codes_input = torch.full(
+                (batch_size, self.num_audio_codebooks, 1), self.audio_bos_id
             ).long().to(device)
-            self.audio_codes_lens = torch.full((1,), self.audio_codes_input.size(2), device=device).long()
-            audio_codes_mask = get_mask_from_lengths(self.audio_codes_lens)
+            audio_codes_lens = torch.full((batch_size,), audio_codes_input.size(2), device=device).long().to(device)
+            audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
 
             if use_cfg:
                 dummy_cond, dummy_cond_mask, dummy_additional_decoder_input, dummy_addition_dec_mask, _ = (
@@ -3569,25 +3567,19 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                     )
                 )
 
-            if self.history_attn_prior is not None:
-                print(f"111 self.history_attn_prior {self.history_attn_prior.shape}")
-                print(f"111 self.history_attn_prior {self.history_attn_prior[0]}")
+            _attn_prior = None
+            if self.previous_attn_len > 0:
                 # First case of infinite history .i.e. no window
-                if self.true_window_size > 1000:
-                    if self.history_attn_prior.size(2) < current_text_lens:
-                        right_side = (
-                            torch.zeros(
-                                self.history_attn_prior.size(0), 1, current_text_lens - self.history_attn_prior.size(2)
-                            ).to(device)
-                            + prior_epsilon
+                if true_window_size > 10000:
+                    if self.previous_attn_len < current_text_lens:
+                        # Dummy path -- Never gonna hit because true_window_size will always be less than 10000
+                        _attn_prior = (
+                            torch.zeros(batch_size * 2, 1, current_text_lens).to(device) + prior_epsilon
                         )
-                        self.history_attn_prior = torch.cat([self.history_attn_prior, right_side], dim=2)
                 else:
-                    first_08_idx = (self.history_attn_prior[0] == 0.2).nonzero(as_tuple=True)[1][0].item() if (self.history_attn_prior[0] == 0.2).any() else -1
-                    print(f"...111 first_08_idx {first_08_idx}")
                     # As we move the window, we need to discard the left side of the history, this logic is to do that.
-                    _tmp_attn_prior = (
-                        torch.zeros(self.history_attn_prior.size(0), 1, current_text_lens).to(device) + prior_epsilon
+                    _attn_prior = (
+                        torch.zeros(batch_size * 2, 1, current_text_lens).to(device) + prior_epsilon
                     )
                     # New text chunk added to the right side of the history = delta_in_len_after_chunk
                     delta_in_len_after_chunk = current_chunk_len
@@ -3595,7 +3587,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         delta_in_len_after_chunk = delta_in_len_after_chunk.item()
                     # len_to_be_deleted_from_left = (history_attn_prior.size(2) + new chunk len) - current text len to be processed
                     len_to_be_deleted_from_left = (
-                        self.history_attn_prior.size(2) + delta_in_len_after_chunk - current_text_lens
+                        self.previous_attn_len + delta_in_len_after_chunk - current_text_lens
                     )
                     if not isinstance(len_to_be_deleted_from_left, int):
                         len_to_be_deleted_from_left = len_to_be_deleted_from_left.item()
@@ -3603,34 +3595,22 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                     self.left_offset += len_to_be_deleted_from_left
                     if not isinstance(self.left_offset, int):
                         self.left_offset = self.left_offset.item()
-                    # Use the history attn prior that has been used to generate the audio in the last step
-                    _tmp_attn_prior[:, :, :-delta_in_len_after_chunk] = self.history_attn_prior[
-                        :, :, len_to_be_deleted_from_left:
-                    ]
 
-                    _tmp_attn_prior[:, :, :-current_chunk_len] = prior_epsilon * prior_epsilon
-                    # _tmp_attn_prior[:, :, -current_chunk_len - 3] = prior_epsilon * prior_epsilon * prior_epsilon * prior_epsilon
-                    # _tmp_attn_prior[:, :, -current_chunk_len - 2] = prior_epsilon 
-                    # _tmp_attn_prior[:, :, -current_chunk_len - 1] = 0.1 # prior_epsilon * prior_epsilon * prior_epsilon * prior_epsilon * prior_epsilon
-                    _tmp_attn_prior[:, :, -current_chunk_len] = 1.0
-                    _tmp_attn_prior[:, :, -current_chunk_len + 1] = 1.0
-                    _tmp_attn_prior[:, :, -current_chunk_len + 2] = 0.8
-                    _tmp_attn_prior[:, :, -current_chunk_len + 3] = 0.4
-                    _tmp_attn_prior[:, :, -current_chunk_len + 4] = 0.2
+                    # Reconstructing the attention prior for the new chunk
+                    _attn_prior[:, :, :-current_chunk_len] = prior_epsilon * prior_epsilon
+                    _attn_prior[:, :, -current_chunk_len] = 1.0
+                    _attn_prior[:, :, -current_chunk_len + 1] = 1.0
+                    _attn_prior[:, :, -current_chunk_len + 2] = 0.8
+                    _attn_prior[:, :, -current_chunk_len + 3] = 0.4
+                    _attn_prior[:, :, -current_chunk_len + 4] = 0.2
                     
-                    self.history_attn_prior = _tmp_attn_prior
-                    # self.history_attn_prior = self.history_attn_prior[:, :, :-1]
-
-
-            num_audio_tokens_to_predict = max_decoder_steps - self.overall_idx
 
             cross_attention_scores_all_timesteps = []
             all_heads_cross_attn_scores_all_timesteps = []
             all_predictions = []
-            num_text_tokens_slid_in_current_session = 0
 
-            for idx in range(num_audio_tokens_to_predict):
-                audio_codes_embedded = self.embed_audio_tokens(self.audio_codes_input)
+            for idx in range(max_decoder_steps):
+                audio_codes_embedded = self.embed_audio_tokens(audio_codes_input)
                 if context_tensors['additional_decoder_input'] is not None:
                     _audio_codes_embedded = torch.cat(
                         [context_tensors['additional_decoder_input'], audio_codes_embedded], dim=1
@@ -3645,9 +3625,9 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                 if apply_prior_to_layers is not None:
                     attn_prior = [None for _ in range(self.cfg.decoder.n_layers)]
                     for layer_idx in apply_prior_to_layers:
-                        attn_prior[layer_idx] = self.history_attn_prior
+                        attn_prior[layer_idx] = _attn_prior
                 else:
-                    attn_prior = self.history_attn_prior
+                    attn_prior = _attn_prior
 
                 if self.model_type == 'multi_encoder_context_tts':
                     attn_prior = [attn_prior, None]
@@ -3731,7 +3711,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                     )
 
                     (
-                        self.history_attn_prior,
+                        _attn_prior,
                         self.unfinished_texts,
                         self.finished_texts_counter,
                         chunk_end_has_reached,
@@ -3750,6 +3730,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         left_offset=self.left_offset,
                         use_exponential=use_exponential_weight,
                     )
+                    self.previous_attn_len = _attn_prior.shape[2]
 
                 for key in self.finished_texts_counter:
                     self.finished_texts_counter[key] += 1
@@ -3778,12 +3759,6 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                     finished_items=finished_items,
                 )  # (B, num_codebooks)
 
-                # TODO(sugh) Check conversion of text_time_step_attended
-                # Track audio tokens per text token
-                if text_time_step_attended[-1] not in self.audio_tokens_per_text_token:
-                    self.audio_tokens_per_text_token[text_time_step_attended[-1]] = 0
-                self.audio_tokens_per_text_token[text_time_step_attended[-1]] += 1
-
                 for item_idx in range(batch_size):
                     if item_idx not in self.end_indices:
                         end_frame_index = self.detect_eos(
@@ -3799,9 +3774,9 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
 
                 all_predictions.append(audio_codes_next)
 
-                self.audio_codes_input = torch.cat([self.audio_codes_input, audio_codes_next], dim=-1)  # (B, C, T')
-                self.audio_codes_lens = self.audio_codes_lens + 1
-                audio_codes_mask = get_mask_from_lengths(self.audio_codes_lens)
+                audio_codes_input = torch.cat([audio_codes_input, audio_codes_next], dim=-1)  # (B, C, T')
+                audio_codes_lens = audio_codes_lens + 1
+                audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
                 
                 if len(self.end_indices) == batch_size:
                     print("All ends reached")
@@ -3811,44 +3786,10 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                     break
 
                 self.overall_idx += 1
-                audio_tokens_in_current_session += 1
-
-                # Check if we need to shift text by 1 token
-                if audio_tokens_in_current_session >= max_decoder_steps_in_each_session and current_text_lens > 1:
-                    shift_by = 1
-                    logging.info(
-                        f"Shifting text by 1 token at audio timestep {self.overall_idx}, "
-                        f"current_text_position: {self.current_text_position}"
-                    )
-                    self.history_text = self.history_text[:, shift_by:]
-                    context_tensors['cond'] = context_tensors['cond'][:, shift_by:]
-                    context_tensors['cond_mask'] = context_tensors['cond_mask'][:, shift_by:]
-                    self.history_context_tensor = self.history_context_tensor[:, shift_by:]
-                    context_tensors['text_lens'] = context_tensors['text_lens'] - shift_by
-                    dummy_cond = dummy_cond[:, shift_by:]
-                    dummy_cond_mask = dummy_cond_mask[:, shift_by:]
-                    
-                    # Shift history_attn_prior by 1
-                    if self.history_attn_prior is not None:
-                        self.history_attn_prior = self.history_attn_prior[:, :, shift_by:]
-
-                    # Shift audio codes self.audio_codes_input by the corresponding tokens.
-                    audio_codes_to_shift = self.audio_tokens_per_text_token.get(self.text_window_start_idx, 0)
-                    # Reset session counter
-                    audio_tokens_in_current_session -= audio_codes_to_shift
-                    # audio_codes_to_shift = self.audio_tokens_per_text_token[self.text_window_start_idx] if self.text_window_start_idx in self.audio_tokens_per_text_token else 0
-                    self.audio_codes_input = self.audio_codes_input[:, :, audio_codes_to_shift:]
-                    self.audio_codes_lens = self.audio_codes_lens - audio_codes_to_shift
-                    audio_codes_mask = get_mask_from_lengths(self.audio_codes_lens)
-                    self.text_window_start_idx += shift_by
-                    self.left_offset += shift_by
-                    num_text_tokens_slid_in_current_session += shift_by
 
             predicted_codes = torch.stack(all_predictions, dim=-1)
             predicted_codes = predicted_codes.squeeze(2)
             predicted_codes_lens = [predicted_codes.size(2)]
-
-            self.num_text_tokens_slid_in_current_session = num_text_tokens_slid_in_current_session
             
             torch.cuda.empty_cache()
             

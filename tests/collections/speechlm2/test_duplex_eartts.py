@@ -466,19 +466,18 @@ def test_eartts_offline_generation(model):
         torch.cuda.manual_seed_all(42)
 
     gen_audio_inc, gen_audio_len_inc = model.offline_inference(
-        next_subword_ids=subword_ids,
-        init_inputs=init_inputs,
-        incremental_audio_decoding=True
+        next_subword_ids=subword_ids, init_inputs=init_inputs, incremental_audio_decoding=True
     )
 
-    assert torch.equal(gen_audio_len, gen_audio_len_inc), \
-       "Audio lengths differ between incremental and non-incremental decoding."
+    assert torch.equal(
+        gen_audio_len, gen_audio_len_inc
+    ), "Audio lengths differ between incremental and non-incremental decoding."
 
     # compare waveform
     torch.testing.assert_close(
         gen_audio,
         gen_audio_inc,
-        atol=1e-1, 
+        atol=1e-1,
         rtol=0,
     )
 

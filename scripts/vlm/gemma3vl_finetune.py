@@ -84,7 +84,6 @@ def main(args):
             raise ValueError("data_dir is required for energon data type.")
         # Initialize the data module
         use_packed_sequence = False
-        hf_processor = Gemma3Processor.from_pretrained(args.hf_model_id)
         data = EnergonMultiModalDataModule(
             path=args.data_dir,
             tokenizer=tokenizer,

@@ -1,9 +1,6 @@
 """Export Gemma3VL NeMo checkpoints to Hugging Face format."""
 
 import argparse
-import importlib
-import os
-import sys
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download
@@ -65,7 +62,7 @@ def main():
                     local_dir=args.output_hf_path,
                 )
                 print(f"Downloaded {downloaded_path} during export gamma3vl models.")
-            except:
+            except Exception as e:
                 print(f"Ignore {file_name} during export gamma3vl models.")
 
 

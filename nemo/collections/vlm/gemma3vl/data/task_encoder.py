@@ -25,7 +25,6 @@ from nemo.collections.vlm.data.task_encoder import DataBatch, DataSample
 from nemo.collections.vlm.data.task_encoder import TaskEncoder as BaseTaskEncoder
 from nemo.collections.vlm.data.task_encoder import TaskEncoderConfig as BaseTaskEncoderConfig
 from nemo.collections.vlm.data.utils import _find_pattern_indices
-from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import IGNORE_INDEX, IMAGE_TOKEN_INDEX
 from nemo.utils import logging
 
 

@@ -39,7 +39,8 @@ from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import load_distributed_mode
 from nemo.lightning import io, teardown
 from nemo.lightning.io.state import TransformFns, _ModelState
 from nemo.lightning.pytorch.optim import OptimizerModule
-from nemo.lightning.pytorch.utils import dtype_from_hf, is_safe_repo
+from nemo.lightning.pytorch.utils import dtype_from_hf
+from nemo.collections.llm.utils import is_safe_repo
 from nemo.utils import logging
 
 if TYPE_CHECKING:

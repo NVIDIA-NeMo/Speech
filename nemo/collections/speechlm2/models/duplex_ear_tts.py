@@ -65,16 +65,16 @@ def maybe_to(x, dtype):
 
 
 @contextmanager
-def ensures_16_precision(mixed_dtype):
+def ensures_target_precision(target_dtype):
     """
     Workaround for precision related issues when training with bf16-true PyTorch Lightning precision setting.
     In bf16-true, PTL changes PyTorch's default dtype, which may break implicit assumptions for some models.
     This context manager restores default float32 precision and runs the computation in float32 autocast context.
     """
     default_dtype = torch.get_default_dtype()
-    torch.set_default_dtype(mixed_dtype)
+    torch.set_default_dtype(target_dtype)
     try:
-        with torch.amp.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", dtype=mixed_dtype):
+        with torch.amp.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", dtype=target_dtype):
             yield
     finally:
         torch.set_default_dtype(default_dtype)
@@ -175,7 +175,7 @@ def make_tts_model_mixed_precision_definite(
                     for k, v in kwargs.items()
                 }
                 # with torch.cuda.amp.autocast(enabled=True, dtype=mixed_dtype):
-                with ensures_16_precision(mixed_dtype):
+                with ensures_target_precision(mixed_dtype):
                     return module._original_forward(*new_args, **new_kwargs)
 
         module.forward = new_forward
@@ -315,10 +315,10 @@ def setup_rvq_audio_codec(model):
 
     Includes a workaround for PTL auto-downcasting the codec model to bf16 with bf16-true precision.
     """
-    if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == torch.float:
+    if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == model.audio_codec_run_dtype:
         return  # skip if already set up and has the right dtype
 
-    with fp32_precision():
+    with ensures_target_precision(model.audio_codec_run_dtype):
         if model.cfg.get("pretrained_ae_dir", None):
             model.audio_codec = (
                 RVQVAEModel.from_pretrained(
@@ -448,6 +448,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             # delete llm because we use it only to get the  embbeding tokens
             del self.language_model
 
+        self.audio_codec_run_dtype = getattr(torch, self.cfg.get("audio_codec_run_dtype", "bfloat16"), torch.float32)
+
         # instanciate eartts model and codec
         self._load_tts_model(self.cfg)
         self._codebook_size = self.tts_model.config.codebook_size
@@ -495,7 +497,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         audio_len = torch.tensor([audio.size(-1)]).long()
         audio, audio_len = self.pad_audio_to_factor(audio, audio_len, self.target_samples_per_frame)
 
-        with fp32_precision(), torch.no_grad():
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             sil_codes, sil_codes_lens = self.audio_codec.encode(audio.unsqueeze(1), audio_len)
             return sil_codes[0, -1]
 
@@ -507,7 +509,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         audio_len = torch.tensor([audio.size(-1)]).long()
         audio, audio_len = self.pad_audio_to_factor(audio, audio_len, self.target_samples_per_frame)
 
-        with fp32_precision(), torch.no_grad():
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             sil_codes, _ = self.audio_codec.encode(audio.unsqueeze(1), audio_len)  # [1, T, C]
             sil_codes = sil_codes[0]  # [T, C]
 
@@ -692,10 +694,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         aligned_position_ids = batch["aligned_position_ids"]
 
         # extract target audio codes
-        with fp32_precision(), torch.no_grad():
-            target_audio, target_audio_lens = self.pad_audio_to_factor(
-                target_audio, target_audio_lens, self.target_samples_per_frame, 1
-            )
+        target_audio, target_audio_lens = self.pad_audio_to_factor(
+            target_audio, target_audio_lens, self.target_samples_per_frame, 1
+        )
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             target_codes, target_codes_lens = self.audio_codec.encode(target_audio.unsqueeze(1), target_audio_lens)
 
         # ToDo: consider use the source audio
@@ -707,8 +709,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 source_audio_lens = (source_audio_lens * (self.target_sample_rate/self.source_sample_rate)).to(lengths.dtype)
         # ToDo: Add a transformer encoder to help the model to better extract contextual information, replace the code bellow with it
         # extract embedding for context audios
-        with fp32_precision(), torch.no_grad():
-            source_audio, source_audio_lens = self.pad_audio_to_factor(source_audio, source_audio_lens, self.target_samples_per_frame, 1)
+        
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             source_codes, source_codes_lens = self.audio_codec.encode(
                 source_audio.unsqueeze(1), source_audio_lens
             )
@@ -915,7 +917,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         tf_audio_codes_pred = replace_control_speech_codes(
             tf_audio_codes_pred, self._control_codes, self.codec_silence_tokens
         )
-        with fp32_precision(), torch.no_grad():
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             audio_pred, audio_len = self.audio_codec.decode(tf_audio_codes_pred, inputs["output_lens"])
 
         return audio_pred.squeeze(1), audio_len
@@ -1395,7 +1397,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         target_audio_len = torch.tensor(
             [target_audio.size(-1)] * target_audio.size(0), dtype=torch.long, device=self.device
         )
-        with fp32_precision(), torch.no_grad():
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             code, _ = self.audio_codec.encode(target_audio.unsqueeze(1), target_audio_len)
 
         # get context hidden
@@ -1541,7 +1543,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
     @torch.no_grad()
     def decode_one_audio_step(self, gen_audio_codes_history, number_prev_tokens=None):
-        with fp32_precision(), torch.no_grad():
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             if number_prev_tokens:
                 gen_audio_codes_history = gen_audio_codes_history[:, -number_prev_tokens:]
 
@@ -1706,7 +1708,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             gen_audio_codes = replace_control_speech_codes(
                 gen_audio_codes, self._control_codes, self.codec_silence_tokens
             )
-            with fp32_precision(), torch.no_grad():
+            with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
                 audio_pred, audio_pred_len = self.audio_codec.decode(gen_audio_codes, gen_audio_codes_lens)
 
         return audio_pred.squeeze(1), audio_pred_len

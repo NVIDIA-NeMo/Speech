@@ -35,6 +35,7 @@ test_eartts_config = {
             r"^audio_codec\..+$",  # Keep audio codec frozen as it only provides supervision for training.
             r"^embed_tokens\..+$",  # Keep embed_tokens frozen as done in eartts
         ],
+        "audio_codec_run_dtype": "float32",
         "prevent_freeze_params": [],
         "audio_save_path": "",
         "inference_guidance_scale": 0.5,

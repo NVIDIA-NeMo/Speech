@@ -428,7 +428,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.save_hyperparameters()
         # convert dict to config
         cfg = DictConfig(cfg)
-        self.trainer_config = cfg.trainer
+        self.trainer_config = cfg.get("trainer", None)
         self.data_cfg = cfg.data
         self.cfg = cfg.model
         self.target_sample_rate = cfg.data.target_sample_rate
@@ -995,6 +995,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         if (
             not self.model_16_precision_safe
             and self.cfg.get("ensures_16_safe", False)
+            and self.trainer_config is not None
             and str(self.trainer_config.precision) != str(32)
         ):
             # ToDo: move it to a method

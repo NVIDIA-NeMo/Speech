@@ -87,28 +87,29 @@ class CacheAwareContextManager:
             self.cache_last_time,  # [17, B, 512, 8]
             self.cache_last_channel_len,  # B
         ) = self.cache_aware_model.get_initial_cache_state(self.num_slots)
+        self.device = self.cache_last_channel.device
 
-    def reset_slot(self, slot_idx: int) -> None:
+    def _reset_slots(self, slot_ids: list[int]) -> None:
         """
-        Resets particular slot
+        Resets the slots for the given slot_ids
         Args:
-            slot_idx: slot index to reset
+            slot_ids: list of slot indices to reset
         """
         if self.cache_disabled:
             return
 
-        # iterate over the layers
-        for i in range(self.cache_last_channel.size(0)):
-            self.cache_last_channel[i][slot_idx] = torch.zeros_like(self.cache_last_channel[i][slot_idx])
-            self.cache_last_time[i][slot_idx] = torch.zeros_like(self.cache_last_time[i][slot_idx])
-        self.cache_last_channel_len[slot_idx] = 0
+        slot_ids_tensor = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
+        self.cache_last_channel.index_fill_(1, slot_ids_tensor, 0.0)
+        self.cache_last_time.index_fill_(1, slot_ids_tensor, 0.0)
+        self.cache_last_channel_len.index_fill_(0, slot_ids_tensor, 0)
 
         # free the slot, so that it can be used by other streams
         # remove the stream from the mappings
-        self.free_slots.put(slot_idx)
-        stream_id = self.slotidx2streamidx[slot_idx]
-        del self.slotidx2streamidx[slot_idx]
-        del self.streamidx2slotidx[stream_id]
+        for slot_id in slot_ids:
+            self.free_slots.put(slot_id)
+            stream_id = self.slotidx2streamidx[slot_id]
+            del self.slotidx2streamidx[slot_id]
+            del self.streamidx2slotidx[stream_id]
 
     def update_cache(self, stream_ids: list[int], new_context: CacheAwareContext, mapping: dict) -> None:
         """
@@ -121,17 +122,20 @@ class CacheAwareContextManager:
         if self.cache_disabled:
             return
 
-        for stream_id in stream_ids:
-            slot_idx = self.streamidx2slotidx.get(stream_id, None)
-            if slot_idx is None:
-                raise RuntimeError(f"Stream {stream_id} is not registered in the context manager")
+        slot_ids_list = [self.streamidx2slotidx[sid] for sid in stream_ids]
+        slot_ids = torch.tensor(slot_ids_list, device=self.device, dtype=torch.long)
+        tgt_slot_ids = torch.tensor(
+            [mapping[sid] for sid in slot_ids_list],
+            device=self.device,
+            dtype=torch.long,
+        )
 
-            # iterate over layers
-            tgt_slot_idx = mapping[slot_idx]
-            for i in range(self.cache_last_channel.size(0)):
-                self.cache_last_channel[i][slot_idx] = new_context.cache_last_channel[i][tgt_slot_idx].clone()
-                self.cache_last_time[i][slot_idx] = new_context.cache_last_time[i][tgt_slot_idx].clone()
-            self.cache_last_channel_len[slot_idx] = new_context.cache_last_channel_len[tgt_slot_idx]
+        # In-place copy along batch/slot dimension
+        self.cache_last_channel.index_copy_(1, slot_ids, new_context.cache_last_channel.index_select(1, tgt_slot_ids))
+        self.cache_last_time.index_copy_(1, slot_ids, new_context.cache_last_time.index_select(1, tgt_slot_ids))
+        self.cache_last_channel_len.index_copy_(
+            0, slot_ids, new_context.cache_last_channel_len.index_select(0, tgt_slot_ids)
+        )
 
     def reset_slots(self, stream_ids: list[int], eos_flags: list[bool]) -> None:
         """
@@ -150,10 +154,7 @@ class CacheAwareContextManager:
             return
 
         # reset the slots for finished streams
-        for stream_id, eos_flag in zip(stream_ids, eos_flags):
-            if eos_flag:
-                slot_idx = self.streamidx2slotidx[stream_id]
-                self.reset_slot(slot_idx)
+        self._reset_slots([self.streamidx2slotidx[sid] for sid, eos in zip(stream_ids, eos_flags) if eos])
 
     def get_context(self, stream_ids: list[int]) -> tuple[CacheAwareContext, dict]:
         """

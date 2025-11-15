@@ -270,7 +270,7 @@ class BasePipeline(PipelineInterface):
             outputs.append(step_output)
 
         # Perform the translation step
-        if self.nmt_model is not None:
+        if self.nmt_enabled:
             self.translate_step(states=states, step_outputs=outputs)
 
         # Cleanup the states after the response is sent
@@ -398,7 +398,7 @@ class BasePipeline(PipelineInterface):
             nmt_model: (LLMTranslator | None) LLM based translation model.
         """
         self.nmt_model = nmt_model
-        self.nmt_enabled = (nmt_model is not None)
+        self.nmt_enabled = nmt_model is not None
 
     def init_bufferer_for_buffered_streaming(self) -> None:
         """Initialize the bufferer."""

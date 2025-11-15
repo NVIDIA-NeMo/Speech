@@ -28,6 +28,14 @@ class PromptTemplate(ABC):
         """
         raise NotImplementedError()
 
+    @classmethod
+    @abstractmethod
+    def extract(cls, response: str) -> str:
+        """
+        Extract the answer from the response.
+        """
+        raise NotImplementedError()
+
 
 class EuroLLMTranslatorPromptTemplate(PromptTemplate):
     """
@@ -59,3 +67,14 @@ class EuroLLMTranslatorPromptTemplate(PromptTemplate):
         return cls.PROMPT_TEMPLATE.format(
             src_lang=src_lang, tgt_lang=tgt_lang, src_prefix=src_prefix, tgt_prefix=tgt_prefix
         )
+
+    @classmethod
+    def extract(cls, response: str) -> str:
+        """
+        Extract the first line of text from a model response.
+        Args:
+            response (str): The full response from the model.
+        Returns:
+            str: The text before the first newline.
+        """
+        return response.split('\n')[0]

@@ -115,7 +115,9 @@ class LLMTranslator:
         outputs = self.nmt_model.generate(input_texts, self.sampling_params)
         translations = []
         for tgt_prefix, output in zip(nmt_prefixes, outputs):
-            translations.append(f"{tgt_prefix}{output.outputs[0].text}")
+            output_text = output.outputs[0].text
+            output_text = self.prompt_template.extract(output_text)
+            translations.append(f"{tgt_prefix}{output_text}")
         return translations
 
     def get_nmt_prefixes(

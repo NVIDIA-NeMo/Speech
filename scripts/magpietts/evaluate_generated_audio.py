@@ -34,7 +34,6 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
-from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
 

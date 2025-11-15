@@ -35,7 +35,6 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.models import AudioCodecModel
-from nemo.collections.tts.modules.fcd_metric import FrechetCodecDistance
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
 
@@ -190,15 +189,11 @@ def evaluate(
     language="en",
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
-    codecmodel_path=None,
     with_utmosv2=True,
 ):
     audio_file_lists = find_generated_audio_files(generated_audio_dir)
     records = read_manifest(manifest_path)
     assert len(audio_file_lists) == len(records)
-    if codecmodel_path is not None:
-        codes_file_lists = find_generated_codec_files(generated_audio_dir)
-        assert len(codes_file_lists) == len(records)
 
     device = "cuda"
 
@@ -236,19 +231,6 @@ def evaluate(
     speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
     speaker_verification_model_alternate.eval()
 
-    if codecmodel_path is not None:
-        codec = AudioCodecModel.restore_from(codecmodel_path, strict=False)
-        codec = codec.to(device)
-        codec.eval()
-        # The FCD metric measures a distance between generated and real codec frames. The distance
-        # is measured in the codec's embedding space. `codec_feature_dim` is the size of the codec's embedding vector.
-        # For example, for a group-FSQ codec with 8 codebooks with 4 values in each codebook, the embedding dimension is 8 x 4 = 32.
-        codec_feature_dim = codec.vector_quantizer.codebook_dim
-        fcd_metric = FrechetCodecDistance(codec=codec, feature_dim=codec_feature_dim).to(device)
-    else:
-        print("No codec model provided, skipping FCD metric")
-        fcd_metric = None
-
     if with_utmosv2:
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
     filewise_metrics = []
@@ -263,13 +245,8 @@ def evaluate(
             gt_audio_filepath = os.path.join(audio_dir, gt_audio_filepath)
             if context_audio_filepath is not None:
                 context_audio_filepath = os.path.join(audio_dir, context_audio_filepath)
-            # Update the FCD metric for *real* codes
-            if fcd_metric is not None:
-                fcd_metric.update_from_audio_file(gt_audio_filepath, True)
 
         pred_audio_filepath = audio_file_lists[ridx]
-        if fcd_metric is not None:
-            pred_codes_filepath = codes_file_lists[ridx]
 
         if with_utmosv2:
             utmosv2_score = utmosv2_scores[os.path.normpath(pred_audio_filepath)]
@@ -315,12 +292,6 @@ def evaluate(
         pred_texts.append(pred_text)
         gt_texts.append(gt_text)
         gt_audio_texts.append(gt_audio_text)
-
-        # update FCD metric
-        if fcd_metric is not None:
-            predicted_codes = torch.load(pred_codes_filepath).unsqueeze(0)  # B, C, T
-            predicted_codes_lens = torch.tensor([predicted_codes.size(-1)], dtype=torch.int, device=device)
-            fcd_metric.update(predicted_codes, predicted_codes_lens, False)
 
         pred_context_ssim = 0.0
         gt_context_ssim = 0.0
@@ -416,13 +387,6 @@ def evaluate(
     # Sort filewise metrics by cer in reverse
     filewise_metrics.sort(key=lambda x: x['cer'], reverse=True)
 
-    # compute frechet distance for the whole test set
-    if fcd_metric is not None:
-        fcd = fcd_metric.compute().cpu().item()
-        fcd_metric.reset()
-    else:
-        fcd = 0.0
-
     avg_metrics = {}
     avg_metrics['cer_filewise_avg'] = sum([m['detailed_cer'][0] for m in filewise_metrics]) / len(filewise_metrics)
     avg_metrics['wer_filewise_avg'] = sum([m['detailed_wer'][0] for m in filewise_metrics]) / len(filewise_metrics)
@@ -450,7 +414,6 @@ def evaluate(
     avg_metrics["wer_gt_audio_cumulative"] = word_error_rate_detail(
         hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
     )[0]
-    avg_metrics["frechet_codec_distance"] = fcd
     avg_metrics["utmosv2_avg"] = sum([m['utmosv2'] for m in filewise_metrics]) / len(filewise_metrics)
     avg_metrics["total_gen_audio_seconds"] = total_generated_audio_seconds
     pprint.pprint(avg_metrics)

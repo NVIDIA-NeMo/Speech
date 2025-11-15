@@ -281,7 +281,7 @@ def evaluate(
                 with torch.inference_mode():
                     pred_text = asr_model.transcribe([pred_audio_filepath], batch_size=1, use_lhotse=False)[0].text
                     pred_text = process_text(pred_text)
-                    gt_audio_text = asr_model.transcribe([gt_audio_filepath], batch_size=1)[0].text
+                    gt_audio_text = asr_model.transcribe([gt_audio_filepath], batch_size=1, use_lhotse=False)[0].text
                     gt_audio_text = process_text(gt_audio_text)
             else:
                 pred_text = transcribe_with_whisper(

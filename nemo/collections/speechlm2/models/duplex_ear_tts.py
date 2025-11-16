@@ -19,10 +19,10 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 
+import librosa
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import librosa
 from lightning import LightningModule
 from omegaconf import DictConfig
 from peft import PeftModel
@@ -55,10 +55,11 @@ from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, set_
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
+
 def load_audio_librosa(path, sr=None):
     """
     Load audio using librosa with torchaudio-like behavior.
-    
+
     Returns:
         audio_tensor: torch.FloatTensor of shape [channels, time]
         sr: sampling rate
@@ -74,6 +75,7 @@ def load_audio_librosa(path, sr=None):
     # Convert to torch float32 (torchaudio behavior)
     audio_tensor = torch.from_numpy(audio).float()
     return audio_tensor, sr
+
 
 def maybe_to(x, dtype):
     if x is None:

@@ -22,7 +22,7 @@ from contextlib import contextmanager
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchaudio
+import librosa
 from lightning import LightningModule
 from omegaconf import DictConfig
 from peft import PeftModel
@@ -55,6 +55,25 @@ from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, set_
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
+def load_audio_librosa(path, sr=None):
+    """
+    Load audio using librosa with torchaudio-like behavior.
+    
+    Returns:
+        audio_tensor: torch.FloatTensor of shape [channels, time]
+        sr: sampling rate
+    """
+    # Load with librosa (preserve original sampling rate)
+    audio, sr = librosa.load(path, sr=sr, mono=False)
+
+    # Ensure shape is [channels, time]
+    if audio.ndim == 1:
+        # Mono: (time,) -> (1, time)
+        audio = audio[None, :]
+
+    # Convert to torch float32 (torchaudio behavior)
+    audio_tensor = torch.from_numpy(audio).float()
+    return audio_tensor, sr
 
 def maybe_to(x, dtype):
     if x is None:
@@ -940,7 +959,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # ToDo: split it in multiples batches to support long list of sentences
         B = len(test_sentences)
         # load and get speaker reference
-        speaker_audio, sr = torchaudio.load(inference_speaker_reference)
+        speaker_audio, sr = load_audio_librosa(inference_speaker_reference)
         speaker_audio = resample(speaker_audio, sr, self.target_sample_rate)
         speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
         # lengths -> [B]
@@ -1250,7 +1269,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                         ref_name = os.path.basename(inference_speaker_reference)
                         # Append to each sample_id
                         new_dataset_batch['sample_id'] = [f"{sid}_{ref_name}" for sid in dataset_batch['sample_id']]
-                        speaker_audio, sr = torchaudio.load(inference_speaker_reference)
+                        speaker_audio, sr = load_audio_librosa(inference_speaker_reference)
                         speaker_audio = resample(speaker_audio, sr, self.target_sample_rate)
                         speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
                         # lengths -> [B]
@@ -1262,7 +1281,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 # run inference for a custom speaker reference
                 elif self.cfg.get("inference_speaker_reference", None):
                     new_dataset_batch = copy.deepcopy(dataset_batch)
-                    speaker_audio, sr = torchaudio.load(inference_speaker_reference)
+                    speaker_audio, sr = load_audio_librosa(inference_speaker_reference)
                     speaker_audio = resample(speaker_audio, sr, self.target_sample_rate)
                     speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
                     # lengths -> [B]

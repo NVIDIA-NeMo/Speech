@@ -489,7 +489,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             del self.language_model
 
         # get codec run precision
-        self.audio_codec_run_dtype = getattr(torch, self.cfg.get("audio_codec_run_dtype", "bfloat16"), torch.float32)
+        self.audio_codec_run_dtype = getattr(torch, self.cfg.get("audio_codec_run_dtype", "float32"), torch.float32)
 
         # instanciate eartts model and codec
         self._load_tts_model(self.cfg)

@@ -247,7 +247,6 @@ def training_cutset_batch():
 
 
 def test_eartts_dataset(dataset, training_cutset_batch):
-    print(training_cutset_batch)
     batch = dataset[training_cutset_batch]
     # Keys that must be present in batch
     expected_keys = {

@@ -74,7 +74,7 @@ class Intelligibility:
         if self.asr is None and not self.reuse_asr_hyps:
             self.reset()
 
-        if pred_audio_lens is None:
+        if pred_audio_lens is None and pred_audio is not None:
             pred_audio_lens = [pred_audio.shape[1]] * pred_audio.shape[0]
 
         with fp32_precision():

@@ -15,10 +15,12 @@ from .asr_bleu import ASRBLEU
 from .bleu import BLEU
 from .results_logger import ResultsLogger
 from .token_accuracy import TokenAccuracy
+from .intelligibility import Intelligibility
 
 __all__ = [
     'ASRBLEU',
     'BLEU',
     'TokenAccuracy',
     'ResultsLogger',
+    'Intelligibility',
 ]

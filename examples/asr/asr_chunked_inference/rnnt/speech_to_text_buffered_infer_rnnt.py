@@ -55,7 +55,7 @@ python speech_to_text_buffered_infer_rnnt.py \
     lcs_alignment_dir=<OPTIONAL: Some path to store the LCS alignments> 
 
 # NOTE:
-    You can use `DEBUG=1 python speech_to_text_buffered_infer_ctc.py ...` to print out the
+    You can use `DEBUG=1 python speech_to_text_buffered_infer_rnnt.py ...` to print out the
     predictions of the model, and ground-truth text if presents in manifest.
 """
 import copy

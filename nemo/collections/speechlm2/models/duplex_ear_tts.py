@@ -101,18 +101,26 @@ def ensures_target_precision(target_dtype):
         torch.set_default_dtype(default_dtype)
 
 
-def make_tts_model_mixed_precision_definite(
-    model, inputs, mixed_dtype=torch.bfloat16, bf16_min=1e-2, bf16_max=1e2, safety_factor=1.0
-):
-    safe_min = bf16_min * safety_factor
-    safe_max = bf16_max * safety_factor
+def collect_activation_stats(model: nn.Module, inputs: dict) -> dict:
+    """
+    Collect per-layer activation statistics (min and max) for Linear, LayerNorm, and Embedding modules.
 
-    # 1️⃣ Collect activation stats in FP32
-    model_fp32 = copy.deepcopy(model).eval().to(torch.float32)
+    This performs a forward pass in FP32 and registers hooks to record
+    the min and max values of each layer's output. These statistics are
+    used to decide which layers are safe for mixed precision.
+
+    Args:
+        model (nn.Module): Model to analyze.
+        inputs (dict): Input arguments for the model forward pass.
+
+    Returns:
+        dict: Mapping from layer names to activation stats:
+              {"layer_name": {"min": value, "max": value}}
+    """
     stats = {}
     hooks = []
 
-    def _activation_hook(name):
+    def _make_hook(name: str):
         def hook(_, __, out):
             if isinstance(out, tuple):
                 out = out[0]
@@ -121,12 +129,14 @@ def make_tts_model_mixed_precision_definite(
 
         return hook
 
-    for name, module in model_fp32.named_modules():
+    # Register hooks
+    for name, module in model.named_modules():
         if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding)):
-            hooks.append(module.register_forward_hook(_activation_hook(name)))
+            hooks.append(module.register_forward_hook(_make_hook(name)))
 
+    # Forward pass
     with torch.no_grad():
-        _ = model_fp32(
+        _ = model(
             code=inputs["code"],
             audio_mask=maybe_to(inputs["audio_mask"], torch.float32),
             attention_mask=maybe_to(inputs["attention_mask"], torch.float32),
@@ -137,124 +147,141 @@ def make_tts_model_mixed_precision_definite(
             non_prompt_mask=maybe_to(inputs["non_prompt_mask"], torch.float32),
         )
 
+    # Remove hooks
     for h in hooks:
         h.remove()
 
-    # 2️⃣ Patch model for mixed precision with safe propagation
-    model_patched = copy.deepcopy(model).eval()
-    bf16_layers, fp32_layers = [], []
+    return stats
 
-    all_modules = list(model_patched.named_modules())
 
-    # flag to propagate FP32 to next safe layers
+def classify_precision_layers(
+    model: nn.Module, stats: dict, safe_min: float, safe_max: float
+) -> list:
+    """
+    Determine which layers must remain FP32 for numerical stability.
+
+    Sensitive layers (LayerNorm, Embedding, or Linear layers with out-of-range activations)
+    are forced to FP32. FP32 can propagate to the next safe layer to prevent instability.
+
+    Args:
+        model (nn.Module): Model to classify.
+        stats (dict): Activation statistics from `collect_activation_stats`.
+        safe_min (float): Minimum threshold for safe activations.
+        safe_max (float): Maximum threshold for safe activations.
+
+    Returns:
+        list: Names of layers that should remain FP32.
+    """
+    fp32_layers = []
     propagate_fp32 = False
 
-    for idx, (name, module) in enumerate(all_modules):
+    for name, module in model.named_modules():
         if name not in stats:
             continue
+
         mn, mx = stats[name]["min"], stats[name]["max"]
-        safe = abs(mn) < safe_max and abs(mx) < safe_max and not (abs(mn) < safe_min and abs(mx) < safe_min)
+        safe_range = abs(mn) < safe_max and abs(mx) < safe_max
+        not_tiny = not (abs(mn) < safe_min and abs(mx) < safe_min)
+        safe = safe_range and not_tiny
 
-        is_sensitive = False
-        if isinstance(module, (nn.LayerNorm, nn.Embedding)):
+        # Determine if layer is FP32-sensitive
+        is_sensitive = isinstance(module, (nn.LayerNorm, nn.Embedding))
+        if isinstance(module, nn.Linear) and not safe:
             is_sensitive = True
-        elif isinstance(module, nn.Linear):
-            if not safe:
-                is_sensitive = True
 
-        # mark this layer
         if is_sensitive:
-            if name not in fp32_layers:
-                fp32_layers.append(name)
-            propagate_fp32 = True  # propagate FP32 to next layers if safe
+            fp32_layers.append(name)
+            propagate_fp32 = True
+        elif propagate_fp32:
+            # Propagate FP32 to next safe layer
+            fp32_layers.append(name)
+            propagate_fp32 = False
+
+    return fp32_layers
+
+
+def wrap_module_precision(module: nn.Module, force_fp32: bool, mixed_dtype=torch.bfloat16):
+    """
+    Wrap a module's forward to enforce mixed precision or FP32.
+
+    Args:
+        module (nn.Module): Module to wrap.
+        force_fp32 (bool): If True, module runs in FP32.
+        mixed_dtype (torch.dtype): Target dtype for mixed precision layers.
+    """
+    if hasattr(module, "_original_forward"):
+        return
+
+    module._original_forward = module.forward
+
+    def new_forward(*args, **kwargs):
+        if force_fp32:
+            with fp32_precision():
+                return module._original_forward(*args, **kwargs)
         else:
-            if propagate_fp32:
-                # next layer is safe but preceded by FP32-sensitive -> still FP32
-                fp32_layers.append(name)
-                propagate_fp32 = False  # stop propagation after one safe layer
-            else:
-                # layer itself is safe and no FP32 propagation -> use BF16/FP16
-                if isinstance(module, nn.Linear):
-                    bf16_layers.append(name)
+            new_args = tuple(
+                a.to(mixed_dtype) if isinstance(a, torch.Tensor) and a.is_floating_point() else a
+                for a in args
+            )
+            new_kwargs = {
+                k: v.to(mixed_dtype) if isinstance(v, torch.Tensor) and v.is_floating_point() else v
+                for k, v in kwargs.items()
+            }
+            with ensures_target_precision(mixed_dtype):
+                return module._original_forward(*new_args, **new_kwargs)
 
-    # 3️⃣ Wrap forwards to enforce precision
-    def wrap_forward(module, is_fp32_sensitive):
-        if hasattr(module, "_original_forward"):
-            return
-        module._original_forward = module.forward
+    module.forward = new_forward
 
-        def new_forward(*args, **kwargs):
-            if is_fp32_sensitive:
-                with fp32_precision():
-                    return module._original_forward(*args, **kwargs)
-            else:
-                new_args = tuple(
-                    a.to(mixed_dtype) if isinstance(a, torch.Tensor) and a.is_floating_point() else a for a in args
-                )
-                new_kwargs = {
-                    k: v.to(mixed_dtype) if isinstance(v, torch.Tensor) and v.is_floating_point() else v
-                    for k, v in kwargs.items()
-                }
-                # with torch.cuda.amp.autocast(enabled=True, dtype=mixed_dtype):
-                with ensures_target_precision(mixed_dtype):
-                    return module._original_forward(*new_args, **new_kwargs)
 
-        module.forward = new_forward
+def find_sensitive_layers(
+    model: nn.Module,
+    inputs: dict,
+    bf16_min: float = 1e-2,
+    bf16_max: float = 1e2,
+    safety_factor: float = 1.0,
+) -> list:
+    """
+    Identify FP32-sensitive layers for a TTS model.
 
-    for name, module in model_patched.named_modules():
-        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding)):
-            wrap_forward(module, name in fp32_layers)
+    Steps:
+        1. Run FP32 forward pass to collect activation stats.
+        2. Classify layers that must remain FP32.
 
-    # 4️⃣ Count actual running dtype
-    running_dtypes = Counter()
-    hook_handles = []
+    Args:
+        model (nn.Module): TTS model.
+        inputs (dict): Inputs for forward pass.
+        bf16_min (float): Minimum safe activation for BF16.
+        bf16_max (float): Maximum safe activation for BF16.
+        safety_factor (float): Safety factor for thresholds.
 
-    def dtype_counter_hook(module, inputs, outputs):
-        for x in inputs:
-            if isinstance(x, torch.Tensor):
-                running_dtypes[str(x.dtype)] += 1
-        outputs_list = outputs if isinstance(outputs, (tuple, list)) else [outputs]
-        for x in outputs_list:
-            if isinstance(x, torch.Tensor):
-                running_dtypes[str(x.dtype)] += 1
+    Returns:
+        list: Names of FP32-sensitive layers.
+    """
+    safe_min = bf16_min * safety_factor
+    safe_max = bf16_max * safety_factor
 
-    for name, module in model_patched.named_modules():
-        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding)):
-            hook_handles.append(module.register_forward_hook(dtype_counter_hook))
+    # FP32 reference forward
+    model_fp32 = copy.deepcopy(model).eval().to(torch.float32)
+    stats = collect_activation_stats(model_fp32, inputs)
 
-    with torch.no_grad():
-        _ = model_patched(
-            code=inputs["code"],
-            audio_mask=maybe_to(inputs["audio_mask"], torch.float32),
-            attention_mask=maybe_to(inputs["attention_mask"], torch.float32),
-            position_ids=inputs["position_ids"],
-            context_hidden_state=maybe_to(inputs["context_hidden_state"], torch.float32),
-            subword_ids=inputs["subword_ids"],
-            subword_mask=maybe_to(inputs["subword_mask"], torch.float32),
-            non_prompt_mask=maybe_to(inputs["non_prompt_mask"], torch.float32),
-        )
+    # Identify FP32 layers
+    model_patched = copy.deepcopy(model).eval()
+    fp32_layers = classify_precision_layers(model_patched, stats, safe_min, safe_max)
 
-    for h in hook_handles:
-        h.remove()
+    # Count total relevant layers
+    total_layers = sum(
+        1
+        for _, module in model.named_modules()
+        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding))
+    )
+    half_precision_layers = total_layers - len(fp32_layers)
 
-    num_bf16_fp16 = running_dtypes.get("torch.bfloat16", 0) + running_dtypes.get("torch.float16", 0)
-    num_fp32 = running_dtypes.get("torch.float32", 0)
+    print(
+        f"Total sensitive layers (FP32): {len(fp32_layers)}, "
+        f"Half precision layers: {half_precision_layers}"
+    )
 
-    summary = {
-        "bf16_layers": bf16_layers,
-        "fp32_layers": fp32_layers,
-        "num_bf16_fp16": num_bf16_fp16,
-        "num_fp32": num_fp32,
-        "stats": stats,
-        "safe_min": safe_min,
-        "safe_max": safe_max,
-        "safety_factor": safety_factor,
-    }
-
-    print("Num. BF16/FP16 candidate layers:", len(bf16_layers))
-    print("Num. FP32 layers (sensitive + propagated):", len(fp32_layers))
-
-    return model_patched, summary
+    return fp32_layers
 
 
 def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int = 0, eos_token_id: int = 1):
@@ -524,7 +551,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             return sil_codes[0, -1]
 
     def get_codec_silence_frame(self):
-        from collections import Counter
 
         # Generate long zero waveform (silence)
         audio = torch.zeros(1, 10 * self.target_sample_rate).float().to(self.device)
@@ -1012,6 +1038,24 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         )
         return audio, audio_len, speaker_audio, speaker_audio_lens
 
+    def apply_mixed_precision_wrapping_on_tts_model(
+        self, fp32_layers: list, mixed_dtype=torch.bfloat16
+    ):
+        """
+        Apply mixed precision to TTS model layers, keeping FP32 layers intact.
+
+        Args:
+            fp32_layers (list): Names of layers to keep FP32.
+            mixed_dtype (torch.dtype): Target dtype for mixed precision layers.
+        """
+        logging.info(
+            f"Converting TTS model to mixed precision. FP32 layers: {fp32_layers}"
+        )
+        for name, module in self.tts_model.named_modules():
+            if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding)):
+                force_fp32 = name in fp32_layers
+                wrap_module_precision(module, force_fp32, mixed_dtype)
+
     def run_evaluation_one_batch(self, name, dataset_batch, use_dataloader_init=False):
         """
         Runs evaluation and scoring for a single data batch, logging metrics and updating result buffers.
@@ -1034,16 +1078,16 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             and self.trainer_config is not None
             and str(self.trainer_config.precision) != str(32)
         ):
-            # ToDo: move it to a method
-            self.tts_model, summary = make_tts_model_mixed_precision_definite(
-                self.tts_model,
-                inputs,
-                safety_factor=1.0,
-                mixed_dtype=torch.float16 if str(self.trainer_config.precision) == str(16) else torch.bfloat16,
-            )
-            # self.tts_model, summary = make_tts_model_mixed_precision_safe(self.tts_model, inputs, safety_factor=1.0)
+            if self.cfg.get("sensitive_layers", None):
+                self.apply_mixed_precision_wrapping_on_tts_model(self.cfg.sensitive_layers, mixed_dtype=torch.float16 if str(self.trainer_config.precision) == str(16) else torch.bfloat16,)
+            else:
+                sensitive_layers = find_sensitive_layers(
+                    self.tts_model,
+                    inputs,
+                    safety_factor=1.0,
+                )
+                self.apply_mixed_precision_wrapping_on_tts_model(sensitive_layers, mixed_dtype=torch.float16 if str(self.trainer_config.precision) == str(16) else torch.bfloat16,)
             self.model_16_precision_safe = True
-            print("Current FP32 layers:", summary["fp32_layers"])
 
         results["audio_tf"], results["audio_tf_len"] = self.get_teacher_force_inference_audio(dataset_batch)
         if use_dataloader_init:

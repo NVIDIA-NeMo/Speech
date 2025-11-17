@@ -95,11 +95,19 @@ class MLPLayer(nn.Module):
 # ==============================================================================
 # Triton-accelerated and Fallback Functions
 # ==============================================================================
+
+TRITON_IMPORTED = False
 try:
-    # Attempt to import Triton for optimized GPU kernels
     import triton
     import triton.language as tl
+    TRITON_IMPORTED = True
+except ImportError:
+    TRITON_IMPORTED = False
 
+USE_TRITON = TRITON_IMPORTED and torch.cuda.is_available()
+logging.info("Triton available & CUDA detected. Using Triton kernel for batch_matmul.")
+
+if USE_TRITON:
     @triton.jit
     def batch_matmul_kernel(
         x_ptr,  # Pointer to input tensor x: [batch_size, d_in]
@@ -190,7 +198,93 @@ try:
     batch_matmul = batch_matmul_triton
     logging.info("Triton is available. Using optimized Triton kernel for batch_matmul.")
 
+
+try:
+    import triton
+    import triton.language as tl
+    TRITON_IMPORTED = True
 except ImportError:
+    TRITON_IMPORTED = False
+
+USE_TRITON = TRITON_IMPORTED and torch.cuda.is_available()
+
+if USE_TRITON:
+    logging.info("Triton+CUDA detected. Using Triton kernel for batch_matmul.")
+
+    @triton.jit
+    def batch_matmul_kernel(
+        x_ptr,
+        w_ptr,
+        y_ptr,
+        result_ptr,
+        b,
+        d_in,
+        d_out,
+        n,
+        BLOCK_SIZE_DIN: tl.constexpr,
+        BLOCK_SIZE_DOUT: tl.constexpr,
+    ):
+        batch_id = tl.program_id(axis=0)
+        dout_block_id = tl.program_id(axis=1)
+
+        if batch_id >= b:
+            return
+
+        idx = tl.load(y_ptr + batch_id)
+
+        x_offset = x_ptr + batch_id * d_in
+        w_offset = w_ptr + idx * d_out * d_in
+
+        dout_offsets = dout_block_id * BLOCK_SIZE_DOUT + tl.arange(0, BLOCK_SIZE_DOUT)
+        dout_mask = dout_offsets < d_out
+
+        result_block = tl.zeros([BLOCK_SIZE_DOUT], dtype=tl.float32)
+
+        for din_start in range(0, d_in, BLOCK_SIZE_DIN):
+            din_offsets = din_start + tl.arange(0, BLOCK_SIZE_DIN)
+            din_mask = din_offsets < d_in
+
+            x_i = tl.load(x_offset + din_offsets, mask=din_mask, other=0.0)
+
+            w_i_block = tl.load(
+                w_offset + dout_offsets[:, None] * d_in + din_offsets[None, :],
+                mask=(dout_mask[:, None] & din_mask[None, :]),
+                other=0.0,
+            )
+
+            result_block += tl.sum(w_i_block * x_i[None, :], axis=1)
+
+        result_offset = result_ptr + batch_id * d_out + dout_offsets
+        tl.store(result_offset, result_block, mask=dout_mask)
+
+    def batch_matmul_triton(x, w, y, BLOCK_SIZE_DIN: int = 16, BLOCK_SIZE_DOUT: int = 64):
+        assert x.is_contiguous() and w.is_contiguous() and y.is_contiguous()
+
+        b, d_in = x.shape
+        n, d_out, _ = w.shape
+        result = torch.empty(b, d_out, device=x.device, dtype=torch.float32)
+
+        batch_matmul_kernel[
+            lambda meta: (b, triton.cdiv(d_out, meta["BLOCK_SIZE_DOUT"]))
+        ](
+            x.float(),
+            w.float(),
+            y,
+            result,
+            b,
+            d_in,
+            d_out,
+            n,
+            BLOCK_SIZE_DIN=BLOCK_SIZE_DIN,
+            BLOCK_SIZE_DOUT=BLOCK_SIZE_DOUT,
+        )
+
+        return result.to(dtype=x.dtype)
+
+    batch_matmul = batch_matmul_triton
+
+else:
+    logging.info("Using PyTorch fallback (Triton unavailable or no CUDA).")
     # Fallback to PyTorch implementation if Triton is not available
     def batch_matmul_pytorch(x: Tensor, w: Tensor, y: Tensor, *args, **kwargs) -> Tensor:
         """
@@ -213,7 +307,6 @@ except ImportError:
         return torch.bmm(w[y], x.unsqueeze(2)).squeeze(2)
 
     batch_matmul = batch_matmul_pytorch
-    logging.info("Triton is not available. Using PyTorch fallback for batch_matmul.")
 
 
 # ==============================================================================

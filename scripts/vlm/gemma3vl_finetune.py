@@ -36,7 +36,7 @@ import os
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
-from transformers import Gemma3ImageProcessor, Gemma3Processor
+from transformers import Gemma3ImageProcessor
 
 from nemo import lightning as nl
 from nemo.collections import llm, vlm

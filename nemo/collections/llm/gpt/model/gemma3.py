@@ -33,7 +33,6 @@ from megatron.core.transformer.enums import AttnBackend, AttnMaskType
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
 from torch import Tensor, nn
 
-from nemo.collections.llm.fn.activation import openai_gelu
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.gpt.model.gemma2 import TERowParallelLinearLayerNorm
 from nemo.collections.llm.utils import Config

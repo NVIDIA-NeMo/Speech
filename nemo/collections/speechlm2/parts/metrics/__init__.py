@@ -13,9 +13,9 @@
 # limitations under the License.
 from .asr_bleu import ASRBLEU
 from .bleu import BLEU
+from .intelligibility import Intelligibility
 from .results_logger import ResultsLogger
 from .token_accuracy import TokenAccuracy
-from .intelligibility import Intelligibility
 
 __all__ = [
     'ASRBLEU',

@@ -15,11 +15,11 @@ import json
 import os
 import shutil
 
+import soundfile as sf
 import torch
-import torchaudio
 
+from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.utils import logging
-
 
 def safe_remove_path(path):
     shutil.rmtree(path, ignore_errors=True)
@@ -66,7 +66,7 @@ class ResultsLogger:
     ) -> None:
         # if user_audio is None ignore it
         if user_audio is not None:
-            user_audio = torchaudio.functional.resample(user_audio.float(), user_audio_sr, pred_audio_sr)
+            user_audio = resample(user_audio.float(), user_audio_sr, pred_audio_sr)
             T1, T2 = pred_audio.shape[0], user_audio.shape[0]
             max_len = max(T1, T2)
             pred_audio_padded = torch.nn.functional.pad(pred_audio, (0, max_len - T1), mode='constant', value=0)
@@ -85,7 +85,8 @@ class ResultsLogger:
             combined_wav = pred_audio.unsqueeze(0).detach().cpu()
 
         # save audio
-        torchaudio.save(out_audio_path, combined_wav, pred_audio_sr)
+        os.makedirs(os.path.dirname(out_audio_path), exist_ok=True)
+        sf.write(out_audio_path, combined_wav.numpy().astype('float32').T, pred_audio_sr)
         logging.info(f"Audio saved at: {out_audio_path}")
 
     def update(
@@ -152,18 +153,18 @@ class ResultsLogger:
                 )  # (B, T, repeat_factor)
                 eou_pred_wav = eou_pred_wav.view(1, -1)  # (B, T * repeat_factor)
                 eou_pred_wav = eou_pred_wav.float() * 0.8  #  make 1 audible and keep 0 as total silence
-                torchaudio.save(out_audio_path_eou, eou_pred_wav.squeeze().unsqueeze(0).detach().cpu(), pred_audio_sr)
+                sf.write(out_audio_path_eou, eou_pred_wav.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T, pred_audio_sr)
 
             if pre_audio_trimmed is not None:
                 out_audio_path_trimmed = os.path.join(self.audio_save_path, f"{name}_{sample_id}_pred_trimmed.wav")
-                torchaudio.save(
-                    out_audio_path_trimmed, pre_audio_trimmed[i].squeeze().unsqueeze(0).detach().cpu(), pred_audio_sr
+                sf.write(
+                    out_audio_path_trimmed, pre_audio_trimmed[i].squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T, pred_audio_sr
                 )
 
             if reference_audio is not None:
                 out_audio_path_ref = os.path.join(self.audio_save_path, f"{name}_{sample_id}_spk_reference.wav")
-                torchaudio.save(
-                    out_audio_path_ref, reference_audio[i].squeeze().unsqueeze(0).detach().cpu(), pred_audio_sr
+                sf.write(
+                    out_audio_path_ref, reference_audio[i].squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T, pred_audio_sr
                 )
 
             # cache metadata

@@ -1306,7 +1306,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
                         new_dataset_batch = copy.deepcopy(dataset_batch)
                         # Get only the file name
-                        ref_name = os.path.basename(inference_speaker_reference)
+                        ref_name = os.path.basename(inference_speaker_reference).split(".")[0]
                         # Append to each sample_id
                         new_dataset_batch['sample_id'] = [f"{sid}_{ref_name}" for sid in dataset_batch['sample_id']]
                         speaker_audio, sr = load_audio_librosa(inference_speaker_reference)

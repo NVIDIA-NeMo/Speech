@@ -154,9 +154,7 @@ def collect_activation_stats(model: nn.Module, inputs: dict) -> dict:
     return stats
 
 
-def classify_precision_layers(
-    model: nn.Module, stats: dict, safe_min: float, safe_max: float
-) -> list:
+def classify_precision_layers(model: nn.Module, stats: dict, safe_min: float, safe_max: float) -> list:
     """
     Determine which layers must remain FP32 for numerical stability.
 
@@ -220,8 +218,7 @@ def wrap_module_precision(module: nn.Module, force_fp32: bool, mixed_dtype=torch
                 return module._original_forward(*args, **kwargs)
         else:
             new_args = tuple(
-                a.to(mixed_dtype) if isinstance(a, torch.Tensor) and a.is_floating_point() else a
-                for a in args
+                a.to(mixed_dtype) if isinstance(a, torch.Tensor) and a.is_floating_point() else a for a in args
             )
             new_kwargs = {
                 k: v.to(mixed_dtype) if isinstance(v, torch.Tensor) and v.is_floating_point() else v
@@ -270,16 +267,11 @@ def find_sensitive_layers(
 
     # Count total relevant layers
     total_layers = sum(
-        1
-        for _, module in model.named_modules()
-        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding))
+        1 for _, module in model.named_modules() if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding))
     )
     half_precision_layers = total_layers - len(fp32_layers)
 
-    print(
-        f"Total sensitive layers (FP32): {len(fp32_layers)}, "
-        f"Half precision layers: {half_precision_layers}"
-    )
+    print(f"Total sensitive layers (FP32): {len(fp32_layers)}, " f"Half precision layers: {half_precision_layers}")
 
     return fp32_layers
 
@@ -1038,9 +1030,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         )
         return audio, audio_len, speaker_audio, speaker_audio_lens
 
-    def apply_mixed_precision_wrapping_on_tts_model(
-        self, fp32_layers: list, mixed_dtype=torch.bfloat16
-    ):
+    def apply_mixed_precision_wrapping_on_tts_model(self, fp32_layers: list, mixed_dtype=torch.bfloat16):
         """
         Apply mixed precision to TTS model layers, keeping FP32 layers intact.
 
@@ -1048,9 +1038,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             fp32_layers (list): Names of layers to keep FP32.
             mixed_dtype (torch.dtype): Target dtype for mixed precision layers.
         """
-        logging.info(
-            f"Converting TTS model to mixed precision. FP32 layers: {fp32_layers}"
-        )
+        logging.info(f"Converting TTS model to mixed precision. FP32 layers: {fp32_layers}")
         for name, module in self.tts_model.named_modules():
             if isinstance(module, (nn.Linear, nn.LayerNorm, nn.Embedding)):
                 force_fp32 = name in fp32_layers
@@ -1079,14 +1067,20 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             and str(self.trainer_config.precision) != str(32)
         ):
             if self.cfg.get("sensitive_layers", None):
-                self.apply_mixed_precision_wrapping_on_tts_model(self.cfg.sensitive_layers, mixed_dtype=torch.float16 if str(self.trainer_config.precision) == str(16) else torch.bfloat16,)
+                self.apply_mixed_precision_wrapping_on_tts_model(
+                    self.cfg.sensitive_layers,
+                    mixed_dtype=torch.float16 if str(self.trainer_config.precision) == str(16) else torch.bfloat16,
+                )
             else:
                 sensitive_layers = find_sensitive_layers(
                     self.tts_model,
                     inputs,
                     safety_factor=1.0,
                 )
-                self.apply_mixed_precision_wrapping_on_tts_model(sensitive_layers, mixed_dtype=torch.float16 if str(self.trainer_config.precision) == str(16) else torch.bfloat16,)
+                self.apply_mixed_precision_wrapping_on_tts_model(
+                    sensitive_layers,
+                    mixed_dtype=torch.float16 if str(self.trainer_config.precision) == str(16) else torch.bfloat16,
+                )
             self.model_16_precision_safe = True
 
         results["audio_tf"], results["audio_tf_len"] = self.get_teacher_force_inference_audio(dataset_batch)

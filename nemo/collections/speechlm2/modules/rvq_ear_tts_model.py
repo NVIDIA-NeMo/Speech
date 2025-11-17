@@ -100,6 +100,7 @@ TRITON_IMPORTED = False
 try:
     import triton
     import triton.language as tl
+
     TRITON_IMPORTED = True
 except ImportError:
     TRITON_IMPORTED = False
@@ -108,6 +109,7 @@ USE_TRITON = TRITON_IMPORTED and torch.cuda.is_available()
 logging.info("Triton available & CUDA detected. Using Triton kernel for batch_matmul.")
 
 if USE_TRITON:
+
     @triton.jit
     def batch_matmul_kernel(
         x_ptr,  # Pointer to input tensor x: [batch_size, d_in]
@@ -202,6 +204,7 @@ if USE_TRITON:
 try:
     import triton
     import triton.language as tl
+
     TRITON_IMPORTED = True
 except ImportError:
     TRITON_IMPORTED = False
@@ -264,9 +267,7 @@ if USE_TRITON:
         n, d_out, _ = w.shape
         result = torch.empty(b, d_out, device=x.device, dtype=torch.float32)
 
-        batch_matmul_kernel[
-            lambda meta: (b, triton.cdiv(d_out, meta["BLOCK_SIZE_DOUT"]))
-        ](
+        batch_matmul_kernel[lambda meta: (b, triton.cdiv(d_out, meta["BLOCK_SIZE_DOUT"]))](
             x.float(),
             w.float(),
             y,
@@ -285,6 +286,7 @@ if USE_TRITON:
 
 else:
     logging.info("Using PyTorch fallback (Triton unavailable or no CUDA).")
+
     # Fallback to PyTorch implementation if Triton is not available
     def batch_matmul_pytorch(x: Tensor, w: Tensor, y: Tensor, *args, **kwargs) -> Tensor:
         """

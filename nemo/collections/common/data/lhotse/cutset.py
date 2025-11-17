@@ -540,7 +540,6 @@ def cut_to_conversation(
     )
 
 
-
 @data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
 def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     """
@@ -563,11 +562,13 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
     def filter_cuts_starting_with_agent_fn(cuts: CutSet, agent_roles: Tuple[str, ...]) -> CutSet:
         """Remove cuts where the first supervision belongs to an agent role."""
+
         def _filter_fn(cut: Cut) -> bool:
             if not cut.supervisions:
                 return False
             cut.supervisions = sorted(cut.supervisions, key=lambda s: s.start)
             return cut.supervisions[0].speaker not in agent_roles
+
         return cuts.filter(_filter_fn)
 
     def convert_overlap_cut_fn(cut: Cut) -> Cut:
@@ -703,19 +704,29 @@ def read_lhotse_magpietts_data_as_continuation(config) -> Tuple[CutSet, bool]:
 
     # Filters
     def filter_cer_fn(cut: Cut) -> bool:
-        return len(cut.supervisions) == 0 or not cut.supervisions[0].has_custom("cer") or cut.supervisions[0].cer <= max_cer
+        return (
+            len(cut.supervisions) == 0
+            or not cut.supervisions[0].has_custom("cer")
+            or cut.supervisions[0].cer <= max_cer
+        )
 
     def filter_val_flag_fn(cut: Cut) -> bool:
         return not cut.has_custom("validation_status") or cut.validation_status == keep_flag
 
     def filter_secs_fn(cut: Cut) -> bool:
-        return len(cut.supervisions) == 0 or not cut.supervisions[0].has_custom("context_speaker_similarity") or cut.supervisions[0].context_speaker_similarity >= min_context_speaker_similarity
+        return (
+            len(cut.supervisions) == 0
+            or not cut.supervisions[0].has_custom("context_speaker_similarity")
+            or cut.supervisions[0].context_speaker_similarity >= min_context_speaker_similarity
+        )
 
     def filter_target_speaker_fn(cut: Cut) -> bool:
         return len(cut.supervisions) == 0 or target_speaker is None or target_speaker in cut.supervisions[0].speaker
 
     # Apply filters
-    cuts = cuts.filter(filter_cer_fn).filter(filter_val_flag_fn).filter(filter_secs_fn).filter(filter_target_speaker_fn)
+    cuts = (
+        cuts.filter(filter_cer_fn).filter(filter_val_flag_fn).filter(filter_secs_fn).filter(filter_target_speaker_fn)
+    )
 
     # Convert cuts
     cuts = cuts.map(convert_cut_fn)

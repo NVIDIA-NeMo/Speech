@@ -21,6 +21,7 @@ import torch
 from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.utils import logging
 
+
 def safe_remove_path(path):
     shutil.rmtree(path, ignore_errors=True)
 
@@ -153,18 +154,26 @@ class ResultsLogger:
                 )  # (B, T, repeat_factor)
                 eou_pred_wav = eou_pred_wav.view(1, -1)  # (B, T * repeat_factor)
                 eou_pred_wav = eou_pred_wav.float() * 0.8  #  make 1 audible and keep 0 as total silence
-                sf.write(out_audio_path_eou, eou_pred_wav.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T, pred_audio_sr)
+                sf.write(
+                    out_audio_path_eou,
+                    eou_pred_wav.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
+                )
 
             if pre_audio_trimmed is not None:
                 out_audio_path_trimmed = os.path.join(self.audio_save_path, f"{name}_{sample_id}_pred_trimmed.wav")
                 sf.write(
-                    out_audio_path_trimmed, pre_audio_trimmed[i].squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T, pred_audio_sr
+                    out_audio_path_trimmed,
+                    pre_audio_trimmed[i].squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
                 )
 
             if reference_audio is not None:
                 out_audio_path_ref = os.path.join(self.audio_save_path, f"{name}_{sample_id}_spk_reference.wav")
                 sf.write(
-                    out_audio_path_ref, reference_audio[i].squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T, pred_audio_sr
+                    out_audio_path_ref,
+                    reference_audio[i].squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
                 )
 
             # cache metadata

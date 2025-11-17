@@ -23,7 +23,7 @@ import torch
 from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.nn import functional as F
-from torchaudio import functional as ta_F
+import librosa
 
 # Project
 from nemo.collections.speechlm2.modules.ear_tts_commons import PreTrainedModel
@@ -318,7 +318,7 @@ def get_fbanks(
     are only computed once for a given set of parameters, improving efficiency
     when the function is called multiple times with the same arguments.
 
-    Note: This implementation only supports Mel filterbanks via torchaudio.
+    Note: This implementation only supports Mel filterbanks via librosa.
 
     Args:
         sample_rate (int): The sample rate of the audio.
@@ -336,16 +336,17 @@ def get_fbanks(
         Tensor: The Mel filterbank matrix.
                 Shape: [n_mels, n_fft // 2 + 1]
     """
-    # Generate Mel filterbanks using torchaudio's functional API
-    fb = ta_F.melscale_fbanks(
-        n_freqs=n_fft // 2 + 1,
-        f_min=f_min,
-        f_max=f_max,
+    # Generate Mel filterbanks using librosa's functional API
+    fb = librosa.filters.mel(
+        sr=sample_rate,
+        n_fft=n_fft,
         n_mels=n_mels,
-        sample_rate=sample_rate,
+        fmin=f_min,
+        fmax=f_max,
         norm=norm,
-        mel_scale=mel_scale,
-    ).T  # Transpose to get the shape [n_mels, n_freqs]
+        htk=(mel_scale == "htk"),
+    ) # [n_mels, n_freqs]
+    fb = torch.from_numpy(fb).float()
     return fb
 
 

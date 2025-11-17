@@ -24,7 +24,6 @@ import torch
 from omegaconf import DictConfig
 from tqdm.auto import tqdm
 
-import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ASRModel, EncDecMultiTaskModel
 from nemo.collections.asr.parts.utils import manifest_utils, rnnt_utils
@@ -200,71 +199,6 @@ def get_buffered_pred_feat_rnnt(
                 batch.clear()
                 batch_lang_ids.clear()
                 asr.sample_offset += len(batch)
-
-    if os.environ.get('DEBUG', '0') in ('1', 'y', 't'):
-        if len(refs) == 0:
-            print("ground-truth text does not present!")
-            for hyp in hyps:
-                print("hyp:", hyp)
-        else:
-            for hyp, ref in zip(hyps, refs):
-                print("hyp:", hyp)
-                print("ref:", ref)
-
-    wrapped_hyps = wrap_transcription(hyps)
-    return wrapped_hyps
-
-
-def get_buffered_pred_feat(
-    asr: FrameBatchASR,
-    frame_len: float,
-    tokens_per_chunk: int,
-    delay: int,
-    preprocessor_cfg: DictConfig,
-    model_stride_in_secs: int,
-    device: Union[List[int], int],
-    manifest: str = None,
-    filepaths: List[list] = None,
-) -> List[rnnt_utils.Hypothesis]:
-    """
-    Moved from examples/asr/asr_chunked_inference/ctc/speech_to_text_buffered_infer_ctc.py
-    Write all information presented in input manifest to output manifest and removed WER calculation.
-    """
-    # Create a preprocessor to convert audio samples into raw features,
-    # Normalization will be done per buffer in frame_bufferer
-    # Do not normalize whatever the model's preprocessor setting is
-    preprocessor_cfg.normalize = "None"
-    preprocessor = nemo_asr.models.EncDecCTCModelBPE.from_config_dict(preprocessor_cfg)
-    preprocessor.to(device)
-    hyps = []
-    refs = []
-
-    if filepaths and manifest:
-        raise ValueError("Please select either filepaths or manifest")
-    if filepaths is None and manifest is None:
-        raise ValueError("Either filepaths or manifest shoud not be None")
-
-    if filepaths:
-        for L in tqdm(filepaths, desc="Sample:"):
-            asr.reset()
-            asr.read_audio_file(L, delay, model_stride_in_secs)
-            hyp = asr.transcribe(tokens_per_chunk, delay)
-            hyps.append(hyp)
-    else:
-        with open(manifest, "r", encoding='utf_8') as mfst_f:
-            for L in tqdm(mfst_f, desc="Sample:"):
-                asr.reset()
-                L = L.strip()
-                if not L:
-                    continue
-                row = json.loads(L)
-                if 'text' in row:
-                    refs.append(row['text'])
-                audio_file = get_full_path(audio_file=row['audio_filepath'], manifest_file=manifest)
-                # do not support partial audio
-                asr.read_audio_file(audio_file, delay, model_stride_in_secs)
-                hyp = asr.transcribe(tokens_per_chunk, delay)
-                hyps.append(hyp)
 
     if os.environ.get('DEBUG', '0') in ('1', 'y', 't'):
         if len(refs) == 0:

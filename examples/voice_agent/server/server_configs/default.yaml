@@ -15,8 +15,7 @@ vad:
 
 stt:
   type: nemo # choices in ['nemo'] currently only NeMo is supported
-  model: "stt_en_fastconformer_hybrid_large_streaming_80ms"
-  # model: "nvidia/parakeet_realtime_eou_120m-v1"
+  model: "nvidia/parakeet_realtime_eou_120m-v1"
   model_config: "./server_configs/stt_configs/nemo_cache_aware_streaming.yaml"
   device: "cuda"
 

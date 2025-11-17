@@ -502,7 +502,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.source_samples_per_frame = int(self.source_sample_rate // self.source_fps)
 
         # get codec silence tokens
-        self.codec_silence_tokens = self.get_codec_silence_frame()
+        codec_silence_tokens = self.get_codec_silence_frame()
+        self.register_buffer("codec_silence_tokens", codec_silence_tokens)
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer(

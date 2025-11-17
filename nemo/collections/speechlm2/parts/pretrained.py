@@ -13,7 +13,7 @@
 # limitations under the License.
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 import torch
 from omegaconf import open_dict

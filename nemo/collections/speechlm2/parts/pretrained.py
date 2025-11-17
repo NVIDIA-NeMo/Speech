@@ -25,7 +25,6 @@ from nemo.collections.speechlm2.modules import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
-from typing import Dict
 
 
 def load_pretrained_nemo(cls, model_path_or_name: str):

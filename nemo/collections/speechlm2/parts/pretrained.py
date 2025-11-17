@@ -13,6 +13,7 @@
 # limitations under the License.
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, Dict
 
 import torch
 from omegaconf import open_dict
@@ -21,11 +22,9 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.speechlm2.modules import AudioPerceptionModule
-
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
-from typing import Dict, Any
 
 
 def load_pretrained_nemo(cls, model_path_or_name: str):
@@ -103,10 +102,11 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
 
 
-def set_model_dict_for_partial_init(pretrained_dict: Dict[str, torch.Tensor],
-                                    model_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+def set_model_dict_for_partial_init(
+    pretrained_dict: Dict[str, torch.Tensor], model_dict: Dict[str, torch.Tensor]
+) -> Dict[str, torch.Tensor]:
     """
-    Partially initialize a model's state dictionary with a pretrained state dictionary.  
+    Partially initialize a model's state dictionary with a pretrained state dictionary.
     This function safely copies compatible layers from a pretrained model into a new model,
     ignoring layers with mismatched shapes or missing keys.
 

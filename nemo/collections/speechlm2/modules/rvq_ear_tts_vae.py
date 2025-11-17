@@ -18,12 +18,13 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, Concatenate
 
+import librosa
+
 # Third-party
 import torch
 from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.nn import functional as F
-import librosa
 
 # Project
 from nemo.collections.speechlm2.modules.ear_tts_commons import PreTrainedModel
@@ -345,7 +346,7 @@ def get_fbanks(
         fmax=f_max,
         norm=norm,
         htk=(mel_scale == "htk"),
-    ) # [n_mels, n_freqs]
+    )  # [n_mels, n_freqs]
     fb = torch.from_numpy(fb).float()
     return fb
 

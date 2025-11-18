@@ -15,6 +15,7 @@
 import os
 import re
 import shutil
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Union
@@ -707,7 +708,16 @@ class ModelCheckpoint(PTLModelCheckpoint):
         # if anything goes wrong during removal, we should be able to detect that data is incomplete.
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
         try:
-            super()._remove_checkpoint(trainer, filepath)
+            if self.async_save:
+                threading.Thread(
+                    target=super()._remove_checkpoint,
+                    args=(
+                        trainer,
+                        filepath,
+                    ),
+                ).start()
+            else:
+                super()._remove_checkpoint(trainer, filepath)
         except Exception as e:
             logging.warning(
                 f'Error removing checkpoint, common if doing manual cleanup and restarting: {filepath}: {e}'
@@ -718,7 +728,16 @@ class ModelCheckpoint(PTLModelCheckpoint):
 
             filepath = self._ema_format_filepath(filepath)
             try:
-                super()._remove_checkpoint(trainer, filepath)
+                if self.async_save:
+                    threading.Thread(
+                        target=super()._remove_checkpoint,
+                        args=(
+                            trainer,
+                            filepath,
+                        ),
+                    ).start()
+                else:
+                    super()._remove_checkpoint(trainer, filepath)
             except Exception as e:
                 logging.warning(
                     f'Error removing checkpoint, common if doing manual cleanup and restarting: {filepath}: {e}'

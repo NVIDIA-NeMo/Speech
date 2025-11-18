@@ -164,7 +164,7 @@ model:
     apply_norm_out: true
     max_length_causal_mask: 2048
     use_learnable_pos_emb: true
-    make_prior_window_strict: true
+    make_prior_window_strict: false
 
   optim:
     _target_: torch.optim.AdamW

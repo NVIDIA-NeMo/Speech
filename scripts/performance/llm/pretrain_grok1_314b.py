@@ -62,6 +62,8 @@ from ..helpers import (
     set_exp_logging_configs,
     set_primary_perf_configs,
 )
+# TEMPORARY WORKAROUND - Remove in next release when upstream srun issue is fixed
+from ..slurm_exit_code_override import *  # Monkey-patch for false-positive job failures
 from ..utils import hf_tokenizer
 
 NAME = "grok1_314b"

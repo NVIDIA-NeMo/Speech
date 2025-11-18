@@ -62,9 +62,12 @@ class BaseBuilder:
                 model_name=cfg.nmt.model_name,
                 source_language=cfg.nmt.source_language,
                 target_language=cfg.nmt.target_language,
-                max_tokens=cfg.nmt.max_tokens,
-                temperature=cfg.nmt.temperature,
                 waitk=cfg.nmt.waitk,
+                device=cfg.nmt.device,
+                device_id=cfg.nmt.device_id,
+                batch_size=cfg.nmt.batch_size,
+                llm_params=cfg.nmt.llm_params,
+                sampling_params=cfg.nmt.sampling_params,
             )
         logging.info(f"NMT model `{cfg.nmt.model_name}` loaded")
         return nmt_model

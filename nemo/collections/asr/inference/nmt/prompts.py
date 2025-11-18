@@ -18,6 +18,9 @@ from abc import ABC, abstractmethod
 class PromptTemplate(ABC):
     """
     Base class for prompt templates.
+    Derived classes should implement the format and extract methods.
+        - format: format the prompt template with the given arguments
+        - extract: extract the answer from the response
     """
 
     @classmethod

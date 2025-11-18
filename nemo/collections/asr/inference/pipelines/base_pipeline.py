@@ -189,54 +189,52 @@ class BasePipeline(PipelineInterface):
             states (list[StreamingState]): List of StreamingState objects.
             step_outputs (list[TranscribeStepOutput]): List of TranscribeStepOutput objects.
         """
+        src_langs, tgt_langs = [], []
+        asr_transcripts, current_prefixes, previous_translations = [], [], []
+        final_transcript_mask = []
         states_to_translate = []
-        for i, state in enumerate(states):
-            if state.options.enable_nmt:
-                src_lang = state.options.source_language
-                tgt_lang = state.options.target_language
-                if tgt_lang is None or src_lang is None:
-                    raise ValueError("Source and target languages must be set when NMT is enabled")
+        for state, step_output in zip(states, step_outputs):
+            if not state.options.enable_nmt:
+                continue
 
-                final_transcript = step_outputs[i].final_transcript.strip()
-                partial_transcript = step_outputs[i].partial_transcript.strip()
-                if len(final_transcript) + len(partial_transcript) == 0:
-                    continue
-                states_to_translate.append(i)
+            src_lang = state.options.source_language
+            tgt_lang = state.options.target_language
+            if not src_lang or not tgt_lang:
+                raise ValueError("Source and target languages must be set when NMT is enabled")
+
+            final = step_output.final_transcript
+            partial = step_output.partial_transcript
+            if not (final.strip() or partial.strip()):
+                continue
+
+            transcript = final or partial
+            is_final = bool(final)
+            prev_translation, prefix = state.previous_translation_info
+
+            states_to_translate.append((state, step_output))
+            src_langs.append(src_lang)
+            tgt_langs.append(tgt_lang)
+            asr_transcripts.append(transcript)
+            current_prefixes.append(prefix)
+            previous_translations.append(prev_translation)
+            final_transcript_mask.append(is_final)
 
         if len(states_to_translate) == 0:
             return
 
-        src_langs, tgt_langs = [], []
-        asr_transcripts, current_prefixes, previous_translations = [], [], []
-        final_transcript_mask = {i: False for i in states_to_translate}
-        for i in states_to_translate:
-            state, step_output = states[i], step_outputs[i]
-            prev_translation, current_prefix = state.previous_translation_info
-
-            current_prefixes.append(current_prefix)
-            previous_translations.append(prev_translation)
-            src_langs.append(state.options.source_language)
-            tgt_langs.append(state.options.target_language)
-
-            if step_output.final_transcript:
-                final_transcript_mask[i] = True
-                asr_transcripts.append(step_output.final_transcript)
-            else:
-                asr_transcripts.append(step_output.partial_transcript)
-
         translations = self.nmt_model.translate(asr_transcripts, current_prefixes, src_langs, tgt_langs)
-        new_prefixes = self.nmt_model.get_nmt_prefixes(asr_transcripts, translations, previous_translations)
-        for i, step_output, translation, new_prefix in zip(
-            states_to_translate, step_outputs, translations, new_prefixes
+        new_prefixes = self.nmt_model.get_prefixes(asr_transcripts, translations, previous_translations)
+        for (state, step_output), translation, new_prefix, is_final in zip(
+            states_to_translate, translations, new_prefixes, final_transcript_mask
         ):
-            if final_transcript_mask[i]:
+            if is_final:
                 step_output.final_translation = translation
                 step_output.partial_translation = ""
-                states[i].cleanup_translation_info_after_eou()
+                state.cleanup_translation_info_after_eou()
             else:
                 step_output.partial_translation = translation
                 step_output.final_translation = ""
-                states[i].set_translation_info(translation, new_prefix)
+                state.set_translation_info(translation, new_prefix)
 
     def transcribe_step(self, requests: list[Request]) -> list[TranscribeStepOutput]:
         """

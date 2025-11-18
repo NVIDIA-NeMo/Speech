@@ -29,9 +29,18 @@ nmt:
   model_name: "utter-project/EuroLLM-1.7B-Instruct"  # vLLM-supported model name
   source_language: "English"                         # Source language code
   target_language: "Russian"                         # Target language code
-  max_tokens: 100                                    # Maximum number of tokens to generate with LLM
-  temperature: 0.0                                   # LLM sampling temperature, default for translation is 0 (greedy)
   waitk: -1                                          # Parameter that controls latency of translation
+  device: cuda                                       # Device for translation: 'cuda' or 'cpu'
+  device_id: 1                                       # GPU device ID for translation
+  batch_size: 16                                     # Batch size for translation, if -1, the batch size is set to the number of ASR transcripts
+  llm_params:                                        # See https://docs.vllm.ai/en/v0.8.1/api/offline_inference/llm.html for more details
+    dtype: "auto"                                    # Compute precision
+    seed: 42                                         # The seed to initialize the random number generator for sampling
+  sampling_params:                                   # See https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html for more details
+    max_tokens: 100                                  # Maximum number of tokens to generate with LLM
+    temperature: 0.0                                 # LLM sampling temperature, default for translation is 0 (greedy)
+    top_p: 0.9                                       # The cumulative probability threshold for nucleus sampling
+    seed: 42                                         # The seed to initialize the random number generator for sampling
 
 
 # ========================

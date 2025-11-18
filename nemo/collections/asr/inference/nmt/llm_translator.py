@@ -16,6 +16,9 @@
 import os
 import string
 
+import torch
+from omegaconf import DictConfig, OmegaConf
+
 from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplate, PromptTemplate
 
 try:
@@ -23,6 +26,7 @@ try:
 except ImportError as e:
     raise ImportError("Failed to import vLLM.") from e
 
+from nemo.utils import logging
 
 EURO_LLM_INSTRUCT_SMALL = "utter-project/EuroLLM-1.7B-Instruct"
 EURO_LLM_INSTRUCT_LARGE = "utter-project/EuroLLM-9B-Instruct"
@@ -32,6 +36,7 @@ SUPPORTED_TRANSLATION_MODELS = [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE
 class LLMTranslator:
     """
     A vLLM-based LLM translator for ASR transcripts.
+    It takes ASR transcripts and prefixes to start translation from, and returns corresponding continuations of translations.
     """
 
     def __init__(
@@ -39,9 +44,12 @@ class LLMTranslator:
         model_name: str,
         source_language: str,
         target_language: str,
-        max_tokens: int = 50,
-        temperature: float = 0.0,
         waitk: int = -1,
+        device: str = "cuda",
+        device_id: int = 0,
+        batch_size: int = -1,
+        llm_params: dict | DictConfig | None = None,
+        sampling_params: dict | DictConfig | None = None,
     ):
         """
         A model for translating ASR transcripts with LLM.
@@ -49,23 +57,81 @@ class LLMTranslator:
             model_name: (str) path to the model name on HuggingFace.
             source_language: (str) source language
             target_language: (str) target language
-            max_tokens: (int) maximum number of tokens to generate with LLM
-            temperature: (float) LLM sampling temperature, default for translation is 0 (greedy)
             waitk: (int) parameter that controls latency by forcing the generation of new
                    prefix of up to |asr|-waitk words if both translations do not agree
                    on at least of |asr|-waitk words
+            device: (str) device to run the model on
+            device_id: (int) device ID to run the model on
+            batch_size: (int) batch size for the LLM model, in case of -1, the batch size is set to the number of ASR transcripts
+            llm_params: (dict | DictConfig | None) parameters for the LLM model
+            sampling_params: (dict | DictConfig | None) parameters for the sampling
         """
         self.model_name = model_name
         if model_name not in SUPPORTED_TRANSLATION_MODELS:
             raise ValueError(f"Model {model_name} is not supported for translation.")
-        self.nmt_model = self.load_model()
-        self.prompt_template = self.get_prompt_template(model_name)
-        self.waitk = waitk
-        self.sampling_params = SamplingParams(max_tokens=max_tokens, temperature=temperature)
+
+        llm_params = self.convert_to_dict(llm_params)
+        sampling_params = self.convert_to_dict(sampling_params)
+
+        self.device_str, self.device_id = self.setup_device(device, device_id)
+
+        self.batch_size = batch_size
+        self.split_batch = self.batch_size > 0
+
+        self.nmt_model = self.load_model(llm_params)
+        self.sampling_params = SamplingParams(**sampling_params)
+
         self.source_language = source_language
         self.target_language = target_language
+        self.prompt_template = self.get_prompt_template(model_name)
+        self.waitk = waitk
 
-    def get_prompt_template(self, model_name: str) -> PromptTemplate:
+    @staticmethod
+    def convert_to_dict(params: dict | DictConfig | None) -> dict:
+        """
+        Convert DictConfig to dict.
+        Args:
+            params: (dict | DictConfig | None) parameters to convert
+        Returns:
+            dict: converted parameters
+        """
+        if params is None:
+            return dict()
+        if isinstance(params, DictConfig):
+            return OmegaConf.to_container(params)
+        return params
+
+    @staticmethod
+    def setup_device(device: str, device_id: int) -> tuple[str, int]:
+        """
+        Setup device for the LLM model.
+        Args:
+            device: (str) device to run the model on
+            device_id: (int) device ID to run the model on
+        Returns:
+            device_str: (str) device string, e.g. "cuda:1"
+            device_id: (int) device ID, e.g. 1
+        Raises:
+            ValueError: if device is not supported, or CUDA is not available
+        """
+        if device == "cpu":
+            raise ValueError("Currently, CPU is not supported for vLLM.")
+
+        if device == "cuda":
+            if not torch.cuda.is_available():
+                raise ValueError("CUDA is not not available.")
+
+            if device_id >= torch.cuda.device_count():
+                logging.warning(f"Device ID {device_id} is not available. Using GPU 0 instead.")
+                device_id = 0
+
+            device_str = f"cuda:{device_id}"
+            return device_str, device_id
+
+        raise ValueError(f"Unsupported device: {device}")
+
+    @staticmethod
+    def get_prompt_template(model_name: str) -> PromptTemplate:
         """
         Returns prompt template for the LLM model.
         Args:
@@ -75,52 +141,82 @@ class LLMTranslator:
         Raises:
             ValueError: if model is not supported for translation
         """
-        if model_name == EURO_LLM_INSTRUCT_SMALL or model_name == EURO_LLM_INSTRUCT_LARGE:
+        if model_name in [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]:
             return EuroLLMTranslatorPromptTemplate
 
         raise ValueError(f"Model {model_name} is not supported for translation.")
 
-    def load_model(self) -> LLM:
+    def load_model(self, llm_params: dict) -> LLM:
         """
         Load NMT model in vLLM format.
+        Args:
+            llm_params: (dict) parameters for the LLM model
         Returns:
             Loaded LLM instance.
         Raises:
             RuntimeError: If model loading fails.
         """
         try:
-            model = LLM(model=self.model_name)
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device_id)
+            model = LLM(model=self.model_name, **llm_params, device=self.device_str)
             return model
         except Exception as e:
             raise RuntimeError(f"Model loading failed: {str(e)}")
 
-    def translate(
-        self, asr_transcripts: list[str], nmt_prefixes: list[str], src_langs: list[str], tgt_langs: list[str]
+    def translate_batch(
+        self, asr_transcripts: list[str], prefixes: list[str], src_langs: list[str], tgt_langs: list[str]
     ) -> list[str]:
         """
         Translate ASR transcripts starting from pre-defined prefixes in target language.
         Args:
-            asr_transcripts: (list[str]) texts in source language to be translated
-            nmt_prefixes: (list[str]) texts in target language to start translation from
-            src_langs: (list[str]) source languages
-            tgt_langs: (list[str]) target languages
+            asr_transcripts: (list[str]) batch of ASR transcripts to be translated
+            prefixes: (list[str]) batch of prefixes to start translation from
+            src_langs: (list[str]) batch of source languages
+            tgt_langs: (list[str]) batch of target languages
         Returns:
             list[str] translations of ASR transcripts
         """
         input_texts = []
-        for src_lang, tgt_lang, src_prefix, tgt_prefix in zip(src_langs, tgt_langs, asr_transcripts, nmt_prefixes):
+        for src_lang, tgt_lang, src_prefix, tgt_prefix in zip(src_langs, tgt_langs, asr_transcripts, prefixes):
             text = self.prompt_template.format(src_lang, tgt_lang, src_prefix, tgt_prefix)
             input_texts.append(text)
 
         outputs = self.nmt_model.generate(input_texts, self.sampling_params)
         translations = []
-        for tgt_prefix, output in zip(nmt_prefixes, outputs):
+        for tgt_prefix, output in zip(prefixes, outputs):
             output_text = output.outputs[0].text
             output_text = self.prompt_template.extract(output_text)
             translations.append(f"{tgt_prefix}{output_text}")
         return translations
 
-    def get_nmt_prefixes(
+    def translate(
+        self, asr_transcripts: list[str], prefixes: list[str], src_langs: list[str], tgt_langs: list[str]
+    ) -> list[str]:
+        """
+        Translate ASR transcript starting from pre-defined prefix in target language.
+        Args:
+            asr_transcripts: (list[str]) ASR transcripts to be translated
+            prefixes: (list[str]) prefixes to start translation from
+            src_langs: (list[str]) source languages
+            tgt_langs: (list[str]) target languages
+        Returns:
+            list[str] translations of ASR transcripts
+        """
+        all_translations = []
+        n_requests = len(asr_transcripts)
+        bs = self.batch_size if self.split_batch else n_requests
+        for i in range(0, n_requests, bs):
+            all_translations.extend(
+                self.translate_batch(
+                    asr_transcripts=asr_transcripts[i : i + bs],
+                    prefixes=prefixes[i : i + bs],
+                    src_langs=src_langs[i : i + bs],
+                    tgt_langs=tgt_langs[i : i + bs],
+                )
+            )
+        return all_translations
+
+    def get_prefixes(
         self,
         asr_transcripts: list[str],
         translations: list[str],

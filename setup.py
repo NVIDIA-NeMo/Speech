@@ -70,9 +70,8 @@ extras_require = {
     'test': req_file("requirements_test.txt"),
     'run': req_file("requirements_run.txt"),
     # Lightning Collections Packages
-    'core': req_file(["requirements_lightning.txt", "requirements_automodel.txt"]),
+    'core': req_file(["requirements_lightning.txt"]),
     'lightning': req_file(["requirements_lightning.txt"]),
-    'automodel': req_file(["requirements_automodel.txt"]),
     'common-only': req_file('requirements_common.txt'),
     # domain packages
     'asr-only': req_file("requirements_asr.txt"),

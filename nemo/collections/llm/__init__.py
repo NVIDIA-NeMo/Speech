@@ -98,7 +98,6 @@ from nemo.collections.llm.gpt.model import (  # noqa: F401
     GPTOSSConfig20B,
     GPTOSSConfig120B,
     GPTOSSModel,
-    HFAutoModelForCausalLM,
     Hyena1bConfig,
     Hyena7bARCLongContextConfig,
     Hyena7bConfig,
@@ -395,7 +394,6 @@ __all__ = [
     "dolly",
     "peft",
     "hf_dataset",
-    "HFAutoModelForCausalLM",
     "HFMockDataModule",
 ]
 

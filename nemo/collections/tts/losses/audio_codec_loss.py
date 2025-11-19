@@ -230,8 +230,8 @@ class STFTLoss(Loss):
     @typecheck()
     def forward(self, audio_real, audio_gen, audio_len):
         spec_len = (audio_len // self.hop_length) + 1
-        spec_real = self._compute_spectrogram(audio=audio_real, spec_len=spec_len)
-        spec_gen = self._compute_spectrogram(audio=audio_gen, spec_len=spec_len)
+        spec_real = self._compute_spectrogram(audio=audio_real.float(), spec_len=spec_len).to(audio_gen.dtype)
+        spec_gen = self._compute_spectrogram(audio=audio_gen.float(), spec_len=spec_len).to(audio_gen.dtype)
         loss = self.loss_fn(predicted=spec_gen, target=spec_real, target_len=spec_len)
         return loss
 
@@ -511,4 +511,177 @@ class DiscriminatorSquaredLoss(Loss):
 
         loss /= len(disc_scores_real)
 
+        return loss
+
+
+class MMDLoss(Loss):
+    """
+    Maximum mean discrepancy (MMD) loss, as defined in https://arxiv.org/abs/2406.02315
+
+    Args:
+        kernel_radii: List of radii for Gaussian kernels
+        loss_scale: Constant to multiply loss by
+    """
+
+    def __init__(self, kernel_radii=(0.1, 1, 5, 10, 20, 50), loss_scale=1.0):
+        super().__init__()
+        self.kernel_radii = kernel_radii
+        self.loss_scale = loss_scale
+
+    @staticmethod
+    def _exp_kernel(dxx, r):
+        return torch.exp((-0.5 / r) * dxx).sum()
+
+    @staticmethod
+    def _shuffle_codebooks(x):
+        B, C, _ = x.size()
+        x_shuffled = torch.zeros_like(x)
+        for c in range(C):
+            batch_perm = torch.randperm(B, device=x.device)
+            x_shuffled[:, c, :] = x[batch_perm, c, :]
+        return x_shuffled
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": [NeuralType(('B', 'C', 'D'), VoidType())],
+        }
+
+    @property
+    def output_types(self):
+        return {"loss": NeuralType(elements_type=LossType())}
+
+    @typecheck()
+    def forward(self, inputs):
+        B, C, D = inputs.size()
+
+        x = inputs
+        x_mean = x.mean(dim=(0,), keepdim=True)
+        x_stdev = torch.sqrt(x.var(dim=(0,), keepdim=True) + 1e-8)
+        x = (x - x_mean) / x_stdev
+        y = self._shuffle_codebooks(x)
+
+        # [B, C * D]
+        x = x.reshape([B, C * D])
+        y = y.reshape([B, C * D])
+
+        # [B, B]
+        xx = torch.mm(x, x.t())
+        yy = torch.mm(y, y.t())
+        zz = torch.mm(x, y.t())
+
+        rx = xx.diag().unsqueeze(0).expand_as(xx)
+        ry = yy.diag().unsqueeze(0).expand_as(yy)
+
+        dxx = rx.t() + rx - 2.0 * xx
+        dyy = ry.t() + ry - 2.0 * yy
+        dxy = rx.t() + ry - 2.0 * zz
+
+        loss = 0.0
+        coeff = -2.0 / B**2
+        denom = B * (B - 1)
+        for r in self.kernel_radii:
+            loss += (torch.utils.checkpoint.checkpoint(self._exp_kernel, dxx, r) - B) / denom
+            loss += coeff * torch.utils.checkpoint.checkpoint(self._exp_kernel, dxy, r)
+            loss += (torch.utils.checkpoint.checkpoint(self._exp_kernel, dyy, r) - B) / denom
+
+        loss = loss.clamp(min=0)
+        loss = self.loss_scale * loss
+        return loss
+
+
+class MMDCodebookLoss(Loss):
+    """
+    MMD loss which incentivizes independence between codebooks within each timestep.
+
+    Args:
+        num_codebooks: Number of codebooks.
+        codebook_dim: Dimension of a single codebook code.
+        loss_fn: MMDLoss instance.
+    """
+
+    def __init__(self, num_codebooks, codebook_dim, loss_fn):
+        super().__init__()
+        self.num_codebooks = num_codebooks
+        self.codebook_dim = codebook_dim
+        self.loss_fn = loss_fn
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": [NeuralType(('B', 'D', 'T'), VoidType())],
+        }
+
+    @property
+    def output_types(self):
+        return {"loss": NeuralType(elements_type=LossType())}
+
+    @typecheck()
+    def forward(self, inputs):
+        B, D, T = inputs.size()
+
+        # [B, C, D / C, T]
+        x = inputs.reshape(B, self.num_codebooks, self.codebook_dim, T)
+        # [B*T, C, D / C]
+        x = rearrange(x, 'B C D T -> (B T) C D')
+        loss = self.loss_fn(inputs=x)
+        return loss
+
+
+class MMDEmbeddingLoss(Loss):
+    """
+    MMD loss which incentivizes independence between embedding values within each timestep.
+
+    Args:
+        loss_fn: MMDLoss instance.
+    """
+
+    def __init__(self, loss_fn):
+        super().__init__()
+        self.loss_fn = loss_fn
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": [NeuralType(('B', 'D', 'T'), VoidType())],
+        }
+
+    @property
+    def output_types(self):
+        return {"loss": NeuralType(elements_type=LossType())}
+
+    @typecheck()
+    def forward(self, inputs):
+        # [B*T, 1, D]
+        x = rearrange(inputs, 'B D T -> (B T) D 1')
+        loss = self.loss_fn(inputs=x)
+        return loss
+
+
+class MMDTimeLoss(Loss):
+    """
+    MMD loss which incentivizes independence between different timesteps.
+
+    Args:
+        loss_fn: MMDLoss instance.
+    """
+
+    def __init__(self, loss_fn):
+        super().__init__()
+        self.loss_fn = loss_fn
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": [NeuralType(('B', 'D', 'T'), VoidType())],
+        }
+
+    @property
+    def output_types(self):
+        return {"loss": NeuralType(elements_type=LossType())}
+
+    @typecheck()
+    def forward(self, inputs):
+        x = rearrange(inputs, 'B D T -> B T D')
+        loss = self.loss_fn(inputs=x)
         return loss

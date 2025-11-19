@@ -13,4 +13,5 @@ pandas
 pypinyin
 pypinyin-dict
 seaborn
+utmosv2 @ git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1
 

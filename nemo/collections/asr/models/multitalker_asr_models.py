@@ -127,7 +127,7 @@ class EncDecMultiTalkerRNNTBPEModel(EncDecRNNTBPEModel, SpeakerKernelMixin):
             'shuffle': False,
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
-            'use_lhotse': True,
+            'use_lhotse': config.get('use_lhotse', True),
             'use_bucketing': False,
             'channel_selector': config.get('channel_selector', None),
             'inference_mode': self.cfg.test_ds.get('inference_mode', True),

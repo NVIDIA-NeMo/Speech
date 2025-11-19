@@ -159,12 +159,16 @@ def mask_sequence_tensor(tensor: torch.Tensor, lengths: torch.Tensor):
 
 class ClampActivation(nn.Module):
 
-    def __init__(self, min_value: float = -1.0, max_value: float = 1.0):
+    def __init__(self, min_value: float = -1.0, max_value: float = 1.0, clamp_training: bool = True):
         super().__init__()
         self.min_value = min_value
         self.max_value = max_value
+        self.clamp_training = clamp_training
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if self.training and not self.clamp_training:
+            return input
+
         return torch.clamp(input, min=self.min_value, max=self.max_value)
 
 

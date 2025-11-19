@@ -102,6 +102,7 @@ class MagpieTTSModel(ModelPT):
             cfg.get('codecmodel_path'), strict=False, override_config_path=codec_model_cfg
         )
         self.sample_rate = codec_model.sample_rate
+        self.output_sample_rate = codec_model.output_sample_rate
         self.codec_model_samples_per_frame = codec_model.samples_per_frame
         # del codec discriminator to free memory
         del codec_model.discriminator
@@ -514,10 +515,10 @@ class MagpieTTSModel(ModelPT):
         codes, codes_len = self.remove_eos_token(codes=codes, codes_len=codes_len)
         return codes, codes_len
 
-    def audio_to_codes(self, audio, audio_len):
+    def audio_to_codes(self, audio, audio_len, sample_rate=None):
         self._codec_model.eval()
         with torch.no_grad(), torch.autocast(device_type=audio.device.type, dtype=torch.float32):
-            codes, codes_len = self._codec_model.encode(audio=audio, audio_len=audio_len)
+            codes, codes_len = self._codec_model.encode(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
             return codes, codes_len
 
     def codes_to_audio(self, codes, codes_len):
@@ -1322,13 +1323,13 @@ class MagpieTTSModel(ModelPT):
                     wandb_audio_log[f"Audio/Example_{idx}"] = list()
                     if context_audio_np is not None:
                         wandb_audio_log[f"Audio/Example_{idx}"].append(
-                            wandb.Audio(context_audio_np, sample_rate=self.sample_rate, caption="context")
+                            wandb.Audio(context_audio_np, sample_rate=self.output_sample_rate, caption="context")
                         )
                     wandb_audio_log[f"Audio/Example_{idx}"].append(
-                        wandb.Audio(pred_audio_np, sample_rate=self.sample_rate, caption="prediction")
+                        wandb.Audio(pred_audio_np, sample_rate=self.output_sample_rate, caption="prediction")
                     )
                     wandb_audio_log[f"Audio/Example_{idx}"].append(
-                        wandb.Audio(target_audio_np, sample_rate=self.sample_rate, caption="target")
+                        wandb.Audio(target_audio_np, sample_rate=self.output_sample_rate, caption="target")
                     )
 
                 if is_tb:
@@ -1337,19 +1338,19 @@ class MagpieTTSModel(ModelPT):
                             f'Example_{idx}/context',
                             context_audio_np,
                             global_step=self.global_step,
-                            sample_rate=self.sample_rate,
+                            sample_rate=self.output_sample_rate,
                         )
                     logger.experiment.add_audio(
                         f'Example_{idx}/prediction',
                         pred_audio_np,
                         global_step=self.global_step,
-                        sample_rate=self.sample_rate,
+                        sample_rate=self.output_sample_rate,
                     )
                     logger.experiment.add_audio(
                         f'Example_{idx}/target',
                         target_audio_np,
                         global_step=self.global_step,
-                        sample_rate=self.sample_rate,
+                        sample_rate=self.output_sample_rate,
                     )
 
         return wandb_audio_log
@@ -1466,7 +1467,7 @@ class MagpieTTSModel(ModelPT):
                 context_audio_codes_lens = batch['context_audio_codes_lens']
             else:
                 context_audio_codes, context_audio_codes_lens = self.audio_to_codes(
-                    batch['context_audio'], batch['context_audio_lens']
+                    batch['context_audio'], batch['context_audio_lens'], batch.get('context_sample_rate')
                 )
             if self._codec_converter is not None:
                 context_audio_codes = self._codec_converter.convert_original_to_new(
@@ -1689,7 +1690,9 @@ class MagpieTTSModel(ModelPT):
         disable_alignment_loss = False
 
         if 'audio_codes' not in batch:
-            audio_codes, audio_codes_lens = self.audio_to_codes(batch['audio'], batch['audio_lens'])
+            audio_codes, audio_codes_lens = self.audio_to_codes(
+                batch['audio'], batch['audio_lens'], batch.get('sample_rate')
+            )
         else:
             audio_codes = batch['audio_codes']
             audio_codes_lens = batch['audio_codes_lens']
@@ -2694,7 +2697,7 @@ class MagpieTTSModel(ModelPT):
             end_time = time.time()
             total_audio_duration_generated = (
                 predicted_audio_lens.max().item() * predicted_audio_lens.shape[0]
-            ) / self.sample_rate
+            ) / self.output_sample_rate
             rtf = total_audio_duration_generated / (end_time - start_time)
             rtf_metrics = {
                 'rtf': rtf,
@@ -2760,7 +2763,7 @@ class MagpieTTSModel(ModelPT):
                     if is_wandb:
                         log_dict = {
                             "test/predicted_audio": wandb.Audio(
-                                predicted_audio_np, sample_rate=self.sample_rate, caption="Predicted Audio"
+                                predicted_audio_np, sample_rate=self.output_sample_rate, caption="Predicted Audio"
                             ),
                         }
                         logger.experiment.log(log_dict, step=item_idx)
@@ -2770,7 +2773,7 @@ class MagpieTTSModel(ModelPT):
                             'test/predicted_audio',
                             predicted_audio_np,
                             global_step=item_idx,
-                            sample_rate=self.sample_rate,
+                            sample_rate=self.output_sample_rate,
                         )
 
                     # Save the predicted audio
@@ -2779,7 +2782,7 @@ class MagpieTTSModel(ModelPT):
                     if not os.path.exists(audio_dir):
                         os.makedirs(audio_dir)
                     audio_path = os.path.join(audio_dir, f'predicted_audioRank{self.global_rank}_{item_idx}.wav')
-                    sf.write(audio_path, predicted_audio_np, self.sample_rate)
+                    sf.write(audio_path, predicted_audio_np, self.output_sample_rate)
 
     def on_validation_epoch_end(self):
         collect = lambda key: torch.stack([x[key] for x in self.validation_step_outputs]).mean()

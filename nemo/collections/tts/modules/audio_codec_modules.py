@@ -2776,8 +2776,6 @@ class MultiResolutionSTFTEncoder(NeuralModule):
             The total down sample rate of the encoder will be 2**(len(resolutions)) * product(down_sample_rate_list)
         kernel_size: Kernel size to use in all convolutions.
         activation: Name of activation function.
-        resample_rates: Optional tuple of two integers. If provided, input audio will be resampled from sampling rate
-            resample_rates[0] to sampling rate resample_rates[1].
         pad_mode: Type of padding to use for conv1d layers.
             See https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
     """
@@ -2791,23 +2789,11 @@ class MultiResolutionSTFTEncoder(NeuralModule):
         down_sample_rate_list: Tuple[int] = (),
         kernel_size: int = 3,
         activation: str = "lrelu",
-        resample_rates: Tuple[int] = (),
         pad_mode: str = "replicate",
     ):
         super(MultiResolutionSTFTEncoder, self).__init__()
         assert len(resolutions) >= 1
         assert len(resolutions) == len(resolution_filter_list)
-
-        if resample_rates:
-            if not HAVE_TORCHAUDIO:
-                raise ValueError("Must install torchaudio for resampling.")
-
-            input_sr, encoder_sr = resample_rates
-            self.resample = torchaudio.transforms.Resample(input_sr, encoder_sr)
-            self.resample_length_modifier = encoder_sr / input_sr
-        else:
-            self.resample = torch.nn.Identity()
-            self.resample_length_modifier = 1.0
 
         n_fft, hop_length, win_length = resolutions[0]
         input_filters = resolution_filter_list[0]
@@ -2886,9 +2872,6 @@ class MultiResolutionSTFTEncoder(NeuralModule):
 
     @typecheck()
     def forward(self, audio, audio_len):
-        audio = self.resample(audio)
-        audio_len = torch.round(self.resample_length_modifier * audio_len).int()
-
         encoded, encoded_len = self.pre_spec_processor(audio=audio, audio_len=audio_len)
         encoded = self.pre_conv(inputs=encoded, input_len=encoded_len)
         encoded = self.pre_res_block(inputs=encoded, input_len=encoded_len)

@@ -493,10 +493,6 @@ def run_inference(
                 codec_model_samples_per_frame=model.codec_model_samples_per_frame,
                 bos_id=model.bos_id,
                 eos_id=model.eos_id,
-                context_audio_bos_id=model.context_audio_bos_id,
-                context_audio_eos_id=model.context_audio_eos_id,
-                audio_bos_id=model.audio_bos_id,
-                audio_eos_id=model.audio_eos_id,
                 num_audio_codebooks=model.num_audio_codebooks,
                 prior_scaling_factor=None,
                 load_cached_codes_if_available=False,
@@ -585,7 +581,7 @@ def run_inference(
                     predicted_audio_np = predicted_audio[idx].float().detach().cpu().numpy()
                     predicted_audio_np = predicted_audio_np[: predicted_audio_lens[idx]]
                     audio_path = os.path.join(pred_audio_dir, f"predicted_audio_{item_idx}.wav")
-                    sf.write(audio_path, predicted_audio_np, model.sample_rate)
+                    sf.write(audio_path, predicted_audio_np, model.output_sample_rate)
                     codes_path = os.path.join(pred_audio_dir, f"predicted_codes_{item_idx}.pt")
                     predicted_codes_current = predicted_codes[idx, :, : predicted_codes_lens[idx]]  # C, T'
                     torch.save(predicted_codes_current, codes_path)

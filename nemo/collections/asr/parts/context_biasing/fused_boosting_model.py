@@ -21,8 +21,28 @@ import torch.nn as nn
 from nemo.collections.asr.parts.context_biasing import GPUBoostingTreeModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 
+# from nemo.core.utils.optional_libs import TRITON_AVAILABLE, triton_required
+
+# if TRITON_AVAILABLE:
+#     import triton
+#
+#     from nemo.collections.asr.parts.submodules.ngram_lm.ngram_lm_triton import ngram_advance_triton_kernel
+
 
 class FusedGPUBiasingModelBase(abc.ABC, nn.Module):
+    @abstractmethod
+    def add_model(self, model: NGramGPULanguageModel) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def remove_model(self, model_id: int):
+        raise NotImplementedError
+
+    @staticmethod
+    def compatible_with_cuda_graphs() -> bool:
+        """True if model can be compiled as a part of CUDA graph, False otherwise"""
+        return False
+
     @abstractmethod
     def advance(
         self, states: torch.Tensor, model_ids: torch.Tensor, eos_id: int | None = None
@@ -41,24 +61,35 @@ class FusedGPUBiasingModelBase(abc.ABC, nn.Module):
 
 
 class FusedGPUBiasingModelNonBatched(FusedGPUBiasingModelBase):
-    """Reference slow implementation"""
+    """Reference implementation (incompatible with CUDA graphs)"""
 
-    def __init__(self, models: list[NGramGPULanguageModel]):
+    def __init__(self):
         super().__init__()
-        self.models = nn.ModuleList(models)
-        self.vocab_size = None
-        self.float_dtype = None
-        for model in self.models:
-            self._check_model_compatibility(model)
+        self.models = nn.ModuleList([])
+        self.vocab_size: int | None = None
+        self.float_dtype: torch.dtype | None = None
+        self.bos_state: int | None = None
+        self.start_state: int | None = None
+        self._params_defined = False
 
-    def _check_model_compatibility(self, model):
-        if self.vocab_size is None:
+    def _check_model_compatibility(self, model: NGramGPULanguageModel):
+        if self.vocab_size != model.vocab_size:
+            raise ValueError(f"Inconsistent vocab size: {model.vocab_size}")
+        if self.bos_state != model.bos_state:
+            raise ValueError(f"Inconsistent bos state")
+        if self.start_state != model.START_STATE:
+            raise ValueError(f"Inconsistent start state")
+
+    def add_model(self, model: NGramGPULanguageModel) -> int:
+        if not self._params_defined:
+            # there were no previous models
             self.vocab_size = model.vocab_size
-        else:
-            if self.vocab_size != model.vocab_size:
-                raise ValueError(f"Inconsistent vocab size: {model.vocab_size}")
-        if self.float_dtype is None:
+            self.bos_state = model.bos_state
+            self.start_state = model.START_STATE
             self.float_dtype = model.arc_weights.dtype
+            self._params_defined = True
+        self._check_model_compatibility(model=model)
+        raise NotImplementedError
 
     def advance(
         self, states: torch.Tensor, model_ids: torch.Tensor, eos_id: int | None = None
@@ -87,3 +118,9 @@ class FusedGPUBiasingModelNonBatched(FusedGPUBiasingModelBase):
             scores[batch_i : batch_i + 1] = scores_i
             new_states[batch_i : batch_i + 1] = new_states_i
         return scores, new_states
+
+
+class FusedGPUBiasingModel(FusedGPUBiasingModelBase):
+    def __init__(self):
+        super().__init__()
+        raise NotImplementedError

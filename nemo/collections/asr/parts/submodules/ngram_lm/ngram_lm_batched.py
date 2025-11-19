@@ -584,6 +584,10 @@ class NGramGPULanguageModel(ModelPT):
         """Stub necessary to create the ModelPT. Not used for LM"""
         pass
 
+    def compatible_with_cuda_graphs(self) -> bool:
+        """True if model can be compiled as a part of CUDA graph, False otherwise"""
+        return self.use_triton
+
     @classmethod
     def from_nemo(
         cls,

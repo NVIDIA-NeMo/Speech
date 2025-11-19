@@ -23,7 +23,7 @@ asr:
         key_phrases_file: null  # The path to the context-biasing list file (one phrase per line)
         key_phrases_list: null  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
         source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer)
-      boosting_tree_alpha: float = 0.0
+      boosting_tree_alpha: 0.0
 
 
 # ==========================================

@@ -81,7 +81,7 @@ class CacheAwarePipelineBuilder(BaseBuilder):
             Returns CacheAwareRNNTPipeline object
         """
         # building ASR model
-        decoding_cfg = cls.get_rnnt_decoding_cfg()
+        decoding_cfg = cls.get_rnnt_decoding_cfg(cfg)
         asr_model = cls._build_asr(cfg, decoding_cfg)
 
         # building ITN model

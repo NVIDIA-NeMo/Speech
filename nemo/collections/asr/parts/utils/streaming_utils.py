@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import copy
+import logging
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -1030,6 +1032,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
         batch_size=32,
         max_steps_per_timestep: int = 5,
         stateful_decoding: bool = False,
+        target_lang_id=None,
     ):
         '''
         Args:
@@ -1039,12 +1042,14 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             batch_size: Number of independent audio samples to process at each step.
             max_steps_per_timestep: Maximum number of tokens (u) to process per acoustic timestep (t).
             stateful_decoding: Boolean whether to enable stateful decoding for preservation of state across buffers.
+            target_lang_id: Optional target language ID for multilingual AST models.
         '''
         super().__init__(asr_model, frame_len=frame_len, total_buffer=total_buffer, batch_size=batch_size)
 
         # OVERRIDES OF THE BASE CLASS
         self.max_steps_per_timestep = max_steps_per_timestep
         self.stateful_decoding = stateful_decoding
+        self.target_lang_id = target_lang_id
 
         self.all_alignments = [[] for _ in range(self.batch_size)]
         self.all_preds = [[] for _ in range(self.batch_size)]
@@ -1061,12 +1066,18 @@ class BatchedFrameASRRNNT(FrameBatchASR):
 
         print("Performing Stateful decoding :", self.stateful_decoding)
 
+        if self.target_lang_id is not None:
+            logging.info("Using target language ID")
         # OVERRIDES
         self.frame_bufferer = BatchedFeatureFrameBufferer(
             asr_model=asr_model, frame_len=frame_len, batch_size=batch_size, total_buffer=total_buffer
         )
 
         self.reset()
+
+    def set_target_lang_id(self, target_lang_id):
+        """Set the target language ID for multilingual models."""
+        self.target_lang_id = target_lang_id
 
     def reset(self):
         """
@@ -1156,7 +1167,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             feat_signals.append(feat_signal)
             feat_signal_lens.append(feat_signal_len)
 
-            # preserve batch indeices
+            # preserve batch indices
             new_batch_keys.append(idx)
 
         if len(feat_signals) == 0:
@@ -1167,7 +1178,51 @@ class BatchedFrameASRRNNT(FrameBatchASR):
 
         del feat_signals, feat_signal_lens
 
-        encoded, encoded_len = self.asr_model(processed_signal=feat_signal, processed_signal_length=feat_signal_len)
+        # Handle prompt if needed - check if model supports prompts
+        prompt_tensor = None
+        if hasattr(self.asr_model, 'num_prompts') or hasattr(self.asr_model, 'prompt_kernel'):
+            # Get prompt dictionary from model config
+            prompt_dict = getattr(self.asr_model._cfg, 'model_defaults', {}).get('prompt_dictionary', {})
+            if not prompt_dict:
+                logging.ValueError("Prompt dictionary is empty in model config")
+
+            # Get prompt index from dictionary or default to 0
+            prompt_idx = 0  # Default value
+            if self.target_lang_id is not None and isinstance(self.target_lang_id, str):
+                prompt_idx = prompt_dict.get(self.target_lang_id, 0)
+                if prompt_idx == 0 and self.target_lang_id not in prompt_dict:
+                    logging.ValueError(f"Prompt ID '{self.target_lang_id}' not found in prompt dictionary")
+
+            # Create target prompt tensor with calculated time dimension
+            time_length = feat_signal.shape[2]
+            hidden_length = math.ceil(time_length / 8)
+
+            # Get number of prompts from model
+            if hasattr(self.asr_model, 'num_prompts'):
+                num_prompts = self.asr_model.num_prompts
+            else:
+                # Fallback: get from config or use default
+                num_prompts = getattr(self.asr_model._cfg, 'model_defaults', {}).get('num_prompts', 128)
+
+            prompt_tensor = torch.zeros(
+                [feat_signal.size(0), hidden_length, num_prompts], dtype=feat_signal.dtype, device=device
+            )
+
+            # Set the target language
+            for i in range(prompt_tensor.size(0)):
+                prompt_tensor[i, :, prompt_idx] = 1
+
+        # Call model forward with or without prompt
+        if prompt_tensor is not None:
+            encoded, encoded_len = self.asr_model.forward(
+                processed_signal=feat_signal,
+                processed_signal_length=feat_signal_len,
+                prompt=prompt_tensor,
+            )
+        else:
+            encoded, encoded_len = self.asr_model.forward(
+                processed_signal=feat_signal, processed_signal_length=feat_signal_len
+            )
 
         # filter out partial hypotheses from older batch subset
         if self.stateful_decoding and self.previous_hypotheses is not None:

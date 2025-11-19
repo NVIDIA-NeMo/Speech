@@ -619,6 +619,23 @@ class MultiTaskDecoding(AbstractMultiTaskDecoding):
 
 
 @dataclass
+class AEDStreamingDecodingConfig:
+    streaming_policy: str = "waitk"  # "waitk" or "alignatt"
+    alignatt_thr: float = 8  # frames threshold for alignatt
+    waitk_lagging: int = 2  # number of chunks to wait in the beginning (works for waitk and alignatt)
+    exclude_sink_frames: int = (
+        8  # number of frames to exclude from the xatt scores calculation (token can attend to first frames in the audio signal)
+    )
+    xatt_scores_layer: int = -2  # layer to get cross-attention (xatt) scores from
+    max_tokens_per_alignatt_step: int = (
+        30  # maximum number of tokens to be generated for each step of alignatt decoding policy (before the last speech chunk)
+    )
+    max_generation_length: int = 512  # maximum number of tokens to be generated for each sample
+    use_avgpool_for_alignatt: bool = False  # use avgpool for alignatt to smooth peaky xatt scores
+    hallucinations_detector: bool = True  # detect hallucinations in the predicted tokens
+
+
+@dataclass
 class MultiTaskDecodingConfig:
     strategy: str = "beam"
 

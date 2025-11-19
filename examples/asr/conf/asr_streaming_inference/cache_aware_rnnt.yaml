@@ -1,0 +1,81 @@
+# ================================
+# ASR Configuration
+# ================================
+asr:
+  model_name: stt_en_fastconformer_hybrid_large_streaming_multi         # Pre-trained CTC/hybrid model from NGC/HuggingFace or local .nemo file path
+  device: cuda                                                          # Device for inference: 'cuda' or 'cpu'
+  device_id: 0                                                          # GPU device ID
+  compute_dtype: bfloat16                                               # Compute precision: 'bfloat16' for Ampere+, 'float16' for older GPUs, or 'float32'               
+  use_amp: true                                                         # Enable Automatic Mixed Precision
+
+
+# ==========================================
+# Inverse Text Normalization Configuration
+# ==========================================
+itn:
+  input_case: lower_cased                       # Input text case handling: 'lower_cased', 'cased'
+  whitelist: null                               # Custom whitelist for ITN processing
+  overwrite_cache: false                        # Whether to overwrite existing cache files
+  max_number_of_permutations_per_split: 729     # Maximum permutations allowed per text split during ITN processing
+  left_padding_size: 4                          # Padding size (#spans) for ITN context
+  batch_size: 32                                # Batch size for ITN inference
+  n_jobs: 16                                    # Number of parallel jobs for ITN processing
+
+
+# ========================
+# Confidence estimation
+# ========================
+confidence:
+  exclude_blank: true                         # Exclude blank tokens when calculating confidence
+  aggregation: mean                           # Aggregation method for confidence across time steps
+  method_cfg:
+    name: entropy                             # Confidence estimation method: 'max_prob' or 'entropy'
+    entropy_type: tsallis                     
+    alpha: 0.5                                
+    entropy_norm: exp     
+
+
+# ========================
+# Endpointing settings
+# ========================
+endpointing:
+  stop_history_eou: 800                       # Time window (ms) for evaluating EoU
+  residue_tokens_at_end: 2                    # Number of residual tokens used for EoU
+
+
+# ========================
+# Streaming configuration
+# ========================
+streaming:
+  sample_rate: 16000                          # Audio sample rate in Hz
+  batch_size: 256                             # Number of audio frames per batch
+  word_boundary_tolerance: 4                  # Tolerance for word boundaries
+  att_context_size: [70,13]                   # Attention context size: [70,13],[70,6],[70,1],[70,0]
+  use_cache: true                             # Whether to use cache for streaming
+  use_feat_cache: true                        # Whether to cache mel-spec features, set false to re-calculate all mel-spec features in audio buffer
+  chunk_size_in_secs: null                    # Amount of audio to load for each streaming step, e.g., 0.08s for FastConformer. Set to `null` for using default size equal to 1+lookahead frames.
+  request_type: frame                         # Type of request: frame, only frame is supported for cache-aware streaming
+  num_slots: 1024                             # Number of slots in the context manager: must be >= batch_size
+
+
+# ========================
+# Pipeline settings
+# ========================
+matmul_precision: high                        # Matrix multiplication precision: highest, high, medium
+log_level: 20                                 # Logging level: 0 (NOTSET), 10 (DEBUG), 20 (INFO), 30 (WARNING), 40 (ERROR), 50 (CRITICAL)
+pipeline_type: cache_aware                    # Pipeline type: buffered, cache_aware
+asr_decoding_type: rnnt                       # Decoding method: ctc or rnnt
+
+
+# ========================
+# Runtime arguments defined at runtime   via command line
+# ========================
+audio_file: null                              # Path to audio file, directory, or manifest JSON
+output_filename: null                         # Path to output transcription JSON file
+output_dir: null                              # Directory to save time-aligned output
+enable_pnc: false                             # Whether to apply punctuation & capitalization
+enable_itn: false                             # Whether to apply inverse text normalization
+asr_output_granularity: segment               # Output granularity: word or segment
+cache_dir: null                               # Directory to store cache (e.g., .far files)
+lang: null                                    # Language code for ASR model
+return_tail_result: false                     # Whether to return the tail labels left in the right padded side of the buffer

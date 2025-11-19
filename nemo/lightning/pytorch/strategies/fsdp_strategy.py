@@ -29,7 +29,17 @@ from lightning.fabric.utilities.seed import reset_seed
 from lightning.pytorch.strategies.fsdp import FSDPStrategy as PLFSDPStrategy
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from megatron.core.transformer.transformer_layer import TransformerLayer
+
+try:
+    from megatron.core.transformer.transformer_layer import TransformerLayer
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    TransformerLayer = object
+    HAVE_MEGATRON_CORE = False
+
 from torch.distributed.checkpoint.state_dict import (  # get_state_dict,
     StateDictOptions,
     get_optimizer_state_dict,

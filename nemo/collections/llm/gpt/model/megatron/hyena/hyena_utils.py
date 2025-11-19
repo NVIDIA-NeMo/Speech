@@ -54,11 +54,10 @@ except ImportError:
 
 
 try:
-    from subquadratic_ops.b2b_causal_conv1d import b2b_causal_conv1d
-    from subquadratic_ops.causal_conv1d import causal_conv1d
-    from subquadratic_ops.fft_causal_conv1d import fft_causal_conv1d
-    from subquadratic_ops.fft_causal_conv1d import short_fft_is_available as is_fused_supported
-    from subquadratic_ops.implicit_filter import implicit_filter
+    from subquadratic_ops_torch.b2b_causal_conv1d import b2b_causal_conv1d
+    from subquadratic_ops_torch.causal_conv1d import causal_conv1d
+    from subquadratic_ops_torch.fft_causal_conv1d import fft_causal_conv1d
+    from subquadratic_ops_torch.implicit_filter import implicit_filter
 except ImportError:
 
     def causal_conv1d(*args, **kwargs):
@@ -72,10 +71,6 @@ except ImportError:
     def fft_causal_conv1d(*args, **kwargs):
         """Not imported: fft_causal_conv1d. An error will be raised if this is called."""
         raise ImportError("subquadratic_ops not installed. fft_causal_conv1d is not available.")
-
-    def is_fused_supported(*args, **kwargs):
-        """Not imported: is_fused_supported. An error will be raised if this is called."""
-        raise ImportError("subquadratic_ops not installed. is_fused_supported is not available.")
 
     def implicit_filter(*args, **kwargs):
         """Not imported: implicit_filter. An error will be raised if this is called."""
@@ -482,8 +477,6 @@ def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=Fal
     # causal
     else:
         if use_subquadratic_ops:
-            if not is_fused_supported(k.shape[-1]):  # TODO: Remove this check after full subquadratic_ops support
-                raise ValueError("subquadratic_ops FFT causal convolution is not supported for this filter length.")
             y = fft_causal_conv1d(u, k.squeeze(0))
         else:
             k_f = torch.fft.rfft(k, n=fft_size) / fft_size
@@ -1351,6 +1344,10 @@ class B2BCausalConv1dModule(nn.Module):
     """Module that performs back-to-back causal convolution operations using optimized CUDA kernels.
 
     Combines the projection and mixer convolutions into a single optimized operation.
+
+    Note: This module stores references to other modules without registering them as child modules
+    to avoid duplicate parameters in the state dict. The actual parameters are owned by the
+    parent HyenaMixer module's hyena_proj_conv and mixer attributes.
     """
 
     def __init__(
@@ -1366,9 +1363,11 @@ class B2BCausalConv1dModule(nn.Module):
         """
         super().__init__()
         self.b2b_causal_conv1d_fn = b2b_causal_conv1d
-        # Store references to the modules, not their weights
-        self._proj_conv_module = proj_conv_module
-        self._mixer_module = mixer_module
+        # Store references to the modules WITHOUT registering them as child modules
+        # Using object.__setattr__ bypasses PyTorch's module registration system
+        # This prevents their parameters from appearing in the state dict with the b2b_kernel prefix
+        object.__setattr__(self, '_proj_conv_module', proj_conv_module)
+        object.__setattr__(self, '_mixer_module', mixer_module)
         self._use_conv_bias = self._mixer_module.use_conv_bias
         self.operator_type = operator_type
 

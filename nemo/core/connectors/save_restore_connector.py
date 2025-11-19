@@ -756,8 +756,23 @@ class SaveRestoreConnector:
         torch.save(state_dict, filepath)
 
     @staticmethod
-    def _load_state_dict_from_disk(model_weights, map_location=None):
-        return torch.load(model_weights, map_location='cpu', weights_only=False)
+    def _load_state_dict_from_disk(model_weights, map_location='cpu'):
+        """
+        Load model state dict from disk.
+
+        Args:
+            model_weights: Path to the checkpoint file
+            map_location: Device to map tensors to
+
+        Returns:
+            State dict loaded from checkpoint
+
+        """
+        try:
+            return torch.load(model_weights, map_location=map_location, weights_only=True)
+        except Exception as e:
+            logging.error(f"Failed to load checkpoint with weights_only=True: {e}")
+            raise e
 
     @property
     def model_config_yaml(self) -> str:

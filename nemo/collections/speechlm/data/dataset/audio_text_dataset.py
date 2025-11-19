@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+# pylint: skip-file
+
 import copy
 import io
+import math
 import os
 from typing import Dict, List, Optional, Union
 
@@ -31,6 +35,7 @@ from nemo.collections.asr.data.audio_to_text import (
 from nemo.collections.asr.data.audio_to_text_dataset import convert_to_config_list, get_chain_dataset
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
+from nemo.collections.common.data.blendable_dataset import BlendableDataset
 from nemo.collections.common.data.dataset import ConcatDataset
 from nemo.collections.common.parts.preprocessing import collections
 from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import (
@@ -40,10 +45,6 @@ from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import (
     get_num_samples_from_files,
     maybe_cast_to_list,
 )
-from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils import (
-    get_datasets_weights_and_num_samples,
-)
-from nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset import BlendableDataset
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.utils import logging, logging_mode
 from nemo.utils import webdataset as wds
@@ -1037,3 +1038,36 @@ def get_audio_text_dataset_from_config(
         return dataset
     else:
         return datasets
+
+
+def get_datasets_weights_and_num_samples(data_prefix, num_samples):
+
+    # The data prefix should be in the format of:
+    #   weight-1, data-prefix-1, weight-2, data-prefix-2, ..
+    assert len(data_prefix) % 2 == 0
+    num_datasets = len(data_prefix) // 2
+    weights = [0] * num_datasets
+    prefixes = [0] * num_datasets
+    for i in range(num_datasets):
+        weights[i] = float(data_prefix[2 * i])
+        prefixes[i] = (data_prefix[2 * i + 1]).strip()
+    # Normalize weights
+    weight_sum = 0.0
+    for weight in weights:
+        weight_sum += weight
+    assert weight_sum > 0.0
+    weights = [weight / weight_sum for weight in weights]
+
+    # Add 0.5% (the 1.005 factor) so in case the bleding dataset does
+    # not uniformly distribute the number of samples, we still have
+    # samples left to feed to the network.
+    # TODO: check data leakage between train/val/test?
+    datasets_train_valid_test_num_samples = []
+    for weight in weights:
+        # Comes here when we have seperate train,test and validation datasets.
+        if isinstance(num_samples, int):
+            datasets_train_valid_test_num_samples.append(int(math.ceil(num_samples * weight * 1.005)))
+        else:
+            datasets_train_valid_test_num_samples.append([int(math.ceil(val * weight * 1.005)) for val in num_samples])
+
+    return prefixes, weights, datasets_train_valid_test_num_samples

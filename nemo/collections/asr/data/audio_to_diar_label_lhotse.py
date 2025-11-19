@@ -55,7 +55,6 @@ class LhotseAudioToSpeechE2ESpkDiarDataset(torch.utils.data.Dataset):
             self.cfg.get('window_stride', 0.01) * self.cfg.get('sample_rate', 16000)
         )  # 160 samples for every 1ms by default
         self.num_mel_frame_per_target_frame = int(self.cfg.get('subsampling_factor', 8))
-        self.spk_tar_all_zero = self.cfg.get('spk_tar_all_zero', False)
 
     def __getitem__(self, cuts) -> Tuple[torch.Tensor, ...]:
         audio, audio_lens, cuts = self.load_audio(cuts)
@@ -63,14 +62,20 @@ class LhotseAudioToSpeechE2ESpkDiarDataset(torch.utils.data.Dataset):
         for cut in cuts:
             speaker_activity = speaker_to_target(
                 a_cut=cut,
-                num_speakers=self.num_speakers,
                 num_sample_per_mel_frame=self.num_sample_per_mel_frame,
                 num_mel_frame_per_asr_frame=self.num_mel_frame_per_target_frame,
-                spk_tar_all_zero=self.spk_tar_all_zero,
                 boundary_segments=True,
             )
             speaker_activities.append(speaker_activity)
-        targets = collate_matrices(speaker_activities).to(audio.dtype)
+        targets = collate_matrices(speaker_activities).to(audio.dtype)  # (B, T, N)
+
+        if targets.shape[2] > self.num_speakers:
+            targets = targets[:, :, : self.num_speakers]
+        elif targets.shape[2] < self.num_speakers:
+            targets = torch.nn.functional.pad(
+                targets, (0, self.num_speakers - targets.shape[2]), mode='constant', value=0
+            )
+
         target_lens_list = []
         for audio_len in audio_lens:
             target_fr_len = get_hidden_length_from_sample_length(

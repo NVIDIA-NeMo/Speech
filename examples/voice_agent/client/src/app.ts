@@ -46,12 +46,12 @@ class WebsocketClientApp {
   private readonly serverConfigs = {
     websocket: {
       name: 'WebSocket Server',
-      baseUrl: 'http://localhost:7860',
+      baseUrl: `http://${window.location.hostname}:7860`,
       port: 8765
     },
     fastapi: {
       name: 'FastAPI Server', 
-      baseUrl: 'http://localhost:8000',
+      baseUrl: `http://${window.location.hostname}:8000`,
       port: 8000
     }
   };
@@ -257,6 +257,7 @@ class WebsocketClientApp {
 
       this.log('Initializing devices...');
       await this.rtviClient.initDevices();
+      this.log('Devices initialized successfully');
 
       this.log('Connecting to bot...');
       await this.rtviClient.connect();

@@ -297,6 +297,42 @@ Fast Conformer Hybrid
    :widths: 50,50
    :header-rows: 1
 
+Fast Conformer Hybrid with Prompt Feature
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCBPEModelWithPrompt``) supports multilingual ASR/AST through prompt-based conditioning. This model enables:
+
+- **Multi-language transcription** with language-specific prompts
+- **Streaming and offline inference** modes
+- **Scalable architecture** can support multilingual ASR and AST tasks
+
+**Key Features:**
+- Prompt-based language conditioning using one-hot embeddings
+- Concatenation-based feature fusion with learned projection networks
+- Compatible with existing FastConformer hybrid architecture
+- Support for both offline and buffered streaming inference
+
+**Usage Example:**
+
+.. code-block:: python
+
+  import nemo.collections.asr as nemo_asr
+  
+  # Load the model
+  model = nemo_asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt.restore_from("path/to/model.nemo")
+  
+  # Transcribe with language prompts
+  transcriptions = model.transcribe(
+      paths2audio_files=["audio1.wav", "audio2.wav"],
+      target_lang="en-US"  # Specify target language
+  )
+
+**Configuration and Training:**
+- Training script: ``<NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe_prompt.py``
+- Config file: ``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml``
+
+For detailed configuration parameters, see :ref:`Hybrid-Transducer-CTC with Prompt Conditioning Configuration <Hybrid-Transducer-CTC-Prompt_model__Config>`.
+
 Code-Switching
 ^^^^^^^^^^^^^^
 

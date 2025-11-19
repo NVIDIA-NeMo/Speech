@@ -451,12 +451,6 @@ class IpaG2p(BaseG2p):
     def __call__(self, text: str) -> List[str]:
         text = normalize_unicode_text(text)
 
-        if self.heteronym_model is not None:
-            try:
-                text = self.heteronym_model.disambiguate(sentences=[text])[1][0]
-            except Exception as e:
-                logging.warning(f"Heteronym model failed {e}, skipping")
-
         words_list_of_tuple = self.word_tokenize_func(text)
 
         prons = []

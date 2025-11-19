@@ -180,6 +180,7 @@ class Llama4SelfAttention(MCoreSelfAttention):
         sequence_len_offset: Optional[int] = None,
         *,
         inference_params: Optional[BaseInferenceContext] = None,
+        **kwargs,
     ) -> Tuple[Tensor, Tensor]:
         """
         Perform a forward pass through the attention module.

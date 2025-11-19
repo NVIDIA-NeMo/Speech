@@ -29,6 +29,9 @@ tts_models:
   "fastpitch-hifigan":
     yaml_id: "nemo_fastpitch-hifigan.yaml"
 
+  "hexgrad/Kokoro-82M":
+    yaml_id: "kokoro_82M.yaml"
+
 stt_models:
   "stt_en_fastconformer_hybrid_large_streaming_80ms":
     yaml_id: "nemo_cache_aware_streaming.yaml"

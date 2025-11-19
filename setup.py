@@ -70,9 +70,8 @@ extras_require = {
     'test': req_file("requirements_test.txt"),
     'run': req_file("requirements_run.txt"),
     # Lightning Collections Packages
-    'core': req_file(["requirements_lightning.txt", "requirements_automodel.txt"]),
+    'core': req_file(["requirements_lightning.txt"]),
     'lightning': req_file(["requirements_lightning.txt"]),
-    'automodel': req_file(["requirements_automodel.txt"]),
     'common-only': req_file('requirements_common.txt'),
     # domain packages
     'asr-only': req_file("requirements_asr.txt"),
@@ -82,12 +81,10 @@ extras_require = {
     'slu': req_file("requirements_slu.txt"),
     'multimodal-only': req_file("requirements_multimodal.txt"),
     'audio': req_file("requirements_audio.txt"),
-    'deploy': req_file("requirements_deploy.txt"),
-    'eval': req_file("requirements_eval.txt"),
 }
 
 
-extras_require['all'] = list(chain(val for key, val in extras_require.items() if key != 'deploy'))
+extras_require['all'] = list(chain(val for key, val in extras_require.items()))
 
 # Add lightning requirements as needed
 extras_require['common'] = extras_require['common-only']
@@ -117,7 +114,6 @@ extras_require['nlp'] = extras_require['nlp-only']
 extras_require['nlp'] = list(
     chain(
         extras_require['nlp'],
-        extras_require['eval'],
         extras_require['common'],
     )
 )
@@ -147,14 +143,6 @@ extras_require['slu'] = list(
     chain(
         extras_require['slu'],
         extras_require['asr'],
-    )
-)
-extras_require['deploy'] = list(
-    chain(
-        extras_require['nlp'],
-        extras_require['multimodal'],
-        extras_require['tts'],
-        extras_require['deploy'],
     )
 )
 

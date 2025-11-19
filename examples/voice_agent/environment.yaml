@@ -176,6 +176,7 @@ dependencies:
     - kaldi-python-io==1.2.2
     - kaldialign==0.9.1
     - kiwisolver==1.4.9
+    - kokoro==0.9.4
     - kornia==0.8.1
     - kornia-rs==0.1.9
     - langdetect==1.0.9
@@ -451,4 +452,5 @@ dependencies:
     - zarr==2.18.3
     - zipp==3.23.0
     - zstandard==0.25.0
+    - espeakng==1.0.3
 prefix: /home/heh/anaconda3/envs/nemo2

@@ -112,8 +112,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             self.sortformer_modules.encoder_proj = None
         self._init_loss_weights()
 
-        self.eps = 1e-3
-        self.negative_init_val = -99
+        self.eps = self._cfg.get("eps", 1e-3)
+        self.negative_init_val = self._cfg.get("negative_init_val", -99)
         self.loss = instantiate(self._cfg.loss)
 
         self.async_streaming = self._cfg.get("async_streaming", False)
@@ -128,6 +128,21 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
 
         self.max_batch_dur = self._cfg.get("max_batch_dur", 20000)
         self.concat_and_pad_script = torch.jit.script(self.sortformer_modules.concat_and_pad)
+        self.rttms_mask_mats: List[torch.Tensor] = None  # Used when GT diarization needs to be tested.
+
+    def add_rttms_mask_mats(self, rttms_mask_mats, device: torch.device):
+        """
+        Check if the rttms_mask_mats is empty then add it to the list
+
+        Args:
+            rttms_mask_mats (List[torch.Tensor]): List of PyTorch tensors containing the rttms mask matrices.
+        """
+        if self.rttms_mask_mats is None:
+            self.rttms_mask_mats = rttms_mask_mats.to(device)
+        else:
+            raise ValueError(
+                f"{self.rttms_mask_mats.shape}: rttms_mask_mats already exist but new one is being added."
+            )
 
     def _init_loss_weights(self):
         pil_weight = self._cfg.get("pil_weight", 0.0)
@@ -304,7 +319,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         """
         encoder_mask = self.sortformer_modules.length_to_mask(emb_seq_length, emb_seq.shape[1])
         trans_emb_seq = self.transformer_encoder(encoder_states=emb_seq, encoder_mask=encoder_mask)
-        preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
+        _preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
+        preds = _preds * encoder_mask.unsqueeze(-1)
         return preds
 
     def _diarize_forward(self, batch: Any):
@@ -704,6 +720,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         processed_signal_length,
         streaming_state,
         total_preds,
+        drop_extra_pre_encoded=0,
         left_offset=0,
         right_offset=0,
     ):
@@ -744,6 +761,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         chunk_pre_encode_embs, chunk_pre_encode_lengths = self.encoder.pre_encode(
             x=processed_signal, lengths=processed_signal_length
         )
+        # To match the output of the ASR model, we need to drop the extra pre-encoded embeddings
+        if drop_extra_pre_encoded > 0:
+            chunk_pre_encode_embs = chunk_pre_encode_embs[:, drop_extra_pre_encoded:, :]
+            chunk_pre_encode_lengths = chunk_pre_encode_lengths - drop_extra_pre_encoded
 
         if self.async_streaming:
             spkcache_fifo_chunk_pre_encode_embs, spkcache_fifo_chunk_pre_encode_lengths = (

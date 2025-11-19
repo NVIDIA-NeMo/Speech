@@ -25,7 +25,12 @@ from PIL import Image
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from nemo.collections.nlp.data.language_modeling.megatron import indexed_dataset
+try:
+    from nemo.collections.nlp.data.language_modeling.megatron import indexed_dataset
+
+    HAVE_NLP = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_NLP = False
 
 """
 You can run this script as follows

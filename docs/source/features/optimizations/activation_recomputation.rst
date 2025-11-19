@@ -11,7 +11,7 @@ NeMo also supports partial transformer layer recomputation, which is beneficial 
 
 The recomputation config can be enabled via the transformer config `TransformerConfig <https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/transformer_config.py#L25>`_.
 
-Transformer layer recomputation is enabled by setting ``recompute_method=full``.
+Transformer layer recomputation is enabled by setting ``recompute_granularity=full``.
 The number of transformer layers to recompute can be set using ``recompute_num_layers`` along with ``recompute_method=block``.
 If you set ``recompute_num_layers`` as the total number of layers, the inputs of all transformer layers are checkpointed and recomputed.
 When training with the pipeline parallelism, ``recompute_num_layers`` indicates the layers per pipeline stage.

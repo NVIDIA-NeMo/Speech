@@ -15,8 +15,8 @@ asr:
       use_cuda_graph_decoder: true
       max_symbols: 10
       # n-gram LM
-      ngram_lm_model: null
-      ngram_lm_alpha: 0.0
+      ngram_lm_model: null  # The path to built '.nemo' NGPU-LM model
+      ngram_lm_alpha: 0.0  # Weight of the LM model
       # phrase boosting
       boosting_tree:
         model_path: null  # The path to built '.nemo' boosting tree model

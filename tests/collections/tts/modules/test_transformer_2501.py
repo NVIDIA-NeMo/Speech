@@ -37,6 +37,9 @@ def set_seed(seed):
     random.seed(seed)
 
 
+from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
+
+
 @pytest.mark.unit
 class TestConvolutionLayer:
     @classmethod
@@ -53,6 +56,7 @@ class TestConvolutionLayer:
               [-1.0317,  1.6818,  1.4257, -0.5003, -1.7254,  0.8830, -0.4541, -0.4631, -0.0986,  0.5083],
               [-0.3231, -1.0899,  0.5774,  0.1661,  0.9620, -2.3307, -0.6158, -0.3663,  1.2469, -1.0208]]]
         )
+        cls.input_mask = torch.ones(1, cls.input_tensor.shape[2])
         # fmt:on
 
     def test_non_causal_forward(self):
@@ -68,7 +72,7 @@ class TestConvolutionLayer:
         )
 
         with torch.no_grad():
-            output_tensor = layer(self.input_tensor)
+            output_tensor = layer(self.input_tensor, self.input_mask)
 
         # fmt:off
         expected_output_tensor = torch.Tensor(
@@ -96,7 +100,7 @@ class TestConvolutionLayer:
         )
 
         with torch.no_grad():
-            output_tensor = layer(self.input_tensor)
+            output_tensor = layer(self.input_tensor, self.input_mask)
 
         # fmt:off
         expected_output_tensor = torch.Tensor(
@@ -133,6 +137,7 @@ class TestPositionwiseConvFF:
               [-0.1543,  0.3365,  1.7475],
               [-0.1753,  0.4115,  0.0772]]]
         )
+        cls.input_mask = torch.ones(1, cls.input_tensor.shape[1])
         # fmt:on
 
     def test_causal_forward(self):
@@ -142,7 +147,7 @@ class TestPositionwiseConvFF:
         )
 
         with torch.no_grad():
-            output_tensor = layer(self.input_tensor)
+            output_tensor = layer(self.input_tensor, self.input_mask)
 
         # fmt:off
         expected_output_tensor = torch.Tensor(
@@ -168,7 +173,7 @@ class TestPositionwiseConvFF:
         )
 
         with torch.no_grad():
-            output_tensor = layer(self.input_tensor)
+            output_tensor = layer(self.input_tensor, self.input_mask)
 
         # fmt:off
         expected_output_tensor = torch.Tensor(
@@ -795,3 +800,58 @@ class TestTransformer:
                 expected_output["attn_probabilities"][i]["cross_attn_probabilities"][0],
                 atol=1e-4,
             )
+
+
+@pytest.mark.unit
+class TestTransformerBatchedInference:
+    @classmethod
+    def setup_class(cls):
+        cls.n_layers = 3
+        cls.d_model = 4
+        cls.d_ffn = 16
+        cls.sa_n_heads = 2
+        cls.p_dropout = 0.0
+        cls.p_dropout_out = 0.0
+        cls.max_length_causal_mask = 10
+        cls.short_length = 4
+        cls.long_length = 10
+
+    def test_forward(self):
+        set_seed(0)
+        query_tensor1 = torch.randn(1, self.long_length, self.d_model)
+        query_tensor2 = torch.randn(1, self.short_length, self.d_model)
+
+        padding_tensor = torch.randn(1, self.long_length - self.short_length, self.d_model)
+        query_tensor2_padded = torch.cat([query_tensor2, padding_tensor], dim=1)
+        lengths = torch.tensor([self.long_length, self.short_length])
+        mask_batched = get_mask_from_lengths(lengths)
+
+        query_batched = torch.cat([query_tensor1, query_tensor2_padded], dim=0)
+
+        mask_bs1_1 = torch.ones(1, self.long_length)
+        mask_bs1_2 = torch.ones(1, self.short_length)
+
+        for is_causal in [True, False]:
+            for kernel_size in [1, 3]:
+                model = Transformer(
+                    n_layers=self.n_layers,
+                    d_model=self.d_model,
+                    d_ffn=self.d_ffn,
+                    sa_n_heads=self.sa_n_heads,
+                    kernel_size=kernel_size,
+                    p_dropout=self.p_dropout,
+                    p_dropout_out=self.p_dropout_out,
+                    is_causal=is_causal,
+                    max_length_causal_mask=self.max_length_causal_mask,
+                )
+
+                output_batched = model(query_batched, mask_batched)
+                output_bs1_1 = model(query_tensor1, mask_bs1_1)
+                output_bs1_2 = model(query_tensor2, mask_bs1_2)
+
+                assert torch.allclose(
+                    output_batched['output'][0][: self.long_length, :], output_bs1_1['output'], atol=1e-4
+                )
+                assert torch.allclose(
+                    output_batched['output'][1][: self.short_length, :], output_bs1_2['output'], atol=1e-4
+                )

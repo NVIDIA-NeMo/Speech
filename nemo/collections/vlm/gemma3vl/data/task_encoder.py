@@ -104,6 +104,14 @@ class TaskEncoder(BaseTaskEncoder):
         return batch_data
 
     def encode_vqa_sample_multi_turns(self, input_sample: VQASample):
+        """Encode a VQA sample multi turns into a DataSample format.
+
+        Args:
+            input_sample (VQASample): Input VQA sample containing image, context and answers
+
+        Returns:
+            Encoded tokens, labels and images.
+        """
         images = input_sample.image if isinstance(input_sample.image, list) else [input_sample.image]
 
         contexts = json.loads(input_sample.context.decode('utf-8'))
@@ -132,7 +140,7 @@ class TaskEncoder(BaseTaskEncoder):
         images = outputs.get("pixel_values")  # Use .get() for optional images
 
         # --- Label Generation ---
-        # Same as: https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/vlm/qwen2vl/data/task_encoder.py#L263-L270.
+        # Same as: https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/vlm/qwen2vl/data/task_encoder.py#L263-L270
         # Initialize labels with ignore placeholder
         labels = torch.full_like(tokens, self.config.ignore_place_holder)
         search_start_index = 0

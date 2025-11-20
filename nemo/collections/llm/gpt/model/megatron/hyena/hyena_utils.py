@@ -1351,7 +1351,12 @@ class B2BCausalConv1dModule(nn.Module):
     """
 
     def __init__(
-        self, proj_conv_module, mixer_module, operator_type="hyena_short_conv", b2b_causal_conv1d=b2b_causal_conv1d, flip_mixer_weight: bool = False
+        self,
+        proj_conv_module,
+        mixer_module,
+        operator_type="hyena_short_conv",
+        b2b_causal_conv1d=b2b_causal_conv1d,
+        flip_mixer_weight: bool = False,
     ):
         """Initialize the B2BCausalConv1dModule.
 

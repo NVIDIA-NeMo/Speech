@@ -455,7 +455,8 @@ import warnings
 
 
 warnings.warn(
-    "nemo.collections.llm is deprecated and will be removed in the next major NeMo FW container release.",
+    "nemo.collections.llm is deprecated and will be removed in a future major NeMo FW container release. "
+    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
     DeprecationWarning,
     stacklevel=2,
 )

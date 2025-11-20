@@ -312,11 +312,12 @@ class ReRankerImporter(io.ModelConnector["AutoModelForSequenceClassification", R
     def init(self) -> ReRankerModel:
         return ReRankerModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """Apply the conversion from HF to NeMo format.
 
         Args:
             output_path: Path where the converted model will be saved
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path
 
         Returns:
             Path: Path to the saved NeMo model
@@ -325,6 +326,7 @@ class ReRankerImporter(io.ModelConnector["AutoModelForSequenceClassification", R
 
         target = self.init()
         trainer = self.nemo_setup(target)
+        self.trust_remote_code = trust_remote_code
         source = AutoModelForSequenceClassification.from_pretrained(
             str(self),
             torch_dtype='auto',
@@ -413,8 +415,9 @@ class ReRankerExporter(io.ModelConnector[ReRankerModel, "AutoModelForSequenceCla
         with no_init_weights():
             return LlamaBidirectionalForSequenceClassification._from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """Apply the conversion from NeMo to HF format."""
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         source_dtype = source.module.embedding.word_embeddings.weight.dtype
         target = self.init(source_dtype)

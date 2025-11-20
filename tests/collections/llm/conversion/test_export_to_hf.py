@@ -27,6 +27,7 @@ def get_parser():
     parser.add_argument("--original-hf-path", type=str, default="models/llama_31_toy")
     parser.add_argument("--output-path", type=str, default="/tmp/output_hf")
     parser.add_argument("--add-model-name", action="store_true", default=False)
+    parser.add_argument("--trust-remote-code", action="store_true", help="if trust_remote_code")
     parser.add_argument("--hf-target-class", type=str, default="AutoModelForCausalLM")
     parser.add_argument(
         "--allow-mismatch", nargs='+', default=[], help="List of parameter names to compare after casting to bfloat16"
@@ -36,7 +37,7 @@ def get_parser():
 
 if __name__ == '__main__':
     args = get_parser().parse_args()
-    kwargs = {}
+    kwargs = {'trust_remote_code': args.trust_remote_code}
     if args.add_model_name:
         kwargs = {
             'target_model_name': args.original_hf_path,

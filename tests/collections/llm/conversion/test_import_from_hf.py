@@ -30,6 +30,7 @@ def get_parser():
     parser.add_argument("--model-config", type=str, help="Model config", default="Llama31Config8B")
     parser.add_argument("--output-path", type=str, help="Output NeMo2 model")
     parser.add_argument("--ignore-keys", nargs='+', type=str, default=[], help="Ignore keys")
+    parser.add_argument("--trust-remote-code", action="store_true", help="if trust_remote_code")
     return parser
 
 
@@ -65,6 +66,7 @@ if __name__ == '__main__':
         source=f"hf://{args.hf_path}",
         output_path=args.output_path,
         overwrite=True,
+        trust_remote_code=args.trust_remote_code,
     )
 
     trainer = nl.Trainer(

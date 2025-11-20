@@ -229,8 +229,9 @@ class HFGPTOSSImporter(_BaseGPTOSSImporter):
     """Importer for GPT-OSS models from Hugging Face"""
 
     # pylint: disable=C0115,C0116
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         logging.setLevel(logging.DEBUG)
+        self.trust_remote_code = trust_remote_code
         source_state = self.hf_ckpt_load()
         source = _ModelState(source_state)
         target = self.init()
@@ -568,7 +569,7 @@ class HFGPTOSSPEFTExporter(HFGPTOSSExporter):
         model.name_or_path = os.path.join(model_ckpt_path.split("/")[-2:])
         return get_peft_model(model, self.peft_config, autocast_adapter_dtype=False)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """Apply the conversion from NeMo PEFT model to HF format.
 
         Args:
@@ -579,6 +580,7 @@ class HFGPTOSSPEFTExporter(HFGPTOSSExporter):
         """
         from nemo.collections.llm.peft import CanonicalLoRA, DoRA, LoRA
 
+        self.trust_remote_code = trust_remote_code
         self.peft_obj: Union[LoRA, DoRA, CanonicalLoRA] = io.load_context(str(self), subpath="model.model_transform")
 
         source, _ = self.nemo_load(str(self))

@@ -215,9 +215,10 @@ class HFQwen2Importer(io.ModelConnector["AutoModelForCausalLM", Qwen2Model]):
     def init(self) -> Qwen2Model:
         return Qwen2Model(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         from transformers import AutoModelForCausalLM
 
+        self.trust_remote_code = trust_remote_code
         source = AutoModelForCausalLM.from_pretrained(
             str(self),
             torch_dtype='auto',
@@ -342,7 +343,8 @@ class HFQwen2Exporter(io.ModelConnector[Qwen2Model, "AutoModelForCausalLM"]):
                 torch_dtype=dtype,
             )
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         target = self.init(torch_dtype_from_mcore_config(source.config))
         target = self.convert_state(source, target)

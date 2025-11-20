@@ -226,9 +226,10 @@ class HFDeepSeekImporter(io.ModelConnector["AutoModelForCausalLM", DeepSeekModel
     def init(self) -> DeepSeekModel:
         return DeepSeekModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, convert_mtp: bool = False) -> Path:
+    def apply(self, output_path: Path, convert_mtp: bool = False, trust_remote_code: bool | None = None) -> Path:
         from transformers import AutoModelForCausalLM
 
+        self.trust_remote_code = trust_remote_code
         self.convert_mtp = convert_mtp
         self._verify_source()
         source = AutoModelForCausalLM.from_pretrained(
@@ -557,8 +558,9 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
                 state_dict[new_k] = v
         return state_dict, config['config']
 
-    def apply(self, output_path: Path, target_model_name=None) -> Path:
+    def apply(self, output_path: Path, target_model_name=None, trust_remote_code: bool | None = None) -> Path:
         logging.info("Loading DeepSeek NeMo checkpoint. This may take a while...")
+        self.trust_remote_code = trust_remote_code
         source, source_config = self.ckpt_load(self)
         logging.info("DeepSeek NeMo checkpoint loaded.")
         if target_model_name is None:

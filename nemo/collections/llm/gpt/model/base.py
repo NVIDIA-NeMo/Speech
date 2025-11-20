@@ -315,7 +315,6 @@ class GPTConfig(TransformerConfig, io.IOMixin):
 
     vocab_size: Optional[int] = None
     tp_comm_overlap_cfg: Optional[Union[str, dict[str, Any]]] = None
-    trust_remote_code: Optional[bool] = None
 
     def configure_model(self, tokenizer, pre_process=None, post_process=None, vp_stage=None) -> "MCoreGPTModel":
         """Configure and instantiate a Megatron Core GPT model based on this configuration.

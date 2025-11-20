@@ -122,17 +122,32 @@ def barrier():
         dist.barrier()
 
 
-def is_safe_repo(trust_remote_code: bool = None, hf_path: str = None) -> bool:
+def is_safe_repo(hf_path: str, trust_remote_code: bool | None) -> bool:
     """
-    Determine whether remote code execution should be trusted for a given
-    Hugging Face repository path.
+    Decide whether remote code execution should be enabled for a Hugging Face
+    model or dataset repository.
+    This function follows three rules:
+        1. If `trust_remote_code` is explicitly provided (True/False), its value
+            takes precedence.
+        2. If `trust_remote_code` is None, the function checks whether the repo
+            belongs to a predefined list of trusted repositories (`SAFE_REPOS`).
+        3. Otherwise, remote code execution is disabled.
     Args:
-        trust_remote_code (bool): whther to define repo as safe w/o checking SAFE_REPOS.
-        hf_path (str): path to HF's model or dataset.
+        hf_path (str):
+            The Hugging Face repository identifier (e.g., "org/model_name").
+        trust_remote_code (bool | None):
+            If True, always allow remote code execution.
+            If False, always disable it.
+            If None, fall back to internal safety rules and trusted repo list.
     Returns:
-        True if remote code execution is allowed; False otherwise.
+        bool: Whether remote code execution should be enabled.
     """
     if trust_remote_code is not None:
+        if trust_remote_code is False:
+            logging.warning(
+                "`trust_remote_code=False`. Remote code may not be executed. "
+                "Set `trust_remote_code=True` only if you fully trust the Hugging Face repository."
+            )
         return trust_remote_code
 
     hf_repo = hf_path.split("/")[0]

@@ -329,15 +329,17 @@ class PyTorchSSMImporter(io.ModelConnector["MambaModel", MambaModel]):
         """
         return MambaModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, source_dist_ckpt: bool = False) -> Path:
+    def apply(self, output_path: Path, source_dist_ckpt: bool = False, trust_remote_code: bool | None = None) -> Path:
         """
         Converts the SSM model to Nemo format and saves it to the specified path.
         Args:
             output_path (Path): The path to save the exported model.
             source_dist_ckpt (bool): Whether to load from a distributed checkpoint.
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path.
         Returns:
             output_path (Path): The path to the saved model.
         """
+        self.trust_remote_code = trust_remote_code
         if source_dist_ckpt:
             source, dist_ckpt_args = dist_ckpt_handler(str(self))
         else:
@@ -476,14 +478,16 @@ class HFNemotronHImporter(io.ModelConnector["AutoModelForCausalLM", MambaModel])
         """
         return MambaModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """
         Converts the NemotronH model to Nemo format and saves it to the specified path.
         Args:
             output_path (Path): The path to save the exported model.
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path.
         Returns:
             output_path (Path): The path to the saved model.
         """
+        self.trust_remote_code = trust_remote_code
         source = AutoModelForCausalLM.from_pretrained(
             str(self),
             trust_remote_code=is_safe_repo(
@@ -628,14 +632,16 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
                 ),
             )
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """
         Converts the Mamba model to Hugging Face format and saves it to the specified path.
         Args:
             output_path (Path): The path to save the exported model.
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path.
         Returns:
             output_path (Path): The path to the saved model.
         """
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         source = source.to(torch_dtype_from_mcore_config(source.config))
         target = self.init().to(torch_dtype_from_mcore_config(source.config))

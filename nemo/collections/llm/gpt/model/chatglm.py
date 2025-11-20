@@ -114,18 +114,20 @@ class HFChatGLMImporter(io.ModelConnector["AutoModelForCausalLM", ChatGLMModel])
         """
         return ChatGLMModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """
         Apply the conversion from HF to NeMo format.
 
         Args:
             output_path: Path where the converted model will be saved
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path
 
         Returns:
             Path: Path to the saved NeMo model
         """
         from transformers import AutoModelForCausalLM
 
+        self.trust_remote_code = trust_remote_code
         source = AutoModelForCausalLM.from_pretrained(
             str(self),
             trust_remote_code=is_safe_repo(
@@ -266,7 +268,8 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
             type(hf_model).register_for_auto_class("AutoModelForCausalLM")
             return hf_model
 
-    def apply(self, output_path: Path, target_model_name=None) -> Path:
+    def apply(self, output_path: Path, target_model_name=None, trust_remote_code: bool | None = None) -> Path:
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         target = self.init(torch_dtype_from_mcore_config(source.config), model_name=target_model_name)
         target = self.convert_state(source, target)

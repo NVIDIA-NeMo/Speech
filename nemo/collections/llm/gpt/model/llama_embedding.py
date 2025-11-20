@@ -304,15 +304,17 @@ class LlamaEmbeddingImporter(HFLlamaImporter):
 
         return output
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """Apply the conversion from HF to NeMo format.
         Args:
             output_path: Path where the converted model will be saved
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path
         Returns:
             Path: Path to the saved NeMo model
         """
         from transformers import AutoModel, AutoModelForCausalLM
 
+        self.trust_remote_code = trust_remote_code
         try:
             source = AutoModelForCausalLM.from_pretrained(
                 str(self),
@@ -372,7 +374,8 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
         with no_init_weights():
             return LlamaBidirectionalModel._from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         source_dtype = source.module.embedding.word_embeddings.weight.dtype
         target = self.init(source_dtype)

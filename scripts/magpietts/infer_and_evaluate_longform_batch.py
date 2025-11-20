@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import argparse
 import copy
 import glob
@@ -21,7 +23,7 @@ import shutil
 import time
 from functools import partial
 from pathlib import Path
-from typing import List
+from typing import Union, List, Dict, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,13 +44,13 @@ from scripts.magpietts.infer_and_evaluate import (
     update_ckpt,
     update_config,
 )
+from torch.utils.data import Dataset, DataLoader
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
-from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.models import MagpieTTSStreamingInference
-from nemo.collections.tts.parts.utils.tts_dataset_utils import _read_audio
+from nemo.collections.tts.parts.utils.tts_dataset_utils import _read_audio, stack_tensors
 
 # EVALUATION_DATASETS is the full list of datasets for evaluation of a new model.
 EVALUATION_DATASETS = (
@@ -56,36 +58,310 @@ EVALUATION_DATASETS = (
 )
 
 
+def split_by_sentence(
+    paragraph: str,
+    sentence_separators: Union[str, List[str]] = ['.', '?', '!', '...']
+) -> List[str]:
+    """
+    Splits a paragraph into sentences based on sentence-ending punctuation.
+    
+    This method handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by checking
+    if the separator is followed by a space before splitting. Sentence-ending punctuation is
+    preserved with each sentence.
+    
+    Args:
+        paragraph (str): The input text paragraph to split into sentences.
+        sentence_separators (Union[str, List[str]]): A string or list of strings representing
+            sentence-ending punctuation marks. Defaults to ['.', '?', '!', '...'].
+    
+    Returns:
+        List[str]: A list of sentence strings with punctuation preserved.
+    
+    Examples:
+        >>> model.chunk_and_tokenize_text_sentence("Hello world. How are you?")
+        ["Hello world.", "How are you?"]
+        
+        >>> model.chunk_and_tokenize_text_sentence("Dr. Smith is here. Good morning!")
+        ["Dr. Smith is here.", "Good morning!"]
+        
+        >>> model.chunk_and_tokenize_text_sentence("Really? Yes! Amazing.")
+        ["Really?", "Yes!", "Amazing."]
+    """
+    if not paragraph or not paragraph.strip():
+        return []
+    paragraph = paragraph.replace('-', ' ')
+    paragraph = paragraph.replace('*', '')
+    
+    # Normalize to list if single string is provided
+    if isinstance(sentence_separators, str):
+        sentence_separators = [sentence_separators]
+    
+    sentences = []
+    last_sep_idx = -1
+    
+    for i, char in enumerate(paragraph):
+        # Check if the current character is a separator and the next character is a space
+        # The additional space check is done to avoid splitting words like "a.m." or "Dr." into sentences
+        next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
+        if char in sentence_separators and next_char == " ":
+            sentences.append(paragraph[last_sep_idx + 1 : i + 1].strip())
+            last_sep_idx = i + 1
+    
+    # Add the remaining text as the last sentence
+    if last_sep_idx < len(paragraph):
+        sentences.append(paragraph[last_sep_idx + 1 :].strip())
+    
+    # Remove any empty sentences
+    sentences = [sent for sent in sentences if len(sent) > 0]
+    
+    # Capitalize the first letter of each sentence if it's not already capitalized
+    sentences = [sent if sent[0].isupper() else sent[0].upper() + sent[1:] for sent in sentences]
+    
+    # Add '.' to the beginning of each sentence
+    sentences = [': ' + sent for sent in sentences]
+    
+    return sentences
+
+
+def chunk_and_tokenize_text_sentence(
+    text, text_chunk_size, num_chunk_per_window, tokenizer_name, text_tokenizer, eos_token_id, start_of_generation=True
+):
+    split_sentences = split_by_sentence(text)
+    chunked_tokens = []
+    chunked_tokens_len = []
+    chunked_text = []
+    for idx, sentence in enumerate(split_sentences):
+        # Add a space betweenthe end of the sentence and the punctuation mark.
+        sentence = sentence[:-1] + " " + sentence[-1]
+        chunked_text.append(sentence)
+        print(f"sentence {sentence}")
+        tokens = text_tokenizer.encode(text=sentence, tokenizer_name=tokenizer_name)
+        # TODO(sugh): Add EOS token to every sentence.
+        if idx == len(split_sentences) - 1:
+            tokens = tokens + [eos_token_id]
+        tokens = torch.tensor(tokens, dtype=torch.int32)
+        print(f"i {idx} tokens {tokens.shape}")
+        tokens_len = tokens.shape[0]
+        chunked_tokens.append(tokens)
+        chunked_tokens_len.append(tokens_len)
+    print(f"chunked_tokens {sum(chunked_tokens_len)}")
+    return chunked_tokens, chunked_tokens_len, chunked_text
+
+
 def chunk_and_tokenize_text(
     text, text_chunk_size, num_chunk_per_window, tokenizer_name, text_tokenizer, eos_token_id, start_of_generation=True
 ):
-    split_text = text.split()  # []
+    split_text = text.split()
+    print(f"split_text {len(split_text)}")  # []
     chunked_tokens = []
     chunked_tokens_len = []
     chunked_text = []
     start = num_chunk_per_window * text_chunk_size if start_of_generation else text_chunk_size
+    print(f"text len {len(split_text[:start])}")
     current_text = " ".join(split_text[:start])
 
     chunked_text.append(current_text)
     tokens = text_tokenizer.encode(text=current_text, tokenizer_name=tokenizer_name)
     tokens = torch.tensor(tokens, dtype=torch.int32)
+    print(f"tokens {tokens.shape}")
 
     tokens_len = tokens.shape[0]
     chunked_tokens.append(tokens)
     chunked_tokens_len.append(tokens_len)
 
     for i in range(start, len(split_text), text_chunk_size):
+        print(f"i text len {len(split_text[i : min(i + text_chunk_size, len(split_text))])}")
         current_text = " ".join(split_text[i : min(i + text_chunk_size, len(split_text))])
         chunked_text.append(current_text)
         tokens = text_tokenizer.encode(text=current_text, tokenizer_name=tokenizer_name)
         if i + text_chunk_size >= len(split_text):
             tokens = tokens + [eos_token_id]
         tokens = torch.tensor(tokens, dtype=torch.int32)
+        print(f"i {i} tokens {tokens.shape}")
         tokens_len = tokens.shape[0]
         chunked_tokens.append(tokens)
         chunked_tokens_len.append(tokens_len)
+    print(f"chunked_tokens {sum(chunked_tokens_len)}")
 
     return chunked_tokens, chunked_tokens_len, chunked_text
+
+
+class LongFormTTSDataset(Dataset):
+    """
+    Dataset class for long-form TTS inference with batching support.
+    
+    This dataset handles:
+    - Loading manifest entries
+    - Text tokenization and chunking
+    - Context audio code loading and preprocessing
+    
+    Args:
+        manifest_records: List of manifest entries
+        text_tokenizer: Text tokenizer instance
+        tokenizer_name: Name of the tokenizer to use
+        eos_id: End-of-sequence token ID
+        text_chunk_size: Number of words per text chunk
+        num_chunk_per_window: Number of chunks per window
+        dataset_meta: Dataset metadata dictionary
+        dataset_name: Name of the dataset
+        model: Model instance for audio encoding
+        context_duration_min: Minimum context duration in seconds
+        context_duration_max: Maximum context duration in seconds
+        sample_rate: Audio sample rate
+        codec_model_downsample_factor: Codec model downsampling factor
+        context_audio_bos_id: Context audio BOS token ID
+        context_audio_eos_id: Context audio EOS token ID
+    """
+    
+    def __init__(
+        self,
+        manifest_records: List[Dict[str, Any]],
+        text_tokenizer: Any,
+        tokenizer_name: str,
+        eos_id: int,
+        text_chunk_size: int,
+        num_chunk_per_window: int,
+        dataset_meta: Dict[str, Any],
+        dataset_name: str,
+        model: Any,
+        context_duration_min: float,
+        context_duration_max: float,
+        sample_rate: int,
+        codec_model_downsample_factor: int,
+        context_audio_bos_id: int,
+        context_audio_eos_id: int,
+    ):
+        self.manifest_records = manifest_records
+        self.text_tokenizer = text_tokenizer
+        self.tokenizer_name = tokenizer_name
+        self.eos_id = eos_id
+        self.text_chunk_size = text_chunk_size
+        self.num_chunk_per_window = num_chunk_per_window
+        self.dataset_meta = dataset_meta
+        self.dataset_name = dataset_name
+        self.model = model
+        self.context_duration_min = context_duration_min
+        self.context_duration_max = context_duration_max
+        self.sample_rate = sample_rate
+        self.codec_model_downsample_factor = codec_model_downsample_factor
+        self.context_audio_bos_id = context_audio_bos_id
+        self.context_audio_eos_id = context_audio_eos_id
+    
+    def __len__(self) -> int:
+        return len(self.manifest_records)
+    
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Load and preprocess a single sample.
+        
+        Returns:
+            Dictionary containing:
+                - idx: Sample index
+                - chunked_tokens: List of tokenized text chunks
+                - chunked_tokens_len: List of token lengths
+                - chunked_text_list: List of text strings
+                - context_audio_codes: Context audio codes tensor
+                - entry: Original manifest entry
+        """
+        entry = self.manifest_records[idx]
+        
+        # Get text
+        if "normalized_text" in entry:
+            text = entry["normalized_text"]
+        else:
+            text = entry["text"]
+        
+        # Tokenize and chunk text
+        chunked_tokens, chunked_tokens_len, chunked_text_list = chunk_and_tokenize_text_sentence(
+            text,
+            self.text_chunk_size,
+            self.num_chunk_per_window,
+            self.tokenizer_name,
+            self.text_tokenizer,
+            self.eos_id,
+        )
+        
+        # Load context audio codes
+        if 'context_audio_codes_path' in entry:
+            context_audio_codes_path = entry['context_audio_codes_path']
+            context_audio_codes = torch.load(context_audio_codes_path).long()  # (8, T)
+        elif 'context_audio_filepath' in entry:
+            context_audio_filepath = entry['context_audio_filepath']
+            if self.dataset_meta[self.dataset_name]['audio_dir'] is not None:
+                context_audio_filepath = os.path.join(
+                    self.dataset_meta[self.dataset_name]['audio_dir'], context_audio_filepath
+                )
+            context_audio_duration = entry['context_audio_duration']
+            context_audio_array = _read_audio(
+                audio_filepath=context_audio_filepath,
+                sample_rate=self.sample_rate,
+                offset=0,
+                duration=context_audio_duration,
+            )
+            context_audio_array = context_audio_array.samples
+            context_audio_array = torch.tensor(context_audio_array).unsqueeze(0).cuda()
+            context_audio_len = torch.tensor(context_audio_array.shape[1]).unsqueeze(0).cuda()
+            context_audio_codes, _ = self.model.audio_to_codes(
+                context_audio_array, context_audio_len, audio_type='context'
+            )
+            context_audio_codes = torch.tensor(context_audio_codes).squeeze(0).cpu()
+        else:
+            raise ValueError(f"Context audio codes path or filepath not found in manifest entry: {entry}")
+        
+        # Randomly slice context audio to desired duration
+        _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
+        _num_frames_to_slice = int(_context_duration_to_slice * self.sample_rate / self.codec_model_downsample_factor)
+        
+        if _num_frames_to_slice < context_audio_codes.shape[1]:
+            start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
+            context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
+        else:
+            # Repeat the audio if it is shorter than the desired duration
+            _num_repeats = int(np.ceil(_num_frames_to_slice / context_audio_codes.shape[1]))
+            context_audio_codes_repeated = context_audio_codes.repeat(1, _num_repeats)
+            context_audio_codes = context_audio_codes_repeated[:, :_num_frames_to_slice]
+        
+        # Add BOS and EOS tokens
+        context_bos_tensor = torch.full(
+            (context_audio_codes.shape[0], 1), self.context_audio_bos_id, dtype=context_audio_codes.dtype
+        )
+        context_eos_tensor = torch.full(
+            (context_audio_codes.shape[0], 1), self.context_audio_eos_id, dtype=context_audio_codes.dtype
+        )
+        context_audio_codes = torch.cat([context_bos_tensor, context_audio_codes, context_eos_tensor], dim=1)
+        
+        return {
+            'idx': idx,
+            'chunked_tokens': chunked_tokens,
+            'chunked_tokens_len': chunked_tokens_len,
+            'context_audio_codes': context_audio_codes,
+            'entry': entry,
+        }
+
+
+    def collate_fn(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Collate function for batching.
+        
+        Since each sample may have different sequence lengths and the streaming
+        inference processes samples independently, we simply return the batch as a list.
+        
+        Args:
+            batch: List of sample dictionaries from __getitem__
+        
+        Returns:
+            List of sample dictionaries (no padding/stacking needed)
+        """
+        max_num_chunks = max([len(sample['chunked_tokens']) for sample in batch])
+        for sample in batch:
+            num_padding = max_num_chunks - len(sample['chunked_tokens'])
+            sample['chunked_tokens'] = sample['chunked_tokens'] + [
+                torch.tensor(self.eos_id, dtype=torch.int32).unsqueeze(0) for _ in range(num_padding)
+            ]
+            sample['chunked_tokens_len'] = sample['chunked_tokens_len'] + [
+                torch.tensor(1, dtype=torch.int32) for _ in range(num_padding)
+            ]
+        return batch
 
 
 def run_inference_streaming(
@@ -121,11 +397,11 @@ def run_inference_streaming(
     compute_fcd=False,
     violin_plot_metrics=['cer', 'pred_context_ssim'],
     tokenizer_name=None,
+    eos_detection_method='argmax_or_multinomial_any',
 ):
     num_chunk_per_window = 2
-    num_audio_tokens_per_text = 1
-    true_window_size = 200
-    text_chunk_size = 5
+    true_window_size = 300 # Unit is number of text tokens
+    text_chunk_size = 20 # Unit is number of words
     # Load model
     if hparams_file is not None and checkpoint_file is not None:
         model_cfg = OmegaConf.load(hparams_file)
@@ -179,7 +455,7 @@ def run_inference_streaming(
     else:
         exp_name = ""
 
-    checkpoint_name = "{}{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_LT_{}_MGsteps_{}_ST_{}_sched_{}".format(
+    checkpoint_name = "{}{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_LT_{}_MGsteps_{}_ST_{}_sched_{}_EOS_{}".format(
         exp_name,
         checkpoint_name,
         temperature,
@@ -199,6 +475,7 @@ def run_inference_streaming(
         use_local_transformer,
         maskgit_n_steps,
         sv_model,
+        eos_detection_method,
     )
 
     dataset_meta_info = evalset_config.dataset_meta_info
@@ -250,97 +527,120 @@ def run_inference_streaming(
         audio_bos_id = model.audio_bos_id
         audio_eos_id = model.audio_eos_id
 
-        batch = {}
         metrics_n_repeated = []
         dataset_filewise_metrics_all_repeats = []
 
+        # Create dataset and dataloader
         print(f"manifest_records {len(manifest_records)}")
-        for idx, entry in enumerate(manifest_records):
-            if "normalized_text" in entry:
-                text = entry["normalized_text"]
-            else:
-                text = entry["text"]
+        inference_dataset = LongFormTTSDataset(
+            manifest_records=manifest_records,
+            text_tokenizer=text_tokenizer,
+            tokenizer_name="english_phoneme" if tokenizer_name is None else tokenizer_name,
+            eos_id=model.eos_id,
+            text_chunk_size=text_chunk_size,
+            num_chunk_per_window=num_chunk_per_window,
+            dataset_meta=dataset_meta,
+            dataset_name=dataset,
+            model=model,
+            context_duration_min=context_duration_min,
+            context_duration_max=context_duration_max,
+            sample_rate=sample_rate,
+            codec_model_downsample_factor=codec_model_downsample_factor,
+            context_audio_bos_id=context_audio_bos_id,
+            context_audio_eos_id=context_audio_eos_id,
+        )
+        
+        dataloader = DataLoader(
+            inference_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0,  # Set to 0 to avoid multiprocessing issues with CUDA
+            collate_fn=inference_dataset.collate_fn,
+        )
+        
+        # Iterate over batches
+        for batch_samples in dataloader:
+            batch_size = len(batch_samples)
+            model.set_streaming_inference_variables(batch_size=batch_size, true_window_size=true_window_size)
+            max_num_chunks = len(batch_samples[0]['chunked_tokens'])
+            # Process each sample in the batch
+            # Prepare batch dictionary for model
+            batch = {}
+            context_audio_codes_list = []
+            context_audio_codes_lens_list = []
+            has_text_context_list = []
+            context_text_tokens_list = []
+            context_text_tokens_lens_list = []
+            for sample in batch_samples:
+                context_audio_codes_list.append(sample['context_audio_codes'])
+                context_audio_codes_lens_list.append(torch.tensor([sample['context_audio_codes'].shape[1]]))
+                
+                if model.use_text_conditioning_encoder:
+                    text_context_tokens = text_tokenizer.encode(
+                        "[NO TEXT CONTEXT]",
+                        "english_phoneme" if tokenizer_name is None else tokenizer_name
+                    )
 
-            chunked_tokens, chunked_tokens_len, chunked_text_list = chunk_and_tokenize_text(
-                text,
-                text_chunk_size,
-                num_chunk_per_window,
-                "english_phoneme" if tokenizer_name is None else tokenizer_name,
-                text_tokenizer,
-                model.eos_id,
-            )  # List, List
+                    if model.pad_context_text_to_max_duration:
+                        _required_len = (
+                            int(model.cfg.context_duration_max * sample_rate / model.codec_model_samples_per_frame) + 2
+                        )  # +2 for BOS and EOS
+                        if len(text_context_tokens) < _required_len:
+                            _pad_id = text_tokenizer.tokenizer_pad_ids["english_phoneme"]
+                            text_context_tokens += [_pad_id] * (_required_len - len(text_context_tokens))
+                        else:
+                            text_context_tokens = text_context_tokens[:_required_len]
 
-            if 'context_audio_codes_path' in entry:
-                context_audio_codes_path = entry['context_audio_codes_path']
-                context_audio_codes = torch.load(context_audio_codes_path).long()  # (8, T)
-            elif 'context_audio_filepath' in entry:
-                context_audio_filepath = entry['context_audio_filepath']
-                if dataset_meta[dataset]['audio_dir'] is not None:
-                    context_audio_filepath = os.path.join(dataset_meta[dataset]['audio_dir'], context_audio_filepath)
-                context_audio_duration = entry['context_audio_duration']
-                context_audio_array = _read_audio(
-                    audio_filepath=context_audio_filepath,
-                    sample_rate=sample_rate,
-                    offset=0,
-                    duration=context_audio_duration,
-                )
-                context_audio_array = context_audio_array.samples
-                context_audio_array = torch.tensor(context_audio_array).unsqueeze(0).cuda()
-                context_audio_len = torch.tensor(context_audio_array.shape[1]).unsqueeze(0).cuda()
-                context_audio_codes, _ = model.audio_to_codes(
-                    context_audio_array, context_audio_len, audio_type='context'
-                )
-                context_audio_codes = torch.tensor(context_audio_codes).squeeze(0).cpu()
-            else:
-                raise ValueError(f"Context audio codes path or filepath not found in manifest entry: {entry}")
-            # Sample random duration between self.context_duration_min and self.context_duration_max
-            _context_duration_to_slice = random.uniform(context_duration_min, context_duration_max)
-            _num_frames_to_slice = int(_context_duration_to_slice * sample_rate / codec_model_downsample_factor)  # ???
-            if _num_frames_to_slice < context_audio_codes.shape[1]:
-                start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
-                context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
-            else:
-                # Repeaet the audio if it is shorter than the desired duration
-                _num_repeats = int(np.ceil(_num_frames_to_slice / context_audio_codes.shape[1]))
-                # context_audio_codes is a tensor of shape (num_codebooks, T)
-                context_audio_codes_repeated = context_audio_codes.repeat(1, _num_repeats)
-                context_audio_codes = context_audio_codes_repeated[:, :_num_frames_to_slice]
+                    text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).cuda()
+                    context_text_len = torch.tensor([text_context_tokens.shape[0]]).cuda()
 
-            context_bos_tensor = torch.full(
-                (context_audio_codes.shape[0], 1), context_audio_bos_id, dtype=context_audio_codes.dtype
-            )
-            context_eos_tensor = torch.full(
-                (context_audio_codes.shape[0], 1), context_audio_eos_id, dtype=context_audio_codes.dtype
-            )
-            context_audio_codes = torch.cat([context_bos_tensor, context_audio_codes, context_eos_tensor], dim=1)
-            context_audio_codes_len = torch.tensor([context_audio_codes.shape[1]])
-            context_audio_codes = context_audio_codes.unsqueeze(0)
-            batch['context_audio_codes'] = context_audio_codes.cuda()
-            batch['context_audio_codes_lens'] = context_audio_codes_len.cuda()
-            batch['has_text_context'] = torch.BoolTensor([False]).cuda()
+                    context_text_tokens_list.append(text_context_tokens)
+                    context_text_tokens_lens_list.append(context_text_len)
+                    has_text_context_list.append(torch.BoolTensor([False]))
 
-            model.set_streaming_inference_variables(true_window_size=true_window_size)
-            predicted_codes = []
-            predicted_codes_lens = 0
-            input_len = 0
-            model.decoder.reset_cache(use_cache=False)
+            text_max_len = max([ct.shape[0] for ct in context_text_tokens_list])
+            audio_max_len = max([ca.shape[1] for ca in context_audio_codes_list])
+            batch['context_audio_codes'] = stack_tensors(context_audio_codes_list, max_lens=[audio_max_len]).cuda()
+            batch['context_audio_codes_lens'] = torch.IntTensor(context_audio_codes_lens_list).cuda()
+            batch['has_text_context'] = torch.BoolTensor(has_text_context_list).cuda()
+            batch['context_text_tokens'] = stack_tensors(context_text_tokens_list, max_lens=[text_max_len]).cuda()
+            batch['context_text_tokens_lens'] = torch.IntTensor(context_text_tokens_lens_list).cuda()
+            
+            predicted_codes = [[] for _ in range(batch_size)]
+            predicted_codes_lens = [0 for _ in range(batch_size)]
             torch.cuda.empty_cache()
-            import time
 
             st = time.time()
 
-            for token_idx, inputs in enumerate(zip(chunked_tokens, chunked_tokens_len)):
-                current_tokens, current_tokens_lens = inputs
-                current_tokens = current_tokens.unsqueeze(0)
+            for token_idx in range(max_num_chunks):
 
-                batch['text'] = current_tokens.cuda()
-                batch['text_lens'] = torch.tensor([current_tokens_lens]).cuda()
-                input_len += current_tokens_lens
+                current_tokens = []
+                current_tokens_lens = []
+                for sample in batch_samples:
+                    current_tokens.append(sample['chunked_tokens'][token_idx])
+                    current_tokens_lens.append(sample['chunked_tokens_len'][token_idx])
 
-                is_end_of_text = token_idx == (len(chunked_tokens) - 1)
+                max_len = max(current_tokens_lens)
+                batch['text'] = stack_tensors(current_tokens, max_lens=[max_len]).cuda()
+                batch['text_lens'] = torch.IntTensor(current_tokens_lens).cuda()
+                print(f"batch['text_lens'] {batch['text_lens']}")
+                batch_size = batch['text'].shape[0]
+
+                is_end_of_text = []
+                for b_idx in range(batch_size):
+                    if token_idx == (max_num_chunks - 1):
+                        is_end_of_text.append(True)
+                    elif current_tokens_lens[b_idx] == 1:
+                        is_end_of_text.append(True)
+                    elif batch_samples[b_idx]['chunked_tokens_len'][token_idx + 1] == 1:
+                        is_end_of_text.append(True)
+                    else:
+                        is_end_of_text.append(False)
+                print(f"is_end_of_text {is_end_of_text}")
+
                 beginning_of_text = token_idx == 0
-                current_predicted_codes, current_predicted_codes_lens, cross_attention_maps, _ = (
-                    model.generate_speech_per_chunk_of_text(
+                current_predicted_codes, current_predicted_codes_lens, _, _ = (
+                    model.generate_long_form_speech(
                         batch,
                         is_end_of_text,
                         beginning_of_text,
@@ -349,7 +649,7 @@ def run_inference_streaming(
                         topk=topk,
                         use_cfg=use_cfg,
                         cfg_scale=cfg_scale,
-                        return_cross_attn_probs=True,
+                        return_cross_attn_probs=False,
                         apply_attention_prior=apply_attention_prior,
                         prior_epsilon=attention_prior_epsilon,
                         lookahead_window_size=attention_prior_lookahead_window,
@@ -357,23 +657,32 @@ def run_inference_streaming(
                         apply_prior_to_layers=apply_prior_to_layers,
                         start_prior_after_n_audio_steps=start_prior_after_n_audio_steps,
                         use_exponential_weight=use_exponential_weight,
+                        eos_detection_method=eos_detection_method,
                     )
                 )
-                predicted_codes.append(current_predicted_codes)
-                predicted_codes_lens += current_predicted_codes_lens[0]
+                for b_idx in range(batch_size):
+                    if is_end_of_text[b_idx] and current_tokens_lens[b_idx] == 1:
+                        continue
+                    predicted_codes[b_idx].append(current_predicted_codes[b_idx][:, :current_predicted_codes_lens[b_idx]])
+                    predicted_codes_lens[b_idx] += current_predicted_codes_lens[b_idx]
 
             et = time.time()
             print(f"Magpie Time taken for inference: {et - st} seconds")
             torch.cuda.empty_cache()
 
-            predicted_codes = torch.cat(predicted_codes, dim=2).cuda()
-            predicted_codes_lens = torch.tensor([predicted_codes_lens]).long().cuda()
-            predicted_audio, predicted_audio_lens = model.codes_to_audio(predicted_codes, predicted_codes_lens)
+            predicted_codes_list = []
+            for b_idx, predicted_code in enumerate(predicted_codes):
+                predicted_codes_list.append(torch.cat(predicted_code, dim=1).cuda())
+
+            predicted_codes = stack_tensors(predicted_codes_list, max_lens=[max(predicted_codes_lens)]).cuda()
+            predicted_codes_lens = torch.tensor(predicted_codes_lens).long().cuda()
+            predicted_audio, _ = model.codes_to_audio(predicted_codes, predicted_codes_lens)
             predicted_audio_np = predicted_audio.squeeze(0).float().detach().cpu().numpy()
 
             print(f"Total Time taken for inference: {time.time() - st} seconds")
-            audio_path = os.path.join(pred_audio_dir, f"predicted_audio_{idx}.wav")
-            sf.write(audio_path, predicted_audio_np, sample_rate)
+            for b_idx, sample in enumerate(batch_samples):
+                audio_path = os.path.join(pred_audio_dir, f"predicted_audio_{sample['idx']}.wav")
+                sf.write(audio_path, predicted_audio_np[b_idx], sample_rate)
 
         metrics, filewise_metrics = evaluate_generated_audio.evaluate(
             dataset_meta[dataset]['manifest_path'],
@@ -509,6 +818,7 @@ def main():
         log_exp_name=args.log_exp_name,
         compute_fcd=compute_fcd,
         violin_plot_metrics=args.violin_plot_metrics,
+        eos_detection_method=args.eos_detection_method,
     )
 
     # Mode 1: Run inference from provided hparams and checkpoint files

@@ -706,30 +706,49 @@ def main():
         num_processed_records = 0
         total_initial_records = 0
 
-        with open(args.manifest, "r", encoding="utf-8") as f:
-            for line in f:
-                total_initial_records += 1
-                try:
-                    rec = json.loads(line.strip())
-                except json.JSONDecodeError:
-                    logger.warning(f"Skipping malformed JSON line: `{line.strip()}`")
-                    continue
+        with open(args.manifest, 'r', encoding='utf-8') as f:
+            # Load the entire JSON file - handles multi-line formatted dictionaries
+            json_data = json.load(f)
 
-                # 1. Apply duration filter
-                if rec.get("duration") is None or rec.get("duration") < min_duration_in_sec_required:
-                    continue
+        for rec in json_data:
+            total_initial_records += 1
+            if rec.get("duration") is None or rec.get("duration") < min_duration_in_sec_required:
+                continue
 
-                # 2. Apply speaker format check
-                if not check_speaker_format(rec["speaker"]):
-                    msg = f"Invalid speaker format for record: {rec['speaker']}, File: {rec['audio_filepath']}(offset={rec['offset']}, duration={rec['duration']})."
-                    logger.error(msg)
-                    raise ValueError(msg)
+            if not check_speaker_format(rec["speaker"]):
+                msg = f"Invalid speaker format for record: {rec['speaker']}, File: {rec['audio_filepath']}(offset={rec['offset']}, duration={rec['duration']})."
+                logger.error(msg)
+                raise ValueError(msg)
 
-                # 3. Parse speaker ID and add to map
-                rec['parsed_speaker_id'] = _get_parsed_speaker_id_for_dataset(args.dataset_name, rec)
+            rec['parsed_speaker_id'] = _get_parsed_speaker_id_for_dataset(args.dataset_name, rec)
+            
+            speaker_to_records[rec['parsed_speaker_id']].append(rec)
+            num_processed_records += 1
 
-                speaker_to_records[rec['parsed_speaker_id']].append(rec)
-                num_processed_records += 1
+        # with open(args.manifest, "r", encoding="utf-8") as f:
+        #     for line in f:
+        #         total_initial_records += 1
+        #         try:
+        #             rec = json.loads(line.strip())
+        #         except json.JSONDecodeError:
+        #             logger.warning(f"Skipping malformed JSON line: `{line.strip()}`")
+        #             continue
+
+        #         # 1. Apply duration filter
+        #         if rec.get("duration") is None or rec.get("duration") < min_duration_in_sec_required:
+        #             continue
+
+        #         # 2. Apply speaker format check
+        #         if not check_speaker_format(rec["speaker"]):
+        #             msg = f"Invalid speaker format for record: {rec['speaker']}, File: {rec['audio_filepath']}(offset={rec['offset']}, duration={rec['duration']})."
+        #             logger.error(msg)
+        #             raise ValueError(msg)
+
+        #         # 3. Parse speaker ID and add to map
+        #         rec['parsed_speaker_id'] = _get_parsed_speaker_id_for_dataset(args.dataset_name, rec)
+
+        #         speaker_to_records[rec['parsed_speaker_id']].append(rec)
+        #         num_processed_records += 1
 
         num_filtered_out_initial_pass = total_initial_records - num_processed_records
 

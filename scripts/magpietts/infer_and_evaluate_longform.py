@@ -21,7 +21,7 @@ import shutil
 import time
 from functools import partial
 from pathlib import Path
-from typing import List
+from typing import Union, List
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -56,34 +56,130 @@ EVALUATION_DATASETS = (
 )
 
 
+def split_by_sentence(
+    paragraph: str,
+    sentence_separators: Union[str, List[str]] = ['.', '?', '!', '...']
+) -> List[str]:
+    """
+    Splits a paragraph into sentences based on sentence-ending punctuation.
+    
+    This method handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by checking
+    if the separator is followed by a space before splitting. Sentence-ending punctuation is
+    preserved with each sentence.
+    
+    Args:
+        paragraph (str): The input text paragraph to split into sentences.
+        sentence_separators (Union[str, List[str]]): A string or list of strings representing
+            sentence-ending punctuation marks. Defaults to ['.', '?', '!', '...'].
+    
+    Returns:
+        List[str]: A list of sentence strings with punctuation preserved.
+    
+    Examples:
+        >>> model.chunk_and_tokenize_text_sentence("Hello world. How are you?")
+        ["Hello world.", "How are you?"]
+        
+        >>> model.chunk_and_tokenize_text_sentence("Dr. Smith is here. Good morning!")
+        ["Dr. Smith is here.", "Good morning!"]
+        
+        >>> model.chunk_and_tokenize_text_sentence("Really? Yes! Amazing.")
+        ["Really?", "Yes!", "Amazing."]
+    """
+    if not paragraph or not paragraph.strip():
+        return []
+    paragraph = paragraph.replace('-', ' ')
+    paragraph = paragraph.replace('*', '')
+    
+    # Normalize to list if single string is provided
+    if isinstance(sentence_separators, str):
+        sentence_separators = [sentence_separators]
+    
+    sentences = []
+    last_sep_idx = -1
+    
+    for i, char in enumerate(paragraph):
+        # Check if the current character is a separator and the next character is a space
+        # The additional space check is done to avoid splitting words like "a.m." or "Dr." into sentences
+        next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
+        if char in sentence_separators and next_char == " ":
+            sentences.append(paragraph[last_sep_idx + 1 : i + 1].strip())
+            last_sep_idx = i + 1
+    
+    # Add the remaining text as the last sentence
+    if last_sep_idx < len(paragraph):
+        sentences.append(paragraph[last_sep_idx + 1 :].strip())
+    
+    # Remove any empty sentences
+    sentences = [sent for sent in sentences if len(sent) > 0]
+    
+    # Capitalize the first letter of each sentence if it's not already capitalized
+    sentences = [sent if sent[0].isupper() else sent[0].upper() + sent[1:] for sent in sentences]
+    
+    # Add '.' to the beginning of each sentence
+    sentences = [': ' + sent for sent in sentences]
+    
+    return sentences
+
+
+def chunk_and_tokenize_text_sentence(
+    text, text_chunk_size, num_chunk_per_window, tokenizer_name, text_tokenizer, eos_token_id, start_of_generation=True
+):
+    split_sentences = split_by_sentence(text)
+    chunked_tokens = []
+    chunked_tokens_len = []
+    chunked_text = []
+    for idx, sentence in enumerate(split_sentences):
+        # Add a space betweenthe end of the sentence and the punctuation mark.
+        sentence = sentence[:-1] + " " + sentence[-1]
+        chunked_text.append(sentence)
+        print(f"sentence {sentence}")
+        tokens = text_tokenizer.encode(text=sentence, tokenizer_name=tokenizer_name)
+        # TODO(sugh): Add EOS token to every sentence.
+        if idx == len(split_sentences) - 1:
+            tokens = tokens + [eos_token_id]
+        tokens = torch.tensor(tokens, dtype=torch.int32)
+        print(f"i {idx} tokens {tokens.shape}")
+        tokens_len = tokens.shape[0]
+        chunked_tokens.append(tokens)
+        chunked_tokens_len.append(tokens_len)
+    print(f"chunked_tokens {sum(chunked_tokens_len)}")
+    return chunked_tokens, chunked_tokens_len, chunked_text
+
+
 def chunk_and_tokenize_text(
     text, text_chunk_size, num_chunk_per_window, tokenizer_name, text_tokenizer, eos_token_id, start_of_generation=True
 ):
-    split_text = text.split()  # []
+    split_text = text.split()
+    print(f"split_text {len(split_text)}")  # []
     chunked_tokens = []
     chunked_tokens_len = []
     chunked_text = []
     start = num_chunk_per_window * text_chunk_size if start_of_generation else text_chunk_size
+    print(f"text len {len(split_text[:start])}")
     current_text = " ".join(split_text[:start])
 
     chunked_text.append(current_text)
     tokens = text_tokenizer.encode(text=current_text, tokenizer_name=tokenizer_name)
     tokens = torch.tensor(tokens, dtype=torch.int32)
+    print(f"tokens {tokens.shape}")
 
     tokens_len = tokens.shape[0]
     chunked_tokens.append(tokens)
     chunked_tokens_len.append(tokens_len)
 
     for i in range(start, len(split_text), text_chunk_size):
+        print(f"i text len {len(split_text[i : min(i + text_chunk_size, len(split_text))])}")
         current_text = " ".join(split_text[i : min(i + text_chunk_size, len(split_text))])
         chunked_text.append(current_text)
         tokens = text_tokenizer.encode(text=current_text, tokenizer_name=tokenizer_name)
         if i + text_chunk_size >= len(split_text):
             tokens = tokens + [eos_token_id]
         tokens = torch.tensor(tokens, dtype=torch.int32)
+        print(f"i {i} tokens {tokens.shape}")
         tokens_len = tokens.shape[0]
         chunked_tokens.append(tokens)
         chunked_tokens_len.append(tokens_len)
+    print(f"chunked_tokens {sum(chunked_tokens_len)}")
 
     return chunked_tokens, chunked_tokens_len, chunked_text
 
@@ -121,11 +217,11 @@ def run_inference_streaming(
     compute_fcd=False,
     violin_plot_metrics=['cer', 'pred_context_ssim'],
     tokenizer_name=None,
+    eos_detection_method='argmax_or_multinomial_any',
 ):
     num_chunk_per_window = 2
-    num_audio_tokens_per_text = 1
-    true_window_size = 200
-    text_chunk_size = 5
+    true_window_size = 300 # Unit is number of text tokens
+    text_chunk_size = 20 # Unit is number of words
     # Load model
     if hparams_file is not None and checkpoint_file is not None:
         model_cfg = OmegaConf.load(hparams_file)
@@ -179,7 +275,7 @@ def run_inference_streaming(
     else:
         exp_name = ""
 
-    checkpoint_name = "{}{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_LT_{}_MGsteps_{}_ST_{}_sched_{}".format(
+    checkpoint_name = "{}{}_Temp{}_Topk{}_Cfg_{}_{}_Prior_{}_LT_{}_MGsteps_{}_ST_{}_sched_{}_EOS_{}".format(
         exp_name,
         checkpoint_name,
         temperature,
@@ -199,6 +295,7 @@ def run_inference_streaming(
         use_local_transformer,
         maskgit_n_steps,
         sv_model,
+        eos_detection_method,
     )
 
     dataset_meta_info = evalset_config.dataset_meta_info
@@ -261,7 +358,7 @@ def run_inference_streaming(
             else:
                 text = entry["text"]
 
-            chunked_tokens, chunked_tokens_len, chunked_text_list = chunk_and_tokenize_text(
+            chunked_tokens, chunked_tokens_len, chunked_text_list = chunk_and_tokenize_text_sentence(
                 text,
                 text_chunk_size,
                 num_chunk_per_window,
@@ -318,6 +415,25 @@ def run_inference_streaming(
             batch['context_audio_codes'] = context_audio_codes.cuda()
             batch['context_audio_codes_lens'] = context_audio_codes_len.cuda()
             batch['has_text_context'] = torch.BoolTensor([False]).cuda()
+            if model.use_text_conditioning_encoder:
+                text_context_tokens = text_tokenizer.encode("[NO TEXT CONTEXT]", "english_phoneme" if tokenizer_name is None else tokenizer_name)
+
+                if model.pad_context_text_to_max_duration:
+                    _required_len = (
+                        int(model.cfg.context_duration_max * sample_rate / model.codec_model_samples_per_frame) + 2
+                    )  # +2 for BOS and EOS
+                    if len(text_context_tokens) < _required_len:
+                        _pad_id = text_tokenizer.tokenizer_pad_ids["english_phoneme"]
+                        text_context_tokens += [_pad_id] * (_required_len - len(text_context_tokens))
+                    else:
+                        text_context_tokens = text_context_tokens[:_required_len]
+
+                text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).unsqueeze(0).cuda()
+                context_text_len = torch.tensor([text_context_tokens.shape[1]]).cuda()
+                # context_text_len = context_tokens.shape[0]
+
+                batch['context_text_tokens'] = text_context_tokens
+                batch['context_text_tokens_lens'] = context_text_len
 
             model.set_streaming_inference_variables(true_window_size=true_window_size)
             predicted_codes = []
@@ -339,8 +455,8 @@ def run_inference_streaming(
 
                 is_end_of_text = token_idx == (len(chunked_tokens) - 1)
                 beginning_of_text = token_idx == 0
-                current_predicted_codes, current_predicted_codes_lens, cross_attention_maps, _ = (
-                    model.generate_speech_per_chunk_of_text(
+                current_predicted_codes, current_predicted_codes_lens, _, _ = (
+                    model.generate_long_form_speech(
                         batch,
                         is_end_of_text,
                         beginning_of_text,
@@ -357,6 +473,7 @@ def run_inference_streaming(
                         apply_prior_to_layers=apply_prior_to_layers,
                         start_prior_after_n_audio_steps=start_prior_after_n_audio_steps,
                         use_exponential_weight=use_exponential_weight,
+                        eos_detection_method=eos_detection_method,
                     )
                 )
                 predicted_codes.append(current_predicted_codes)
@@ -509,6 +626,7 @@ def main():
         log_exp_name=args.log_exp_name,
         compute_fcd=compute_fcd,
         violin_plot_metrics=args.violin_plot_metrics,
+        eos_detection_method=args.eos_detection_method,
     )
 
     # Mode 1: Run inference from provided hparams and checkpoint files

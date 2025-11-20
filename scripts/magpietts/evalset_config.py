@@ -53,4 +53,9 @@ dataset_meta_info = {
         'audio_dir': '/',
         'feature_dir': None, 
     },
+    'local_longer_1': {
+        'manifest_path': '/workspace/NeMo/filtered_test_longer_1_magpie_gemma2.json',
+        'audio_dir': '/',
+        'feature_dir': '/',
+    },
 }

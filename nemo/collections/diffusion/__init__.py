@@ -16,8 +16,7 @@ import warnings
 
 
 warnings.warn(
-    "nemo.collections.diffusion is deprecated and will be removed in a future major NeMo FW container release. "
-    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
+    "nemo.collections.diffusion is deprecated and will be removed in a future major NeMo FW container release.",
     DeprecationWarning,
     stacklevel=2,
 )

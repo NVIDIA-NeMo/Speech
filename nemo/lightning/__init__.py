@@ -78,12 +78,3 @@ __all__ = [
     "get_vocab_size",
     "teardown",
 ]
-
-import warnings
-
-warnings.warn(
-    "nemo.lightning is deprecated and will be removed in a future major NeMo FW container release. "
-    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
-    DeprecationWarning,
-    stacklevel=2,
-)

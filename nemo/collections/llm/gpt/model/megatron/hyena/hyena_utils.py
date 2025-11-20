@@ -1444,6 +1444,7 @@ class B2BCausalConv1dModule(nn.Module):
             else:
                 # Otherwise reshape to flatten the first two dimensions
                 mixer_weight = mixer_weight.reshape(-1, mixer_weight.size(-1))
+        # For evo2 compatibility, since it uses FFTConv mixer and here we use direct convolution.
         if self.flip_mixer_weight:
             mixer_weight = torch.flip(mixer_weight, dims=[-1])
 

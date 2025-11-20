@@ -305,6 +305,7 @@ class GPTConfig(TransformerConfig, io.IOMixin):
     deallocate_pipeline_outputs: bool = True
     scatter_embedding_sequence_parallel: bool = True
     tp_only_amax_red: bool = False
+    deterministic_mode: bool = False
 
     use_transformer_engine_full_layer_spec: bool = False
     transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = default_layer_spec
@@ -440,6 +441,13 @@ class GPTConfig(TransformerConfig, io.IOMixin):
                                 parallel_state.get_context_parallel_global_ranks(),
                                 cp_stream,
                             )
+
+        # import torch
+        # if torch.distributed.is_initialized():
+        #     if torch.distributed.get_rank() == 0:
+        #         breakpoint()
+        #         print(f"model.config.vocab_size: {model.config.vocab_size}")
+        # torch.distributed.barrier()
 
         return model
 

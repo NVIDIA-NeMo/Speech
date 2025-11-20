@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import os
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -21,6 +22,7 @@ import lightning.pytorch as pl
 import nemo_run as run
 import torch
 from megatron.core import parallel_state
+from megatron.core.transformer.enums import AttnBackend
 from rich.console import Console
 from torch.distributed import all_gather_object
 from typing_extensions import Annotated
@@ -987,6 +989,42 @@ def _set_with_io(obj, attr, value):
         setattr(obj.__io__, attr, deepcopy(value.__io__))
 
 
+def _validate_and_apply_deterministic_mode(model: pl.LightningModule) -> None:
+    """Apply and validate deterministic mode requirements.
+    
+    This enforces restrictions and settings that must hold when
+    the model is configured to run in deterministic mode.
+    
+    Args:
+        model: The model to validate and configure for deterministic mode.
+    """
+    if not hasattr(model, "config"):
+        return
+    
+    if not getattr(model.config, "deterministic_mode", False):
+        return
+
+    # Disallow flash attention when running deterministically
+    if getattr(model.config, "attention_backend", None) == AttnBackend.flash:
+        raise AssertionError("Flash attention cannot be used in deterministic mode.")
+
+    # Disallow cross-entropy loss fusion as it is not deterministic
+    assert not getattr(model.config, "cross_entropy_loss_fusion", False), (
+        "Cross Entropy Fusion is currently not deterministic."
+    )
+
+    # Validate NCCL_ALGO environment variable
+    all_reduce_choices = ("Tree", "Ring", "CollnetDirect", "CollnetChain", "^NVLS")
+    nccl_algo = os.getenv("NCCL_ALGO", None)
+    assert nccl_algo is not None and nccl_algo in all_reduce_choices, (
+        f"NCCL_ALGO must be set to one of {all_reduce_choices} for deterministic mode."
+    )
+
+    # Enable deterministic algorithms in torch
+    torch.use_deterministic_algorithms(True)
+    logging.info("Deterministic mode enabled: torch.use_deterministic_algorithms(True)")
+
+
 def _validate_config(
     model: pl.LightningModule,
     data: pl.LightningDataModule,
@@ -997,6 +1035,9 @@ def _validate_config(
     tokenizer: Optional[TokenizerType] = None,
     model_transform: Optional[Union[PEFT, ModelTransform, Callable]] = None,
 ) -> None:
+
+    # Validate and apply deterministic mode if enabled
+    _validate_and_apply_deterministic_mode(model)
 
     # Model validation
     if hasattr(model, "config"):
@@ -1029,6 +1070,10 @@ def _validate_config(
         assert trainer.strategy.context_parallel_size > 0
 
         # DP validation
+        print(f"trainer.num_devices * trainer.num_nodes: {trainer.num_devices * trainer.num_nodes}")
+        print(f"trainer.strategy.tensor_model_parallel_size: {trainer.strategy.tensor_model_parallel_size}")
+        print(f"trainer.strategy.pipeline_model_parallel_size: {trainer.strategy.pipeline_model_parallel_size}")
+        print(f"trainer.strategy.context_parallel_size: {trainer.strategy.context_parallel_size}")
         assert (trainer.num_devices * trainer.num_nodes) % (
             trainer.strategy.tensor_model_parallel_size
             * trainer.strategy.pipeline_model_parallel_size

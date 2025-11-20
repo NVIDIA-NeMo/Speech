@@ -194,7 +194,8 @@ except ImportError as error:
 import warnings
 
 warnings.warn(
-    "nemo.collections.vlm is deprecated and will be removed in the next major NeMo FW container release.",
+    "nemo.collections.vlm is deprecated and will be removed in a future major NeMo FW container release. "
+    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
     DeprecationWarning,
     stacklevel=2,
 )

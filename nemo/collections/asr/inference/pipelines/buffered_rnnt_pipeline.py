@@ -267,14 +267,14 @@ class BufferedRNNTPipeline(BasePipeline):
             buffer_lens=torch.tensor([zero_buffer.shape[1]], device=self.device),
             expected_feature_buffer_len=self.expected_feature_buffer_len,
         )
-        
+
         if self.prompt_enabled:
             # Use "en-US" as the default prompt for zero encoding
             # This region is sliced out before decoding, so language choice doesn't matter
             default_prompt_idx = self._resolve_prompt_index("en-US")
             prompt_matrix = self._get_prompt_matrix()
             prompt_vector = prompt_matrix[default_prompt_idx].unsqueeze(0)  # [1, num_prompts]
-            
+
             zero_encoded, _ = self.asr_model.encode_with_prompts(
                 processed_signal=zero_features,
                 processed_signal_length=zero_features_len,
@@ -284,7 +284,7 @@ class BufferedRNNTPipeline(BasePipeline):
             zero_encoded, _ = self.asr_model.encode(
                 processed_signal=zero_features, processed_signal_length=zero_features_len
             )
-        
+
         return zero_encoded[0]
 
     def create_state(self, options: ASRRequestOptions) -> RNNTStreamingState:

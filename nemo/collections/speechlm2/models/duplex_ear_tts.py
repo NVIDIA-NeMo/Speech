@@ -801,6 +801,27 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # set the extra self.speech_pad_id at first 1 position in non_prompt_mask
         target_codes_aligned[row_idx, pos] = self.speech_pad_id
 
+        # EOS dropout to make the model more robust
+        if self.training and self.cfg.get("text_eos_dropout_prob", 0.0) > 0:
+            # Mask EOS positions
+            eos_mask = (input_text_tokens == self.text_eos_id)
+
+            # Random dropout only on EOS positions
+            dropout_mask = (
+                torch.rand(eos_mask.sum(), device=input_text_tokens.device) < self.cfg.text_eos_dropout_prob
+            )
+
+            # Scatter dropout decisions into [B, T]
+            full_dropout_mask = torch.zeros_like(input_text_tokens, dtype=torch.bool)
+            full_dropout_mask[eos_mask] = dropout_mask
+
+            # Replace dropped EOS with PAD
+            input_text_tokens = torch.where(
+                full_dropout_mask,
+                torch.full_like(input_text_tokens, self.text_pad_id),
+                input_text_tokens
+            )
+
         # shift text tokens
         subword_ids = F.pad(input_text_tokens[:, 1:], [0, 1])
         # note that we are using a text mask where we are ignoring the desc + audio prompt but we are keeping 1 until the audio ends to support duplex

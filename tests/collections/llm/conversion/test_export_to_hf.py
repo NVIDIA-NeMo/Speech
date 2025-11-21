@@ -53,11 +53,17 @@ if __name__ == '__main__':
     hf_target_class = getattr(transformers, args.hf_target_class)
     original_hf = hf_target_class.from_pretrained(
         args.original_hf_path,
-        trust_remote_code=is_safe_repo(hf_path=args.original_hf_path),
+        trust_remote_code=is_safe_repo(
+            hf_path=args.original_hf_path,
+            trust_remote_code=args.trust_remote_code,
+        ),
     )
     converted_hf = hf_target_class.from_pretrained(
         args.output_path,
-        trust_remote_code=is_safe_repo(hf_path=args.original_hf_path),
+        trust_remote_code=is_safe_repo(
+            hf_path=args.original_hf_path,
+            trust_remote_code=args.trust_remote_code,
+        ),
     )
 
     for (name1, parameter1), (name2, parameter2) in zip(

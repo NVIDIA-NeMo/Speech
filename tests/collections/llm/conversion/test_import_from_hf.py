@@ -61,13 +61,21 @@ if __name__ == '__main__':
         raise ValueError(f'Unrecognized collection {args.collection}')
     config = getattr(collection, args.model_config)()
     model = getattr(collection, args.model_type)(config=config)
-    output_path = llm.import_ckpt(
-        model=model,
-        source=f"hf://{args.hf_path}",
-        output_path=args.output_path,
-        overwrite=True,
-        trust_remote_code=args.trust_remote_code,
-    )
+    try:
+        output_path = llm.import_ckpt(
+            model=model,
+            source=f"hf://{args.hf_path}",
+            output_path=args.output_path,
+            overwrite=True,
+            trust_remote_code=args.trust_remote_code,
+        )
+    except TypeError:
+        output_path = llm.import_ckpt(
+            model=model,
+            source=f"hf://{args.hf_path}",
+            output_path=args.output_path,
+            overwrite=True,
+        )
 
     trainer = nl.Trainer(
         accelerator="cpu",

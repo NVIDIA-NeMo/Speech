@@ -109,13 +109,16 @@ def slurm_executor(
     PERF_ENV_VARS |= custom_env_vars
     mounts.extend(custom_mounts)
 
-    # add --segment flag to sbatch if job uses GB200 and goes beyond one rack.
+    # add --segment flag to sbatch if job uses GB200.
     segment = None
-    if num_gpus_per_node == 4 and nodes > 18:
-        for segment_candidate in range(18, 0, -1):
-            if nodes % segment_candidate == 0:
-                segment = segment_candidate
-                break
+    if num_gpus_per_node == 4:
+        if nodes <= 18:
+            segment = nodes
+        else:  # nodes > 18
+            for segment_candidate in range(18, 0, -1):
+                if nodes % segment_candidate == 0:
+                    segment = segment_candidate
+                    break
 
     numa_divisor = 2 if gpu.lower() == 'gb200' else 4
     numa_cmd = f"numactl --cpunodebind=$((SLURM_LOCALID/{numa_divisor})) --membind=$((SLURM_LOCALID/{numa_divisor}))"

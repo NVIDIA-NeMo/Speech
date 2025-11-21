@@ -230,6 +230,9 @@ class LongFormTTSDataset(Dataset):
         codec_model_downsample_factor: int,
         context_audio_bos_id: int,
         context_audio_eos_id: int,
+        use_text_conditioning_encoder: bool,
+        pad_context_text_to_max_duration: bool,
+        codec_model_samples_per_frame: int,
     ):
         self.manifest_records = manifest_records
         self.text_tokenizer = text_tokenizer
@@ -246,6 +249,9 @@ class LongFormTTSDataset(Dataset):
         self.codec_model_downsample_factor = codec_model_downsample_factor
         self.context_audio_bos_id = context_audio_bos_id
         self.context_audio_eos_id = context_audio_eos_id
+        self.pad_context_text_to_max_duration = pad_context_text_to_max_duration
+        self.use_text_conditioning_encoder = use_text_conditioning_encoder
+        self.codec_model_samples_per_frame = codec_model_samples_per_frame
     
     def __len__(self) -> int:
         return len(self.manifest_records)
@@ -352,16 +358,66 @@ class LongFormTTSDataset(Dataset):
         Returns:
             List of sample dictionaries (no padding/stacking needed)
         """
+        s_idx = []
+        context_audio_codes_list = []
+        context_audio_codes_lens_list = []
+        has_text_context_list = []
+        context_text_tokens_list = []
+        context_text_tokens_lens_list = []
+        current_tokens = [] # List of lists of token tensors for each sample in the batch [[t,t,t,...], [t,t,t,...], ...]
+        current_tokens_lens = [] # List of lists of token lengths for each sample in the batch [[l,l,l,...], [l,l,l,...], ...]
+
         max_num_chunks = max([len(sample['chunked_tokens']) for sample in batch])
         for sample in batch:
+            s_idx.append(sample['idx'])
             num_padding = max_num_chunks - len(sample['chunked_tokens'])
             sample['chunked_tokens'] = sample['chunked_tokens'] + [
                 torch.tensor(self.eos_id, dtype=torch.int32).unsqueeze(0) for _ in range(num_padding)
             ]
+            current_tokens.append(sample['chunked_tokens'])
             sample['chunked_tokens_len'] = sample['chunked_tokens_len'] + [
                 torch.tensor(1, dtype=torch.int32) for _ in range(num_padding)
             ]
-        return batch
+            current_tokens_lens.append(sample['chunked_tokens_len'])
+
+            context_audio_codes_list.append(sample['context_audio_codes'])
+
+            context_audio_codes_lens_list.append(torch.tensor([sample['context_audio_codes'].shape[1]]))
+            if self.use_text_conditioning_encoder:
+                text_context_tokens = self.text_tokenizer.encode(
+                    "[NO TEXT CONTEXT]",
+                    "english_phoneme" if self.tokenizer_name is None else self.tokenizer_name
+                )
+                if self.pad_context_text_to_max_duration:
+                    _required_len = (
+                        int(self.context_duration_max * self.sample_rate / self.codec_model_samples_per_frame) + 2
+                    )  # +2 for BOS and EOS
+                    if len(text_context_tokens) < _required_len:
+                        _pad_id = self.text_tokenizer.tokenizer_pad_ids["english_phoneme"]
+                        text_context_tokens += [_pad_id] * (_required_len - len(text_context_tokens))
+                    else:
+                        text_context_tokens = text_context_tokens[:_required_len]
+                text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).cuda()
+                context_text_len = torch.tensor([text_context_tokens.shape[0]]).cuda()
+
+                context_text_tokens_list.append(text_context_tokens)
+                context_text_tokens_lens_list.append(context_text_len)
+                has_text_context_list.append(torch.BoolTensor([False]))
+
+        context_text_max_len = max([ct.shape[0] for ct in context_text_tokens_list])
+        context_audio_codes_max_len = max([ca.shape[1] for ca in context_audio_codes_list])
+        batch_dict = {
+            'idx': s_idx,
+            'chunked_tokens': current_tokens,
+            'chunked_tokens_lens': current_tokens_lens,
+            'context_audio_codes': stack_tensors(context_audio_codes_list, max_lens=[context_audio_codes_max_len]).cuda(),
+            'context_audio_codes_lens': torch.IntTensor(context_audio_codes_lens_list).cuda(),
+            'has_text_context': torch.BoolTensor(has_text_context_list).cuda(),
+            'context_text_tokens': stack_tensors(context_text_tokens_list, max_lens=[context_text_max_len]).cuda(),
+            'context_text_tokens_lens': torch.IntTensor(context_text_tokens_lens_list).cuda(),
+        }
+
+        return batch_dict
 
 
 def run_inference_streaming(
@@ -548,6 +604,9 @@ def run_inference_streaming(
             codec_model_downsample_factor=codec_model_downsample_factor,
             context_audio_bos_id=context_audio_bos_id,
             context_audio_eos_id=context_audio_eos_id,
+            use_text_conditioning_encoder=model.use_text_conditioning_encoder,
+            pad_context_text_to_max_duration=model.pad_context_text_to_max_duration,
+            codec_model_samples_per_frame=model.codec_model_samples_per_frame,
         )
         
         dataloader = DataLoader(
@@ -559,53 +618,53 @@ def run_inference_streaming(
         )
         
         # Iterate over batches
-        for batch_samples in dataloader:
-            batch_size = len(batch_samples)
+        for batch in dataloader:
+            batch_size = len(batch['chunked_tokens'])
             model.set_streaming_inference_variables(batch_size=batch_size, true_window_size=true_window_size)
-            max_num_chunks = len(batch_samples[0]['chunked_tokens'])
+            max_num_chunks = max([len(tokens) for tokens in batch['chunked_tokens']])
             # Process each sample in the batch
             # Prepare batch dictionary for model
-            batch = {}
-            context_audio_codes_list = []
-            context_audio_codes_lens_list = []
-            has_text_context_list = []
-            context_text_tokens_list = []
-            context_text_tokens_lens_list = []
-            for sample in batch_samples:
-                context_audio_codes_list.append(sample['context_audio_codes'])
-                context_audio_codes_lens_list.append(torch.tensor([sample['context_audio_codes'].shape[1]]))
+            # batch = {}
+            # context_audio_codes_list = []
+            # context_audio_codes_lens_list = []
+            # has_text_context_list = []
+            # context_text_tokens_list = []
+            # context_text_tokens_lens_list = []
+            # for sample in batch_samples:
+            #     context_audio_codes_list.append(sample['context_audio_codes'])
+            #     context_audio_codes_lens_list.append(torch.tensor([sample['context_audio_codes'].shape[1]]))
                 
-                if model.use_text_conditioning_encoder:
-                    text_context_tokens = text_tokenizer.encode(
-                        "[NO TEXT CONTEXT]",
-                        "english_phoneme" if tokenizer_name is None else tokenizer_name
-                    )
+            #     if model.use_text_conditioning_encoder:
+            #         text_context_tokens = text_tokenizer.encode(
+            #             "[NO TEXT CONTEXT]",
+            #             "english_phoneme" if tokenizer_name is None else tokenizer_name
+            #         )
 
-                    if model.pad_context_text_to_max_duration:
-                        _required_len = (
-                            int(model.cfg.context_duration_max * sample_rate / model.codec_model_samples_per_frame) + 2
-                        )  # +2 for BOS and EOS
-                        if len(text_context_tokens) < _required_len:
-                            _pad_id = text_tokenizer.tokenizer_pad_ids["english_phoneme"]
-                            text_context_tokens += [_pad_id] * (_required_len - len(text_context_tokens))
-                        else:
-                            text_context_tokens = text_context_tokens[:_required_len]
+            #         if model.pad_context_text_to_max_duration:
+            #             _required_len = (
+            #                 int(model.cfg.context_duration_max * sample_rate / model.codec_model_samples_per_frame) + 2
+            #             )  # +2 for BOS and EOS
+            #             if len(text_context_tokens) < _required_len:
+            #                 _pad_id = text_tokenizer.tokenizer_pad_ids["english_phoneme"]
+            #                 text_context_tokens += [_pad_id] * (_required_len - len(text_context_tokens))
+            #             else:
+            #                 text_context_tokens = text_context_tokens[:_required_len]
 
-                    text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).cuda()
-                    context_text_len = torch.tensor([text_context_tokens.shape[0]]).cuda()
+            #         text_context_tokens = torch.tensor(text_context_tokens, dtype=torch.int32).cuda()
+            #         context_text_len = torch.tensor([text_context_tokens.shape[0]]).cuda()
 
-                    context_text_tokens_list.append(text_context_tokens)
-                    context_text_tokens_lens_list.append(context_text_len)
-                    has_text_context_list.append(torch.BoolTensor([False]))
+            #         context_text_tokens_list.append(text_context_tokens)
+            #         context_text_tokens_lens_list.append(context_text_len)
+            #         has_text_context_list.append(torch.BoolTensor([False]))
 
-            text_max_len = max([ct.shape[0] for ct in context_text_tokens_list])
-            audio_max_len = max([ca.shape[1] for ca in context_audio_codes_list])
-            batch['context_audio_codes'] = stack_tensors(context_audio_codes_list, max_lens=[audio_max_len]).cuda()
-            batch['context_audio_codes_lens'] = torch.IntTensor(context_audio_codes_lens_list).cuda()
-            batch['has_text_context'] = torch.BoolTensor(has_text_context_list).cuda()
-            batch['context_text_tokens'] = stack_tensors(context_text_tokens_list, max_lens=[text_max_len]).cuda()
-            batch['context_text_tokens_lens'] = torch.IntTensor(context_text_tokens_lens_list).cuda()
-            
+            # text_max_len = max([ct.shape[0] for ct in context_text_tokens_list])
+            # audio_max_len = max([ca.shape[1] for ca in context_audio_codes_list])
+            # batch['context_audio_codes'] = stack_tensors(context_audio_codes_list, max_lens=[audio_max_len]).cuda()
+            # batch['context_audio_codes_lens'] = torch.IntTensor(context_audio_codes_lens_list).cuda()
+            # batch['has_text_context'] = torch.BoolTensor(has_text_context_list).cuda()
+            # batch['context_text_tokens'] = stack_tensors(context_text_tokens_list, max_lens=[text_max_len]).cuda()
+            # batch['context_text_tokens_lens'] = torch.IntTensor(context_text_tokens_lens_list).cuda()
+
             predicted_codes = [[] for _ in range(batch_size)]
             predicted_codes_lens = [0 for _ in range(batch_size)]
             torch.cuda.empty_cache()
@@ -614,25 +673,29 @@ def run_inference_streaming(
 
             for token_idx in range(max_num_chunks):
 
+                # Extract and pad current chunk of text tokens.
                 current_tokens = []
                 current_tokens_lens = []
-                for sample in batch_samples:
-                    current_tokens.append(sample['chunked_tokens'][token_idx])
-                    current_tokens_lens.append(sample['chunked_tokens_len'][token_idx])
+                for b_idx in range(batch_size):
+                    current_tokens.append(batch['chunked_tokens'][b_idx][token_idx])
+                    current_tokens_lens.append(batch['chunked_tokens_lens'][b_idx][token_idx])
 
                 max_len = max(current_tokens_lens)
                 batch['text'] = stack_tensors(current_tokens, max_lens=[max_len]).cuda()
                 batch['text_lens'] = torch.IntTensor(current_tokens_lens).cuda()
                 print(f"batch['text_lens'] {batch['text_lens']}")
-                batch_size = batch['text'].shape[0]
 
+                # Compute is_end_of_text flags for each sample in the batch.
                 is_end_of_text = []
                 for b_idx in range(batch_size):
                     if token_idx == (max_num_chunks - 1):
+                        # This sample goes till the end (maximum number of chunks).
                         is_end_of_text.append(True)
                     elif current_tokens_lens[b_idx] == 1:
+                        # Text chunks have ended for this sample.
                         is_end_of_text.append(True)
-                    elif batch_samples[b_idx]['chunked_tokens_len'][token_idx + 1] == 1:
+                    elif batch['chunked_tokens_lens'][b_idx][token_idx + 1] == 1:
+                        # This sample ends in this iteration, Hence next chunk of text tokens len is 1.
                         is_end_of_text.append(True)
                     else:
                         is_end_of_text.append(False)
@@ -658,6 +721,7 @@ def run_inference_streaming(
                         start_prior_after_n_audio_steps=start_prior_after_n_audio_steps,
                         use_exponential_weight=use_exponential_weight,
                         eos_detection_method=eos_detection_method,
+                        ignore_finished_sentence_tracking=False,
                     )
                 )
                 for b_idx in range(batch_size):
@@ -680,8 +744,8 @@ def run_inference_streaming(
             predicted_audio_np = predicted_audio.squeeze(0).float().detach().cpu().numpy()
 
             print(f"Total Time taken for inference: {time.time() - st} seconds")
-            for b_idx, sample in enumerate(batch_samples):
-                audio_path = os.path.join(pred_audio_dir, f"predicted_audio_{sample['idx']}.wav")
+            for b_idx, s_idx in enumerate(batch['idx']):
+                audio_path = os.path.join(pred_audio_dir, f"predicted_audio_{s_idx}.wav")
                 sf.write(audio_path, predicted_audio_np[b_idx], sample_rate)
 
         metrics, filewise_metrics = evaluate_generated_audio.evaluate(

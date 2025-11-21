@@ -2978,9 +2978,9 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         self.last_attended_timesteps = [
             [1 for _ in range(batch_size)]
         ]  # Maintain a list of attended timesteps as we predict audio for each batch item
-        self.attended_timestep_counter = [
-            {} for _ in range(batch_size)
-        ]  # Maintain a list of count of attended timesteps as we predict audio for each batch item
+        # self.attended_timestep_counter = [
+        #     {} for _ in range(batch_size)
+        # ]  # Maintain a list of count of attended timesteps as we predict audio for each batch item
         self.unfinished_texts = (
             {}
         )  # Maintains the unfinished texts .i.e. all of the text tokens have not been provided to the model yet
@@ -3100,10 +3100,10 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                             0.2  # Slight exposure to history for better pronounciation. Not very important.
                         )
                         _attn_prior[bidx, 0, text_time_step_attended[bidx] - left_offset[bidx]] = (
-                            0.8  # Slightly bias to continue moving forward. Not very important.
+                            1.0  # Slightly bias to continue moving forward. Not very important.
                         )
                         _attn_prior[bidx, 0, min(text_time_step_attended[bidx] - left_offset[bidx] + 1, _text_len - 1)] = (
-                            1.0  # Slightly bias to continue moving forward. Not very important.
+                            0.6  # Slightly bias to continue moving forward. Not very important.
                         )
                         if text_time_step_attended[bidx] - left_offset[bidx] + 2 < _text_len:
                             _attn_prior[bidx, 0, min(text_time_step_attended[bidx] - left_offset[bidx] + 2, _text_len - 1)] = 0.4
@@ -3118,7 +3118,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
 
                 chunk_end_has_reached[bidx] = False
                 if not end_of_text[bidx] and (
-                    text_time_step_attended[bidx] - left_offset[bidx] >= text_lens[bidx] - 2
+                    text_time_step_attended[bidx] - left_offset[bidx] >= text_lens[bidx] - 3
                 ):
                     # This means entire text has not been provided yet and audio generation for current chunk has almost reached the end
                     chunk_end_has_reached[bidx] = True
@@ -3485,6 +3485,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
         return_cross_attn_probs=False,
         use_exponential_weight=False,
         eos_detection_method="argmax_or_multinomial_any",
+        ignore_finished_sentence_tracking=False,
     ):
         """
         Generates speech for long-form text by progressively shifting through text tokens.
@@ -3610,9 +3611,6 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                             len_to_be_deleted_from_left = len_to_be_deleted_from_left.item()
                         # self.left_offset is the offset of the left side of the history that is to be discarded
                         self.left_offset[_idx] += len_to_be_deleted_from_left
-                        for _timestep in self.attended_timestep_counter[_idx]:
-                            if _timestep < self.left_offset[_idx]:
-                                self.attended_timestep_counter[_idx][_timestep] = 0
                         if not isinstance(self.left_offset[_idx], int):
                             self.left_offset[_idx] = self.left_offset[_idx].item()
                         if _idx in self.end_indices and self.end_indices[_idx] is not None: # If the text has been ended, skip the update.
@@ -3621,14 +3619,16 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         # Reconstructing the attention prior for the new chunk
                         current_starting_point = batch['text_lens'][_idx] - current_chunk_len[_idx]
                         _attn_prior[_idx, :, :current_starting_point] = prior_epsilon * prior_epsilon
-                        _attn_prior[_idx, :, current_starting_point] = 1.0
+                        _attn_prior[_idx, :, current_starting_point] = 0.8
                         _attn_prior[_idx, :, current_starting_point + 1] = 1.0
                         _attn_prior[_idx, :, current_starting_point + 2] = 0.8
                         _attn_prior[_idx, :, current_starting_point + 3] = 0.4
                         _attn_prior[_idx, :, current_starting_point + 4] = 0.2
+                        ones_indices = (_attn_prior[_idx, 0] == 1.0).nonzero(as_tuple=True)[0]
+                
             self.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
-                    
 
+            attended_timestep_counter = [{} for _ in range(batch_size)]
             cross_attention_scores_all_timesteps = []
             all_heads_cross_attn_scores_all_timesteps = []
             all_predictions = []
@@ -3646,6 +3646,8 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                 else:
                     _audio_codes_embedded = audio_codes_embedded
                     _audio_codes_mask = audio_codes_mask
+                if _attn_prior is not None:
+                    print(f"_attn_prior {_attn_prior.shape}")
 
                 if apply_prior_to_layers is not None:
                     attn_prior = [None for _ in range(self.cfg.decoder.n_layers)]
@@ -3721,12 +3723,12 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                             [h.detach() for h in all_heads_cross_attn_scores]
                         )
 
-                    text_time_step_attended, self.attended_timestep_counter = self.get_most_attended_text_timestep(
+                    text_time_step_attended, attended_timestep_counter = self.get_most_attended_text_timestep(
                         alignment_attention_scores=alignment_attention_scores,
                         last_attended_timesteps=self.last_attended_timesteps,
                         text_lens=context_tensors['text_lens'],
                         lookahead_window_size=lookahead_window_size,
-                        attended_timestep_counter=self.attended_timestep_counter,
+                        attended_timestep_counter=attended_timestep_counter,
                         batch_size=batch_size,
                         left_offset=self.left_offset,
                     )
@@ -3734,6 +3736,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         text_time_step_attended.detach() if isinstance(text_time_step_attended, torch.Tensor) 
                         else text_time_step_attended
                     )
+
 
                     (
                         _attn_prior,
@@ -3745,7 +3748,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         cross_attention_scores=cross_attention_scores,
                         text_lens=context_tensors['text_lens'],
                         text_time_step_attended=text_time_step_attended,
-                        attended_timestep_counter=self.attended_timestep_counter,
+                        attended_timestep_counter=attended_timestep_counter,
                         unfinished_texts=self.unfinished_texts,
                         finished_texts_counter=self.finished_texts_counter,
                         end_indices=self.end_indices,
@@ -3755,6 +3758,7 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         left_offset=self.left_offset,
                         use_exponential=use_exponential_weight,
                     )
+                    ones_indices = (_attn_prior[_idx, 0] == 1.0).nonzero(as_tuple=True)[0]
 
                 for key in self.finished_texts_counter:
                     self.finished_texts_counter[key] += 1
@@ -3762,10 +3766,14 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         # We should allow EOS to be predicted now.
                         self.unfinished_texts[key] = False
 
-                finished_items = {
-                    k: v for k, v in self.finished_texts_counter.items() if v >= 15
-                }  # Items that have been close to the end for atleast 15 timesteps
-                unifinished_items = {k: v for k, v in self.unfinished_texts.items() if v}
+                if ignore_finished_sentence_tracking:
+                    finished_items = {}
+                    unifinished_items = {}
+                else:
+                    finished_items = {
+                        k: v for k, v in self.finished_texts_counter.items() if v >= 15
+                    }  # Items that have been close to the end for atleast 15 timesteps
+                    unifinished_items = {k: v for k, v in self.unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
                 audio_codes_next = self.sample_codes_from_logits(
@@ -3773,18 +3781,19 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                     temperature=temperature,
                     topk=topk,
                     unfinished_items=unifinished_items,
-                    finished_items=finished_items,
+                    finished_items=finished_items
                 )  # (B, num_codebooks)
                 all_codes_next_argmax = self.sample_codes_from_logits(
                     all_code_logits_t,
                     temperature=0.01,
                     topk=1,
                     unfinished_items=unifinished_items,
-                    finished_items=finished_items,
+                    finished_items=finished_items
                 )  # (B, num_codebooks)
 
                 for item_idx in range(batch_size):
                     if chunk_end_has_reached[item_idx] and item_idx not in chunk_end_dict:
+                        print(f"... chunk_end_has_reached[{item_idx}]={chunk_end_has_reached[item_idx]} item_idx={item_idx} idx={idx}")
                         chunk_end_dict[item_idx] = idx
                     if item_idx not in self.end_indices:
                         end_frame_index = self.detect_eos(

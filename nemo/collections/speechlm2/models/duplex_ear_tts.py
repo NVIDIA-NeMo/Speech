@@ -804,12 +804,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # EOS dropout to make the model more robust
         if self.training and self.cfg.get("text_eos_dropout_prob", 0.0) > 0:
             # Mask EOS positions
-            eos_mask = (input_text_tokens == self.text_eos_id)
+            eos_mask = input_text_tokens == self.text_eos_id
 
             # Random dropout only on EOS positions
-            dropout_mask = (
-                torch.rand(eos_mask.sum(), device=input_text_tokens.device) < self.cfg.text_eos_dropout_prob
-            )
+            dropout_mask = torch.rand(eos_mask.sum(), device=input_text_tokens.device) < self.cfg.text_eos_dropout_prob
 
             # Scatter dropout decisions into [B, T]
             full_dropout_mask = torch.zeros_like(input_text_tokens, dtype=torch.bool)
@@ -817,9 +815,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
             # Replace dropped EOS with PAD
             input_text_tokens = torch.where(
-                full_dropout_mask,
-                torch.full_like(input_text_tokens, self.text_pad_id),
-                input_text_tokens
+                full_dropout_mask, torch.full_like(input_text_tokens, self.text_pad_id), input_text_tokens
             )
 
         # shift text tokens

@@ -3624,7 +3624,6 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                         _attn_prior[_idx, :, current_starting_point + 2] = 0.8
                         _attn_prior[_idx, :, current_starting_point + 3] = 0.4
                         _attn_prior[_idx, :, current_starting_point + 4] = 0.2
-                        ones_indices = (_attn_prior[_idx, 0] == 1.0).nonzero(as_tuple=True)[0]
                 
             self.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
 
@@ -3646,8 +3645,6 @@ class MagpieTTSStreamingInference(MagpieTTSModel):
                 else:
                     _audio_codes_embedded = audio_codes_embedded
                     _audio_codes_mask = audio_codes_mask
-                if _attn_prior is not None:
-                    print(f"_attn_prior {_attn_prior.shape}")
 
                 if apply_prior_to_layers is not None:
                     attn_prior = [None for _ in range(self.cfg.decoder.n_layers)]

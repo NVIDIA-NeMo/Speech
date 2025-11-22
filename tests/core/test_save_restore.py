@@ -1371,7 +1371,7 @@ class TestSaveRestore:
         found_card_data = False
         checked_count = 0
         max_checks = 20  # Check up to 20 models
-        
+
         for info in model_infos:
             if checked_count >= max_checks:
                 break
@@ -1379,12 +1379,14 @@ class TestSaveRestore:
             if hasattr(info, 'cardData') and info.cardData is not None:
                 found_card_data = True
                 break
-        
+
         # If we checked models and none had cardData, that's acceptable
         # The test passes if we found at least one, or if we didn't check many models
         if checked_count > 0:
             # Test passes if we found cardData or if we only checked a few models (API might not return cardData for all)
-            assert found_card_data or checked_count < 5, "Expected to find cardData in at least some models when requested"
+            assert (
+                found_card_data or checked_count < 5
+            ), "Expected to find cardData in at least some models when requested"
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit

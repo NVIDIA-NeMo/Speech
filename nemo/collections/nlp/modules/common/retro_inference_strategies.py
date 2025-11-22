@@ -120,7 +120,7 @@ class RetroModelTextGenerationStrategy(TextGenerationStrategy):
         return context_tokens_tensor, context_length_tensor
 
     def clip_max_len(self, maxlen: int) -> int:
-        """ clip the max len based on the LM model max sequence length"""
+        """clip the max len based on the LM model max sequence length"""
         if maxlen > self.model.cfg.encoder_seq_length + 1:
             maxlen = self.model.cfg.encoder_seq_length + 1
         return maxlen

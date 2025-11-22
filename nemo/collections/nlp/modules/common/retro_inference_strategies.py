@@ -401,10 +401,16 @@ class RetroFileQAModelTextGenerationStrategy(RetroQAModelTextGenerationStrategy)
         super().__init__(model, **args)
         # load the DPR to memory
         self.context_db = {}
-        with open('/dataset/FiD/test.jsonl_title', 'r') as f:
-            for line in f:
-                obj = json.loads(line)
-                self.context_db[obj['question']] = obj
+        # Use configurable path from args if provided, otherwise use default
+        dataset_path = args.get('dataset_path', '/dataset/FiD/test.jsonl_title')
+        try:
+            with open(dataset_path, 'r') as f:
+                for line in f:
+                    obj = json.loads(line)
+                    self.context_db[obj['question']] = obj
+        except FileNotFoundError:
+            # If file doesn't exist, context_db will be empty (graceful degradation)
+            pass
 
     def tokenize_batch(self, questions, max_len, add_BOS):
         """

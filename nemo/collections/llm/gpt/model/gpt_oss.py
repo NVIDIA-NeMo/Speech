@@ -546,7 +546,9 @@ class HFGPTOSSPEFTExporter(HFGPTOSSExporter):
         adapter_meta_path = ckpt_to_weights_subdir(str(self), is_saving=False) / ADAPTER_META_FILENAME
         with open(adapter_meta_path, "r") as f:
             model_ckpt_path = json.load(f)['model_ckpt_path']
-        model.name_or_path = os.path.join(model_ckpt_path.split("/")[-2:])
+        # Extract last two path components, handling both Unix and Windows paths
+        path_parts = model_ckpt_path.replace("\\", "/").split("/")
+        model.name_or_path = "/".join(path_parts[-2:])
         return get_peft_model(model, self.peft_config, autocast_adapter_dtype=False)
 
     def apply(self, output_path: Path) -> Path:

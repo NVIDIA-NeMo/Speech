@@ -58,6 +58,10 @@ class Perplexity(Metric):
             probs: A ``torch.Tensor`` which innermost dimension is valid probability distribution.
             logits: A ``torch.Tensor`` without NaNs.
         """
+        # Validate that exactly one of probs or logits is provided
+        if (probs is None) == (logits is None):
+            raise ValueError("Exactly one of 'probs' or 'logits' must be provided, not both or neither.")
+        
         d = Categorical(
             None if probs is None else probs.detach(),
             None if logits is None else logits.detach(),

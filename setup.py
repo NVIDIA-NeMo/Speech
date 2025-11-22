@@ -21,11 +21,10 @@ import codecs
 import importlib.util
 import os
 import subprocess
-from distutils import cmd as distutils_cmd
-from distutils import log as distutils_log
 from itertools import chain
 
 import setuptools
+from setuptools import Command
 
 spec = importlib.util.spec_from_file_location('package_info', 'nemo/package_info.py')
 package_info = importlib.util.module_from_spec(spec)
@@ -152,7 +151,7 @@ extras_require['slu'] = list(
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% #
 
 
-class StyleCommand(distutils_cmd.Command):
+class StyleCommand(Command):
     __ISORT_BASE = 'isort'
     __BLACK_BASE = 'black'
     description = 'Checks overall project code style.'
@@ -169,10 +168,7 @@ class StyleCommand(distutils_cmd.Command):
         if check:
             command.extend(['--check', '--diff'])
 
-        self.announce(
-            msg='Running command: %s' % str(' '.join(command)),
-            level=distutils_log.INFO,
-        )
+        print('Running command: %s' % str(' '.join(command)))
 
         return_code = subprocess.call(command)
 
@@ -193,10 +189,10 @@ class StyleCommand(distutils_cmd.Command):
         )
 
     def _pass(self):
-        self.announce(msg='\033[32mPASS\x1b[0m', level=distutils_log.INFO)
+        print('\033[32mPASS\x1b[0m')
 
     def _fail(self):
-        self.announce(msg='\033[31mFAIL\x1b[0m', level=distutils_log.INFO)
+        print('\033[31mFAIL\x1b[0m')
 
     # noinspection PyAttributeOutsideInit
     def initialize_options(self):

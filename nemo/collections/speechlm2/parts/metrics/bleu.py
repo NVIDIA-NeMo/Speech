@@ -40,6 +40,8 @@ class BLEU:
         self._hyps = defaultdict(list)
 
     def reset(self):
+        self._refs.clear()
+        self._hyps.clear()
         return self
 
     def update(self, name: str, refs: list[str], hyps: list[str]) -> None:
@@ -56,8 +58,7 @@ class BLEU:
             metric = torch.tensor(sacrebleu.corpus_bleu(self._hyps[name], [self._refs[name]]).score)
             corpus_metric[f"txt_bleu_{name}"] = metric
         corpus_metric["txt_bleu"] = torch.stack(list(corpus_metric.values())).mean()
-        self._refs.clear()
-        self._hyps.clear()
+        self.reset()
         return corpus_metric
 
 

@@ -42,8 +42,8 @@ from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.modules.ear_tts_commons import SCRIPT_PLACEHOLDER
-from nemo.collections.speechlm2.modules.rvq_ear_tts_model import RVQEARTTSModel
-from nemo.collections.speechlm2.modules.rvq_ear_tts_vae import RVQVAEModel
+from nemo.collections.speechlm2.modules.ear_tts_model import RVQEARTTSModel
+from nemo.collections.speechlm2.modules.ear_tts_vae_codec import RVQVAEModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.intelligibility import Intelligibility
@@ -1313,9 +1313,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             for name, dataset_batch in batch.items():
                 if dataset_batch is None:
                     continue  # some dataset is exhausted
+
+                B = len(dataset_batch['sample_id'])
+
                 # run inference for multiples references
                 if self.cfg.get("inference_speaker_reference_path", None):
-                    B = len(dataset_batch['sample_id'])
                     for inference_speaker_reference in glob.glob(
                         os.path.join(self.cfg.inference_speaker_reference_path, "**"), recursive=True
                     ):
@@ -1339,7 +1341,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 # run inference for a custom speaker reference
                 elif self.cfg.get("inference_speaker_reference", None):
                     new_dataset_batch = copy.deepcopy(dataset_batch)
-                    speaker_audio, sr = load_audio_librosa(inference_speaker_reference)
+                    speaker_audio, sr = load_audio_librosa(self.cfg.inference_speaker_reference)
                     speaker_audio = resample(speaker_audio, sr, self.target_sample_rate)
                     speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
                     # lengths -> [B]

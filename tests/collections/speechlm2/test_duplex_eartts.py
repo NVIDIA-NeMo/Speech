@@ -248,7 +248,6 @@ def training_cutset_batch():
 
 def test_eartts_dataset(dataset, training_cutset_batch):
     batch = dataset[training_cutset_batch]
-    # Keys that must be present in batch
     expected_keys = {
         "sample_id",
         "non_prompt_mask",
@@ -271,11 +270,9 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         "formatter",
     }
 
-    # --- Presence + tensor sanity checks ---
     for key in expected_keys:
         assert key in batch, f"Missing key: {key}"
 
-    # Tensor-only keys
     tensor_keys = [
         "non_prompt_mask",
         "desc_mask",
@@ -296,16 +293,11 @@ def test_eartts_dataset(dataset, training_cutset_batch):
     for key in tensor_keys:
         assert torch.is_tensor(batch[key]), f"{key} must be a tensor"
 
-    # --- Shape/value checks similar to the original test ---
-
-    # Audio shapes (you can adjust if needed)
     assert batch["source_audio"].shape == (1, 89082)
     assert batch["target_audio"].shape == (1, 89082)
 
-    # Target text consistency
+    # Check target text consistency
     assert batch["target_texts"] == ["hello okay"]
-
-    # Token checks (same content as your old test)
     assert batch["source_tokens"].tolist() == [
         [
             2,

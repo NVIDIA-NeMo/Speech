@@ -330,18 +330,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             self.cfg.pretrained_lm_name, use_fast=True, trust_remote_code=True
         )  # Note that we are using fast tokenizer
 
-        if 'Qwen2.5' in self.cfg.pretrained_lm_name:
-            # For Qwen, '<|im_start|>' is a common choice for a BOS token.
-            # You can check your tokenizer's vocabulary for the best candidate.
-            logging.warning("Tokenizer does not have a `bos_token`. Setting it to '<|im_start|>'.")
-            self.tokenizer.bos_token = '<|im_start|>'
-            self.tokenizer.eos_token = '<|im_end|>'
-
-        elif 'Nemotron' in self.cfg.pretrained_lm_name:
-            # ====== NEMOTRON-SPECIFIC HANDLING ======
-            self.tokenizer.bos_token = '<s>'
-            self.tokenizer.eos_token = '</s>'
-            self.tokenizer.pad_token = '<SPECIAL_12>'
+        # set tokenizer special tokens
+        self.tokenizer.bos_token = self.cfg.get("bos_token", '<s>')
+        self.tokenizer.eos_token = self.cfg.get("eos_token", '</s>')
+        self.tokenizer.pad_token = self.cfg.get("pad_token", '<SPECIAL_12>')
 
         # cached for quicker audio decoding
         self.register_buffer(
@@ -538,7 +530,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         """
         # check if audios has the same batch size
         assert batch["source_audio"].size(0) == batch["target_audio"].size(0)
-        assert batch["speaker_reference_audio"].size(0) == batch["target_audio"].size(0)
+        assert batch["audio_prompt"].size(0) == batch["target_audio"].size(0)
 
         target_audio = batch["target_audio"]
         target_audio_lens = batch["target_audio_lens"]
@@ -787,63 +779,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "eos_threshold": -3.0,
         }
 
-    def offline_inference_with_custom_sentences(
-        self, test_sentences: torch.Tensor, inference_speaker_reference: torch.Tensor, speech_text_ratio: float = 3.5
-    ):
-        # ToDo: split it in multiples batches to support long list of sentences
-        B = len(test_sentences)
-        # load and get speaker reference
-        speaker_audio, sr = load_audio_librosa(inference_speaker_reference)
-        speaker_audio = resample(speaker_audio, sr, self.target_sample_rate)
-        speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
-        # lengths -> [B]
-        speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long().repeat(B)
-
-        # Tokenize sentences
-        tokenized = [
-            torch.as_tensor(
-                [self.tokenizer.bos] + self.tokenizer.text_to_ids(text), dtype=torch.long, device=self.device
-            )
-            for text in test_sentences
-        ]
-
-        # Get max length and target length
-        max_len = max(len(t) for t in tokenized)
-        # Pad each to double length
-        target_len = int(
-            speech_text_ratio * max_len
-        )  # make text longer to ensures that we have enough steps for speech gen
-        next_subword_ids = torch.stack(
-            [
-                torch.cat(
-                    [
-                        torch.tensor(
-                            [self.text_pad_id], dtype=torch.long, device=self.device
-                        ),  # shift right adding one padding token
-                        t,
-                        torch.full(
-                            (target_len - len(t) - 1,), self.text_pad_id, dtype=torch.long, device=self.device
-                        ),  # remaining padding
-                    ]
-                )
-                for t in tokenized
-            ]
-        )
-
-        # set init inputs and get it
-        self.set_init_inputs(
-            speaker_audio=speaker_audio,
-            speaker_audio_lens=speaker_audio_lens,
-        )
-        init_inputs = self.get_init_inputs(B=next_subword_ids.size(0))
-
-        audio, audio_len = self.offline_inference(
-            next_subword_ids=next_subword_ids,
-            guidance_enabled=self.cfg.get("inference_guidance_enabled", True),
-            init_inputs=init_inputs,
-        )
-        return audio, audio_len, speaker_audio, speaker_audio_lens
-
     def run_evaluation_one_batch(self, name, dataset_batch, use_dataloader_init=False):
         """
         Runs evaluation and scoring for a single data batch, logging metrics and updating result buffers.
@@ -882,8 +817,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         else:
             # set init inputs and get it
             self.set_init_inputs(
-                speaker_audio=dataset_batch["speaker_reference_audio"],
-                speaker_audio_lens=dataset_batch["speaker_reference_audio_lens"],
+                speaker_audio=dataset_batch["audio_prompt"],
+                speaker_audio_lens=dataset_batch["audio_prompt_lens"],
             )
             init_inputs = self.get_init_inputs(B=inputs["subword_ids"].size(0))
 
@@ -996,7 +931,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 pred_audio=results["audio"].float(),
                 pred_audio_tf=results["audio_tf"].float(),
                 pre_audio_trimmed=None,
-                reference_audio=dataset_batch["speaker_reference_audio"].float(),
+                reference_audio=dataset_batch["audio_prompt"].float(),
                 target_audio=target_audio_no_prompt.float(),
                 pred_audio_sr=self.target_sample_rate,
                 user_audio=dataset_batch["source_audio"].float(),
@@ -1022,8 +957,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
                 # lengths -> [B]
                 speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long().repeat(B)
-                new_dataset_batch["speaker_reference_audio"] = speaker_audio
-                new_dataset_batch["speaker_reference_audio_lens"] = speaker_audio_lens
+                new_dataset_batch["audio_prompt"] = speaker_audio
+                new_dataset_batch["audio_prompt_lens"] = speaker_audio_lens
                 self.run_evaluation_one_batch(name, new_dataset_batch)
 
             # run inference using dataloader speaker references

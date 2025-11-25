@@ -265,8 +265,8 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         "source_tokens",
         "source_token_lens",
         "target_texts",
-        "speaker_reference_audio",
-        "speaker_reference_audio_lens",
+        "audio_prompt",
+        "audio_prompt_lens",
         "formatter",
     }
 
@@ -286,8 +286,8 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         "target_token_lens",
         "source_tokens",
         "source_token_lens",
-        "speaker_reference_audio",
-        "speaker_reference_audio_lens",
+        "audio_prompt",
+        "audio_prompt_lens",
     ]
 
     for key in tensor_keys:

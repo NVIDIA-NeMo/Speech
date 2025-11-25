@@ -13,7 +13,6 @@
 # limitations under the License.
 import copy
 import os
-import tempfile
 import time
 from collections import Counter
 from contextlib import contextmanager
@@ -37,7 +36,6 @@ from torch.distributed.tensor.parallel import (
 )
 
 from nemo.collections.audio.parts.utils.resampling import resample
-from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.modules.ear_tts_model import RVQEARTTSModel
@@ -437,14 +435,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             None. The model is updated in-place.
         """
         if checkpoint_path is not None:
-            if '.nemo' in checkpoint_path:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
-                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
-            else:
-                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
-
+            checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())
 
             if self.cfg.get("rescale_pretrained_weights", None):

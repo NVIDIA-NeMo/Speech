@@ -1132,61 +1132,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
     def test_step(self, *args, **kwargs):
         return self.validation_step(*args, **kwargs)
 
-    def get_system_prompt(self, system_prompt=None, user_prompt=None):
-        """
-        Constructs a prompt message pair (system, user, assistant) formatted for chat inference.
-
-        Args:
-            system_prompt (str, optional): System message describing conversational policy.
-            user_prompt (str, optional): User message/content.
-
-        Returns:
-            torch.Tensor: Tokenized prompt IDs, shape (1, T).
-        """
-        messages = []
-        if system_prompt is None:
-            system_prompt = (
-                "You engage in conversation with the user. When delivering your response as speech, "
-                "if the user provides a description such as emotions, scene details, "
-                "or speaker style, you adjust your speaking style accordingly when delivering the response. "
-                "However, this description should influence only the delivery of your response, not its content. "
-                "Your response should remain independent of any stylistic instructions."
-            )
-        messages.append({"role": "system", "content": system_prompt})
-
-        # ToDo: implement dataloading support for descriptions
-        """for desc in example["descriptions"]:
-            user_prompt = ""
-            if random.random() > self.p_drop_description and desc:
-                user_prompt += f"```\n{desc}\n```"
-            if random.random() > self.p_drop_description:
-                if user_prompt:
-                    user_prompt += "\n\n"
-                user_prompt += self.rng.choice(self.user_prompts)
-            if user_prompt:
-                messages.append({"role": "user", "content": user_prompt})
-            messages.append({"role": "assistant", "content": SCRIPT_PLACEHOLDER})
-        """
-
-        # given that descriptions are currently not supported, only added the user prompt
-        if user_prompt is None:
-            user_prompt = "Can you tell me something interesting?"
-        messages.append({"role": "user", "content": user_prompt})
-        messages.append({"role": "assistant", "content": SCRIPT_PLACEHOLDER})
-        non_script_list = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False,
-        ).split(SCRIPT_PLACEHOLDER + self.tokenizer.eos_token)[:-1]
-
-        input_ids = []
-        for i, non_script in enumerate(non_script_list):
-            desc_ids = self.tokenizer.text_to_ids(non_script)
-            input_ids.extend(desc_ids)
-
-        input_ids = torch.tensor(input_ids, dtype=torch.long, device=self.device).view(1, -1)
-        return input_ids
-
     def set_init_inputs(self, speaker_audio, speaker_audio_lens, system_prompt=None, user_prompt=None):
         """
         Registers and prepares initial input buffers for text/audio prompt and context, to warm up AR inference.
@@ -1242,30 +1187,23 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         with fp32_precision():
             prompt_audio_text_pad_size = int(prompt_audio_size // self.target_samples_per_frame)
 
-        # get description tokens
-        # ToDo: Consider remove the prompt description, given that NanoV2 does not support it and curently it is only a single eos text token
-        desc_tokens_ids = self.get_system_prompt(system_prompt=system_prompt, user_prompt=user_prompt)
+        # create a eos token id
+        first_text_frame = torch.tensor([self.tokenizer.eos], dtype=torch.long, device=self.device)
 
         # create a padding tensor
         prompt_audio_text_pad = (
-            torch.ones(prompt_audio_text_pad_size, device=self.device, dtype=desc_tokens_ids.dtype) * self.text_pad_id
+            torch.ones(prompt_audio_text_pad_size, device=self.device, dtype=first_text_frame.dtype) * self.text_pad_id
         )
         prompt_audio_text_pad[-1] = self.tokenizer.eos
 
-        # Add eos to simulate the end of a turn as in EAR-TTS inference
-        desc_tokens_ids = torch.cat(
-            [
-                desc_tokens_ids.squeeze(),
-                torch.tensor([self.tokenizer.eos], dtype=desc_tokens_ids.dtype, device=desc_tokens_ids.device),
-            ]
-        )
-        # Add padding equivalent to the audio prompt size in number of tokens
+        # Prepend an initial text EOS token followed by padding tokens that match
+        # the number of audio-prompt frames (in text-token units).
         input_text_tokens = torch.cat(
-            [desc_tokens_ids.to(desc_tokens_ids.dtype), prompt_audio_text_pad.to(desc_tokens_ids.dtype)]
+            [first_text_frame, prompt_audio_text_pad.to(first_text_frame.dtype)]
         )
 
         # create pad audio for the description
-        pad_size = desc_tokens_ids.size(-1) * self.target_samples_per_frame
+        pad_size = first_text_frame.size(-1) * self.target_samples_per_frame
         pad_audio = (
             torch.zeros(pad_size, device=prompt_audio.device, dtype=prompt_audio.dtype)
             .unsqueeze(0)
@@ -1301,7 +1239,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         )
         # desc mask is all zeros except the description
         desc_mask = torch.zeros_like(input_text_tokens)
-        desc_mask[:, : desc_tokens_ids.size(-1)] = 1
+        desc_mask[:, : first_text_frame.size(-1)] = 1
 
         if not self.cfg.get("disable_speech_pad", False):
             # add special tokens on audio codes

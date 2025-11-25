@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-import glob
 import os
 import tempfile
 import time
@@ -41,7 +40,6 @@ from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.collections.speechlm2.modules.ear_tts_commons import SCRIPT_PLACEHOLDER
 from nemo.collections.speechlm2.modules.ear_tts_model import RVQEARTTSModel
 from nemo.collections.speechlm2.modules.ear_tts_vae_codec import RVQVAEModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
@@ -1019,109 +1017,27 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             )
 
     def validation_step(self, batch: dict, batch_idx: int):
-        if self.cfg.get("test_sentences", None) and self.cfg.get("inference_speaker_reference", None):
-            for name in self.cfg.test_sentences.keys():
-                logging.info(f"Generating {name} custom sentences.")
-                test_sentences = self.cfg.test_sentences[name]
-                results = {}
-                results["audio"], results["audio_len"], speaker_audio, speaker_audio_lens = (
-                    self.offline_inference_with_custom_sentences(test_sentences, self.cfg.inference_speaker_reference)
-                )
-                with fp32_precision():  # resample is fragile to bfloat16 default dtype
-                    metric_audio_pred = results["audio"]
-                    metric_audio_pred_lens = results["audio_len"]
+        for name, dataset_batch in batch.items():
+            if dataset_batch is None:
+                continue  # some dataset is exhausted
 
-                    # resample audio to the asr sampling rate
-                    metric_audio_pred = resample(metric_audio_pred, self.target_sample_rate, 16000)
-                    metric_audio_pred_lens = (metric_audio_pred_lens / self.target_sample_rate * 16000).to(torch.long)
+            B = len(dataset_batch['sample_id'])
 
-                    asr_hyps = self.asr_bleu.update(
-                        name=name,
-                        refs=test_sentences,
-                        pred_audio=metric_audio_pred,
-                        pred_audio_lens=metric_audio_pred_lens,
-                    )
+            # run inference for a custom speaker reference
+            if self.cfg.get("inference_speaker_reference", None):
+                new_dataset_batch = copy.deepcopy(dataset_batch)
+                speaker_audio, sr = load_audio_librosa(self.cfg.inference_speaker_reference)
+                speaker_audio = resample(speaker_audio, sr, self.target_sample_rate)
+                speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
+                # lengths -> [B]
+                speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long().repeat(B)
+                new_dataset_batch["speaker_reference_audio"] = speaker_audio
+                new_dataset_batch["speaker_reference_audio_lens"] = speaker_audio_lens
+                self.run_evaluation_one_batch(name, new_dataset_batch)
 
-                    self.intelligibility.update(
-                        name=name,
-                        refs=test_sentences,
-                        pred_audio=metric_audio_pred,
-                        pred_audio_lens=metric_audio_pred_lens,
-                        asr_hyps=asr_hyps,
-                    )
-
-                    self.secs.update(
-                        name=name,
-                        target_audio=resample(speaker_audio, self.target_sample_rate, 16000),
-                        target_audio_lens=(speaker_audio_lens / self.target_sample_rate * 16000).to(torch.long),
-                        pred_audio=resample(results["audio"], self.target_sample_rate, 16000),
-                        pred_audio_lens=(results["audio_len"] / self.target_sample_rate * 16000).to(torch.long),
-                    )
-
-                    self.results_logger.update(
-                        name=name,
-                        refs=test_sentences,
-                        hyps=test_sentences,
-                        asr_hyps=asr_hyps,
-                        samples_id=[str(i) for i in range(len(test_sentences))],
-                        pred_audio=results["audio"].float(),
-                        pred_audio_tf=None,
-                        pre_audio_trimmed=None,
-                        reference_audio=speaker_audio.float(),
-                        target_audio=None,
-                        pred_audio_sr=self.target_sample_rate,
-                        user_audio=None,
-                        user_audio_sr=None,
-                        eou_pred=None,
-                        fps=self.target_fps,
-                        results=None,
-                        tokenizer=self.tokenizer,
-                    )
-
-        else:
-            for name, dataset_batch in batch.items():
-                if dataset_batch is None:
-                    continue  # some dataset is exhausted
-
-                B = len(dataset_batch['sample_id'])
-
-                # run inference for multiples references
-                if self.cfg.get("inference_speaker_reference_path", None):
-                    for inference_speaker_reference in glob.glob(
-                        os.path.join(self.cfg.inference_speaker_reference_path, "**"), recursive=True
-                    ):
-                        if not os.path.isfile(inference_speaker_reference):
-                            continue
-
-                        new_dataset_batch = copy.deepcopy(dataset_batch)
-                        # Get only the file name
-                        ref_name = os.path.basename(inference_speaker_reference).split(".")[0]
-                        # Append to each sample_id
-                        new_dataset_batch['sample_id'] = [f"{sid}_{ref_name}" for sid in dataset_batch['sample_id']]
-                        speaker_audio, sr = load_audio_librosa(inference_speaker_reference)
-                        speaker_audio = resample(speaker_audio, sr, self.target_sample_rate)
-                        speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
-                        # lengths -> [B]
-                        speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long().repeat(B)
-                        new_dataset_batch["speaker_reference_audio"] = speaker_audio
-                        new_dataset_batch["speaker_reference_audio_lens"] = speaker_audio_lens
-                        self.run_evaluation_one_batch(name, new_dataset_batch, use_dataloader_init=False)
-
-                # run inference for a custom speaker reference
-                elif self.cfg.get("inference_speaker_reference", None):
-                    new_dataset_batch = copy.deepcopy(dataset_batch)
-                    speaker_audio, sr = load_audio_librosa(self.cfg.inference_speaker_reference)
-                    speaker_audio = resample(speaker_audio, sr, self.target_sample_rate)
-                    speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
-                    # lengths -> [B]
-                    speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long().repeat(B)
-                    new_dataset_batch["speaker_reference_audio"] = speaker_audio
-                    new_dataset_batch["speaker_reference_audio_lens"] = speaker_audio_lens
-                    self.run_evaluation_one_batch(name, new_dataset_batch, use_dataloader_init=False)
-
-                # run inference using dataloader speaker references
-                else:
-                    self.run_evaluation_one_batch(name, dataset_batch, use_dataloader_init=False)
+            # run inference using dataloader speaker references
+            else:
+                self.run_evaluation_one_batch(name, dataset_batch, use_dataloader_init=False)
 
     def on_test_epoch_start(self) -> None:
         return self.on_validation_epoch_start()

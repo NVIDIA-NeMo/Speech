@@ -24,7 +24,6 @@ from lhotse.utils import ifnone
 
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.collections.speechlm2.modules.ear_tts_commons import SCRIPT_PLACEHOLDER
 from nemo.utils import logging
 
 

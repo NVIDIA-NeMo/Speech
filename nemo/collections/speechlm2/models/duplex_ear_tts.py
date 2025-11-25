@@ -1198,9 +1198,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         # Prepend an initial text EOS token followed by padding tokens that match
         # the number of audio-prompt frames (in text-token units).
-        input_text_tokens = torch.cat(
-            [first_text_frame, prompt_audio_text_pad.to(first_text_frame.dtype)]
-        )
+        input_text_tokens = torch.cat([first_text_frame, prompt_audio_text_pad.to(first_text_frame.dtype)])
 
         # create pad audio for the description
         pad_size = first_text_frame.size(-1) * self.target_samples_per_frame

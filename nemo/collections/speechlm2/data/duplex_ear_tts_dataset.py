@@ -303,7 +303,9 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         # for each sample in the batch
         for i in range(input_text_tokens.size(0)):
             # create a eos token tensor
-            initial_text_frame_id = torch.tensor([self.tokenizer.eos], dtype=torch.long, device=input_text_tokens[i].device)
+            initial_text_frame_id = torch.tensor(
+                [self.tokenizer.eos], dtype=torch.long, device=input_text_tokens[i].device
+            )
 
             if self.add_audio_prompt_after_description:
                 prompt_audio_size = int(

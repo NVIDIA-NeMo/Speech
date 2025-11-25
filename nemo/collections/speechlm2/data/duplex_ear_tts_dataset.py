@@ -140,19 +140,58 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         output_roles (list[str], optional):
             List of speaker roles (cut.supervisions[:].speaker) to consider as outputs. Defaults to ["agent"].
 
-    Returns:
+        p_drop_description (float, optional):
+            Probability of dropping text descriptions. Default: `0.0`.
+
+        add_text_bos_and_eos_in_each_turn (bool, optional):
+            If True, each conversational turn from any speaker is explicitly delimited
+            with BOS and EOS tokens in the text stream.
+            Default: `True`.
+
+        add_audio_prompt_after_description (bool, optional):
+            If True, an optional audio/speaker prompt is appended after the description.
+            Default: `True`.
+
+        audio_prompt_duration (float, optional):
+            Duration (in seconds) of the audio prompt appended when
+            `add_audio_prompt_after_description=True`. Default: `3.0`.
+
+        num_delay_speech_tokens (int, optional):
+            Number of PAD tokens to insert before speech tokens to artificially
+            delay the start of speech. Default: `0`.
+
+     Returns:
         A dictionary with the following keys:
+            - sample_id: List of sample IDs for each cut in the batch [B]
+
+            - non_prompt_mask: Bool tensor [B, T] marking positions that are not part of the prompt
+            - desc_mask: Bool tensor [B, T] marking positions belonging to the description
+            - desc_lens: Tensor of description text lengths [B]
+            - desc_plus_audio_prompt_lens: Tensor of description + audio prompt lengths [B]
+
+            - aligned_attention_mask: Bool tensor [B, T] used by alignment-aware transformer models
+            - aligned_position_ids: Tensor of position indices aligned to audio frames [B, T]
+
             - source_audio: Tensor of source waveform samples [B, T]
             - source_audio_lens: Tensor of source audio lengths [B]
+
             - target_audio: Tensor of target waveform samples [B, T]
             - target_audio_lens: Tensor of target audio lengths [B]
-            - input_text_tokens: Tensor of target text tokens [B, T], with special tokens (BOS/EOS/PAD)
-                at positions aligned with audio frames
+
+            - input_text_tokens: Tensor of frame-aligned input text tokens [B, T],
+                including BOS/EOS/PAD when enabled
             - target_token_lens: Tensor of target token sequence lengths [B]
-            - source_tokens: Tensor of source text tokens [B, T], with special tokens (BOS/EOS/PAD)
-                at positions aligned with audio frames
+
+            - source_tokens: Tensor of frame-aligned source text tokens [B, T],
+                including BOS/EOS/PAD
             - source_token_lens: Tensor of source token sequence lengths [B]
+
             - target_texts: List of full target texts joined from output_roles supervisions [B]
+
+            - speaker_reference_audio: Tensor of optional speaker reference waveform samples [B, T]
+            - speaker_reference_audio_lens: Tensor of speaker reference audio lengths [B]
+
+            - formatter: List indicating the formatter to use for each cut (default "s2s_duplex") [B]
 
     Notes:
         - The dataset ensures frame-level alignment between audio and text by inserting tokens at
@@ -174,8 +213,8 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         input_roles: list[str] = None,
         output_roles: list[str] = None,
         p_drop_description: float = 0.0,
-        add_text_bos_and_eos_in_each_turn: bool = False,
-        add_audio_prompt_after_description: bool = False,
+        add_text_bos_and_eos_in_each_turn: bool = True,
+        add_audio_prompt_after_description: bool = True,
         audio_prompt_duration: float = 3.0,
         num_delay_speech_tokens: int = 0,
     ):

@@ -257,7 +257,9 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
         )
 
-        audio_prompt, audio_prompt_lens = get_audio_prompt(cuts, self.target_sample_rate, roles=self.output_roles, recording_field="target_audio")
+        audio_prompt, audio_prompt_lens = get_audio_prompt(
+            cuts, self.target_sample_rate, roles=self.output_roles, recording_field="target_audio"
+        )
 
         # ensures that input_text_tokens is not longer than its duration
         input_text_tokens = input_text_tokens[:, : target_token_lens.max()]
@@ -457,8 +459,8 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             if self.add_audio_prompt:
                 # Compute audio prompt duration in samples (rounded to frame boundaries)
                 prompt_audio_size = int(
-                    ((self.audio_prompt_duration * self.target_sample_rate) //
-                    self.target_samples_per_frame) * self.target_samples_per_frame
+                    ((self.audio_prompt_duration * self.target_sample_rate) // self.target_samples_per_frame)
+                    * self.target_samples_per_frame
                 )
 
                 prompt_audio = sample_audio_segments_repeat(
@@ -466,7 +468,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                 )
 
                 # Fade transition: add silence at the end of the prompt
-                prompt_audio[:, -int(self.target_samples_per_frame * 2):] = 0
+                prompt_audio[:, -int(self.target_samples_per_frame * 2) :] = 0
 
                 # Number of text tokens to insert to align with prompt_audio frames
                 prompt_audio_text_pad_size = prompt_audio_size // self.target_samples_per_frame
@@ -476,7 +478,8 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                         prompt_audio_text_pad_size,
                         device=input_text_tokens.device,
                         dtype=input_text_tokens.dtype,
-                    ) * text_pad_id
+                    )
+                    * text_pad_id
                 )
                 prompt_audio_text_pad[-1] = self.tokenizer.eos
 
@@ -623,6 +626,7 @@ def add_speech_delay(
 
     return source_audio, source_audio_lens, target_audio, target_audio_lens
 
+
 def get_audio_prompt(
     cuts: CutSet,
     target_sample_rate: int,
@@ -688,6 +692,7 @@ def get_audio_prompt(
         )
 
     return audio_prompt, audio_prompt_lens
+
 
 def collate_random_turn_audio(
     cuts: CutSet,

@@ -803,10 +803,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             for key in init_inputs:
                 if init_inputs[key] is not None:
                     init_inputs[key] = torch.stack(
-                        [
-                            init_inputs[key][i, :plen]
-                            for i, plen in enumerate(dataset_batch["prompt_lens"])
-                        ]
+                        [init_inputs[key][i, :plen] for i, plen in enumerate(dataset_batch["prompt_lens"])]
                     )
         else:
             # set init inputs and get it

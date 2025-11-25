@@ -147,13 +147,13 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             with BOS and EOS tokens in the text stream.
             Default: `True`.
 
-        add_audio_prompt_after_description (bool, optional):
+        add_audio_prompt (bool, optional):
             If True, an optional audio/speaker prompt is appended after the description.
             Default: `True`.
 
         audio_prompt_duration (float, optional):
             Duration (in seconds) of the audio prompt appended when
-            `add_audio_prompt_after_description=True`. Default: `3.0`.
+            `add_audio_prompt=True`. Default: `3.0`.
 
         num_delay_speech_tokens (int, optional):
             Number of PAD tokens to insert before speech tokens to artificially
@@ -164,9 +164,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             - sample_id: List of sample IDs for each cut in the batch [B]
 
             - non_prompt_mask: Bool tensor [B, T] marking positions that are not part of the prompt
-            - desc_mask: Bool tensor [B, T] marking positions belonging to the description
-            - desc_lens: Tensor of description text lengths [B]
-            - desc_plus_audio_prompt_lens: Tensor of description + audio prompt lengths [B]
+            - prompt_lens: Tensor of description + audio prompt lengths [B]
 
             - aligned_attention_mask: Bool tensor [B, T] used by alignment-aware transformer models
             - aligned_position_ids: Tensor of position indices aligned to audio frames [B, T]
@@ -213,7 +211,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         output_roles: list[str] = None,
         p_drop_description: float = 0.0,
         add_text_bos_and_eos_in_each_turn: bool = True,
-        add_audio_prompt_after_description: bool = True,
+        add_audio_prompt: bool = True,
         audio_prompt_duration: float = 3.0,
         num_delay_speech_tokens: int = 0,
     ):
@@ -225,9 +223,15 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         self.output_roles = set(ifnone(output_roles, ["agent"]))
         self.p_drop_description = p_drop_description
         self.add_text_bos_and_eos_in_each_turn = add_text_bos_and_eos_in_each_turn
-        self.add_audio_prompt_after_description = add_audio_prompt_after_description
+        self.add_audio_prompt = add_audio_prompt
         self.audio_prompt_duration = audio_prompt_duration
         self.num_delay_speech_tokens = num_delay_speech_tokens
+
+        # compute source and target samples_per_frame
+        source_fps = self.source_sample_rate / (self.source_sample_rate * self.frame_length)
+        self.source_samples_per_frame = int(self.source_sample_rate // source_fps)
+        target_fps = self.target_sample_rate / (self.target_sample_rate * self.frame_length)
+        self.target_samples_per_frame = int(self.target_sample_rate // target_fps)
 
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
@@ -253,152 +257,49 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
         )
 
-        # if context audio is available use it, otherwise use a random agent turn as speaker reference
-        if hasattr(cuts[0], "context_audio"):
-            audio_prompt = []
-            audio_prompt_lens = []
-            for cut in cuts:
-                ref_audio = torch.tensor(cut.context_audio.resample(self.target_sample_rate).load_audio()).float()
-                ref_audio_len = torch.tensor(ref_audio.shape[1]).long()
-                audio_prompt.append(ref_audio.squeeze(0))
-                audio_prompt_lens.append(ref_audio_len)
-
-            audio_prompt = collate_vectors(audio_prompt, padding_value=0).float()
-            audio_prompt_lens = torch.tensor(audio_prompt_lens).long()
-        else:
-            # extract target speaker reference from a random audio audio
-            audio_prompt, audio_prompt_lens = collate_random_turn_audio(
-                cuts.resample(self.target_sample_rate), roles=self.output_roles, recording_field="target_audio"
-            )
+        audio_prompt, audio_prompt_lens = get_audio_prompt(cuts, self.target_sample_rate, roles=self.output_roles, recording_field="target_audio")
 
         # ensures that input_text_tokens is not longer than its duration
         input_text_tokens = input_text_tokens[:, : target_token_lens.max()]
 
-        source_fps = self.source_sample_rate / (self.source_sample_rate * self.frame_length)
-        source_samples_per_frame = int(self.source_sample_rate // source_fps)
-        target_fps = self.target_sample_rate / (self.target_sample_rate * self.frame_length)
-        target_samples_per_frame = int(self.target_sample_rate // target_fps)
-
-        # one is default and we add BOS on speech channel to ensures it, inside of the model class, so if we want bigger than that we can add padding in the audio here
+        # add speech channel delay if needed
         if self.num_delay_speech_tokens:
-            # compute the padding need in target audio for the number of delay tokens
-            extra_frames = int(self.num_delay_speech_tokens * target_samples_per_frame)
-            # left pad target audio to create the delay and make the model to predict silence while consuming self.num_delay_speech_tokens text tokens
-            target_audio = F.pad(target_audio, (extra_frames, 0))
-            target_audio_lens = target_audio_lens + extra_frames
-
-            # right pad the source audio to avoid size mismatch
-            extra_frames = int(self.num_delay_speech_tokens * source_samples_per_frame)
-            source_audio = F.pad(source_audio, (0, extra_frames))
-            source_audio_lens = source_audio_lens + extra_frames
-
-        text_pad_id = get_pad_id(self.tokenizer)
-        input_text_tokens_ = []
-        source_tokens_ = []
-        source_audio_ = []
-        target_audio_ = []
-        desc_lens = []
-        desc_plus_audio_prompt_lens = []
-        # for each sample in the batch
-        for i in range(input_text_tokens.size(0)):
-            # create a eos token tensor
-            first_text_frame = torch.tensor(
-                [self.tokenizer.eos], dtype=torch.long, device=input_text_tokens[i].device
+            source_audio, source_audio_lens, target_audio, target_audio_lens = add_speech_delay(
+                source_audio,
+                source_audio_lens,
+                target_audio,
+                target_audio_lens,
+                self.num_delay_speech_tokens,
+                self.target_samples_per_frame,
+                self.source_samples_per_frame,
             )
 
-            if self.add_audio_prompt_after_description:
-                prompt_audio_size = int(
-                    ((self.audio_prompt_duration * self.target_sample_rate) // target_samples_per_frame)
-                    * target_samples_per_frame
-                )
-                prompt_audio = sample_audio_segments_repeat(
-                    audio_prompt, audio_prompt_lens, prompt_audio_size, sample=True
-                )
-                # add a silence in the end to smooth the transition between prompt and audio tokens, keep one extra pad token due shift on subword_ids
-                prompt_audio[:, -int(target_samples_per_frame * 2) :] = 0
-
-                # create tensor to pad text channels with the same amount of frames added in audio channel (audio prompt)
-                prompt_audio_text_pad_size = prompt_audio_size // target_samples_per_frame
-                prompt_audio_text_pad = (
-                    torch.ones(
-                        prompt_audio_text_pad_size, device=input_text_tokens.device, dtype=input_text_tokens.dtype
-                    )
-                    * text_pad_id
-                )
-                # set last prompt frame with eos in text channel
-                prompt_audio_text_pad[-1] = self.tokenizer.eos
-
-                # Prepend an initial text EOS token followed by padding tokens that match
-                # the number of audio-prompt frames (in text-token units) and input_text_tokens
-                new_input_text_tokens = torch.cat(
-                    [
-                        first_text_frame.to(input_text_tokens.dtype),
-                        prompt_audio_text_pad.to(input_text_tokens.dtype),
-                        input_text_tokens[i],
-                    ]
-                )
-                # append to list and update lens
-                input_text_tokens_.append(new_input_text_tokens)
-                target_token_lens[i] = target_token_lens[i] + len(first_text_frame) + prompt_audio_text_pad_size
-
-                # add description to source text tokens
-                source_tokens_.append(torch.cat([first_text_frame, prompt_audio_text_pad, source_tokens[i]]))
-                source_token_lens[i] = source_token_lens[i] + len(first_text_frame) + prompt_audio_text_pad_size
-                # add silence in the source audio while the prompt is being processed
-                pad_size = (len(first_text_frame) * source_samples_per_frame) + prompt_audio.size(1)
-                pad_audio = torch.zeros(pad_size, device=source_audio.device, dtype=source_audio.dtype)
-                source_audio_.append(torch.cat([pad_audio, source_audio[i]]))
-                source_audio_lens[i] = source_audio_lens[i] + pad_size
-                # add silence in the target audio while the prompt is being processed
-                pad_size = len(first_text_frame) * target_samples_per_frame
-                pad_audio = torch.zeros(pad_size, device=target_audio.device, dtype=target_audio.dtype)
-                target_audio_.append(torch.cat([pad_audio, prompt_audio[i], target_audio[i]]))
-                target_audio_lens[i] = target_audio_lens[i] + pad_size + prompt_audio.size(1)
-                # desc duration
-                desc_lens.append(len(first_text_frame))
-                desc_plus_audio_prompt_lens.append(
-                    len(first_text_frame) + prompt_audio_text_pad_size - 1
-                )  # -1 due the shift done in subword_ids
-            else:
-                # add description to target text tokens
-                input_text_tokens_.append(torch.cat([first_text_frame, input_text_tokens[i]]))
-                target_token_lens[i] = target_token_lens[i] + len(first_text_frame)
-                # add description to source text tokens
-                source_tokens_.append(torch.cat([first_text_frame, source_tokens[i]]))
-                source_token_lens[i] = source_token_lens[i] + len(first_text_frame)
-                # add silence in the source audio while the prompt is being processed
-                pad_size = len(first_text_frame) * source_samples_per_frame
-                pad_audio = torch.zeros(pad_size, device=source_audio.device, dtype=source_audio.dtype)
-                source_audio_.append(torch.cat([pad_audio, source_audio[i]]))
-                source_audio_lens[i] = source_audio_lens[i] + pad_size
-                # add silence in the target audio while the prompt is being processed
-                pad_size = len(first_text_frame) * target_samples_per_frame
-                pad_audio = torch.zeros(pad_size, device=target_audio.device, dtype=target_audio.dtype)
-                target_audio_.append(torch.cat([pad_audio, target_audio[i]]))
-                target_audio_lens[i] = target_audio_lens[i] + pad_size
-
-                # des duration
-                desc_lens.append(len(first_text_frame))
-                desc_plus_audio_prompt_lens.append(len(first_text_frame))
-
-        # collate tensors
-        input_text_tokens = collate_vectors(input_text_tokens_, padding_value=text_pad_id)
-        source_tokens = collate_vectors(source_tokens_, padding_value=text_pad_id)
-        source_audio = collate_vectors(source_audio_, padding_value=0)
-        target_audio = collate_vectors(target_audio_, padding_value=0)
-
-        # recreate audio mask
-        non_desc_mask = get_mask_from_lengths(target_token_lens)
-        # ignore desc len in audio mask
-        for i, frame in enumerate(desc_lens):
-            non_desc_mask[i, :frame] = 0.0
-
-        # desc mask is totally the oposite of audio mask
-        desc_mask = ~non_desc_mask
+        (
+            input_text_tokens,
+            target_token_lens,
+            source_tokens,
+            source_token_lens,
+            source_audio,
+            source_audio_lens,
+            target_audio,
+            target_audio_lens,
+            prompt_lens,
+        ) = self.maybe_add_audio_prompt(
+            input_text_tokens,
+            target_token_lens,
+            source_tokens,
+            source_token_lens,
+            target_audio,
+            target_audio_lens,
+            source_audio,
+            source_audio_lens,
+            audio_prompt,
+            audio_prompt_lens,
+        )
 
         # create non_prompt_mask that should mask desc plus audio prompt if used
         non_prompt_mask = get_mask_from_lengths(target_token_lens)
-        for i, frame in enumerate(desc_plus_audio_prompt_lens):
+        for i, frame in enumerate(prompt_lens):
             non_prompt_mask[i, : frame - 1] = 0.0
 
         max_len = max(target_token_lens)
@@ -435,9 +336,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         return {
             "sample_id": [str(cut.id) for cut in cuts],
             "non_prompt_mask": non_prompt_mask.bool(),
-            "desc_mask": desc_mask.bool(),
-            "desc_lens": desc_lens,
-            "desc_plus_audio_prompt_lens": desc_plus_audio_prompt_lens,
+            "prompt_lens": prompt_lens,
             "aligned_attention_mask": aligned_attention_mask.bool(),
             "aligned_position_ids": aligned_position_ids,
             "source_audio": source_audio,
@@ -456,6 +355,339 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in cuts],
         }
 
+    def maybe_add_audio_prompt(
+        self,
+        input_text_tokens: torch.Tensor,
+        target_token_lens: torch.Tensor,
+        source_tokens: torch.Tensor,
+        source_token_lens: torch.Tensor,
+        target_audio: torch.Tensor,
+        target_audio_lens: torch.Tensor,
+        source_audio: torch.Tensor,
+        source_audio_lens: torch.Tensor,
+        audio_prompt: torch.Tensor,
+        audio_prompt_lens: torch.Tensor,
+    ):
+        """
+        Prepend an audio-based speaker prompt and aligned text tokens to the Duplex S2S inputs.
+
+        This method optionally injects a speaker-reference audio prompt at the beginning of each
+        sample in the batch. The prompt is inserted in the target-audio channel and aligned text
+        padding is inserted into the text-token streams (input text tokens and source tokens).
+        The corresponding silence padding is inserted into the source/target audio streams to
+        preserve frame-level alignment.
+
+        Args:
+            input_text_tokens (torch.Tensor):
+                Tensor of input text tokens with shape [B, T_text].
+                dtype: torch.long.
+
+            target_token_lens (torch.Tensor):
+                Lengths of input_text_tokens per batch element (before padding). shape [B].
+
+            source_tokens (torch.Tensor):
+                Source-side text tokens, shape [B, T_src_text], dtype torch.long.
+
+            source_token_lens (torch.Tensor):
+                Source text token lengths per batch element, shape [B].
+
+            target_audio (torch.Tensor):
+                Target-side audio waveforms, shape [B, T_audio], dtype torch.float32/float16.
+
+            target_audio_lens (torch.Tensor):
+                Target audio lengths per batch element, shape [B].
+
+            source_audio (torch.Tensor):
+                Source-side audio waveforms, shape [B, T_audio], dtype torch.float32/float16.
+
+            source_audio_lens (torch.Tensor):
+                Source audio lengths per batch element, shape [B].
+
+            audio_prompt (torch.Tensor):
+                Audio prompt waveforms to sample from, shape [B, T_prompt_audio].
+
+            audio_prompt_lens (torch.Tensor):
+                Valid lengths for audio_prompt per batch element.
+
+        Returns:
+            Tuple containing:
+                input_text_tokens (torch.Tensor):
+                    Updated text tokens with prepended prompt-aligned tokens. Shape [B, T'].
+
+                target_token_lens (torch.Tensor):
+                    Updated token lengths per batch element.
+
+                source_tokens (torch.Tensor):
+                    Updated source text tokens with prompt padding included. Shape [B, T'].
+
+                source_token_lens (torch.Tensor):
+                    Updated source token lengths per batch element.
+
+                source_audio (torch.Tensor):
+                    Updated source audio with silence padding. Shape [B, T_audio'].
+
+                source_audio_lens (torch.Tensor):
+                    Updated source audio lengths.
+
+                target_audio (torch.Tensor):
+                    Updated target audio with prompt audio and silence padding. Shape [B, T_audio'].
+
+                target_audio_lens (torch.Tensor):
+                    Updated target audio lengths.
+
+                prompt_lens (list[int]):
+                    Length (in text-token units) of the prompt region per batch item.
+        """
+
+        text_pad_id = get_pad_id(self.tokenizer)
+
+        input_text_tokens_ = []
+        source_tokens_ = []
+        source_audio_ = []
+        target_audio_ = []
+        prompt_lens = []
+
+        for i in range(input_text_tokens.size(0)):
+            first_text_frame = torch.tensor(
+                [self.tokenizer.eos],
+                dtype=torch.long,
+                device=input_text_tokens.device,
+            )
+
+            if self.add_audio_prompt:
+                # Compute audio prompt duration in samples (rounded to frame boundaries)
+                prompt_audio_size = int(
+                    ((self.audio_prompt_duration * self.target_sample_rate) //
+                    self.target_samples_per_frame) * self.target_samples_per_frame
+                )
+
+                prompt_audio = sample_audio_segments_repeat(
+                    audio_prompt, audio_prompt_lens, prompt_audio_size, sample=True
+                )
+
+                # Fade transition: add silence at the end of the prompt
+                prompt_audio[:, -int(self.target_samples_per_frame * 2):] = 0
+
+                # Number of text tokens to insert to align with prompt_audio frames
+                prompt_audio_text_pad_size = prompt_audio_size // self.target_samples_per_frame
+
+                prompt_audio_text_pad = (
+                    torch.ones(
+                        prompt_audio_text_pad_size,
+                        device=input_text_tokens.device,
+                        dtype=input_text_tokens.dtype,
+                    ) * text_pad_id
+                )
+                prompt_audio_text_pad[-1] = self.tokenizer.eos
+
+                new_input_text_tokens = torch.cat(
+                    [
+                        first_text_frame.to(input_text_tokens.dtype),
+                        prompt_audio_text_pad,
+                        input_text_tokens[i],
+                    ]
+                )
+                input_text_tokens_.append(new_input_text_tokens)
+                target_token_lens[i] += len(first_text_frame) + prompt_audio_text_pad_size
+
+                new_source_tokens = torch.cat([first_text_frame, prompt_audio_text_pad, source_tokens[i]])
+                source_tokens_.append(new_source_tokens)
+                source_token_lens[i] += len(first_text_frame) + prompt_audio_text_pad_size
+
+                # Silence in source audio during prompt processing
+                pad_size_src = (len(first_text_frame) * self.source_samples_per_frame) + prompt_audio.size(1)
+                pad_audio_src = torch.zeros(
+                    pad_size_src,
+                    device=source_audio.device,
+                    dtype=source_audio.dtype,
+                )
+                source_audio_.append(torch.cat([pad_audio_src, source_audio[i]]))
+                source_audio_lens[i] += pad_size_src
+
+                # Insert prompt audio in the target channel
+                pad_size_tgt = len(first_text_frame) * self.target_samples_per_frame
+                pad_audio_tgt = torch.zeros(
+                    pad_size_tgt,
+                    device=target_audio.device,
+                    dtype=target_audio.dtype,
+                )
+                target_audio_.append(torch.cat([pad_audio_tgt, prompt_audio[i], target_audio[i]]))
+                target_audio_lens[i] += pad_size_tgt + prompt_audio.size(1)
+
+                prompt_lens.append(len(first_text_frame) + prompt_audio_text_pad_size - 1)
+
+            else:
+                # Add only a single text-frame (EOS) as prompt
+                input_text_tokens_.append(torch.cat([first_text_frame, input_text_tokens[i]]))
+                target_token_lens[i] += len(first_text_frame)
+
+                source_tokens_.append(torch.cat([first_text_frame, source_tokens[i]]))
+                source_token_lens[i] += len(first_text_frame)
+
+                pad_size_src = len(first_text_frame) * self.source_samples_per_frame
+                pad_audio_src = torch.zeros(
+                    pad_size_src,
+                    device=source_audio.device,
+                    dtype=source_audio.dtype,
+                )
+                source_audio_.append(torch.cat([pad_audio_src, source_audio[i]]))
+                source_audio_lens[i] += pad_size_src
+
+                pad_size_tgt = len(first_text_frame) * self.target_samples_per_frame
+                pad_audio_tgt = torch.zeros(
+                    pad_size_tgt,
+                    device=target_audio.device,
+                    dtype=target_audio.dtype,
+                )
+                target_audio_.append(torch.cat([pad_audio_tgt, target_audio[i]]))
+                target_audio_lens[i] += pad_size_tgt
+
+                prompt_lens.append(len(first_text_frame))
+
+        input_text_tokens = collate_vectors(input_text_tokens_, padding_value=text_pad_id)
+        source_tokens = collate_vectors(source_tokens_, padding_value=text_pad_id)
+        source_audio = collate_vectors(source_audio_, padding_value=0)
+        target_audio = collate_vectors(target_audio_, padding_value=0)
+
+        return (
+            input_text_tokens,
+            target_token_lens,
+            source_tokens,
+            source_token_lens,
+            source_audio,
+            source_audio_lens,
+            target_audio,
+            target_audio_lens,
+            prompt_lens,
+        )
+
+
+def add_speech_delay(
+    source_audio: torch.Tensor,
+    source_audio_lens: torch.Tensor,
+    target_audio: torch.Tensor,
+    target_audio_lens: torch.Tensor,
+    num_delay_speech_tokens: int,
+    target_samples_per_frame: int,
+    source_samples_per_frame: int,
+):
+    """
+    Apply a speech delay by padding audio waveforms based on the number of delay speech tokens.
+
+    Behavior:
+        - Target audio is *left padded* to force the model to predict initial silence.
+        - Source audio is *right padded* to maintain size consistency for attention alignment.
+
+    Args:
+        source_audio (FloatTensor [B, T_src]):
+            Source/input audio waveforms.
+
+        source_audio_lens (LongTensor [B]):
+            Lengths of source audio in samples.
+
+        target_audio (FloatTensor [B, T_tgt]):
+            Target/output audio waveforms.
+
+        target_audio_lens (LongTensor [B]):
+            Lengths of target audio in samples.
+
+        num_delay_speech_tokens (int):
+            Number of delay tokens inserted on the text side.
+
+        target_samples_per_frame (int):
+            Number of audio samples per frame for target audio.
+
+        source_samples_per_frame (int):
+            Number of audio samples per frame for source audio.
+
+    Returns:
+        Tuple containing:
+            - source_audio (FloatTensor [B, T_src + pad])
+            - source_audio_lens (LongTensor [B])
+            - target_audio (FloatTensor [B, T_tgt + pad])
+            - target_audio_lens (LongTensor [B])
+    """
+    # Compute target-side left padding for the delay
+    extra_target_samples = int(num_delay_speech_tokens * target_samples_per_frame)
+
+    # Left-pad target audio: forces model to generate silence initially
+    target_audio = F.pad(target_audio, (extra_target_samples, 0))
+    target_audio_lens = target_audio_lens + extra_target_samples
+
+    # Compute source-side right padding to maintain alignment
+    extra_source_samples = int(num_delay_speech_tokens * source_samples_per_frame)
+
+    # Right-pad source audio: avoids mismatch when aligning source/target frames
+    source_audio = F.pad(source_audio, (0, extra_source_samples))
+    source_audio_lens = source_audio_lens + extra_source_samples
+
+    return source_audio, source_audio_lens, target_audio, target_audio_lens
+
+def get_audio_prompt(
+    cuts: CutSet,
+    target_sample_rate: int,
+    roles: set[str],
+    recording_field: str = "target_audio",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Retrieve an audio prompt for speaker conditioning.
+
+    This function returns:
+        - context audio if available (per-cut),
+        - otherwise a random turn belonging to the desired speaker roles.
+
+    Behavior:
+        1. If `cut.context_audio` exists, use it as the reference.
+        2. Otherwise, select a random audio turn from the same target-role speakers.
+
+    Args:
+        cuts (CutSet):
+            Batch of cuts from which to extract reference audio.
+
+        target_sample_rate (int):
+            Sample rate to which reference audio is resampled.
+
+        roles (set[str]):
+            Set of speaker roles to sample from when selecting random turns.
+
+        recording_field (str, optional):
+            Name of the audio field in the cut ("source_audio", "target_audio", etc.).
+            Used when sampling random reference turns.
+
+    Returns:
+        (audio_prompt, audio_prompt_lens):
+
+        - audio_prompt (FloatTensor [B, T]):
+            Padded batch of reference waveforms.
+
+        - audio_prompt_lens (LongTensor [B]):
+            Lengths of each reference waveform before padding.
+    """
+    # use provided context audio directly
+    if hasattr(cuts[0], "context_audio"):
+        audio_prompt = []
+        audio_prompt_lens = []
+
+        for cut in cuts:
+            ref_audio = cut.context_audio.resample(target_sample_rate).load_audio()
+            ref_audio = torch.tensor(ref_audio).float()  # shape: [1, T]
+            ref_audio_len = ref_audio.shape[1]
+
+            audio_prompt.append(ref_audio.squeeze(0))  # [T]
+            audio_prompt_lens.append(ref_audio_len)
+
+        audio_prompt = collate_vectors(audio_prompt, padding_value=0).float()
+        audio_prompt_lens = torch.tensor(audio_prompt_lens).long()
+
+    else:
+        # sample a reference turn from the target-role speakers
+        audio_prompt, audio_prompt_lens = collate_random_turn_audio(
+            cuts.resample(target_sample_rate),
+            roles=roles,
+            recording_field=recording_field,
+        )
+
+    return audio_prompt, audio_prompt_lens
 
 def collate_random_turn_audio(
     cuts: CutSet,

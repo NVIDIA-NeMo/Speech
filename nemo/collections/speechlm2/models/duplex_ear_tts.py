@@ -535,7 +535,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         target_audio = batch["target_audio"]
         target_audio_lens = batch["target_audio_lens"]
         input_text_tokens = batch["input_text_tokens"]
-        desc_mask = batch["desc_mask"]
         non_prompt_mask = batch["non_prompt_mask"]
         aligned_attention_mask = batch["aligned_attention_mask"]
         aligned_position_ids = batch["aligned_position_ids"]
@@ -561,7 +560,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 return x  # leave others for now
 
             input_text_tokens = pad_or_truncate(input_text_tokens, pad_value=self.text_pad_id)
-            desc_mask = pad_or_truncate(desc_mask, pad_value=0)
             non_prompt_mask = pad_or_truncate(non_prompt_mask, pad_value=0)
             aligned_position_ids = pad_or_truncate(aligned_position_ids, pad_value=0)
 
@@ -575,13 +573,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             elif L1 > new_len or L2 > new_len:
                 aligned_attention_mask = aligned_attention_mask[:, :, :new_len, :new_len]
 
-        # ToDo: desc_mask is one for the end of the sequence, this is what cause the artifact issue in the end, fix it.
-        # set the pad token when there is desc
-        target_codes_aligned = torch.where(
-            desc_mask.unsqueeze(-1),  # (B, T, 1) for broadcasting
-            torch.full_like(target_codes, self.speech_pad_id),  # fill with pad id
-            target_codes,
-        )
+        # set the pad token for the first BOS frame
+        target_codes_aligned = target_codes.clone()
+        target_codes_aligned[:, 0] = self.speech_pad_id
 
         # set special token in the last audio prompt (it will works as a BOS token)
         pos = non_prompt_mask.float().argmax(dim=1)  # shape: [B]
@@ -811,7 +805,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     init_inputs[key] = torch.stack(
                         [
                             init_inputs[key][i, :plen]
-                            for i, plen in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])
+                            for i, plen in enumerate(dataset_batch["prompt_lens"])
                         ]
                     )
         else:
@@ -826,7 +820,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         next_subword_ids = torch.stack(
             [
                 inputs["subword_ids"][i, plen:]  # slice each element
-                for i, plen in enumerate(dataset_batch["desc_plus_audio_prompt_lens"])
+                for i, plen in enumerate(dataset_batch["prompt_lens"])
             ]
         )
 
@@ -849,7 +843,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         ]
         target_audio_no_prompt_lens = dataset_batch["target_audio_lens"] - (
             torch.tensor(
-                dataset_batch["desc_plus_audio_prompt_lens"],
+                dataset_batch["prompt_lens"],
                 dtype=torch.long,
                 device=dataset_batch["target_audio_lens"].device,
             )
@@ -1077,17 +1071,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         subword_mask[:, -3:] = (
             1  # -3 because of the it start right after the first valid prompt token and it is shifted by 1
         )
-        # desc mask is all zeros except the description
-        desc_mask = torch.zeros_like(input_text_tokens)
-        desc_mask[:, : first_text_frame.size(-1)] = 1
 
-        if not self.cfg.get("disable_speech_pad", False):
-            # add special tokens on audio codes
-            code = torch.where(
-                desc_mask.unsqueeze(-1).bool(),  # (B, T, 1) for broadcasting
-                torch.full_like(code, self.speech_pad_id),  # fill with pad id
-                code,
-            )
+        # set the pad token for the first BOS frame
+        code[:, 0] = self.speech_pad_id
 
         # shift subword_ids
         subword_ids = F.pad(input_text_tokens[:, 1:], [0, 1], value=0.0)

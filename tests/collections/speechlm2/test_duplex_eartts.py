@@ -153,7 +153,7 @@ test_eartts_config = {
     },
     "data": {
         "add_text_bos_and_eos_in_each_turn": True,
-        "add_audio_prompt_after_description": True,
+        "add_audio_prompt": True,
         "audio_prompt_duration": 3.0,
         "frame_length": 0.08,
         "source_sample_rate": 22050,
@@ -195,7 +195,7 @@ def dataset(model):
     return DuplexEARTTSDataset(
         model.tokenizer,
         add_text_bos_and_eos_in_each_turn=True,
-        add_audio_prompt_after_description=True,
+        add_audio_prompt=True,
         audio_prompt_duration=3.0,
         frame_length=0.08,
         source_sample_rate=22050,
@@ -251,9 +251,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
     expected_keys = {
         "sample_id",
         "non_prompt_mask",
-        "desc_mask",
-        "desc_lens",
-        "desc_plus_audio_prompt_lens",
+        "prompt_lens",
         "aligned_attention_mask",
         "aligned_position_ids",
         "source_audio",
@@ -275,7 +273,6 @@ def test_eartts_dataset(dataset, training_cutset_batch):
 
     tensor_keys = [
         "non_prompt_mask",
-        "desc_mask",
         "aligned_attention_mask",
         "aligned_position_ids",
         "source_audio",

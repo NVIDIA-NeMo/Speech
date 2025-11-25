@@ -48,7 +48,7 @@ def train(cfg):
         input_roles=cfg.data.input_roles,
         output_roles=cfg.data.output_roles,
         add_text_bos_and_eos_in_each_turn=cfg.data.get("add_text_bos_and_eos_in_each_turn", True),
-        add_audio_prompt_after_description=cfg.data.add_audio_prompt_after_description,
+        add_audio_prompt=cfg.data.get("add_audio_prompt", True),
         audio_prompt_duration=cfg.data.audio_prompt_duration,
         num_delay_speech_tokens=cfg.model.get("num_delay_speech_tokens", 2),
     )

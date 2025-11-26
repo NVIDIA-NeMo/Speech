@@ -119,6 +119,12 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.start_state: int | None = None
         self._params_defined = False
         self.free_ids = set()
+        self._device = torch.device("cpu")
+
+    def to(self, *args, **kwargs):
+        device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(*args, **kwargs)
+        self._device = device
+        return super().to(*args, **kwargs)
 
     def _check_model_compatibility(self, model: NGramGPULanguageModel):
         if self.vocab_size != model.vocab_size:
@@ -166,6 +172,8 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         Returns:
             tensor [B] of initial states
         """
+        if not self._params_defined:
+            return torch.zeros([batch_size], device=self._device, dtype=torch.long)
         device = self.models[0].arcs_weights.device
         return torch.full(
             [batch_size], fill_value=self.bos_state if bos else self.start_state, device=device, dtype=torch.long

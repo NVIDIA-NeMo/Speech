@@ -472,7 +472,7 @@ class BufferedRNNTPipeline(BasePipeline):
             rnnt_states.append(hyp_state)
             if hyp_state is not None:
                 all_rnnt_states_are_none = False
-            if state.options is not None and (not state.options.biasing_cfg.is_empty()):
+            if state.options is not None and state.options.has_biasing_request():
                 if state.options.biasing_cfg.multi_model_id is not None:
                     all_multi_biasing_models_empty = False
                     multi_biasing_ids[i] = state.options.biasing_cfg.multi_model_id
@@ -530,9 +530,10 @@ class BufferedRNNTPipeline(BasePipeline):
             curr_state.timestamp_offset += self.tokens_per_frame_float
         ready_state_ids.update(ready_states)
 
-        for request in requests:
-            if request.is_last and (request.options is not None and request.options.has_biasing_request()):
-                request.options.biasing_cfg.remove_from_multi_model(
+        for request, state in zip(requests, states):
+            # only the first request contains biasing options; biasing options for the stream are stored in state
+            if request.is_last and (state.options is not None and state.options.has_biasing_request()):
+                state.options.biasing_cfg.remove_from_multi_model(
                     biasing_multi_model=self.decoding_computer.biasing_multi_model
                 )
 

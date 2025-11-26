@@ -3,8 +3,23 @@
 <!-- Next changelog -->
 ## NVIDIA Neural Modules 2.6.0
 
-### Detailed Changelogs:
+### Highlights
 
+- Speech
+  - Add Timestamps to streaming ASR [PR](https://github.com/NVIDIA-NeMo/NeMo/pull/14766)
+  - Add Streaming decoding policies (Wait-K and AlignAtt) for Canary model [PR](https://github.com/NVIDIA-NeMo/NeMo/pull/14765)
+  - Add NeMo Voice Agent [PR](https://github.com/NVIDIA-NeMo/NeMo/pull/14325)
+  - Hybrid RNNT-CTC Prompted Parakeet Model support [PR](https://github.com/NVIDIA-NeMo/NeMo/pull/14561)
+  - [New] MT-Parakeet Streaming Models [release](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1)
+- Removed the Automodel module. Automodel is available in the repo https://github.com/NVIDIA-NeMo/Automodel.  
+- Removed the Deploy module. Export & Deploy is available in the repo https://github.com/NVIDIA-NeMo/Export-Deploy.
+- Non-Speech NeMo 2.0 collections are deprecated and will be removed in a later release. Their functionality is available in the Megatron Bridge repo at https://github.com/NVIDIA-NeMo/Megatron-Bridge.
+
+### Known Issues
+
+- NeMo voice agent pipecat connecting issues
+
+### Detailed Changelogs:
 
 #### ASR
 
@@ -177,6 +192,7 @@
 - cp: `Add deprecation notice to modules (15050)` into `r2.6.0` by @chtruong814 :: PR: #15110
 
 </details>
+
 ## NVIDIA Neural Modules 2.5.3
 
 ### Highlights

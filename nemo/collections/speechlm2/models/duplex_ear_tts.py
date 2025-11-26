@@ -42,7 +42,7 @@ from nemo.collections.speechlm2.modules.ear_tts_model import RVQEARTTSModel
 from nemo.collections.speechlm2.modules.ear_tts_vae_codec import RVQVAEModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
-from nemo.collections.speechlm2.parts.metrics.intelligibility import Intelligibility
+from nemo.collections.speechlm2.parts.metrics.asr_cer_wer import Intelligibility
 from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
@@ -633,7 +633,13 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "input_text_tokens": input_text_tokens,
         }
 
-    def forward(self, inputs):
+    def training_step(self, batch: dict, batch_idx: int):
+        for m in (self.tts_model,):
+            if is_frozen(m):
+                m.eval()
+
+        inputs = self.prepare_inputs(batch)
+
         tts_output = self.tts_model(
             code=inputs["code"],
             audio_mask=inputs["audio_mask"],
@@ -644,16 +650,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             subword_mask=inputs["subword_mask"],
             non_prompt_mask=inputs["non_prompt_mask"],
         )
-        return tts_output
-
-    def training_step(self, batch: dict, batch_idx: int):
-        for m in (self.tts_model,):
-            if is_frozen(m):
-                m.eval()
-
-        inputs = self.prepare_inputs(batch)
-        tts_output = self.forward(inputs)
-
         loss_dict = {"lm_loss": tts_output.lm_loss, "c_loss": tts_output.c_loss, "k_loss": tts_output.k_loss}
         loss = sum(loss_dict.values())
 

@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .asr_bleu import ASRBLEU
-from .bleu import BLEU
 from .asr_cer_wer import Intelligibility
+from .bleu import BLEU
 from .results_logger import ResultsLogger
 from .token_accuracy import TokenAccuracy
 

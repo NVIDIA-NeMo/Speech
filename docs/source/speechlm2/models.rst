@@ -8,6 +8,30 @@ Core Model Architectures
 
 The collection includes the following core model architectures:
 
+
+DuplexEARTTS
+^^^^^^^^^^^^
+
+DuplexEARTTS is a streaming text-to-speech model designed for duplex speech-to-speech systems. It focuses on low-latency, fully streamable speech generation by converting text tokens into audio representations in real time.
+
+The architecture is based on the Streaming TTS model proposed in `Audio Flamingo 3<https://arxiv.org/abs/2507.08128>`_, with several extensions for duplex interaction:
+
+* **Gated fusion of text and audio representations**: (`GatedProjectedSumRMSNorm`), enabling better multimodal integration.
+* **Subword-aware embeddings**: (`SubwordFlagEmbedding`) to improve pronunciation for words composed of multiple text tokens.
+* **Custom BOS/EOS embeddings**: (`BOSEOSEmbedding`) for interruption-aware, multi-turn duplex generation.
+
+
+Key components:
+
+* **RVQVAEModel**: An RVQ-based neural audio codec that compresses speech into discrete acoustic tokens using a convolutional encoder and reconstructs high-quality audio via a convolutional decoder.
+* **RVQEARTTSModel**: A streaming speech generation model that predicts multiple RVQ codebooks in parallel using a Mixture-of-Gaussians (MoG) prediction head. It produces audio tokens autoregressively from text representations with minimal latency.
+
+DuplexEARTTS is particularly useful for:
+* Duplex speech-to-speech systems requiring interruption-aware synthesis.
+* Low-latency text-to-speech generation.
+* Real-time conversational agents with streamed audio output.
+
+
 SALM (Speech-Augmented Language Model)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

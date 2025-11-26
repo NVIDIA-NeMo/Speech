@@ -609,7 +609,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
 
 @data_type_parser(["lhotse_magpietts_data_as_continuation"])
-def read_lhotse_magpietts_data_as_continuation(config) -> Tuple[CutSet, bool]:
+def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     """
     Convert MagpieTTS dataset cuts into the Duplex S2S format, with optional
     `context_audio` that can be used as a speaker reference.

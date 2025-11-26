@@ -276,6 +276,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                 self.source_samples_per_frame,
             )
 
+        # add audio prompt if needed
         (
             input_text_tokens,
             target_token_lens,
@@ -376,8 +377,6 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         This method optionally injects a speaker-reference audio prompt at the beginning of each
         sample in the batch. The prompt is inserted in the target-audio channel and aligned text
         padding is inserted into the text-token streams (input text tokens and source tokens).
-        The corresponding silence padding is inserted into the source/target audio streams to
-        preserve frame-level alignment.
 
         Args:
             input_text_tokens (torch.Tensor):
@@ -467,7 +466,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                     audio_prompt, audio_prompt_lens, prompt_audio_size, sample=True
                 )
 
-                # Fade transition: add silence at the end of the prompt
+                # add silence at the end of the prompt
                 prompt_audio[:, -int(self.target_samples_per_frame * 2) :] = 0
 
                 # Number of text tokens to insert to align with prompt_audio frames
@@ -655,7 +654,7 @@ def get_audio_prompt(
             Set of speaker roles to sample from when selecting random turns.
 
         recording_field (str, optional):
-            Name of the audio field in the cut ("source_audio", "target_audio", etc.).
+            Name of the audio field in the cut ("recording", "target_audio", etc.).
             Used when sampling random reference turns.
 
     Returns:

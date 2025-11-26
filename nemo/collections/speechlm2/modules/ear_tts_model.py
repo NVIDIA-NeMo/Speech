@@ -1132,11 +1132,22 @@ class GatedProjectedSumRMSNorm(nn.Module):
 
 class RVQEARTTSModel(PreTrainedModel):
     """
-    The main RVQEARTTS model, which can be used for both training and inference.
+    Main RVQEARTTS model for training and inference.
 
-    This model integrates a character-aware text encoder and a MoG head with a
-    transformer backbone. It can be trained to predict audio codes or used for
-    autoregressive inference.
+    This model integrates a character-aware text encoder with a transformer backbone
+    and a Mixture-of-Gaussians (MoG) prediction head.
+
+    The architecture is based on the Streaming TTS model proposed in
+    "Audio Flamingo 3" (https://arxiv.org/abs/2507.08128), with several improvements:
+
+        1. Gated fusion of text and audio representations
+           (`GatedProjectedSumRMSNorm`).
+
+        2. Subword-aware embeddings for improved pronunciation of multi-token words
+           (`SubwordFlagEmbedding`).
+
+        3. Custom BOS and EOS embeddings for duplex interaction support,
+           enabling interruption-aware generation (`BOSEOSEmbedding`).
 
     Args:
         config (DictConfig | dict[str, Any]): The configuration object for the model.

@@ -102,6 +102,7 @@ Speech generation components convert text or token representations back into spe
 
 1. **TransformerARSpeechDecoder**: An autoregressive transformer-based speech decoder
 2. **Audio Codec Integration**: Works with audio codecs to generate natural speech from discrete tokens
+3. **DuplexEARTTS**: A ready-to-use duplex text-to-speech model that supports user interruption via a special text interruption token. The model integrates an RVQ-based audio codec with a streaming speech generation module to enable low-latency, real-time synthesis.
 
 Implementation Details
 --------------------
@@ -223,6 +224,9 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     
     # Load DuplexS2SSpeechDecoderModel
     decoder_model = slm.models.DuplexS2SSpeechDecoderModel.from_pretrained("path/to/checkpoint")
+
+    # Load DuplexEARTTS
+    decoder_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
 
 Model Configuration
 -----------------

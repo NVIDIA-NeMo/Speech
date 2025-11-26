@@ -144,7 +144,7 @@ class HFMistralImporter(io.ModelConnector["MistralForCausalLM", MistralModel]):
     def init(self) -> MistralModel:
         return MistralModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         from transformers import MistralForCausalLM
 
         source = MistralForCausalLM.from_pretrained(str(self), torch_dtype='auto')
@@ -252,7 +252,7 @@ class HFMistralExporter(io.ModelConnector[MistralModel, "MistralForCausalLM"]):
         with no_init_weights():
             return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         # TODO: Make it work with lazy init
         # with torch.device("meta"):
         #     target = self.init()

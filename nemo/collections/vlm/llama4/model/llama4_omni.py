@@ -99,7 +99,7 @@ class HFLlama4OmniImporter(io.ModelConnector["Llama4ForConditionalGeneration", L
         """
         return Llama4OmniModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         """Apply the conversion from HF to NeMo format.
 
         Args:
@@ -481,7 +481,7 @@ class HFLlama4OmniExporter(io.ModelConnector[Llama4OmniModel, "Llama4ForConditio
         )
         return config
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         """Apply the conversion from NeMo to HF format.
 
         Args:

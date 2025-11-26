@@ -187,7 +187,7 @@ class HFBaichuan2Importer(io.ModelConnector["AutoModelForCausalLM", Baichuan2Mod
                 self.save_hf_tokenizer_assets(str(self)),
                 trust_remote_code=is_safe_repo(
                     trust_remote_code=self.trust_remote_code,
-                    hf_path=self.str(self),
+                    hf_path=str(self),
                 ),
             ),
         )

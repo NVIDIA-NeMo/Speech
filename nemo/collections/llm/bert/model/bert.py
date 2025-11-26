@@ -130,7 +130,7 @@ class HuggingFaceBertImporter(io.ModelConnector["BertForMaskedLM", BertModel]):
     def init(self) -> HuggingFaceBertModel:
         return HuggingFaceBertModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         from transformers import BertForMaskedLM, BertForNextSentencePrediction, BertForPreTraining, BertModel
 
         source = BertForPreTraining.from_pretrained(str(self), torch_dtype='auto')
@@ -266,7 +266,7 @@ class HuggingFaceBertExporter(io.ModelConnector[BertModel, "BertModel"]):
         with no_init_weights():
             return BertModel._from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         source, _ = self.nemo_load(str(self))
         target = self.init(source.dtype)
         target = self.convert_state(source, target)

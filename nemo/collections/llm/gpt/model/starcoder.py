@@ -110,7 +110,7 @@ class HFStarcoderImporter(io.ModelConnector["GPTBigCodeForCausalLM", StarcoderMo
         """
         return StarcoderModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         """
         Apply the conversion from HF to NeMo format.
 
@@ -248,7 +248,7 @@ class HFStarcoderExporter(io.ModelConnector[StarcoderModel, "GPTBigCodeForCausal
         with no_init_weights():
             return GPTBigCodeForCausalLM._from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         source, _ = self.nemo_load(str(self))
         target = self.init(torch_dtype_from_mcore_config(source.config))
         target = self.convert_state(source, target)

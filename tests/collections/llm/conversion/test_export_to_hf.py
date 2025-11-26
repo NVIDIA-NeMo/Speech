@@ -47,6 +47,7 @@ if __name__ == '__main__':
         target='hf',
         output_path=Path(args.output_path),
         overwrite=True,
+        trust_remote_code=args.trust_remote_code,
         **kwargs,
     )
 

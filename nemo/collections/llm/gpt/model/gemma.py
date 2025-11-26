@@ -132,7 +132,7 @@ class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", GemmaModel]):
         """ """
         return GemmaModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         """ """
         from transformers import GemmaForCausalLM
 
@@ -232,7 +232,7 @@ class HFGemmaExporter(io.ModelConnector[GemmaModel, "GemmaForCausalLM"]):
         with no_init_weights():
             return AutoModelForCausalLM.from_config(self.config)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         """ """
         target = self.init()
         source, _ = self.nemo_load(str(self))

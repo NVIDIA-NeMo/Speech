@@ -23,7 +23,7 @@ def get_args():
     parser.add_argument("--conversion_type", type=str, required=True)
     parser.add_argument("--source_ckpt", type=str, required=True)
     parser.add_argument("--target_ckpt", type=str, required=True)
-    parser.add_argument("--trust_remote_code", action=store_true)
+    parser.add_argument("--trust_remote_code", action="store_true")
     return parser.parse_args()
 
 

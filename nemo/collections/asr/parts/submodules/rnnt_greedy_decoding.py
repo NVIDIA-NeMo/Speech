@@ -795,13 +795,13 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         else:
             multi_biasing_ids = np.full([len(partial_hypotheses)], fill_value=-1)
             for batch_i, hyp in enumerate(partial_hypotheses):
-                if hyp is None or hyp.biasing_cfg is None:
+                if hyp is None or hyp.biasing_cfg is None or hyp.biasing_cfg.is_empty():
                     continue
-                if hyp.biasing_cfg.multi_biasing_id is None:
-                    if not hyp.biasing_cfg.boosting_tree_cfg.is_empty(hyp.biasing_cfg.boosting_tree_cfg):
-                        logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
+                # biasing_cfg is not empty
+                if hyp.biasing_cfg.multi_model_id is None:
+                    logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
                     continue
-                multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_biasing_id
+                multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
             if (multi_biasing_ids != -1).any():
                 multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
             else:
@@ -2950,13 +2950,13 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         else:
             multi_biasing_ids = np.full([len(partial_hypotheses)], fill_value=-1)
             for batch_i, hyp in enumerate(partial_hypotheses):
-                if hyp is None or hyp.biasing_cfg is None:
+                if hyp is None or hyp.biasing_cfg is None or hyp.biasing_cfg.is_empty():
                     continue
-                if hyp.biasing_cfg.multi_biasing_id is None:
-                    if not hyp.biasing_cfg.boosting_tree_cfg.is_empty(hyp.biasing_cfg.boosting_tree_cfg):
-                        logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
+                # biasing_cfg is not empty
+                if hyp.biasing_cfg.multi_model_id is None:
+                    logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
                     continue
-                multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_biasing_id
+                multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
             if (multi_biasing_ids != -1).any():
                 multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
             else:

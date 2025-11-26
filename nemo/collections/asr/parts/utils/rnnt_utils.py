@@ -31,32 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
-from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
-from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
-    BoostingTreeModelConfig,
-    GPUBoostingTreeModel,
-)
-from nemo.utils import logging
-
-
-@dataclass
-class HypBiasingRequestConfig:
-    boosting_tree_cfg: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
-    boosting_tree_alpha: float = 1.0
-    multi_biasing_id: int | None = None  # compiled model id
-
-    def add_to_multi_model_(self, tokenizer, biasing_multi_model: GPUBiasingMultiModelBase):
-        if self.boosting_tree_cfg.is_empty(self.boosting_tree_cfg):
-            logging.warning("Nothing to compile, boosting request is empty")
-            return
-        boosting_tree = GPUBoostingTreeModel.from_config(self.boosting_tree_cfg, tokenizer=tokenizer)
-        self.multi_biasing_id = biasing_multi_model.add_model(model=boosting_tree, alpha=self.boosting_tree_alpha)
-
-    def remove_from_multi_model_(self, biasing_multi_model: GPUBiasingMultiModelBase):
-        if self.multi_biasing_id is None:
-            return
-        biasing_multi_model.remove_model(self.multi_biasing_id)
-        self.multi_biasing_id = None
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItem
 
 
 @dataclass
@@ -135,7 +110,7 @@ class Hypothesis:
     last_token: Optional[torch.Tensor] = None
     token_duration: Optional[torch.Tensor] = None
     last_frame: Optional[int] = None
-    biasing_cfg: HypBiasingRequestConfig | None = None
+    biasing_cfg: BiasingRequestItem | None = None
 
     @property
     def non_blank_frame_confidence(self) -> List[float]:

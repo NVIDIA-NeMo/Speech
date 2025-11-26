@@ -13,12 +13,57 @@
 # limitations under the License.
 import abc
 from abc import abstractmethod
+from dataclasses import dataclass, field
 from typing import cast
 
 import torch
 import torch.nn as nn
 
+from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
+    BoostingTreeModelConfig,
+    GPUBoostingTreeModel,
+)
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
+from nemo.collections.common.tokenizers import TokenizerSpec
+
+
+@dataclass
+class BiasingRequestItem:
+    boosting_model_cfg: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
+    boosting_model: NGramGPULanguageModel | GPUBoostingTreeModel | None = None
+    boosting_model_alpha: float = 1.0
+    multi_model_id: int | None = None  # compiled model id
+    auto_manage_multi_model: bool = True
+
+    def is_empty(self):
+        if self.multi_model_id is not None:
+            return False
+        if self.boosting_model is not None:
+            return False
+        if not self.boosting_model_cfg.is_empty(self.boosting_model_cfg):
+            return False
+        return True
+
+    def get_model(self, tokenizer: TokenizerSpec) -> NGramGPULanguageModel | GPUBoostingTreeModel | None:
+        if self.boosting_model is not None:
+            return self.boosting_model
+        if self.boosting_model_cfg.is_empty(self.boosting_model_cfg):
+            return None
+        self.boosting_model = GPUBoostingTreeModel.from_config(self.boosting_model_cfg, tokenizer=tokenizer)
+        return self.boosting_model
+
+    def add_to_multi_model(self, tokenizer: TokenizerSpec, biasing_multi_model: "GPUBiasingMultiModelBase"):
+        boosting_model = self.get_model(tokenizer=tokenizer)
+        if boosting_model is None:
+            raise ValueError("Nothing to add, biasing model is empty")
+        self.multi_model_id = biasing_multi_model.add_model(model=boosting_model, alpha=self.boosting_model_alpha)
+
+    def remove_from_multi_model(self, biasing_multi_model: "GPUBiasingMultiModelBase"):
+        if self.multi_model_id is None:
+            # nothing to remove
+            return
+        biasing_multi_model.remove_model(self.multi_model_id)
+        self.multi_model_id = None
 
 
 class GPUBiasingMultiModelBase(abc.ABC, nn.Module):

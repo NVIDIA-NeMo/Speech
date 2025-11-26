@@ -37,7 +37,6 @@ def get_parser():
 
 if __name__ == '__main__':
     args = get_parser().parse_args()
-    kwargs = {'trust_remote_code': args.trust_remote_code}
     if args.add_model_name:
         kwargs = {
             'target_model_name': args.original_hf_path,

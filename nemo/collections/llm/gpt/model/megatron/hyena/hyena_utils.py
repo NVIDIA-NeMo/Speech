@@ -1351,7 +1351,12 @@ class B2BCausalConv1dModule(nn.Module):
     """
 
     def __init__(
-        self, proj_conv_module, mixer_module, operator_type="hyena_short_conv", b2b_causal_conv1d=b2b_causal_conv1d
+        self,
+        proj_conv_module,
+        mixer_module,
+        operator_type="hyena_short_conv",
+        b2b_causal_conv1d=b2b_causal_conv1d,
+        flip_mixer_weight: bool = False,
     ):
         """Initialize the B2BCausalConv1dModule.
 
@@ -1360,6 +1365,7 @@ class B2BCausalConv1dModule(nn.Module):
             mixer_module: The mixer module that performs the second convolution operation
             operator_type: The type of hyena operator to use, either "hyena_short_conv" or "hyena_medium_conv"
             b2b_causal_conv1d: The CUDA kernel function for optimized back-to-back causal convolution
+            flip_mixer_weight: Whether to flip the mixer weight, when weights are coming from FFTConv mixer
         """
         super().__init__()
         self.b2b_causal_conv1d_fn = b2b_causal_conv1d
@@ -1370,7 +1376,7 @@ class B2BCausalConv1dModule(nn.Module):
         object.__setattr__(self, '_mixer_module', mixer_module)
         self._use_conv_bias = self._mixer_module.use_conv_bias
         self.operator_type = operator_type
-
+        self.flip_mixer_weight = flip_mixer_weight
         # Combined padding from both convolutions - this is a key difference from the
         # sequential execution of two convs which applies padding separately
         self._proj_conv_kernel_size = self._proj_conv_module.kernel_size
@@ -1438,6 +1444,9 @@ class B2BCausalConv1dModule(nn.Module):
             else:
                 # Otherwise reshape to flatten the first two dimensions
                 mixer_weight = mixer_weight.reshape(-1, mixer_weight.size(-1))
+        # For evo2 compatibility, since it uses FFTConv mixer and here we use direct convolution.
+        if self.flip_mixer_weight:
+            mixer_weight = torch.flip(mixer_weight, dims=[-1])
 
         # maybe handle num_groups
         proj_weight = proj_weight.repeat_interleave(self._proj_conv_module.group_dim, dim=0)

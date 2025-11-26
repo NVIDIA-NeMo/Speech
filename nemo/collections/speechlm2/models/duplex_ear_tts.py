@@ -1413,21 +1413,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         Return a typing schema for optimal batch size calibration for various
         sequence lengths using OOMptimizer.
         """
-        return {
-            "cls": dict,
-            "inputs": [
-                {"name": "source_audio", "type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input"},
-                {"name": "source_audio_lens", "type": NeuralType(("B",), LengthsType()), "seq_length": "input"},
-                {"name": "target_audio", "type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input"},
-                {"name": "target_audio_lens", "type": NeuralType(("B",), LengthsType()), "seq_length": "input"},
-                {
-                    "name": "input_text_tokens",
-                    "type": NeuralType(("B", "T"), LabelsType()),
-                    "seq_length": "output",
-                    "vocab_size": self.tokenizer.vocab_size,
-                },
-            ],
-        }
+        raise NotImplementedError
 
     def configure_model(self) -> None:
         # TODO(pzelasko): refactor into separate module re-usable across models
@@ -1522,13 +1508,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 )
             else:
                 self.embed_text_tokens = fully_shard(self.embed_text_tokens, **fsdp_config)
-                # self.tts_model = fully_shard(self.tts_model, **fsdp_config)
                 self.tts_model.mog_head = fully_shard(self.tts_model.mog_head, **fsdp_config)
                 self.tts_model.embed_subword = fully_shard(self.tts_model.embed_subword, **fsdp_config)
                 self.tts_model.embed_context = fully_shard(self.tts_model.embed_context, **fsdp_config)
                 self.tts_model.embed_code = fully_shard(self.tts_model.embed_code, **fsdp_config)
-                self.tts_model.null_emb = fully_shard(self.tts_model.null_emb, **fsdp_config)
-                self.tts_model.bos_emb = fully_shard(self.tts_model.bos_emb, **fsdp_config)
                 self.tts_model.lm_head = fully_shard(self.tts_model.lm_head, **fsdp_config)
 
     def load_state_dict(self, state_dict, strict: bool = True):

@@ -34,6 +34,7 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.core.utils.cuda_python_utils import cu_call, run_nvrtc, with_conditional_node
+from nemo.utils import logging
 
 try:
     from cuda.bindings import runtime as cudart
@@ -227,6 +228,9 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
         self.allow_cuda_graphs = allow_cuda_graphs
+        if self.allow_cuda_graphs and enable_per_stream_biasing:
+            logging.warning("Per stream biasing is not compatible currently with CUDA graphs, switching off")
+            self.allow_cuda_graphs = False
         self._SOS = self._blank_index
         self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
         assert self._SOS == self._blank_index  # "blank as pad" algorithm only

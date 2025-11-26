@@ -34,6 +34,7 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.core.utils.cuda_python_utils import cu_call, run_nvrtc, with_conditional_node
+from nemo.utils import logging
 
 try:
     from cuda.bindings import runtime as cudart
@@ -235,8 +236,8 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             include_duration: if predicted token durations are needed to be added to the Hypothesis object
             include_duration_confidence: if duration confidence is needed to be added to the frame confidence
             confidence_method_cfg: config for the confidence
-            fusion_models: list of fusion models
-            fusion_models_alpha: list of weights for the fusion models scores
+            fusion_models: list of fusion models (ngram_lm_model and boosting_tree_model)
+            fusion_models_alpha: list of fusion model weights (ngram_lm_alpha and boosting_tree_alpha)
             enable_per_stream_biasing: enable multi-biasing model for per-stream customization
         """
         super().__init__()
@@ -250,6 +251,9 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.preserve_frame_confidence = preserve_frame_confidence
         self.preserve_alignments = preserve_alignments or preserve_frame_confidence
         self.allow_cuda_graphs = allow_cuda_graphs
+        if self.allow_cuda_graphs and enable_per_stream_biasing:
+            logging.warning("Per stream biasing is not compatible currently with CUDA graphs, switching off")
+            self.allow_cuda_graphs = False
         self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
         self._SOS = self._blank_index

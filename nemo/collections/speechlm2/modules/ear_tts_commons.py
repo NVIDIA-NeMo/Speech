@@ -277,6 +277,7 @@ class PreTrainedModel(nn.Module):
 # IO and Checkpointing Utilities
 # ==============================================================================
 
+
 def latest_checkpoint_path(dir_path: str, regex: str | None = None) -> str:
     """
     Finds the path of the latest checkpoint file or directory in a directory.

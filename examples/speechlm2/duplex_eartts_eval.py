@@ -51,7 +51,7 @@ def inference(cfg):
         output_roles=cfg.data.output_roles,
         add_text_bos_and_eos_in_each_turn=cfg.data.get("add_text_bos_and_eos_in_each_turn", True),
         add_audio_prompt=cfg.data.get("add_audio_prompt", True),
-        audio_prompt_duration=cfg.data.audio_prompt_duration,
+        audio_prompt_duration=cfg.data.get("audio_prompt_duration", 3),
         num_delay_speech_tokens=cfg.model.get("num_delay_speech_tokens", 2),
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)

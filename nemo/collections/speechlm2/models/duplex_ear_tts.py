@@ -633,13 +633,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "input_text_tokens": input_text_tokens,
         }
 
-    def training_step(self, batch: dict, batch_idx: int):
-        for m in (self.tts_model,):
-            if is_frozen(m):
-                m.eval()
-
-        inputs = self.prepare_inputs(batch)
-
+    def forward(self, inputs):
         tts_output = self.tts_model(
             code=inputs["code"],
             audio_mask=inputs["audio_mask"],
@@ -650,6 +644,16 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             subword_mask=inputs["subword_mask"],
             non_prompt_mask=inputs["non_prompt_mask"],
         )
+        return tts_output
+
+    def training_step(self, batch: dict, batch_idx: int):
+        for m in (self.tts_model,):
+            if is_frozen(m):
+                m.eval()
+
+        inputs = self.prepare_inputs(batch)
+        tts_output = self.forward(inputs)
+
         loss_dict = {"lm_loss": tts_output.lm_loss, "c_loss": tts_output.c_loss, "k_loss": tts_output.k_loss}
         loss = sum(loss_dict.values())
 

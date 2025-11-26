@@ -19,8 +19,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -278,64 +276,6 @@ class PreTrainedModel(nn.Module):
 # ==============================================================================
 # IO and Checkpointing Utilities
 # ==============================================================================
-
-
-def check_git_hash() -> str | None:
-    """
-    Retrieves the current git commit hash of the repository containing this file.
-
-    This is useful for reproducibility, allowing you to track the exact version
-    of the code used for a particular experiment.
-
-    Returns:
-        str | None: The git commit hash as a string if successful, otherwise None.
-    """
-
-    try:
-        # Get the directory where this script is located
-        source_sub_dir = os.path.dirname(os.path.realpath(__file__))
-        # Execute the git command to get the current HEAD commit hash
-        git_hash = (
-            subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source_sub_dir, stderr=subprocess.DEVNULL)
-            .decode(sys.stdout.encoding)
-            .strip()
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        # Handle cases where git is not installed or the directory is not a git repo
-        logging.warning(
-            "Could not retrieve git hash. This may be because the code is not in a git repository "
-            "or git is not installed. Git hash checking will be ignored."
-        )
-        return None
-    return git_hash
-
-
-def write_git_hash(workdir_path: str) -> None:
-    """
-    Writes the current git hash to a file in a specified directory.
-
-    If a hash file already exists, it compares the current hash with the saved one
-    and logs a warning if they differ.
-
-    Args:
-        workdir_path (str): The path to the directory where the git hash file will be saved.
-    """
-    git_hash = check_git_hash()
-    if git_hash is None:
-        return
-
-    saved_git_hash_path = os.path.join(workdir_path, GIT_HASH_NAME)
-    if os.path.exists(saved_git_hash_path):
-        # If hash file exists, compare it with the current hash
-        with open(saved_git_hash_path) as f:
-            saved_git_hash = f.read().strip()
-        if saved_git_hash != git_hash:
-            logging.warning(f"Git hash has changed. Saved: {saved_git_hash[:8]}, Current: {git_hash[:8]}")
-    else:
-        # If no hash file exists, write the current hash
-        with open(saved_git_hash_path, "w") as f:
-            f.write(git_hash)
-
 
 def latest_checkpoint_path(dir_path: str, regex: str | None = None) -> str:
     """

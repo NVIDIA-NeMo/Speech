@@ -26,7 +26,7 @@ from torch.distributed import all_gather_object
 from typing_extensions import Annotated
 
 import nemo.lightning as nl
-from nemo.collections.llm import GPTModel, HFAutoModelForCausalLM
+from nemo.collections.llm import GPTModel
 from nemo.collections.llm.gpt.data.fine_tuning import FineTuningDataModule
 from nemo.collections.llm.modelopt import (
     DistillationGPTModel,
@@ -545,30 +545,24 @@ def ptq(
 
     quantizer = Quantizer(quantization_config, export_config)
     assert Path(model_path).exists(), f"Path {model_path} does not exist"
-    is_automodel = (Path(model_path) / 'config.json').exists()
 
     trainer = None
-    if is_automodel:
-        assert export_config.export_format != "nemo", "Automodel PTQ does not support export format nemo"
-        model = HFAutoModelForCausalLM(model_name=model_path, trust_remote_code=trust_remote_code, device_map="auto")
-        model.configure_model()
-    else:
-        model, trainer = setup_trainer_and_restore_model_with_modelopt_spec(
-            model_path=model_path,
-            tensor_model_parallel_size=calibration_tp,
-            pipeline_model_parallel_size=calibration_pp,
-            num_layers_in_first_pipeline_stage=num_layers_in_first_pipeline_stage,
-            num_layers_in_last_pipeline_stage=num_layers_in_last_pipeline_stage,
-            expert_model_parallel_size=calibration_ep,
-            devices=devices,
-            num_nodes=num_nodes,
-            inference_only=True,
-            tokenizer_path=tokenizer_path,
-            legacy_ckpt=legacy_ckpt,
-            strategy_kwargs={"sequence_parallel": False, "lazy_init": True},
-            trainer_kwargs={},
-            model_config_overrides={"sequence_parallel": False},
-        )
+    model, trainer = setup_trainer_and_restore_model_with_modelopt_spec(
+        model_path=model_path,
+        tensor_model_parallel_size=calibration_tp,
+        pipeline_model_parallel_size=calibration_pp,
+        num_layers_in_first_pipeline_stage=num_layers_in_first_pipeline_stage,
+        num_layers_in_last_pipeline_stage=num_layers_in_last_pipeline_stage,
+        expert_model_parallel_size=calibration_ep,
+        devices=devices,
+        num_nodes=num_nodes,
+        inference_only=True,
+        tokenizer_path=tokenizer_path,
+        legacy_ckpt=legacy_ckpt,
+        strategy_kwargs={"sequence_parallel": False, "lazy_init": True},
+        trainer_kwargs={},
+        model_config_overrides={"sequence_parallel": False},
+    )
 
     model = quantizer.quantize(model, forward_loop)
     quantizer.export(model, model_path, trainer)

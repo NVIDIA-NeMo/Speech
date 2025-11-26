@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from omegaconf.dictconfig import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.inference.factory.base_builder import BaseBuilder
 from nemo.collections.asr.inference.pipelines.cache_aware_ctc_pipeline import CacheAwareCTCPipeline
@@ -48,18 +48,15 @@ class CacheAwarePipelineBuilder(BaseBuilder):
         raise ValueError("Invalid asr decoding type for cache aware streaming. Need to be one of ['CTC', 'RNNT']")
 
     @classmethod
-    def get_rnnt_decoding_cfg(cls) -> RNNTDecodingConfig:
+    def get_rnnt_decoding_cfg(cls, cfg: DictConfig) -> RNNTDecodingConfig:
         """
         Get the decoding config for the RNNT pipeline.
         Returns:
             (RNNTDecodingConfig) Decoding config
         """
-        decoding_cfg = RNNTDecodingConfig()
-        decoding_cfg.strategy = "greedy_batch"
-        decoding_cfg.preserve_alignments = False
-        decoding_cfg.greedy.use_cuda_graph_decoder = False
-        decoding_cfg.greedy.max_symbols = 10
-        decoding_cfg.fused_batch_size = -1
+        base_cfg_structured = OmegaConf.structured(RNNTDecodingConfig)
+        base_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg_structured))
+        decoding_cfg = OmegaConf.merge(base_cfg, cfg.asr.decoding)
         return decoding_cfg
 
     @classmethod
@@ -84,7 +81,7 @@ class CacheAwarePipelineBuilder(BaseBuilder):
             Returns CacheAwareRNNTPipeline object
         """
         # building ASR model
-        decoding_cfg = cls.get_rnnt_decoding_cfg()
+        decoding_cfg = cls.get_rnnt_decoding_cfg(cfg)
         asr_model = cls._build_asr(cfg, decoding_cfg)
 
         # building ITN model

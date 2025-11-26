@@ -101,7 +101,7 @@ def find_last_period_index(text: str) -> int:
 class SimpleSegmentedTextAggregator(SimpleTextAggregator):
     def __init__(
         self,
-        punctuation_marks: str | list[str] = ".,!?;:",
+        punctuation_marks: str | list[str] = ".,!?;:\n",
         ignore_marks: str | list[str] = "*",
         min_sentence_length: int = 0,
         use_legacy_eos_detection: bool = False,
@@ -130,9 +130,8 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
             )
             if "." in punctuation_marks:
                 punctuation_marks.remove(".")
-            punctuation_marks += [
-                "."
-            ]  # put period at the end of the list to ensure it's the last punctuation mark to be matched
+            # put period at the end of the list to ensure it's the last punctuation mark to be matched
+            punctuation_marks += ["."]
             self._punctuation_marks = punctuation_marks
 
     def _find_segment_end(self, text: str) -> Optional[int]:
@@ -144,7 +143,12 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         Returns:
             The index of the end of the segment, or None if the text is too short.
         """
-        if len(text.strip()) < self._min_sentence_length:
+        # drop leading whitespace but keep trailing whitespace to
+        # allow "\n" to trigger the end of the sentence
+        text_len = len(text)
+        text = text.lstrip()
+        offset = text_len - len(text)
+        if len(text) < self._min_sentence_length:
             return None
 
         for punc in self._punctuation_marks:
@@ -153,12 +157,12 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
             else:
                 idx = text.find(punc)
             if idx != -1:
-                return idx + 1
+                # add the offset to the index to account for the leading whitespace
+                return idx + 1 + offset
         return None
 
     async def aggregate(self, text: str) -> Optional[str]:
         result: Optional[str] = None
-
         self._text += str(text)
 
         for ignore_mark in self._ignore_marks:
@@ -174,10 +178,12 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         if eos_end_index:
             result = self._text[:eos_end_index]
             if len(result.strip()) < self._min_sentence_length:
+                logger.debug(
+                    f"Text is too short, skipping: `{result}`, full text: `{self._text}`, input text: `{text}`"
+                )
                 result = None
-                logger.debug(f"Text is too short, skipping: `{result}`, full text: `{self._text}`")
             else:
-                logger.debug(f"Text Aggregator Result: `{result}`, full text: `{self._text}`")
+                logger.debug(f"Text Aggregator Result: `{result}`, full text: `{self._text}`, input text: `{text}`")
                 self._text = self._text[eos_end_index:]
 
         return result

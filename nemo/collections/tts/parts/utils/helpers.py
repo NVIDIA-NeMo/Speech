@@ -134,14 +134,14 @@ def binarize_attention_parallel(attn, in_lens, out_lens):
 
 
 def get_mask_from_lengths(
-    lengths: Optional[torch.Tensor] = None,
-    x: Optional[torch.Tensor] = None,
+    lengths: Optional[torch.Tensor] = None, x: Optional[torch.Tensor] = None, pad_to_factor: Optional[int] = None
 ) -> torch.Tensor:
     """Constructs binary mask from a 1D torch tensor of input lengths
 
     Args:
         lengths: Optional[torch.tensor] (torch.tensor): 1D tensor with lengths
         x: Optional[torch.tensor] = tensor to be used on, last dimension is for mask
+        pad_to_factor: Optional[int] = pad the mask to an integer multiple of this factor
     Returns:
         mask (torch.tensor): num_sequences x max_length binary tensor
     """
@@ -153,6 +153,8 @@ def get_mask_from_lengths(
             max_len = torch.max(lengths)
         else:
             max_len = x.shape[-1]
+    if pad_to_factor is not None:
+        max_len = torch.ceil(max_len / pad_to_factor) * pad_to_factor
     ids = torch.arange(0, max_len, device=lengths.device, dtype=lengths.dtype)
     mask = ids < lengths.unsqueeze(1)
     return mask
@@ -440,12 +442,15 @@ def tacotron2_log_to_wandb_func(
             swriter.log({"audios": audios})
 
 
-def plot_alignment_to_numpy(alignment, title='', info=None, phoneme_seq=None, vmin=None, vmax=None):
+def plot_alignment_to_numpy(alignment, title='', info=None, phoneme_seq=None, vmin=None, vmax=None, attended=None):
     if phoneme_seq:
         fig, ax = plt.subplots(figsize=(15, 10))
     else:
         fig, ax = plt.subplots(figsize=(6, 4))
     im = ax.imshow(alignment, aspect='auto', origin='lower', interpolation='none', vmin=vmin, vmax=vmax)
+    if attended is not None:
+        for step in range(len(attended) - 1):
+            plt.plot([step, step + 1], [attended[step], attended[step + 1]], color='red', linewidth=1, linestyle='--')
     ax.set_title(title)
     fig.colorbar(im, ax=ax)
     xlabel = 'Decoder timestep'

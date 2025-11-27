@@ -24,8 +24,8 @@ from lhotse.utils import ifnone
 
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.utils import logging
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
+from nemo.utils import logging
 
 
 def sample_audio_segments_repeat(

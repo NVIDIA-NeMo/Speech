@@ -181,7 +181,7 @@ def setup_audio_codec(self):
 
 def rescale_state_dict(state_dict, target_std=0.02, first_n_layers=None, layer_prefix="tts_model.backbone.layers."):
     """
-    Rescale trainable weights in a state_dict for BF16 stability.
+    Rescale trainable weights in a state_dict for BF16/FP16 stability.
 
     Args:
         state_dict: PyTorch state_dict
@@ -217,9 +217,9 @@ def rescale_state_dict(state_dict, target_std=0.02, first_n_layers=None, layer_p
 
     if not weight_tensors:
         if first_n_layers is not None:
-            print(f"⚠️ No weights found for first {first_n_layers} layers with prefix '{layer_prefix}'.")
+            logging.info(f"No weights found for first {first_n_layers} layers with prefix '{layer_prefix}'.")
         else:
-            print("⚠️ No weights found to rescale in state_dict.")
+            logging.info("No weights found to rescale in state_dict.")
         return state_dict
 
     # Compute global std across selected weights (on CPU)
@@ -228,8 +228,8 @@ def rescale_state_dict(state_dict, target_std=0.02, first_n_layers=None, layer_p
     current_std = float(torch.std(flat))
     scale = target_std / (current_std + 1e-8)
 
-    print(
-        f"📦 Rescaling state_dict "
+    logging.info(
+        f"Rescaling state_dict "
         f"{'(first N layers)' if first_n_layers else '(all layers)'}: "
         f"current std = {current_std:.6f}, target = {target_std}, scale = {scale:.6f}"
     )
@@ -246,7 +246,7 @@ def rescale_state_dict(state_dict, target_std=0.02, first_n_layers=None, layer_p
         else:
             new_state_dict[name] = param
 
-    print("✅ Done: weights rescaled.")
+    logging.info("Done: weights rescaled.")
     return new_state_dict
 
 

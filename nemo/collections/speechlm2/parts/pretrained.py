@@ -25,6 +25,7 @@ from nemo.collections.speechlm2.modules import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
+from safetensors.torch import load_file
 
 
 def load_pretrained_nemo(cls, model_path_or_name: str):
@@ -127,7 +128,7 @@ def set_model_dict_for_partial_init(
 
     Example:
         >>> model_dict = model.state_dict()
-        >>> pretrained_dict = torch.load("pretrained_model.pt")
+        >>> pretrained_dict = load_checkpoint("pretrained_model.ckpt")
         >>> model_dict = set_model_dict_for_partial_init(pretrained_dict, model_dict)
         >>> model.load_state_dict(model_dict)
     """
@@ -145,3 +146,29 @@ def set_model_dict_for_partial_init(
     logging.info(f" | > {len(pretrained_dict)} / {len(model_dict)} layers are restored.")
 
     return model_dict
+
+
+def load_checkpoint(checkpoint_path):
+    """
+    Load a model checkpoint from disk.
+
+    Supports loading checkpoints stored in either PyTorch (`.ckpt`, `.pt`) or
+    SafeTensors (`.safetensors`) formats. All parameters are loaded onto CPU
+    regardless of the original device.
+
+    Args:
+        checkpoint_path (str):
+            Path to the checkpoint file. If the filename contains `.safetensors`,
+            it is loaded using the SafeTensors backend; otherwise, it is assumed
+            to be a PyTorch checkpoint containing a `state_dict` field.
+
+    Returns:
+        dict:
+            A state dictionary mapping parameter names to tensors.
+    """
+    if ".safetensors" in checkpoint_path:
+        checkpoint_state = load_file(checkpoint_path, device="cpu")
+    else:
+        checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location="cpu")["state_dict"]
+    return checkpoint_state
+

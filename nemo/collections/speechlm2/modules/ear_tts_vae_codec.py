@@ -19,15 +19,10 @@ from contextlib import contextmanager
 from typing import Any, Concatenate
 
 import librosa
-
-# Third-party
 import torch
 from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.nn import functional as F
-
-# Project
-from nemo.collections.speechlm2.modules.ear_tts_commons import PreTrainedModel
 
 
 @contextmanager
@@ -875,7 +870,7 @@ class Latent2Wav(nn.Module):
         return x
 
 
-class RVQVAEModel(PreTrainedModel):
+class RVQVAEModel(nn.Module):
     """
     Residual Vector-Quantized Variational Autoencoder (RVQ-VAE) model.
 
@@ -890,7 +885,8 @@ class RVQVAEModel(PreTrainedModel):
     config_class: type[DictConfig] = DictConfig
 
     def __init__(self, config: DictConfig | dict[str, Any]):
-        super().__init__(config)
+        super().__init__()
+        self.config = config
 
         self.encoder = Wav2Latent(
             latent_size=self.config.latent_size,

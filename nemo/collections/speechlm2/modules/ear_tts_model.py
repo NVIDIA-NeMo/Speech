@@ -26,7 +26,6 @@ from torch.nn import functional as F
 from transformers import AutoConfig, AutoModel, AutoModelForTextEncoding, AutoTokenizer, Cache
 from transformers.generation.logits_process import TopKLogitsWarper, TopPLogitsWarper
 
-from nemo.collections.speechlm2.modules.ear_tts_commons import PreTrainedModel
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
@@ -1130,7 +1129,7 @@ class GatedProjectedSumRMSNorm(nn.Module):
         return h
 
 
-class RVQEARTTSModel(PreTrainedModel):
+class RVQEARTTSModel(nn.Module):
     """
     Main RVQEARTTS model for training and inference.
 
@@ -1152,11 +1151,12 @@ class RVQEARTTSModel(PreTrainedModel):
     Args:
         config (DictConfig | dict[str, Any]): The configuration object for the model.
     """
-
+    config_class = DictConfig
     rvq_embs: Tensor
 
     def __init__(self, config: DictConfig | dict[str, Any]):
-        super().__init__(config)
+        super().__init__()
+        self.config = config
 
         # Backbone module
         if self.config.get("pretrained_text_name", None):

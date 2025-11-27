@@ -47,7 +47,7 @@ from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogge
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, set_model_dict_for_partial_init
+from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, set_model_dict_for_partial_init, load_checkpoint
 from nemo.utils import logging
 
 
@@ -151,19 +151,12 @@ def setup_rvq_audio_codec(model):
         return  # skip if already set up and has the right dtype
 
     with ensures_target_precision(model.audio_codec_run_dtype):
-        if model.cfg.get("pretrained_ae_dir", None):
-            model.audio_codec = (
-                RVQVAEModel.from_pretrained(
-                    model.cfg.pretrained_ae_dir,
-                    cfg=DictConfig(model.cfg.codec_config) if model.cfg.get("codec_config", None) else None,
-                    strict=False,
-                )
-                .eval()
-                .to(model.device)
-            )
-        else:
-            # init codec from config
-            model.audio_codec = RVQVAEModel(DictConfig(model.cfg.codec_config))
+        model.audio_codec = RVQVAEModel(DictConfig(model.cfg.codec_config))
+        # load pretrained codec checkpoint
+        if model.cfg.get("pretrained_codec_model", None):
+            checkpoint_state = load_checkpoint(model.cfg.pretrained_codec_model)
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.audio_codec.state_dict())
+            model.audio_codec.load_state_dict(checkpoint_state, strict=True)
 
     for p in model.audio_codec.parameters():
         p.requires_grad = False
@@ -367,13 +360,14 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
     def _load_tts_model(self, cfg) -> nn.Module:
         """Load TTS model for RVQ-EAR-TTS."""
+        # instanciate tts model
+        self.tts_model = RVQEARTTSModel(DictConfig(cfg.tts_config))
+
+        # load pretrained tts checkpoint
         if self.cfg.get("pretrained_tts_model", None):
-            self.tts_model = RVQEARTTSModel.from_pretrained(
-                cfg.pretrained_tts_model, DictConfig(cfg.tts_config), strict=False
-            )
-        else:
-            # start the model from scratch
-            self.tts_model = RVQEARTTSModel(DictConfig(cfg.tts_config))
+            checkpoint_state = load_checkpoint(self.cfg.pretrained_tts_model)
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.tts_model.state_dict())
+            self.tts_model.load_state_dict(checkpoint_state, strict=True)
 
         setup_audio_codec(self)
 
@@ -389,7 +383,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
     def restore_from_pretrained_checkpoint(self, checkpoint_path):
         """
-        Loads model weights a pretrained checkpoint file, supporting partial loading from .nemo and PyTorch formats.
+        Loads model weights a pretrained checkpoint file, supporting partial loading from safetensor and PyTorch formats.
 
         Args:
             checkpoint_path (str): Path to checkpoint file.
@@ -398,7 +392,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             None. The model is updated in-place.
         """
         if checkpoint_path is not None:
-            checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+            checkpoint_state = load_checkpoint(checkpoint_path)
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())
 
             if self.cfg.get("rescale_pretrained_weights", None):

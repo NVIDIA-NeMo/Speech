@@ -21,6 +21,30 @@ import torch
 from nemo.collections.audio.parts.utils.resampling import resample
 from nemo.utils import logging
 
+"""
+Utilities for logging evaluation results of SpeechLM2 collection models.
+
+This file provides helper functionality for saving audio outputs and structured
+metadata during evaluation or inference of Duplex speech-to-speech / TTS models.
+It is primarily responsible for:
+
+    - Writing predicted waveforms to disk.
+    - Merging user and model audio into multi-channel WAV files for analysis.
+    - Exporting metadata (reference text, predictions, ASR output) into JSONL format.
+    - Saving auxiliary debug artifacts such as:
+        * teacher-forced predictions,
+        * reference audio,
+        * trimmed outputs,
+        * end-of-utterance (EOU) probability signals.
+
+Unlike other files in this directory, which focus on metric evaluation, this module
+is dedicated to persisting model outputs — including predicted audio samples and
+their associated metadata — for later inspection and analysis.
+
+Key abstraction:
+    - `ResultsLogger`: A lightweight utility class that manages audio dumping
+      and metadata bookkeeping across inference batches.
+"""
 
 def safe_remove_path(path):
     shutil.rmtree(path, ignore_errors=True)

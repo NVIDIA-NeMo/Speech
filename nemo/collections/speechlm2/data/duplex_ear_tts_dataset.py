@@ -634,11 +634,9 @@ def get_audio_prompt(
             Used when sampling random reference turns.
 
     Returns:
-        (audio_prompt, audio_prompt_lens):
-
+        Tuple containing:
         - audio_prompt (FloatTensor [B, T]):
             Padded batch of reference waveforms.
-
         - audio_prompt_lens (LongTensor [B]):
             Lengths of each reference waveform before padding.
     """
@@ -674,6 +672,32 @@ def collate_random_turn_audio(
     roles: set[str],
     recording_field: str = "target_audio",
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sample and collate reference audio from random speaker turns.
+
+    For each cut in the batch, this function:
+        - selects a random supervision belonging to one of the specified roles,
+        - extracts the corresponding audio segment,
+        - collates all segments into a padded batch.
+
+    Args:
+        cuts (CutSet):
+            Batch of cuts to sample from.
+
+        roles (set[str]):
+            Set of speaker roles to consider when selecting random turns.
+
+        recording_field (str, optional):
+            Name of the audio field to load from the cut
+            (e.g., "recording", "target_audio").
+
+    Returns:
+        Tuple containing:
+        - audio (FloatTensor [B, T]):
+            Padded batch of sampled reference waveforms.
+        - audio_lens (LongTensor [B]):
+            Lengths of each waveform before padding.
+    """
     selected_turn_audios = []
     selected_turn_audios_lens = []
     for cut in cuts:
@@ -701,6 +725,38 @@ def collate_token_channel(
     roles: set[str],
     add_text_bos_and_eos_in_each_turn: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Build and collate token channels aligned to the audio frame grid.
+
+    This function converts text supervisions into frame-level token
+    representations for each cut, pads them to a uniform length, and
+    returns both the padded tokens and their true lengths.
+
+    Args:
+        cuts (CutSet):
+            Batch of cuts from which to extract token channels.
+
+        tokenizer (TokenizerSpec):
+            Tokenizer used to convert text into token IDs.
+
+        frame_length (Seconds):
+            Duration of a single audio frame, used to align text tokens
+            to audio frames.
+
+        roles (set[str]):
+            Speaker roles whose text will be included in the token channel.
+
+        add_text_bos_and_eos_in_each_turn (bool, optional):
+            Whether to insert BOS at the beginning and EOS at the end of
+            each speaking turn.
+
+    Returns:
+        Tuple containing:
+        - tokens (LongTensor [B, T]):
+            Padded batch of frame-aligned token sequences.
+        - token_lens (LongTensor [B]):
+            Length of each sequence before padding.
+    """
     pad_id = get_pad_id(tokenizer)
     tokens = [
         build_token_channel(
@@ -726,6 +782,39 @@ def build_token_channel(
     pad_id: int = -1,
     add_text_bos_and_eos_in_each_turn: bool = True,
 ) -> torch.Tensor:
+    """
+    Build a frame-aligned token sequence for a single cut.
+
+    This function maps speaking turns into a token channel aligned to the
+    audio frame grid. Tokens are inserted at frame positions corresponding
+    to supervision start times, with optional BOS and EOS insertion.
+
+    Any region not covered by text is filled with `pad_id`.
+
+    Args:
+        cut (Cut):
+            Input cut containing audio and supervisions.
+
+        tokenizer (TokenizerSpec):
+            Tokenizer used to encode text into tokens.
+
+        frame_length (Seconds):
+            Duration of one frame, used to align text to the audio grid.
+
+        roles (set[str]):
+            Speaker roles whose text should be included.
+
+        pad_id (int, optional):
+            Token ID used for padding empty frames.
+
+        add_text_bos_and_eos_in_each_turn (bool, optional):
+            Whether to insert BOS before and EOS after each supervision.
+
+    Returns:
+        tokens (LongTensor [T]):
+            Frame-aligned token sequence for the cut.
+    """
+
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
         diagnostic = f"{diagnostic} {cut.shard_origin=}"

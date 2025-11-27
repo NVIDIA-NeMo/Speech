@@ -239,7 +239,6 @@ class BasePipeline(PipelineInterface):
                 step_output.final_translation = translation
                 step_output.partial_translation = ""
                 state.cleanup_translation_info_after_eou()
-
                 state.set_translation_context(step_output.final_transcript, translation)
             else:
                 step_output.partial_translation = translation

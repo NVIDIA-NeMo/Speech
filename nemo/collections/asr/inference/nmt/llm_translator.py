@@ -179,6 +179,8 @@ class LLMTranslator:
             prefixes: (list[str]) batch of prefixes to start translation from
             src_langs: (list[str]) batch of source languages
             tgt_langs: (list[str]) batch of target languages
+            src_contexts: (list[str]) batch of source contexts
+            tgt_contexts: (list[str]) batch of target contexts
         Returns:
             list[str] translations of ASR transcripts
         """
@@ -213,6 +215,8 @@ class LLMTranslator:
             prefixes: (list[str]) prefixes to start translation from
             src_langs: (list[str]) source languages
             tgt_langs: (list[str]) target languages
+            src_contexts: (list[str]) source contexts
+            tgt_contexts: (list[str]) target contexts
         Returns:
             list[str] translations of ASR transcripts
         """

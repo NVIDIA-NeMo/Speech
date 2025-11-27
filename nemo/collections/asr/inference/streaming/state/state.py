@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import re
 from typing import Callable
 
 from nemo.collections.asr.inference.streaming.framing.request import RequestOptions
@@ -78,6 +79,7 @@ class StreamingState:
 
         # Translation attributes
         self.previous_translation_info = ("", "")
+        self.previous_context = ("", "")
 
         # Word-level ASR output attributes (cleared after cleanup_after_response):
         # - words: Raw word-level ASR output
@@ -241,6 +243,20 @@ class StreamingState:
             prefix: (str) The prefix to store in the state
         """
         self.previous_translation_info = (translation, prefix)
+
+    def set_translation_context(self, src_context: str, tgt_context: str) -> None:
+        """
+        Set the translation context
+        Args:
+            src_context: (str) The source context to store in the state
+            tgt_context: (str) The target context to store in the state
+        """
+        src_context = re.sub(r'\s+', ' ', src_context).strip()
+        tgt_context = re.sub(r'\s+', ' ', tgt_context).strip()
+        if not (src_context and tgt_context):
+            src_context = tgt_context = ""
+
+        self.previous_context = (src_context, tgt_context)
 
     def cleanup_after_eou(self) -> None:
         """

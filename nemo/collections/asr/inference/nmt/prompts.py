@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 from abc import ABC, abstractmethod
 
 
@@ -49,14 +50,22 @@ class EuroLLMTranslatorPromptTemplate(PromptTemplate):
         "<|im_start|>system\n<|im_end|>\n"
         "<|im_start|>user\n"
         "Translate the following {src_lang} source text to {tgt_lang}:\n"
-        "{src_lang}: {src_prefix}\n"
+        "{src_lang}: {src_text}\n"
         "{tgt_lang}: <|im_end|>\n"
         "<|im_start|>assistant\n"
-        "{tgt_prefix}"
+        "{tgt_text}"
     )
 
     @classmethod
-    def format(cls, src_lang: str, tgt_lang: str, src_prefix: str, tgt_prefix: str) -> str:
+    def format(
+        cls,
+        src_lang: str,
+        tgt_lang: str,
+        src_prefix: str,
+        tgt_prefix: str,
+        src_context: str = "",
+        tgt_context: str = "",
+    ) -> str:
         """
         Generate a translation prompt for the EuroLLM model.
         Args:
@@ -64,12 +73,16 @@ class EuroLLMTranslatorPromptTemplate(PromptTemplate):
             tgt_lang (str): Target language name.
             src_prefix (str): Source text to translate.
             tgt_prefix (str): Optional target prefix or placeholder for completion.
+            src_context (str): Optional source context to start translation from.
+            tgt_context (str): Optional target context to start translation from.
         Returns:
             str: Formatted translation prompt.
         """
-        return cls.PROMPT_TEMPLATE.format(
-            src_lang=src_lang, tgt_lang=tgt_lang, src_prefix=src_prefix, tgt_prefix=tgt_prefix
-        )
+        src_text = f"{src_context} {src_prefix}"
+        tgt_text = f"{tgt_context} {tgt_prefix}"
+        src_text = re.sub(r'\s+', ' ', src_text).strip()
+        tgt_text = re.sub(r'\s+', ' ', tgt_text).strip()
+        return cls.PROMPT_TEMPLATE.format(src_lang=src_lang, tgt_lang=tgt_lang, src_text=src_text, tgt_text=tgt_text)
 
     @classmethod
     def extract(cls, response: str) -> str:

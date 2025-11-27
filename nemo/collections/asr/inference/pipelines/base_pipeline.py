@@ -193,6 +193,8 @@ class BasePipeline(PipelineInterface):
         asr_transcripts, current_prefixes, previous_translations = [], [], []
         final_transcript_mask = []
         states_to_translate = []
+
+        src_contexts, tgt_contexts = [], []
         for state, step_output in zip(states, step_outputs):
             if not state.options.enable_nmt:
                 continue
@@ -219,10 +221,16 @@ class BasePipeline(PipelineInterface):
             previous_translations.append(prev_translation)
             final_transcript_mask.append(is_final)
 
+            src_context, tgt_context = state.previous_context
+            src_contexts.append(src_context)
+            tgt_contexts.append(tgt_context)
+
         if len(states_to_translate) == 0:
             return
 
-        translations = self.nmt_model.translate(asr_transcripts, current_prefixes, src_langs, tgt_langs)
+        translations = self.nmt_model.translate(
+            asr_transcripts, current_prefixes, src_langs, tgt_langs, src_contexts, tgt_contexts
+        )
         new_prefixes = self.nmt_model.get_prefixes(asr_transcripts, translations, previous_translations)
         for (state, step_output), translation, new_prefix, is_final in zip(
             states_to_translate, translations, new_prefixes, final_transcript_mask
@@ -231,6 +239,8 @@ class BasePipeline(PipelineInterface):
                 step_output.final_translation = translation
                 step_output.partial_translation = ""
                 state.cleanup_translation_info_after_eou()
+
+                state.set_translation_context(step_output.final_transcript, translation)
             else:
                 step_output.partial_translation = translation
                 step_output.final_translation = ""
@@ -521,8 +531,11 @@ class BasePipeline(PipelineInterface):
                         first_segment = final_segments[0]
                         first_segment.text = first_segment.text.lstrip(sep)
 
+                if not accumulated_translation:
+                    final_translation = final_translation.lstrip(sep)
+
                 accumulated_text += final_transcript
-                accumulated_translation = sep.join([accumulated_translation, final_translation]).strip()
+                accumulated_translation += final_translation
                 pipeline_output[stream_id]["text"] = accumulated_text
                 pipeline_output[stream_id]["translation"] = accumulated_translation
                 pipeline_output[stream_id]["segments"].extend(final_segments)

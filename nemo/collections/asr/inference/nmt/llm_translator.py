@@ -164,7 +164,13 @@ class LLMTranslator:
             raise RuntimeError(f"Model loading failed: {str(e)}")
 
     def translate_batch(
-        self, asr_transcripts: list[str], prefixes: list[str], src_langs: list[str], tgt_langs: list[str]
+        self,
+        asr_transcripts: list[str],
+        prefixes: list[str],
+        src_langs: list[str],
+        tgt_langs: list[str],
+        src_contexts: list[str],
+        tgt_contexts: list[str],
     ) -> list[str]:
         """
         Translate ASR transcripts starting from pre-defined prefixes in target language.
@@ -177,8 +183,10 @@ class LLMTranslator:
             list[str] translations of ASR transcripts
         """
         input_texts = []
-        for src_lang, tgt_lang, src_prefix, tgt_prefix in zip(src_langs, tgt_langs, asr_transcripts, prefixes):
-            text = self.prompt_template.format(src_lang, tgt_lang, src_prefix, tgt_prefix)
+        for src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context in zip(
+            src_langs, tgt_langs, asr_transcripts, prefixes, src_contexts, tgt_contexts
+        ):
+            text = self.prompt_template.format(src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context)
             input_texts.append(text)
 
         outputs = self.nmt_model.generate(input_texts, self.sampling_params)
@@ -190,7 +198,13 @@ class LLMTranslator:
         return translations
 
     def translate(
-        self, asr_transcripts: list[str], prefixes: list[str], src_langs: list[str], tgt_langs: list[str]
+        self,
+        asr_transcripts: list[str],
+        prefixes: list[str],
+        src_langs: list[str],
+        tgt_langs: list[str],
+        src_contexts: list[str],
+        tgt_contexts: list[str],
     ) -> list[str]:
         """
         Translate ASR transcript starting from pre-defined prefix in target language.
@@ -212,6 +226,8 @@ class LLMTranslator:
                     prefixes=prefixes[i : i + bs],
                     src_langs=src_langs[i : i + bs],
                     tgt_langs=tgt_langs[i : i + bs],
+                    src_contexts=src_contexts[i : i + bs],
+                    tgt_contexts=tgt_contexts[i : i + bs],
                 )
             )
         return all_translations
@@ -239,6 +255,7 @@ class LLMTranslator:
 
             # Longest common prefix of translations on current and previous steps
             lcp = os.path.commonprefix([prev_trans, trans])
+            had_leading_space = lcp.startswith(" ")
 
             # If lcp happends mid-word, remove generated ending up to the first full word
             if (len(lcp) > 0) and (lcp[-1] not in f"{string.punctuation} "):
@@ -260,6 +277,10 @@ class LLMTranslator:
                 new_prefix = " ".join(trans.split()[:num_words_to_pick])
             else:
                 new_prefix = lcp
+
+            # Preserve leading space if it was present in the previous translation
+            if len(new_prefix) > 0 and had_leading_space and not new_prefix.startswith(" "):
+                new_prefix = " " + new_prefix
 
             new_prefixes.append(new_prefix)
 

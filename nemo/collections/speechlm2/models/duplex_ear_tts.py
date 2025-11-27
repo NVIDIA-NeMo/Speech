@@ -140,34 +140,6 @@ def replace_control_speech_codes(
         return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
 
 
-def get_mask_from_lengths(
-    lengths: torch.Tensor = None, x: torch.Tensor = None, pad_to_factor: int = None
-) -> torch.Tensor:
-    """Constructs binary mask from a 1D torch tensor of input lengths
-    Args:
-        lengths: torch.tensor (torch.tensor): 1D tensor with lengths
-        x: torch.tensor = tensor to be used on, last dimension is for mask
-    Returns:
-        mask (torch.tensor): num_sequences x max_length binary tensor
-    """
-    if lengths is None:
-        assert x is not None
-        return torch.ones(x.shape[-1], dtype=torch.bool, device=x.device)
-    else:
-        if x is None:
-            max_len = torch.max(lengths)
-        else:
-            max_len = x.shape[-1]
-
-    if pad_to_factor is not None:
-        with fp32_precision():
-            max_len = torch.ceil(max_len / pad_to_factor) * pad_to_factor
-
-    ids = torch.arange(0, max_len, device=lengths.device, dtype=lengths.dtype)
-    mask = ids < lengths.unsqueeze(1)
-    return mask
-
-
 def setup_rvq_audio_codec(model):
     """
     Sets up an ``AudioCodecModel``, initializing it from pretrained weights.

@@ -25,6 +25,7 @@ from lhotse.utils import ifnone
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.utils import logging
+from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 
 
 def sample_audio_segments_repeat(
@@ -82,31 +83,6 @@ def sample_audio_segments_repeat(
             out[b] = repeated
 
     return out
-
-
-def get_mask_from_lengths(
-    lengths: torch.Tensor = None,
-    x: torch.Tensor = None,
-) -> torch.Tensor:
-    """Constructs binary mask from a 1D torch tensor of input lengths
-    Args:
-        lengths: torch.tensor (torch.tensor): 1D tensor with lengths
-        x: torch.tensor = tensor to be used on, last dimension is for mask
-    Returns:
-        mask (torch.tensor): num_sequences x max_length binary tensor
-    """
-    if lengths is None:
-        assert x is not None
-        return torch.ones(x.shape[-1], dtype=torch.bool, device=x.device)
-    else:
-        if x is None:
-            max_len = torch.max(lengths)
-        else:
-            max_len = x.shape[-1]
-
-    ids = torch.arange(0, max_len, device=lengths.device, dtype=lengths.dtype)
-    mask = ids < lengths.unsqueeze(1)
-    return mask
 
 
 class DuplexEARTTSDataset(torch.utils.data.Dataset):

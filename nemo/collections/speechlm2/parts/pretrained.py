@@ -18,6 +18,7 @@ from typing import Dict
 import torch
 from omegaconf import open_dict
 from peft import PeftModel
+from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.asr.models import ASRModel
@@ -25,7 +26,6 @@ from nemo.collections.speechlm2.modules import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
-from safetensors.torch import load_file
 
 
 def load_pretrained_nemo(cls, model_path_or_name: str):
@@ -171,4 +171,3 @@ def load_checkpoint(checkpoint_path):
     else:
         checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location="cpu")["state_dict"]
     return checkpoint_state
-

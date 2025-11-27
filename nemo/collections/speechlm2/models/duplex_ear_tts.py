@@ -47,7 +47,11 @@ from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogge
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, set_model_dict_for_partial_init, load_checkpoint
+from nemo.collections.speechlm2.parts.pretrained import (
+    load_checkpoint,
+    load_pretrained_hf,
+    set_model_dict_for_partial_init,
+)
 from nemo.utils import logging
 
 

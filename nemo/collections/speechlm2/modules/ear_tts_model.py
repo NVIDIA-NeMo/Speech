@@ -1151,6 +1151,7 @@ class RVQEARTTSModel(nn.Module):
     Args:
         config (DictConfig | dict[str, Any]): The configuration object for the model.
     """
+
     config_class = DictConfig
     rvq_embs: Tensor
 

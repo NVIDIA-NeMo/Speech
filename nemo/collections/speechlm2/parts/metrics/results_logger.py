@@ -46,6 +46,7 @@ Key abstraction:
       and metadata bookkeeping across inference batches.
 """
 
+
 def safe_remove_path(path):
     shutil.rmtree(path, ignore_errors=True)
 

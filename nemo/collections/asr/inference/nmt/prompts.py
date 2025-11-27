@@ -49,7 +49,7 @@ class EuroLLMTranslatorPromptTemplate(PromptTemplate):
     PROMPT_TEMPLATE = (
         "<|im_start|>system\n<|im_end|>\n"
         "<|im_start|>user\n"
-        "Translate the following {src_lang} source text to {tgt_lang}:\n"
+        "Translate the following {src_lang} source text to {tgt_lang}. Always output text in the {tgt_lang} language:\n"
         "{src_lang}: {src_text}\n"
         "{tgt_lang}: <|im_end|>\n"
         "<|im_start|>assistant\n"

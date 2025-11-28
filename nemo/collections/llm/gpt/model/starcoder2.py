@@ -144,7 +144,7 @@ class HFStarcoder2Importer(io.ModelConnector["Starcoder2ForCausalLM", Starcoder2
         """
         return Starcoder2Model(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         """
         Apply the conversion from HF to NeMo format.
 
@@ -300,7 +300,7 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
         with no_init_weights():
             return Starcoder2ForCausalLM._from_config(self.config)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         target = self.init()
         source, _ = self.nemo_load(str(self))
         target = self.convert_state(source, target)

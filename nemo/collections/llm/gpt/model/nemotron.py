@@ -185,7 +185,7 @@ class HFNemotronImporter(io.ModelConnector["NemotronForCausalLM", NemotronModel]
         """
         return NemotronModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         """
         Apply the conversion from HF to NeMo format.
 
@@ -332,7 +332,7 @@ class HFNemotronExporter(io.ModelConnector[NemotronModel, "NemotronForCausalLM"]
         with no_init_weights():
             return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         source, _ = self.nemo_load(str(self))
         target = self.init(torch_dtype_from_mcore_config(source.config))
         target = self.convert_state(source, target)

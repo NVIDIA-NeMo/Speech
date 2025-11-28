@@ -75,7 +75,7 @@ class HFPhi3Importer(io.ModelConnector["Phi3ForCausalLM", Phi3Model]):
     def init(self) -> Phi3Model:
         return Phi3Model(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         from transformers import Phi3ForCausalLM
 
         # Check if the source is valid model identifier or path
@@ -160,7 +160,7 @@ class HFPhi3Exporter(io.ModelConnector[Phi3Model, "Phi3ForCausalLM"]):
 
         return AutoModelForCausalLM.from_config(self.config)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         target = self.init()
         source, _ = self.nemo_load(str(self))
         target = self.convert_state(source, target)

@@ -381,7 +381,7 @@ class HFT5Importer(io.ModelConnector["T5ForConditionalGeneration", T5Model]):
     def init(self) -> T5Model:
         return T5Model(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         from transformers import T5ForConditionalGeneration
 
         source = T5ForConditionalGeneration.from_pretrained(str(self), torch_dtype="auto")
@@ -622,7 +622,7 @@ class HFT5Exporter(io.ModelConnector[T5Model, "T5ForConditionalGeneration"]):
         with no_init_weights():
             return T5ForConditionalGeneration(config=self.config)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         source, _ = self.nemo_load(str(self))
         target = self.init()
         target = self.convert_state(source, target)

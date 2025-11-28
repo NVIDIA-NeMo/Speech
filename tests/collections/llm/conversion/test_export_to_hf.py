@@ -42,14 +42,23 @@ if __name__ == '__main__':
         kwargs = {
             'target_model_name': args.original_hf_path,
         }
-    llm.export_ckpt(
-        path=Path(args.nemo_path),
-        target='hf',
-        output_path=Path(args.output_path),
-        overwrite=True,
-        trust_remote_code=args.trust_remote_code,
-        **kwargs,
-    )
+    try:
+        llm.export_ckpt(
+            path=Path(args.nemo_path),
+            target='hf',
+            output_path=Path(args.output_path),
+            overwrite=True,
+            trust_remote_code=args.trust_remote_code,
+            **kwargs,
+        )
+    except TypeError:
+        llm.export_ckpt(
+            path=Path(args.nemo_path),
+            target='hf',
+            output_path=Path(args.output_path),
+            overwrite=True,
+            **kwargs,
+        )
 
     hf_target_class = getattr(transformers, args.hf_target_class)
     original_hf = hf_target_class.from_pretrained(

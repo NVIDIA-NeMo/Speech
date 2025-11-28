@@ -506,7 +506,7 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
         """
         return LlamaModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         """Apply the conversion from HF to NeMo format.
 
         Args:
@@ -798,7 +798,7 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
         with no_init_weights():
             return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         """Apply the conversion from NeMo to HF format.
 
         Args:
@@ -1159,7 +1159,7 @@ class HFLlamaPEFTExporter(HFLlamaExporter):
 
         return get_peft_model(model, self.peft_config, autocast_adapter_dtype=False)
 
-    def apply(self, output_path: Path, **kwargs) -> Path:
+    def apply(self, output_path: Path) -> Path:
         """Apply the conversion from NeMo PEFT model to HF format.
 
         Args:

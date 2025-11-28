@@ -46,13 +46,13 @@ class BaseBuilder:
     """
 
     @classmethod
-    def _build_nmt(cls, cfg: DictConfig) -> LLMTranslator:
+    def _build_nmt(cls, cfg: DictConfig) -> LLMTranslator | None:
         """
         Build the NMT model based on the config.
         Args:
             cfg: (DictConfig) Config
         Returns:
-            (LLMTranslator) NMT model
+            (LLMTranslator | None) NMT model
         """
         nmt_model = None
         if cfg.enable_nmt:

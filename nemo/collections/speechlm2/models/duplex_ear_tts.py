@@ -339,7 +339,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self._use_fsdp = False
         self._use_tp = False
 
-
     def get_codec_silence_frame_last_one(self):
         audio = torch.zeros(1, 10 * self.target_sample_rate).float().to(self.device)
         audio_len = torch.tensor([audio.size(-1)]).long()
@@ -653,7 +652,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         return ans
 
     def on_train_epoch_start(self) -> None:
-        ensures_codec_target_dtype(self)  # potentially reloads the audio codec to make sure it's in target codec precision
+        ensures_codec_target_dtype(
+            self
+        )  # potentially reloads the audio codec to make sure it's in target codec precision
 
     def on_train_epoch_end(self) -> None:
         # log model stats to debug gradient weights issues
@@ -701,7 +702,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_start(self) -> None:
-        ensures_codec_target_dtype(self)  # potentially reloads the audio codec to make sure it's in target codec precision
+        ensures_codec_target_dtype(
+            self
+        )  # potentially reloads the audio codec to make sure it's in target codec precision
 
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()

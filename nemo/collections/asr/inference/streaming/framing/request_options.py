@@ -14,7 +14,8 @@
 
 
 from dataclasses import dataclass
-from typing import TypeAlias, Any
+from typing import Any, TypeAlias
+
 from nemo.collections.asr.inference.utils.enums import ASROutputGranularity
 
 

@@ -515,7 +515,7 @@ class BufferedRNNTPipeline(BasePipeline):
                     batched_rnnt_states,
                     multi_biasing_ids=multi_biasing_ids,
                 )
-        # TODO: remove double-decoding
+        # TODO(@artbataev): remove double-decoding
         best_hyp = self.asr_model.decode(encs, enc_lens, partial_hypotheses=partial_hypotheses)
         if self.tokens_per_right_padding > 0 and batched_state is not None:
             for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):

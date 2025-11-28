@@ -182,10 +182,12 @@ class Hypothesis:
         self.dec_state = None
 
     def has_biasing_request(self) -> bool:
+        """Return True if contains non-empty biasing request"""
         return self.biasing_cfg is not None and (not self.biasing_cfg.is_empty())
 
     @classmethod
     def empty_with_biasing_cfg(cls, biasing_cfg: BiasingRequestItemConfig):
+        """Constructor of empty hypothesis with biasing request"""
         return cls(y_sequence=[], score=0.0, biasing_cfg=biasing_cfg)
 
 

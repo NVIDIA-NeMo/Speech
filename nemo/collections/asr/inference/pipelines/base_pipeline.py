@@ -57,13 +57,13 @@ class TranscribeStepOutput:
 
     stream_id: int
     # Final transcript is the transcript generated started from the previous EoU to the current EoU
-    # It is finilized transcript, optionally punctuated and ITN-normalized. It's not subject to further modifications.
+    # It is finalized transcript, optionally punctuated and ITN-normalized. It's not subject to further modifications.
     # Final segments contains metadata for each word/segment in the final transcript.
     final_transcript: str = ""
     final_segments: list[TextSegment] | None = None
     final_translation: str = ""
     # Partial transcript is the transcript generated started from the previous EoU up to the current frame
-    # It is not finilized transcript, it may be subject to further modifications.
+    # It is not finalized transcript, it may be subject to further modifications.
     # It can also contain transcript from future frames.
     partial_transcript: str = ""
     partial_translation: str = ""

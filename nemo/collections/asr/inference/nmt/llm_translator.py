@@ -59,7 +59,7 @@ class LLMTranslator:
             target_language: (str) target language
             waitk: (int) parameter that controls latency by forcing the generation of new
                    prefix of up to |asr|-waitk words if both translations do not agree
-                   on at least of |asr|-waitk words
+                   on at least |asr|-waitk words
             device: (str) device to run the model on
             device_id: (int) device ID to run the model on
             batch_size: (int) batch size for the LLM model, in case of -1, the batch size is set to the number of ASR transcripts
@@ -68,7 +68,7 @@ class LLMTranslator:
         """
         self.model_name = model_name
         if model_name not in SUPPORTED_TRANSLATION_MODELS:
-            raise ValueError(f"Model {model_name} is not supported for translation.")
+            raise ValueError(f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}")
 
         llm_params = self.convert_to_dict(llm_params)
         sampling_params = self.convert_to_dict(sampling_params)
@@ -119,7 +119,7 @@ class LLMTranslator:
 
         if device == "cuda":
             if not torch.cuda.is_available():
-                raise ValueError("CUDA is not not available.")
+                raise ValueError("CUDA is not available.")
 
             if device_id >= torch.cuda.device_count():
                 logging.warning(f"Device ID {device_id} is not available. Using GPU 0 instead.")
@@ -144,7 +144,7 @@ class LLMTranslator:
         if model_name in [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]:
             return EuroLLMTranslatorPromptTemplate
 
-        raise ValueError(f"Model {model_name} is not supported for translation.")
+        raise ValueError(f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}")
 
     def load_model(self, llm_params: dict) -> LLM:
         """
@@ -261,11 +261,11 @@ class LLMTranslator:
             lcp = os.path.commonprefix([prev_trans, trans])
             had_leading_space = lcp.startswith(" ")
 
-            # If lcp happends mid-word, remove generated ending up to the first full word
+            # If lcp happens mid-word, remove generated ending up to the first full word
             if (len(lcp) > 0) and (lcp[-1] not in f"{string.punctuation} "):
                 lcp = " ".join(lcp.split()[:-1])
 
-            # Remove tralining whitespaces
+            # Remove trailing whitespaces
             lcp = lcp.strip()
 
             # Remove hallucinations if ASR transcript is empty string

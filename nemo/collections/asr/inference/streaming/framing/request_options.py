@@ -42,8 +42,8 @@ class ASRRequestOptions:
         if isinstance(self.asr_output_granularity, str):
             self.asr_output_granularity = ASROutputGranularity.from_str(self.asr_output_granularity)
 
-        if self.enable_nmt == False:
-            # Forcely set the source and target languages to None
+        if not self.enable_nmt:
+            # Forcibly set the source and target languages to None
             self.source_language = None
             self.target_language = None
 
@@ -100,8 +100,8 @@ class ASRRequestOptions:
         enable_itn = self._with_default(self.enable_itn, default_enable_itn)
         enable_pnc = self._with_default(self.enable_pnc, default_enable_pnc)
         enable_nmt = self._with_default(self.enable_nmt, default_enable_nmt)
-        if enable_nmt == False:
-            # Forcely set the source and target languages to None
+        if not enable_nmt:
+            # Forcibly set the source and target languages to None
             source_language, target_language = None, None
         else:
             source_language = self._with_default(self.source_language, default_source_language)

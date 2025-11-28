@@ -68,7 +68,9 @@ class LLMTranslator:
         """
         self.model_name = model_name
         if model_name not in SUPPORTED_TRANSLATION_MODELS:
-            raise ValueError(f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}")
+            raise ValueError(
+                f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}"
+            )
 
         llm_params = self.convert_to_dict(llm_params)
         sampling_params = self.convert_to_dict(sampling_params)
@@ -144,7 +146,9 @@ class LLMTranslator:
         if model_name in [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]:
             return EuroLLMTranslatorPromptTemplate
 
-        raise ValueError(f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}")
+        raise ValueError(
+            f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}"
+        )
 
     def load_model(self, llm_params: dict) -> LLM:
         """

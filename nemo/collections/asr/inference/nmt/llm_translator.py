@@ -57,9 +57,9 @@ class LLMTranslator:
             model_name: (str) path to the model name on HuggingFace.
             source_language: (str) source language
             target_language: (str) target language
-            waitk: (int) parameter that controls latency by forcing the generation of new
-                   prefix of up to |asr|-waitk words if both translations do not agree
-                   on at least |asr|-waitk words
+            waitk: (int) parameter that controls the length of the new prefix (up to |asr|-waitk words)
+                         if both translations do not agree on at least |asr|-waitk words.
+                         Use -1 to disable and rely on the longest common prefix only.
             device: (str) device to run the model on
             device_id: (int) device ID to run the model on
             batch_size: (int) batch size for the LLM model, in case of -1, the batch size is set to the number of ASR transcripts

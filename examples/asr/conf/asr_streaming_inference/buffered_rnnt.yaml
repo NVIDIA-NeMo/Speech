@@ -31,7 +31,7 @@ nmt:
   model_name: "utter-project/EuroLLM-1.7B-Instruct"  # vLLM-supported model name
   source_language: "English"                         # Source language code
   target_language: "Russian"                         # Target language code
-  waitk: -1                                          # Parameter that controls latency of translation
+  waitk: -1                                          # Controls how much of the current translation to keep. Use -1 to disable and rely on the longest common prefix.
   device: cuda                                       # Device for translation: 'cuda' or 'cpu'
   device_id: 1                                       # GPU device ID for translation
   batch_size: 16                                     # Batch size for translation, if -1, the batch size is set to the number of ASR transcripts

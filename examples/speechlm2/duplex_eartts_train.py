@@ -24,6 +24,11 @@ from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
+from nemo.collections.speechlm2.parts.pretrained import (
+    load_checkpoint,
+    set_model_dict_for_partial_init,
+)
+
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
@@ -39,6 +44,16 @@ def train(cfg):
 
     with trainer.init_module():
         model = DuplexEARTTS(OmegaConf.to_container(cfg, resolve=True))
+
+        # load pretrained tts checkpoint if available
+        if model.cfg.get("pretrained_tts_model", None):
+            checkpoint_state = load_checkpoint(model.cfg.pretrained_tts_model)
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.tts_model.state_dict())
+            model.tts_model.load_state_dict(checkpoint_state, strict=True)
+    
+        # load pretrained checkpoint and rescale the weights if needed
+        if model.cfg.get("pretrained_model", None):
+            model.restore_from_pretrained_checkpoint(model.cfg.pretrained_model)
 
     dataset = DuplexEARTTSDataset(
         tokenizer=model.tokenizer,

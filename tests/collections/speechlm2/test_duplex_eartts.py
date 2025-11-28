@@ -21,6 +21,7 @@ from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2.data import DuplexEARTTSDataset
 from nemo.collections.speechlm2.models import DuplexEARTTS
 
+
 if torch.cuda.is_available():
     torch.set_default_device('cuda')
 

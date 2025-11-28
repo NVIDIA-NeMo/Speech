@@ -144,16 +144,42 @@ def replace_control_speech_codes(
         return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
 
 
-def setup_rvq_audio_codec(model):
+def ensures_codec_target_dtype(model):
     """
-    Sets up an ``AudioCodecModel``, initializing it from pretrained weights.
-    The result is assigned to ``model.audio_codec`` attribute.
+    Ensures the audio codec is instantiated with the target dtype.
 
-    Includes a workaround for PTL auto-downcasting the codec model to bf16 with bf16-true precision.
+    This function checks whether `model.audio_codec` exists and whether its
+    parameters match `model.audio_codec_run_dtype`. If the codec is missing
+    or is running with the wrong dtype (e.g., due to PTL auto-downcasting),
+    the codec is reloaded by calling `setup_audio_codec()`.
+
+    Intended to be called at runtime boundaries such as:
+      - `on_train_epoch_start`
+      - `on_validation_epoch_start`
+
+    Args:
+        model: Model instance of DuplexEARTTS
+
     """
     if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == model.audio_codec_run_dtype:
-        return  # skip if already set up and has the right dtype
+        return  # already correct precision → no-op
 
+    setup_audio_codec(model)
+
+
+def setup_audio_codec(model):
+    """
+    Instantiates the RVQ audio codec and injects codec embeddings into the TTS model.
+
+    This function is responsible only for:
+      - Instantiating the codec model (`RVQVAEModel`).
+      - Loading pretrained codec weights (if configured).
+      - Freezing codec parameters.
+      - Registering RVQ embeddings inside the TTS model via `set_rvq_embs`.
+
+    Args:
+        model: Model instance of DuplexEARTTS
+    """
     with ensures_target_precision(model.audio_codec_run_dtype):
         model.audio_codec = RVQVAEModel(DictConfig(model.cfg.codec_config))
         # load pretrained codec checkpoint
@@ -165,15 +191,13 @@ def setup_rvq_audio_codec(model):
     for p in model.audio_codec.parameters():
         p.requires_grad = False
 
+    assert callable(model.tts_model.set_rvq_embs)
 
-def setup_audio_codec(self):
-    setup_rvq_audio_codec(self)
-    assert callable(self.tts_model.set_rvq_embs)
-    self.tts_model.set_rvq_embs(torch.stack([x.detach() for x in self.audio_codec.prvq.mus_list], 0))
-    self.tts_model.rvq_embs = self.tts_model.rvq_embs.to(next(self.tts_model.parameters()).dtype)
+    model.tts_model.set_rvq_embs(torch.stack([x.detach() for x in model.audio_codec.prvq.mus_list], 0))
+    model.tts_model.rvq_embs = model.tts_model.rvq_embs.to(next(model.tts_model.parameters()).dtype)
     # compute target fps
-    self.target_fps = self.target_sample_rate / self.audio_codec.config.wav_to_token_ratio
-    self.target_samples_per_frame = self.audio_codec.config.wav_to_token_ratio
+    model.target_fps = model.target_sample_rate / model.audio_codec.config.wav_to_token_ratio
+    model.target_samples_per_frame = model.audio_codec.config.wav_to_token_ratio
 
 
 def rescale_state_dict(state_dict, target_std=0.02, first_n_layers=None, layer_prefix="tts_model.backbone.layers."):
@@ -279,8 +303,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # get codec run precision
         self.audio_codec_run_dtype = getattr(torch, self.cfg.get("audio_codec_run_dtype", "float32"), torch.float32)
 
-        # instanciate eartts model and codec
-        self._load_tts_model(self.cfg)
+        # Instantiate TTS model
+        self.tts_model = RVQEARTTSModel(DictConfig(self.cfg.tts_config))
+        # Load and initialize audio codec, and bind RVQ embeddings to the TTS model
+        setup_audio_codec(self)
+
         self._codebook_size = self.tts_model.config.codebook_size
 
         # compute source fps
@@ -311,8 +338,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
-        if self.cfg.get("pretrained_model", None):
-            self.restore_from_pretrained_checkpoint(self.cfg.pretrained_model)
+
 
     def get_codec_silence_frame_last_one(self):
         audio = torch.zeros(1, 10 * self.target_sample_rate).float().to(self.device)
@@ -361,19 +387,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             embed_tokens = nn.Embedding(vocab_size, hidden_size, dtype=torch.bfloat16)
             embed_tokens.load_state_dict(embed_tokens_state_dict)
         return embed_tokens
-
-    def _load_tts_model(self, cfg) -> nn.Module:
-        """Load TTS model for RVQ-EAR-TTS."""
-        # instanciate tts model
-        self.tts_model = RVQEARTTSModel(DictConfig(cfg.tts_config))
-
-        # load pretrained tts checkpoint
-        if self.cfg.get("pretrained_tts_model", None):
-            checkpoint_state = load_checkpoint(self.cfg.pretrained_tts_model)
-            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.tts_model.state_dict())
-            self.tts_model.load_state_dict(checkpoint_state, strict=True)
-
-        setup_audio_codec(self)
 
     def _load_language_model(self, cfg):
         """Load language model for RVQ-EAR-TTS."""
@@ -640,7 +653,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         return ans
 
     def on_train_epoch_start(self) -> None:
-        setup_audio_codec(self)  # potentially reloads the audio codec to make sure it's in fp32
+        ensures_codec_target_dtype(self)  # potentially reloads the audio codec to make sure it's in target codec precision
 
     def on_train_epoch_end(self) -> None:
         # log model stats to debug gradient weights issues
@@ -688,7 +701,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_start(self) -> None:
-        setup_audio_codec(self)
+        ensures_codec_target_dtype(self)  # potentially reloads the audio codec to make sure it's in target codec precision
+
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
         self.intelligibility = Intelligibility(self.cfg.scoring_asr, reuse_asr_hyps=True).reset()

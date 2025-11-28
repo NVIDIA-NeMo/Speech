@@ -38,9 +38,13 @@ def inference(cfg):
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     with trainer.init_module():
-        model = DuplexEARTTS(OmegaConf.to_container(cfg, resolve=True))
-
-    model.eval()
+        if cfg.get("checkpoint_path", None):
+            model = DuplexEARTTS.load_from_checkpoint(
+                cfg.checkpoint_path,
+                cfg=OmegaConf.to_container(cfg, resolve=True),
+            )
+        else:
+            raise ValueError("For evaluation, you must provide `cfg.checkpoint_path`.")
 
     dataset = DuplexEARTTSDataset(
         tokenizer=model.tokenizer,

@@ -1,0 +1,216 @@
+name: Magpie-TTS
+
+quadratic_duration: 20  # both training and validation datasets can apply same quadratic_duration.
+model:
+  use_lhotse: true
+  model_type: "decoder_ce" # decoder_context_tts or decoder_ce
+  use_text_conditioning_encoder: true # Enable or disable text context. Audio context is always enabled
+  text_conditioning_tokenizer_name: text_ce_tokenizer # The tokenizer to be used for text contexts
+  context_duration_min: 5.0
+  context_duration_max: 5.0
+  load_cached_codes_if_available: true
+  prior_scaling_factor: 0.5
+  prior_end_step: 12000
+  prior_scaledown_start_step: 8000
+  indefinite_prior_prob: 0. # If > 0, then prior will be applied after prior_end_step with this probability.
+  alignment_loss_scale: 0.002
+  embedding_dim: 768
+  codecmodel_path: ???
+  cfg_unconditional_prob: 0.1
+
+  # Alignment encoder parameters, to binarize the prior
+  # This is used for attention-constrained training and inference
+  use_alignment_encoder: false
+  # Below args are only relevant if use_alignment_encoder is true
+  use_prior_for_aligner: true # Whether to use the beta-binomial prior to train the alignment encoder
+  alignment_encoder_loss_scale: 1.0
+  binarize_prior_after_step: 10000 # Switch from beta-binomial prior to binarized prior after this step.
+  binarize_attn_method: "nemo_binarize" # nemo_binarize or argmax.
+  prior_future_context: 2 # Future window of the binarized prior.
+  prior_past_context: 2 # Past window of the binarized prior.
+  prior_future_decay: 0.8 # Decay factor for future context
+  prior_past_decay: 0.5 # Decay factor for past context
+  binarize_repeat_audio_factor: 2 # Temporally increase audio timesteps, for nemo_binarize to work better. Increase this for low frame rate codecs
+  binarized_prior_epsilon: 0.0
+  aligner_encoder_train_steps: 50000
+
+  # Local transformer parameters for autoregressive codebook prediction within a frame
+  local_transformer_type: "autoregressive" # "none", "autoregressive", "maskgit"
+  # Below args are only relevant if use_local_transformer is true
+  local_transformer_loss_scale: 1.0
+  local_transformer_n_layers: 1
+  local_transformer_n_heads: 1
+  local_transformer_hidden_dim: 256
+
+  text_context_remapping_json: null # JSON file defining mapping of multiple text contexts to a single text context. Does not need to cover all text contexts.
+  text_context_remapping_prob: 0.0 # Probability of remapping the original text context to a remapped text context.
+
+  text_tokenizers:
+    english_phoneme:
+      _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer
+      punct: true
+      apostrophe: true
+      pad_with_space: false
+      g2p:
+        _target_: nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p
+        phoneme_dict: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
+        heteronyms: "scripts/tts_dataset_files/heteronyms-052722"
+        phoneme_probability: 0.8
+        ignore_ambiguous_words: false
+        use_chars: true
+        use_stresses: true
+    text_ce_tokenizer:  # Used for text context
+      _target_: AutoTokenizer
+      pretrained_model: "google/byt5-small"
+    ### For additional languages, consider adding a generic byt5 tokenizer like the one below
+    # french_chartokenizer:  # Used for text context
+    #     _target_: AutoTokenizer
+    #     pretrained_model: "google/byt5-small"
+
+  train_ds:
+    use_lhotse: ${model.use_lhotse}
+    volume_norm: true
+
+    dataset:
+      min_duration: 0.2
+      min_context_speaker_similarity: 0.6
+      max_cer: 0.03
+      batch_duration : ???  # in seconds. Adjust based on your GPU memory.
+      quadratic_duration: ${quadratic_duration}
+      use_bucketing: true
+      num_buckets: 20
+      bucket_buffer_size: 20_000
+      shuffle_buffer_size: 20_000
+      num_cuts_for_bins_estimate: 20_000
+      shard_seed: "trng"
+      drop_last: true
+      shuffle: true
+      num_workers: 6
+      pin_memory: true
+
+      input_cfg:
+      - type: lhotse_shar
+        shar_path: ???
+        weight: 1.0
+        tags:
+          tokenizer_names: ["english_phoneme"]
+
+  validation_ds:
+    use_lhotse: ${model.use_lhotse}
+    volume_norm: true
+
+    dataset:
+      min_duration: 0.2
+      min_context_speaker_similarity: 0.6
+      max_cer: 0.03
+      batch_duration: ???   # recommend to use smaller batch_duration for validation dataset than training dataset.
+      quadratic_duration: ${quadratic_duration}
+      use_bucketing: false
+      force_finite: true
+      drop_last: false
+      shuffle: false
+      num_workers: 2
+      pin_memory: true
+
+      input_cfg:
+      - type: lhotse_shar
+        shar_path: ???
+        weight: 1.0
+        tags:
+          tokenizer_names: ["english_phoneme"]
+
+  encoder:
+    n_layers: 6
+    d_model: 768
+    d_ffn: 3072
+    sa_n_heads: 12
+    kernel_size: 3
+    p_dropout: 0.1
+    p_dropout_out: 0.0
+    has_xattn: false
+    is_causal: true
+    apply_norm_out: true
+    max_length_causal_mask: 2048
+    use_learnable_pos_emb: true
+
+  context_encoder: # Only used for decoder_ce (and multi_encoder_context_tts), ignored otherwise
+    n_layers: 1
+    d_model: 768
+    d_ffn: 3072
+    sa_n_heads: 12
+    kernel_size: 3
+    p_dropout: 0.1
+    p_dropout_out: 0.0
+    has_xattn: false
+    is_causal: false
+    apply_norm_out: true
+    max_length_causal_mask: 2048
+    use_learnable_pos_emb: true
+
+  decoder:
+    n_layers: 12
+    d_model: 768
+    d_ffn: 3072
+    sa_n_heads: 12
+    kernel_size: 1
+    p_dropout: 0.1
+    p_dropout_out: 0.0
+    has_xattn: true
+    xa_d_head: 128
+    xa_d_memory: 768
+    xa_n_heads: 1
+    is_causal: true
+    apply_norm_to_cond: true
+    apply_norm_out: true
+    max_length_causal_mask: 2048
+    use_learnable_pos_emb: true
+    make_prior_window_strict: false
+
+  optim:
+    _target_: torch.optim.AdamW
+    lr: 2e-4
+
+    sched:
+      name: ExponentialLR
+      gamma: 0.998
+
+trainer:
+  num_nodes: 1
+  devices: -1
+  accelerator: gpu
+  strategy: ddp_find_unused_parameters_true
+  precision: 32
+  max_steps: ???
+  accumulate_grad_batches: 1
+  enable_checkpointing: False # Provided by exp_manager
+  logger: false # Provided by exp_manager
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 1
+  limit_train_batches: 1_000
+  val_check_interval: 1_000
+  num_sanity_val_steps: 0
+  benchmark: false
+  use_distributed_sampler: false  # required because Lhotse has its own handling
+  gradient_clip_val: 2.5
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    entity: null
+    project: null
+    group: null
+    name: ${name}
+    resume: true  # enable resume to ensure continuous training log metrics merged on the previous run id.
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    monitor: val_loss
+    mode: min
+    save_top_k: 5
+    save_best_model: true
+    always_save_nemo: true
+    filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.4f}-{step}'
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true

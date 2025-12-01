@@ -1,4 +1,4 @@
-name: Magpie-TTS-ML-V1-Infer
+name: MagpieTTS-PO-Infer
 mode: test
 init_from_ptl_ckpt: ???
 max_epochs: 1
@@ -9,44 +9,63 @@ batch_size: 16
 weighted_sampling_steps_per_epoch: null
 
 # Dataset metadata for each manifest
-# https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/tts/data/vocoder_dataset.py#L39-L41
+# See DatasetMeta in https://github.com/NVIDIA-NeMo/NeMo/blob/main/nemo/collections/tts/data/text_to_speech_dataset.py
 test_ds_meta: ???
-
-# Modify these values based on your sample rate
-sample_rate: 22050
 
 phoneme_dict_path: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 model:
+  # Inference hyperparameters
   use_kv_cache_for_inference: true
   inference_temperature: 0.7
   inference_topk: 80
   inference_use_cfg: false
   inference_cfg_scale: 1.0
-  model_type: "multi_encoder_context_tts" # single_encoder_sv_tts, multi_encoder_context_tts, decoder_context_tts or decoder_pretrain_synthesizer
-  use_text_conditioning_encoder: false
-  transcript_decoder_layers: [3,4,5,6,7] # ONLY used in multi_encoder_context_tts, Transcript goes to these layer ids, context goes to the rest. In single_encoder_sv_tts, all layers are used for transcript.
-  context_decoder_layers: [8,9] # ONLY used in multi_encoder_context_tts
-  context_duration_min: 3.0
-  context_duration_max: 8.0
-  speaker_emb_dim: 192
   max_decoder_steps: 500
-  num_audio_codebooks: 8
-  num_audio_tokens_per_codebook: 2048 # Keep atleast 2 extra for eos/bos ids
-  codec_model_downsample_factor: 1024
+
+  model_type: "decoder_ce" # decoder_context_tts or decoder_ce
+  use_text_conditioning_encoder: true # Enable or disable text context. Audio context is always enabled
+  text_conditioning_tokenizer_name: text_ce_tokenizer # The tokenizer to be used for text contexts
+  context_duration_min: 5.0
+  context_duration_max: 5.0
   load_cached_codes_if_available: true
   prior_scaling_factor: null
   prior_end_step: 0
   prior_scaledown_start_step: 0
   alignment_loss_scale: 0.0
   embedding_dim: 768
-  codecmodel_path: null
+  codecmodel_path: ???
   max_epochs: ${max_epochs}
   steps_per_epoch: ${weighted_sampling_steps_per_epoch}
 
-  sample_rate: ${sample_rate}
+  # Alignment encoder parameters, to binarize the prior
+  # This is used for attention-constrained training and inference
+  use_alignment_encoder: false
+  # Below args are only relevant if use_alignment_encoder is true
+  use_prior_for_aligner: true # Whether to use the beta-binomial prior to train the alignment encoder
+  alignment_encoder_loss_scale: 1.0
+  binarize_prior_after_step: 10000 # Switch from beta-binomial prior to binarized prior after this step.
+  binarize_attn_method: "nemo_binarize" # nemo_binarize or argmax.
+  prior_future_context: 2 # Future window of the binarized prior.
+  prior_past_context: 2 # Past window of the binarized prior.
+  prior_future_decay: 0.8 # Decay factor for future context
+  prior_past_decay: 0.5 # Decay factor for past context
+  binarize_repeat_audio_factor: 2 # Temporally increase audio timesteps, for nemo_binarize to work better. Increase this for low frame rate codecs
+  binarized_prior_epsilon: 0.0
+  aligner_encoder_train_steps: 50000
 
-  text_tokenizers: # Add more languages for multi-lingual TTS
+  # Local transformer parameters for autoregressive codebook prediction within a frame
+  local_transformer_type: "autoregressive" # "none", "autoregressive", "maskgit"
+  # Below args are only relevant if use_local_transformer is true
+  local_transformer_loss_scale: 1.0
+  local_transformer_n_layers: 1
+  local_transformer_n_heads: 1
+  local_transformer_hidden_dim: 256
+
+  text_context_remapping_json: null # JSON file defining mapping of multiple text contexts to a single text context. Does not need to cover all text contexts.
+  text_context_remapping_prob: 0.0 # Probability of remapping the original text context to a remapped text context.
+
+  text_tokenizers:
     english_phoneme:
       _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer
       punct: true
@@ -60,63 +79,20 @@ model:
         ignore_ambiguous_words: false
         use_chars: true
         use_stresses: true
-    spanish_phoneme:
-      _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer
-      locale: es-ES
-      punct: true
-      apostrophe: true
-      pad_with_space: true
-      g2p:
-        _target_: nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p
-        locale: es-ES
-        phoneme_dict: "scripts/tts_dataset_files/es_ES/es_ES_nv230301.dict"
-        phoneme_probability: 0.8
-        ignore_ambiguous_words: false
-        use_chars: true
-        use_stresses: true
-    german_phoneme:
-      _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer
-      locale: de-DE
-      punct: true
-      apostrophe: true
-      pad_with_space: true
-      g2p:
-        _target_: nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p
-        locale: 'de-DE'
-        phoneme_dict: "scripts/tts_dataset_files/de/de_nv230119.dict"
-        heteronyms: "scripts/tts_dataset_files/de/de_nv230119.heteronym"
-        phoneme_probability: 0.8
-        ignore_ambiguous_words: false
-        use_chars: true
-        use_stresses: true
-        grapheme_case: mixed
-        grapheme_prefix: '#'
-    mandarin_phoneme:
-      _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ChinesePhonemesTokenizer
-      punct: true
-      apostrophe: true
-      pad_with_space: true
-      g2p:
-        _target_: nemo.collections.tts.g2p.models.zh_cn_pinyin.ChineseG2p
-        phoneme_dict: "scripts/tts_dataset_files/zh/36finals/ipa_dict_nv23.05.txt"
-        word_segmenter: "jieba"
-        phoneme_prefix: ""
-        phoneme_case: "lower"
-        tone_prefix: "#"
-        ascii_letter_prefix: ""
-        ascii_letter_case: "upper"
-    multilingual_sentencepiece:
+    text_ce_tokenizer:  # Used for text context
       _target_: AutoTokenizer
-      pretrained_model: "bert-base-multilingual-uncased"
+      pretrained_model: "google/byt5-small"
+    ### For additional languages, consider adding a generic byt5 tokenizer like the one below
+    # french_chartokenizer:  # Used for text context
+    #     _target_: AutoTokenizer
+    #     pretrained_model: "google/byt5-small"
 
   test_ds:
     dataset:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDataset
       dataset_meta: ${test_ds_meta}
-      sample_rate: ${sample_rate}
-      min_duration: 0.5
+      min_duration: 0.2
       max_duration: 20.0
-      # speaker_path: ${speaker_path}
 
     dataloader_params:
       batch_size: ${batch_size}
@@ -131,13 +107,13 @@ model:
     p_dropout: 0.1
     p_dropout_out: 0.0
     has_xattn: false
-    is_causal: False
+    is_causal: true
     apply_norm_out: true
     max_length_causal_mask: 2048
     use_learnable_pos_emb: true
 
-  context_encoder: # Only used for multi_encoder_context_tts, ignored otherwise
-    n_layers: 3
+  context_encoder: # Only used for decoder_ce (and multi_encoder_context_tts), ignored otherwise
+    n_layers: 1
     d_model: 768
     d_ffn: 3072
     sa_n_heads: 12
@@ -155,22 +131,23 @@ model:
     d_model: 768
     d_ffn: 3072
     sa_n_heads: 12
-    kernel_size: 3
+    kernel_size: 1
     p_dropout: 0.1
     p_dropout_out: 0.0
     has_xattn: true
+    xa_d_head: 128
     xa_d_memory: 768
-    xa_n_heads: 12
+    xa_n_heads: 1
     is_causal: true
     apply_norm_to_cond: true
     apply_norm_out: true
     max_length_causal_mask: 2048
     use_learnable_pos_emb: true
+    make_prior_window_strict: true
 
   optim:
-    _target_: torch.optim.Adam
+    _target_: torch.optim.AdamW
     lr: 2e-4
-    betas: [0.8, 0.99]
 
     sched:
       name: ExponentialLR
@@ -188,8 +165,8 @@ trainer:
   logger: false # Provided by exp_manager
   log_every_n_steps: 100
   val_check_interval: 500
-  # check_val_every_n_epoch: 10
   benchmark: false
+  gradient_clip_val: 2.5
 
 exp_manager:
   exp_dir: null
@@ -197,8 +174,11 @@ exp_manager:
   create_tensorboard_logger: true
   create_wandb_logger: false
   wandb_logger_kwargs:
-    name: null
+    entity: null
     project: null
+    group: null
+    name: ${name}
+    resume: true  # enable resume to ensure continuous training log metrics merged on the previous run id.
   create_checkpoint_callback: true
   checkpoint_callback_params:
     monitor: val_loss
@@ -206,5 +186,6 @@ exp_manager:
     save_top_k: 5
     save_best_model: true
     always_save_nemo: true
+    filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.4f}-{step}'
   resume_if_exists: true
   resume_ignore_no_checkpoint: true

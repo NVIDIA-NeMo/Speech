@@ -25,6 +25,12 @@ from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
 )
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.common.tokenizers import TokenizerSpec
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE, triton_required
+
+if TRITON_AVAILABLE:
+    import triton
+
+    # from nemo.collections.asr.parts.submodules.ngram_lm.ngram_lm_triton import multi_model_advance_triton_kernel
 
 
 @dataclass
@@ -228,6 +234,8 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         if reallocation_callback_fn is not None:
             self.reallocation_callbacks.append(reallocation_callback_fn)
 
+        self.use_triton = TRITON_AVAILABLE
+
         int_dtype = torch.int64
 
         self.num_models = 0
@@ -425,10 +433,116 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         Returns:
             tuple with next states and scores
         """
+        assert model_ids.shape[0] == states.shape[0]
+
+        if self.use_triton and states.device.type == "cuda":
+            scores, next_states = self._advance_triton(states=states, model_ids=model_ids)
+        else:
+            scores, next_states = self._advance_pytorch(states=states, model_ids=model_ids)
+
+        # replace eos_id score with maximum state weight to prevent from hallucinating in case of AED models (e.g. Canary)
+        if eos_id is not None:
+            raise NotImplementedError
+
+        return scores, next_states
+
+    @triton_required
+    def _advance_triton(self, states: torch.Tensor, model_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Advance `states` [B]: return scores [B, V] and next states [B, V] for full vocab.
+        Triton implementation. Currently not differentiable.
+
+        Args:
+            states: batch of states
+
+        Returns:
+            tuple of scores and next states
+        """
         batch_size = states.shape[0]
-        assert model_ids.shape[0] == batch_size
-        device = self.arcs_weights.device
-        scores = torch.zeros([batch_size, self.vocab_size], device=device, dtype=self.float_dtype)
+        device = states.device
+        scores = torch.zeros([batch_size, self.vocab_size], device=device, dtype=self.arcs_weights.dtype)
         new_states = torch.zeros([batch_size, self.vocab_size], dtype=torch.long, device=device)
+
         raise NotImplementedError
+
+        # ngram_advance_triton_kernel[batch_size,](
+        #     vocab_size=self.vocab_size,
+        #     states_ptr=states,
+        #     new_states_ptr=new_states,
+        #     scores_ptr=scores,
+        #     start_state=self.START_STATE,
+        #     to_states_ptr=self.to_states,
+        #     ilabels_ptr=self.ilabels,
+        #     arcs_weights_ptr=self.arcs_weights,
+        #     start_end_arcs_ptr=self.start_end_arcs,
+        #     backoff_to_states_ptr=self.backoff_to_states,
+        #     backoff_weights_ptr=self.backoff_weights,
+        #     BLOCK_SIZE=triton.next_power_of_2(self.vocab_size),
+        # )
+
         return scores, new_states
+
+    def _advance_pytorch(self, states: torch.Tensor, model_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Advance `states` [B]: return scores [B, V] and next states [B, V] for full vocab.
+        PyTorch implementation (slow, differentiable).
+
+        Args:
+            states: batch of states
+
+        Returns:
+            tuple of scores and next states
+        """
+        batch_size = states.shape[0]
+        device = states.device
+        current_states = states.clone()
+        states_dtype = current_states.dtype
+
+        # init output tensors
+        out_scores = torch.zeros(batch_size, self.vocab_size, device=device)
+        out_states = torch.full([batch_size, self.vocab_size], fill_value=-1, dtype=states_dtype, device=device)
+
+        # helper ranges
+        vocab_range = torch.arange(self.vocab_size, device=device)
+        batch_indices = torch.arange(batch_size, device=device)
+
+        # backoff weight accumulator
+        accumulated_backoff = torch.zeros(batch_size, device=device)
+        # loop condition
+        start_state_not_processed = torch.full([batch_size], fill_value=True, dtype=torch.bool, device=device)
+
+        num_iterations = 0
+        while start_state_not_processed.any():
+            # assert num_iterations <= self.max_order, "Infinite loop in LM advance"
+            num_iterations += 1
+            # get arc boundaries
+            start, end = self.start_end_arcs[current_states].unbind(dim=1)
+            # number of arcs for each state cannot be larger than vocab size
+            indices = start[:, None] + vocab_range[None, :]
+            mask = indices < end[:, None]
+            mask &= start_state_not_processed[:, None]
+            mask_flat = mask.view(-1)
+            indices_flat = indices.view(-1)
+            # map indices outside the mask to vocab_size + 1
+            scores_add = torch.zeros([batch_size, self.vocab_size + 1], device=device, dtype=out_scores.dtype)
+            out_states_add = torch.full(
+                [batch_size, self.vocab_size + 1], fill_value=-1, device=device, dtype=states_dtype
+            )
+            ilabels = self.ilabels[indices_flat] * mask_flat + ~mask_flat * self.vocab_size
+            scores_add[batch_indices.repeat_interleave(self.vocab_size), ilabels] = self.arcs_weights[indices_flat]
+            out_states_add[batch_indices.repeat_interleave(self.vocab_size), ilabels] = self.to_states[
+                indices_flat
+            ].to(states_dtype)
+            # fill out_scores and out_states with new values where state is not found yet
+            state_found = out_states != -1
+            out_scores = torch.where(
+                state_found, out_scores, accumulated_backoff.unsqueeze(-1) + scores_add[:, : self.vocab_size]
+            )
+            out_states = torch.where(state_found, out_states, out_states_add[:, : self.vocab_size])
+            # update loop condition; process backoffs
+            start_state_not_processed &= current_states != self.START_STATE
+            accumulated_backoff += self.backoff_weights[current_states] * start_state_not_processed
+            torch.where(
+                start_state_not_processed, self.backoff_to_states[current_states], current_states, out=current_states
+            )
+        return out_scores, out_states

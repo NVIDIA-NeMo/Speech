@@ -251,6 +251,23 @@ class BufferedRNNTPipeline(BasePipeline):
         self._prompt_matrix_cache[key] = eye
         return eye
 
+    def _build_prompt_vectors(self, states: list) -> Tensor:
+        """
+        Build prompt vectors for a batch of states.
+        Args:
+            states: (list) List of streaming states.
+        Returns:
+            (Tensor) Prompt vectors of shape [B, num_prompts].
+        Raises:
+            ValueError: If any prompt index is out of range.
+        """
+        indices = torch.tensor([getattr(s, 'prompt_idx', 0) for s in states], device=self.device, dtype=torch.long)
+        num_prompts = self._prompt_config['num_prompts']
+        if torch.any((indices < 0) | (indices >= num_prompts)):
+            raise ValueError("Found out-of-range prompt index in batch.")
+        prompt_matrix = self._get_prompt_matrix()
+        return prompt_matrix.index_select(0, indices)  # [B, num_prompts]
+
     def init_zero_enc(self) -> Tensor:
         """
         Initialize the encoder output for the zero buffer.
@@ -302,6 +319,7 @@ class BufferedRNNTPipeline(BasePipeline):
             default_enable_pnc=self.text_processor.is_pnc_enabled(),
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
+            default_language_code="en-US" if self.prompt_enabled else None,
         )
         state.set_options(new_options)
 
@@ -399,13 +417,7 @@ class BufferedRNNTPipeline(BasePipeline):
         # Build prompt vectors if prompts are enabled
         if self.prompt_enabled:
             requests_states = [self.get_state(f.stream_id) for f in frames]
-            indices = torch.tensor([s.prompt_idx for s in requests_states], device=self.device, dtype=torch.long)
-            # Validate indices
-            num_prompts = self._prompt_config['num_prompts']
-            if torch.any((indices < 0) | (indices >= num_prompts)):
-                raise ValueError("Found out-of-range prompt index in batch.")
-            prompt_matrix = self._get_prompt_matrix()
-            prompt_vectors = prompt_matrix.index_select(0, indices)  # [B, num_prompts]
+            prompt_vectors = self._build_prompt_vectors(requests_states)
 
             # Use encode_with_prompts which handles dimension expansion
             encoded, encoded_len = self.asr_model.encode_with_prompts(
@@ -453,12 +465,7 @@ class BufferedRNNTPipeline(BasePipeline):
         # Build prompt vectors if prompts are enabled
         if self.prompt_enabled:
             requests_states = [self.get_state(f.stream_id) for f in fbuffers]
-            indices = torch.tensor([s.prompt_idx for s in requests_states], device=self.device, dtype=torch.long)
-            num_prompts = self._prompt_config['num_prompts']
-            if torch.any((indices < 0) | (indices >= num_prompts)):
-                raise ValueError("Found out-of-range prompt index in batch.")
-            prompt_matrix = self._get_prompt_matrix()
-            prompt_vectors = prompt_matrix.index_select(0, indices)  # [B, num_prompts]
+            prompt_vectors = self._build_prompt_vectors(requests_states)
 
             # Use encode_with_prompts which handles dimension expansion
             encoded, encoded_len = self.asr_model.encode_with_prompts(

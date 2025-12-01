@@ -244,6 +244,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
 
         # store each model properties
         self.alphas = nn.Buffer(torch.zeros([self.num_models_reserved]))
+        self.models_active = nn.Buffer(torch.zeros([self.num_models_reserved], dtype=torch.bool))
         self.num_states = nn.Buffer(torch.zeros([self.num_models_reserved], dtype=torch.int64))
         self.num_arcs = nn.Buffer(torch.zeros([self.num_models_reserved], dtype=torch.int64))
         self.num_arcs_extended = nn.Buffer(torch.zeros([self.num_models_reserved], dtype=torch.int64))
@@ -337,6 +338,9 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.num_arcs_extended.data = torch.cat(
             (self.num_arcs_extended.data, torch.zeros_like(self.num_arcs_extended.data)), dim=-1
         )
+        self.models_active.data = torch.cat(
+            (self.models_active.data, torch.zeros_like(self.models_active.data)), dim=-1
+        )
 
     def add_model(self, model: GPUBoostingTreeModel, alpha: float = 1.0) -> int:
         if not self._params_defined:
@@ -394,6 +398,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.num_arcs_extended_total += model.num_arcs_extended
 
         self.alphas[model_id] = alpha
+        self.models_active[model_id] = True
         self.num_models += 1
         if reallocated:
             for reallocation_callback_fn in self.reallocation_callbacks:
@@ -405,7 +410,34 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         # decrease num models up to first active model
         # fill tensors with zeros
         # raise NotImplementedError
-        logging.warning("Removing model for now is not implemented and does nothing")
+        self.alphas[model_id] = 0.0
+        self.models_active[model_id] = False
+        # we can shrink reserved models by removing last K inactive models
+        if model_id == self.num_models - 1:
+            model_id_to_remove = self.num_models - 1
+            models_active = self.models_active.tolist()
+            while model_id_to_remove > 0 and models_active[model_id] is False:
+                self.num_states_total -= self.num_states[model_id]
+                self.num_arcs_extended_total -= self.num_arcs_extended[model_id]
+                self.num_models -= 1
+                model_id_to_remove -= 1
+
+        # It is not necessary to fill this data with zeros, but this will clean up the memory to make debugging easier
+        self.num_states.data[self.num_models :].fill_(0)
+        self.num_arcs.data[self.num_models :].fill_(0)
+        self.num_arcs_extended.data[self.num_models :].fill_(0)
+        # arcs-related data
+        self.arcs_weights.data[self.num_arcs_extended_total :].fill_(0.0)
+        self.from_states.data[self.num_arcs_extended_total :].fill_(0)
+        self.to_states.data[self.num_arcs_extended_total :].fill_(0)
+        self.ilabels.data[self.num_arcs_extended_total :].fill_(0)
+
+        # states-related data
+        self.start_end_arcs.data[self.num_states_total :].fill_(0)
+        self.state_order.data[self.num_states_total :].fill_(0)
+        self.backoff_to_states.data[self.num_states_total :].fill_(0)
+        self.backoff_weights.data[self.num_states_total :].fill_(0.0)
+        self.final_weights.data[self.num_states_total :].fill_(0.0)
 
     def get_init_states(self, batch_size: int, bos=True) -> torch.Tensor:
         """

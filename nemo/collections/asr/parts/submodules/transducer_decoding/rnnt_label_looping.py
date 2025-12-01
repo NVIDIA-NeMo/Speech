@@ -23,7 +23,6 @@ from omegaconf import DictConfig
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import (
     GPUBiasingMultiModel,
     GPUBiasingMultiModelBase,
-    GPUBiasingMultiModelReference,
 )
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
@@ -247,8 +246,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.fusion_models_alpha = fusion_models_alpha or []
 
         self.biasing_multi_model = (
-            # GPUBiasingMultiModelReference()
-            GPUBiasingMultiModel(reallocation_callback_fn=lambda: self.reset_cuda_graphs_state())
+            GPUBiasingMultiModel(reallocation_callback_fn=self.reset_cuda_graphs_state)
             if enable_per_stream_biasing
             else None
         )

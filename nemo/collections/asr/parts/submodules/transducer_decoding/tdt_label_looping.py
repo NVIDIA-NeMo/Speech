@@ -21,8 +21,8 @@ import torch.nn.functional as F
 from omegaconf import DictConfig, ListConfig
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import (
+    GPUBiasingMultiModel,
     GPUBiasingMultiModelBase,
-    GPUBiasingMultiModelReference,
 )
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
@@ -270,7 +270,11 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.fusion_models = fusion_models or []
         self.fusion_models_alpha = fusion_models_alpha or []
 
-        self.biasing_multi_model = GPUBiasingMultiModelReference() if enable_per_stream_biasing else None
+        self.biasing_multi_model = (
+            GPUBiasingMultiModel(reallocation_callback_fn=self.reset_cuda_graphs_state)
+            if enable_per_stream_biasing
+            else None
+        )
 
     def _all_fusion_models(
         self, with_multi_model: bool = True

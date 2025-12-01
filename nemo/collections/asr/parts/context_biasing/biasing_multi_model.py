@@ -203,16 +203,16 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
         assert model_ids.shape[0] == batch_size
         device = next(iter(self.parameters())).device
         scores = torch.zeros([batch_size, self.vocab_size], device=device, dtype=self.float_dtype)
-        new_states = torch.zeros([batch_size, self.vocab_size], dtype=torch.long, device=device)
+        next_states = torch.full([batch_size, self.vocab_size], fill_value=-1, dtype=torch.long, device=device)
         model_ids = model_ids.to("cpu").tolist()
         for batch_i, model_id in enumerate(model_ids):
             if model_id < 0:
                 continue
             model = cast(NGramGPULanguageModel, self.models[model_id])
-            scores_i, new_states_i = model.advance(states[batch_i : batch_i + 1], eos_id=eos_id)
+            scores_i, next_states_i = model.advance(states[batch_i : batch_i + 1], eos_id=eos_id)
             scores[batch_i : batch_i + 1] = scores_i * self.alphas[model_id]
-            new_states[batch_i : batch_i + 1] = new_states_i
-        return scores, new_states
+            next_states[batch_i : batch_i + 1] = next_states_i
+        return scores, next_states
 
 
 class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
@@ -444,6 +444,8 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             scores, next_states = self._advance_triton(states=states, model_ids=model_ids)
         else:
             scores, next_states = self._advance_pytorch(states=states, model_ids=model_ids)
+        # NB: model_id can be -1, but we assume that there at least 1 element in self.alphas
+        scores *= self.alphas[model_ids][:, None]
 
         # replace eos_id score with maximum state weight to prevent from hallucinating in case of AED models (e.g. Canary)
         if eos_id is not None:

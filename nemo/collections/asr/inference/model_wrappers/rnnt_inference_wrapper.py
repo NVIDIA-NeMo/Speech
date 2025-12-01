@@ -79,7 +79,8 @@ class RNNTInferenceWrapper(ASRInferenceWrapper):
         Args:
             processed_signal: (Tensor) processed signal. Shape is torch.Size([B, C, T]).
             processed_signal_length: (Tensor) processed signal length. Shape is torch.Size([B]).
-            prompt_vectors: (Tensor | None) Optional prompt vectors for multilingual models. Shape is torch.Size([B, num_prompts]).
+            prompt_vectors: (Tensor | None) Optional prompt vectors for multilingual models. 
+                Shape can be torch.Size([B, num_prompts]) or torch.Size([B, T_enc, num_prompts]) if already expanded.
         Returns:
             (tuple[Tensor, Tensor]) encoder output and encoder output length of shape torch.Size([B, T, D]), torch.Size([B]).
         """
@@ -136,7 +137,7 @@ class RNNTInferenceWrapper(ASRInferenceWrapper):
         Returns:
             (tuple[Tensor, Tensor]) encoder output and encoder output length.
         """
-        encoder_time_steps = self._estimate_encoder_time_steps(processed_signal.shape[2])
+        encoder_time_steps = processed_signal.shape[2] // self.get_subsampling_factor()
         # Expand prompts: [B, num_prompts] -> [B, T_enc, num_prompts]
         prompt_vectors = prompt_vectors.unsqueeze(1).expand(-1, encoder_time_steps, -1)
         return self.encode(
@@ -144,13 +145,3 @@ class RNNTInferenceWrapper(ASRInferenceWrapper):
             processed_signal_length=processed_signal_length,
             prompt_vectors=prompt_vectors,
         )
-
-    def _estimate_encoder_time_steps(self, input_time_steps: int) -> int:
-        """
-        Estimate encoder output time steps from input time steps.
-        Args:
-            input_time_steps: (int) Number of time steps in the input signal.
-        Returns:
-            (int) Estimated number of time steps in encoder output.
-        """
-        return input_time_steps // self.get_subsampling_factor()

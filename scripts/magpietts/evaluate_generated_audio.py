@@ -370,6 +370,11 @@ def evaluate(
                 gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
                     gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
                 ).item()
+            else:
+                pred_context_ssim = 0.0
+                gt_context_ssim = 0.0
+                pred_context_ssim_alternate = 0.0
+                gt_context_ssim_alternate = 0.0
             total_generated_audio_seconds += get_wav_file_duration(pred_audio_filepath)
 
         filewise_metrics.append(

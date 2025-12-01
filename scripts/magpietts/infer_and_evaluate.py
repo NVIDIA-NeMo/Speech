@@ -596,9 +596,9 @@ def run_inference(
                         context_audio_path = os.path.join(dataset_meta_info[dataset]['audio_dir'], context_audio_path)
                     if target_audio_path is not None:
                         target_audio_path = os.path.join(dataset_meta_info[dataset]['audio_dir'], target_audio_path)
-                    if os.path.exists(context_audio_path):
+                    if context_audio_path is not None and os.path.exists(context_audio_path):
                         shutil.copy(context_audio_path, os.path.join(audio_dir, f"context_audio_{item_idx}.wav"))
-                    if os.path.exists(target_audio_path):
+                    if target_audio_path is not None and os.path.exists(target_audio_path):
                         shutil.copy(target_audio_path, os.path.join(audio_dir, f"target_audio_{item_idx}.wav"))
                     item_idx += 1
 

@@ -1554,9 +1554,9 @@ class LongestCommonSubsequenceBatchedFrameASRRNNT(BatchedFrameASRRNNT):
 
 class CacheAwareStreamingAudioBuffer:
     """
-    A buffer to be used for cache-aware streaming. It can load a single or multiple audio
-    files/processed signals, split them in chunks and return one on one. It can be used to
-    simulate streaming audio or audios.
+    A buffer to be used for cache-aware streaming. It can be used to buffer streaming audio bytes.
+    Or it can load a single or multiple audio files/processed signals, split them in chunks and 
+    return one on one. It can be used to simulate streaming audio or audios.
     """
 
     def __init__(self, model, online_normalization=None, pad_and_drop_preencoded=False):

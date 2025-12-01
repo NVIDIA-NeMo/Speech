@@ -1555,7 +1555,7 @@ class LongestCommonSubsequenceBatchedFrameASRRNNT(BatchedFrameASRRNNT):
 class CacheAwareStreamingAudioBuffer:
     """
     A buffer to be used for cache-aware streaming. It can be used to buffer streaming audio bytes.
-    Or it can load a single or multiple audio files/processed signals, split them in chunks and 
+    Or it can load a single or multiple audio files/processed signals, split them in chunks and
     return one on one. It can be used to simulate streaming audio or audios.
     """
 
@@ -1595,10 +1595,10 @@ class CacheAwareStreamingAudioBuffer:
     def get_next_chunk(self):
         """
         Get the next audio chunk for streaming processing.
-        
+
         This method can be called repeatedly after appending audio via append_audio()
         to process the audio in a streaming fashion.
-        
+
         Returns:
             tuple: (audio_chunk, chunk_lengths) if there's data to process, None if buffer is exhausted
                 - audio_chunk: tensor containing the audio chunk with pre-encode cache prepended
@@ -1709,16 +1709,18 @@ class CacheAwareStreamingAudioBuffer:
         chunk_lengths = torch.clamp(max_chunk_lengths, min=0, max=audio_chunk.size(-1))
 
         # Update buffer position and step counter
-        print(f"[get_next_chunk] BEFORE: buffer_idx={self.buffer_idx}, shift_size={shift_size}, streams_length={self.streams_length}, chunk_lengths={chunk_lengths}")
+        print(
+            f"[get_next_chunk] BEFORE: buffer_idx={self.buffer_idx}, shift_size={shift_size}, streams_length={self.streams_length}, chunk_lengths={chunk_lengths}"
+        )
         self.buffer_idx += shift_size
         self.step += 1
         print(f"[get_next_chunk] AFTER: buffer_idx={self.buffer_idx}, buffer.size(-1)={self.buffer.size(-1)}")
-        
+
         return audio_chunk, chunk_lengths
 
     def __iter__(self):
         """
-        Iterator interface for batch processing.
+        Iterator interface for streaming buffered audio chunks.
         Yields chunks by repeatedly calling get_next_chunk().
         """
         while True:
@@ -1736,13 +1738,13 @@ class CacheAwareStreamingAudioBuffer:
     def has_next_chunk(self):
         """
         Check if there are more chunks available to process.
-        
+
         Returns:
             bool: True if get_next_chunk() will return data, False otherwise
         """
         if self.buffer is None or self.streams_length is None:
             return False
-        
+
         # Determine the required chunk size for the next chunk
         if self.buffer_idx == 0 and isinstance(self.streaming_cfg.chunk_size, list):
             if self.pad_and_drop_preencoded:
@@ -1755,7 +1757,7 @@ class CacheAwareStreamingAudioBuffer:
                 if isinstance(self.streaming_cfg.chunk_size, list)
                 else self.streaming_cfg.chunk_size
             )
-        
+
         # Check if we have enough valid data available
         available_valid_frames = self.streams_length - self.buffer_idx
         return available_valid_frames.min() >= chunk_size
@@ -1796,7 +1798,9 @@ class CacheAwareStreamingAudioBuffer:
         processed_signal, processed_signal_length, stream_id = self.append_processed_signal(
             processed_signal, stream_id
         )
-        print(f"[append_audio] After append: stream_id={stream_id}, streams_length={self.streams_length}, buffer_idx={self.buffer_idx}")
+        print(
+            f"[append_audio] After append: stream_id={stream_id}, streams_length={self.streams_length}, buffer_idx={self.buffer_idx}"
+        )
         return processed_signal, processed_signal_length, stream_id
 
     def append_processed_signal(self, processed_signal, stream_id=-1):

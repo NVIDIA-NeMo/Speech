@@ -26,6 +26,7 @@ from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import (
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE, triton_required
+from nemo.utils import logging
 
 if TRITON_AVAILABLE:
     import triton
@@ -247,8 +248,8 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.num_arcs = nn.Buffer(torch.zeros([self.num_models_reserved], dtype=torch.int64))
         self.num_arcs_extended = nn.Buffer(torch.zeros([self.num_models_reserved], dtype=torch.int64))
 
-        self.num_states_total = self.INIT_NUM_STATES
-        self.num_arcs_extended_total = self.INIT_NUM_ARCS  # + extra padding
+        self.num_states_total = 0
+        self.num_arcs_extended_total = 0  # + extra padding
         self.num_states_reserved = self.INIT_NUM_STATES
         self.num_arcs_extended_reserved = self.INIT_NUM_ARCS  # + extra padding
 
@@ -308,7 +309,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
                 self.num_states_reserved, self.num_states_total + add_num_states - self.num_states_reserved
             )
             self.start_end_arcs.data = torch.cat(
-                (self.start_end_arcs.data, torch.zeros([add_num_states], dtype=int_dtype, device=device))
+                (self.start_end_arcs.data, torch.zeros([add_num_states, 2], dtype=int_dtype, device=device))
             )
             self.state_order.data = torch.cat(
                 (self.state_order.data, torch.zeros([add_num_states], dtype=int_dtype, device=device))
@@ -400,7 +401,11 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         return model_id
 
     def remove_model(self, model_id: int):
-        raise NotImplementedError
+        # set to inactive
+        # decrease num models up to first active model
+        # fill tensors with zeros
+        # raise NotImplementedError
+        logging.warning("Removing model for now is not implemented and does nothing")
 
     def get_init_states(self, batch_size: int, bos=True) -> torch.Tensor:
         """
@@ -461,17 +466,17 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         batch_size = states.shape[0]
         device = states.device
         scores = torch.zeros([batch_size, self.vocab_size], device=device, dtype=self.arcs_weights.dtype)
-        new_states = torch.zeros([batch_size, self.vocab_size], dtype=torch.long, device=device)
+        next_states = torch.full([batch_size, self.vocab_size], fill_value=-1, dtype=torch.long, device=device)
 
         states_offsets = torch.cumsum(self.num_states, dim=-1) - self.num_states
-        arcs_offsets = (torch.cumsum(self.num_arcs_extended, dim=-1) - self.num_arcs_extended,)
+        arcs_offsets = torch.cumsum(self.num_arcs_extended, dim=-1) - self.num_arcs_extended
 
         ngram_multi_advance_triton_kernel[batch_size,](
             vocab_size=self.vocab_size,
             states_ptr=states,
-            new_states_out_ptr=new_states,
+            new_states_out_ptr=next_states,
             scores_out_ptr=scores,
-            start_state=self.START_STATE,
+            start_state=self.start_state,
             model_ids_ptr=model_ids,
             states_offsets_ptr=states_offsets,
             arcs_offsets_ptr=arcs_offsets,
@@ -484,7 +489,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             BLOCK_SIZE=triton.next_power_of_2(self.vocab_size),
         )
 
-        return scores, new_states
+        return scores, next_states
 
     def _advance_pytorch(self, states: torch.Tensor, model_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -513,29 +518,34 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         # backoff weight accumulator
         accumulated_backoff = torch.zeros(batch_size, device=device)
         # loop condition
-        start_state_not_processed = torch.full([batch_size], fill_value=True, dtype=torch.bool, device=device)
+        start_state_not_processed = model_ids != -1
+
+        states_offsets = (torch.cumsum(self.num_states, dim=-1) - self.num_states)[model_ids]
+        arcs_offsets = (torch.cumsum(self.num_arcs_extended, dim=-1) - self.num_arcs_extended)[model_ids]
 
         num_iterations = 0
         while start_state_not_processed.any():
             # assert num_iterations <= self.max_order, "Infinite loop in LM advance"
             num_iterations += 1
             # get arc boundaries
-            start, end = self.start_end_arcs[current_states].unbind(dim=1)
+            start, end = self.start_end_arcs[current_states + states_offsets].unbind(dim=1)
             # number of arcs for each state cannot be larger than vocab size
-            indices = start[:, None] + vocab_range[None, :]
-            mask = indices < end[:, None]
+            start += arcs_offsets
+            end += arcs_offsets
+            arc_indices = start[:, None] + vocab_range[None, :]
+            mask = arc_indices < end[:, None]
             mask &= start_state_not_processed[:, None]
             mask_flat = mask.view(-1)
-            indices_flat = indices.view(-1)
+            arc_indices_flat = arc_indices.view(-1)
             # map indices outside the mask to vocab_size + 1
             scores_add = torch.zeros([batch_size, self.vocab_size + 1], device=device, dtype=out_scores.dtype)
             out_states_add = torch.full(
                 [batch_size, self.vocab_size + 1], fill_value=-1, device=device, dtype=states_dtype
             )
-            ilabels = self.ilabels[indices_flat] * mask_flat + ~mask_flat * self.vocab_size
-            scores_add[batch_indices.repeat_interleave(self.vocab_size), ilabels] = self.arcs_weights[indices_flat]
+            ilabels = self.ilabels[arc_indices_flat] * mask_flat + ~mask_flat * self.vocab_size
+            scores_add[batch_indices.repeat_interleave(self.vocab_size), ilabels] = self.arcs_weights[arc_indices_flat]
             out_states_add[batch_indices.repeat_interleave(self.vocab_size), ilabels] = self.to_states[
-                indices_flat
+                arc_indices_flat
             ].to(states_dtype)
             # fill out_scores and out_states with new values where state is not found yet
             state_found = out_states != -1
@@ -544,9 +554,12 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             )
             out_states = torch.where(state_found, out_states, out_states_add[:, : self.vocab_size])
             # update loop condition; process backoffs
-            start_state_not_processed &= current_states != self.START_STATE
-            accumulated_backoff += self.backoff_weights[current_states] * start_state_not_processed
+            start_state_not_processed &= current_states != self.start_state
+            accumulated_backoff += self.backoff_weights[current_states + states_offsets] * start_state_not_processed
             torch.where(
-                start_state_not_processed, self.backoff_to_states[current_states], current_states, out=current_states
+                start_state_not_processed,
+                self.backoff_to_states[current_states + states_offsets],
+                current_states,
+                out=current_states,
             )
         return out_scores, out_states

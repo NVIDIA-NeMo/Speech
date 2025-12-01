@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import (
+    GPUBiasingMultiModel,
     GPUBiasingMultiModelBase,
     GPUBiasingMultiModelReference,
 )
@@ -245,7 +246,12 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.fusion_models = fusion_models or []
         self.fusion_models_alpha = fusion_models_alpha or []
 
-        self.biasing_multi_model = GPUBiasingMultiModelReference() if enable_per_stream_biasing else None
+        self.biasing_multi_model = (
+            # GPUBiasingMultiModelReference()
+            GPUBiasingMultiModel(reallocation_callback_fn=lambda: self.reset_cuda_graphs_state())
+            if enable_per_stream_biasing
+            else None
+        )
 
     def _all_fusion_models(
         self, with_multi_model: bool = True

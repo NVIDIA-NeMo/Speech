@@ -42,8 +42,7 @@ def ngram_advance_triton_kernel(
         to_states_ptr: pointer to the tensor with target states (arcs data)
         ilabels_ptr: pointer to the tensor with labels (arcs data)
         arcs_weights_ptr: pointer to the tensor with weights (arcs data)
-        state_start_arcs_ptr: pointer to the tensor with start indices of arcs (states data)
-        state_end_arcs_ptr: pointer to the tensor with end indices of arcs (states data)
+        start_end_arcs_ptr: pointer to the tensor with (start, end) indices of arcs (states data)
         backoff_to_states_ptr: pointer to the tensor with backoff target states (states data)
         backoff_weights_ptr: pointer to the tensor with backoff weights (states data)
         BLOCK_SIZE: block size, should be >= vocab_size
@@ -119,8 +118,7 @@ def ngram_multi_advance_triton_kernel(
         to_states_ptr: pointer to the tensor with target states (arcs data)
         ilabels_ptr: pointer to the tensor with labels (arcs data)
         arcs_weights_ptr: pointer to the tensor with weights (arcs data)
-        state_start_arcs_ptr: pointer to the tensor with start indices of arcs (states data)
-        state_end_arcs_ptr: pointer to the tensor with end indices of arcs (states data)
+        start_end_arcs_ptr: pointer to the tensor with (start, end) indices of arcs (states data)
         backoff_to_states_ptr: pointer to the tensor with backoff target states (states data)
         backoff_weights_ptr: pointer to the tensor with backoff weights (states data)
         BLOCK_SIZE: block size, should be >= vocab_size
@@ -146,8 +144,9 @@ def ngram_multi_advance_triton_kernel(
     vocab_offsets = tl.arange(0, BLOCK_SIZE)
     vocab_mask = vocab_offsets < vocab_size
     # fill in initial values: new_states = -1 (not found yet), scores = 0
-    tl.store(new_states_out_ptr + batch_i * vocab_size + vocab_offsets, -1, mask=vocab_mask)
-    tl.store(scores_out_ptr + batch_i * vocab_size + vocab_offsets, 0.0, mask=vocab_mask)
+    # moved to caller function, uncomment if needed
+    # tl.store(new_states_out_ptr + batch_i * vocab_size + vocab_offsets, -1, mask=vocab_mask)
+    # tl.store(scores_out_ptr + batch_i * vocab_size + vocab_offsets, 0.0, mask=vocab_mask)
 
     accumulated_backoff = 0.0
     start_state_not_processed = True

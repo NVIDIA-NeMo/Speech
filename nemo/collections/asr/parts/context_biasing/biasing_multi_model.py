@@ -77,6 +77,11 @@ class GPUBiasingMultiModelBase(abc.ABC, nn.Module):
     def remove_model(self, model_id: int):
         raise NotImplementedError
 
+    @abstractmethod
+    def has_models(self) -> bool:
+        """Return True if the multi-model has at least one model"""
+        raise NotImplementedError
+
     @staticmethod
     def compatible_with_cuda_graphs() -> bool:
         """True if model can be compiled as a part of CUDA graph, False otherwise"""
@@ -127,11 +132,16 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
         self._params_defined = False
         self.free_ids = set()
         self._device = torch.device("cpu")
+        self.num_models = 0
 
     def to(self, *args, **kwargs):
         device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(*args, **kwargs)
         self._device = device
         return super().to(*args, **kwargs)
+
+    def has_models(self) -> bool:
+        """Return True if the multi-model has at least one model"""
+        return self.num_models > 0
 
     def _check_model_compatibility(self, model: NGramGPULanguageModel):
         if self.vocab_size != model.vocab_size:
@@ -161,12 +171,14 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
         else:
             self.models[model_id] = model
             self.alphas[model_id] = alpha
+        self.num_models += 1
         return model_id
 
     def remove_model(self, model_id: int):
         self.models[model_id] = nn.Identity()  # dummy nn model
         self.alphas[model_id] = 0.0
         self.free_ids.add(model_id)
+        self.num_models -= 1
 
     def get_init_states(self, batch_size: int, bos=True) -> torch.Tensor:
         """
@@ -266,6 +278,10 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.backoff_to_states = nn.Buffer(torch.zeros([self.num_states_reserved], dtype=int_dtype))
         self.backoff_weights = nn.Parameter(torch.zeros([self.num_states_reserved]))
         self.final_weights = nn.Parameter(torch.zeros([self.num_states_reserved]))
+
+    def has_models(self) -> bool:
+        """Return True if the multi-model has at least one model"""
+        return self.num_models > 0
 
     def _check_model_compatibility(self, model: NGramGPULanguageModel):
         if self.vocab_size != model.vocab_size:

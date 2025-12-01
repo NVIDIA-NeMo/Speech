@@ -416,28 +416,31 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         if model_id == self.num_models - 1:
             model_id_to_remove = self.num_models - 1
             models_active = self.models_active.tolist()
-            while model_id_to_remove > 0 and models_active[model_id] is False:
+            while model_id_to_remove >= 0 and models_active[model_id] is False:
+                logging.info(f"Clean up memory allocated by biasing model {model_id_to_remove}")
                 self.num_states_total -= self.num_states[model_id]
                 self.num_arcs_extended_total -= self.num_arcs_extended[model_id]
                 self.num_models -= 1
                 model_id_to_remove -= 1
 
-        # It is not necessary to fill this data with zeros, but this will clean up the memory to make debugging easier
-        self.num_states.data[self.num_models :].fill_(0)
-        self.num_arcs.data[self.num_models :].fill_(0)
-        self.num_arcs_extended.data[self.num_models :].fill_(0)
-        # arcs-related data
-        self.arcs_weights.data[self.num_arcs_extended_total :].fill_(0.0)
-        self.from_states.data[self.num_arcs_extended_total :].fill_(0)
-        self.to_states.data[self.num_arcs_extended_total :].fill_(0)
-        self.ilabels.data[self.num_arcs_extended_total :].fill_(0)
+            # It is not necessary to fill this data with zeros, but this will clean up the memory to make debugging easier
+            self.num_states.data[self.num_models :].fill_(0)
+            self.num_arcs.data[self.num_models :].fill_(0)
+            self.num_arcs_extended.data[self.num_models :].fill_(0)
+            # arcs-related data
+            self.arcs_weights.data[self.num_arcs_extended_total :].fill_(0.0)
+            self.from_states.data[self.num_arcs_extended_total :].fill_(0)
+            self.to_states.data[self.num_arcs_extended_total :].fill_(0)
+            self.ilabels.data[self.num_arcs_extended_total :].fill_(0)
 
-        # states-related data
-        self.start_end_arcs.data[self.num_states_total :].fill_(0)
-        self.state_order.data[self.num_states_total :].fill_(0)
-        self.backoff_to_states.data[self.num_states_total :].fill_(0)
-        self.backoff_weights.data[self.num_states_total :].fill_(0.0)
-        self.final_weights.data[self.num_states_total :].fill_(0.0)
+            # states-related data
+            self.start_end_arcs.data[self.num_states_total :].fill_(0)
+            self.state_order.data[self.num_states_total :].fill_(0)
+            self.backoff_to_states.data[self.num_states_total :].fill_(0)
+            self.backoff_weights.data[self.num_states_total :].fill_(0.0)
+            self.final_weights.data[self.num_states_total :].fill_(0.0)
+        else:
+            logging.info(f"Removal of biasing model {model_id} is deferred, since {self.num_models - 1} exists")
 
     def get_init_states(self, batch_size: int, bos=True) -> torch.Tensor:
         """

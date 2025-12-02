@@ -18,7 +18,7 @@ import torch
 import torch.distributed
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
-from nemo.collections.nlp.modules.common.megatron.utils import ApproxGELUActivation
+from nemo.collections.common.modules.utils import ApproxGELUActivation
 from nemo.collections.vlm.clip.model import CLIPConfig, CLIPModel, CLIPTextModelConfig, CLIPViTConfig
 from nemo.lightning import io, teardown
 

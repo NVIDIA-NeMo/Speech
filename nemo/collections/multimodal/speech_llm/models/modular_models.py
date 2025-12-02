@@ -57,7 +57,7 @@ except (ImportError, ModuleNotFoundError):
 
 from nemo.collections.multimodal.speech_llm.modules.common.text_generation_utils import get_computeprob_response
 from nemo.collections.multimodal.speech_llm.parts.peft_config import PEFT_CONFIG_MAP
-from nemo.collections.nlp.modules.common.megatron.utils import (
+from nemo.collections.common.modules.utils import (
     average_losses_across_data_parallel_group,
     build_position_ids,
     get_iterator_k_split,

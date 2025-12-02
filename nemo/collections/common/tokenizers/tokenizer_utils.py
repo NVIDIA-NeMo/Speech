@@ -100,7 +100,7 @@ def get_tokenizer(
 
     if "megatron" in tokenizer_name:
         try:
-            from nemo.collections.nlp.modules.common.megatron.megatron_utils import (
+            from nemo.collections.common.tokenizers.megatron_utils import (
                 get_megatron_merges_file,
                 get_megatron_tokenizer,
                 get_megatron_vocab_file,

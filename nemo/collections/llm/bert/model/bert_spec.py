@@ -13,7 +13,7 @@
 # limitations under the License.
 from dataclasses import dataclass
 
-from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+from nemo.collections.common.modules.utils import ApexGuardDefaults
 
 try:
     from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add

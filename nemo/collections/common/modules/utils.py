@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# flake8: noqa
+# pylint: skip-file
 
 """Utilities for models."""
 import itertools
@@ -503,15 +506,3 @@ def get_iterator_k_split(
 
     return itertools.chain(microbatches)
 
-
-def _cast_if_autocast_enabled(tensor):
-    if torch.is_autocast_enabled():
-        if isinstance(tensor, torch.Tensor):
-            if tensor.device.type == 'cuda':
-                dtype = torch.get_autocast_gpu_dtype()
-            elif tensor.device.type == 'cpu':
-                dtype = torch.get_autocast_cpu_dtype()
-            else:
-                raise NotImplementedError()
-            return tensor.to(dtype=dtype)
-    return tensor

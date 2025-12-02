@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+from nemo.collections.common.modules.utils import ApexGuardDefaults
 from nemo.utils import logging
 
 try:

@@ -30,7 +30,7 @@ from megatron.core.transformer.transformer_layer import TransformerLayer
 from megatron.core.utils import make_viewless_tensor
 from torch import Tensor
 
-from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
+from nemo.collections.common.modules.adapters.parallel_adapters import (
     AdapterName,
     InfusedAdapterConfig,
     Lora4HtoHAdapterConfig,

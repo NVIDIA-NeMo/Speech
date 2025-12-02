@@ -1,5 +1,5 @@
-# Copyright 2020 The HuggingFace Inc. team.
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright 2025 The HuggingFace Inc. team.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 
 import os
 import shutil
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import torch
 import wget
@@ -23,15 +23,6 @@ from torch.hub import _get_torch_home
 
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
-
-__all__ = [
-    "get_megatron_lm_model",
-    "get_megatron_lm_models_list",
-    "get_megatron_checkpoint",
-    "is_lower_cased_megatron",
-    "get_megatron_tokenizer",
-    "get_megatron_pretrained_bert_models",
-]
 
 
 torch_home = _get_torch_home()
@@ -99,20 +90,7 @@ MEGATRON_CONFIG_MAP = {
 }
 
 
-def compute_model_parallel_rank(local_rank: int, model_parallel_size: int) -> int:
-    """Calculates the model_parallel_rank from the local rank and the model parallel size
-
-    Args:
-        local_rank (int): The local rank of the process.
-        model_parallel_size (int): The number of ranks in the model parallel group.
-
-    Returns:
-        int: The model parallel rank corresponding to the given local rank.
-    """
-    return local_rank % model_parallel_size
-
-
-def get_megatron_pretrained_bert_models() -> List[str]:
+def list_available_models() -> List[str]:
     """Retrieves the names of all available pretrained Megatron-BERT models.
 
     This function uses the NeMo MegatronBertModel class to list all available
@@ -131,20 +109,6 @@ def get_megatron_lm_models_list() -> List[str]:
     Returns the list of supported Megatron-LM models
     """
     return list(MEGATRON_CONFIG_MAP.keys())
-
-
-def get_megatron_config(pretrained_model_name: str) -> Dict[str, int]:
-    """
-    Returns Megatron-LM model config file
-
-    Args:
-        pretrained_model_name (str): pretrained model name
-
-    Returns:
-        config (dict): contains model configuration: number of hidden layers, number of attention heads, etc
-    """
-    _check_megatron_name(pretrained_model_name)
-    return MEGATRON_CONFIG_MAP[pretrained_model_name]["config"]
 
 
 def _check_megatron_name(pretrained_model_name: str) -> None:
@@ -191,20 +155,6 @@ def get_megatron_merges_file(pretrained_model_name: str) -> str:
     return path
 
 
-def get_megatron_checkpoint(pretrained_model_name: str) -> str:
-    """
-    Gets checkpoint file from cache or downloads it
-    Args:
-        pretrained_model_name: pretrained model name
-    Returns:
-        path: path to model checkpoint
-    """
-    _check_megatron_name(pretrained_model_name)
-    url = MEGATRON_CONFIG_MAP[pretrained_model_name]["checkpoint"]
-    path = os.path.join(MEGATRON_CACHE, pretrained_model_name)
-    return _download(path, url)
-
-
 def _download(path: str, url: str):
     """
     Gets a file from cache or downloads it
@@ -230,19 +180,6 @@ def _download(path: str, url: str):
         torch.distributed.barrier()
 
     return path
-
-
-def is_lower_cased_megatron(pretrained_model_name):
-    """
-    Returns if the megatron is cased or uncased
-
-    Args:
-        pretrained_model_name (str): pretrained model name
-    Returns:
-        do_lower_cased (bool): whether the model uses lower cased data
-    """
-    _check_megatron_name(pretrained_model_name)
-    return MEGATRON_CONFIG_MAP[pretrained_model_name]["do_lower_case"]
 
 
 def get_megatron_tokenizer(pretrained_model_name: str):
@@ -297,3 +234,4 @@ def list_available_models() -> Optional[PretrainedModelInfo]:
             )
         )
     return result
+

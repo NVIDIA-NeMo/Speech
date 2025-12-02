@@ -64,7 +64,7 @@ except ImportError:
     # since PyTorch 2.3 the path has changed
     from torch.amp.grad_scaler import _refresh_per_optimizer_state
 
-from nemo.collections.nlp.modules.common.megatron.module import Float16Module
+from nemo.collections.common.modules.megatron import Float16Module
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import MainParamsOptimizerWrapper
 from nemo.core.optim.optimizers import init_optimizer_states

@@ -44,7 +44,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_t5_adapter_model imp
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.collections.nlp.models.nlp_model import NLPModel
-from nemo.collections.nlp.modules.common.megatron.utils import (
+from nemo.collections.common.modules.utils import (
     average_losses_across_data_parallel_group,
     build_position_ids,
     get_iterator_k_split,

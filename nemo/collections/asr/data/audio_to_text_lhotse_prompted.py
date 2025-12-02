@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -66,6 +67,11 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
     If `enable_chunking` is True, each audio sample is split into optimally sized chunks
     (see `find_optimal_chunk_size` and `chunk_waveform`). This is useful for long audio inputs,
     allowing the model to process them in manageable segments.
+
+    NOTE:
+    If the environment variable `USE_AIS_GET_BATCH` is set to `true` (case-insensitive),
+    then batch audio loading from AIStore will be enabled for this dataset. This will use the
+    AISBatchLoader to load the audio from AIStore. This can improve data loading efficiency in some setups.
     """
 
     def __init__(
@@ -76,12 +82,28 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
     ):
         super().__init__()
         self.tokenizer = tokenizer
-        self.load_audio = AudioSamples(fault_tolerant=True)
+        self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+
+        # Try to use use_batch_loader if available (Lhotse >= 1.32.0)
+        try:
+            self.load_audio = AudioSamples(fault_tolerant=True, use_batch_loader=self.use_ais_get_batch)
+        except TypeError:
+            # Lhotse < 1.32.0 doesn't support use_batch_loader
+            if self.use_ais_get_batch:
+                import logging
+
+                logging.warning(
+                    "AIS batch loading requested but not supported by this Lhotse version. "
+                    "Please upgrade to Lhotse >= 1.32.0"
+                )
+            self.load_audio = AudioSamples(fault_tolerant=True)
+
         self.padding_value = self.tokenizer.pad_id
         self.prompt = prompt
         self.enable_chunking = enable_chunking
 
     def __getitem__(self, cuts: CutSet) -> PromptedAudioToTextMiniBatch:
+        # Load the audio's from AIS and add them to the CutSet
         audio, audio_lens, cuts = self.load_audio(cuts)
 
         # Will work if batch_size is set to 1.

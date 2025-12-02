@@ -1,10 +1,12 @@
 braceexpand
 ctc_segmentation==1.7.4
+diskcache
 editdistance
 einops
 jiwer>=3.1.0,<4.0.0
 kaldi-python-io
-lhotse>=1.31.1
+kaldialign<=0.9.1
+lhotse>=1.32.0
 # Align with upstream PyTorch requirements
 librosa>=0.10.1
 marshmallow
@@ -19,6 +21,4 @@ ruamel.yaml
 scipy>=0.14
 soundfile
 sox<=1.5.0
-kaldialign<=0.9.1
 whisper_normalizer
-diskcache

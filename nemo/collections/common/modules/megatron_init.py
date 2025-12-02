@@ -544,4 +544,3 @@ def fake_initialize_model_parallel(
         pipeline_model_parallel_split_rank_,
         virtual_pipeline_model_parallel_rank,
     )
-

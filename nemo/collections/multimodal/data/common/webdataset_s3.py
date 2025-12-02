@@ -219,7 +219,7 @@ if HAVE_WEBDATASET:
                 assert not resampled
                 self.append(urls)
             elif isinstance(urls, str) and (urls.endswith(".yaml") or urls.endswith(".yml")):
-                with (open(urls)) as stream:
+                with open(urls) as stream:
                     spec = yaml.safe_load(stream)
                 assert "datasets" in spec
                 self.append(shardlists.MultiShardSample(spec))
@@ -255,10 +255,12 @@ if HAVE_WEBDATASET:
                 assert cache_size == -1 or cache_size > 0
                 self.append(
                     cache.cached_tarfile_to_samples(
-                        handler=handler, verbose=verbose, cache_size=cache_size, cache_dir=cache_dir,
+                        handler=handler,
+                        verbose=verbose,
+                        cache_size=cache_size,
+                        cache_dir=cache_dir,
                     )
                 )
-
 
 else:
 

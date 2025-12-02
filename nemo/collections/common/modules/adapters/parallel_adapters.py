@@ -23,10 +23,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
-from nemo.collections.common.parts.adapter_modules import AdapterModuleUtil
-from nemo.collections.common.parts.utils import activation_registry
+
 from nemo.collections.common.modules.adapters.fused_bias_gelu import fused_bias_gelu
 from nemo.collections.common.modules.utils import (
     ApexGuardDefaults,
@@ -34,6 +32,8 @@ from nemo.collections.common.modules.utils import (
     init_method_kaiming_uniform,
     init_method_normal,
 )
+from nemo.collections.common.parts.adapter_modules import AdapterModuleUtil
+from nemo.collections.common.parts.utils import activation_registry
 from nemo.core.classes.mixins import adapter_mixin_strategies
 from nemo.core.classes.mixins.adapter_mixins import AdapterConfig
 

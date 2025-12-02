@@ -505,4 +505,3 @@ def get_iterator_k_split(
         ]
 
     return itertools.chain(microbatches)
-

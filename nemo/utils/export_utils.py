@@ -22,8 +22,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from nemo.utils import CastToFloat, CastToFloatAll, logging
 from nemo.collections.common.modules.utils import ApexGuardDefaults
+from nemo.utils import CastToFloat, CastToFloatAll, logging
 
 try:
     import onnxruntime
@@ -42,6 +42,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 if HAVE_APEX:
+
     class MatchedScaleMaskSoftmax(FusedScaleMaskSoftmax):
         """
         fused operation: scaling + mask + softmax
@@ -77,7 +78,9 @@ if HAVE_APEX:
                 else:
                     probs = probs.bfloat16()
             return probs
+
 else:
+
     class MatchedScaleMaskSoftmax(ApexGuardDefaults):
         def __init__(self):
             super().__init__()

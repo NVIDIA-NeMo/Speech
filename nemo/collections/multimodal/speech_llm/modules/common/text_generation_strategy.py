@@ -22,9 +22,9 @@ from typing import List, Set, Tuple
 import torch
 from transformers import CLIPImageProcessor
 
-from nemo.collections.common.tokenizers.chat_template_mixin import explode_chat_template_input, is_chat_input
 from nemo.collections.common.modules.megatron import Float16Module
 from nemo.collections.common.modules.utils import get_ltor_masks_and_position_ids
+from nemo.collections.common.tokenizers.chat_template_mixin import explode_chat_template_input, is_chat_input
 from nemo.utils import logging
 
 try:

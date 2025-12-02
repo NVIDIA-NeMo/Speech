@@ -234,4 +234,3 @@ def list_available_models() -> Optional[PretrainedModelInfo]:
             )
         )
     return result
-

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-from contextlib import nullcontext
 from enum import Enum
 from typing import Callable, Dict, Optional, Type
 
@@ -395,7 +394,7 @@ try:
         "MixedFusedRMSNorm": replace_MixedFusedRMSNorm,
     }
 
-except Exception as e:
+except Exception:
     default_Apex_replacements = {}
     apex_available = False
 

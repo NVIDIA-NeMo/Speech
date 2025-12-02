@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import glob
 import io
 import itertools
@@ -234,7 +235,7 @@ class WebDatasetCommon(NeMoIterableDataset):
         epoch = 0
 
         if not self.infinite_sampler:
-            logging.info(f'Initiating Webdataset Random Sampler..')
+            logging.info('Initiating Webdataset Random Sampler..')
             assert (
                 self.filterings is None
             ), 'Webdataset Random Sampler should not be used with filters. Switch to infinite sampler'

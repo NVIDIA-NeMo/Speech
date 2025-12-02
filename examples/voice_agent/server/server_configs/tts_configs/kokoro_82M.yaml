@@ -6,7 +6,11 @@ sub_model_id: "af_heart" # "af_heart" "af_bella" "am_fenrir" "am_michael"
 device: "cuda"
 speed: 1.25 # Speaking rate
 extra_separator:  # a list of additional punctuations to chunk LLM response into segments for faster TTS output, e.g., ",". Set to `null` to use default behavior 
-  - ","
+  - ','
+  - '\n'
+  - "."
   - "?"
   - "!"
+  - ";"
+  - ":"
 think_tokens: ["<think>", "</think>"]  # specify them to avoid TTS for thinking process, set to `null` to allow thinking out loud

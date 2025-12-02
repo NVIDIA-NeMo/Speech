@@ -1,0 +1,372 @@
+# The model would have two decoders: RNNT (Transducer) and CTC
+
+# You may find more detail:
+# FastConformer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#fast-conformer
+# Hybrid ASR: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#hybrid-transducer-ctc
+# FastConformer-CTC's architecture config: NeMo/examples/asr/conf/fastconformer/fast-conformer_ctc_bpe.yaml
+# FastConformer-Transducer's architecture config, along with the optimal batch size and precision: NeMo/examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml
+
+name: "FastConformerXL-Hybrid-Transducer-CTC-BPE-Prompt"
+
+model:
+  sample_rate: 16000
+  compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
+  log_prediction: true # enables logging sample predictions in the output during training
+  skip_nan_grad: false
+  use_cer: false
+
+  model_defaults:
+    enc_hidden: ${model.encoder.d_model}
+    pred_hidden: 640
+    joint_hidden: 640
+    initialize_prompt_feature: true
+    num_prompts: 128
+    norm: None
+    # Dictionary mapping prompt identifiers to their corresponding embedding indices
+    # Custom prompts can be added with descriptive keys and indices 
+    # Examples: 'en-US': 0, 'pnc': 100 (Punctuation mode)
+    prompt_dictionary: {
+    # Language prompts (0-99)
+    'en-US': 0,
+    'en-GB': 1,
+    'es-ES': 2,
+    'es-US': 3,
+    'zh-CN': 4,
+    'zh-TW': 5,
+    'hi-IN': 6,
+    'ar-AR': 7,
+    'fr-FR': 8,
+    'de-DE': 9,
+    'ja-JP': 10,
+    'ru-RU': 11,
+    'pt-BR': 12,
+    'pt-PT': 13,
+    'ko-KR': 14,
+    'it-IT': 15,
+    'nl-NL': 16,
+    'pl-PL': 17,
+    'tr-TR': 18,
+    'uk-UA': 19,
+    'ro-RO': 20,
+    'el-GR': 21,
+    'cs-CZ': 22,
+    'hu-HU': 23,
+    'sv-SE': 24,
+    'da-DK': 25,
+    'fi-FI': 26,
+    'no-NO': 27,
+    'sk-SK': 28,
+    'hr-HR': 29,
+    'bg-BG': 30,
+    'lt-LT': 31,
+    'th-TH': 32,
+    'vi-VN': 33,
+    'id-ID': 34,
+    'ms-MY': 35,
+    'bn-IN': 36,
+    'ur-PK': 37,
+    'fa-IR': 38,
+    'ta-IN': 39,
+    'te-IN': 40,
+    'mr-IN': 41,
+    'gu-IN': 42,
+    'kn-IN': 43,
+    'ml-IN': 44,
+    'si-LK': 45,
+    'ne-NP': 46,
+    'km-KH': 47,
+    'sw-KE': 48,
+    'am-ET': 49,
+    'ha-NG': 50,
+    'zu-ZA': 51,
+    'yo-NG': 52,
+    'ig-NG': 53,
+    'af-ZA': 54,
+    'rw-RW': 55,
+    'so-SO': 56,
+    'ny-MW': 57,
+    'ln-CD': 58,
+    'or-KE': 59,
+    'he-IL': 64,
+    'ku-TR': 65,
+    'az-AZ': 66,
+    'ka-GE': 67,
+    'hy-AM': 68,
+    'uz-UZ': 69,
+    'tg-TJ': 70,
+    'ky-KG': 71,
+    'qu-PE': 80,
+    'ay-BO': 81,
+    'gn-PY': 82,
+    'nah-MX': 83,
+    'mi-NZ': 96,
+    'haw-US': 97,
+    'sm-WS': 98,
+    'to-TO': 99 
+    # Custom prompts can be added here
+    }
+
+
+  train_ds:
+    manifest_filepath: null
+    sample_rate: ${model.sample_rate}
+    use_lhotse: true
+    shard_manifests: true
+    batch_duration: 800
+    quadratic_duration: 15
+    num_buckets: 24
+    shuffle: true
+    num_workers: 8
+    pin_memory: true
+    max_duration: 20 # you may need to update it for your dataset
+    min_duration: 0.1
+    # tarred datasets
+    is_tarred: true
+    tarred_audio_filepaths: null
+    shuffle_n: 2048
+    # bucketing params
+    bucketing_strategy: "fully_randomized"
+    bucketing_batch_size: null
+    bucket_buffer_size: 10000
+    shuffle_buffer_size: 10000
+    #prompt configs
+    prompt_field: target_lang
+    prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+    num_prompts: ${model.model_defaults.num_prompts}
+    subsampling_factor: ${model.encoder.subsampling_factor}
+
+  validation_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    batch_size: 16
+    shuffle: false
+    use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
+    batch_duration: null
+    use_lhotse: true
+    use_bucketing: false
+    max_cuts: 8
+    
+    # prompt configurations for validation
+    prompt_field: target_lang
+    prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+    num_prompts: ${model.model_defaults.num_prompts}
+    subsampling_factor: ${model.encoder.subsampling_factor}
+
+  test_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    batch_size: 16
+    shuffle: false
+    use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
+    use_lhotse: true
+    use_bucketing: false
+    # prompt configurations for testing
+    prompt_field: target_lang
+    prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+    num_prompts: ${model.model_defaults.num_prompts}
+    subsampling_factor: ${model.encoder.subsampling_factor}
+
+  # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
+  # We recommend to use vocab size of 1024 with SPE Unigram for most languages
+  tokenizer:
+    dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
+    type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    sample_rate: ${model.sample_rate}
+    normalize: "per_feature"
+    window_size: 0.025
+    window_stride: 0.01
+    window: "hann"
+    features: 80
+    n_fft: 512
+    frame_splicing: 1
+    dither: 0.00001
+    pad_to: 0
+
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 2 # set to zero to disable it
+    time_masks: 10 # set to zero to disable it
+    freq_width: 27
+    time_width: 0.05
+
+  encoder:
+    _target_: nemo.collections.asr.modules.ConformerEncoder
+    feat_in: ${model.preprocessor.features}
+    feat_out: -1 # you may set it if you need different output size other than the default d_model
+    n_layers: 42
+    d_model: 1024
+
+    # Sub-sampling parameters
+    subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
+    subsampling_factor: 8 # must be power of 2 for striding and vggnet
+    subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
+
+    # Feed forward module's params
+    ff_expansion_factor: 4
+
+    # Multi-headed Attention Module's params
+    self_attention_model: rel_pos # rel_pos or abs_pos
+    n_heads: 8 # may need to be lower for smaller d_models
+    # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+    att_context_size: [-1, -1] # -1 means unlimited context
+    att_context_style: regular # regular or chunked_limited
+    xscaling: false # scales up the input embeddings by sqrt(d_model)
+    pos_emb_max_len: 5000
+
+    # Convolution module's params
+    conv_kernel_size: 9
+    conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+
+    ### regularization
+    dropout: 0.1 # The dropout used in most of the Conformer Modules
+    dropout_pre_encoder: 0.1 # The dropout used before the encoder
+    dropout_emb: 0.0 # The dropout used for embeddings
+    dropout_att: 0.1 # The dropout for multi-headed attention modules
+
+    # set to non-zero to enable stochastic depth
+    stochastic_depth_drop_prob: 0.0
+    stochastic_depth_mode: linear  # linear or uniform
+    stochastic_depth_start_layer: 1
+
+  decoder:
+    _target_: nemo.collections.asr.modules.RNNTDecoder
+    normalization_mode: null # Currently only null is supported for export.
+    random_state_sampling: false # Random state sampling: https://arxiv.org/pdf/1910.11455.pdf
+    blank_as_pad: true # This flag must be set in order to support exporting of RNNT models + efficient inference.
+
+    prednet:
+      pred_hidden: ${model.model_defaults.pred_hidden}
+      pred_rnn_layers: 2
+      t_max: null
+      dropout: 0.2
+
+  joint:
+    _target_: nemo.collections.asr.modules.RNNTJoint
+    log_softmax: null  # 'null' would set it automatically according to CPU/GPU device
+    preserve_memory: false  # dramatically slows down training, but might preserve some memory
+
+    # Fuses the computation of prediction net + joint net + loss + WER calculation
+    # to be run on sub-batches of size `fused_batch_size`.
+    # When this flag is set to true, consider the `batch_size` of *_ds to be just `encoder` batch size.
+    # `fused_batch_size` is the actual batch size of the prediction net, joint net and transducer loss.
+    # Using small values here will preserve a lot of memory during training, but will make training slower as well.
+    # An optimal ratio of fused_batch_size : *_ds.batch_size is 1:1.
+    # However, to preserve memory, this ratio can be 1:8 or even 1:16.
+    # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
+    fuse_loss_wer: true
+    fused_batch_size: 2
+
+    jointnet:
+      joint_hidden: ${model.model_defaults.joint_hidden}
+      activation: "relu"
+      dropout: 0.2
+
+  decoding:
+    strategy: "greedy_batch" # can be greedy, greedy_batch, beam, tsd, alsd.
+
+    # greedy strategy config
+    greedy:
+      max_symbols: 10
+
+    # beam strategy config
+    beam:
+      beam_size: 2
+      return_best_hypothesis: False
+      score_norm: true
+      tsd_max_sym_exp: 50  # for Time Synchronous Decoding
+      alsd_max_target_len: 2.0  # for Alignment-Length Synchronous Decoding
+
+  # The section which would contain the decoder and decoding configs of the auxiliary CTC decoder
+  aux_ctc:
+    ctc_loss_weight: 0.1 # the weight used to combine the CTC loss with the RNNT loss
+    use_cer: false
+    ctc_reduction: 'mean_batch'
+    decoder:
+      _target_: nemo.collections.asr.modules.ConvASRDecoder
+      feat_in: null
+      num_classes: -1
+      vocabulary: []
+    decoding:
+      strategy: "greedy"
+
+  # config for InterCTC loss: https://arxiv.org/abs/2102.03216
+  # specify loss weights and which layers to use for InterCTC
+  # e.g., to reproduce the paper results, set loss_weights: [0.3]
+  # and apply_at_layers: [8] (assuming 18 layers). Note that final
+  # layer loss coefficient is automatically adjusted (to 0.7 in above example)
+  interctc:
+    loss_weights: []
+    apply_at_layers: []
+
+  loss:
+    loss_name: "default"
+    warprnnt_numba_kwargs:
+      # FastEmit regularization: https://arxiv.org/abs/2010.11148
+      # You may enable FastEmit to reduce the latency of the model for streaming
+      # It also helps to improve the accuracy of the model in streaming mode
+      fastemit_lambda: 0.0  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
+      clamp: -1.0  # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
+
+  optim:
+    name: adamw
+    lr: 3.0
+    # optimizer arguments
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+
+    # scheduler setup
+    sched:
+      name: NoamAnnealing
+      d_model: ${model.encoder.d_model}
+      # scheduler config override
+      warmup_steps: 15000
+      warmup_ratio: null
+      min_lr: 1e-6
+
+trainer:
+  devices: -1 # number of GPUs, -1 would use all available GPUs
+  num_nodes: 1
+  max_epochs: -1
+  max_steps: 10000
+  val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  accelerator: auto
+  strategy: ddp
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  precision: bf16 # 16, 32, or bf16
+  log_every_n_steps: 100  # Interval of logging.
+  enable_progress_bar: True
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  sync_batchnorm: true
+  enable_checkpointing: False  # Provided by exp_manager
+  logger: false  # Provided by exp_manager
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
+  use_distributed_sampler: false
+  limit_train_batches: 1000
+
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    # in case of multiple validation sets, first one is used
+    monitor: "val_bleu"
+    mode: "max"
+    save_top_k: 5
+    always_save_nemo: true # saves the checkpoints as nemo files instead of PTL checkpoints
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false
+
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: null
+    project: null

@@ -11,3 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+import warnings
+
+
+warnings.warn(
+    "nemo.collections.diffusion is deprecated and will be removed in a future major NeMo FW container release.",
+    DeprecationWarning,
+    stacklevel=2,
+)

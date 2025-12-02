@@ -56,6 +56,7 @@ class InternalTranscribeConfig:
 
 @dataclass
 class TranscribeConfig:
+    use_lhotse: bool = True
     batch_size: int = 4
     return_hypotheses: bool = False
     num_workers: Optional[int] = None
@@ -175,6 +176,7 @@ class TranscriptionMixin(ABC):
     def transcribe(
         self,
         audio: Union[str, List[str], np.ndarray, DataLoader],
+        use_lhotse: bool = True,
         batch_size: int = 4,
         return_hypotheses: bool = False,
         num_workers: int = 0,
@@ -193,6 +195,8 @@ class TranscriptionMixin(ABC):
                 Can also be a dataloader object that provides values that can be consumed by the model.
                 Recommended length per file is between 5 and 25 seconds.
                 But it is possible to pass a few hours long file if enough GPU memory is available.
+            use_lhotse: (bool) If audio is not a dataloder, defines whether to create a lhotse dataloader or a
+                non-lhotse dataloader.
             batch_size: (int) batch size to use during inference.
                 Bigger will result in better throughput performance but would use more memory.
             return_hypotheses: (bool) Either return hypotheses or text
@@ -229,6 +233,7 @@ class TranscriptionMixin(ABC):
 
         if override_config is None:
             transcribe_cfg = TranscribeConfig(
+                use_lhotse=use_lhotse,
                 batch_size=batch_size,
                 return_hypotheses=return_hypotheses,
                 num_workers=num_workers,
@@ -526,6 +531,7 @@ class TranscriptionMixin(ABC):
             )
 
         ds_config = {
+            'use_lhotse': get_value_from_transcription_config(trcfg, 'use_lhotse', True),
             'audio_tensors': audio_tensors,
             'batch_size': get_value_from_transcription_config(trcfg, 'batch_size', 4),
             'temp_dir': temp_dir,
@@ -714,6 +720,7 @@ class ASRTranscriptionMixin(TranscriptionMixin):
                     )
 
         ds_config = {
+            'use_lhotse': get_value_from_transcription_config(trcfg, 'use_lhotse', True),
             'paths2audio_files': audio_files,
             'batch_size': get_value_from_transcription_config(trcfg, 'batch_size', 4),
             'temp_dir': temp_dir,

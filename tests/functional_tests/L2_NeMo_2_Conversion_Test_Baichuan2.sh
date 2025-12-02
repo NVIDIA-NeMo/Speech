@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-HF_ORI_PATH=baichuan-inc/Baichuan2-7B-Chat #/home/TestData/llm/models/baichuan2_toy
+HF_ORI_PATH=/home/TestData/llm/models/baichuan2_toy
 NEMO_MODEL_TYPE=Baichuan2Model
 NEMO_MODEL_CONFIG=Baichuan2Config7B
 NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt

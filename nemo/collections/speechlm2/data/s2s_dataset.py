@@ -102,9 +102,14 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
     def __getitem__(self, cuts: CutSet) -> dict:
         cuts = cuts.transform_text(_strip_timestamps)
         source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
-        target_audio, target_audio_lens = collate_audio(
-            cuts.resample(self.target_sample_rate), recording_field="target_audio"
-        )
+        # Manually resample target_audio attribute since cuts.resample() only affects the main recording
+        cuts_with_resampled_target = []
+        for cut in cuts:
+            if hasattr(cut, "target_audio") and cut.target_audio is not None:
+                cut.target_audio = cut.target_audio.resample(self.target_sample_rate)
+            cuts_with_resampled_target.append(cut)
+        cuts_with_resampled_target = CutSet(cuts_with_resampled_target)
+        target_audio, target_audio_lens = collate_audio(cuts_with_resampled_target, recording_field="target_audio")
         target_tokens, target_token_lens = collate_token_channel(
             cuts, self.tokenizer, self.frame_length, roles=self.output_roles
         )

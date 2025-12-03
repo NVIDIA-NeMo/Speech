@@ -195,6 +195,13 @@ class LabelLoopingState:
         )
 
 
+@dataclass
+class FusionModelWithParams:
+    model: NGramGPULanguageModel | GPUBiasingMultiModelBase
+    alpha: float | None = None
+    is_multi_model: bool = False
+
+
 class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase, ConfidenceMethodMixin):
     """
     Label-Looping algorithm implementation https://arxiv.org/abs/2406.06220 for optimized batched greedy decoding.

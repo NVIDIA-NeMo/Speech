@@ -186,16 +186,17 @@ class ContextGraph:
                 # if node.is_primary:
                 #     if not node.fail.is_primary:
                 #         print(f"strange backoff {node.id} -> {node.fail.id}")
-                    # assert node.fail.is_primary
+                # assert node.fail.is_primary
                 # fill the output arc
-                output = node.fail
-                while not output.is_end:
-                    output = output.fail
-                    if output.token == -1:  # root
-                        output = None
-                        break
-                node.output = output
-                node.output_score += 0 if output is None else output.output_score
+                if node.output is None:
+                    output = node.fail
+                    while not output.is_end:
+                        output = output.fail
+                        if output.token == -1:  # root
+                            output = None
+                            break
+                    node.output = output
+                    node.output_score += 0 if output is None else output.output_score
                 queue.append(node)
             visited_ids.add(current_node.id)
 

@@ -20,9 +20,9 @@
 import torch
 from torch.autograd import Variable
 from torch.nn.parameter import Parameter
-from nemo.utils.megatron_utils import ApexGuardDefaults
 
 from nemo.utils import logging
+from nemo.utils.megatron_utils import ApexGuardDefaults
 
 try:
     from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel

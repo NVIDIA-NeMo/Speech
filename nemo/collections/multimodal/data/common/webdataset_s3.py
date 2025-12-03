@@ -22,8 +22,8 @@ from urllib.parse import urlparse
 
 import yaml
 
-from nemo.utils.megatron_utils import ApexGuardDefaults
 from nemo.utils import logging
+from nemo.utils.megatron_utils import ApexGuardDefaults
 
 try:
     import webdataset.gopen as gopen_webdata

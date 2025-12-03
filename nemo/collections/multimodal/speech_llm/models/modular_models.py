@@ -55,11 +55,6 @@ except (ImportError, ModuleNotFoundError):
     MegatronGPTModel = ABC
     MegatronGPTSFTModel = ABC
 
-from nemo.utils.megatron_utils import (
-    average_losses_across_data_parallel_group,
-    build_position_ids,
-    get_iterator_k_split,
-)
 from nemo.collections.multimodal.speech_llm.modules.common.text_generation_utils import get_computeprob_response
 from nemo.collections.multimodal.speech_llm.parts.peft_config import PEFT_CONFIG_MAP
 from nemo.core.classes import ModelPT
@@ -67,6 +62,11 @@ from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import AppState, logging, model_utils
+from nemo.utils.megatron_utils import (
+    average_losses_across_data_parallel_group,
+    build_position_ids,
+    get_iterator_k_split,
+)
 from nemo.utils.model_utils import inject_model_parallel_rank
 
 try:

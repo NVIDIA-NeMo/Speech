@@ -17,10 +17,10 @@ from pathlib import Path
 import torch
 import torch.distributed
 
-from nemo.utils.megatron_utils import ApproxGELUActivation
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.vlm.clip.model import CLIPConfig, CLIPModel, CLIPTextModelConfig, CLIPViTConfig
 from nemo.lightning import io, teardown
+from nemo.utils.megatron_utils import ApproxGELUActivation
 
 
 @dataclass

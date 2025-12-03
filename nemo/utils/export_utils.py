@@ -17,7 +17,7 @@
 
 import os
 from enum import Enum
-from typing import Callable, Dict, Optional, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Type
 
 import onnx
 import torch

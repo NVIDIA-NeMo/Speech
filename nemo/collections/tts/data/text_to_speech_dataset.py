@@ -460,7 +460,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             if 'audio_filepath' in data.manifest_entry:
                 # If audio_filepath is available, then use the actual audio file path.
                 example['audio_filepath'] = data.manifest_entry['audio_filepath']
-        else:
+        elif 'audio_filepath' in data.manifest_entry:
             # Only load audio if codes are not available
             audio_array, _, audio_filepath_rel = load_audio(
                 manifest_entry=data.manifest_entry,
@@ -657,12 +657,14 @@ class MagpieTTSDataset(TextToSpeechDataset):
         language_list = []
         for example in batch:
             dataset_name_list.append(example["dataset_name"])
-            audio_filepath_list.append(example["audio_filepath"])
             raw_text_list.append(example["raw_text"])
             language_list.append(example["language"])
 
             token_list.append(example["tokens"])
             token_len_list.append(example["text_len"])
+
+            if 'audio_filepath' in example:
+                audio_filepath_list.append(example["audio_filepath"])
 
             if 'audio' in example:
                 audio_list.append(example["audio"])
@@ -764,8 +766,10 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if len(reward_list) > 0:
             batch_dict['rewards'] = torch.FloatTensor(reward_list)
 
-        # Assert only ONE of context_audio or context_audio_codes in the batch
-        assert ('audio' in batch_dict) ^ ('audio_codes' in batch_dict)
+        # Assert at most ONE of context_audio or context_audio_codes in the batch
+        if 'audio' in batch_dict:
+            assert 'audio_filepath' not in batch_dict
+        # assert ('audio' in batch_dict) ^ ('audio_codes' in batch_dict)
 
         # Assert only ONE of context_audio or context_audio_codes in the batch
         if 'context_audio' in batch_dict:

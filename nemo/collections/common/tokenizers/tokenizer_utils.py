@@ -14,13 +14,11 @@
 
 import os.path
 from dataclasses import MISSING, dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from nemo.utils import logging
 
-from .huggingface.huggingface_utils import get_huggingface_pretrained_lm_models_list
-
-__all__ = ["get_tokenizer", "get_tokenizer_list"]
+__all__ = ["get_tokenizer"]
 
 
 megatron_tokenizer_model_map = {
@@ -28,15 +26,6 @@ megatron_tokenizer_model_map = {
     "BertWordPieceCase": "megatron-bert-345m-cased",
     "GPT2BPETokenizer": "megatron-gpt-345m",
 }
-
-
-def get_tokenizer_list() -> List[str]:
-    """
-    Returns all all supported tokenizer names
-    """
-    s = set(get_huggingface_pretrained_lm_models_list(include_external=False))
-    s.update(set(get_huggingface_pretrained_lm_models_list(include_external=True)))
-    return ["sentencepiece", "char", "word"] + list(s)
 
 
 @dataclass
@@ -71,8 +60,6 @@ def get_tokenizer(
     Args:
         tokenizer_name: sentencepiece or pretrained model from the hugging face list,
             for example: bert-base-cased
-            To see the list of all HuggingFace pretrained models, use:
-            nemo_nlp.modules.common.get_huggingface_pretrained_lm_models_list()
         tokenizer_model: tokenizer model file of sentencepiece
         special_tokens: dict of special tokens.
             For additional special tokens besides standard special tokens (bos, eos, pad, etc.), such as sentinel

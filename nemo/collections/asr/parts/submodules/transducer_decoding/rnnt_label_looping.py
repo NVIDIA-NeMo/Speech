@@ -1048,6 +1048,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 src_states=self.state.decoder_state_after_sos, dst_states=self.state.decoder_state
             )
             self.state.decoder_output.copy_(self.state.decoder_output_after_sos)
+
             # init fusion models states
             for fusion_model_idx, fusion_model in enumerate(self._all_fusion_models()):
                 self.state.fusion_states_list[fusion_model_idx].copy_(
@@ -1065,6 +1066,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             self.state.decoder_output[:current_batch_size].copy_(
                 prev_batched_state.predictor_outputs[:current_batch_size]
             )
+
             # init fusion models states
             for fusion_model_idx, fusion_model in enumerate(self._all_fusion_models()):
                 self.state.fusion_states_list[fusion_model_idx][:current_batch_size].copy_(

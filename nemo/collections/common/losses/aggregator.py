@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 import torch
 
@@ -36,8 +36,7 @@ class AggregatorLoss(Loss):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         input_types = {}
         for i in range(self._num_losses):
             input_types["loss_" + str(i + 1)] = NeuralType(elements_type=LossType())
@@ -46,8 +45,7 @@ class AggregatorLoss(Loss):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {"loss": NeuralType(elements_type=LossType())}
 
     def __init__(self, num_inputs: int = 2, weights: List[float] = None):

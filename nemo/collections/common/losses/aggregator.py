@@ -16,8 +16,7 @@ from typing import List
 
 import torch
 
-from nemo.core.classes import typecheck
-from nemo.core.classes.loss import Loss
+from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LossType, NeuralType
 
 __all__ = ['AggregatorLoss']

@@ -44,7 +44,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from tqdm import tqdm
 
-from nemo.collections.common.modules.utils import average_losses_across_data_parallel_group
+from nemo.utils.megatron_utils import average_losses_across_data_parallel_group
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.llm import fn
 from nemo.collections.llm.gpt.model import transformer_engine_layer_spec

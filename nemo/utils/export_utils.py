@@ -17,15 +17,17 @@
 
 import os
 from enum import Enum
-from typing import Callable, Dict, Optional, Type
+from typing import Callable, Dict, Optional, Type, TYPE_CHECKING
 
 import onnx
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from nemo.collections.common.modules.utils import ApexGuardDefaults
 from nemo.utils import CastToFloat, CastToFloatAll, logging
+
+if TYPE_CHECKING:
+    from nemo.utils.megatron_utils import ApexGuardDefaults
 
 try:
     import onnxruntime

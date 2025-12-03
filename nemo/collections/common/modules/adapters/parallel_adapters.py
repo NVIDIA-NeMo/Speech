@@ -29,7 +29,7 @@ import torch.nn.init as init
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 
 from nemo.collections.common.modules.adapters.fused_bias_gelu import fused_bias_gelu
-from nemo.collections.common.modules.utils import (
+from nemo.utils.megatron_utils import (
     ApexGuardDefaults,
     init_method_const,
     init_method_kaiming_uniform,

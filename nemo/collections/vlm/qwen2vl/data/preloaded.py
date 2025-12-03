@@ -32,7 +32,7 @@ from torch.utils import data
 from torch.utils.data import DataLoader, Dataset
 from transformers import CLIPImageProcessor, Qwen2VLImageProcessor
 
-from nemo.collections.common.modules.utils import get_ltor_masks_and_position_ids
+from nemo.utils.megatron_utils import get_ltor_masks_and_position_ids
 from nemo.collections.vlm.qwen2vl.data.config import Qwen2VLDataConfig
 from nemo.collections.vlm.qwen2vl.data.conversation import conv_templates as supported_conv_templates
 from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import (

@@ -27,7 +27,7 @@ from megatron.energon.flavors.base_dataset import Sample
 from megatron.energon.task_encoder.cooking import Cooker, basic_sample_keys
 from PIL import Image
 
-from nemo.collections.common.modules.utils import get_ltor_masks_and_position_ids
+from nemo.utils.megatron_utils import get_ltor_masks_and_position_ids
 from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import (
     HF_IMAGE_TOKEN_INDEX,
     HF_VIDEO_TOKEN_INDEX,

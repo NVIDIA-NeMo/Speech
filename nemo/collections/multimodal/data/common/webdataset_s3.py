@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from nemo.collections.common.modules.utils import ApexGuardDefaults
+from nemo.utils.megatron_utils import ApexGuardDefaults
 from nemo.utils import logging
 
 try:

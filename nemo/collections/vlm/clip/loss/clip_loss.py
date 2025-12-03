@@ -19,7 +19,7 @@ from megatron.core import parallel_state
 from torch import distributed as dist
 from torch.nn import functional as F
 
-from nemo.collections.common.modules.utils import average_losses_across_data_parallel_group
+from nemo.utils.megatron_utils import average_losses_across_data_parallel_group
 from nemo.lightning.megatron_parallel import MegatronLossReduction
 
 

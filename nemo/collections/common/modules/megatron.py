@@ -20,7 +20,7 @@
 import torch
 from torch.autograd import Variable
 from torch.nn.parameter import Parameter
-from nemo.collections.common.modules.utils import ApexGuardDefaults
+from nemo.utils.megatron_utils import ApexGuardDefaults
 
 from nemo.utils import logging
 

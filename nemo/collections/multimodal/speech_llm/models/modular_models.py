@@ -55,7 +55,7 @@ except (ImportError, ModuleNotFoundError):
     MegatronGPTModel = ABC
     MegatronGPTSFTModel = ABC
 
-from nemo.collections.common.modules.utils import (
+from nemo.utils.megatron_utils import (
     average_losses_across_data_parallel_group,
     build_position_ids,
     get_iterator_k_split,

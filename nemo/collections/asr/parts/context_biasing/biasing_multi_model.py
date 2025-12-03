@@ -124,6 +124,7 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
     def __init__(self):
         super().__init__()
         self.models = nn.ModuleList([])
+        self.buffer_for_device_handling = nn.Buffer(torch.zeros([1], dtype=torch.long))
         self.alphas: list[float] = []
         self.vocab_size: int | None = None
         self.float_dtype: torch.dtype | None = None
@@ -131,13 +132,7 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
         self.start_state: int | None = None
         self._params_defined = False
         self.free_ids = set()
-        self._device = torch.device("cpu")
         self.num_models = 0
-
-    def to(self, *args, **kwargs):
-        device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(*args, **kwargs)
-        self._device = device
-        return super().to(*args, **kwargs)
 
     def has_models(self) -> bool:
         """Return True if the multi-model has at least one model"""
@@ -191,9 +186,9 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
         Returns:
             tensor [B] of initial states
         """
+        device = self.buffer_for_device_handling.device
         if not self._params_defined:
-            return torch.zeros([batch_size], device=self._device, dtype=torch.long)
-        device = self.models[0].arcs_weights.device
+            return torch.zeros([batch_size], device=device, dtype=torch.long)
         return torch.full(
             [batch_size], fill_value=self.bos_state if bos else self.start_state, device=device, dtype=torch.long
         )

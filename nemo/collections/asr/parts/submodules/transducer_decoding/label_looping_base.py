@@ -43,7 +43,7 @@ class BatchedLabelLoopingState:
     predictor_outputs: torch.Tensor
     labels: torch.Tensor
     decoded_lengths: torch.Tensor
-    fusion_states_list: list[torch.Tensor] | None = None
+    fusion_states_list: list[torch.Tensor] = field(default_factory=list)
     time_jumps: torch.Tensor | None = None
 
 
@@ -55,7 +55,7 @@ class LabelLoopingStateItem:
     predictor_output: torch.Tensor
     label: torch.Tensor
     decoded_length: torch.Tensor
-    fusion_state_list: list[torch.Tensor] | None = None
+    fusion_state_list: list[torch.Tensor] = field(default_factory=list)
     time_jump: torch.Tensor | None = None
 
 

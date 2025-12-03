@@ -58,6 +58,7 @@ class AggregatorLoss(Loss):
 
     @typecheck()
     def forward(self, **kwargs):
+        """ """
         values = [kwargs[x] for x in sorted(kwargs.keys())]
         loss = torch.zeros_like(values[0])
         for loss_idx, loss_value in enumerate(values):

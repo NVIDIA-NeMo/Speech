@@ -12,15 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TYPE_CHECKING, List
-
 import torch
 
 from nemo.core.classes import typecheck
+from nemo.core.classes.loss import Loss
 from nemo.core.neural_types import LossType, NeuralType
-
-if TYPE_CHECKING:
-    from nemo.core.classes import Loss
 
 __all__ = ['AggregatorLoss']
 

@@ -55,7 +55,7 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
         self.cfg = DictConfig(cfg)
 
         setup_audio_codec(self)
-        self._codebook_size = self.audio_codec.vector_quantizer.codebook_size_per_group
+        self._codebook_size = self.audio_codec.vector_quantizer.codebook_size
         self._num_codebooks = self.audio_codec.vector_quantizer.num_groups
 
         # We load the pretrained HF LLM using "ForCausalLM" variant so that we can obtain the

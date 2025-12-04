@@ -20,9 +20,8 @@ import signal
 import sys
 
 from loguru import logger
-from omegaconf import OmegaConf
 
-from pipecat.audio.vad.silero import SileroVADAnalyzer, VADParams
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import EndTaskFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -112,7 +111,10 @@ def signal_handler(signum, frame):
     shutdown_event.set()
 
 
-async def run_bot_websocket_server():
+async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
+    logger.info(f"Starting websocket server on {host}:{port}")
+    logger.info(f"Server configured to run indefinitely with no timeouts, use Ctrl+C to quit.")
+
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -147,8 +149,8 @@ async def run_bot_websocket_server():
             is None,  # if backchannel phrases are disabled, we can use VAD to interrupt the bot immediately
             audio_out_10ms_chunks=TRANSPORT_AUDIO_OUT_10MS_CHUNKS,
         ),
-        host="0.0.0.0",  # Bind to all interfaces
-        port=8765,
+        host=host,
+        port=port,
     )
 
     logger.info("Initializing STT service...")
@@ -279,7 +281,7 @@ async def run_bot_websocket_server():
 
     pipeline = Pipeline(pipeline)
 
-    rtvi_text_aggregator = SimpleSegmentedTextAggregator("\n?!.", min_sentence_length=5)
+    rtvi_text_aggregator = SimpleSegmentedTextAggregator(punctuation_marks=".!?\n")
     task = PipelineTask(
         pipeline,
         params=PipelineParams(

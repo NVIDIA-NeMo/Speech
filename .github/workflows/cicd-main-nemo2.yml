@@ -167,10 +167,6 @@ jobs:
           - script: L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
             runner: self-hosted-azure
             is-optional: true
-          - script: L2_NeMo_2_Automodel_PTQ_trtllm
-            runner: self-hosted-azure
-          - script: L2_NeMo_2_Automodel_PTQ_hf
-            runner: self-hosted-azure
           - script: L2_NeMo_2_PTQ_Llama2_FP8_trtllm
             runner: self-hosted-azure
           - script: L2_NeMo_2_PTQ_Llama2_FP8_nemo

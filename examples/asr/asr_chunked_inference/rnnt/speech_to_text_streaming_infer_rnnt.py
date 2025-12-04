@@ -351,7 +351,11 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 # decode only chunk frames
                 chunk_batched_hyps, _, state = decoding_computer(
                     x=encoder_output,
-                    out_len=encoder_context_batch.chunk,
+                    out_len=torch.where(
+                        is_last_chunk_batch,
+                        encoder_output_len - encoder_context_batch.left,
+                        encoder_context_batch.chunk,
+                    ),
                     prev_batched_state=state,
                 )
                 # merge hyps with previous hyps

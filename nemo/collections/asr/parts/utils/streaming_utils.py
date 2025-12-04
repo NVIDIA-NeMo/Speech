@@ -1554,9 +1554,9 @@ class LongestCommonSubsequenceBatchedFrameASRRNNT(BatchedFrameASRRNNT):
 
 class CacheAwareStreamingAudioBuffer:
     """
-    A buffer to be used for cache-aware streaming. It can be used to buffer streaming audio bytes.
-    Or it can load a single or multiple audio files/processed signals, split them in chunks and
-    return one on one. It can be used to simulate streaming audio or audios.
+    A buffer to be used for cache-aware streaming. It can load a single or multiple audio
+    files/processed signals, split them in chunks and return one on one. It can be used to
+    simulate streaming audio or audios.
     """
 
     def __init__(self, model, online_normalization=None, pad_and_drop_preencoded=False):
@@ -1633,15 +1633,16 @@ class CacheAwareStreamingAudioBuffer:
                 else self.streaming_cfg.shift_size
             )
 
-        # Check if we have enough valid data available for a full chunk
-        # We need at least chunk_size frames of valid data from buffer_idx onwards
-        available_valid_frames = self.streams_length - self.buffer_idx
-        if available_valid_frames.min() < chunk_size:
-            # Not enough data accumulated yet, wait for more audio
-            return None
-
         # Extract the current audio chunk
         audio_chunk = self.buffer[:, :, self.buffer_idx : self.buffer_idx + chunk_size]
+
+        # For single-stream streaming: wait if not enough data accumulated yet
+        # For multi-stream batches: rely on chunk_lengths to mask invalid streams
+        if len(self.streams_length) == 1:
+            available_valid_frames = self.streams_length[0] - self.buffer_idx
+            if available_valid_frames < chunk_size:
+                # Not enough data accumulated yet, wait for more audio
+                return None
 
         # Check if we have enough frames for downsampling (if applicable)
         if self.sampling_frames is not None:
@@ -1709,18 +1710,14 @@ class CacheAwareStreamingAudioBuffer:
         chunk_lengths = torch.clamp(max_chunk_lengths, min=0, max=audio_chunk.size(-1))
 
         # Update buffer position and step counter
-        print(
-            f"[get_next_chunk] BEFORE: buffer_idx={self.buffer_idx}, shift_size={shift_size}, streams_length={self.streams_length}, chunk_lengths={chunk_lengths}"
-        )
         self.buffer_idx += shift_size
         self.step += 1
-        print(f"[get_next_chunk] AFTER: buffer_idx={self.buffer_idx}, buffer.size(-1)={self.buffer.size(-1)}")
 
         return audio_chunk, chunk_lengths
 
     def __iter__(self):
         """
-        Iterator interface for streaming buffered audio chunks.
+        Iterator interface for batch processing.
         Yields chunks by repeatedly calling get_next_chunk().
         """
         while True:
@@ -1745,22 +1742,32 @@ class CacheAwareStreamingAudioBuffer:
         if self.buffer is None or self.streams_length is None:
             return False
 
-        # Determine the required chunk size for the next chunk
-        if self.buffer_idx == 0 and isinstance(self.streaming_cfg.chunk_size, list):
-            if self.pad_and_drop_preencoded:
-                chunk_size = self.streaming_cfg.chunk_size[1]
-            else:
-                chunk_size = self.streaming_cfg.chunk_size[0]
-        else:
-            chunk_size = (
-                self.streaming_cfg.chunk_size[1]
-                if isinstance(self.streaming_cfg.chunk_size, list)
-                else self.streaming_cfg.chunk_size
-            )
+        # Check if we've processed past the buffer
+        if self.buffer_idx >= self.buffer.size(-1):
+            return False
 
-        # Check if we have enough valid data available
-        available_valid_frames = self.streams_length - self.buffer_idx
-        return available_valid_frames.min() >= chunk_size
+        # For single-stream: check if enough data accumulated
+        # For multi-stream batches: always return True and let chunk_lengths handle validity
+        if len(self.streams_length) == 1:
+            # Determine the required chunk size for the next chunk
+            if self.buffer_idx == 0 and isinstance(self.streaming_cfg.chunk_size, list):
+                if self.pad_and_drop_preencoded:
+                    chunk_size = self.streaming_cfg.chunk_size[1]
+                else:
+                    chunk_size = self.streaming_cfg.chunk_size[0]
+            else:
+                chunk_size = (
+                    self.streaming_cfg.chunk_size[1]
+                    if isinstance(self.streaming_cfg.chunk_size, list)
+                    else self.streaming_cfg.chunk_size
+                )
+
+            # Check if we have enough valid data available
+            available_valid_frames = self.streams_length[0] - self.buffer_idx
+            return available_valid_frames >= chunk_size
+        else:
+            # Multi-stream batch: return True if buffer not exhausted
+            return True
 
     def __len__(self):
         return len(self.buffer)
@@ -1794,12 +1801,8 @@ class CacheAwareStreamingAudioBuffer:
 
     def append_audio(self, audio, stream_id=-1):
         processed_signal, processed_signal_length = self.preprocess_audio(audio)
-        print(f"[append_audio] Audio samples: {len(audio)}, Preprocessed to {processed_signal_length} frames")
         processed_signal, processed_signal_length, stream_id = self.append_processed_signal(
             processed_signal, stream_id
-        )
-        print(
-            f"[append_audio] After append: stream_id={stream_id}, streams_length={self.streams_length}, buffer_idx={self.buffer_idx}"
         )
         return processed_signal, processed_signal_length, stream_id
 

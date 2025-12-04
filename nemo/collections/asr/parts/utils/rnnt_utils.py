@@ -522,7 +522,7 @@ class BatchedHyps:
         cur_len = self.current_lengths.max().item()
         other_len = other.current_lengths.max().item()
         if cur_len + other_len >= self._max_length:
-            add_len = self._max_length - cur_len - other_len + 1
+            add_len = cur_len + other_len - self._max_length - + 1
             device = self.transcript.device
             add_shape = [self.batch_size, add_len]
             self.transcript = torch.cat(

@@ -210,9 +210,7 @@ def open_datastore_object_with_binary(path: str, num_retries: int = 5):
         done = False
 
         for _ in range(num_retries):
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False
-            )  # bytes mode
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)  # bytes mode
             stream = proc.stdout
             if stream.peek(1):
                 done = True

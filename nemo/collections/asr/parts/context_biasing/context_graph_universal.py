@@ -385,7 +385,7 @@ class ContextGraph:
                 if token not in node.next:
                     self.num_nodes += 1
                     is_end = i == len(tokens) - 1
-                    node_score = acc_score - node.node_score
+                    node_score = max(0.0, acc_score - node.node_score)
                     next_node = ContextState(
                         id=self.num_nodes,
                         token=token,

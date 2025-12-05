@@ -205,14 +205,14 @@ def open_datastore_object_with_binary(path: str, num_retries: int = 5):
                 "See AIS binary installation instructions at https://github.com/NVIDIA/aistore?tab=readme-ov-file#install-from-release-binaries.\n"
             )
 
-        cmd = f'{binary} get {path} -'
+        cmd = [binary, "get", path, "-"]
 
         done = False
 
         for _ in range(num_retries):
             proc = subprocess.Popen(
-                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False  # bytes mode
-            )
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False
+            )  # bytes mode
             stream = proc.stdout
             if stream.peek(1):
                 done = True

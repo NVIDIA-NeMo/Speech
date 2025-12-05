@@ -19,12 +19,14 @@
 import pickle
 import sys
 from collections.abc import Iterable
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-import nemo.collections.multimodal.speech_llm.modules.common.text_generation_utils as text_generation_utils
+if TYPE_CHECKING:
+    import nemo.collections.multimodal.speech_llm.modules.common.text_generation_utils as text_generation_utils
+
 from nemo.collections.common.tokenizers.tabular_tokenizer import TabularTokenizer
 from nemo.collections.multimodal.speech_llm.modules.common.audio_text_generation_strategy import (
     model_inference_strategy_dispatcher,

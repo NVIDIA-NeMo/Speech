@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Optional
 
 # NB: PYTORCH_CUDA_ALLOC_CONF should be set before importing pytorch / nemo
+# using expandable_segments can save more than 10x GPU memory when using small chunks
 alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
 if "expandable_segments" not in alloc_conf:
     if len(alloc_conf) > 0:

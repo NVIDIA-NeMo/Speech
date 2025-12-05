@@ -162,7 +162,7 @@ class LLMTranslator:
         """
         try:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device_id)
-            model = LLM(model=self.model_name, **llm_params, device=self.device_str)
+            model = LLM(model=self.model_name, **llm_params)
             return model
         except Exception as e:
             raise RuntimeError(f"Model loading failed: {str(e)}")

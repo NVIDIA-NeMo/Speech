@@ -30,7 +30,8 @@ python asr_streaming_infer.py \
         output_filename=<path to output jsonfile> \
         lang=en \
         enable_pnc=False \
-        enable_itn=True \
+        enable_itn=False \
+        enable_nmt=False \
         asr_output_granularity=segment \
         ...
         # See ../conf/asr_streaming_inference/*.yaml for all available options

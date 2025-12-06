@@ -13,9 +13,11 @@
 # limitations under the License.
 
 import copy
+import math
 
 import torch
 import torch.nn as nn
+from torch.nn.functional import gelu
 
 from nemo.collections.common.parts import form_attention_mask
 

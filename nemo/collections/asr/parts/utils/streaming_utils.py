@@ -1592,11 +1592,164 @@ class CacheAwareStreamingAudioBuffer:
         else:
             self.sampling_frames = None
 
-    def __iter__(self):
-        while True:
-            if self.buffer_idx >= self.buffer.size(-1):
-                return
+    def get_next_chunk(self):
+        """
+        Get the next audio chunk for streaming processing.
 
+        This method can be called repeatedly after appending audio via append_audio()
+        to process the audio in a streaming fashion.
+
+        Returns:
+            tuple: (audio_chunk, chunk_lengths) if there's data to process, None if buffer is exhausted
+                - audio_chunk: tensor containing the audio chunk with pre-encode cache prepended
+                - chunk_lengths: tensor containing the valid lengths for each stream in the batch
+        """
+        if self.buffer is None or self.buffer_idx >= self.buffer.size(-1):
+            return None
+
+        # Determine chunk size based on position (first chunk may be different)
+        if self.buffer_idx == 0 and isinstance(self.streaming_cfg.chunk_size, list):
+            if self.pad_and_drop_preencoded:
+                chunk_size = self.streaming_cfg.chunk_size[1]
+            else:
+                chunk_size = self.streaming_cfg.chunk_size[0]
+        else:
+            chunk_size = (
+                self.streaming_cfg.chunk_size[1]
+                if isinstance(self.streaming_cfg.chunk_size, list)
+                else self.streaming_cfg.chunk_size
+            )
+
+        # Determine shift size based on position (first chunk may be different)
+        if self.buffer_idx == 0 and isinstance(self.streaming_cfg.shift_size, list):
+            if self.pad_and_drop_preencoded:
+                shift_size = self.streaming_cfg.shift_size[1]
+            else:
+                shift_size = self.streaming_cfg.shift_size[0]
+        else:
+            shift_size = (
+                self.streaming_cfg.shift_size[1]
+                if isinstance(self.streaming_cfg.shift_size, list)
+                else self.streaming_cfg.shift_size
+            )
+
+        # Extract the current audio chunk
+        audio_chunk = self.buffer[:, :, self.buffer_idx : self.buffer_idx + chunk_size]
+
+        # For single-stream streaming: wait if not enough data accumulated yet
+        # For multi-stream batches: rely on chunk_lengths to mask invalid streams
+        if len(self.streams_length) == 1:
+            available_valid_frames = self.streams_length[0] - self.buffer_idx
+            if available_valid_frames < chunk_size:
+                # Not enough data accumulated yet, wait for more audio
+                return None
+
+        # Check if we have enough frames for downsampling (if applicable)
+        if self.sampling_frames is not None:
+            if self.buffer_idx == 0 and isinstance(self.sampling_frames, list):
+                cur_sampling_frames = self.sampling_frames[0]
+            else:
+                cur_sampling_frames = (
+                    self.sampling_frames[1] if isinstance(self.sampling_frames, list) else self.sampling_frames
+                )
+            if audio_chunk.size(-1) < cur_sampling_frames:
+                return None
+
+        # Add the pre-encode cache to the chunk
+        zeros_pads = None
+        if self.buffer_idx == 0 and isinstance(self.streaming_cfg.pre_encode_cache_size, list):
+            if self.pad_and_drop_preencoded:
+                cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[1]
+            else:
+                cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[0]
+            cache_pre_encode = torch.zeros(
+                (audio_chunk.size(0), self.input_features, cache_pre_encode_num_frames),
+                device=audio_chunk.device,
+                dtype=audio_chunk.dtype,
+            )
+        else:
+            if isinstance(self.streaming_cfg.pre_encode_cache_size, list):
+                pre_encode_cache_size = self.streaming_cfg.pre_encode_cache_size[1]
+            else:
+                pre_encode_cache_size = self.streaming_cfg.pre_encode_cache_size
+
+            start_pre_encode_cache = self.buffer_idx - pre_encode_cache_size
+            if start_pre_encode_cache < 0:
+                start_pre_encode_cache = 0
+            cache_pre_encode = self.buffer[:, :, start_pre_encode_cache : self.buffer_idx]
+            if cache_pre_encode.size(-1) < pre_encode_cache_size:
+                zeros_pads = torch.zeros(
+                    (
+                        audio_chunk.size(0),
+                        audio_chunk.size(-2),
+                        pre_encode_cache_size - cache_pre_encode.size(-1),
+                    ),
+                    device=audio_chunk.device,
+                    dtype=audio_chunk.dtype,
+                )
+
+        added_len = cache_pre_encode.size(-1)
+        audio_chunk = torch.cat((cache_pre_encode, audio_chunk), dim=-1)
+
+        # Apply online normalization if enabled
+        if self.online_normalization:
+            audio_chunk, x_mean, x_std = normalize_batch(
+                x=audio_chunk,
+                seq_len=torch.tensor([audio_chunk.size(-1)] * audio_chunk.size(0)),
+                normalize_type=self.model_normalize_type,
+            )
+
+        # Add zero padding if needed
+        if zeros_pads is not None:
+            audio_chunk = torch.cat((zeros_pads, audio_chunk), dim=-1)
+            added_len += zeros_pads.size(-1)
+
+        # Calculate valid chunk lengths for each stream
+        max_chunk_lengths = self.streams_length - self.buffer_idx
+        max_chunk_lengths = max_chunk_lengths + added_len
+        chunk_lengths = torch.clamp(max_chunk_lengths, min=0, max=audio_chunk.size(-1))
+
+        # Update buffer position and step counter
+        self.buffer_idx += shift_size
+        self.step += 1
+
+        return audio_chunk, chunk_lengths
+
+    def __iter__(self):
+        """
+        Iterator interface for batch processing.
+        Yields chunks by repeatedly calling get_next_chunk().
+        """
+        while True:
+            result = self.get_next_chunk()
+            if result is None:
+                return
+            yield result
+
+    def is_buffer_empty(self):
+        if self.buffer_idx >= self.buffer.size(-1):
+            return True
+        else:
+            return False
+
+    def has_next_chunk(self):
+        """
+        Check if there are more chunks available to process.
+
+        Returns:
+            bool: True if get_next_chunk() will return data, False otherwise
+        """
+        if self.buffer is None or self.streams_length is None:
+            return False
+
+        # Check if we've processed past the buffer
+        if self.buffer_idx >= self.buffer.size(-1):
+            return False
+
+        # For single-stream: check if enough data accumulated
+        # For multi-stream batches: always return True and let chunk_lengths handle validity
+        if len(self.streams_length) == 1:
+            # Determine the required chunk size for the next chunk
             if self.buffer_idx == 0 and isinstance(self.streaming_cfg.chunk_size, list):
                 if self.pad_and_drop_preencoded:
                     chunk_size = self.streaming_cfg.chunk_size[1]
@@ -1609,94 +1762,12 @@ class CacheAwareStreamingAudioBuffer:
                     else self.streaming_cfg.chunk_size
                 )
 
-            if self.buffer_idx == 0 and isinstance(self.streaming_cfg.shift_size, list):
-                if self.pad_and_drop_preencoded:
-                    shift_size = self.streaming_cfg.shift_size[1]
-                else:
-                    shift_size = self.streaming_cfg.shift_size[0]
-            else:
-                shift_size = (
-                    self.streaming_cfg.shift_size[1]
-                    if isinstance(self.streaming_cfg.shift_size, list)
-                    else self.streaming_cfg.shift_size
-                )
-
-            audio_chunk = self.buffer[:, :, self.buffer_idx : self.buffer_idx + chunk_size]
-
-            if self.sampling_frames is not None:
-                # checking to make sure the audio chunk has enough frames to produce at least one output after
-                # downsampling
-                if self.buffer_idx == 0 and isinstance(self.sampling_frames, list):
-                    cur_sampling_frames = self.sampling_frames[0]
-                else:
-                    cur_sampling_frames = (
-                        self.sampling_frames[1] if isinstance(self.sampling_frames, list) else self.sampling_frames
-                    )
-                if audio_chunk.size(-1) < cur_sampling_frames:
-                    return
-
-            # Adding the cache needed for the pre-encoder part of the model to the chunk
-            # if there is not enough frames to be used as the pre-encoding cache, zeros would be added
-            zeros_pads = None
-            if self.buffer_idx == 0 and isinstance(self.streaming_cfg.pre_encode_cache_size, list):
-                if self.pad_and_drop_preencoded:
-                    cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[1]
-                else:
-                    cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[0]
-                cache_pre_encode = torch.zeros(
-                    (audio_chunk.size(0), self.input_features, cache_pre_encode_num_frames),
-                    device=audio_chunk.device,
-                    dtype=audio_chunk.dtype,
-                )
-            else:
-                if isinstance(self.streaming_cfg.pre_encode_cache_size, list):
-                    pre_encode_cache_size = self.streaming_cfg.pre_encode_cache_size[1]
-                else:
-                    pre_encode_cache_size = self.streaming_cfg.pre_encode_cache_size
-
-                start_pre_encode_cache = self.buffer_idx - pre_encode_cache_size
-                if start_pre_encode_cache < 0:
-                    start_pre_encode_cache = 0
-                cache_pre_encode = self.buffer[:, :, start_pre_encode_cache : self.buffer_idx]
-                if cache_pre_encode.size(-1) < pre_encode_cache_size:
-                    zeros_pads = torch.zeros(
-                        (
-                            audio_chunk.size(0),
-                            audio_chunk.size(-2),
-                            pre_encode_cache_size - cache_pre_encode.size(-1),
-                        ),
-                        device=audio_chunk.device,
-                        dtype=audio_chunk.dtype,
-                    )
-
-            added_len = cache_pre_encode.size(-1)
-            audio_chunk = torch.cat((cache_pre_encode, audio_chunk), dim=-1)
-
-            if self.online_normalization:
-                audio_chunk, x_mean, x_std = normalize_batch(
-                    x=audio_chunk,
-                    seq_len=torch.tensor([audio_chunk.size(-1)] * audio_chunk.size(0)),
-                    normalize_type=self.model_normalize_type,
-                )
-
-            if zeros_pads is not None:
-                # TODO: check here when zero_pads is not None and added_len is already non-zero
-                audio_chunk = torch.cat((zeros_pads, audio_chunk), dim=-1)
-                added_len += zeros_pads.size(-1)
-
-            max_chunk_lengths = self.streams_length - self.buffer_idx
-            max_chunk_lengths = max_chunk_lengths + added_len
-            chunk_lengths = torch.clamp(max_chunk_lengths, min=0, max=audio_chunk.size(-1))
-
-            self.buffer_idx += shift_size
-            self.step += 1
-            yield audio_chunk, chunk_lengths
-
-    def is_buffer_empty(self):
-        if self.buffer_idx >= self.buffer.size(-1):
-            return True
+            # Check if we have enough valid data available
+            available_valid_frames = self.streams_length[0] - self.buffer_idx
+            return available_valid_frames >= chunk_size
         else:
-            return False
+            # Multi-stream batch: return True if buffer not exhausted
+            return True
 
     def __len__(self):
         return len(self.buffer)

@@ -19,7 +19,7 @@ import json
 import os
 from abc import ABC
 from functools import partial
-from typing import List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
 import hydra
 import sacrebleu
@@ -40,7 +40,10 @@ from nemo.collections.multimodal.speech_llm.data.build_dataset import (
     build_speechllm_dataloader,
     build_speechllm_dataset,
 )
-from nemo.collections.multimodal.speech_llm.modules.common.audio_text_generation_utils import generate
+
+if TYPE_CHECKING:
+    from nemo.collections.multimodal.speech_llm.modules.common.audio_text_generation_utils import generate
+
 from nemo.collections.multimodal.speech_llm.modules.perception_modules import (
     AudioPerceptionModule,
     MultiAudioPerceptionModule,

@@ -423,8 +423,7 @@ if __name__ == "__main__":
 
     env_vars = args.custom_env_vars
 
-    if args.gpu.lower() == 'gb200':
-        env_vars |= {"NCCL_NET_GDR_LEVEL": "PHB"}
+
 
     plugins = [build_perf_env_plugin(args, pp_size=pp_size)]
 

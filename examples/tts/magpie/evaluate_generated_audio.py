@@ -27,7 +27,6 @@ from functools import partial
 
 import librosa
 import numpy as np
-import scripts.magpietts.evalset_config as evalset_config
 import soundfile as sf
 import torch
 from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForConditionalGeneration, WhisperProcessor
@@ -35,6 +34,8 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
+
+import examples.tts.magpie.evalset_config as evalset_config
 
 
 def find_generated_files(audio_dir, prefix, extension):

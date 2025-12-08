@@ -182,4 +182,3 @@ def create_combined_box_plot(
     plt.savefig(output_path, format="png", bbox_inches="tight", dpi=300)
     plt.close()
     logger.info(f"Combined box plot saved to: {output_path}")
-

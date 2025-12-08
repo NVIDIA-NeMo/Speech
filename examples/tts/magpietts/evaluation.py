@@ -23,11 +23,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
-import numpy as np
-import scipy.stats as stats
-
 # Import the existing evaluation module
 import examples.tts.magpietts.evaluate_generated_audio as evaluate_generated_audio
+import numpy as np
+import scipy.stats as stats
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +72,7 @@ def evaluate_generated_audio_batch(
             - avg_metrics: Dictionary of averaged metrics across all files.
             - filewise_metrics: List of per-file metric dictionaries.
     """
-    logger.info(
-        f"Evaluating generated audio from {generated_audio_dir} "
-        f"against manifest {manifest_path}"
-    )
+    logger.info(f"Evaluating generated audio from {generated_audio_dir} " f"against manifest {manifest_path}")
 
     avg_metrics, filewise_metrics = evaluate_generated_audio.evaluate(
         manifest_path=manifest_path,
@@ -154,4 +150,3 @@ STANDARD_METRIC_KEYS = [
 
 # Default metrics to show in violin plots
 DEFAULT_VIOLIN_METRICS = ['cer', 'pred_context_ssim', 'utmosv2']
-

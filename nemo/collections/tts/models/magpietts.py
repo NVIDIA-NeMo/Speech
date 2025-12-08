@@ -483,9 +483,9 @@ class MagpieTTSModel(ModelPT):
         state_dict = self.update_ckpt(state_dict)
 
         # Check if checkpoint has baked context embedding
-        has_baked_embedding_in_ckpt = 'baked_context_embedding' in state_dict and state_dict[
-            'baked_context_embedding'
-        ] is not None
+        has_baked_embedding_in_ckpt = (
+            'baked_context_embedding' in state_dict and state_dict['baked_context_embedding'] is not None
+        )
 
         # Load baked embedding buffers if present
         if has_baked_embedding_in_ckpt:
@@ -1547,13 +1547,11 @@ class MagpieTTSModel(ModelPT):
                     if self.has_baked_context_embedding:
                         batch_size = text.size(0)
                         # Expand baked embedding to batch size: (T, E) -> (B, T, E)
-                        context_embeddings = self.baked_context_embedding.unsqueeze(0).expand(
-                            batch_size, -1, -1
-                        )
+                        context_embeddings = self.baked_context_embedding.unsqueeze(0).expand(batch_size, -1, -1)
                         # Create context mask from baked length
-                        context_input_lens = self.baked_context_embedding_len.unsqueeze(0).expand(
-                            batch_size
-                        ).to(text.device)
+                        context_input_lens = (
+                            self.baked_context_embedding_len.unsqueeze(0).expand(batch_size).to(text.device)
+                        )
                         context_mask = get_mask_from_lengths(context_input_lens)
                     else:
                         context_embeddings = self.context_encoder(

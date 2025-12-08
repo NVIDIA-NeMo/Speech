@@ -46,6 +46,8 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+# Import dataset configuration
+import examples.tts.magpietts.evalset_config as evalset_config
 import numpy as np
 
 # Import the modular components
@@ -57,15 +59,8 @@ from examples.tts.magpietts.evaluation import (
     evaluate_generated_audio_batch,
 )
 from examples.tts.magpietts.inference import InferenceConfig, MagpieInferenceRunner
-from examples.tts.magpietts.utils import (
-    ModelLoadConfig,
-    get_experiment_name_from_checkpoint_path,
-    load_magpie_model,
-)
+from examples.tts.magpietts.utils import ModelLoadConfig, get_experiment_name_from_checkpoint_path, load_magpie_model
 from examples.tts.magpietts.visualization import create_combined_box_plot, create_violin_plot
-
-# Import dataset configuration
-import examples.tts.magpietts.evalset_config as evalset_config
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 
@@ -78,8 +73,7 @@ logger = logging.getLogger(__name__)
 
 # Default evaluation datasets
 EVALUATION_DATASETS = (
-    "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,"
-    "vctk,libritts_seen,libritts_test_clean"
+    "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short," "vctk,libritts_seen,libritts_test_clean"
 )
 
 
@@ -332,50 +326,67 @@ def create_argument_parser() -> argparse.ArgumentParser:
     # Model loading arguments
     model_group = parser.add_argument_group('Model Loading')
     model_group.add_argument(
-        '--hparams_files', type=str, default=None,
+        '--hparams_files',
+        type=str,
+        default=None,
         help='Comma-separated paths to hparams.yaml files (use with --checkpoint_files)',
     )
     model_group.add_argument(
-        '--checkpoint_files', type=str, default=None,
+        '--checkpoint_files',
+        type=str,
+        default=None,
         help='Comma-separated paths to .ckpt files (use with --hparams_files)',
     )
     model_group.add_argument(
-        '--nemo_files', type=str, default=None,
+        '--nemo_files',
+        type=str,
+        default=None,
         help='Comma-separated paths to .nemo files (alternative to hparams + checkpoint)',
     )
     model_group.add_argument(
-        '--codecmodel_path', type=str, required=True,
+        '--codecmodel_path',
+        type=str,
+        required=True,
         help='Path to the audio codec model',
     )
     model_group.add_argument(
-        '--hparams_file_from_wandb', action='store_true',
+        '--hparams_file_from_wandb',
+        action='store_true',
         help='Set if hparams file was exported from wandb',
     )
     model_group.add_argument(
-        '--legacy_codebooks', action='store_true',
+        '--legacy_codebooks',
+        action='store_true',
         help='Use legacy codebook indices (for old checkpoints)',
     )
     model_group.add_argument(
-        '--legacy_text_conditioning', action='store_true',
+        '--legacy_text_conditioning',
+        action='store_true',
         help='Use legacy text conditioning (for old checkpoints)',
     )
 
     # Dataset and output arguments
     data_group = parser.add_argument_group('Dataset and Output')
     data_group.add_argument(
-        '--datasets', type=str, default=None,
+        '--datasets',
+        type=str,
+        default=None,
         help=f'Comma-separated dataset names (default: {EVALUATION_DATASETS})',
     )
     data_group.add_argument(
-        '--out_dir', type=str, required=True,
+        '--out_dir',
+        type=str,
+        required=True,
         help='Output directory for generated audio and metrics',
     )
     data_group.add_argument(
-        '--log_exp_name', action='store_true',
+        '--log_exp_name',
+        action='store_true',
         help='Include experiment name in output folder name',
     )
     data_group.add_argument(
-        '--clean_up_disk', action='store_true',
+        '--clean_up_disk',
+        action='store_true',
         help='Delete output directory after completion',
     )
 
@@ -393,11 +404,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
     prior_group.add_argument('--attention_prior_epsilon', type=float, default=0.1)
     prior_group.add_argument('--attention_prior_lookahead_window', type=int, default=5)
     prior_group.add_argument(
-        '--estimate_alignment_from_layers', type=str, default=None,
+        '--estimate_alignment_from_layers',
+        type=str,
+        default=None,
         help='Comma-separated layer indices for alignment estimation',
     )
     prior_group.add_argument(
-        '--apply_prior_to_layers', type=str, default=None,
+        '--apply_prior_to_layers',
+        type=str,
+        default=None,
         help='Comma-separated layer indices to apply prior',
     )
     prior_group.add_argument('--start_prior_after_n_audio_steps', type=int, default=0)
@@ -409,18 +424,24 @@ def create_argument_parser() -> argparse.ArgumentParser:
     lt_group.add_argument('--maskgit_noise_scale', type=float, default=0.0)
     lt_group.add_argument('--maskgit_fixed_schedule', type=int, nargs='+', default=None)
     lt_group.add_argument(
-        '--maskgit_sampling_type', default=None,
+        '--maskgit_sampling_type',
+        default=None,
         choices=["default", "causal", "purity_causal", "purity_default"],
     )
 
     # EOS detection
     eos_group = parser.add_argument_group('EOS Detection')
     eos_group.add_argument(
-        '--eos_detection_method', type=str, default="argmax_or_multinomial_any",
+        '--eos_detection_method',
+        type=str,
+        default="argmax_or_multinomial_any",
         choices=[
-            "argmax_any", "argmax_or_multinomial_any",
-            "argmax_all", "argmax_or_multinomial_all",
-            "argmax_zero_cb", "argmax_or_multinomial_zero_cb",
+            "argmax_any",
+            "argmax_or_multinomial_any",
+            "argmax_all",
+            "argmax_or_multinomial_all",
+            "argmax_zero_cb",
+            "argmax_or_multinomial_zero_cb",
         ],
     )
     eos_group.add_argument('--ignore_finished_sentence_tracking', action='store_true')
@@ -428,7 +449,8 @@ def create_argument_parser() -> argparse.ArgumentParser:
     # Evaluation arguments
     eval_group = parser.add_argument_group('Evaluation')
     eval_group.add_argument(
-        '--run_evaluation', action='store_true',
+        '--run_evaluation',
+        action='store_true',
         help='Run evaluation after inference (default: inference only)',
     )
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
@@ -437,7 +459,9 @@ def create_argument_parser() -> argparse.ArgumentParser:
     eval_group.add_argument('--confidence_level', type=float, default=0.95)
     eval_group.add_argument('--disable_utmosv2', action='store_true')
     eval_group.add_argument(
-        '--violin_plot_metrics', type=str, nargs='*',
+        '--violin_plot_metrics',
+        type=str,
+        nargs='*',
         default=['cer', 'pred_context_ssim', 'utmosv2'],
     )
 
@@ -470,11 +494,7 @@ def main():
     has_nemo_mode = args.nemo_files is not None and args.nemo_files != "null"
 
     if not has_checkpoint_mode and not has_nemo_mode:
-        parser.error(
-            "You must provide either:\n"
-            "  1. --hparams_files and --checkpoint_files\n"
-            "  2. --nemo_files"
-        )
+        parser.error("You must provide either:\n" "  1. --hparams_files and --checkpoint_files\n" "  2. --nemo_files")
 
     # Build configurations
     inference_config = InferenceConfig(
@@ -568,16 +588,12 @@ def main():
     # Check quality targets
     if cer is not None and args.cer_target is not None:
         if cer > args.cer_target:
-            raise ValueError(
-                f"CER {cer:.4f} exceeds target {args.cer_target:.4f}"
-            )
+            raise ValueError(f"CER {cer:.4f} exceeds target {args.cer_target:.4f}")
         logger.info(f"CER {cer:.4f} meets target {args.cer_target:.4f}")
 
     if ssim is not None and args.ssim_target is not None:
         if ssim < args.ssim_target:
-            raise ValueError(
-                f"SSIM {ssim:.4f} below target {args.ssim_target:.4f}"
-            )
+            raise ValueError(f"SSIM {ssim:.4f} below target {args.ssim_target:.4f}")
         logger.info(f"SSIM {ssim:.4f} meets target {args.ssim_target:.4f}")
 
     logger.info("Inference and evaluation completed successfully.")
@@ -585,4 +601,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

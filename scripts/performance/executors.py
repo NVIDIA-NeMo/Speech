@@ -95,8 +95,6 @@ def slurm_executor(
     if wandb_key is not None:
         PERF_ENV_VARS["WANDB_API_KEY"] = wandb_key
 
-
-
     if nemo_home != DEFAULT_NEMO_CACHE_HOME:  # DO NOT change this to 'DEFAULT_NEMO_HOME'/'NEMO_HOME'
         PERF_ENV_VARS["NEMO_HOME"] = nemo_home
         mounts.extend([f"{nemo_home}:{nemo_home}"])

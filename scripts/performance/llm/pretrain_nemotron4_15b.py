@@ -158,7 +158,6 @@ if __name__ == "__main__":
 
     env_vars = {}
 
-
     if args.cluster_type == "runai":
         pvcs = []
         for item in args.custom_mounts:

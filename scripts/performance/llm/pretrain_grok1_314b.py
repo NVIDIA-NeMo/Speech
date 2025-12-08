@@ -419,8 +419,6 @@ if __name__ == "__main__":
 
     env_vars = args.custom_env_vars
 
-
-
     plugins = [build_perf_env_plugin(args, pp_size=pp_size)]
 
     if args.enable_nsys:

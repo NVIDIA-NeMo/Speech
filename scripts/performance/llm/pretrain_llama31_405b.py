@@ -215,8 +215,6 @@ if __name__ == "__main__":
     else:
         env_vars = {}
 
-
-
     plugins = [build_perf_env_plugin(args, pp_size=pp_size)]
     if args.enable_memory_profile:
         assert args.memory_profile_out_path is not None

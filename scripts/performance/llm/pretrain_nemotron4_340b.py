@@ -178,8 +178,6 @@ if __name__ == "__main__":
 
     env_vars = {}
 
-
-
     executor = slurm_executor(
         args.gpu.lower(),
         args.account,

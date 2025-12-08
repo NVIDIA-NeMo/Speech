@@ -15,8 +15,9 @@ import json
 import os
 import random
 import time
+from dataclasses import dataclass
 from functools import partial
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import soundfile as sf
@@ -51,6 +52,36 @@ from nemo.collections.tts.parts.utils.helpers import (
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+
+
+@dataclass
+class InferBatchOutput:
+    """Output dataclass for MagpieTTS infer_batch method.
+
+    This provides a consistent return type regardless of which optional outputs
+    are requested.
+
+    Attributes:
+        predicted_audio: Generated audio waveforms. Shape: (B, T_audio).
+        predicted_audio_lens: Length of each audio in samples. Shape: (B,).
+        predicted_codes: Generated audio codec tokens. Shape: (B, num_codebooks, T_frames).
+        predicted_codes_lens: Length of each code sequence in frames. Shape: (B,).
+        rtf_metrics: Dictionary containing real-time factor and timing metrics.
+        cross_attention_maps: Optional cross-attention visualization maps.
+            List of numpy arrays, one per batch item. Only populated if
+            return_cross_attn_probs=True.
+        headwise_cross_attention_maps: Optional per-head cross-attention maps.
+            Only populated if return_cross_attn_probs=True and
+            compute_all_heads_attn_maps=True.
+    """
+
+    predicted_audio: torch.Tensor
+    predicted_audio_lens: torch.Tensor
+    predicted_codes: torch.Tensor
+    predicted_codes_lens: torch.Tensor
+    rtf_metrics: Dict[str, Any]
+    cross_attention_maps: Optional[List[Any]] = None
+    headwise_cross_attention_maps: Optional[List[Any]] = None
 
 
 def worker_init_fn(worker_id):
@@ -2504,6 +2535,8 @@ class MagpieTTSModel(ModelPT):
                 'batch_size': text.size(0),
             }
             torch.cuda.empty_cache()
+            cross_attention_maps = None
+            headwise_cross_attention_maps = None
             if return_cross_attn_probs:
                 cross_attention_maps, headwise_cross_attention_maps = self.get_inference_attention_plots(
                     cross_attention_scores_all_timesteps,
@@ -2514,18 +2547,16 @@ class MagpieTTSModel(ModelPT):
                     compute_all_heads_attn_maps,
                     last_attended_timesteps,
                 )
-                return (
-                    predicted_audio,
-                    predicted_audio_lens,
-                    predicted_codes,
-                    predicted_codes_lens,
-                    rtf_metrics,
-                    cross_attention_maps,
-                    headwise_cross_attention_maps,
-                )
-            else:
-                # For backward compatibility
-                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics
+
+            return InferBatchOutput(
+                predicted_audio=predicted_audio,
+                predicted_audio_lens=predicted_audio_lens,
+                predicted_codes=predicted_codes,
+                predicted_codes_lens=predicted_codes_lens,
+                rtf_metrics=rtf_metrics,
+                cross_attention_maps=cross_attention_maps,
+                headwise_cross_attention_maps=headwise_cross_attention_maps,
+            )
 
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
@@ -2534,7 +2565,7 @@ class MagpieTTSModel(ModelPT):
             topk = self.cfg.get('inference_topk', 80)
             use_cfg = self.cfg.get('inference_use_cfg', False)
             cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
-            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, _ = self.infer_batch(
+            output = self.infer_batch(
                 batch,
                 max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
                 temperature=temperature,
@@ -2542,6 +2573,10 @@ class MagpieTTSModel(ModelPT):
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
             )
+            predicted_audio = output.predicted_audio
+            predicted_audio_lens = output.predicted_audio_lens
+            predicted_codes = output.predicted_codes
+            predicted_codes_lens = output.predicted_codes_lens
 
             for logger in self.loggers:
                 is_wandb = isinstance(logger, WandbLogger)

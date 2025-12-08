@@ -98,7 +98,7 @@ class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
             topk = self.cfg.get('inference_topk', 80)
             use_cfg = self.cfg.get('inference_use_cfg', False)
             cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
-            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, _ = self.infer_batch(
+            output = self.infer_batch(
                 batch,
                 max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
                 temperature=temperature,
@@ -106,6 +106,10 @@ class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
             )
+            predicted_audio = output.predicted_audio
+            predicted_audio_lens = output.predicted_audio_lens
+            predicted_codes = output.predicted_codes
+            predicted_codes_lens = output.predicted_codes_lens
             predicted_audio_paths = []
             audio_durations = []
             batch_invalid = False
@@ -612,7 +616,7 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             use_cfg = random.random() < self.cfg.inference_cfg_prob
             cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
 
-        predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, _ = self.infer_batch(
+        output = self.infer_batch(
             batch_repeated,
             max_decoder_steps=self.max_decoder_steps,
             temperature=temperature,
@@ -622,6 +626,10 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             use_local_transformer_for_inference=use_local_transformer_for_inference,
             use_LT_kv_cache=False,  # We don't use KV caching for local transformer in GRPO due to issues.
         )
+        predicted_audio = output.predicted_audio
+        predicted_audio_lens = output.predicted_audio_lens
+        predicted_codes = output.predicted_codes
+        predicted_codes_lens = output.predicted_codes_lens
         predicted_audio_paths = []
         audio_durations = []
         for idx in range(predicted_audio.size(0)):

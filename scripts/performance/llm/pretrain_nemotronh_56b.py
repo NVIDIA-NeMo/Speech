@@ -152,8 +152,7 @@ if __name__ == "__main__":
 
     custom_env_vars = {}
 
-    if args.gpu.lower() == 'gb200':
-        custom_env_vars |= {"NCCL_NET_GDR_LEVEL": "PHB"}
+
 
     if args.enable_nsys:
         plugins.append(

@@ -272,5 +272,3 @@ def get_experiment_name_from_checkpoint_path(checkpoint_path: str) -> str:
     """
     return os.path.basename(os.path.dirname(os.path.dirname(checkpoint_path)))
 
-
-

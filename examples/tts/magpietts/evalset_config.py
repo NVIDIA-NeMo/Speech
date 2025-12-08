@@ -47,11 +47,10 @@ dataset_meta_info = {
         'audio_dir': '/Data/LibriTTS',
         'feature_dir': '/Data/LibriTTS',
     },
-    # We need an4_val_ci just for CI tests
     'an4_val_ci': {
         'manifest_path': '/home/TestData/an4_dataset/an4_val_context_v1.json',
         'audio_dir': '/',
-        'feature_dir': None, 
+        'feature_dir': None,
     },
     'local_longer_1': {
         'manifest_path': '/workspace/NeMo/long_manifests/filtered_test_longer_1_magpie_gemma2_audiowav.json',
@@ -123,11 +122,6 @@ dataset_meta_info = {
         'audio_dir': '/',
         'feature_dir': '/',
     },
-    'lindy': {
-        'manifest_path': '/workspace/NeMo/manifest_11_3_rel/en_lindy_other.json',
-        'audio_dir': '/',
-        'feature_dir': '/',
-    },
     'sean': {
         'manifest_path': '/workspace/NeMo/manifest_11_3_rel/en_sean_additional.json',
         'audio_dir': '/',
@@ -139,3 +133,4 @@ dataset_meta_info = {
         'feature_dir': '/',
     },
 }
+

@@ -21,7 +21,7 @@ This package provides modular components for:
 - Metrics visualization (visualization.py)
 
 Example Usage:
-    from examples.tts.magpie import (
+    from examples.tts.magpietts import (
         InferenceConfig,
         MagpieInferenceRunner,
         load_magpie_model,
@@ -40,16 +40,16 @@ Example Usage:
     runner = MagpieInferenceRunner(model, inference_config)
 """
 
-from examples.tts.magpie.evaluation import (
+from examples.tts.magpietts.evaluation import (
     DEFAULT_VIOLIN_METRICS,
     STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_batch,
 )
-from examples.tts.magpie.inference import InferenceConfig, MagpieInferenceRunner
-from examples.tts.magpie.utils import ModelLoadConfig, load_magpie_model
-from examples.tts.magpie.visualization import create_combined_box_plot, create_violin_plot
+from examples.tts.magpietts.inference import InferenceConfig, MagpieInferenceRunner
+from examples.tts.magpietts.utils import ModelLoadConfig, load_magpie_model
+from examples.tts.magpietts.visualization import create_combined_box_plot, create_violin_plot
 
 __all__ = [
     # Utils

@@ -408,5 +408,3 @@ class MagpieInferenceRunner:
 
         return mean_metrics
 
-
-

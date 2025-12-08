@@ -19,14 +19,14 @@ It decouples inference and evaluation into separate modules for better maintaina
 
 Example usage:
     # Inference only (from .nemo file) - default behavior
-    python examples/tts/magpie_inference.py \\
+    python examples/tts/magpietts_inference.py \\
         --nemo_files /path/to/model.nemo \\
         --datasets libritts_test_clean \\
         --out_dir /path/to/output \\
         --codecmodel_path /path/to/codec.nemo
 
     # Inference with evaluation (from checkpoint)
-    python examples/tts/magpie_inference.py \\
+    python examples/tts/magpietts_inference.py \\
         --hparams_files /path/to/hparams.yaml \\
         --checkpoint_files /path/to/model.ckpt \\
         --datasets libritts_test_clean,vctk \\
@@ -49,23 +49,23 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 # Import the modular components
-from examples.tts.magpie.evaluation import (
+from examples.tts.magpietts.evaluation import (
     DEFAULT_VIOLIN_METRICS,
     STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_batch,
 )
-from examples.tts.magpie.inference import InferenceConfig, MagpieInferenceRunner
-from examples.tts.magpie.utils import (
+from examples.tts.magpietts.inference import InferenceConfig, MagpieInferenceRunner
+from examples.tts.magpietts.utils import (
     ModelLoadConfig,
     get_experiment_name_from_checkpoint_path,
     load_magpie_model,
 )
-from examples.tts.magpie.visualization import create_combined_box_plot, create_violin_plot
+from examples.tts.magpietts.visualization import create_combined_box_plot, create_violin_plot
 
 # Import dataset configuration
-import examples.tts.magpie.evalset_config as evalset_config
+import examples.tts.magpietts.evalset_config as evalset_config
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 
@@ -585,6 +585,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
 

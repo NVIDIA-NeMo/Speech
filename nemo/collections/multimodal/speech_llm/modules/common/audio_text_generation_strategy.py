@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 import torch
 
 if TYPE_CHECKING:
+    from nemo.collections.multimodal.speech_llm.modules.common import text_generation_strategy
+else:
     import nemo.collections.multimodal.speech_llm.modules.common.text_generation_strategy as text_generation_strategy
 
 from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import shift_tokens_by_multi_audios

@@ -353,6 +353,10 @@ class MagpieTTSModel(ModelPT):
             self.transcript_decoder_layers = [
                 idx for idx in range(cfg.decoder.n_layers)
             ]  # All layers are used for text
+            # Register buffers for baked context embedding (initially None/empty)
+            # These will be populated when loading a checkpoint with baked embedding
+            self.register_buffer('baked_context_embedding', None)
+            self.register_buffer('baked_context_embedding_len', None)
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
@@ -396,12 +400,18 @@ class MagpieTTSModel(ModelPT):
 
         _speaker_verification_model is only included in older checkpoints with the older single_encoder_sv_tts
         model_type that is no longer supported and can likely be removed in a future version.
+
+        If the model has a baked context embedding, the context_encoder weights are also excluded
+        since they are no longer needed for inference.
         """
         if hasattr(self, '_no_state_dict') and self._no_state_dict:
             return {}
         # Don't save the speaker verification and codec model in the state dict
         state_dict = super().state_dict(destination, prefix, keep_vars)
         keys_substrings_to_exclude = ['_speaker_verification_model', '_codec_model']
+        # If we have a baked context embedding, exclude context_encoder weights
+        if self.has_baked_context_embedding:
+            keys_substrings_to_exclude.append('context_encoder')
         for key in list(state_dict.keys()):
             if any([substring in key for substring in keys_substrings_to_exclude]):
                 del state_dict[key]
@@ -428,6 +438,19 @@ class MagpieTTSModel(ModelPT):
             if self.use_text_conditioning_encoder:
                 raise ValueError("Text conditioning is not supported for frame stacking")
 
+    @property
+    def has_baked_context_embedding(self) -> bool:
+        """Check if the model has a baked context embedding.
+
+        Returns:
+            True if baked_context_embedding buffer is set and not None.
+        """
+        return (
+            hasattr(self, 'baked_context_embedding')
+            and self.baked_context_embedding is not None
+            and self.baked_context_embedding.numel() > 0
+        )
+
     def update_ckpt(self, state_dict):
         """
         Backward compatibility for checkpoints saved with old model names.
@@ -453,20 +476,45 @@ class MagpieTTSModel(ModelPT):
 
         _speaker_verification_model is only included in older checkpoints with the older single_encoder_sv_tts
         model_type that is no longer supported and can likely be removed in a future version.
+
+        Also handles loading baked context embeddings. If the checkpoint contains baked_context_embedding,
+        context_encoder weights are not expected to be present.
         """
         state_dict = self.update_ckpt(state_dict)
+
+        # Check if checkpoint has baked context embedding
+        has_baked_embedding_in_ckpt = 'baked_context_embedding' in state_dict and state_dict[
+            'baked_context_embedding'
+        ] is not None
+
+        # Load baked embedding buffers if present
+        if has_baked_embedding_in_ckpt:
+            self.baked_context_embedding = state_dict['baked_context_embedding']
+            self.baked_context_embedding_len = state_dict['baked_context_embedding_len']
+            logging.info(
+                f"Loaded baked context embedding with shape {self.baked_context_embedding.shape}, "
+                f"length {self.baked_context_embedding_len.item()}"
+            )
+
         if strict == False:
             super().load_state_dict(state_dict, strict=False)
+
+        # Build list of modules to skip
+        modules_to_skip = [
+            '_speaker_verification_model',
+            '_codec_model',
+            '_reference_model',
+            'eval_asr_model',
+            'eval_speaker_verification_model',
+            'whisper_model',
+            'squim_objective_model',
+        ]
+        # Skip context_encoder if checkpoint has baked embedding (weights won't be in checkpoint)
+        if has_baked_embedding_in_ckpt:
+            modules_to_skip.append('context_encoder')
+
         for name, child in self.named_children():
-            if name in [
-                '_speaker_verification_model',
-                '_codec_model',
-                '_reference_model',
-                'eval_asr_model',
-                'eval_speaker_verification_model',
-                'whisper_model',
-                'squim_objective_model',
-            ]:
+            if name in modules_to_skip:
                 continue
             if any(param.numel() > 0 for param in child.parameters()):
                 # If the module has parameters, we want to change the default mapping so that the state_dict gets
@@ -1491,14 +1539,27 @@ class MagpieTTSModel(ModelPT):
                 attn_prior = [_attn_prior, None]
 
             elif self.model_type in ['decoder_context_tts', 'decoder_ce']:
-                dec_context_size = context_mask.size(1)
                 context_embeddings = None  # Address CodeQL
                 if self.model_type == 'decoder_context_tts':
                     context_embeddings = context_input_embedded
                 elif self.model_type == 'decoder_ce':
-                    context_embeddings = self.context_encoder(
-                        context_input_embedded, context_mask, cond=None, cond_mask=None
-                    )['output']
+                    # Check for baked context embedding first
+                    if self.has_baked_context_embedding:
+                        batch_size = text.size(0)
+                        # Expand baked embedding to batch size: (T, E) -> (B, T, E)
+                        context_embeddings = self.baked_context_embedding.unsqueeze(0).expand(
+                            batch_size, -1, -1
+                        )
+                        # Create context mask from baked length
+                        context_input_lens = self.baked_context_embedding_len.unsqueeze(0).expand(
+                            batch_size
+                        ).to(text.device)
+                        context_mask = get_mask_from_lengths(context_input_lens)
+                    else:
+                        context_embeddings = self.context_encoder(
+                            context_input_embedded, context_mask, cond=None, cond_mask=None
+                        )['output']
+                dec_context_size = context_mask.size(1)
                 attn_prior = _attn_prior
                 if attn_prior is not None:
                     # B, audio_timesteps, text_timesteps

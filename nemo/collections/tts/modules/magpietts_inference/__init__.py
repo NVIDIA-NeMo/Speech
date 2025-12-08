@@ -40,7 +40,11 @@ Example Usage:
     runner = MagpieInferenceRunner(model, inference_config)
 """
 
+<<<<<<< HEAD:nemo/collections/tts/modules/magpietts_inference/__init__.py
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
+=======
+from examples.tts.magpietts.evaluation import (
+>>>>>>> Renaming magpietts inference scripts from magpie to magpietts:examples/tts/magpietts/__init__.py
     DEFAULT_VIOLIN_METRICS,
     STANDARD_METRIC_KEYS,
     EvaluationConfig,

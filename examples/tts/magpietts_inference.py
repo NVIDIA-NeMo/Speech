@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 
 # Default evaluation datasets
 EVALUATION_DATASETS = (
-    "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short," "vctk,libritts_seen,libritts_test_clean"
+    "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,vctk,libritts_seen,libritts_test_clean"
 )
 
 

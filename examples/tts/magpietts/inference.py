@@ -308,8 +308,6 @@ class MagpieInferenceRunner:
 
             predicted_audio = output.predicted_audio
             predicted_audio_lens = output.predicted_audio_lens
-            predicted_codes = output.predicted_codes
-            predicted_codes_lens = output.predicted_codes_lens
             rtf_metrics = output.rtf_metrics
             cross_attention_maps = output.cross_attention_maps
 

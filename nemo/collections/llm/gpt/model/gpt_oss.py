@@ -14,6 +14,8 @@
 import json
 import math
 import os
+import logging
+
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -230,7 +232,7 @@ class HFGPTOSSImporter(_BaseGPTOSSImporter):
 
     # pylint: disable=C0115,C0116
     def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
-        logging.setLevel(logging.DEBUG)
+        logger = logging.getLogger(__name__)
         self.trust_remote_code = trust_remote_code
         source_state = self.hf_ckpt_load()
         source = _ModelState(source_state)

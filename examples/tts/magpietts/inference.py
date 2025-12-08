@@ -393,7 +393,7 @@ class MagpieInferenceRunner:
     @staticmethod
     def compute_mean_rtf_metrics(rtf_metrics_list: List[dict]) -> Dict[str, float]:
         """Compute mean RTF metrics across batches."""
-        if not rtf_metrics_list:
+        if not rtf_metrics_list or not rtf_metrics_list[0]:
             return {}
 
         mean_metrics = {}

@@ -451,7 +451,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     eval_group.add_argument(
         '--run_evaluation',
         action='store_true',
-        help='Run evaluation after inference (default: inference only)',
+        help='Run evaluation after inference (default: False, inference only)',
     )
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
     eval_group.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b")
@@ -494,7 +494,11 @@ def main():
     has_nemo_mode = args.nemo_files is not None and args.nemo_files != "null"
 
     if not has_checkpoint_mode and not has_nemo_mode:
-        parser.error("You must provide either:\n" "  1. --hparams_files and --checkpoint_files\n" "  2. --nemo_files")
+        parser.error(
+            "You must provide either:\n" 
+            "  1. --hparams_files and --checkpoint_files\n" 
+            "  2. --nemo_files"
+        )
 
     # Build configurations
     inference_config = InferenceConfig(

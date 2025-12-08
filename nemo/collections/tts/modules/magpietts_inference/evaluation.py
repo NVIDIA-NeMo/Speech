@@ -22,9 +22,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
-import numpy as np
-import scipy.stats as stats
-
 # Import the existing evaluation module
 import nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio as evaluate_generated_audio
 from nemo.utils import logging

@@ -45,6 +45,8 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+# Import dataset configuration
+import examples.tts.magpietts.evalset_config as evalset_config
 import numpy as np
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
@@ -503,11 +505,7 @@ def main():
     has_nemo_mode = args.nemo_files is not None and args.nemo_files != "null"
 
     if not has_checkpoint_mode and not has_nemo_mode:
-        parser.error(
-            "You must provide either:\n"
-            "  1. --hparams_files and --checkpoint_files\n"
-            "  2. --nemo_files"
-        )
+        parser.error("You must provide either:\n" "  1. --hparams_files and --checkpoint_files\n" "  2. --nemo_files")
 
     # Build configurations
     inference_config = InferenceConfig(

@@ -23,6 +23,7 @@ def get_args():
     parser.add_argument("--conversion_type", type=str, required=True)
     parser.add_argument("--source_ckpt", type=str, required=True)
     parser.add_argument("--target_ckpt", type=str, required=True)
+    parser.add_argument("--trust_remote_code", action="store_true")
     return parser.parse_args()
 
 
@@ -33,12 +34,12 @@ if __name__ == "__main__":
     if args.conversion_type == "NEMO2_TO_HF":
 
         exporter = HFNemotronHExporter(args.source_ckpt, model_config=nmh_config)
-        exporter.apply(args.target_ckpt)
+        exporter.apply(args.target_ckpt, args.trust_remote_code)
 
     elif args.conversion_type == "HF_TO_NEMO2":
 
         exporter = HFNemotronHImporter(args.source_ckpt)
-        exporter.apply(args.target_ckpt)
+        exporter.apply(args.target_ckpt, args.trust_remote_code)
 
     else:
         raise ValueError(f"Invalid conversion type: {args.conversion_type}")

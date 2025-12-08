@@ -65,7 +65,7 @@ class QuantizationConfig:
     """Quantization parameters.
 
     Available quantization methods are listed in `QUANT_CFG_CHOICES` dictionary above.
-    Please consult Model Optimizer documentation https://nvidia.github.io/TensorRT-Model-Optimizer/ for details.
+    Please consult Model Optimizer documentation https://nvidia.github.io/Model-Optimizer/ for details.
 
     Quantization algorithm can also be conveniently set to None to perform only weights export step
     for TensorRT-LLM deployment. This is useful to getting baseline results for a full-precision model.

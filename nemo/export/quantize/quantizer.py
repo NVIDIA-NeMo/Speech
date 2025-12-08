@@ -92,7 +92,7 @@ class Quantizer:
     model families is experimental and might not be fully supported.
 
     Available quantization methods are listed in `QUANT_CFG_CHOICES` dictionary above.
-    Please consult Model Optimizer documentation https://nvidia.github.io/TensorRT-Model-Optimizer/ for details.
+    Please consult Model Optimizer documentation https://nvidia.github.io/Model-Optimizer/ for details.
     You can also inspect different choices in examples/nlp/language_modeling/conf/megatron_gpt_ptq.yaml
     for quantization algorithms and calibration data as well as recommended settings.
 

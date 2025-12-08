@@ -283,7 +283,7 @@ class MagpieInferenceRunner:
 
             # Run inference
             start_time = time.time()
-            outputs = self.model.infer_batch(
+            output = self.model.infer_batch(
                 batch_cuda,
                 max_decoder_steps=self.config.max_decoder_steps,
                 temperature=self.config.temperature,
@@ -306,15 +306,12 @@ class MagpieInferenceRunner:
                 eos_detection_method=self.config.eos_detection_method,
             )
 
-            (
-                predicted_audio,
-                predicted_audio_lens,
-                predicted_codes,
-                predicted_codes_lens,
-                rtf_metrics,
-                cross_attention_maps,
-                _,
-            ) = outputs
+            predicted_audio = output.predicted_audio
+            predicted_audio_lens = output.predicted_audio_lens
+            predicted_codes = output.predicted_codes
+            predicted_codes_lens = output.predicted_codes_lens
+            rtf_metrics = output.rtf_metrics
+            cross_attention_maps = output.cross_attention_maps
 
             all_rtf_metrics.append(rtf_metrics)
             elapsed = time.time() - start_time

@@ -446,7 +446,8 @@ class MagpieTTSModel(ModelPT):
             True if baked_context_embedding buffer is set and not None.
         """
         return (
-            hasattr(self, 'baked_context_embedding')
+            self.model_type == 'decoder_ce'
+            and hasattr(self, 'baked_context_embedding')
             and self.baked_context_embedding is not None
             and self.baked_context_embedding.numel() > 0
         )
@@ -2634,8 +2635,6 @@ class MagpieTTSModel(ModelPT):
             )
             predicted_audio = output.predicted_audio
             predicted_audio_lens = output.predicted_audio_lens
-            predicted_codes = output.predicted_codes
-            predicted_codes_lens = output.predicted_codes_lens
 
             for logger in self.loggers:
                 is_wandb = isinstance(logger, WandbLogger)

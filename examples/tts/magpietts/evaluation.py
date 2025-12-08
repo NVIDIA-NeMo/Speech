@@ -15,7 +15,7 @@
 Evaluation wrapper for MagpieTTS generated audio.
 
 This module provides a clean interface to the evaluation functionality,
-wrapping the existing `scripts.magpietts.evaluate_generated_audio` module.
+wrapping the existing `examples.tts.magpietts.evaluate_generated_audio` module.
 """
 from __future__ import annotations
 

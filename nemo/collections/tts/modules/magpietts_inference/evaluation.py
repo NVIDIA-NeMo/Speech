@@ -145,7 +145,3 @@ STANDARD_METRIC_KEYS = [
 
 # Default metrics to show in violin plots
 DEFAULT_VIOLIN_METRICS = ['cer', 'pred_context_ssim', 'utmosv2']
-<<<<<<< HEAD:nemo/collections/tts/modules/magpietts_inference/evaluation.py
-=======
-
->>>>>>> Renaming magpietts inference scripts from magpie to magpietts:examples/tts/magpietts/evaluation.py

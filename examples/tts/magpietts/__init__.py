@@ -68,4 +68,3 @@ __all__ = [
     "create_violin_plot",
     "create_combined_box_plot",
 ]
-

@@ -247,9 +247,7 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
 
     # Validate sample rate
     if cfg_sample_rate is not None and cfg_sample_rate != model.sample_rate:
-        raise ValueError(
-            f"Sample rate mismatch: config has {cfg_sample_rate}, model has {model.sample_rate}"
-        )
+        raise ValueError(f"Sample rate mismatch: config has {cfg_sample_rate}, model has {model.sample_rate}")
 
     # Move to device and set to eval mode
     model.to(device)
@@ -271,4 +269,3 @@ def get_experiment_name_from_checkpoint_path(checkpoint_path: str) -> str:
         The experiment name (parent directory of checkpoints folder).
     """
     return os.path.basename(os.path.dirname(os.path.dirname(checkpoint_path)))
-

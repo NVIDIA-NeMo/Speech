@@ -32,10 +32,7 @@ import soundfile as sf
 import torch
 from PIL import Image
 
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
-    AggregatedTTSTokenizer,
-    IPATokenizer,
-)
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.models import MagpieTTSModel
 
@@ -117,21 +114,25 @@ class InferenceConfig:
         ]
 
         if self.apply_attention_prior:
-            parts.extend([
-                f"{self.attention_prior_epsilon}",
-                f"{self.attention_prior_lookahead_window}",
-                f"{self.start_prior_after_n_audio_steps}",
-                self._format_layer_list(self.estimate_alignment_from_layers),
-                self._format_layer_list(self.apply_prior_to_layers),
-            ])
+            parts.extend(
+                [
+                    f"{self.attention_prior_epsilon}",
+                    f"{self.attention_prior_lookahead_window}",
+                    f"{self.start_prior_after_n_audio_steps}",
+                    self._format_layer_list(self.estimate_alignment_from_layers),
+                    self._format_layer_list(self.apply_prior_to_layers),
+                ]
+            )
 
-        parts.extend([
-            f"LT_{self.use_local_transformer}",
-            f"MaskGit_{self.maskgit_n_steps}_{self.maskgit_sampling_type}",
-            self._format_layer_list(self.maskgit_fixed_schedule),
-            f"EOS_{self.eos_detection_method}",
-            f"IgnoreFST_{self.ignore_finished_sentence_tracking}",
-        ])
+        parts.extend(
+            [
+                f"LT_{self.use_local_transformer}",
+                f"MaskGit_{self.maskgit_n_steps}_{self.maskgit_sampling_type}",
+                self._format_layer_list(self.maskgit_fixed_schedule),
+                f"EOS_{self.eos_detection_method}",
+                f"IgnoreFST_{self.ignore_finished_sentence_tracking}",
+            ]
+        )
 
         return "_".join(parts)
 
@@ -326,7 +327,7 @@ class MagpieInferenceRunner:
 
                 # Save predicted audio
                 audio_np = predicted_audio[idx].float().detach().cpu().numpy()
-                audio_np = audio_np[:predicted_audio_lens[idx]]
+                audio_np = audio_np[: predicted_audio_lens[idx]]
                 audio_path = os.path.join(output_dir, f"predicted_audio_{item_idx}.wav")
                 sf.write(audio_path, audio_np, self.model.sample_rate)
                 generated_audio_paths.append(audio_path)
@@ -403,4 +404,3 @@ class MagpieInferenceRunner:
             mean_metrics[key] = float(sum(values) / len(values)) if values else 0.0
 
         return mean_metrics
-

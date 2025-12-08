@@ -25,6 +25,7 @@ import time
 from contextlib import contextmanager
 from functools import partial
 
+import examples.tts.magpietts.evalset_config as evalset_config
 import librosa
 import numpy as np
 import soundfile as sf
@@ -34,8 +35,6 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
-
-import examples.tts.magpietts.evalset_config as evalset_config
 
 
 def find_generated_files(audio_dir, prefix, extension):
@@ -449,4 +448,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

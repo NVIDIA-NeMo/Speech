@@ -202,8 +202,6 @@ if __name__ == "__main__":
         )
         plugins = [build_perf_env_plugin(args, pp_size=pp_size)]
 
-
-
         if args.enable_nsys:
             plugins.append(
                 NsysPlugin(

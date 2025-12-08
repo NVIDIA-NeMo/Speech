@@ -156,8 +156,6 @@ if __name__ == "__main__":
 
     custom_env_vars = {}
 
-
-
     if args.enable_nsys:
         plugins.append(
             NsysPlugin(

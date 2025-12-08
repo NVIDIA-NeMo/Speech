@@ -107,7 +107,7 @@ def compute_mean_with_confidence_interval(
     """
     if len(metrics_list) < 2:
         # Can't compute CI with fewer than 2 samples
-        return {key: f"{metrics_list[0].get(key, 0):.4f}" for key in metric_keys}
+        return {key: f"{metrics_list[0].get(key, 0):.4f} (single sample)" for key in metric_keys}
 
     results = {}
     for key in metric_keys:

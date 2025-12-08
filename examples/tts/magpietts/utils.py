@@ -83,7 +83,7 @@ def update_config_for_inference(
     """Update model configuration for inference, handling backward compatibility.
 
     This function transforms legacy configuration options to their modern equivalents
-    and disables training-specific settings.
+    and disables training-specific settings. The function updates the model configuration in place and also returns.
 
     Args:
         model_cfg: The model configuration dictionary.

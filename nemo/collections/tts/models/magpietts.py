@@ -443,7 +443,7 @@ class MagpieTTSModel(ModelPT):
         """Check if the model has a baked context embedding.
 
         Returns:
-            True if baked_context_embedding buffer is set and not None.
+            True if baked_context_embedding buffer is set, not None, and has elements.
         """
         return (
             self.model_type == 'decoder_ce'
@@ -497,7 +497,7 @@ class MagpieTTSModel(ModelPT):
                 f"length {self.baked_context_embedding_len.item()}"
             )
 
-        if strict == False:
+        if not strict:
             super().load_state_dict(state_dict, strict=False)
 
         # Build list of modules to skip
@@ -1546,6 +1546,10 @@ class MagpieTTSModel(ModelPT):
                 elif self.model_type == 'decoder_ce':
                     # Check for baked context embedding first
                     if self.has_baked_context_embedding:
+                        # self.baked_context_embedding is a fixed context embedding that is baked into the model.
+                        # This is used when we do not want users to generate speech with context audio or context text.
+                        # This is done to disable zero-shot inference. Users can only generate speech in 1 voice chosen
+                        # by the model development team.
                         batch_size = text.size(0)
                         # Expand baked embedding to batch size: (T, E) -> (B, T, E)
                         context_embeddings = self.baked_context_embedding.unsqueeze(0).expand(batch_size, -1, -1)

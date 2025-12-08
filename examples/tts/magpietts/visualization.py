@@ -15,8 +15,8 @@
 Visualization utilities for MagpieTTS evaluation metrics.
 
 This module provides functions for creating:
-- Violin plots for per-file metrics
-- Combined box plots comparing multiple datasets
+- create_violin_plot: Violin plots for per-file metrics
+- create_combined_box_plot:Combined box plots comparing multiple datasets
 """
 from __future__ import annotations
 

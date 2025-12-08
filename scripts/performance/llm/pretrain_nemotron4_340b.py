@@ -178,9 +178,6 @@ if __name__ == "__main__":
 
     env_vars = {}
 
-    if args.gpu.lower() == 'gb200':
-        env_vars |= {"NCCL_NET_GDR_LEVEL": "PHB"}
-
     executor = slurm_executor(
         args.gpu.lower(),
         args.account,

@@ -175,9 +175,6 @@ if __name__ == "__main__":
         )
         plugins = [build_perf_env_plugin(args, pp_size=pp_size)]
 
-        if args.gpu.lower() == 'gb200':
-            custom_env_vars |= {"NCCL_NET_GDR_LEVEL": "PHB"}
-
         if args.enable_nsys:
             plugins.append(
                 NsysPlugin(

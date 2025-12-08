@@ -157,8 +157,6 @@ if __name__ == "__main__":
     exp_name = f"{splitext(basename(__file__))[0]}_{args.compute_dtype}_{exp_config}"
 
     env_vars = {}
-    if args.gpu.lower() == 'gb200':
-        env_vars |= {"NCCL_NET_GDR_LEVEL": "PHB"}
 
     if args.cluster_type == "runai":
         pvcs = []

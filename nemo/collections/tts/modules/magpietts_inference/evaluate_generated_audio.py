@@ -24,7 +24,6 @@ import time
 from functools import partial
 from pathlib import Path
 
-import examples.tts.magpietts.evalset_config as evalset_config
 import librosa
 import numpy as np
 import soundfile as sf
@@ -48,6 +47,7 @@ def load_evalset_config(config_path: str = None) -> dict:
 
 
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
+import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
 
 
 def find_generated_files(audio_dir, prefix, extension):

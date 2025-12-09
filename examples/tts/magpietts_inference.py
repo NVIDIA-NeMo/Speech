@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 # Import dataset configuration
-import examples.tts.magpietts.evalset_config as evalset_config
+import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
 import numpy as np
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest

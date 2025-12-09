@@ -40,17 +40,16 @@ Example Usage:
     runner = MagpieInferenceRunner(model, inference_config)
 """
 
-<<<<<<< HEAD:nemo/collections/tts/modules/magpietts_inference/__init__.py
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
-=======
-from examples.tts.magpietts.evaluation import (
->>>>>>> Renaming magpietts inference scripts from magpie to magpietts:examples/tts/magpietts/__init__.py
     DEFAULT_VIOLIN_METRICS,
     STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_dir,
 )
+from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
+from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_magpie_model
+from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
 from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_magpie_model
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot

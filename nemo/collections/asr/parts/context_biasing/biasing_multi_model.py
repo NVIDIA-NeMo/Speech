@@ -413,10 +413,8 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         return model_id
 
     def remove_model(self, model_id: int):
-        # set to inactive
-        # decrease num models up to first active model
-        # fill tensors with zeros
-        # raise NotImplementedError
+        if not self.models_active[model_id].item():
+            raise ValueError(f"Trying to remove already deleted model {model_id}")
         self.alphas[model_id] = 0.0
         self.models_active[model_id] = False
         # we can shrink reserved models by removing last K inactive models
@@ -424,9 +422,8 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             model_id_to_remove = self.num_models - 1
             models_active = self.models_active.tolist()
             while model_id_to_remove >= 0 and models_active[model_id] is False:
-                logging.info(f"Clean up memory allocated by biasing model {model_id_to_remove}")
-                self.num_states_total -= self.num_states[model_id]
-                self.num_arcs_extended_total -= self.num_arcs_extended[model_id]
+                self.num_states_total -= self.num_states[model_id_to_remove].item()
+                self.num_arcs_extended_total -= self.num_arcs_extended[model_id_to_remove].item()
                 self.num_models -= 1
                 model_id_to_remove -= 1
 

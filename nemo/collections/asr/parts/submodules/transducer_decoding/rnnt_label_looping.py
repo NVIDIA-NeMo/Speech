@@ -743,7 +743,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         # set length to zero for elements outside the current batch
         self.state.encoder_output_length[current_batch_size:].fill_(0)
         if self.biasing_multi_model is not None:
-            self.state.multi_biasing_ids.copy_(multi_biasing_ids)
+            self.state.multi_biasing_ids[:current_batch_size].copy_(multi_biasing_ids)
+            self.state.multi_biasing_ids[current_batch_size:].fill_(-1)
 
         self._init_decoding_state(current_batch_size=current_batch_size, prev_batched_state=prev_batched_state)
 
@@ -1115,7 +1116,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             for fusion_model_idx, fusion_model_with_params in enumerate(self._all_fusion_models_with_params()):
                 # get fusion scores/states
                 fusion_scores, fusion_states_candidates = fusion_model_with_params.model.advance(
-                    states=self.state.fusion_states_list[fusion_model_idx]
+                    states=self.state.fusion_states_list[fusion_model_idx],
+                    **({"model_ids": self.state.multi_biasing_ids} if fusion_model_with_params.is_multi_model else {}),
                 )
                 if not fusion_model_with_params.is_multi_model:
                     fusion_scores *= fusion_model_with_params.alpha

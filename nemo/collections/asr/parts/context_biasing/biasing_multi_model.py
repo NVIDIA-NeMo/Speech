@@ -69,6 +69,8 @@ class BiasingRequestItemConfig:
 
 
 class GPUBiasingMultiModelBase(abc.ABC, nn.Module):
+    START_STATE = 0
+
     @abstractmethod
     def add_model(self, model: NGramGPULanguageModel, alpha: float = 1.0) -> int:
         raise NotImplementedError
@@ -129,7 +131,6 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
         self.vocab_size: int = vocab_size
         self.float_dtype: torch.dtype | None = None
         self.bos_state: int | None = None
-        self.start_state: int | None = None
         self._params_defined = False
         self.free_ids = set()
         self.num_models = 0
@@ -143,14 +144,13 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
             raise ValueError(f"Inconsistent vocab size: {model.vocab_size}")
         if self.bos_state != model.bos_state:
             raise ValueError(f"Inconsistent bos state: {self.bos_state} vs {model.bos_state}")
-        if self.start_state != model.START_STATE:
-            raise ValueError(f"Inconsistent start state: {self.start_state} vs {model.START_STATE}")
+        if self.START_STATE != model.START_STATE:
+            raise ValueError(f"Inconsistent start state: {self.START_STATE} vs {model.START_STATE}")
 
     def add_model(self, model: NGramGPULanguageModel, alpha: float = 1.0) -> int:
         if not self._params_defined:
             # there were no previous models
             self.bos_state = model.bos_state
-            self.start_state = model.START_STATE
             self.float_dtype = model.arcs_weights.dtype
             self._params_defined = True
         self._check_model_compatibility(model=model)
@@ -189,7 +189,7 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
         if not self._params_defined:
             return torch.zeros([batch_size], device=device, dtype=torch.long)
         return torch.full(
-            [batch_size], fill_value=self.bos_state if bos else self.start_state, device=device, dtype=torch.long
+            [batch_size], fill_value=self.bos_state if bos else self.START_STATE, device=device, dtype=torch.long
         )
 
     def advance(
@@ -233,7 +233,6 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.vocab_size: int = vocab_size
         self.float_dtype: torch.dtype | None = None
         self.bos_state: int | None = None
-        self.start_state: int | None = None
         self._params_defined = False
         self.free_ids = set()
 
@@ -282,8 +281,8 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             raise ValueError(f"Inconsistent vocab size: {model.vocab_size}")
         if self.bos_state != model.bos_state:
             raise ValueError(f"Inconsistent bos state: {self.bos_state} vs {model.bos_state}")
-        if self.start_state != model.START_STATE:
-            raise ValueError(f"Inconsistent start state: {self.start_state} vs {model.START_STATE}")
+        if self.START_STATE != model.START_STATE:
+            raise ValueError(f"Inconsistent start state: {self.START_STATE} vs {model.START_STATE}")
         if not model._final_resolved:
             model._resolve_final()
 
@@ -356,7 +355,6 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         if not self._params_defined:
             # there were no previous models
             self.bos_state = model.bos_state
-            self.start_state = model.START_STATE
             self.float_dtype = model.arcs_weights.dtype
             self._params_defined = True
         self._check_model_compatibility(model=model)
@@ -467,7 +465,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         if not self._params_defined:
             return torch.zeros([batch_size], device=device, dtype=torch.long)
         return torch.full(
-            [batch_size], fill_value=self.bos_state if bos else self.start_state, device=device, dtype=torch.long
+            [batch_size], fill_value=self.bos_state if bos else self.START_STATE, device=device, dtype=torch.long
         )
 
     def advance(
@@ -523,7 +521,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             states_ptr=states,
             new_states_out_ptr=next_states,
             scores_out_ptr=scores,
-            start_state=self.start_state,
+            start_state=self.START_STATE,
             model_ids_ptr=model_ids,
             states_offsets_ptr=states_offsets,
             arcs_offsets_ptr=arcs_offsets,
@@ -601,7 +599,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             )
             out_states = torch.where(state_found, out_states, out_states_add[:, : self.vocab_size])
             # update loop condition; process backoffs
-            start_state_not_processed &= current_states != self.start_state
+            start_state_not_processed &= current_states != self.START_STATE
             accumulated_backoff += self.backoff_weights[current_states + states_offsets] * start_state_not_processed
             torch.where(
                 start_state_not_processed,

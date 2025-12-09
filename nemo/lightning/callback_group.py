@@ -43,7 +43,7 @@ class CallbackGroup:
         return cls._instance
 
     def __init__(self) -> None:
-        self._callbacks: List[BaseCallback] = [OneLoggerNeMoCallback()]
+        self._callbacks: List[BaseCallback] = []
         # Ensure application-end is emitted at most once per process
         self._app_end_emitted: bool = False
 

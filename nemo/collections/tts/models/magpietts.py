@@ -121,12 +121,16 @@ class MagpieTTSModel(ModelPT):
             self.world_size = trainer.num_nodes * trainer.num_devices
 
         # load codec, disable loading of loss modules not needed during inference
-        codec_model_cfg = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), return_config=True)
-        if "use_scl_loss" in codec_model_cfg:
-            codec_model_cfg.use_scl_loss = False
-        codec_model = AudioCodecModel.restore_from(
-            cfg.get('codecmodel_path'), strict=False, override_config_path=codec_model_cfg
-        )
+        codec_model_path = cfg.get('codecmodel_path')
+        if codec_model_path.startswith('nvidia/'):
+            codec_model = AudioCodecModel.from_pretrained(codec_model_path)
+        else:
+            codec_model_cfg = AudioCodecModel.restore_from(codec_model_path, return_config=True)
+            if "use_scl_loss" in codec_model_cfg:
+                codec_model_cfg.use_scl_loss = False
+            codec_model = AudioCodecModel.restore_from(
+                codec_model_path, strict=False, override_config_path=codec_model_cfg
+            )
         self.sample_rate = codec_model.sample_rate
         self.codec_model_samples_per_frame = codec_model.samples_per_frame
         # del codec discriminator to free memory
@@ -2942,6 +2946,169 @@ class MagpieTTSModel(ModelPT):
 
     def setup_test_data(self, dataset_cfg):
         self._test_dl = self._setup_test_dataloader(dataset_cfg)
+
+    def setup_dummy_text_context_in_batch(
+        self,
+        batch: Dict[str, torch.Tensor],
+    ) -> bool:
+        """Setup dummy text context tensors in the batch dictionary.
+        """
+        # No text context provided - set up dummy if model requires text conditioning tensors
+        dummy_context_text = "[NO TEXT CONTEXT]"
+        dummy_tokens = self.tokenizer.encode(
+            text=dummy_context_text, tokenizer_name=self.text_conditioning_tokenizer_name
+        )
+        batch['context_text_tokens'] = torch.tensor([dummy_tokens], device=self.device, dtype=torch.long)
+        batch['context_text_tokens_lens'] = torch.tensor([len(dummy_tokens)], device=self.device, dtype=torch.long)
+        batch['has_text_context'] = torch.tensor([False], device=self.device, dtype=torch.bool)
+
+
+    def setup_dummy_audio_context_in_batch(
+        self,
+        batch: Dict[str, torch.Tensor],
+        context_audio: Optional[torch.Tensor] = None,
+        context_audio_lens: Optional[torch.Tensor] = None,
+    ) -> bool:
+        """Setup dummy audio context tensors in the batch dictionary.
+        """
+        # Model has baked context - create minimal dummy context tensors
+        # These will be ignored in prepare_context_tensors when baked embedding is used
+        dummy_context_codes = torch.zeros(
+            1, self.num_audio_codebooks, 2, device=self.device, dtype=torch.long
+        )
+        dummy_context_codes[:, :, 0] = self.context_audio_bos_id
+        dummy_context_codes[:, :, 1] = self.context_audio_eos_id
+        batch['context_audio_codes'] = dummy_context_codes
+        batch['context_audio_codes_lens'] = torch.tensor([2], device=self.device, dtype=torch.long)
+
+    def do_tts(
+        self,
+        transcript: str,
+        language: str = "en",
+        apply_TN: bool = False,
+        temperature: float = 0.7,
+        topk: int = 80,
+        max_decoder_steps: int = 500,
+        use_cfg: bool = True,
+        cfg_scale: float = 2.5,
+    ) -> tuple:
+        """
+        Generate speech from raw text transcript.
+
+        This is a convenience method for single-utterance text-to-speech synthesis.
+        For batch processing, use `infer_batch` directly. Only supports baked context embedding
+        context injection, NO audio conditioning and text conditioning.
+        Custom voice generation is not supported by this method.
+
+        Args:
+            transcript: Raw text to synthesize.
+            language: Language code for text normalization and tokenization.
+                Supported values depend on model's tokenizer configuration.
+                Common: "en" (English), "de" (German), "es" (Spanish), etc.
+            apply_TN: Whether to apply text normalization to the transcript.
+                If True, uses nemo_text_processing for normalization.
+            temperature: Sampling temperature for token generation.
+            topk: Top-k sampling parameter.
+            max_decoder_steps: Maximum number of decoder steps.
+            use_cfg: Whether to use classifier-free guidance.
+            cfg_scale: Scale factor for classifier-free guidance.
+
+        Returns:
+            Tuple of (audio, audio_len) where:
+                audio: Generated audio waveform. Shape: (1, T_audio).
+                audio_len: Length of generated audio in samples. Shape: (1,).
+
+        Raises:
+            ValueError: If model does not have a baked context embedding.
+            ImportError: If apply_TN=True but nemo_text_processing is not installed.
+
+        Example:
+            >>> # If text does not need to be normalized
+            >>> audio, audio_len = model.do_tts("Hello, how are you today?")
+            >>>
+            >>> # If text needs to be normalized
+            >>> audio, audio_len = model.do_tts(
+            ...     "Hello, how are you today?",
+            ...     apply_TN=True,
+            ... )
+        """
+        assert self.has_baked_context_embedding, "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
+        # Apply text normalization if requested
+        normalized_text = transcript
+        if apply_TN:
+            try:
+                from nemo_text_processing.text_normalization.normalize import Normalizer
+
+                normalizer = Normalizer(input_case='cased', lang=language)
+                normalized_text = normalizer.normalize(transcript, verbose=False)
+                logging.debug(f"Text normalization: '{transcript}' -> '{normalized_text}'")
+            except ImportError:
+                logging.warning(
+                    "nemo_text_processing not installed. Skipping text normalization. "
+                    "Install with: pip install nemo_text_processing"
+                )
+
+        # Determine tokenizer name based on language
+        # Try to find a matching tokenizer, fallback to first available
+        tokenizer_name = None
+        available_tokenizers = list(self.tokenizer.tokenizers.keys())
+        print(f"Available tokenizers: {available_tokenizers}")
+
+        # Common mappings for tokenizer names
+        language_tokenizer_map = {
+            "en": ["english_phoneme", "english"],
+            "de": ["german_phoneme", "german"],
+            "es": ["spanish_phoneme", "spanish"],
+            "fr": ["french_phoneme", "french"],
+            "it": ["italian_phoneme", "italian"],
+            "vi": ["vietnamese_phoneme", "vietnamese"],
+            "zh": ["mandarin_phoneme", "mandarin", "chinese"],
+        }
+
+        # Find matching tokenizer
+        if language in language_tokenizer_map:
+            for candidate in language_tokenizer_map[language]:
+                if candidate in available_tokenizers:
+                    tokenizer_name = candidate
+                    break
+
+        # Fallback to first available tokenizer
+        if tokenizer_name is None:
+            tokenizer_name = available_tokenizers[0]
+            logging.info(
+                f"No tokenizer found for language '{language}'. "
+                f"Using '{tokenizer_name}'. Available: {available_tokenizers}"
+            )
+
+        # Tokenize the transcript text
+        tokens = self.tokenizer.encode(text=normalized_text, tokenizer_name=tokenizer_name)
+        tokens = tokens + [self.eos_id]  # Add EOS token (BOS not used per dataset convention)
+        text_tensor = torch.tensor([tokens], device=self.device, dtype=torch.long)
+        text_lens = torch.tensor([len(tokens)], device=self.device, dtype=torch.long)
+
+        # Create batch dictionary
+        batch = {
+            'text': text_tensor,
+            'text_lens': text_lens,
+        }
+
+        # Setup context in batch
+        if self.use_text_conditioning_encoder:
+            self.setup_dummy_text_context_in_batch(batch)
+        self.setup_dummy_audio_context_in_batch(batch)
+
+        # Run inference
+        with torch.no_grad():
+            output = self.infer_batch(
+                batch,
+                max_decoder_steps=max_decoder_steps,
+                temperature=temperature,
+                topk=topk,
+                use_cfg=use_cfg,
+                cfg_scale=cfg_scale,
+            )
+
+        return output.predicted_audio, output.predicted_audio_lens
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:

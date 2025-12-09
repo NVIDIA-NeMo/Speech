@@ -15,7 +15,6 @@
 """Utilities for generating text."""
 
 import pickle
-import sys
 from collections.abc import Iterable
 from typing import List, Optional, Tuple, TypedDict, Union
 import numpy as np

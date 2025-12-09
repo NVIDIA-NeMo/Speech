@@ -127,6 +127,15 @@ def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
     return metrics_mean_ci
 
 
+def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
+    """Create formatted metrics mean CI."""
+    for k, v in metrics_mean_ci.items():
+        if isinstance(v, list):
+            mean, ci = float(v[0]), float(v[1])
+            logging.info(f"Metric {k}: {mean:.4f} ± {ci:.4f}")
+            metrics_mean_ci[k] =f"{mean:.4f} ± {ci:.4f}"
+    return metrics_mean_ci
+
 def run_inference_and_evaluation(
     model_config: ModelLoadConfig,
     inference_config: InferenceConfig,

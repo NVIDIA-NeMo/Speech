@@ -33,6 +33,15 @@ except (ImportError, ModuleNotFoundError):
 
     HAVE_APEX = False
 
+try:
+    from megatron.core import parallel_state
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 
 def ApproxGELUActivation(input: Tensor):
     """

@@ -46,6 +46,7 @@ def slurm_executor(
     time_limit: str = "00:30:00",
     container_image: str = "nvcr.io/nvidia/nemo:dev",
     custom_mounts: List[str] = [],
+    container_env: List[str] = [],
     custom_env_vars: Dict[str, str] = {},
     custom_srun_args: List[str] = [],
     hf_token: str = None,
@@ -126,6 +127,8 @@ def slurm_executor(
         template_vars={"pre_cmds": " ; ".join(custom_bash_cmds)},
     )
 
+    all_container_env = sorted(set(PERF_ENV_VARS) | set(container_env))
+
     executor = run.SlurmExecutor(
         account=account,
         partition=partition,
@@ -135,6 +138,7 @@ def slurm_executor(
         gpus_per_node=optional_gpus_per_node,
         container_image=container_image,
         container_mounts=mounts,
+        container_env=all_container_env,
         env_vars=PERF_ENV_VARS,
         srun_args=srun_args,
         time=time_limit,

@@ -122,8 +122,7 @@ def compute_mean_with_confidence_interval(
         t_critical = stats.t.ppf((1 + confidence) / 2, len(measurements) - 1)
         ci = std_err * t_critical
 
-        logger.info(f"{key}: {mean:.4f} ± {ci:.4f}")
-        results[key] = f"{mean:.4f} ± {ci:.4f}"
+        results[key] = [mean, ci]
 
     return results
 

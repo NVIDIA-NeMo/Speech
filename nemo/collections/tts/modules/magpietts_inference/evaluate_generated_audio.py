@@ -31,6 +31,7 @@ import torch
 from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForConditionalGeneration, WhisperProcessor
 
 import nemo.collections.asr as nemo_asr
+import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.utils import logging
 
@@ -47,7 +48,6 @@ def load_evalset_config(config_path: str = None) -> dict:
 
 
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
-import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
 
 
 def find_generated_files(audio_dir, prefix, extension):

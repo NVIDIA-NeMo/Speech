@@ -45,9 +45,11 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 # Import dataset configuration
 import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
-import numpy as np
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import load_evalset_config

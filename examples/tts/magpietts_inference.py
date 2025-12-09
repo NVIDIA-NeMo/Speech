@@ -120,6 +120,15 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
     logger.info(f"Metrics appended to: {csv_path}")
 
 
+def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
+    """Create formatted metrics mean CI."""
+    for k, v in metrics_mean_ci.items():
+        if isinstance(v, list):
+            mean, ci = float(v[0]), float(v[1])
+            logging.info(f"Metric {k}: {mean:.4f} ± {ci:.4f}")
+            metrics_mean_ci[k] =f"{mean:.4f} ± {ci:.4f}"
+    return metrics_mean_ci
+
 def run_inference_and_evaluation(
     model_config: ModelLoadConfig,
     inference_config: InferenceConfig,
@@ -292,10 +301,12 @@ def run_inference_and_evaluation(
             confidence=confidence_level,
         )
 
+        formatted_metrics_mean_ci = create_formatted_metrics_mean_ci(metrics_mean_ci)
+
         # Write to aggregated CSV
         ci_csv = os.path.join(out_dir, "all_experiment_metrics_with_ci.csv")
         write_csv_header_if_needed(ci_csv, csv_header)
-        append_metrics_to_csv(ci_csv, full_checkpoint_name, dataset, metrics_mean_ci)
+        append_metrics_to_csv(ci_csv, full_checkpoint_name, dataset, formatted_metrics_mean_ci)
 
         # Track per-dataset means
         ssim_values = [m['ssim_pred_context_avg'] for m in metrics_all_repeats]

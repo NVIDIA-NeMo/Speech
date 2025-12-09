@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 # Import the existing evaluation module
-import examples.tts.magpietts.evaluate_generated_audio as evaluate_generated_audio
+import nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio as evaluate_generated_audio
 import numpy as np
 import scipy.stats as stats
 

@@ -17,7 +17,7 @@
 import pickle
 import sys
 from collections.abc import Iterable
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, TypedDict, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -46,11 +46,6 @@ except (ImportError, ModuleNotFoundError):
     from apex.transformer.pipeline_parallel.utils import (
         _reconfigure_microbatch_calculator as reconfigure_num_microbatches_calculator,
     )
-
-if sys.version_info >= (3, 8):
-    from typing import TypedDict
-else:
-    from typing_extensions import TypedDict
 
 __all__ = [
     "get_computeprob_response",

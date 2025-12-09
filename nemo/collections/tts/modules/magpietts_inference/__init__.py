@@ -45,7 +45,7 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
-    evaluate_generated_audio_batch,
+    evaluate_generated_audio_dir,
 )
 from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
 from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_magpie_model
@@ -60,7 +60,7 @@ __all__ = [
     "MagpieInferenceRunner",
     # Evaluation
     "EvaluationConfig",
-    "evaluate_generated_audio_batch",
+    "evaluate_generated_audio_dir",
     "compute_mean_with_confidence_interval",
     "STANDARD_METRIC_KEYS",
     "DEFAULT_VIOLIN_METRICS",

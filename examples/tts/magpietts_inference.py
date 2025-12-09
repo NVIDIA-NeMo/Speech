@@ -56,7 +56,7 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
-    evaluate_generated_audio_batch,
+    evaluate_generated_audio_dir,
 )
 from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
 from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, get_experiment_name_from_checkpoint_path, load_magpie_model
@@ -251,7 +251,7 @@ def run_inference_and_evaluation(
                 with_utmosv2=eval_config.with_utmosv2,
             )
 
-            metrics, filewise_metrics = evaluate_generated_audio_batch(
+            metrics, filewise_metrics = evaluate_generated_audio_dir(
                 manifest_path=meta['manifest_path'],
                 audio_dir=meta['audio_dir'],
                 generated_audio_dir=repeat_audio_dir,

@@ -47,20 +47,20 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 # Import dataset configuration
-import examples.tts.magpietts.evalset_config as evalset_config
+import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
 import numpy as np
 
 # Import the modular components
-from examples.tts.magpietts.evaluation import (
+from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     DEFAULT_VIOLIN_METRICS,
     STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_batch,
 )
-from examples.tts.magpietts.inference import InferenceConfig, MagpieInferenceRunner
-from examples.tts.magpietts.utils import ModelLoadConfig, get_experiment_name_from_checkpoint_path, load_magpie_model
-from examples.tts.magpietts.visualization import create_combined_box_plot, create_violin_plot
+from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
+from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, get_experiment_name_from_checkpoint_path, load_magpie_model
+from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 

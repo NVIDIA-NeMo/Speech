@@ -391,13 +391,13 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
             if tbranch_cur_order_i == order2cnt[cur_order]:
                 boosting_tree_np._end_adding_tbranches_for_order(order=cur_order)
-                logging.info(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
+                # logging.info(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
                 cur_order += 1
                 tbranch_cur_order_i = 0
 
         assert tbranch_cur_order_i == 0
         boosting_tree_np.sanity_check()
-
+        logging.info(f"Loaded boosting model with {len(tbranches_list)} arcs")
         return GPUBoostingTreeModel.from_boosting_tree_np(boosting_tree_np=boosting_tree_np, use_triton=use_triton)
 
     @classmethod

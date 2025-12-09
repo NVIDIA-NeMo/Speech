@@ -57,9 +57,11 @@ class LLMTranslator:
             model_name: (str) path to the model name on HuggingFace.
             source_language: (str) source language
             target_language: (str) target language
-            waitk: (int) parameter that controls the length of the new prefix (up to |asr|-waitk words)
-                         if both translations do not agree on at least |asr|-waitk words.
-                         Use -1 to disable and rely on the longest common prefix only.
+            waitk: (int) sets the maximum number of words the translation is allowed to lag behind the ASR transcript.
+                         If the translation falls more than waitk words behind, it automatically extends the prefix
+                         using the current translation. -1 disables this rule and relies on the longest common prefix (LCP)
+                         between current and previous translations. Larger values of waitk lead to more coherent translations,
+                         but the cost of generating the translation increases, because the model needs to generate more tokens.
             device: (str) device to run the model on
             device_id: (int) device ID to run the model on
             batch_size: (int) batch size for the LLM model, in case of -1, the batch size is set to the number of ASR transcripts
@@ -247,9 +249,7 @@ class LLMTranslator:
         prev_translations: list[str],
     ) -> list[str]:
         """
-        Pick translation prefixes given the translations generated on the previous and current
-        time steps. New prefixes are selected as Longest Common Prefixes of previous and current
-        translations.
+        Generates new prefixes in target language for the next translation step.
         Args:
             asr_transcripts: (list[str]) current ASR transcripts to be translated
             translations: (list[str]) translations obtained with LLM on current step
@@ -276,8 +276,9 @@ class LLMTranslator:
             if len(asr) == 0:
                 lcp = ""
 
-            # Force translation of up to |asr|-k words if there is no agreement
-            # between current and previous translations
+            # If the LLM-generated translations disagree too much between steps,
+            # and the translation falls more than waitk words behind the ASR transcript,
+            # the algorithm forcibly advances the prefix based on the current translation.
             n_asr_words = len(asr.split())
             n_lcp_words = len(lcp.split())
             if (self.waitk > 0) and (n_asr_words - n_lcp_words > self.waitk):

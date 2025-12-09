@@ -29,10 +29,10 @@ nmt:
   model_name: "utter-project/EuroLLM-1.7B-Instruct"  # vLLM-supported model name
   source_language: "English"                         # Source language code
   target_language: "Russian"                         # Target language code
-  waitk: -1                                          # Controls how much of the current translation to keep. Use -1 to disable and rely on the longest common prefix.
-  device: cuda                                       # Device for translation: 'cuda' or 'cpu'
+  waitk: -1                                          # Max allowed lag (in words) between ASR transcript and translation; -1 disables it and uses only the longest common prefix between current and previous translations.
+  device: cuda                                       # Device for translation: 'cuda'. 'cpu' is not supported.
   device_id: 1                                       # GPU device ID for translation
-  batch_size: 16                                     # Batch size for translation, if -1, the batch size is set to the number of ASR transcripts
+  batch_size: 16                                     # Batch size for translation, if -1, the batch size is equal to the ASR batch size
   llm_params:                                        # See https://docs.vllm.ai/en/v0.8.1/api/offline_inference/llm.html for more details
     dtype: "auto"                                    # Compute precision
     seed: 42                                         # The seed to initialize the random number generator for sampling

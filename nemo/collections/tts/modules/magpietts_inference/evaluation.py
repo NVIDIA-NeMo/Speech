@@ -48,7 +48,7 @@ class EvaluationConfig:
     with_utmosv2: bool = True
 
 
-def evaluate_generated_audio_batch(
+def evaluate_generated_audio_dir(
     manifest_path: str,
     audio_dir: str,
     generated_audio_dir: str,
@@ -93,9 +93,6 @@ def compute_mean_with_confidence_interval(
     confidence: float = 0.95,
 ) -> Dict[str, str]:
     """Compute mean and confidence interval for specified metrics.
-
-    Uses Student's t-distribution for confidence interval calculation,
-    which is appropriate for small sample sizes.
 
     Args:
         metrics_list: List of metric dictionaries (one per repeat/run).

@@ -282,7 +282,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.fusion_models_alpha = fusion_models_alpha or []
 
         self.biasing_multi_model = (
-            GPUBiasingMultiModel(reallocation_callback_fn=self.reset_cuda_graphs_state)
+            GPUBiasingMultiModel(vocab_size=self._blank_index, reallocation_callback_fn=self.reset_cuda_graphs_state)
             if enable_per_stream_biasing
             else None
         )

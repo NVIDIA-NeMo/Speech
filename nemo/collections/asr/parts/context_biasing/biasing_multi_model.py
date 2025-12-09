@@ -121,12 +121,12 @@ class GPUBiasingMultiModelBase(abc.ABC, nn.Module):
 class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
     """Reference implementation (incompatible with CUDA graphs)"""
 
-    def __init__(self):
+    def __init__(self, vocab_size: int):
         super().__init__()
         self.models = nn.ModuleList([])
         self.buffer_for_device_handling = nn.Buffer(torch.zeros([1], dtype=torch.long))
         self.alphas: list[float] = []
-        self.vocab_size: int | None = None
+        self.vocab_size: int = vocab_size
         self.float_dtype: torch.dtype | None = None
         self.bos_state: int | None = None
         self.start_state: int | None = None
@@ -149,7 +149,6 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
     def add_model(self, model: NGramGPULanguageModel, alpha: float = 1.0) -> int:
         if not self._params_defined:
             # there were no previous models
-            self.vocab_size = model.vocab_size
             self.bos_state = model.bos_state
             self.start_state = model.START_STATE
             self.float_dtype = model.arcs_weights.dtype
@@ -229,9 +228,9 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
     INIT_NUM_STATES = 1_000_000
     INIT_NUM_MODELS = 128
 
-    def __init__(self, reallocation_callback_fn: Callable | None = None):
+    def __init__(self, vocab_size: int, reallocation_callback_fn: Callable | None = None):
         super().__init__()
-        self.vocab_size: int | None = None
+        self.vocab_size: int = vocab_size
         self.float_dtype: torch.dtype | None = None
         self.bos_state: int | None = None
         self.start_state: int | None = None
@@ -356,7 +355,6 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
     def add_model(self, model: GPUBoostingTreeModel, alpha: float = 1.0) -> int:
         if not self._params_defined:
             # there were no previous models
-            self.vocab_size = model.vocab_size
             self.bos_state = model.bos_state
             self.start_state = model.START_STATE
             self.float_dtype = model.arcs_weights.dtype

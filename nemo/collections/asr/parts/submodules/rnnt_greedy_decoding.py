@@ -652,6 +652,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 )
             else:
                 # Frame-Looping algorithm
+                if enable_per_stream_biasing:
+                    raise NotImplementedError("Per-stream biasing is not implemented with frame-looping algorithm")
                 if fusion_models:
                     raise NotImplementedError(
                         "N-Gram Language Model and Boosting Tree fusion is not implemented with frame-looping algorithm"
@@ -688,6 +690,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 raise NotImplementedError(
                     "N-Gram Language Model and Boosting Tree fusion is not implemented with `blank_as_pad=False`"
                 )
+            if enable_per_stream_biasing:
+                raise NotImplementedError("Per-stream biasing is not implemented with `blank_as_pad=False`")
             self._greedy_decode = self._greedy_decode_masked
 
     def disable_cuda_graphs(self) -> bool:
@@ -793,22 +797,19 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 [hyp.dec_state if hyp is not None else None for hyp in partial_hypotheses]
             )
         # setup fused biasing ids
-        if partial_hypotheses is None:
-            multi_biasing_ids = None
-        else:
+        if self.decoding_computer.per_stream_biasing_enabled:
             multi_biasing_ids = np.full([len(partial_hypotheses)], fill_value=-1)
-            for batch_i, hyp in enumerate(partial_hypotheses):
-                if hyp is None or (not hyp.has_biasing_request()):
-                    continue
-                # biasing_cfg is not empty
-                if hyp.biasing_cfg.multi_model_id is None:
-                    logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
-                    continue
-                multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
-            if (multi_biasing_ids != -1).any():
-                multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
-            else:
-                multi_biasing_ids = None
+            if partial_hypotheses is not None:
+                for batch_i, hyp in enumerate(partial_hypotheses):
+                    if hyp is None or (not hyp.has_biasing_request()):
+                        continue
+                    # biasing_cfg is not empty
+                    if hyp.biasing_cfg.multi_model_id is None:
+                        logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
+                        continue
+                    multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
+        else:
+            multi_biasing_ids = None
         batched_hyps, alignments, batched_state = self.decoding_computer(
             x=x,
             out_len=out_len,
@@ -2879,6 +2880,8 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         else:
             if fusion_models is not None:
                 raise NotImplementedError("Fusion models are not implemented with `blank_as_pad=False`")
+            if enable_per_stream_biasing:
+                raise NotImplementedError("Per-stream biasing is not implemented with `blank_as_pad=False`")
             self._greedy_decode = self._greedy_decode_masked
 
     @typecheck()
@@ -2952,22 +2955,19 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 [hyp.dec_state if hyp is not None else None for hyp in partial_hypotheses]
             )
         # setup fused biasing ids
-        if partial_hypotheses is None:
-            multi_biasing_ids = None
-        else:
+        if self.decoding_computer.per_stream_biasing_enabled:
             multi_biasing_ids = np.full([len(partial_hypotheses)], fill_value=-1)
-            for batch_i, hyp in enumerate(partial_hypotheses):
-                if hyp is None or (not hyp.has_biasing_request()):
-                    continue
-                # biasing_cfg is not empty
-                if hyp.biasing_cfg.multi_model_id is None:
-                    logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
-                    continue
-                multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
-            if (multi_biasing_ids != -1).any():
-                multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
-            else:
-                multi_biasing_ids = None
+            if partial_hypotheses is not None:
+                for batch_i, hyp in enumerate(partial_hypotheses):
+                    if hyp is None or (not hyp.has_biasing_request()):
+                        continue
+                    # biasing_cfg is not empty
+                    if hyp.biasing_cfg.multi_model_id is None:
+                        logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
+                        continue
+                    multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
+        else:
+            multi_biasing_ids = None
         batched_hyps, alignments, batched_state = self.decoding_computer(
             x=x,
             out_len=out_len,

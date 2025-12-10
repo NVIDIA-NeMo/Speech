@@ -287,10 +287,14 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             else None
         )
 
+    @property
+    def per_stream_biasing_enabled(self):
+        return self.biasing_multi_model is not None
+
     def _all_fusion_models(
         self, with_multi_model: bool = True
     ) -> list[NGramGPULanguageModel | GPUBiasingMultiModelBase]:
-        if with_multi_model and (self.biasing_multi_model is not None):
+        if with_multi_model and self.per_stream_biasing_enabled:
             return self.fusion_models + [self.biasing_multi_model]
         return self.fusion_models
 
@@ -299,7 +303,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             FusionModelWithParams(model=model, alpha=alpha, is_multi_model=False)
             for model, alpha in zip(self.fusion_models, self.fusion_models_alpha)
         ]
-        if self.biasing_multi_model is not None and with_multi_model:
+        if with_multi_model and self.per_stream_biasing_enabled:
             models_with_params.append(
                 FusionModelWithParams(model=self.biasing_multi_model, alpha=None, is_multi_model=True)
             )
@@ -308,7 +312,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
     def has_fusion_models(self, with_multi_model: bool = True) -> bool:
         if len(self.fusion_models) > 0:
             return True
-        return with_multi_model and (self.biasing_multi_model is not None)
+        return with_multi_model and self.per_stream_biasing_enabled
 
     def reset_cuda_graphs_state(self):
         """Reset state to release memory (for CUDA graphs implementations)"""
@@ -783,12 +787,6 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         assert self.cuda_graphs_mode is not None
         device = encoder_output.device
 
-        if multi_biasing_ids is None:
-            multi_biasing_ids = torch.full(
-                [encoder_output_length.shape[0]], fill_value=-1, dtype=torch.long, device=device
-            )
-        else:
-            assert self.biasing_multi_model is not None
         # do not recalculate joint projection, project only once
         encoder_output = self.joint.project_encoder(encoder_output)
         current_batch_size = encoder_output.shape[0]
@@ -812,6 +810,10 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         # set length to zero for elements outside the current batch
         self.state.encoder_output_length[current_batch_size:].fill_(0)
         if self.biasing_multi_model is not None:
+            if multi_biasing_ids is None:
+                multi_biasing_ids = torch.full(
+                    [encoder_output_length.shape[0]], fill_value=-1, dtype=torch.long, device=device
+                )
             self.state.multi_biasing_ids[:current_batch_size].copy_(multi_biasing_ids)
             self.state.multi_biasing_ids[current_batch_size:].fill_(-1)
 

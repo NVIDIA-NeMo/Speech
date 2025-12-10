@@ -261,10 +261,14 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             else None
         )
 
+    @property
+    def per_stream_biasing_enabled(self):
+        return self.biasing_multi_model is not None
+
     def _all_fusion_models(
         self, with_multi_model: bool = True
     ) -> list[NGramGPULanguageModel | GPUBiasingMultiModelBase]:
-        if with_multi_model and (self.biasing_multi_model is not None):
+        if with_multi_model and self.per_stream_biasing_enabled:
             return self.fusion_models + [self.biasing_multi_model]
         return self.fusion_models
 
@@ -273,7 +277,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             FusionModelWithParams(model=model, alpha=alpha, is_multi_model=False)
             for model, alpha in zip(self.fusion_models, self.fusion_models_alpha)
         ]
-        if self.biasing_multi_model is not None and with_multi_model:
+        if with_multi_model and self.per_stream_biasing_enabled:
             models_with_params.append(
                 FusionModelWithParams(model=self.biasing_multi_model, alpha=None, is_multi_model=True)
             )
@@ -282,7 +286,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
     def has_fusion_models(self, with_multi_model: bool = True) -> bool:
         if len(self.fusion_models) > 0:
             return True
-        return with_multi_model and (self.biasing_multi_model is not None)
+        return with_multi_model and self.per_stream_biasing_enabled
 
     def reset_cuda_graphs_state(self):
         """Reset state to release memory (for CUDA graphs implementations)"""
@@ -316,7 +320,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         """
         batch_size, max_time, _unused = encoder_output.shape
         device = encoder_output.device
-        if self.biasing_multi_model is not None and multi_biasing_ids is None:
+        if self.per_stream_biasing_enabled and multi_biasing_ids is None:
             multi_biasing_ids = torch.full([batch_size], fill_value=-1, dtype=torch.long, device=device)
         for fusion_model in self._all_fusion_models():
             fusion_model.to(device)  # fusion_models is nn.Module, but self is not; need to move manually
@@ -714,12 +718,6 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         assert self.cuda_graphs_mode is not None
         device = encoder_output.device
 
-        if multi_biasing_ids is None:
-            multi_biasing_ids = torch.full(
-                [encoder_output_length.shape[0]], fill_value=-1, dtype=torch.long, device=device
-            )
-        else:
-            assert self.biasing_multi_model is not None
         # do not recalculate joint projection, project only once
         encoder_output = self.joint.project_encoder(encoder_output)
         current_batch_size = encoder_output.shape[0]
@@ -742,7 +740,11 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.state.encoder_output_length[: encoder_output_length.shape[0]].copy_(encoder_output_length)
         # set length to zero for elements outside the current batch
         self.state.encoder_output_length[current_batch_size:].fill_(0)
-        if self.biasing_multi_model is not None:
+        if self.per_stream_biasing_enabled:
+            if multi_biasing_ids is None:
+                multi_biasing_ids = torch.full(
+                    [encoder_output_length.shape[0]], fill_value=-1, dtype=torch.long, device=device
+                )
             self.state.multi_biasing_ids[:current_batch_size].copy_(multi_biasing_ids)
             self.state.multi_biasing_ids[current_batch_size:].fill_(-1)
 

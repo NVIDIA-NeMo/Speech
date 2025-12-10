@@ -597,6 +597,6 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
         # 5. save model
         if cfg.model_path is not None:
-            boosting_tree_model.save(cfg.model_path)
+            boosting_tree_model.save_to(cfg.model_path)
 
         return boosting_tree_model

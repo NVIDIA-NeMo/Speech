@@ -17,15 +17,19 @@ import contextlib
 import numpy as np
 import torch
 from packaging.version import Version
+from nemo.utils.exceptions import NeMoBaseException
 
 __CUDA_PYTHON_MINIMUM_VERSION_CUDA_GRAPH_CONDITIONAL_NODES_SUPPORTED__ = (12, 6)  # 12060
 
 
-class NeMoCUDAPythonException(Exception):
+class NeMoCUDAPythonException(NeMoBaseException):
+    """Exception caused by python-cuda in NeMo"""
+
     pass
 
 
 def check_cuda_python_cuda_graphs_conditional_nodes_supported():
+    """Check if CUDA and CUDA-Python are available with CUDA Graphs with conditional nodes support"""
     # for CPU-only environment we need to raise an exception, otherwise cuda-python library will fail
     if not torch.cuda.is_available():
         raise EnvironmentError("CUDA is not available")
@@ -202,6 +206,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
 
 
 def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
+    """Run CUDA kernel using CUDA-Python"""
     from cuda.bindings import driver as cuda
     from cuda.bindings import nvrtc
 

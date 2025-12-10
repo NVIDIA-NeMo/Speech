@@ -250,6 +250,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.separate_graphs = None
 
         self.cuda_graphs_mode = None
+        self.cuda_graphs_allow_fallback = True
         self.maybe_enable_cuda_graphs()
 
         self.fusion_models = fusion_models or []
@@ -914,6 +915,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             try:
                 self._full_graph_compile()
             except NeMoCUDAPythonException as e:
+                if not self.cuda_graphs_allow_fallback:
+                    raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from e
                 logging.warning(
                     f"Full CUDA graph compilation failed: {e}. "
                     "Falling back to native PyTorch CUDA graphs. Decoding will be slower."

@@ -75,8 +75,8 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         NO_WHILE_LOOPS = "no_while_loops"  # Decoding with PyTorch while loops + partial Cuda graphs
         NO_GRAPHS = "no_graphs"  # decoding without graphs, stateful implementation, only for testing purposes
 
-    cuda_graphs_mode: Optional[CudaGraphsMode] = None
-    cuda_graphs_mode_forced: bool = False
+    cuda_graphs_mode: Optional[CudaGraphsMode]
+    cuda_graphs_allow_fallback: bool
     max_symbols: Optional[int]
     allow_cuda_graphs: bool
 
@@ -88,7 +88,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
             - forced mode disallows fallback to native PyTorch CUDA graphs
         """
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
-        self.cuda_graphs_mode_forced = True
+        self.cuda_graphs_allow_fallback = False
         self.state = None
 
     def maybe_enable_cuda_graphs(self) -> bool:
@@ -117,7 +117,6 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
                 )
                 self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
         self.reset_cuda_graphs_state()
-        self.cuda_graphs_mode_forced = False
         return self.cuda_graphs_mode is not None
 
     def disable_cuda_graphs(self) -> bool:
@@ -126,7 +125,6 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
             # nothing to disable
             return False
         self.cuda_graphs_mode = None
-        self.cuda_graphs_mode_forced = False
         self.reset_cuda_graphs_state()
         return True
 

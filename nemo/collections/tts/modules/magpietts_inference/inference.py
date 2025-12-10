@@ -141,7 +141,7 @@ class InferenceConfig:
         """Format a list of layer indices as a compact string."""
         if layers is None:
             return "None"
-        return "".join(str(l) for l in layers)
+        return "".join(str(_layer) for _layer in layers)
 
 
 class MagpieInferenceRunner:

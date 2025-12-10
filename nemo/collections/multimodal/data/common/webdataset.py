@@ -11,6 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# flake8: noqa
+# pylint: skip-file
+
 import glob
 import io
 import itertools
@@ -28,9 +32,9 @@ from PIL import Image
 
 from nemo.collections.multimodal.data.common.data_samplers import SharedEpoch, WDSUrlsRandomSampler
 from nemo.collections.multimodal.data.common.webdataset_s3 import WebDataset as WebDatasetS3
-from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.core.classes import IterableDataset as NeMoIterableDataset
 from nemo.utils import logging
+from nemo.utils.megatron_utils import ApexGuardDefaults
 
 try:
     import webdataset as wds
@@ -234,7 +238,7 @@ class WebDatasetCommon(NeMoIterableDataset):
         epoch = 0
 
         if not self.infinite_sampler:
-            logging.info(f'Initiating Webdataset Random Sampler..')
+            logging.info('Initiating Webdataset Random Sampler..')
             assert (
                 self.filterings is None
             ), 'Webdataset Random Sampler should not be used with filters. Switch to infinite sampler'
@@ -262,7 +266,9 @@ class WebDatasetCommon(NeMoIterableDataset):
             )
         else:
             train_dataset = WebDataset(
-                shards_train_list, handler=warn_and_continue, resampled=self.infinite_sampler or False,
+                shards_train_list,
+                handler=warn_and_continue,
+                resampled=self.infinite_sampler or False,
             )
 
         return train_dataset, epoch
@@ -285,7 +291,11 @@ if HAVE_WEBDATASET:
 
     class detshuffle2(wds.PipelineStage):
         def __init__(
-            self, bufsize=1000, initial=100, seed=0, epoch=-1,
+            self,
+            bufsize=1000,
+            initial=100,
+            seed=0,
+            epoch=-1,
         ):
             self.bufsize = bufsize
             self.initial = initial
@@ -308,7 +318,6 @@ if HAVE_WEBDATASET:
                 seed = self.seed + epoch + (100 * parallel_state.get_data_parallel_rank())
             rng.seed(seed)
             return _shuffle(src, self.bufsize, self.initial, rng)
-
 
 else:
 

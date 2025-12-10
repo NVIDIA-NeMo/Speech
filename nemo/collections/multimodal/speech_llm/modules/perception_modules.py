@@ -22,8 +22,8 @@ from omegaconf import DictConfig
 
 from nemo.collections.asr.models import EncDecSpeakerLabelModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder, ConformerMultiLayerFeatureExtractor
+from nemo.collections.multimodal.speech_llm.modules.transformer_decoders import TransformerDecoder
 from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import align_feat_seq_list
-from nemo.collections.nlp.modules.common.transformer.transformer_decoders import TransformerDecoder
 from nemo.core.classes import Exportable, NeuralModule
 from nemo.core.classes.common import typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType

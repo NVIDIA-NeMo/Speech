@@ -20,7 +20,6 @@
 <details closed>
   <summary><b>Pretrain and finetune :hugs:Hugging Face models via AutoModel</b></summary>
       Nemo Framework's latest feature AutoModel enables broad support for :hugs:Hugging Face models, with 25.04 focusing on
-
   
 - <a href=https://huggingface.co/transformers/v3.5.1/model_doc/auto.html#automodelforcausallm>AutoModelForCausalLM</a> in the <a href="https://huggingface.co/models?pipeline_tag=text-generation&sort=trending">Text Generation</a> category
 - <a href=https://huggingface.co/docs/transformers/main/model_doc/auto#transformers.AutoModelForImageTextToText>AutoModelForImageTextToText</a> in the <a href="https://huggingface.co/models?pipeline_tag=image-text-to-text&sort=trending">Image-Text-to-Text</a> category

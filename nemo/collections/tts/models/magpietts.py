@@ -120,6 +120,12 @@ class MagpieTTSModel(ModelPT):
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
 
+        # Save app_state.nemo_file_folder before loading nested models (codec, etc.)
+        # because nested restore_from calls will overwrite it
+        from nemo.utils.app_state import AppState
+        app_state = AppState()
+        saved_nemo_file_folder = app_state.nemo_file_folder
+
         # load codec, disable loading of loss modules not needed during inference
         codec_model_path = cfg.get('codecmodel_path')
         if codec_model_path.startswith('nvidia/'):
@@ -135,6 +141,10 @@ class MagpieTTSModel(ModelPT):
         self.codec_model_samples_per_frame = codec_model.samples_per_frame
         # del codec discriminator to free memory
         del codec_model.discriminator
+
+        # Restore app_state.nemo_file_folder after nested model loading
+        # This is needed for artifact resolution when loading from .nemo
+        app_state.nemo_file_folder = saved_nemo_file_folder
 
         # When using FSQ tokens, the codebook structure can be changed at any time.
         # An FSQ definition can be provided in `vector_quantizer` config to train with a codebook structure
@@ -214,6 +224,9 @@ class MagpieTTSModel(ModelPT):
             # If no text_conditioning_tokenizer_name is specified, use the first one as default
             # For text context tokenization
             self.text_conditioning_tokenizer_name = list(cfg.text_tokenizers.keys())[0]
+
+        # Register tokenizer artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging
+        self._register_tokenizer_artifacts(cfg)
 
         # TODO @xueyang: both tokenizers are only used to get some token ids. We
         # should kill them to save a small amount of mem resources since dataloader will initialize them
@@ -398,6 +411,74 @@ class MagpieTTSModel(ModelPT):
 
         # Configuration validity checks
         self.check_frame_stacking_config_validity()
+
+    def _register_tokenizer_artifacts(self, cfg: DictConfig) -> None:
+        """
+        Register tokenizer file artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging.
+
+        This method iterates through all tokenizer configs and registers any local file paths
+        as artifacts. When the model is saved to a .nemo file, these files will be packaged
+        inside the archive and automatically restored when loading from .nemo.
+
+        Supported artifact types:
+        - g2p.phoneme_dict: Phoneme dictionary file for G2P conversion
+        - g2p.heteronyms: Heteronyms file for G2P conversion
+
+        Args:
+            cfg: Model configuration containing text_tokenizers config
+        """
+        if 'text_tokenizers' not in cfg:
+            return
+
+        for tokenizer_name in cfg.text_tokenizers:
+            tokenizer_cfg = cfg.text_tokenizers[tokenizer_name]
+
+            # Skip HuggingFace tokenizers (AutoTokenizer, T5Tokenizer) - they don't need local files
+            if hasattr(tokenizer_cfg, '_target_') and tokenizer_cfg._target_ in ['AutoTokenizer', 'T5Tokenizer']:
+                continue
+
+            # Register G2P artifacts if present
+            if hasattr(tokenizer_cfg, 'g2p') and tokenizer_cfg.g2p is not None:
+                g2p_cfg = tokenizer_cfg.g2p
+
+                # Register phoneme_dict (or resolve nemo: path if restoring from .nemo)
+                phoneme_dict_path = g2p_cfg.get('phoneme_dict', None) if hasattr(g2p_cfg, 'get') else getattr(g2p_cfg, 'phoneme_dict', None)
+                if phoneme_dict_path and isinstance(phoneme_dict_path, str) and phoneme_dict_path.strip():
+                    try:
+                        # register_artifact handles both:
+                        # - Local paths: registers for .nemo packaging, returns absolute path
+                        # - nemo: paths: resolves to extracted file location
+                        artifact_path = self.register_artifact(
+                            f'text_tokenizers.{tokenizer_name}.g2p.phoneme_dict',
+                            phoneme_dict_path,
+                            verify_src_exists=True,
+                        )
+                        if artifact_path:
+                            with open_dict(cfg):
+                                cfg.text_tokenizers[tokenizer_name].g2p.phoneme_dict = artifact_path
+                    except FileNotFoundError:
+                        logging.warning(
+                            f"phoneme_dict file not found for tokenizer '{tokenizer_name}': "
+                            f"{phoneme_dict_path}. Artifact will not be packaged in .nemo file."
+                        )
+
+                # Register heteronyms (or resolve nemo: path if restoring from .nemo)
+                heteronyms_path = g2p_cfg.get('heteronyms', None) if hasattr(g2p_cfg, 'get') else getattr(g2p_cfg, 'heteronyms', None)
+                if heteronyms_path and isinstance(heteronyms_path, str) and heteronyms_path.strip():
+                    try:
+                        artifact_path = self.register_artifact(
+                            f'text_tokenizers.{tokenizer_name}.g2p.heteronyms',
+                            heteronyms_path,
+                            verify_src_exists=True,
+                        )
+                        if artifact_path:
+                            with open_dict(cfg):
+                                cfg.text_tokenizers[tokenizer_name].g2p.heteronyms = artifact_path
+                    except FileNotFoundError:
+                        logging.warning(
+                            f"heteronyms file not found for tokenizer '{tokenizer_name}': "
+                            f"{heteronyms_path}. Artifact will not be packaged in .nemo file."
+                        )
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """

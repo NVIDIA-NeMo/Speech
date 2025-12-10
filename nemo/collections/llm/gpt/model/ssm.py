@@ -24,7 +24,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.llm.gpt.model.base import GPTModel, gpt_data_step, torch_dtype_from_mcore_config
-from nemo.collections.llm.utils import Config
+from nemo.collections.llm.utils import Config, is_safe_repo
 from nemo.lightning import OptimizerModule, get_vocab_size, io, teardown
 from nemo.lightning.io.state import _ModelState
 from nemo.utils import logging
@@ -329,15 +329,17 @@ class PyTorchSSMImporter(io.ModelConnector["MambaModel", MambaModel]):
         """
         return MambaModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, source_dist_ckpt: bool = False) -> Path:
+    def apply(self, output_path: Path, source_dist_ckpt: bool = False, trust_remote_code: bool | None = None) -> Path:
         """
         Converts the SSM model to Nemo format and saves it to the specified path.
         Args:
             output_path (Path): The path to save the exported model.
             source_dist_ckpt (bool): Whether to load from a distributed checkpoint.
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path.
         Returns:
             output_path (Path): The path to the saved model.
         """
+        self.trust_remote_code = trust_remote_code
         if source_dist_ckpt:
             source, dist_ckpt_args = dist_ckpt_handler(str(self))
         else:
@@ -476,15 +478,23 @@ class HFNemotronHImporter(io.ModelConnector["AutoModelForCausalLM", MambaModel])
         """
         return MambaModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """
         Converts the NemotronH model to Nemo format and saves it to the specified path.
         Args:
             output_path (Path): The path to save the exported model.
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path.
         Returns:
             output_path (Path): The path to the saved model.
         """
-        source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True)
+        self.trust_remote_code = trust_remote_code
+        source = AutoModelForCausalLM.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         target = self.init()
         trainer = self.nemo_setup(target)
         source = source.to(self.config.params_dtype)
@@ -548,7 +558,13 @@ class HFNemotronHImporter(io.ModelConnector["AutoModelForCausalLM", MambaModel])
         """
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
-        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)), trust_remote_code=True)
+        return AutoTokenizer(
+            self.save_hf_tokenizer_assets(str(self)),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
 
     @property
     def config(self) -> SSMConfig:
@@ -558,7 +574,13 @@ class HFNemotronHImporter(io.ModelConnector["AutoModelForCausalLM", MambaModel])
             SSMConfig: The model configuration object.
         """
 
-        source = AutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        source = AutoConfig.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         source.torch_dtype = torch.bfloat16
 
         def make_vocab_size_divisible_by(vocab_size):
@@ -602,16 +624,24 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights():
-            return AutoModelForCausalLM.from_config(self.config, trust_remote_code=True)
+            return AutoModelForCausalLM.from_config(
+                self.config,
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+            )
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """
         Converts the Mamba model to Hugging Face format and saves it to the specified path.
         Args:
             output_path (Path): The path to save the exported model.
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path.
         Returns:
             output_path (Path): The path to the saved model.
         """
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         source = source.to(torch_dtype_from_mcore_config(source.config))
         target = self.init().to(torch_dtype_from_mcore_config(source.config))
@@ -679,7 +709,13 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
             AutoTokenizer: The tokenizer object.
         """
 
-        return AutoTokenizer.from_pretrained("nvidia/Nemotron-H-8B-Base-8K", trust_remote_code=True)
+        return AutoTokenizer.from_pretrained(
+            "nvidia/Nemotron-H-8B-Base-8K",
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path="nvidia/Nemotron-H-8B-Base-8K",
+            ),
+        )
 
     @property
     def config(self):
@@ -708,7 +744,13 @@ class HFNemotronHExporter(io.ModelConnector[MambaModel, "AutoModelForCausalLM"])
             model_path = local_model_path if local_model_path else "nvidia/NVIDIA-Nemotron-Nano-12B-v2-Base"
         else:
             raise ValueError(f"Unsupported model size: {source}")
-        hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        hf_config = AutoConfig.from_pretrained(
+            model_path,
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=model_path,
+            ),
+        )
         return hf_config
 
 

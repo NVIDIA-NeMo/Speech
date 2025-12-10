@@ -29,6 +29,7 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, NeuralType
 from nemo.core.utils.cuda_python_utils import (
+    NeMoCUDAPythonException,
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
     cu_call,
     run_nvrtc,
@@ -518,6 +519,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
             self.cuda_graphs_mode = None
             self.maybe_enable_cuda_graphs()
             self.state: CTCDecoderCudaGraphsState | None = None
+        self.cuda_graphs_allow_fallback = True
 
     @typecheck()
     def forward(
@@ -841,70 +843,86 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
             float_dtype=logits.dtype,
         )
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
-            # compiling full graph
-            stream_for_graph = torch.cuda.Stream(self.state.device)
-            stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
-            self.state.full_graph = torch.cuda.CUDAGraph()
-            with (
-                torch.cuda.stream(stream_for_graph),
-                torch.inference_mode(),
-                torch.cuda.graph(self.state.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
-            ):
-                self._before_loop()
-
-                capture_status, _, graph, _, _, _ = cu_call(
-                    cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
+            try:
+                self._full_graph_compile()
+            except NeMoCUDAPythonException as e:
+                if not self.cuda_graphs_allow_fallback:
+                    raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from e
+                logging.warning(
+                    f"Full CUDA graph compilation failed: {e}. "
+                    "Falling back to native PyTorch CUDA graphs. Decoding will be slower."
                 )
-                assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
-
-                # capture: while decoding_active:
-                (loop_conditional_handle,) = cu_call(cudart.cudaGraphConditionalHandleCreate(graph, 0, 0))
-                loop_kernel = self._create_while_loop_kernel()
-                decoding_active_ptr = np.array([self.state.active_mask.data_ptr()], dtype=np.uint64)
-                loop_args = np.array(
-                    [loop_conditional_handle.getPtr(), decoding_active_ptr.ctypes.data],
-                    dtype=np.uint64,
-                )
-                # loop while there are active utterances
-                with with_conditional_node(
-                    loop_kernel,
-                    loop_args,
-                    loop_conditional_handle,
-                    device=self.state.device,
-                ):
-                    self._inner_loop()
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+                self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
-            # compiling partial graphs
-            stream_for_graph = torch.cuda.Stream(self.state.device)
-            stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
-            self.state.before_loop_graph = torch.cuda.CUDAGraph()
-            self.state.inner_loop_graph = torch.cuda.CUDAGraph()
-            with (
-                torch.cuda.stream(stream_for_graph),
-                torch.inference_mode(),
-                torch.cuda.graph(
-                    self.state.before_loop_graph,
-                    stream=stream_for_graph,
-                    capture_error_mode="thread_local",
-                ),
-            ):
-                self._before_loop()
-
-            with (
-                torch.cuda.stream(stream_for_graph),
-                torch.inference_mode(),
-                torch.cuda.graph(
-                    self.state.inner_loop_graph,
-                    stream=stream_for_graph,
-                    capture_error_mode="thread_local",
-                ),
-            ):
-                self._inner_loop()
+            self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
             # no graphs needed
             pass
         else:
             raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
+
+    def _full_graph_compile(self):
+        """Compiling full graph"""
+        stream_for_graph = torch.cuda.Stream(self.state.device)
+        stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
+        self.state.full_graph = torch.cuda.CUDAGraph()
+        with (
+            torch.cuda.stream(stream_for_graph),
+            torch.inference_mode(),
+            torch.cuda.graph(self.state.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+        ):
+            self._before_loop()
+
+            capture_status, _, graph, _, _, _ = cu_call(
+                cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
+            )
+            assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
+
+            # capture: while decoding_active:
+            (loop_conditional_handle,) = cu_call(cudart.cudaGraphConditionalHandleCreate(graph, 0, 0))
+            loop_kernel = self._create_while_loop_kernel()
+            decoding_active_ptr = np.array([self.state.active_mask.data_ptr()], dtype=np.uint64)
+            loop_args = np.array(
+                [loop_conditional_handle.getPtr(), decoding_active_ptr.ctypes.data],
+                dtype=np.uint64,
+            )
+            # loop while there are active utterances
+            with with_conditional_node(
+                loop_kernel,
+                loop_args,
+                loop_conditional_handle,
+                device=self.state.device,
+            ):
+                self._inner_loop()
+
+    def _partial_graphs_compile(self):
+        """Compiling partial graphs"""
+        stream_for_graph = torch.cuda.Stream(self.state.device)
+        stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
+        self.state.before_loop_graph = torch.cuda.CUDAGraph()
+        self.state.inner_loop_graph = torch.cuda.CUDAGraph()
+        with (
+            torch.cuda.stream(stream_for_graph),
+            torch.inference_mode(),
+            torch.cuda.graph(
+                self.state.before_loop_graph,
+                stream=stream_for_graph,
+                capture_error_mode="thread_local",
+            ),
+        ):
+            self._before_loop()
+
+        with (
+            torch.cuda.stream(stream_for_graph),
+            torch.inference_mode(),
+            torch.cuda.graph(
+                self.state.inner_loop_graph,
+                stream=stream_for_graph,
+                capture_error_mode="thread_local",
+            ),
+        ):
+            self._inner_loop()
 
     def _greedy_decode_logprobs_batched_fusion_models_cuda_graphs(self, logits: torch.Tensor, out_len: torch.Tensor):
         current_batch_size = logits.shape[0]
@@ -949,6 +967,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         For debugging the algorithm use "no_graphs" mode, since it is impossible to debug CUDA graphs directly.
         """
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
+        self.cuda_graphs_allow_fallback = False
         self.state = None
 
     def maybe_enable_cuda_graphs(self):

@@ -11,7 +11,7 @@ PTQ enables deploying a model in a low-precision format -- FP8, INT4, or INT8 --
 
 Model quantization has two primary benefits: reduced model memory requirements and increased inference throughput.
 
-In NeMo, quantization is enabled by the `NVIDIA TensorRT Model Optimizer (ModelOpt) <https://github.com/NVIDIA/TensorRT-Model-Optimizer>`_ library -- a library to quantize and compress deep learning models for optimized inference on GPUs.
+In NeMo, quantization is enabled by the `NVIDIA Model Optimizer (ModelOpt) <https://github.com/NVIDIA/Model-Optimizer>`_ library -- a library to quantize and compress deep learning models for optimized inference on GPUs.
 
 The quantization process consists of the following steps:
 

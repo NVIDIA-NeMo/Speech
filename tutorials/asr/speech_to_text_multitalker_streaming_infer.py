@@ -18,7 +18,7 @@ from typing import List, Optional, Union
 
 import pytorch_lightning as pl
 import torch
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
@@ -49,13 +49,12 @@ class MultitalkerTranscriptionConfig:
     cache_gating: bool = True  # whether to use cache gating
     cache_gating_buffer_size: int = 2  # buffer size for cache gating
     single_speaker_mode: bool = False  # whether to use single speaker mode
-    feat_len_sec: float = 0.01
 
     # General configs
     session_len_sec: float = -1  # End-to-end diarization session length in seconds
     num_workers: int = 8
     random_seed: Optional[int] = None  # seed number going to be used in seed_everything()
-    log: bool = True  # If True,log will be printed
+    log: bool = True  # If True, log will be printed
 
     # Streaming diarization configs
     streaming_mode: bool = True  # If True, streaming diarization will be used.
@@ -76,10 +75,8 @@ class MultitalkerTranscriptionConfig:
     device: str = 'cuda'
     audio_file: Optional[str] = None
     manifest_file: Optional[str] = None
-    att_context_size: Optional[List[int]] = field(default_factory=lambda: [70, 13])
     use_amp: bool = True
     debug_mode: bool = False
-    deploy_mode: bool = False
     batch_size: int = 32
     chunk_size: int = -1
     shift_size: int = -1
@@ -87,12 +84,10 @@ class MultitalkerTranscriptionConfig:
     online_normalization: bool = False
     output_path: Optional[str] = None
     pad_and_drop_preencoded: bool = False
-    generate_realtime_scripts: bool = False
-    spk_supervision: str = "diar"  # ["diar", "rttm"]
-    binary_diar_preds: bool = False
+    set_decoder: Optional[str] = None  # ["ctc", "rnnt"]
+    att_context_size: Optional[list] = None
+    generate_realtime_scripts: bool = True
 
-    # Multitalker transcription configs
-    verbose: bool = False
     word_window: int = 50
     sent_break_sec: float = 30.0
     fix_prev_words_count: int = 5
@@ -105,9 +100,16 @@ class MultitalkerTranscriptionConfig:
     print_sample_indices: List[int] = field(default_factory=lambda: [0])
     colored_text: bool = True
     real_time_mode: bool = False
-    print_path: Optional[str] = None
+    print_path: str = "./"
+
     ignored_initial_frame_steps: int = 5
+    verbose: bool = False
+
+    feat_len_sec: float = 0.01
     finetune_realtime_ratio: float = 0.01
+
+    spk_supervision: str = "diar"  # ["diar", "rttm"]
+    binary_diar_preds: bool = False
 
 
 def launch_serial_streaming(
@@ -149,7 +151,7 @@ def launch_serial_streaming(
                         is_buffer_empty=streaming_buffer.is_buffer_empty(),
                         drop_extra_pre_encoded=drop_extra_pre_encoded,
                     )
-        if cfg.get("real_time_mode", False):
+        if cfg.real_time_mode:
             add_delay_for_real_time(
                 cfg=cfg,
                 chunk_audio=chunk_audio,
@@ -190,7 +192,7 @@ def launch_parallel_streaming(
                         is_buffer_empty=streaming_buffer.is_buffer_empty(),
                         drop_extra_pre_encoded=drop_extra_pre_encoded,
                     )
-        if cfg.get("real_time_mode", False):
+        if cfg.real_time_mode:
             add_delay_for_real_time(
                 cfg=cfg,
                 chunk_audio=chunk_audio,
@@ -285,6 +287,12 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
         asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=cfg.asr_model)
 
     logging.info(asr_model.encoder.streaming_cfg)
+    if cfg.set_decoder is not None:
+        if hasattr(asr_model, "cur_decoder"):
+            asr_model.change_decoding_strategy(decoder_type=cfg.set_decoder)
+        else:
+            raise ValueError("Decoder cannot get changed for non-Hybrid ASR models.")
+
     if cfg.att_context_size is not None:
         if hasattr(asr_model.encoder, "set_default_att_context_size"):
             asr_model.encoder.set_default_att_context_size(att_context_size=cfg.att_context_size)
@@ -296,6 +304,16 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
 
     # Initialize to avoid "possibly used before assignment" error
     multispk_asr_streamer = None
+
+    # configure the decoding config
+    decoding_cfg = asr_model.cfg.decoding
+    with open_dict(decoding_cfg):
+        decoding_cfg.strategy = "greedy"
+        decoding_cfg.preserve_alignments = False
+        if hasattr(asr_model, 'joint'):  # if an RNNT model
+            decoding_cfg.greedy.max_symbols = 10
+            decoding_cfg.fused_batch_size = -1
+        asr_model.change_decoding_strategy(decoding_cfg)
 
     asr_model = asr_model.to(cfg.device)
     asr_model.eval()
@@ -311,6 +329,23 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
             chunk_size=cfg.chunk_size, left_chunks=cfg.left_chunks, shift_size=shift_size
         )
 
+    # In streaming, offline normalization is not feasible as we don't have access to the
+    # whole audio at the beginning When online_normalization is enabled, the normalization
+    # of the input features (mel-spectrograms) are done per step It is suggested to train
+    # the streaming models without any normalization in the input features.
+    if cfg.online_normalization:
+        if asr_model.cfg.preprocessor.normalize not in ["per_feature", "all_feature"]:
+            logging.warning(
+                "online_normalization is enabled but the model has"
+                "no normalization in the feature extration part, so it is ignored."
+            )
+            online_normalization = False
+        else:
+            online_normalization = True
+
+    else:
+        online_normalization = False
+
     seglst_dict_list = []
     if cfg.audio_file is not None:
         # Stream a single audio file
@@ -321,7 +356,7 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
         ]
         streaming_buffer = CacheAwareStreamingAudioBuffer(
             model=asr_model,
-            online_normalization=cfg.online_normalization,
+            online_normalization=online_normalization,
             pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
         )
         cfg.batch_size = len(samples)
@@ -334,7 +369,7 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
                 streaming_buffer=streaming_buffer,
                 pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
             )
-            batch_seglst_list = multispk_asr_streamer.generate_seglst_dicts_from_parallel_streaming(samples=samples)
+            multispk_asr_streamer.generate_seglst_dicts_from_parallel_streaming(samples=samples)
         else:
             multispk_asr_streamer = launch_serial_streaming(
                 cfg=cfg,
@@ -342,8 +377,8 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
                 diar_model=diar_model,
                 streaming_buffer=streaming_buffer,
             )
-            batch_seglst_list = multispk_asr_streamer.generate_seglst_dicts_from_serial_streaming(samples=samples)
-        seglst_dict_list.extend(batch_seglst_list)
+            multispk_asr_streamer.generate_seglst_dicts_from_serial_streaming(samples=samples)
+        seglst_dict_list.extend(multispk_asr_streamer.instance_manager.seglst_dict_list)
 
     else:
         # Stream audio files in a manifest file in batched mode
@@ -359,7 +394,7 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
 
         streaming_buffer = CacheAwareStreamingAudioBuffer(
             model=asr_model,
-            online_normalization=cfg.online_normalization,
+            online_normalization=online_normalization,
             pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
         )
 
@@ -379,9 +414,7 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
                         streaming_buffer=streaming_buffer,
                         pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
                     )
-                    batch_seglst_list = multispk_asr_streamer.generate_seglst_dicts_from_parallel_streaming(
-                        samples=batch_samples
-                    )
+                    multispk_asr_streamer.generate_seglst_dicts_from_parallel_streaming(samples=batch_samples)
                 else:
                     multispk_asr_streamer = launch_serial_streaming(
                         cfg=cfg,
@@ -389,10 +422,8 @@ def main(cfg: MultitalkerTranscriptionConfig) -> Union[MultitalkerTranscriptionC
                         diar_model=diar_model,
                         streaming_buffer=streaming_buffer,
                     )
-                    batch_seglst_list = multispk_asr_streamer.generate_seglst_dicts_from_serial_streaming(
-                        samples=batch_samples
-                    )
-                seglst_dict_list.extend(batch_seglst_list)
+                    multispk_asr_streamer.generate_seglst_dicts_from_serial_streaming(samples=batch_samples)
+                seglst_dict_list.extend(multispk_asr_streamer.instance_manager.seglst_dict_list)
                 streaming_buffer.reset_buffer()
                 batch_samples = []
 

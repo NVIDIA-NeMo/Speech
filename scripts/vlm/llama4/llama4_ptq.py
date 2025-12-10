@@ -84,7 +84,7 @@ def get_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="NeMo PTQ argument parser"
     )
     parser.add_argument("-nc", "--nemo_checkpoint", type=str, help="Source NeMo 2.0 checkpoint")
-    parser.add_argument("--decoder_type", type=str, help="Decoder type for TensorRT-Model-Optimizer")
+    parser.add_argument("--decoder_type", type=str, help="Decoder type for Model-Optimizer")
     parser.add_argument("-ctp", "--calibration_tp", "--calib_tp", type=int, default=1)
     parser.add_argument("-cpp", "--calibration_pp", "--calib_pp", type=int, default=1)
     parser.add_argument(
@@ -127,7 +127,7 @@ def get_args():
         type=str,
         default="fp8",
         choices=QUANT_CFG_CHOICES_LIST,
-        help="TensorRT-Model-Optimizer quantization algorithm",
+        help="Model-Optimizer quantization algorithm",
     )
     parser.add_argument(
         "-awq_bs", "--awq_block_size", type=int, default=128, help="Block size for AWQ quantization algorithms"

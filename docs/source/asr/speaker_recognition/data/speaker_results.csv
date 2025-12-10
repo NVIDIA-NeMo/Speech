@@ -1,4 +1,7 @@
 Model Name,Model Base Class,Model Card
+diar_sortformer_4spk-v1,SortformerEncLabelModel,"https://huggingface.co/nvidia/diar_sortformer_4spk-v1"
+diar_streaming_sortformer_4spk-v2,SortformerEncLabelModel,"https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2"
+diar_streaming_sortformer_4spk-v2.1,SortformerEncLabelModel,"https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1"
 titanet_large,EncDecSpeakerLabelModel,"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_large"
 titanet_small,EncDecSpeakerLabelModel,"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_small"
 speakerverification_speakernet,EncDecSpeakerLabelModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:speakerverification_speakernet"

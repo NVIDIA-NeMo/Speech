@@ -64,8 +64,7 @@ except ImportError:
     # since PyTorch 2.3 the path has changed
     from torch.amp.grad_scaler import _refresh_per_optimizer_state
 
-from nemo.collections.nlp.modules.common.megatron.module import Float16Module
-from nemo.collections.nlp.modules.common.megatron.transformer import AutocastTransformerLayer, ParallelTransformerLayer
+from nemo.collections.common.modules.megatron import Float16Module
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import MainParamsOptimizerWrapper
 from nemo.core.optim.optimizers import init_optimizer_states
@@ -804,11 +803,7 @@ class NLPFSDPStrategy(FSDPStrategy):
         kwargs['backward_prefetch'] = BackwardPrefetch.BACKWARD_PRE
 
         # Set FSDP wrapping policy: use Transformer layer module as the FSDP sharding granularity.
-        self.fsdp_wrap_module = {
-            MCoreTransformerLayer,
-            AutocastTransformerLayer,
-            ParallelTransformerLayer,
-        }
+        self.fsdp_wrap_module = {MCoreTransformerLayer}
 
         # if extra wrap modules are provided, use them
         if extra_fsdp_wrap_module is not None:

@@ -538,7 +538,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         """
         batch_size = states.shape[0]
         device = states.device
-        scores = torch.zeros([batch_size, self.vocab_size], device=device, dtype=self.arcs_weights.dtype)
+        scores = torch.zeros([batch_size, self.vocab_size], device=device, dtype=self.all_arcs_weights.dtype)
         next_states = torch.full([batch_size, self.vocab_size], fill_value=-1, dtype=torch.long, device=device)
 
         ngram_multi_advance_triton_kernel[batch_size,](
@@ -550,12 +550,12 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             model_ids_ptr=model_ids,
             states_offsets_ptr=self.model2states_offset,
             arcs_offsets_ptr=self.model2arcs_offset,
-            to_states_ptr=self.to_states,
-            ilabels_ptr=self.ilabels,
-            arcs_weights_ptr=self.arcs_weights,
-            start_end_arcs_ptr=self.start_end_arcs,
-            backoff_to_states_ptr=self.backoff_to_states,
-            backoff_weights_ptr=self.backoff_weights,
+            to_states_ptr=self.all_to_states,
+            ilabels_ptr=self.all_ilabels,
+            arcs_weights_ptr=self.all_arcs_weights,
+            start_end_arcs_ptr=self.all_start_end_arcs,
+            backoff_to_states_ptr=self.all_backoff_to_states,
+            backoff_weights_ptr=self.all_backoff_weights,
             BLOCK_SIZE=triton.next_power_of_2(self.vocab_size),
         )
 

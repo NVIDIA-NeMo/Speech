@@ -415,7 +415,6 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         return model_id
 
     def remove_model(self, model_id: int):
-        # return
         logging.info(f"Removing model: {model_id}; total models {self.num_models}")
         if model_id in self.free_ids or model_id >= self.num_models:
             raise ValueError(

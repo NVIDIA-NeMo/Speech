@@ -197,7 +197,7 @@ class LLMTranslator:
             text = self.prompt_template.format(src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context)
             input_texts.append(text)
 
-        outputs = self.nmt_model.generate(input_texts, self.sampling_params)
+        outputs = self.nmt_model.generate(input_texts, self.sampling_params, use_tqdm=False)
         translations = []
         for tgt_prefix, output in zip(prefixes, outputs):
             output_text = output.outputs[0].text

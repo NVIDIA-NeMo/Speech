@@ -808,6 +808,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                         logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
                         continue
                     multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
+            multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
         else:
             multi_biasing_ids = None
         batched_hyps, alignments, batched_state = self.decoding_computer(
@@ -2966,6 +2967,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                         logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
                         continue
                     multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
+            multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
         else:
             multi_biasing_ids = None
         batched_hyps, alignments, batched_state = self.decoding_computer(

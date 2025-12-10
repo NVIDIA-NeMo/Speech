@@ -21,6 +21,10 @@ from packaging.version import Version
 __CUDA_PYTHON_MINIMUM_VERSION_CUDA_GRAPH_CONDITIONAL_NODES_SUPPORTED__ = (12, 6)  # 12060
 
 
+class NeMoCUDAPythonException(Exception):
+    pass
+
+
 def check_cuda_python_cuda_graphs_conditional_nodes_supported():
     # for CPU-only environment we need to raise an exception, otherwise cuda-python library will fail
     if not torch.cuda.is_available():
@@ -78,15 +82,15 @@ def assert_drv(err):
 
     if isinstance(err, cuda.CUresult):
         if err != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError("Cuda Error: {}".format(err))
+            raise NeMoCUDAPythonException("Cuda Error: {}".format(err))
     elif isinstance(err, nvrtc.nvrtcResult):
         if err != nvrtc.nvrtcResult.NVRTC_SUCCESS:
-            raise RuntimeError("Nvrtc Error: {}".format(err))
+            raise NeMoCUDAPythonException("Nvrtc Error: {}".format(err))
     elif isinstance(err, cudart.cudaError_t):
         if err != cudart.cudaError_t.cudaSuccess:
-            raise RuntimeError("Cuda Runtime Error: {}".format(err))
+            raise NeMoCUDAPythonException("Cuda Runtime Error: {}".format(err))
     else:
-        raise RuntimeError("Unknown error type: {}".format(err))
+        raise NeMoCUDAPythonException("Unknown error type: {}".format(err))
 
 
 def cu_call(f_call_out):
@@ -98,7 +102,7 @@ def cu_call(f_call_out):
 
     error, *others = f_call_out
     if error != cudart.cudaError_t.cudaSuccess:
-        raise Exception(f"CUDA failure! {error}")
+        raise NeMoCUDAPythonException(f"CUDA failure! {error}")
     else:
         return tuple(others)
 

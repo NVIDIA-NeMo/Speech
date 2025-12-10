@@ -34,7 +34,7 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
 )
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.core.utils.cuda_python_utils import cu_call, run_nvrtc, with_conditional_node
+from nemo.core.utils.cuda_python_utils import NeMoCUDAPythonException, cu_call, run_nvrtc, with_conditional_node
 from nemo.utils import logging
 
 try:
@@ -911,7 +911,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
             try:
                 self._full_graph_compile()
-            except RuntimeError as e:
+            except NeMoCUDAPythonException as e:
                 logging.warning(
                     f"Full CUDA graph compilation failed: {e}. "
                     "Falling back to native PyTorch CUDA graphs. Decoding will be slower."

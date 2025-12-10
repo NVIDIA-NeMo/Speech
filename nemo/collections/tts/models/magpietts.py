@@ -3032,8 +3032,7 @@ class MagpieTTSModel(ModelPT):
         self,
         batch: Dict[str, torch.Tensor],
     ) -> bool:
-        """Setup dummy text context tensors in the batch dictionary.
-        """
+        """Setup dummy text context tensors in the batch dictionary."""
         # No text context provided - set up dummy if model requires text conditioning tensors
         dummy_context_text = "[NO TEXT CONTEXT]"
         dummy_tokens = self.tokenizer.encode(
@@ -3043,20 +3042,16 @@ class MagpieTTSModel(ModelPT):
         batch['context_text_tokens_lens'] = torch.tensor([len(dummy_tokens)], device=self.device, dtype=torch.long)
         batch['has_text_context'] = torch.tensor([False], device=self.device, dtype=torch.bool)
 
-
     def setup_dummy_audio_context_in_batch(
         self,
         batch: Dict[str, torch.Tensor],
         context_audio: Optional[torch.Tensor] = None,
         context_audio_lens: Optional[torch.Tensor] = None,
     ) -> bool:
-        """Setup dummy audio context tensors in the batch dictionary.
-        """
+        """Setup dummy audio context tensors in the batch dictionary."""
         # Model has baked context - create minimal dummy context tensors
         # These will be ignored in prepare_context_tensors when baked embedding is used
-        dummy_context_codes = torch.zeros(
-            1, self.num_audio_codebooks, 2, device=self.device, dtype=torch.long
-        )
+        dummy_context_codes = torch.zeros(1, self.num_audio_codebooks, 2, device=self.device, dtype=torch.long)
         dummy_context_codes[:, :, 0] = self.context_audio_bos_id
         dummy_context_codes[:, :, 1] = self.context_audio_eos_id
         batch['context_audio_codes'] = dummy_context_codes
@@ -3113,7 +3108,9 @@ class MagpieTTSModel(ModelPT):
             ...     apply_TN=True,
             ... )
         """
-        assert self.has_baked_context_embedding, "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
+        assert (
+            self.has_baked_context_embedding
+        ), "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
         # Apply text normalization if requested
         normalized_text = transcript
         if apply_TN:

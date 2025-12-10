@@ -118,3 +118,23 @@ asr_output_granularity: segment               # Output granularity: word or segm
 cache_dir: null                               # Directory to store cache (e.g., .far files)
 lang: null                                    # Language code for ASR model
 return_tail_result: false                     # Whether to return the tail labels left in the right padded side of the buffer
+calculate_wer: true                           # Whether to calculate WER
+calculate_bleu: true                          # Whether to calculate BLEU score
+
+# ========================
+# Metrics
+# ========================
+metrics:
+  wer:
+    gt_text_attr_name: text                     # Attribute name for ground truth text
+    clean_groundtruth_text: false               # Whether to clean ground truth text
+    langid: en                                  # Language code for text normalization; only "en" is supported
+    use_cer: false                              # Whether to use character error rate
+    ignore_capitalization: true                 # Whether to ignore capitalization
+    ignore_punctuation: true                    # Whether to ignore punctuation
+    strip_punc_space: false                     # Whether to strip punctuation and space
+  bleu:
+    gt_text_attr_name: answer                   # Attribute name for ground truth text
+    ignore_capitalization: false                # Whether to ignore capitalization
+    ignore_punctuation: false                   # Whether to ignore punctuation
+    strip_punc_space: false                     # Whether to strip punctuation and space

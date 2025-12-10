@@ -49,7 +49,9 @@ import hydra
 
 from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder
 from nemo.collections.asr.inference.utils.manifest_io import calculate_duration, dump_output, get_audio_filepaths
+from nemo.collections.asr.inference.utils.pipeline_eval import evaluate_pipeline
 from nemo.collections.asr.inference.utils.progressbar import TQDMProgressBar
+
 from nemo.utils import logging
 
 # disable nemo_text_processing logging
@@ -70,8 +72,11 @@ def main(cfg):
     logging.setLevel(cfg.log_level)
 
     # Reading audio filepaths
-    audio_filepaths = get_audio_filepaths(cfg.audio_file, sort_by_duration=True)
+    audio_filepaths, manifest = get_audio_filepaths(cfg.audio_file, sort_by_duration=True)
     logging.info(f"Found {len(audio_filepaths)} audio files")
+    if manifest:
+        keys = list(manifest[0].keys())
+        logging.info(f"Found {len(keys)} keys in the input manifest: {keys}")
 
     # Build the pipeline
     pipeline = PipelineBuilder.build_pipeline(cfg)
@@ -88,8 +93,10 @@ def main(cfg):
     logging.info(f"RTFX: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
 
     # Dump the transcriptions to a output file
-    dump_output(output, cfg.output_filename, cfg.output_dir)
-    logging.info(f"Transcriptions written to {cfg.output_filename}")
+    dump_output(output, cfg.output_filename, cfg.output_dir, manifest)
+
+    # Evaluate the pipeline
+    evaluate_pipeline(cfg.output_filename, cfg)
     logging.info("Done!")
 
 

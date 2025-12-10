@@ -14,7 +14,7 @@
 <!-- markdownlint-disable -->
 <details open>
   <summary><b>Pivot notice: This repo will pivot to focus on speech models only</b></summary>
-      NeMo 2.0, with its support for LLMs and VLMs will be deprecated by 25.11, and replaced by <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge>NeMo Megatron-Bridge</a> and <a href=https://github.com/NVIDIA-NeMo/Automodel>NeMo Automodel</a>. More details can be find in the <a href=https://github.com/NVIDIA-NeMo>NeMo github org readme</a>. (2025-10-10)
+     The NeMo Framework GitHub repo is currently in the process of restructuring. This original NeMo 2.0 repository will now focus specifically on speech-related components. This transition aims to make NeMo more modular and developer-friendly. NeMo 2.0, with its support for LLMs and VLMs will be deprecated by 25.11, and replaced by <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge>NeMo Megatron-Bridge</a> and <a href=https://github.com/NVIDIA-NeMo/Automodel>NeMo Automodel</a>, while other parts of the framework are being modularized into separate libraries such as NeMo Gym, NeMo RL, and more. More details can be found in the <a href=https://github.com/NVIDIA-NeMo>NeMo github org readme</a>. (2025-10-10)
 </details>
 
 <details closed>
@@ -29,7 +29,7 @@ More Details in Blog: <a href=https://developer.nvidia.com/blog/run-hugging-face
 </details>
 
 <details closed>
-  <summary><b>Training on Blackwell using Nemo</b></summary>
+  <summary><b>Training on Blackwell using NeMo</b></summary>
       NeMo Framework has added Blackwell support, with <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/performance/performance_summary.html>performance benchmarks on GB200 & B200</a>. More optimizations to come in the upcoming releases.(2025-05-19)
 </details>
 

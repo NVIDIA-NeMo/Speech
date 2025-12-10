@@ -123,6 +123,7 @@ class MagpieTTSModel(ModelPT):
         # Save app_state.nemo_file_folder before loading nested models (codec, etc.)
         # because nested restore_from calls will overwrite it
         from nemo.utils.app_state import AppState
+
         app_state = AppState()
         saved_nemo_file_folder = app_state.nemo_file_folder
 
@@ -440,7 +441,11 @@ class MagpieTTSModel(ModelPT):
                 g2p_cfg = tokenizer_cfg.g2p
 
                 # Register phoneme_dict (or resolve nemo: path if restoring from .nemo)
-                phoneme_dict_path = g2p_cfg.get('phoneme_dict', None) if hasattr(g2p_cfg, 'get') else getattr(g2p_cfg, 'phoneme_dict', None)
+                phoneme_dict_path = (
+                    g2p_cfg.get('phoneme_dict', None)
+                    if hasattr(g2p_cfg, 'get')
+                    else getattr(g2p_cfg, 'phoneme_dict', None)
+                )
                 if phoneme_dict_path and isinstance(phoneme_dict_path, str) and phoneme_dict_path.strip():
                     try:
                         # register_artifact handles both:
@@ -461,7 +466,11 @@ class MagpieTTSModel(ModelPT):
                         )
 
                 # Register heteronyms (or resolve nemo: path if restoring from .nemo)
-                heteronyms_path = g2p_cfg.get('heteronyms', None) if hasattr(g2p_cfg, 'get') else getattr(g2p_cfg, 'heteronyms', None)
+                heteronyms_path = (
+                    g2p_cfg.get('heteronyms', None)
+                    if hasattr(g2p_cfg, 'get')
+                    else getattr(g2p_cfg, 'heteronyms', None)
+                )
                 if heteronyms_path and isinstance(heteronyms_path, str) and heteronyms_path.strip():
                     try:
                         artifact_path = self.register_artifact(

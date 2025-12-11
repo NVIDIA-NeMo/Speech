@@ -58,7 +58,6 @@ try:
     from megatron.core.dist_checkpointing.validation import StrictHandling
     from megatron.core.distributed import DistributedDataParallelConfig
     from megatron.core.optimizer import OptimizerConfig
-    from megatron.core.utils import get_torch_version, is_torch_min_version
 
     HAVE_MEGATRON_CORE = True
 except (ImportError, ModuleNotFoundError):

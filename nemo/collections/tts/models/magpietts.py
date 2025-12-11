@@ -457,17 +457,64 @@ class MagpieTTSModel(ModelPT):
         """Return number of baked speakers.
 
         Returns:
-            0 if no baked embedding, 1 for single speaker (2D tensor),
-            N for multi-speaker (3D tensor with shape [N, T, D]).
+            0 if no baked embedding, N for 3D tensor with shape [N, T, D].
         """
         if not self.has_baked_context_embedding:
             return 0
-        if self.baked_context_embedding.dim() == 2:
-            return 1  # Single speaker: (T, D)
-        elif self.baked_context_embedding.dim() == 3:
-            return self.baked_context_embedding.size(0)  # Multi-speaker: (N, T, D)
+        return self.baked_context_embedding.size(0)
+
+    def _normalize_speaker_indices(
+        self,
+        speaker_indices: Optional[Union[int, List[int], torch.Tensor]],
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Normalize speaker_indices to a tensor of shape (batch_size,).
+
+        Args:
+            speaker_indices: Speaker selection. Can be:
+                - None: Use first speaker (index 0) for all batch elements
+                - int: Same speaker for all batch elements
+                - List[int] or Tensor: One speaker index per batch element
+            batch_size: Number of elements in the batch.
+            device: Device to create tensor on.
+
+        Returns:
+            Tensor of shape (batch_size,) with speaker indices.
+
+        Raises:
+            ValueError: If speaker_indices length doesn't match batch_size or indices are out of range.
+        """
+        # Default to first speaker (index 0) if none specified
+        if speaker_indices is None:
+            speaker_indices = 0
+
+        # Normalize to tensor
+        if isinstance(speaker_indices, int):
+            indices = torch.full((batch_size,), speaker_indices, dtype=torch.long, device=device)
+        elif isinstance(speaker_indices, list):
+            if len(speaker_indices) != batch_size:
+                raise ValueError(
+                    f"speaker_indices length ({len(speaker_indices)}) must match batch_size ({batch_size})"
+                )
+            indices = torch.tensor(speaker_indices, dtype=torch.long, device=device)
+        elif isinstance(speaker_indices, torch.Tensor):
+            if speaker_indices.numel() != batch_size:
+                raise ValueError(
+                    f"speaker_indices length ({speaker_indices.numel()}) must match batch_size ({batch_size})"
+                )
+            indices = speaker_indices.to(device=device, dtype=torch.long)
         else:
-            raise ValueError(f"Unexpected baked_context_embedding shape: {self.baked_context_embedding.shape}")
+            raise ValueError(f"speaker_indices must be int, list, or tensor, got {type(speaker_indices)}")
+
+        # Validate indices
+        if (indices < 0).any() or (indices >= self.num_baked_speakers).any():
+            raise ValueError(
+                f"speaker_indices values must be in range [0, {self.num_baked_speakers - 1}], "
+                f"got min={indices.min().item()}, max={indices.max().item()}"
+            )
+
+        return indices
 
     def get_baked_context_embeddings_batch(
         self,
@@ -495,52 +542,13 @@ class MagpieTTSModel(ModelPT):
             raise ValueError("No baked context embedding available")
 
         device = self.baked_context_embedding.device
+        indices = self._normalize_speaker_indices(speaker_indices, batch_size, device)
 
-        if self.baked_context_embedding.dim() == 2:
-            # Single speaker: (T, D) - ignore speaker_indices
-            embedding = self.baked_context_embedding.unsqueeze(0).expand(batch_size, -1, -1)  # (B, T, D)
-            lengths = self.baked_context_embedding_len.unsqueeze(0).expand(batch_size)  # (B,)
-            return embedding, lengths
-
-        elif self.baked_context_embedding.dim() == 3:
-            # Multi-speaker: (N, T, D)
-            # Default to first speaker (index 0) for all batch elements if none specified
-            if speaker_indices is None:
-                speaker_indices = 0
-
-            # Normalize speaker_indices to tensor
-            if isinstance(speaker_indices, int):
-                # Same speaker for all batch elements
-                indices = torch.full((batch_size,), speaker_indices, dtype=torch.long, device=device)
-            elif isinstance(speaker_indices, list):
-                if len(speaker_indices) != batch_size:
-                    raise ValueError(
-                        f"speaker_indices length ({len(speaker_indices)}) must match batch_size ({batch_size})"
-                    )
-                indices = torch.tensor(speaker_indices, dtype=torch.long, device=device)
-            elif isinstance(speaker_indices, torch.Tensor):
-                if speaker_indices.numel() != batch_size:
-                    raise ValueError(
-                        f"speaker_indices length ({speaker_indices.numel()}) must match batch_size ({batch_size})"
-                    )
-                indices = speaker_indices.to(device=device, dtype=torch.long)
-            else:
-                raise ValueError(f"speaker_indices must be int, list, or tensor, got {type(speaker_indices)}")
-
-            # Validate indices
-            if (indices < 0).any() or (indices >= self.num_baked_speakers).any():
-                raise ValueError(
-                    f"speaker_indices values must be in range [0, {self.num_baked_speakers - 1}], "
-                    f"got min={indices.min().item()}, max={indices.max().item()}"
-                )
-
-            # Index into embeddings: (N, T, D) -> (B, T, D)
-            embeddings = self.baked_context_embedding[indices]  # (B, T, D)
-            lengths = self.baked_context_embedding_len[indices]  # (B,)
-            return embeddings, lengths
-
-        else:
-            raise ValueError(f"Unexpected baked_context_embedding shape: {self.baked_context_embedding.shape}")
+        # Index into embeddings: (N, T, D) -> (B, T, D)
+        embeddings = self.baked_context_embedding[indices]  # (B, T, D)
+        lengths = self.baked_context_embedding_len[indices]  # (B,)
+        return embeddings, lengths
+        
 
     def update_ckpt(self, state_dict):
         """
@@ -582,18 +590,15 @@ class MagpieTTSModel(ModelPT):
         if has_baked_embedding_in_ckpt:
             self.baked_context_embedding = state_dict['baked_context_embedding']
             self.baked_context_embedding_len = state_dict['baked_context_embedding_len']
-            # Log info based on single vs multi-speaker embedding
-            if self.baked_context_embedding.dim() == 2:
-                logging.info(
-                    f"Loaded single-speaker baked context embedding with shape {self.baked_context_embedding.shape}, "
-                    f"length {self.baked_context_embedding_len.item()}"
+            if self.baked_context_embedding.dim() != 3:
+                raise ValueError(
+                    f"baked_context_embedding must be 3D (N, T, D), got shape {self.baked_context_embedding.shape}"
                 )
-            else:
-                num_speakers = self.baked_context_embedding.size(0)
-                logging.info(
-                    f"Loaded multi-speaker baked context embedding with shape {self.baked_context_embedding.shape}, "
-                    f"num_speakers={num_speakers}, lengths={self.baked_context_embedding_len.tolist()}"
-                )
+            num_speakers = self.baked_context_embedding.size(0)
+            logging.info(
+                f"Loaded baked context embedding with shape {self.baked_context_embedding.shape}, "
+                f"num_speakers={num_speakers}, lengths={self.baked_context_embedding_len.tolist()}"
+            )
 
         if not strict:
             super().load_state_dict(state_dict, strict=False)

@@ -44,6 +44,8 @@ def load_evalset_config(config_path: str = None) -> dict:
         config_path = EVALSET_CONFIG_PATH
     with open(config_path, 'r') as f:
         return json.load(f)
+
+
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
 

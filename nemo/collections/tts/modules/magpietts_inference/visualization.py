@@ -20,15 +20,13 @@ This module provides functions for creating:
 """
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Dict, List, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-logger = logging.getLogger(__name__)
+from nemo.utils import logging as logger
 
 
 def create_violin_plot(

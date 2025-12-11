@@ -21,7 +21,6 @@ This module provides:
 from __future__ import annotations
 
 import glob
-import logging
 import os
 import shutil
 import time
@@ -35,8 +34,7 @@ from PIL import Image
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.models import MagpieTTSModel
-
-logger = logging.getLogger(__name__)
+from nemo.utils import logging as logger
 
 
 @dataclass

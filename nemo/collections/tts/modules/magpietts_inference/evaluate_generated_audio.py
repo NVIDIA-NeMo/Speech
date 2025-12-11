@@ -16,7 +16,6 @@ Used in infer_and_evaluate.py to obtain metrics such as ASR_WER and UTMOSV2 scor
 """
 import argparse
 import json
-import logging
 import os
 import pprint
 import string
@@ -24,18 +23,19 @@ import tempfile
 import time
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 
 import librosa
 import numpy as np
 import soundfile as sf
 import torch
 from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForConditionalGeneration, WhisperProcessor
-
+from nemo.utils import logging as logger
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 
 # Path to evalset config JSON
-EVALSET_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'evalset_config.json')
+EVALSET_CONFIG_PATH = Path(__file__).parent / 'evalset_config.json'
 
 
 def load_evalset_config(config_path: str = None) -> dict:
@@ -144,24 +144,6 @@ def pad_audio_to_min_length(audio_np: np.ndarray, sampling_rate: int, min_second
     return audio_np
 
 
-@contextmanager
-def nemo_log_level(level):
-    """
-    A context manager that temporarily sets the logging level for the NeMo logger
-    and restores the original level when the context manager is exited.
-
-    Args:
-        level (int): The logging level to set.
-    """
-    logger = logging.getLogger("nemo_logger")
-    original_level = logger.level
-    logger.setLevel(level)
-    try:
-        yield
-    finally:
-        # restore the original level when the context manager is exited (even if an exception was raised)
-        logger.setLevel(original_level)
-
 
 def extract_embedding(model, extractor, audio_path, device, sv_model_type):
     speech_array, sampling_rate = librosa.load(audio_path, sr=16000)
@@ -233,12 +215,11 @@ def evaluate(
         )
         speaker_verification_model = speaker_verification_model.to(device)
         speaker_verification_model.eval()
-    with nemo_log_level(logging.ERROR):
-        # The model `titanet_small` prints thousands of lines during initialization, so suppress logs temporarily
-        print("Loading `titanet_small` model...")
-        speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
-            model_name='titanet_small'
-        )
+    # The model `titanet_small` prints thousands of lines during initialization, so suppress logs temporarily
+    logger.info("Loading `titanet_small` model...")
+    speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
+        model_name='titanet_small'
+    )
     speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
     speaker_verification_model_alternate.eval()
 

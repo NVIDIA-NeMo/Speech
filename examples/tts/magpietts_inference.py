@@ -40,7 +40,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import logging
 import os
 import shutil
 from pathlib import Path
@@ -67,12 +66,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-)
-logger = logging.getLogger(__name__)
+from nemo.utils import logging as logger
 
 # Default evaluation datasets
 EVALUATION_DATASETS = (
@@ -124,7 +118,7 @@ def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
     for k, v in metrics_mean_ci.items():
         if isinstance(v, list):
             mean, ci = float(v[0]), float(v[1])
-            logging.info(f"Metric {k}: {mean:.4f} ± {ci:.4f}")
+            logger.info(f"Metric {k}: {mean:.4f} ± {ci:.4f}")
             metrics_mean_ci[k] = f"{mean:.4f} ± {ci:.4f}"
     return metrics_mean_ci
 

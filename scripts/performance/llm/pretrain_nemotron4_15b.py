@@ -18,9 +18,9 @@ import fiddle as fdl
 import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
 
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.llm.recipes.nemotron4_15b import pretrain_recipe
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import userbuffers_bf16_b200_h6144_tp2_mbs1_seqlen4096
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
 from ..argument_parser import parse_cli_args

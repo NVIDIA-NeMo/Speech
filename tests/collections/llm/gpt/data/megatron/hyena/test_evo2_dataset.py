@@ -1061,7 +1061,7 @@ if __name__ == "__main__":
 def test_evo2_dataset_getitem(monkeypatch):
     """Test Evo2Dataset.__getitem__ method."""
     import numpy as np
-    from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+    from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
     tokenizer = get_nmt_tokenizer("byte-level")
     eod_token_id = tokenizer.eod

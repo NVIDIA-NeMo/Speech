@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import os
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable
@@ -67,8 +68,12 @@ class TranscribeStepOutput:
     # It can also contain transcript from future frames.
     partial_transcript: str = ""
     partial_translation: str = ""
-    # Current step transcript is the transcript generated from the current frame
+    # Current step transcript/translation is the transcript/translation generated from the current frame
     current_step_transcript: str = ""
+    current_step_translation: str = ""
+
+    # Processed audio duration is the duration of the audio processed so far; needed for LAAL calculation
+    processed_audio_duration: float = 0.0
 
     @classmethod
     def from_state(cls, state: StreamingState, request: Request, sep: str = ' ') -> 'TranscribeStepOutput':
@@ -232,18 +237,23 @@ class BasePipeline(PipelineInterface):
             asr_transcripts, current_prefixes, src_langs, tgt_langs, src_contexts, tgt_contexts
         )
         new_prefixes = self.nmt_model.get_prefixes(asr_transcripts, translations, previous_translations)
-        for (state, step_output), translation, new_prefix, is_final in zip(
-            states_to_translate, translations, new_prefixes, final_transcript_mask
+
+        for (state, step_output), translation, new_prefix, prev_prefix, is_final in zip(
+            states_to_translate, translations, new_prefixes, current_prefixes, final_transcript_mask
         ):
             if is_final:
                 step_output.final_translation = translation
                 step_output.partial_translation = ""
                 state.cleanup_translation_info_after_eou()
                 state.set_translation_context(step_output.final_transcript, translation)
+                new_prefix = translation
             else:
                 step_output.partial_translation = translation
                 step_output.final_translation = ""
                 state.set_translation_info(translation, new_prefix)
+
+            lcp = os.path.commonprefix([prev_prefix, new_prefix])
+            step_output.current_step_translation = new_prefix[len(lcp) :]
 
     def transcribe_step(self, requests: list[Request]) -> list[TranscribeStepOutput]:
         """
@@ -275,6 +285,14 @@ class BasePipeline(PipelineInterface):
         for request, state in zip(requests, states):
             step_output = TranscribeStepOutput.from_state(state=state, request=request, sep=sep)
             outputs.append(step_output)
+
+            # Update the processed audio duration for LAAL calculation
+            if isinstance(request, Frame):
+                dur = request.valid_size / self.sample_rate
+            else:
+                dur = request.valid_size * self.asr_model.get_window_stride()
+            state.processed_audio_duration += dur
+            step_output.processed_audio_duration = state.processed_audio_duration
 
         # Perform the translation step
         if self.nmt_enabled:
@@ -517,6 +535,7 @@ class BasePipeline(PipelineInterface):
                         "translation": "",
                         "segments": [],
                         "audio_filepath": request_generator.get_audio_filepath(stream_id),
+                        "translation_segments": [],
                     }
 
                 accumulated_text = pipeline_output[stream_id]["text"]
@@ -538,6 +557,11 @@ class BasePipeline(PipelineInterface):
                 pipeline_output[stream_id]["text"] = accumulated_text
                 pipeline_output[stream_id]["translation"] = accumulated_translation
                 pipeline_output[stream_id]["segments"].extend(final_segments)
+
+                if self.nmt_enabled:
+                    step_translation = step_output.current_step_translation
+                    delay = step_output.processed_audio_duration
+                    pipeline_output[stream_id]["translation_segments"].append((step_translation, delay))
 
         self.close_session()
         return pipeline_output

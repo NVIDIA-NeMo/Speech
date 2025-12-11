@@ -137,16 +137,19 @@ def dump_output(
             fout.flush()
 
 
-def calculate_duration(audio_filepaths: list[str]) -> float:
+def calculate_duration(audio_filepaths: list[str]) -> tuple[float, dict[str, float]]:
     """
     Calculate the duration of the audio files
     Args:
         audio_filepaths: (list[str]) List of audio filepaths
     Returns:
         (float) Total duration of the audio files
+        (dict[str, float]) Dictionary containing the duration of each audio file
     """
     total_duration = 0
+    durations = {}
     for audio_filepath in audio_filepaths:
         duration = librosa.get_duration(path=audio_filepath)
         total_duration += duration
-    return total_duration
+        durations[audio_filepath] = duration
+    return total_duration, durations

@@ -49,7 +49,7 @@ import hydra
 
 from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder
 from nemo.collections.asr.inference.utils.manifest_io import calculate_duration, dump_output, get_audio_filepaths
-from nemo.collections.asr.inference.utils.pipeline_eval import evaluate_pipeline
+from nemo.collections.asr.inference.utils.pipeline_eval import evaluate_pipeline, calculate_pipeline_laal
 from nemo.collections.asr.inference.utils.progressbar import TQDMProgressBar
 
 from nemo.utils import logging
@@ -88,9 +88,14 @@ def main(cfg):
     exec_dur = time() - start
 
     # Calculate RTFX
-    data_dur = calculate_duration(audio_filepaths)
+    data_dur, durations = calculate_duration(audio_filepaths)
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
     logging.info(f"RTFX: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
+
+    # Calculate LAAL
+    laal = calculate_pipeline_laal(output, durations, manifest, cfg)
+    if laal is not None:
+        logging.info(f"LAAL: {laal:.2f}ms")
 
     # Dump the transcriptions to a output file
     dump_output(output, cfg.output_filename, cfg.output_dir, manifest)

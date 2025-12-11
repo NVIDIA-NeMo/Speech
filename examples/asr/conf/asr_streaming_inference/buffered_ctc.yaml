@@ -108,7 +108,7 @@ calculate_bleu: true                          # Whether to calculate BLEU score
 # Metrics
 # ========================
 metrics:
-  wer:
+  asr:
     gt_text_attr_name: text                     # Attribute name for ground truth text
     clean_groundtruth_text: false               # Whether to clean ground truth text
     langid: en                                  # Language code for text normalization; only "en" is supported
@@ -116,7 +116,7 @@ metrics:
     ignore_capitalization: true                 # Whether to ignore capitalization
     ignore_punctuation: true                    # Whether to ignore punctuation
     strip_punc_space: false                     # Whether to strip punctuation and space
-  bleu:
+  nmt:
     gt_text_attr_name: answer                   # Attribute name for ground truth text
     ignore_capitalization: false                # Whether to ignore capitalization
     ignore_punctuation: false                   # Whether to ignore punctuation

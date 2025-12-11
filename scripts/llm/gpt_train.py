@@ -23,8 +23,8 @@ from megatron.core.optimizer import OptimizerConfig
 
 from nemo import lightning as nl
 from nemo.collections import llm
+from nemo.collections.common.tokenizers.tokenizer_utils import get_tokenizer
 from nemo.collections.llm.gpt.data import ChatDataModule, MockDataModule
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.utils import logging

@@ -924,7 +924,8 @@ class SpeakerTaggedASR:
                     text=sentence_dict["words"],
                     session_id=session_id,
                 )
-                self.instance_manager.seglst_dict_list.append(seglst_dict)
+                if seglst_dict['words'].strip() != "":
+                    self.instance_manager.seglst_dict_list.append(seglst_dict)
         return self.instance_manager.seglst_dict_list
 
     def generate_seglst_dicts_from_parallel_streaming(self, samples: List[Dict[str, Any]]):
@@ -940,16 +941,17 @@ class SpeakerTaggedASR:
         for sample, asr_state in zip(samples, self.instance_manager.previous_asr_states):
             audio_filepath = sample["audio_filepath"]
             uniq_id = os.path.basename(audio_filepath).split('.')[0]
-            seglsts = [
-                get_new_sentence_dict(
+            seglsts = []
+            for seg in asr_state.seglsts:
+                a_seg_dict = get_new_sentence_dict(
                     speaker=seg['speaker'],
                     start_time=seg['start_time'],
                     end_time=seg['end_time'],
                     text=seg['words'],
                     session_id=uniq_id,
                 )
-                for seg in asr_state.seglsts
-            ]
+                if a_seg_dict['words'].strip() != "":
+                    seglsts.append(a_seg_dict)
             seglsts = sorted(seglsts, key=lambda x: x['start_time'])
             self.instance_manager.seglst_dict_list.extend(seglsts)
         return self.instance_manager.seglst_dict_list
@@ -1378,7 +1380,13 @@ class MultiTalkerInstanceManager:
         The ASR-states required to perform streaming inference are all included in this class.
         """
 
-        def __init__(self, max_num_of_spks: int = 4, frame_len_sec: float = 0.08, sent_break_sec: float = 5.0):
+        def __init__(
+            self,
+            max_num_of_spks: int = 4,
+            frame_len_sec: float = 0.08,
+            sent_break_sec: float = 5.0,
+            uppercase_first_letter: bool = True,
+        ):
             """
             Initialize the ASR-State class with the initial parameters.
 
@@ -1399,6 +1407,7 @@ class MultiTalkerInstanceManager:
 
             self._frame_len_sec = frame_len_sec
             self._sent_break_sec = sent_break_sec
+            self._uppercase_first_letter = uppercase_first_letter
             self._speaker_wise_sentences = {}
             self._prev_history_speaker_texts = ["" for _ in range(self.max_num_of_spks)]
 
@@ -1595,11 +1604,17 @@ class MultiTalkerInstanceManager:
                             # This handles the case where the first character should be assigned to the previous sentence.
                             the_first_char, diff_text = stripped_text[0], stripped_text[1:]
                             self._update_last_sentence(spk_idx=spk_idx, end_time=None, diff_text=the_first_char)
-                        self._speaker_wise_sentences[spk_idx].append(
-                            get_new_sentence_dict(
-                                speaker=f"speaker_{spk_idx}", start_time=start_time, end_time=end_time, text=diff_text
-                            )
+
+                        # Add the sentence to the speaker-wise sentences only if the text is not empty.
+                        a_seg_dict = get_new_sentence_dict(
+                            speaker=f"speaker_{spk_idx}", start_time=start_time, end_time=end_time, text=diff_text
                         )
+                        if a_seg_dict['words'].strip() != "":
+                            if self._uppercase_first_letter:
+                                split_words = a_seg_dict['words'].split()
+                                split_words[0] = split_words[0].capitalize()
+                                a_seg_dict['words'] = ' '.join(split_words)
+                            self._speaker_wise_sentences[spk_idx].append(a_seg_dict)
                     # Case 2 - If start_time is less than end_time + sent_break_sec, then we need to update the end_time
                     else:
                         self._update_last_sentence(spk_idx=spk_idx, end_time=end_time, diff_text=diff_text)

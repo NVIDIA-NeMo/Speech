@@ -2324,7 +2324,7 @@ class StreamingBatchedAudioBuffer:
         )
         # leave only full_ctx_audio_samples in buffer
         if extra_samples_in_buffer > 0:
-            self.samples = self.samples[:, extra_samples_in_buffer:].clone()
+            self.samples = self.samples[:, extra_samples_in_buffer:]
 
 
 def load_audio(file_path: str | Path, sample_rate: int = 16000) -> tuple[torch.Tensor, int]:

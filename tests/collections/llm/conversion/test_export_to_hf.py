@@ -18,6 +18,7 @@ import torch
 import transformers
 
 from nemo.collections import llm
+from nemo.collections.llm.utils import is_safe_repo
 
 
 def get_parser():
@@ -26,6 +27,7 @@ def get_parser():
     parser.add_argument("--original-hf-path", type=str, default="models/llama_31_toy")
     parser.add_argument("--output-path", type=str, default="/tmp/output_hf")
     parser.add_argument("--add-model-name", action="store_true", default=False)
+    parser.add_argument("--trust-remote-code", action="store_true", help="if trust_remote_code")
     parser.add_argument("--hf-target-class", type=str, default="AutoModelForCausalLM")
     parser.add_argument(
         "--allow-mismatch", nargs='+', default=[], help="List of parameter names to compare after casting to bfloat16"
@@ -40,17 +42,39 @@ if __name__ == '__main__':
         kwargs = {
             'target_model_name': args.original_hf_path,
         }
-    llm.export_ckpt(
-        path=Path(args.nemo_path),
-        target='hf',
-        output_path=Path(args.output_path),
-        overwrite=True,
-        **kwargs,
-    )
+    try:
+        llm.export_ckpt(
+            path=Path(args.nemo_path),
+            target='hf',
+            output_path=Path(args.output_path),
+            overwrite=True,
+            trust_remote_code=args.trust_remote_code,
+            **kwargs,
+        )
+    except TypeError:
+        llm.export_ckpt(
+            path=Path(args.nemo_path),
+            target='hf',
+            output_path=Path(args.output_path),
+            overwrite=True,
+            **kwargs,
+        )
 
     hf_target_class = getattr(transformers, args.hf_target_class)
-    original_hf = hf_target_class.from_pretrained(args.original_hf_path, trust_remote_code=True)
-    converted_hf = hf_target_class.from_pretrained(args.output_path, trust_remote_code=True)
+    original_hf = hf_target_class.from_pretrained(
+        args.original_hf_path,
+        trust_remote_code=is_safe_repo(
+            hf_path=args.original_hf_path,
+            trust_remote_code=args.trust_remote_code,
+        ),
+    )
+    converted_hf = hf_target_class.from_pretrained(
+        args.output_path,
+        trust_remote_code=is_safe_repo(
+            hf_path=args.original_hf_path,
+            trust_remote_code=args.trust_remote_code,
+        ),
+    )
 
     for (name1, parameter1), (name2, parameter2) in zip(
         converted_hf.named_parameters(), original_hf.named_parameters()

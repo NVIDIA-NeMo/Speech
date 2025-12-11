@@ -519,13 +519,25 @@ class BatchedHyps:
         Args:
             other: BatchedHyps
         """
-        self.transcript = torch.cat((self.transcript, torch.zeros_like(other.transcript)), dim=-1)
-        self.timestamps = torch.cat((self.timestamps, torch.zeros_like(other.timestamps)), dim=-1)
-        if self.is_with_durations:
-            self.token_durations = torch.cat((self.token_durations, torch.zeros_like(other.token_durations)), dim=-1)
-        self._max_length += other._max_length
+        cur_len = self.current_lengths.max().item()
+        other_len = other.current_lengths.max().item()
+        if cur_len + other_len >= self._max_length:
+            add_len = cur_len + other_len - self._max_length + 1
+            device = self.transcript.device
+            add_shape = [self.batch_size, add_len]
+            self.transcript = torch.cat(
+                (self.transcript, torch.zeros(add_shape, dtype=torch.long, device=device)), dim=-1
+            )
+            self.timestamps = torch.cat(
+                (self.timestamps, torch.zeros(add_shape, dtype=torch.long, device=device)), dim=-1
+            )
+            if self.is_with_durations:
+                self.token_durations = torch.cat(
+                    (self.token_durations, torch.zeros(add_shape, dtype=torch.long, device=device)), dim=-1
+                )
+            self._max_length += add_len
 
-        indices = torch.arange(other.transcript.shape[1], device=self.current_lengths.device)
+        indices = torch.arange(other_len, device=self.current_lengths.device)
         shifted_indices = self.current_lengths[:, None] + indices[None, :]
         self.transcript.scatter_(dim=1, index=shifted_indices, src=other.transcript)
         self.timestamps.scatter_(dim=1, index=shifted_indices, src=other.timestamps)

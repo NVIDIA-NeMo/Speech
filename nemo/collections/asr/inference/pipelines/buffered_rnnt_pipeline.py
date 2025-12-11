@@ -287,7 +287,7 @@ class BufferedRNNTPipeline(BasePipeline):
         # Only final frames have right padding
         # Keep some amount of extra padding to avoid the performance degradation
         right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.extra_padding_in_samples for frame in frames], device=self.device
+            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
         ).clamp(min=0)
 
         # Create and adjust the buffer lens

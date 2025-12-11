@@ -72,9 +72,6 @@ class TranscribeStepOutput:
     current_step_transcript: str = ""
     current_step_translation: str = ""
 
-    # Processed audio duration is the duration of the audio processed so far; needed for LAAL calculation
-    processed_audio_duration: float = 0.0
-
     @classmethod
     def from_state(cls, state: StreamingState, request: Request, sep: str = ' ') -> 'TranscribeStepOutput':
         """
@@ -285,14 +282,6 @@ class BasePipeline(PipelineInterface):
         for request, state in zip(requests, states):
             step_output = TranscribeStepOutput.from_state(state=state, request=request, sep=sep)
             outputs.append(step_output)
-
-            # Update the processed audio duration for LAAL calculation
-            if isinstance(request, Frame):
-                dur = request.valid_size / self.sample_rate
-            else:
-                dur = request.valid_size * self.asr_model.get_window_stride()
-            state.processed_audio_duration += dur
-            step_output.processed_audio_duration = state.processed_audio_duration
 
         # Perform the translation step
         if self.nmt_enabled:
@@ -560,7 +549,7 @@ class BasePipeline(PipelineInterface):
 
                 if self.nmt_enabled:
                     step_translation = step_output.current_step_translation
-                    delay = step_output.processed_audio_duration
+                    delay = request_generator.get_elapsed_duration(stream_id)
                     pipeline_output[stream_id]["translation_segments"].append((step_translation, delay))
 
         self.close_session()

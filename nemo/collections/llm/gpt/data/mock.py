@@ -85,7 +85,7 @@ class MockDataModule(pl.LightningDataModule):
         self.create_attention_mask = create_attention_mask or not HAVE_TE
 
         if tokenizer is None:
-            from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+            from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
             self.tokenizer = get_nmt_tokenizer(
                 "megatron", "GPT2BPETokenizer", vocab_file=vocab_file, merges_file=merges_file

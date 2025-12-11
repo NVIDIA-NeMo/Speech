@@ -66,7 +66,7 @@ class MockDataModule(pl.LightningDataModule):
         self.persistent_workers = persistent_workers
         self.create_attention_mask = create_attention_mask or not HAVE_TE
 
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+        from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
         self.tokenizer = tokenizer or get_nmt_tokenizer("megatron", "BertWordPieceCase")
         self.data_sampler = MegatronDataSampler(

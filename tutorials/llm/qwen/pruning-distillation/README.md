@@ -1,12 +1,12 @@
 # Qwen3-8B Pruning and Distillation with NeMo 2.0 Framework
 
-[NVIDIA TensorRT Model Optimizer](https://github.com/NVIDIA/TensorRT-Model-Optimizer) is the library (referred to as **Model Optimizer**, or **ModelOpt**) comprising state-of-the-art model optimization techniques including quantization, distillation, pruning, and speculative decoding to compress models. We will use this library to perform the pruning and distillation on [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) in [NVIDIA NeMo Framework](https://docs.nvidia.com/nemo-framework/user-guide/latest/overview.html)
+[NVIDIA Model Optimizer](https://github.com/NVIDIA/Model-Optimizer) is the library (referred to as **Model Optimizer**, or **ModelOpt**) comprising state-of-the-art model optimization techniques including quantization, distillation, pruning, and speculative decoding to compress models. We will use this library to perform the pruning and distillation on [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) in [NVIDIA NeMo Framework](https://docs.nvidia.com/nemo-framework/user-guide/latest/overview.html)
 
 [LLM Pruning and Distillation in Practice: The Minitron Approach](https://arxiv.org/abs/2408.11796) provides details pruning and distillation on Llama 3.1 as described in the [tech report](https://arxiv.org/abs/2408.11796).
 
 [How to Prune and Distill Llama-3.1 8B to an NVIDIA Llama-3.1-Minitron 4B Model](https://developer.nvidia.com/blog/how-to-prune-and-distill-llama-3-1-8b-to-an-nvidia-llama-3-1-minitron-4b-model/) provides practical and effective structured compression best practices for LLMs that combine depth, width, attention, and MLP pruning with knowledge distillation-based retraining.
 
-[Supercharge Edge AI With High‑Accuracy Reasoning Using NVIDIA Nemotron Nano 2 9B](https://huggingface.co/blog/nvidia/supercharge-ai-reasoning-with-nemotron-nano-2) talks about how state-of-the-art reasoning model [NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) was created by pruning and distilling a 12B Hybrid Mamba Transformer model which is also supported by TensorRT Model Optimizer.
+[Supercharge Edge AI With High‑Accuracy Reasoning Using NVIDIA Nemotron Nano 2 9B](https://huggingface.co/blog/nvidia/supercharge-ai-reasoning-with-nemotron-nano-2) talks about how state-of-the-art reasoning model [NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) was created by pruning and distilling a 12B Hybrid Mamba Transformer model which is also supported by Model Optimizer.
 
 ## Objectives
 
@@ -14,7 +14,7 @@ This tutorial demonstrates how to perform depth-pruning, width-pruning, and dist
 
 There are two methods to prune a model: depth-pruning and width-pruning. We will explore both techniques, yielding 2 pruned models. These models will serve as starting points for distillation to create the final distilled models.
 
-**NOTE:** Checkout the full list of supported models and prunable dimensions [here](https://github.com/NVIDIA/TensorRT-Model-Optimizer/tree/main/examples/pruning).
+**NOTE:** Checkout the full list of supported models and prunable dimensions [here](https://github.com/NVIDIA/Model-Optimizer/tree/main/examples/pruning).
 
 ## Requirements
 

@@ -22,7 +22,7 @@ from nemo.export.sentencepiece_tokenizer import SentencePieceTokenizer
 from nemo.export.tiktoken_tokenizer import TiktokenTokenizer
 
 # TODO: use get_nmt_tokenizer helper below to instantiate tokenizer once environment / dependencies get stable
-# from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+# from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
 TOKENIZER_CONFIG_FILE = "tokenizer_config.yaml"
 TOKENIZER_DIR = "tokenizer"

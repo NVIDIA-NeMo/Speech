@@ -11,6 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# flake8: noqa
+# pylint: skip-file
+
 import io
 import os
 import sys
@@ -18,8 +22,8 @@ from urllib.parse import urlparse
 
 import yaml
 
-from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.utils import logging
+from nemo.utils.megatron_utils import ApexGuardDefaults
 
 try:
     import webdataset.gopen as gopen_webdata
@@ -219,7 +223,7 @@ if HAVE_WEBDATASET:
                 assert not resampled
                 self.append(urls)
             elif isinstance(urls, str) and (urls.endswith(".yaml") or urls.endswith(".yml")):
-                with (open(urls)) as stream:
+                with open(urls) as stream:
                     spec = yaml.safe_load(stream)
                 assert "datasets" in spec
                 self.append(shardlists.MultiShardSample(spec))
@@ -255,10 +259,12 @@ if HAVE_WEBDATASET:
                 assert cache_size == -1 or cache_size > 0
                 self.append(
                     cache.cached_tarfile_to_samples(
-                        handler=handler, verbose=verbose, cache_size=cache_size, cache_dir=cache_dir,
+                        handler=handler,
+                        verbose=verbose,
+                        cache_size=cache_size,
+                        cache_dir=cache_dir,
                     )
                 )
-
 
 else:
 

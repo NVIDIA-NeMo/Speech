@@ -20,9 +20,9 @@ from megatron.core.transformer import TransformerConfig
 from torch import Tensor, nn
 
 from nemo.collections import llm
-from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
 from nemo.utils import logging
+from nemo.utils.megatron_utils import average_losses_across_data_parallel_group
 from nemo.utils.model_utils import unwrap_model
 
 from .utils import adjust_distillation_model_for_mcore, load_distillation_config, teacher_provider

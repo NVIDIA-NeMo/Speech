@@ -181,11 +181,10 @@ class BufferedRNNTPipeline(BasePipeline):
 
         if self.prompt_enabled:
             self._prompt_config = self._load_prompt_config()
-            self._prompt_matrix_cache = {}
 
     def _load_prompt_config(self) -> dict:
         """
-        Load and cache prompt configuration once at initialization.
+        Load prompt configuration from model.
         Returns:
             (dict) Prompt configuration containing num_prompts, prompt_dict, and compute_dtype.
         """
@@ -233,27 +232,20 @@ class BufferedRNNTPipeline(BasePipeline):
             )
         return lang_index
 
-    def _get_prompt_matrix(self) -> Tensor:
+    def _create_one_hot_prompts(self, indices: Tensor) -> Tensor:
         """
-        Return cached identity matrix [num_prompts, num_prompts] on device/dtype.
+        Create one-hot prompt vectors from indices.
+        Args:
+            indices: (Tensor) Prompt indices of shape [B].
         Returns:
-            (Tensor) Identity matrix for prompt selection.
+            (Tensor) One-hot prompt vectors of shape [B, num_prompts].
         """
-        if not hasattr(self, '_prompt_config') or not self._prompt_config:
-            raise RuntimeError("Prompt configuration is missing for a prompt-enabled model.")
-        key = (self.device, self._prompt_config['compute_dtype'])
-        cached = self._prompt_matrix_cache.get(key)
-        if cached is not None:
-            return cached
         num_prompts = self._prompt_config['num_prompts']
-        compute_dtype = self._prompt_config['compute_dtype']
-        eye = torch.eye(num_prompts, device=self.device, dtype=compute_dtype)
-        self._prompt_matrix_cache[key] = eye
-        return eye
+        return torch.nn.functional.one_hot(indices, num_classes=num_prompts).to(self._prompt_config['compute_dtype'])
 
     def _build_prompt_vectors(self, states: list) -> Tensor:
         """
-        Build prompt vectors for a batch of states.
+        Build prompt vectors for a batch of states using one-hot encoding.
         Args:
             states: (list) List of streaming states.
         Returns:
@@ -265,8 +257,7 @@ class BufferedRNNTPipeline(BasePipeline):
         num_prompts = self._prompt_config['num_prompts']
         if torch.any((indices < 0) | (indices >= num_prompts)):
             raise ValueError("Found out-of-range prompt index in batch.")
-        prompt_matrix = self._get_prompt_matrix()
-        return prompt_matrix.index_select(0, indices)  # [B, num_prompts]
+        return self._create_one_hot_prompts(indices)
 
     def init_zero_enc(self) -> Tensor:
         """
@@ -289,8 +280,8 @@ class BufferedRNNTPipeline(BasePipeline):
             # Use "en-US" as the default prompt for zero encoding
             # This region is sliced out before decoding, so language choice doesn't matter
             default_prompt_idx = self._resolve_prompt_index("en-US")
-            prompt_matrix = self._get_prompt_matrix()
-            prompt_vector = prompt_matrix[default_prompt_idx].unsqueeze(0)  # [1, num_prompts]
+            prompt_indices = torch.tensor([default_prompt_idx], device=self.device, dtype=torch.long)
+            prompt_vector = self._create_one_hot_prompts(prompt_indices)  # [1, num_prompts]
 
             zero_encoded, _ = self.asr_model.encode_with_prompts(
                 processed_signal=zero_features,

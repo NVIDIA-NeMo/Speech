@@ -32,8 +32,18 @@ import torch
 from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForConditionalGeneration, WhisperProcessor
 
 import nemo.collections.asr as nemo_asr
-import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+
+# Path to evalset config JSON
+EVALSET_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'evalset_config.json')
+
+
+def load_evalset_config(config_path: str = None) -> dict:
+    """Load dataset meta info from JSON config file."""
+    if config_path is None:
+        config_path = EVALSET_CONFIG_PATH
+    with open(config_path, 'r') as f:
+        return json.load(f)
 from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
 
@@ -431,8 +441,8 @@ def main():
     args = parser.parse_args()
 
     if args.evalset is not None:
-        dataset_meta_info = evalset_config.dataset_meta_info
-        assert args.evalset in dataset_meta_info
+        dataset_meta_info = load_evalset_config()
+        assert args.evalset in dataset_meta_info, f"Dataset '{args.evalset}' not found in evalset_config.json"
         args.manifest_path = dataset_meta_info[args.evalset]['manifest_path']
         args.audio_dir = dataset_meta_info[args.evalset]['audio_dir']
 

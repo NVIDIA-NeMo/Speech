@@ -548,7 +548,6 @@ class MagpieTTSModel(ModelPT):
         embeddings = self.baked_context_embedding[indices]  # (B, T, D)
         lengths = self.baked_context_embedding_len[indices]  # (B,)
         return embeddings, lengths
-        
 
     def update_ckpt(self, state_dict):
         """

@@ -21,7 +21,6 @@ This module provides helpers for:
 """
 from __future__ import annotations
 
-from nemo.utils import logging as logger
 import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -30,6 +29,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.tts.models import MagpieTTSModel
+from nemo.utils import logging as logger
 
 
 @dataclass

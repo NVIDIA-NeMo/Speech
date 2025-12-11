@@ -29,9 +29,10 @@ import numpy as np
 import soundfile as sf
 import torch
 from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForConditionalGeneration, WhisperProcessor
-from nemo.utils import logging as logger
+
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+from nemo.utils import logging as logger
 
 # Path to evalset config JSON
 EVALSET_CONFIG_PATH = Path(__file__).parent / 'evalset_config.json'
@@ -141,7 +142,6 @@ def pad_audio_to_min_length(audio_np: np.ndarray, sampling_rate: int, min_second
         padding_needed = min_samples - n_samples
         audio_np = np.pad(audio_np, (0, padding_needed), mode='constant', constant_values=0)
     return audio_np
-
 
 
 def extract_embedding(model, extractor, audio_path, device, sv_model_type):

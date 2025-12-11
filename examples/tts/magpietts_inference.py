@@ -48,9 +48,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-# Import dataset configuration
-import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import load_evalset_config
 
 # Import the modular components
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
@@ -183,7 +182,7 @@ def run_inference_and_evaluation(
     runner = MagpieInferenceRunner(model, inference_config)
 
     # Tracking metrics across datasets
-    dataset_meta_info = evalset_config.dataset_meta_info
+    dataset_meta_info = load_evalset_config()
     ssim_per_dataset = []
     cer_per_dataset = []
     all_datasets_filewise_metrics = {}
@@ -201,7 +200,7 @@ def run_inference_and_evaluation(
         logger.info(f"Processing dataset: {dataset}")
 
         if dataset not in dataset_meta_info:
-            logger.warning(f"Dataset '{dataset}' not found in evalset_config, skipping.")
+            logger.warning(f"Dataset '{dataset}' not found in evalset_config.json, skipping.")
             continue
 
         meta = dataset_meta_info[dataset]

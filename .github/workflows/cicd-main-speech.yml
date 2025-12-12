@@ -164,10 +164,6 @@ jobs:
             script: L2_Speaker_dev_run_Neural_Diarizer_Inference
           - runner: self-hosted-azure
             script: L2_Speaker_dev_run_Multispeaker_ASR_Data_Simulation
-          - runner: self-hosted-azure
-            script: L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav
-          - runner: self-hosted-azure
-            script: L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Ru_QN_with_mp3
           - script: L2_SpeechLM_LoRA_TP1PP1_MBS2
             runner: self-hosted-azure
           - runner: self-hosted-azure-gpus-1

@@ -7,14 +7,14 @@
 [![PyPi total downloads](https://static.pepy.tech/personalized-badge/nemo-toolkit?period=total&units=international_system&left_color=grey&right_color=brightgreen&left_text=downloads)](https://pepy.tech/project/nemo-toolkit)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-# **NVIDIA NeMo Framework**
+# **NVIDIA NeMo Speech Collection**
 
 ## Latest News
 
 <!-- markdownlint-disable -->
 <details open>
-  <summary><b>Pivot notice: This repo will pivot to focus on speech models only</b></summary>
-      NeMo 2.0, with its support for LLMs and VLMs will be deprecated by 25.11, and replaced by <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge>NeMo Megatron-Bridge</a> and <a href=https://github.com/NVIDIA-NeMo/Automodel>NeMo Automodel</a>. More details can be find in the <a href=https://github.com/NVIDIA-NeMo>NeMo github org readme</a>. (2025-10-10)
+  <summary><b>Pivot notice: This repo will pivot to focus on speech models collections only. Please refer to <a href=https://github.com/NVIDIA-NeMo>NeMo Framework Github Org</a> for the complete list of repos under NeMo Framework</b></summary>
+      NeMo 2.0, with its support for LLMs and VLMs will be deprecated by 25.11, and replaced by <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge>NeMo Megatron-Bridge</a> and <a href=https://github.com/NVIDIA-NeMo/Automodel>NeMo Automodel</a>. More details can be find in the <a href=https://github.com/NVIDIA-NeMo>NeMo Framework github org readme</a>. (2025-10-10)
 </details>
 
 <details closed>

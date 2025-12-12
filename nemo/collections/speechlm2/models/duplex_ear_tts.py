@@ -533,11 +533,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
                 # Replace all non-BOS/EOS with PAD
                 input_text_tokens = torch.where(
-                    full_dropout_mask,
-                    torch.full_like(input_text_tokens, self.text_pad_id),
-                    input_text_tokens
+                    full_dropout_mask, torch.full_like(input_text_tokens, self.text_pad_id), input_text_tokens
                 )
-
 
         # extract target audio codes
         target_audio, target_audio_lens = self.pad_audio_to_factor(
@@ -613,9 +610,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 N = eos_positions.shape[0]
 
                 # One random decision per EOS occurrence
-                duplicate_decision = (
-                    torch.rand(N, device=input_text_tokens.device) < p
-                )  # [N]
+                duplicate_decision = torch.rand(N, device=input_text_tokens.device) < p  # [N]
 
                 # Filter only EOS tokens that will be duplicated and are not at position t=0
                 valid = (eos_positions[:, 1] > 0) & duplicate_decision  # [N]
@@ -673,9 +668,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # debug samples:
         if (
             self.cfg.get("debug_dataloader_audios_path", None)
-            and self.training and batch["formatter"][0] == "s2s_duplex_silence_augmented"
+            and self.training
+            and batch["formatter"][0] == "s2s_duplex_silence_augmented"
         ):
             from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
+
             def count_leading_silence_tokens(tensor: torch.Tensor, silence_token: int = 0) -> int:
                 """
                 Count the number of consecutive silence tokens at the beginning of a 1D tensor.
@@ -717,19 +714,18 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 )
                 # reconstruct wav
                 print("target_codes_aligned:", target_codes_aligned.shape)
-                target_codes_aligned_ = replace_control_speech_codes(target_codes_aligned, self._control_codes, self.codec_silence_tokens)
+                target_codes_aligned_ = replace_control_speech_codes(
+                    target_codes_aligned, self._control_codes, self.codec_silence_tokens
+                )
                 print(self._control_codes, target_codes_aligned_.shape)
                 with fp32_precision(), torch.no_grad():
                     lengths = torch.tensor([target_codes_aligned_.shape[1]] * target_codes_aligned_.shape[0]).to(
                         self.device
                     )
                     print(target_codes_aligned_.max(), target_codes.max())
-                    reconstructed_audio_from_tokens, _ = self.audio_codec.decode(
-                        target_codes_aligned_, lengths
-                    )
+                    reconstructed_audio_from_tokens, _ = self.audio_codec.decode(target_codes_aligned_, lengths)
                     reconstructed_audio_from_tokens = reconstructed_audio_from_tokens.squeeze(1)
                     print(reconstructed_audio_from_tokens.shape, batch["target_audio"].shape)
-
 
             # Uses batch["input_text_tokens"] instead of subword_ids, because in subword_ids the first prompt BOS is replace, so it will breaks the generate_multiturn_speaking_mask
             eou_labels = generate_multiturn_speaking_mask(
@@ -762,9 +758,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 )
 
                 repeat_factor = int(self.target_sample_rate / self.target_fps)
-                eou_wav = (
-                    eou_labels[i].unsqueeze(0).unsqueeze(-1).repeat(1, 1, repeat_factor)
-                )  # (B, T, repeat_factor)
+                eou_wav = eou_labels[i].unsqueeze(0).unsqueeze(-1).repeat(1, 1, repeat_factor)  # (B, T, repeat_factor)
                 eou_wav = eou_wav.view(1, -1)  # (B, T * repeat_factor)
                 eou_wav = eou_wav.float() * 0.8  #  make 1 audible and keep 0 as total silence
                 write_wave(
@@ -793,18 +787,18 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             positions = (text_labels[batch_idx] == self.text_bos_id).nonzero(as_tuple=True)[0]
             first_pos = positions[0].item() if len(positions) > 0 else None
 
-            print(
-                "First BOS is in:", first_pos, "for batch idx:", batch_idx
-            )
+            print("First BOS is in:", first_pos, "for batch idx:", batch_idx)
             audio_mask = non_prompt_mask
             batch_idx = -1
             positions = (audio_mask[batch_idx] == 1).nonzero(as_tuple=True)[0]
             first_audio_mask = positions[0].item() if len(positions) > 0 else None
 
-            print("Last EOS in text (for TTS data it is the end of prompt):", (text_labels[batch_idx] == self.text_eos_id).nonzero(as_tuple=True)[0][-1].item())
+            print(
+                "Last EOS in text (for TTS data it is the end of prompt):",
+                (text_labels[batch_idx] == self.text_eos_id).nonzero(as_tuple=True)[0][-1].item(),
+            )
             print("First one in audio mask:", first_audio_mask)
             print("First one in subword_mask:", (subword_mask[batch_idx] == 1).nonzero(as_tuple=True)[0][0].item())
-            
 
             print(batch["formatter"])
             if target_codes_aligned_.shape[0] > 1:

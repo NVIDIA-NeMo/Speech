@@ -46,12 +46,10 @@ from time import time
 
 import hydra
 
-
 from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder
 from nemo.collections.asr.inference.utils.manifest_io import calculate_duration, dump_output, get_audio_filepaths
-from nemo.collections.asr.inference.utils.pipeline_eval import evaluate_pipeline, calculate_pipeline_laal
+from nemo.collections.asr.inference.utils.pipeline_eval import calculate_pipeline_laal, evaluate_pipeline
 from nemo.collections.asr.inference.utils.progressbar import TQDMProgressBar
-
 from nemo.utils import logging
 
 # disable nemo_text_processing logging

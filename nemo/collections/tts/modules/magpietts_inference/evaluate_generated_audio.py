@@ -138,7 +138,7 @@ def pad_audio_to_min_length(audio_np: np.ndarray, sampling_rate: int, min_second
     min_samples = round(min_seconds * sampling_rate)
 
     if n_samples < min_samples:
-        print(f"Padding audio from {n_samples/sampling_rate} seconds to {min_samples/sampling_rate} seconds")
+        logging.info(f"Padding audio from {n_samples/sampling_rate} seconds to {min_samples/sampling_rate} seconds")
         padding_needed = min_samples - n_samples
         audio_np = np.pad(audio_np, (0, padding_needed), mode='constant', constant_values=0)
     return audio_np
@@ -163,14 +163,14 @@ def extract_embedding(model, extractor, audio_path, device, sv_model_type):
 
 
 def compute_utmosv2_scores(audio_dir, device):
-    print(f"\nComputing UTMOSv2 scores for files in {audio_dir}...")
+    logging.info(f"\nComputing UTMOSv2 scores for files in {audio_dir}...")
     start_time = time.time()
     utmosv2_calculator = UTMOSv2Calculator(device=device)
     utmosv2_scores = utmosv2_calculator.process_directory(audio_dir)
     # convert to to a dictionary indexed by file path
     utmosv2_scores_dict = {os.path.normpath(item['file_path']): item['predicted_mos'] for item in utmosv2_scores}
     end_time = time.time()
-    print(f"UTMOSv2 scores computed for {len(utmosv2_scores)} files in {end_time - start_time:.2f} seconds\n")
+    logging.info(f"UTMOSv2 scores computed for {len(utmosv2_scores)} files in {end_time - start_time:.2f} seconds\n")
     return utmosv2_scores_dict
 
 
@@ -261,7 +261,7 @@ def evaluate(
                 )
                 gt_audio_text = process_text(gt_audio_text)
         except Exception as e:
-            print("Error during ASR: {}".format(e))
+            logging.info("Error during ASR: {}".format(e))
             pred_text = ""
             gt_audio_text = ""
 
@@ -275,10 +275,10 @@ def evaluate(
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
 
-        print("{} GT Text:".format(ridx), gt_text)
-        print("{} Pr Text:".format(ridx), pred_text)
+        logging.info(f"{ridx} GT Text: {gt_text}")
+        logging.info(f"{ridx} Pr Text: {pred_text}")
         # Format cer and wer to 2 decimal places
-        print("CER:", "{:.4f} | WER: {:.4f}".format(detailed_cer[0], detailed_wer[0]))
+        logging.info("CER:", "{:.4f} | WER: {:.4f}".format(detailed_cer[0], detailed_wer[0]))
 
         pred_texts.append(pred_text)
         gt_texts.append(gt_text)

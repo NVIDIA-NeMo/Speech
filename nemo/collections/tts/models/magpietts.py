@@ -353,10 +353,12 @@ class MagpieTTSModel(ModelPT):
             self.transcript_decoder_layers = [
                 idx for idx in range(cfg.decoder.n_layers)
             ]  # All layers are used for text
-            # Register buffers for baked context embedding (initially None/empty)
-            # These will be populated when loading a checkpoint with baked embedding
-            self.register_buffer('baked_context_embedding', None)
-            self.register_buffer('baked_context_embedding_len', None)
+            # Baked context embedding: nn.Embedding with flattened (N, T*D), reshaped to (N, T, D) at retrieval
+            # register_buffer does not work with nn.Embedding, so we use a regular variable.
+            self.baked_context_embedding: Optional[nn.Embedding] = None
+            self.register_buffer('_baked_embedding_T', None)  # Time dimension
+            self.register_buffer('_baked_embedding_D', None)  # Embedding dimension
+            self.register_buffer('baked_context_embedding_len', None)  # Per-speaker lengths (N,)
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
@@ -443,13 +445,13 @@ class MagpieTTSModel(ModelPT):
         """Check if the model has a baked context embedding.
 
         Returns:
-            True if baked_context_embedding buffer is set, not None, and has elements.
+            True if baked_context_embedding is set with valid dimensions.
         """
         return (
             self.model_type == 'decoder_ce'
-            and hasattr(self, 'baked_context_embedding')
             and self.baked_context_embedding is not None
-            and self.baked_context_embedding.numel() > 0
+            and self._baked_embedding_T is not None
+            and self._baked_embedding_D is not None
         )
 
     @property
@@ -457,11 +459,11 @@ class MagpieTTSModel(ModelPT):
         """Return number of baked speakers.
 
         Returns:
-            0 if no baked embedding, N for 3D tensor with shape [N, T, D].
+            0 if no baked embedding, N for embedding with N speakers.
         """
         if not self.has_baked_context_embedding:
             return 0
-        return self.baked_context_embedding.size(0)
+        return self.baked_context_embedding.num_embeddings
 
     def _normalize_speaker_indices(
         self,
@@ -541,11 +543,18 @@ class MagpieTTSModel(ModelPT):
         if not self.has_baked_context_embedding:
             raise ValueError("No baked context embedding available")
 
-        device = self.baked_context_embedding.device
+        device = self.baked_context_embedding.weight.device
         indices = self._normalize_speaker_indices(speaker_indices, batch_size, device)
 
-        # Index into embeddings: (N, T, D) -> (B, T, D)
-        embeddings = self.baked_context_embedding[indices]  # (B, T, D)
+        # Lookup flattened embeddings via nn.Embedding: (B,) -> (B, T*D)
+        print(f"indices: {indices}")
+        flat_embeddings = self.baked_context_embedding(indices)
+
+        # Reshape to 3D: (B, T*D) -> (B, T, D)
+        T = self._baked_embedding_T.item()
+        D = self._baked_embedding_D.item()
+        embeddings = flat_embeddings.view(batch_size, T, D)
+
         lengths = self.baked_context_embedding_len[indices]  # (B,)
         return embeddings, lengths
 
@@ -575,28 +584,35 @@ class MagpieTTSModel(ModelPT):
         _speaker_verification_model is only included in older checkpoints with the older single_encoder_sv_tts
         model_type that is no longer supported and can likely be removed in a future version.
 
-        Also handles loading baked context embeddings. If the checkpoint contains baked_context_embedding,
-        context_encoder weights are not expected to be present.
+        Also handles loading baked context embeddings. If the checkpoint contains baked_speaker_embedding.weight,
+        context_encoder weights are not expected to be present. The embedding is stored in flattened format
+        (N, T*D) and reconstructed to (N, T, D) at inference time using stored T and D dimensions.
         """
         state_dict = self.update_ckpt(state_dict)
 
-        # Check if checkpoint has baked context embedding
-        has_baked_embedding_in_ckpt = (
-            'baked_context_embedding' in state_dict and state_dict['baked_context_embedding'] is not None
-        )
+        # Check if checkpoint has baked context embedding (nn.Embedding format)
+        has_baked_embedding_in_ckpt = 'baked_context_embedding.weight' in state_dict
 
-        # Load baked embedding buffers if present
+        # Load baked embedding if present
         if has_baked_embedding_in_ckpt:
-            self.baked_context_embedding = state_dict['baked_context_embedding']
+            weight = state_dict['baked_context_embedding.weight']  # (N, T*D)
+            self._baked_embedding_T = state_dict['_baked_embedding_T']
+            self._baked_embedding_D = state_dict['_baked_embedding_D']
             self.baked_context_embedding_len = state_dict['baked_context_embedding_len']
-            if self.baked_context_embedding.dim() != 3:
-                raise ValueError(
-                    f"baked_context_embedding must be 3D (N, T, D), got shape {self.baked_context_embedding.shape}"
-                )
-            num_speakers = self.baked_context_embedding.size(0)
+
+            num_speakers = weight.size(0)
+            embedding_dim = weight.size(1)
+            T = self._baked_embedding_T.item()
+            D = self._baked_embedding_D.item()
+
+            # Create nn.Embedding and load weights (no gradients for inference)
+            self.baked_context_embedding = nn.Embedding(num_speakers, embedding_dim)
+            self.baked_context_embedding.weight.data = weight
+            self.baked_context_embedding.weight.requires_grad_(False)
+
             logging.info(
-                f"Loaded baked context embedding with shape {self.baked_context_embedding.shape}, "
-                f"num_speakers={num_speakers}, lengths={self.baked_context_embedding_len.tolist()}"
+                f"Loaded baked context embedding: num_speakers={num_speakers}, T={T}, D={D}, "
+                f"shape=({num_speakers}, {embedding_dim}), lengths={self.baked_context_embedding_len.tolist()}"
             )
 
         if not strict:
@@ -1651,7 +1667,6 @@ class MagpieTTSModel(ModelPT):
                     # Check for baked context embedding first
                     if self.has_baked_context_embedding:
                         # Baked context embedding is a fixed embedding that replaces the context encoder.
-                        # Supports single-speaker (2D: T, D) or multi-speaker (3D: N, T, D) embeddings.
                         # For multi-speaker, speaker_indices selects which speaker's embedding to use per batch element.
                         batch_size = text.size(0)
                         # Get embeddings for batch (handles single/multi-speaker and per-element selection)

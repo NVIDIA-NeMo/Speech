@@ -520,6 +520,25 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         aligned_attention_mask = batch["aligned_attention_mask"]
         aligned_position_ids = batch["aligned_position_ids"]
 
+        if self.training and (self.cfg.get("empty_turn_probability", 0.0) > 0):
+            # Randomly decide whether this batch gets emptied
+            if torch.rand(1).item() < self.cfg.empty_turn_probability:
+                # Zero out audio
+                target_audio = torch.zeros_like(target_audio)
+
+                # Create mask for tokens we want to drop
+                # Keep BOS and EOS, drop the rest.
+                keep_mask = (input_text_tokens == self.text_bos_id) | (input_text_tokens == self.text_eos_id)
+                full_dropout_mask = ~keep_mask  # True = positions to replace with PAD
+
+                # Replace all non-BOS/EOS with PAD
+                input_text_tokens = torch.where(
+                    full_dropout_mask,
+                    torch.full_like(input_text_tokens, self.text_pad_id),
+                    input_text_tokens
+                )
+
+
         # extract target audio codes
         target_audio, target_audio_lens = self.pad_audio_to_factor(
             target_audio, target_audio_lens, self.target_samples_per_frame, 1
@@ -581,6 +600,56 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 full_dropout_mask, torch.full_like(input_text_tokens, self.text_pad_id), input_text_tokens
             )
 
+        if self.training and self.cfg.get("text_eos_duplicate_prob", 0.0) > 0:
+            p = self.cfg.text_eos_duplicate_prob
+
+            # [B, T] mask of EOS positions
+            eos_mask = input_text_tokens == self.text_eos_id
+
+            # Flatten EOS positions: tensor of shape [N, 2] where each row = (batch_idx, time_idx)
+            eos_positions = eos_mask.nonzero(as_tuple=False)  # [N, 2]
+
+            if eos_positions.numel() > 0:
+                N = eos_positions.shape[0]
+
+                # One random decision per EOS occurrence
+                duplicate_decision = (
+                    torch.rand(N, device=input_text_tokens.device) < p
+                )  # [N]
+
+                # Filter only EOS tokens that will be duplicated and are not at position t=0
+                valid = (eos_positions[:, 1] > 0) & duplicate_decision  # [N]
+
+                if valid.any():
+                    # Select only valid EOS positions
+                    valid_positions = eos_positions[valid]  # [M, 2]
+
+                    # Indices for the token BEFORE the EOS (t-1)
+                    b_idx = valid_positions[:, 0]
+                    t_idx = valid_positions[:, 1] - 1
+
+                    # Replace token before EOS with an EOS
+                    input_text_tokens[b_idx, t_idx] = self.text_eos_id
+
+        # BOS dropout to make the model more robust
+        if self.training and self.cfg.get("text_bos_dropout_prob", 0.0) > 0:
+            # Mask BOS positions
+            bos_mask = input_text_tokens == self.text_bos_id
+
+            # Random dropout only on BOS positions
+            dropout_mask = torch.rand(bos_mask.sum(), device=input_text_tokens.device) < self.cfg.text_bos_dropout_prob
+
+            # Scatter dropout decisions into [B, T]
+            full_dropout_mask = torch.zeros_like(input_text_tokens, dtype=torch.bool)
+            full_dropout_mask[bos_mask] = dropout_mask
+
+            # Replace dropped BOS with PAD
+            input_text_tokens = torch.where(
+                full_dropout_mask,
+                torch.full_like(input_text_tokens, self.text_pad_id),
+                input_text_tokens,
+            )
+
         # shift text tokens
         subword_ids = F.pad(input_text_tokens[:, 1:], [0, 1])
         # note that we are using a text mask where we are ignoring the desc + audio prompt but we are keeping 1 until the audio ends to support duplex
@@ -600,6 +669,146 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 target_codes_aligned = target_codes_aligned[:, :-remainder]
                 subword_ids = subword_ids[:, :-remainder]
                 subword_mask = subword_mask[:, :-remainder]
+
+        # debug samples:
+        if (
+            self.cfg.get("debug_dataloader_audios_path", None)
+            and self.training and batch["formatter"][0] == "s2s_duplex_silence_augmented"
+        ):
+            from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
+            def count_leading_silence_tokens(tensor: torch.Tensor, silence_token: int = 0) -> int:
+                """
+                Count the number of consecutive silence tokens at the beginning of a 1D tensor.
+
+                Args:
+                    tensor (torch.Tensor): 1D tensor of tokens.
+                    silence_token (int): The token considered as silence (default: 0).
+
+                Returns:
+                    int: Number of consecutive silence tokens at the beginning.
+                """
+                if tensor.ndim != 1:
+                    raise ValueError("Input tensor must be 1D.")
+
+                count = 0
+                for token in tensor:
+                    if token.item() == silence_token:
+                        count += 1
+                    else:
+                        break
+                return count
+
+            def write_wave(one_audio_signal, file_name, sr=None):
+                import numpy as np
+                import soundfile as sf
+
+                one_audio_signal = one_audio_signal.cpu().numpy()
+                one_audio_signal = one_audio_signal.astype(np.float32)
+                if sr is None:
+                    sr = self.target_sample_rate
+                # one_audio_signal = np.clip(one_audio_signal, -1.0, 1.0)
+                sf.write(file_name, one_audio_signal, sr)
+
+            # encode and decode the audio
+            with fp32_precision(), torch.no_grad():
+                print(batch["target_audio"].shape)
+                lengths = torch.tensor([batch["target_audio"].shape[1]] * batch["target_audio"].shape[0]).to(
+                    self.device
+                )
+                # reconstruct wav
+                print("target_codes_aligned:", target_codes_aligned.shape)
+                target_codes_aligned_ = replace_control_speech_codes(target_codes_aligned, self._control_codes, self.codec_silence_tokens)
+                print(self._control_codes, target_codes_aligned_.shape)
+                with fp32_precision(), torch.no_grad():
+                    lengths = torch.tensor([target_codes_aligned_.shape[1]] * target_codes_aligned_.shape[0]).to(
+                        self.device
+                    )
+                    print(target_codes_aligned_.max(), target_codes.max())
+                    reconstructed_audio_from_tokens, _ = self.audio_codec.decode(
+                        target_codes_aligned_, lengths
+                    )
+                    reconstructed_audio_from_tokens = reconstructed_audio_from_tokens.squeeze(1)
+                    print(reconstructed_audio_from_tokens.shape, batch["target_audio"].shape)
+
+
+            # Uses batch["input_text_tokens"] instead of subword_ids, because in subword_ids the first prompt BOS is replace, so it will breaks the generate_multiturn_speaking_mask
+            eou_labels = generate_multiturn_speaking_mask(
+                batch["input_text_tokens"], bos_token_id=self.text_bos_id, eos_token_id=self.text_eos_id
+            )
+
+            for i in range(target_codes_aligned_.shape[0]):
+                write_wave(
+                    batch["target_audio"][i],
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"target_audio_{i}.wav"),
+                    sr=self.target_sample_rate,
+                )
+                write_wave(
+                    batch["audio_prompt"][i],
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"speaker_ref_{i}.wav"),
+                    sr=self.target_sample_rate,
+                )
+                write_wave(
+                    batch["source_audio"][i],
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"source_audio_{i}.wav"),
+                    sr=self.source_sample_rate,
+                )
+
+                write_wave(
+                    reconstructed_audio_from_tokens[i],
+                    os.path.join(
+                        self.cfg.get("debug_dataloader_audios_path"), f"target_audio_reconstructed_from_tokens_{i}.wav"
+                    ),
+                    sr=self.target_sample_rate,
+                )
+
+                repeat_factor = int(self.target_sample_rate / self.target_fps)
+                eou_wav = (
+                    eou_labels[i].unsqueeze(0).unsqueeze(-1).repeat(1, 1, repeat_factor)
+                )  # (B, T, repeat_factor)
+                eou_wav = eou_wav.view(1, -1)  # (B, T * repeat_factor)
+                eou_wav = eou_wav.float() * 0.8  #  make 1 audible and keep 0 as total silence
+                write_wave(
+                    eou_wav.squeeze(),
+                    os.path.join(self.cfg.get("debug_dataloader_audios_path"), f"eou_{i}.wav"),
+                    sr=self.target_sample_rate,
+                )
+
+            print(
+                "target labels from dataloader decoded:",
+                tokens_to_str(
+                    batch["input_text_tokens"][-1:],
+                    target_codes_lens,
+                    tokenizer=self.tokenizer,
+                    pad_id=self.text_pad_id,
+                ),
+            )
+            text_labels = batch["input_text_tokens"]
+            num_bos_tokens = (text_labels.unsqueeze(-1) == self.text_bos_id).flatten(1, 2).sum(-1)
+            # Count how many EOS tokens are present per sequence
+            # Shape: [B]
+            num_eos_tokens = (text_labels.unsqueeze(-1) == self.text_eos_id).flatten(1, 2).sum(-1)
+            print("Num eos:", num_eos_tokens, "num bos:", num_bos_tokens)
+
+            batch_idx = -1
+            positions = (text_labels[batch_idx] == self.text_bos_id).nonzero(as_tuple=True)[0]
+            first_pos = positions[0].item() if len(positions) > 0 else None
+
+            print(
+                "First BOS is in:", first_pos, "for batch idx:", batch_idx
+            )
+            audio_mask = non_prompt_mask
+            batch_idx = -1
+            positions = (audio_mask[batch_idx] == 1).nonzero(as_tuple=True)[0]
+            first_audio_mask = positions[0].item() if len(positions) > 0 else None
+
+            print("Last EOS in text (for TTS data it is the end of prompt):", (text_labels[batch_idx] == self.text_eos_id).nonzero(as_tuple=True)[0][-1].item())
+            print("First one in audio mask:", first_audio_mask)
+            print("First one in subword_mask:", (subword_mask[batch_idx] == 1).nonzero(as_tuple=True)[0][0].item())
+            
+
+            print(batch["formatter"])
+            if target_codes_aligned_.shape[0] > 1:
+                exit()
 
         return {
             "code": target_codes_aligned,

@@ -111,9 +111,6 @@ class StreamingState:
         # Request options
         self.options = None
 
-        # Audio processed so far, in seconds, needed for LAAL calculation
-        self.processed_audio_duration = 0.0
-
     def set_options(self, options: RequestOptions) -> None:
         """
         Set the options

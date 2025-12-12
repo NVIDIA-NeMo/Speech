@@ -547,7 +547,6 @@ class MagpieTTSModel(ModelPT):
         indices = self._normalize_speaker_indices(speaker_indices, batch_size, device)
 
         # Lookup flattened embeddings via nn.Embedding: (B,) -> (B, T*D)
-        print(f"indices: {indices}")
         flat_embeddings = self.baked_context_embedding(indices)
 
         # Reshape to 3D: (B, T*D) -> (B, T, D)
@@ -2542,10 +2541,6 @@ class MagpieTTSModel(ModelPT):
                             dummy_addition_dec_mask
                         )
 
-                    # print(f"step {idx}")
-                    # print(f"use_cfg {use_cfg}")
-                    # print(f"shape {cfg_audio_codes_embedded.shape}")
-                    # print(f"use kv cahce? {self.use_kv_cache_for_inference}")
                     combined_logits, attn_probs, dec_out = self.forward(
                         dec_input_embedded=cfg_audio_codes_embedded,
                         dec_input_mask=cfg_audio_codes_mask,

@@ -32,7 +32,7 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
-from nemo.utils import logging as logger
+from nemo.utils import logging
 
 # Path to evalset config JSON
 EVALSET_CONFIG_PATH = Path(__file__).parent / 'evalset_config.json'
@@ -215,7 +215,7 @@ def evaluate(
         speaker_verification_model = speaker_verification_model.to(device)
         speaker_verification_model.eval()
     # The model `titanet_small` prints thousands of lines during initialization, so suppress logs temporarily
-    logger.info("Loading `titanet_small` model...")
+    logging.info("Loading `titanet_small` model...")
     speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
         model_name='titanet_small'
     )

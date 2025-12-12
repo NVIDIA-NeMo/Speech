@@ -27,7 +27,7 @@ import scipy.stats as stats
 
 # Import the existing evaluation module
 import nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio as evaluate_generated_audio
-from nemo.utils import logging as logger
+from nemo.utils import logging
 
 
 @dataclass
@@ -71,7 +71,7 @@ def evaluate_generated_audio_dir(
             - avg_metrics: Dictionary of averaged metrics across all files.
             - filewise_metrics: List of per-file metric dictionaries.
     """
-    logger.info(f"Evaluating generated audio from {generated_audio_dir} " f"against manifest {manifest_path}")
+    logging.info(f"Evaluating generated audio from {generated_audio_dir} " f"against manifest {manifest_path}")
 
     avg_metrics, filewise_metrics = evaluate_generated_audio.evaluate(
         manifest_path=manifest_path,
@@ -99,7 +99,7 @@ def compute_mean_with_confidence_interval(
         confidence: Confidence level (default: 0.95 for 95% CI).
 
     Returns:
-        Dictionary mapping metric names to formatted "mean ± CI" strings.
+        Dictionary mapping metric names to [mean, CI].
     """
     if len(metrics_list) < 2:
         # Can't compute CI with fewer than 2 samples
@@ -109,7 +109,7 @@ def compute_mean_with_confidence_interval(
     for key in metric_keys:
         measurements = [m[key] for m in metrics_list if key in m]
         if not measurements:
-            logger.warning(f"Metric '{key}' not found in any measurements")
+            logging.warning(f"Metric '{key}' not found in any measurements")
             results[key] = "N/A"
             continue
 

@@ -26,7 +26,7 @@ from typing import Dict, List, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from nemo.utils import logging as logger
+from nemo.utils import logging
 
 
 def create_violin_plot(
@@ -55,7 +55,7 @@ def create_violin_plot(
 
     for i, column in enumerate(metric_keys):
         if column not in df.columns:
-            logger.warning(f"Metric '{column}' not found in data, skipping.")
+            logging.warning(f"Metric '{column}' not found in data, skipping.")
             continue
 
         axs[i].violinplot(df[column], showmedians=True, positions=[i], widths=0.5)
@@ -79,7 +79,7 @@ def create_violin_plot(
     plt.tight_layout()
     plt.savefig(output_path, format="png", bbox_inches="tight")
     plt.close()
-    logger.info(f"Violin plot saved to: {output_path}")
+    logging.info(f"Violin plot saved to: {output_path}")
 
 
 def create_combined_box_plot(
@@ -102,7 +102,7 @@ def create_combined_box_plot(
     num_metrics = len(metric_keys)
 
     if num_datasets < 2:
-        logger.warning("Combined plot requires at least 2 datasets, skipping.")
+        logging.warning("Combined plot requires at least 2 datasets, skipping.")
         return
 
     fig, axs = plt.subplots(1, num_metrics, figsize=(num_metrics * 6, 6))
@@ -131,7 +131,7 @@ def create_combined_box_plot(
                 dataset_labels.append(dataset)
 
         if not all_data:
-            logger.warning(f"No data for metric '{metric}', skipping subplot.")
+            logging.warning(f"No data for metric '{metric}', skipping subplot.")
             continue
 
         # Create box plots
@@ -179,4 +179,4 @@ def create_combined_box_plot(
     plt.tight_layout()
     plt.savefig(output_path, format="png", bbox_inches="tight", dpi=300)
     plt.close()
-    logger.info(f"Combined box plot saved to: {output_path}")
+    logging.info(f"Combined box plot saved to: {output_path}")

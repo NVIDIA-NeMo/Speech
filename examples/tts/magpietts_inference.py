@@ -66,7 +66,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 
-from nemo.utils import logging as logger
+from nemo.utils import logging
 
 # Default evaluation datasets
 EVALUATION_DATASETS = (
@@ -110,7 +110,7 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
     ]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
-    logger.info(f"Metrics appended to: {csv_path}")
+    logging.info(f"Metrics appended to: {csv_path}")
 
 
 def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
@@ -118,7 +118,7 @@ def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
     for k, v in metrics_mean_ci.items():
         if isinstance(v, list):
             mean, ci = float(v[0]), float(v[1])
-            logger.info(f"Metric {k}: {mean:.4f} ± {ci:.4f}")
+            logging.info(f"Metric {k}: {mean:.4f} ± {ci:.4f}")
             metrics_mean_ci[k] = f"{mean:.4f} ± {ci:.4f}"
     return metrics_mean_ci
 
@@ -191,10 +191,10 @@ def run_inference_and_evaluation(
     )
 
     for dataset in datasets:
-        logger.info(f"Processing dataset: {dataset}")
+        logging.info(f"Processing dataset: {dataset}")
 
         if dataset not in dataset_meta_info:
-            logger.warning(f"Dataset '{dataset}' not found in evalset_config.json, skipping.")
+            logging.warning(f"Dataset '{dataset}' not found in evalset_config.json, skipping.")
             continue
 
         meta = dataset_meta_info[dataset]
@@ -219,7 +219,7 @@ def run_inference_and_evaluation(
         filewise_metrics_all_repeats = []
 
         for repeat_idx in range(num_repeats):
-            logger.info(f"Repeat {repeat_idx + 1}/{num_repeats} for dataset {dataset}")
+            logging.info(f"Repeat {repeat_idx + 1}/{num_repeats} for dataset {dataset}")
 
             repeat_audio_dir = os.path.join(audio_dir, f"repeat_{repeat_idx}")
             os.makedirs(repeat_audio_dir, exist_ok=True)
@@ -247,7 +247,7 @@ def run_inference_and_evaluation(
                 json.dump(mean_rtf, f, indent=4)
 
             if skip_evaluation:
-                logger.info("Skipping evaluation as requested.")
+                logging.info("Skipping evaluation as requested.")
                 continue
 
             # Run evaluation
@@ -315,7 +315,7 @@ def run_inference_and_evaluation(
 
     # Clean up if requested
     if clean_up_disk:
-        logger.info(f"Cleaning up output directory: {out_dir}")
+        logging.info(f"Cleaning up output directory: {out_dir}")
         shutil.rmtree(out_dir)
 
     # Return averaged metrics
@@ -544,7 +544,7 @@ def main():
             parser.error("Number of hparams_files must match number of checkpoint_files")
 
         for hparams_file, checkpoint_file in zip(hparam_files, checkpoint_files):
-            logger.info(f"Processing checkpoint: {checkpoint_file}")
+            logging.info(f"Processing checkpoint: {checkpoint_file}")
 
             model_config = ModelLoadConfig(
                 hparams_file=hparams_file,
@@ -571,7 +571,7 @@ def main():
 
     else:  # nemo mode
         for nemo_file in args.nemo_files.split(","):
-            logger.info(f"Processing NeMo file: {nemo_file}")
+            logging.info(f"Processing NeMo file: {nemo_file}")
 
             model_config = ModelLoadConfig(
                 nemo_file=nemo_file,
@@ -598,14 +598,14 @@ def main():
     if cer is not None and args.cer_target is not None:
         if cer > args.cer_target:
             raise ValueError(f"CER {cer:.4f} exceeds target {args.cer_target:.4f}")
-        logger.info(f"CER {cer:.4f} meets target {args.cer_target:.4f}")
+        logging.info(f"CER {cer:.4f} meets target {args.cer_target:.4f}")
 
     if ssim is not None and args.ssim_target is not None:
         if ssim < args.ssim_target:
             raise ValueError(f"SSIM {ssim:.4f} below target {args.ssim_target:.4f}")
-        logger.info(f"SSIM {ssim:.4f} meets target {args.ssim_target:.4f}")
+        logging.info(f"SSIM {ssim:.4f} meets target {args.ssim_target:.4f}")
 
-    logger.info("Inference and evaluation completed successfully.")
+    logging.info("Inference and evaluation completed successfully.")
 
 
 if __name__ == '__main__':

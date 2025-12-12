@@ -29,7 +29,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.tts.models import MagpieTTSModel
-from nemo.utils import logging as logger
+from nemo.utils import logging
 
 
 @dataclass
@@ -67,7 +67,7 @@ class ModelLoadConfig:
             )
 
         if has_ckpt_mode and has_nemo_mode:
-            logger.warning(
+            logging.warning(
                 "Both checkpoint mode and nemo_file provided. Using checkpoint mode (hparams_file + checkpoint_file)."
             )
 
@@ -129,7 +129,7 @@ def update_config_for_inference(
 
     # Handle legacy codebook indices
     if legacy_codebooks:
-        logger.warning(
+        logging.warning(
             "Using legacy codebook indices for backward compatibility. "
             "This should only be used with old checkpoints."
         )
@@ -219,7 +219,7 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
         model.use_kv_cache_for_inference = True
 
         # Load weights
-        logger.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
+        logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
         ckpt = torch.load(config.checkpoint_file, weights_only=False)
         state_dict = update_checkpoint_state_dict(ckpt['state_dict'])
         model.load_state_dict(state_dict)
@@ -228,7 +228,7 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
 
     else:
         # Mode 2: Load from .nemo archive
-        logger.info(f"Loading model from NeMo archive: {config.nemo_file}")
+        logging.info(f"Loading model from NeMo archive: {config.nemo_file}")
         model_cfg = MagpieTTSModel.restore_from(config.nemo_file, return_config=True)
 
         with open_dict(model_cfg):
@@ -250,7 +250,7 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
     # Move to device and set to eval mode
     model.to(device)
     model.eval()
-    logger.info("Model loaded and ready for inference.")
+    logging.info("Model loaded and ready for inference.")
 
     return model, checkpoint_name
 

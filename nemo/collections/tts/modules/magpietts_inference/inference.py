@@ -34,7 +34,7 @@ from PIL import Image
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.models import MagpieTTSModel
-from nemo.utils import logging as logger
+from nemo.utils import logging
 
 
 @dataclass
@@ -274,7 +274,7 @@ class MagpieInferenceRunner:
         generated_audio_paths = []
 
         for batch_idx, batch in enumerate(dataloader):
-            logger.info(f"Processing batch {batch_idx + 1}/{len(dataloader)}")
+            logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)}")
 
             # Move batch to GPU
             batch_cuda = self._batch_to_cuda(batch)
@@ -311,7 +311,7 @@ class MagpieInferenceRunner:
 
             all_rtf_metrics.append(rtf_metrics)
             elapsed = time.time() - start_time
-            logger.info(f"Batch inference time: {elapsed:.2f}s, output shape: {predicted_audio.size()}")
+            logging.info(f"Batch inference time: {elapsed:.2f}s, output shape: {predicted_audio.size()}")
 
             # Save outputs for each item in batch
             for idx in range(predicted_audio.size(0)):
@@ -355,7 +355,7 @@ class MagpieInferenceRunner:
     @staticmethod
     def _delete_old_generated_files(output_dir: str) -> None:
         """Delete leftover generated files from previous runs."""
-        logger.info(f"Cleaning up old generated files in: {output_dir}")
+        logging.info(f"Cleaning up old generated files in: {output_dir}")
         patterns = [
             "predicted_codes*.pt",
             "predicted_audio*.wav",

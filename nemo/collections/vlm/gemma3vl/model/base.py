@@ -37,6 +37,7 @@ from nemo.collections.llm.gpt.model.base import get_packed_seq_params
 from nemo.collections.llm.gpt.model.gemma3 import Gemma3Config
 from nemo.collections.vlm.gemma3vl.model.vision import Gemma3VLMultimodalProjectorConfig, Gemma3VLVisionConfig
 from nemo.collections.vlm.neva.model.base import MODEL_CONFIG_ATTR, NevaModel, restore_model_weights
+from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import IGNORE_INDEX
 from nemo.lightning import io
 from nemo.lightning.pytorch.optim import OptimizerModule
 from nemo.utils.import_utils import safe_import_from
@@ -78,6 +79,7 @@ def gemma3vl_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
         key: val.cuda(non_blocking=True) if key in required_keys and val is not None else None
         for key, val in _batch.items()
     }
+
     return _batch
 
 
@@ -392,18 +394,18 @@ class MCoreGemma3VLModel(MegatronModule):
                 input_ids = F.pad(input_ids, (0, padded_seq_len))
                 position_ids = F.pad(position_ids, (0, padded_seq_len))
             if self.post_process:
-                labels = F.pad(labels, (0, padded_seq_len))
-                loss_mask = F.pad(loss_mask, (0, padded_seq_len))
+                labels = F.pad(labels, (0, padded_seq_len), value=IGNORE_INDEX)
+                loss_mask = F.pad(loss_mask, (0, padded_seq_len), value=0.0)
 
         # Compute language embedding
         if self.pre_process:
             safe_input_ids = input_ids
             # Replace image_token_id with 0 to avoid embedding index error
-            if self.image_token_id >= self.vocab_size:
-                image_token_mask = input_ids == self.image_token_id
-                safe_input_ids = input_ids.clone()
-                safe_input_ids[image_token_mask] = 0
+            image_token_mask = input_ids == self.image_token_id
+            safe_input_ids = input_ids.clone()
+            safe_input_ids[image_token_mask] = 0
             # (T, B, D)
+            # The position_ids is None for qwen2 models, but set to position_ids for gemma3vl models.
             language_embedding = self.language_model.embedding(input_ids=safe_input_ids, position_ids=position_ids)
             # (B, T, D)
             language_embedding = language_embedding.transpose(1, 0).contiguous()
@@ -428,6 +430,7 @@ class MCoreGemma3VLModel(MegatronModule):
             combined_embedding = combined_embedding.transpose(1, 0).contiguous()
 
         # Run decoder model
+        # position_ids is None for gemma3vl models, but set to position_ids to qwen2 models.
         output = self.language_model(
             input_ids=None,
             position_ids=None,
@@ -441,6 +444,8 @@ class MCoreGemma3VLModel(MegatronModule):
 
         if labels is None or loss_mask is None:
             return output
+
+        output = output.masked_fill(labels < 0, 0.0)
         return output, loss_mask
 
     def _preprocess_data(
@@ -536,6 +541,7 @@ class MCoreGemma3VLModel(MegatronModule):
                 combined_embedding = scatter_to_sequence_parallel_region(combined_embedding)
         return combined_embedding, labels, loss_mask, packed_seq_params
 
+    @torch.compile
     def _compute_attention_mask(
         self,
         input_ids: torch.Tensor,

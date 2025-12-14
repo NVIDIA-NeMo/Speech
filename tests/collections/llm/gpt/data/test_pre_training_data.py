@@ -15,8 +15,8 @@
 import pytest
 
 import nemo.lightning as nl
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.llm.gpt.data.pre_training import PreTrainingDataModule
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 
 DATA_PATH = "/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document"
 VOCAB_PATH = "/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json"

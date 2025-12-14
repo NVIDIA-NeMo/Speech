@@ -30,6 +30,7 @@ def get_parser():
     parser.add_argument("--model-config", type=str, help="Model config", default="Llama31Config8B")
     parser.add_argument("--output-path", type=str, help="Output NeMo2 model")
     parser.add_argument("--ignore-keys", nargs='+', type=str, default=[], help="Ignore keys")
+    parser.add_argument("--trust-remote-code", action="store_true", help="if trust_remote_code")
     return parser
 
 
@@ -60,12 +61,21 @@ if __name__ == '__main__':
         raise ValueError(f'Unrecognized collection {args.collection}')
     config = getattr(collection, args.model_config)()
     model = getattr(collection, args.model_type)(config=config)
-    output_path = llm.import_ckpt(
-        model=model,
-        source=f"hf://{args.hf_path}",
-        output_path=args.output_path,
-        overwrite=True,
-    )
+    try:
+        output_path = llm.import_ckpt(
+            model=model,
+            source=f"hf://{args.hf_path}",
+            output_path=args.output_path,
+            overwrite=True,
+            trust_remote_code=args.trust_remote_code,
+        )
+    except TypeError:
+        output_path = llm.import_ckpt(
+            model=model,
+            source=f"hf://{args.hf_path}",
+            output_path=args.output_path,
+            overwrite=True,
+        )
 
     trainer = nl.Trainer(
         accelerator="cpu",

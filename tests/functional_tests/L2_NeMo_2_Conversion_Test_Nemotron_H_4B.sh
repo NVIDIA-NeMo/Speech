@@ -18,5 +18,5 @@ NEMO_MODEL_CONFIG=NemotronHConfig4B
 NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
 HF_OUTPUT_PATH=/tmp/output_hf_ckpt
 
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_nmh_conversion.py --conversion_type=HF_TO_NEMO2 --source_ckpt=${HF_LOCAL_MODEL_PATH} --target_ckpt=${NEMO_OUTPUT_PATH}
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_nmh_conversion.py --conversion_type=NEMO2_TO_HF --source_ckpt=${NEMO_OUTPUT_PATH} --target_ckpt=${HF_OUTPUT_PATH}
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_nmh_conversion.py --conversion_type=HF_TO_NEMO2 --source_ckpt=${HF_LOCAL_MODEL_PATH} --target_ckpt=${NEMO_OUTPUT_PATH} --trust_remote_code
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_nmh_conversion.py --conversion_type=NEMO2_TO_HF --source_ckpt=${NEMO_OUTPUT_PATH} --target_ckpt=${HF_OUTPUT_PATH} --trust_remote_code

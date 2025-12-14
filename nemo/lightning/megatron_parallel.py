@@ -1488,7 +1488,7 @@ class MegatronStep(Generic[ModelT, DataT]):
 
             # finetuning can have dynamic sequence lengths
             seq_length = batch['tokens'].size(1) if 'tokens' in batch else None
-            from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_split
+            from nemo.utils.megatron_utils import get_iterator_k_split
 
             data = get_iterator_k_split(batch, self.num_microbatches, True)
 

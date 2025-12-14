@@ -36,7 +36,7 @@ from nemo.collections.llm.gpt.model.llama import (
     LlamaConfig,
     LlamaModel,
 )
-from nemo.collections.llm.utils import Config
+from nemo.collections.llm.utils import Config, is_safe_repo
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
@@ -304,19 +304,35 @@ class LlamaEmbeddingImporter(HFLlamaImporter):
 
         return output
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """Apply the conversion from HF to NeMo format.
         Args:
             output_path: Path where the converted model will be saved
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path
         Returns:
             Path: Path to the saved NeMo model
         """
         from transformers import AutoModel, AutoModelForCausalLM
 
+        self.trust_remote_code = trust_remote_code
         try:
-            source = AutoModelForCausalLM.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+            source = AutoModelForCausalLM.from_pretrained(
+                str(self),
+                torch_dtype='auto',
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+            )
         except:
-            source = AutoModel.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+            source = AutoModel.from_pretrained(
+                str(self),
+                torch_dtype='auto',
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+            )
 
             # Wrap the source in a model for causal LM
             class ModelWrapper(nn.Module):
@@ -358,7 +374,8 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
         with no_init_weights():
             return LlamaBidirectionalModel._from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         source_dtype = source.module.embedding.word_embeddings.weight.dtype
         target = self.init(source_dtype)

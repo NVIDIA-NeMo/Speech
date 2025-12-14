@@ -31,11 +31,14 @@ __all__ = ["Logger", "LogMode"]
 
 
 class LogMode(enum.IntEnum):
+    """Enum to control how many times to log messages in NeMo logging"""
+
     EACH = 0  # Log the message each time
     ONCE = 1  # Log the message only once. The same message will not be logged again.
 
 
 class Logger(metaclass=Singleton):
+    """NeMo's logging class. Makes some changes on top of python's logging module to aid model devs."""
 
     # Level 0
     NOTSET = _logging.NOTSET
@@ -378,7 +381,7 @@ class Logger(metaclass=Singleton):
         logger.debug("Houston, we have a %s", "thorny problem", exc_info=1)
         """
         if self._logger is not None and self._logger.isEnabledFor(Logger.DEBUG) and not self._logged_once(msg, mode):
-            self._logger._log(Logger.DEBUG, msg, args, **kwargs)
+            self._logger._log(Logger.DEBUG, msg, args, **kwargs, stacklevel=2)
 
     def info(self, msg, *args, mode=LogMode.EACH, **kwargs):
         """
@@ -390,7 +393,7 @@ class Logger(metaclass=Singleton):
         logger.info("Houston, we have a %s", "interesting problem", exc_info=1)
         """
         if self._logger is not None and self._logger.isEnabledFor(Logger.INFO) and not self._logged_once(msg, mode):
-            self._logger._log(Logger.INFO, msg, args, **kwargs)
+            self._logger._log(Logger.INFO, msg, args, **kwargs, stacklevel=2)
 
     def warning(self, msg, *args, mode=LogMode.EACH, **kwargs):
         """
@@ -402,7 +405,7 @@ class Logger(metaclass=Singleton):
         logger.warning("Houston, we have a %s", "bit of a problem", exc_info=1)
         """
         if self._logger is not None and self._logger.isEnabledFor(Logger.WARNING) and not self._logged_once(msg, mode):
-            self._logger._log(Logger.WARNING, msg, args, **kwargs)
+            self._logger._log(Logger.WARNING, msg, args, **kwargs, stacklevel=2)
 
     def error(self, msg, *args, mode=LogMode.EACH, **kwargs):
         """
@@ -414,7 +417,7 @@ class Logger(metaclass=Singleton):
         logger.error("Houston, we have a %s", "major problem", exc_info=1)
         """
         if self._logger is not None and self._logger.isEnabledFor(Logger.ERROR) and not self._logged_once(msg, mode):
-            self._logger._log(Logger.ERROR, msg, args, **kwargs)
+            self._logger._log(Logger.ERROR, msg, args, **kwargs, stacklevel=2)
 
     def critical(self, msg, *args, mode=LogMode.EACH, **kwargs):
         """
@@ -430,4 +433,4 @@ class Logger(metaclass=Singleton):
             and self._logger.isEnabledFor(Logger.CRITICAL)
             and not self._logged_once(msg, mode)
         ):
-            self._logger._log(Logger.CRITICAL, msg, args, **kwargs)
+            self._logger._log(Logger.CRITICAL, msg, args, **kwargs, stacklevel=2)

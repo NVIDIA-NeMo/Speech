@@ -31,7 +31,6 @@ from torch import Tensor
 
 from nemo.collections.tts.parts.utils.helpers import create_plot
 from nemo.utils import logging
-from nemo.utils.decorators import experimental
 
 HAVE_WANDB = True
 try:
@@ -127,7 +126,6 @@ class ArtifactGenerator(ABC):
         """
 
 
-@experimental
 class LoggingCallback(Callback):
     """
     Callback which can log artifacts (eg. model predictions, graphs) to local disk, Tensorboard, and/or WandB.

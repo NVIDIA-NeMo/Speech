@@ -3149,9 +3149,8 @@ class MagpieTTSModel(ModelPT):
             ...     apply_TN=True,
             ... )
         """
-        assert (
-            self.has_baked_context_embedding
-        ), "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
+        if not self.has_baked_context_embedding:
+            raise ValueError("Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding.")
         # Apply text normalization if requested
         normalized_text = (
             self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript

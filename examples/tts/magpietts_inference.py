@@ -50,8 +50,6 @@ import numpy as np
 # Import dataset configuration
 import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-
-from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import load_evalset_config
 
 # Import the modular components
@@ -69,7 +67,6 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     load_magpie_model,
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
-
 from nemo.utils import logging
 
 # Default evaluation datasets

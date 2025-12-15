@@ -402,6 +402,9 @@ class MagpieTTSModel(ModelPT):
         # Configuration validity checks
         self.check_frame_stacking_config_validity()
 
+        # Class-level cache for text normalizers. Used during inference.
+        self._text_normalizers: Dict[str, Any] = {}
+
     def _register_tokenizer_artifacts(self, cfg: DictConfig) -> None:
         """
         Register tokenizer file artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging.
@@ -3026,6 +3029,46 @@ class MagpieTTSModel(ModelPT):
     def setup_test_data(self, dataset_cfg):
         self._test_dl = self._setup_test_dataloader(dataset_cfg)
 
+    def _get_normalized_text(self, transcript: str, language: str) -> str:
+        """Get normalized text using cached normalizer for the specified language.
+        
+        Args:
+            transcript: Raw text to normalize.
+            language: Language code (e.g., 'en', 'de', 'es').
+            
+        Returns:
+            Normalized text, or original text if normalization fails/unavailable.
+        """
+        # Check if normalizer for this language is already cached
+        if language not in self._text_normalizers:
+            try:
+                from nemo_text_processing.text_normalization.normalize import Normalizer
+
+                normalizer = Normalizer(input_case='cased', lang=language)
+                self._text_normalizers[language] = normalizer
+                logging.info(f"Initialized text normalizer for language: {language}")
+            except ImportError:
+                self._text_normalizers[language] = None
+                logging.warning(
+                    "nemo_text_processing not installed. Skipping text normalization. "
+                    "Install with: pip install nemo_text_processing"
+                )
+            except Exception as e:
+                # Handle unsupported language or other initialization errors
+                self._text_normalizers[language] = None
+                logging.warning(
+                    f"Failed to initialize text normalizer for language '{language}': {e}. "
+                    f"Skipping text normalization. Text will be used as-is."
+                )
+        
+        # Use cached normalizer if available
+        normalizer = self._text_normalizers[language]
+        if normalizer is not None:
+            normalized_text = normalizer.normalize(transcript, verbose=False)
+            return normalized_text
+        
+        return transcript
+
     def setup_dummy_text_context_in_batch(
         self,
         batch: Dict[str, torch.Tensor],
@@ -3110,19 +3153,7 @@ class MagpieTTSModel(ModelPT):
             self.has_baked_context_embedding
         ), "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
         # Apply text normalization if requested
-        normalized_text = transcript
-        if apply_TN:
-            try:
-                from nemo_text_processing.text_normalization.normalize import Normalizer
-
-                normalizer = Normalizer(input_case='cased', lang=language)
-                normalized_text = normalizer.normalize(transcript, verbose=False)
-                logging.debug(f"Text normalization: '{transcript}' -> '{normalized_text}'")
-            except ImportError:
-                logging.warning(
-                    "nemo_text_processing not installed. Skipping text normalization. "
-                    "Install with: pip install nemo_text_processing"
-                )
+        normalized_text = self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript
 
         # Determine tokenizer name based on language
         # Try to find a matching tokenizer, fallback to first available

@@ -32,8 +32,18 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
-from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 from nemo.utils import logging
+
+# Optional import for UTMOSv2 (audio quality metric)
+try:
+    from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
+    UTMOSV2_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as e:
+    UTMOSV2_AVAILABLE = False
+    logging.warning(
+        f"UTMOSv2Calculator not available: {e}. "
+        "UTMOSv2 metrics will be disabled. Install required dependencies to enable."
+    )
 
 # Path to evalset config JSON
 # Get project root: from nemo/collections/tts/modules/magpietts_inference/ go up to NeMo/
@@ -165,6 +175,10 @@ def extract_embedding(model, extractor, audio_path, device, sv_model_type):
 
 
 def compute_utmosv2_scores(audio_dir, device):
+    if not UTMOSV2_AVAILABLE:
+        logging.warning("UTMOSv2Calculator not available. Skipping UTMOSv2 score computation.")
+        return {}
+    
     logging.info(f"\nComputing UTMOSv2 scores for files in {audio_dir}...")
     start_time = time.time()
     utmosv2_calculator = UTMOSv2Calculator(device=device)
@@ -225,6 +239,11 @@ def evaluate(
     speaker_verification_model_alternate.eval()
 
     if with_utmosv2:
+        if not UTMOSV2_AVAILABLE:
+            logging.warning(
+                "UTMOSv2 was requested (with_utmosv2=True) but UTMOSv2Calculator is not available. "
+                "UTMOSv2 scores will be set to 0.0 for all files."
+            )
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
     filewise_metrics = []
     pred_texts = []
@@ -241,7 +260,7 @@ def evaluate(
 
         pred_audio_filepath = audio_file_lists[ridx]
 
-        if with_utmosv2:
+        if with_utmosv2 and UTMOSV2_AVAILABLE:
             utmosv2_score = utmosv2_scores[os.path.normpath(pred_audio_filepath)]
         else:
             utmosv2_score = 0.0

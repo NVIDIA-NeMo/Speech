@@ -476,10 +476,10 @@ def main():
     """Main entry point."""
     parser = create_argument_parser()
     args = parser.parse_args()
-    
+
     dataset_meta_info = load_evalset_config(args.datasets_json_path)
     datasets = list(dataset_meta_info.keys())
-    
+
     logging.info(f"Loaded {len(datasets)} datasets from {args.datasets_json_path}: {', '.join(datasets)}")
 
     # Determine mode and validate

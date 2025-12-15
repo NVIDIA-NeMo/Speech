@@ -1,6 +1,6 @@
 # Streaming / Buffered / Chunked ASR
 
-Contained within this directory are scripts to perform streaming or buffered inference of audio files using CTC / Transducer ASR models, and chunked inference for MultitaskAED models (e.g., "nvidia/canary-1b").
+Contained within this directory are scripts to perform streaming or buffered inference of audio files using Transducer ASR models, and chunked inference for MultitaskAED models (e.g., "nvidia/canary-1b"). For CTC models, please refer to the [asr_streaming_inference.py](https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/asr/asr_streaming_inference) script.
 
 ## Difference between streaming and buffered ASR
 

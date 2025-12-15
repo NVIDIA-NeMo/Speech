@@ -49,10 +49,10 @@ from nemo.collections.llm import fn
 from nemo.collections.llm.gpt.model import transformer_engine_layer_spec
 from nemo.collections.llm.gpt.model.base import default_layer_spec
 from nemo.collections.multimodal.data.clip.clip_dataset import build_imagenet_validation_dataloader_params
-from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.collections.vlm.clip.loss.clip_loss import ClipMegatronLoss
 from nemo.lightning import MegatronOptimizerModule, OptimizerModule, get_vocab_size, io
 from nemo.utils import logging
+from nemo.utils.megatron_utils import average_losses_across_data_parallel_group
 
 
 # pylint: disable=C0116

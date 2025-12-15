@@ -32,7 +32,7 @@ def get_args():
     parser.add_argument(
         "--tokenizer", type=str, help="Tokenizer to use. If not provided, model tokenizer will be used"
     )
-    parser.add_argument("--decoder_type", type=str, help="Decoder type for TensorRT-Model-Optimizer")
+    parser.add_argument("--decoder_type", type=str, help="Decoder type for Model-Optimizer")
     parser.add_argument("-ctp", "--calibration_tp", "--calib_tp", type=int, default=1)
     parser.add_argument("-cep", "--calibration_ep", "--calib_ep", type=int, default=1)
     parser.add_argument("-cpp", "--calibration_pp", "--calib_pp", type=int, default=1)
@@ -75,7 +75,7 @@ def get_args():
         "--algorithm",
         type=str,
         default="fp8",
-        help="TensorRT-Model-Optimizer quantization algorithm",
+        help="Model-Optimizer quantization algorithm",
     )
     parser.add_argument(
         "-awq_bs", "--awq_block_size", type=int, default=128, help="Block size for AWQ quantization algorithms"

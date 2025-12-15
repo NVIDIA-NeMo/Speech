@@ -195,7 +195,7 @@ def setup_trainer_and_restore_model_with_modelopt_spec(
 
     tokenizer = None
     if tokenizer_path:
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
+        from nemo.collections.common.tokenizers.tokenizer_utils import get_tokenizer
 
         tokenizer = get_tokenizer(tokenizer_path)
 

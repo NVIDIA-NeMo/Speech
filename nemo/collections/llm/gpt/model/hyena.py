@@ -775,7 +775,7 @@ class PyTorchHyenaImporter(io.ModelConnector["HyenaModel", HyenaModel]):
         Returns:
             Tokenizer instance
         """
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+        from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
         tokenizer = get_nmt_tokenizer(
             library=self.model_config.tokenizer_library,

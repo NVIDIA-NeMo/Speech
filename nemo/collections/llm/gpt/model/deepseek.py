@@ -35,6 +35,7 @@ from nemo.collections.llm.gpt.model.base import (
     gpt_data_step,
     torch_dtype_from_dict_config,
 )
+from nemo.collections.llm.utils import is_safe_repo
 from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import load_distributed_model_weights
 from nemo.lightning import io, teardown
 from nemo.lightning.io.state import TransformFns, _ModelState
@@ -225,12 +226,20 @@ class HFDeepSeekImporter(io.ModelConnector["AutoModelForCausalLM", DeepSeekModel
     def init(self) -> DeepSeekModel:
         return DeepSeekModel(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path, convert_mtp: bool = False) -> Path:
+    def apply(self, output_path: Path, convert_mtp: bool = False, trust_remote_code: bool | None = None) -> Path:
         from transformers import AutoModelForCausalLM
 
+        self.trust_remote_code = trust_remote_code
         self.convert_mtp = convert_mtp
         self._verify_source()
-        source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True, torch_dtype='auto')
+        source = AutoModelForCausalLM.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+            torch_dtype='auto',
+        )
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -244,7 +253,13 @@ class HFDeepSeekImporter(io.ModelConnector["AutoModelForCausalLM", DeepSeekModel
         return output_path
 
     def _verify_source(self):
-        source_config = AutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        source_config = AutoConfig.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         assert 'quantization_config' not in source_config, (
             "HuggingFace cannot load DeepSeek V3's FP8 checkpoint directly. You must convert the checkpoint "
             "to BF16. See NeMo documentation for more details: "
@@ -407,7 +422,13 @@ class HFDeepSeekImporter(io.ModelConnector["AutoModelForCausalLM", DeepSeekModel
         from transformers import AutoConfig as HFAutoConfig
         from transformers import GenerationConfig
 
-        source = HFAutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        source = HFAutoConfig.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         try:
             generation_config = GenerationConfig.from_pretrained(str(self))
         except OSError:
@@ -463,10 +484,19 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
             # Since DeepSeek is not importable from transformers, we can only initialize the HF model
             # from a known checkpoint folder containing the config file and modeling files.
             # The model_name will need to be passed in.
-            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            config = AutoConfig.from_pretrained(
+                model_name,
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=model_name,
+                ),
+            )
             hf_model = AutoModelForCausalLM.from_config(
                 config,
-                trust_remote_code=True,
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=model_name,
+                ),
                 torch_dtype=dtype,
             )
             # Register the AutoModel Hook so that the custom modeling files are saved during save_pretrained()
@@ -528,8 +558,9 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
                 state_dict[new_k] = v
         return state_dict, config['config']
 
-    def apply(self, output_path: Path, target_model_name=None) -> Path:
+    def apply(self, output_path: Path, target_model_name=None, trust_remote_code: bool | None = None) -> Path:
         logging.info("Loading DeepSeek NeMo checkpoint. This may take a while...")
+        self.trust_remote_code = trust_remote_code
         source, source_config = self.ckpt_load(self)
         logging.info("DeepSeek NeMo checkpoint loaded.")
         if target_model_name is None:

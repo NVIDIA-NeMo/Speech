@@ -19,7 +19,7 @@ from omegaconf import DictConfig
 from nemo.utils import logging
 
 try:
-    from nemo.collections.nlp.modules.common.megatron.adapters.mcore_mixins import (
+    from nemo.collections.common.modules.adapters.mcore_mixins import (
         MCoreGPTEmbeddingMixin,
         MCoreMLPMixin,
         MCoreSelfAttentionMixin,
@@ -30,7 +30,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     MCoreGPTEmbeddingMixin = MCoreSelfAttentionMixin = MCoreTransformerLayerMixin = MCoreMLPMixin = None
 
-from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
+from nemo.collections.common.modules.adapters.parallel_adapters import (
     AdapterName,
     InfusedAdapterConfig,
     Lora4HtoHAdapterConfig,

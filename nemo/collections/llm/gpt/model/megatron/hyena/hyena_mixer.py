@@ -198,6 +198,7 @@ class HyenaMixer(MegatronModule):
                     self.hyena_proj_conv,
                     self.mixer,
                     operator_type=self.operator_type,
+                    flip_mixer_weight=False,
                 )
 
         if self.operator_type in [
@@ -228,6 +229,7 @@ class HyenaMixer(MegatronModule):
                     self.hyena_proj_conv,
                     self.mixer,
                     operator_type=self.operator_type,
+                    flip_mixer_weight=True,
                 )
 
         # Dropout. Note that for a single iteration, this layer will generate

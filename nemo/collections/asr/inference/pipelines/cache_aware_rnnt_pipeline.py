@@ -143,9 +143,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
-        if self.request_type is not RequestType.FRAME:
-            raise ValueError(f"Request type {self.request_type} is not supported for cache-aware streaming.")
-
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
         check_existance_of_required_attributes(self, ['vocabulary', 'conf_func'])
@@ -232,12 +229,14 @@ class CacheAwareRNNTPipeline(BasePipeline):
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens
 
-    def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, frame: Frame, hyp: Hypothesis) -> bool:
+    def run_greedy_decoder(
+        self, state: CacheAwareRNNTStreamingState, frame: Frame | FeatureBuffer, hyp: Hypothesis
+    ) -> bool:
         """
         Run the greedy RNNT decoder on the hypothesis and update the state
         Args:
             state: (CacheAwareRNNTStreamingState) The state of the stream
-            frame: (Frame) The current frame
+            frame: (Frame | FeatureBuffer) The current frame or feature buffer
             hyp: (Hypothesis) The hypothesis of the current frame
         Returns:
             (bool) Whether EOU is detected.
@@ -266,7 +265,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
     def cache_aware_transcribe_step(
         self,
-        frames: list[Frame],
+        frames: list[Frame | FeatureBuffer],
         features: list[Tensor],
         right_paddings: list[int],
         ready_state_ids: set,
@@ -274,7 +273,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
     ) -> None:
         """
         Cache Aware Transcribe Step
-        It receives a list of frames and features and do the following:
+        It receives a list of frames (Frame or FeatureBuffer) and features and do the following:
 
         1. Preprocess the features by stacking them and computing the lengths
         2. Collecting previous hypotheses for stateful decoding
@@ -285,7 +284,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         7. Perform greedy RNNT decoding to get the best hypothesis and update the states
         8. Update the ready states to indicate that the state is ready for text post-processing
         Args:
-            frames: (list[Frame]) List of frames to transcribe.
+            frames: (list[Frame | FeatureBuffer]) List of frames or feature buffers to transcribe.
             features: (list[Tensor]) List of feature buffers.
             right_paddings: (list[int] | None) List of right paddings.
             ready_state_ids: (set) Set of ready state IDs.
@@ -324,7 +323,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.context_manager.reset_slots(stream_ids, eos_flags)
 
         # update the previous hypothesis and reset the previous hypothesis for the streams that has ended
-        for state, hyp, eos in zip(states, best_hyp, eos_flags):
+        for i, (state, hyp, eos) in enumerate(zip(states, best_hyp, eos_flags)):
+            hyp_len = len(hyp.y_sequence) if hyp is not None and hasattr(hyp, 'y_sequence') else 0
             if eos:
                 state.reset_previous_hypothesis()
             else:
@@ -339,8 +339,46 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 ready_state_ids.add(frame.stream_id)
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
-        """Transcribe a step for feature buffers"""
-        raise NotImplementedError("Feature buffer type is not supported for cache aware streaming.")
+        """
+        Transcribes the feature buffers in a streaming manner.
+        After detecting EOU, it updates the state and run text processor.
+        If there are multiple streams, it waits until all states are ready to run text processor.
+        Args:
+            fbuffers: (list[FeatureBuffer]) List of feature buffers to transcribe.
+        """
+        ready_state_ids = set()
+
+        final_fbuffers, final_features = [], []
+        nonfinal_fbuffers, nonfinal_features = [], []
+        final_right_paddings = []
+
+        for fbuffer in fbuffers:
+            feature = fbuffer.features
+            right_padding = fbuffer.size - fbuffer.valid_size
+
+            if fbuffer.is_last:
+                final_fbuffers.append(fbuffer)
+                final_features.append(feature)
+                final_right_paddings.append(right_padding)
+            else:
+                nonfinal_fbuffers.append(fbuffer)
+                nonfinal_features.append(feature)
+
+        if len(nonfinal_fbuffers) > 0:
+            self.cache_aware_transcribe_step(
+                nonfinal_fbuffers, nonfinal_features, None, ready_state_ids, keep_all_outputs=False
+            )
+
+        if len(final_fbuffers) > 0:
+            self.cache_aware_transcribe_step(
+                final_fbuffers, final_features, final_right_paddings, ready_state_ids, keep_all_outputs=True
+            )
+
+        if len(ready_state_ids) > 0:
+            self.text_processor.process([self.get_state(stream_id) for stream_id in ready_state_ids])
+            ready_state_ids.clear()
+
+        self.update_partial_transcript(fbuffers, self.tokenizer, self.leading_regex_pattern)
 
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
@@ -359,6 +397,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             final_frames, final_fbuffers = [], []
             nonfinal_frames, nonfinal_fbuffers = [], []
             final_right_paddings = []
+            
             for jdx, bfeature in enumerate(all_fbuffers):
                 bframe = frames[jdx]
 

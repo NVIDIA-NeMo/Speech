@@ -56,7 +56,7 @@ def load_evalset_config(config_path: str = None) -> dict:
     """Load dataset meta info from JSON config file."""
     if config_path is None:
         config_path = EVALSET_CONFIG_PATH
-        logging.info(f"No dataset_json_path provided")
+        logging.info("No dataset_json_path provided")
     logging.info(f"Loading evalset config from {config_path}")
     with open(config_path, 'r') as f:
         return json.load(f)

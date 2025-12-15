@@ -480,7 +480,7 @@ def main():
     dataset_meta_info = load_evalset_config(args.datasets_json_path)
     datasets = list(dataset_meta_info.keys())
 
-    logging.info(f"Loaded {len(datasets)} datasets from {args.datasets_json_path}: {', '.join(datasets)}")
+    logging.info(f"Loaded {len(datasets)} datasets: {', '.join(datasets)}")
 
     # Determine mode and validate
     has_checkpoint_mode = (

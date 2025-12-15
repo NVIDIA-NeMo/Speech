@@ -120,12 +120,8 @@ class MagpieTTSModel(ModelPT):
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
 
-        # Save app_state.nemo_file_folder before loading nested models (codec, etc.)
-        # because nested restore_from calls will overwrite it
-        from nemo.utils.app_state import AppState
-
-        app_state = AppState()
-        saved_nemo_file_folder = app_state.nemo_file_folder
+        # Register tokenizer artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging
+        self._register_tokenizer_artifacts(cfg)
 
         # load codec, disable loading of loss modules not needed during inference
         codec_model_path = cfg.get('codecmodel_path')
@@ -142,10 +138,6 @@ class MagpieTTSModel(ModelPT):
         self.codec_model_samples_per_frame = codec_model.samples_per_frame
         # del codec discriminator to free memory
         del codec_model.discriminator
-
-        # Restore app_state.nemo_file_folder after nested model loading
-        # This is needed for artifact resolution when loading from .nemo
-        app_state.nemo_file_folder = saved_nemo_file_folder
 
         # When using FSQ tokens, the codebook structure can be changed at any time.
         # An FSQ definition can be provided in `vector_quantizer` config to train with a codebook structure
@@ -225,9 +217,6 @@ class MagpieTTSModel(ModelPT):
             # If no text_conditioning_tokenizer_name is specified, use the first one as default
             # For text context tokenization
             self.text_conditioning_tokenizer_name = list(cfg.text_tokenizers.keys())[0]
-
-        # Register tokenizer artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging
-        self._register_tokenizer_artifacts(cfg)
 
         # TODO @xueyang: both tokenizers are only used to get some token ids. We
         # should kill them to save a small amount of mem resources since dataloader will initialize them

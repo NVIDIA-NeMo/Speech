@@ -32,21 +32,23 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 from nemo.utils import logging
 
 # Path to evalset config JSON
-EVALSET_CONFIG_PATH = Path(__file__).parent / 'evalset_config.json'
+# Get project root: from nemo/collections/tts/modules/magpietts_inference/ go up to NeMo/
+_project_root = Path(__file__).resolve().parents[5]
+EVALSET_CONFIG_PATH = _project_root / 'examples' / 'tts' / 'evalset_config.json'
 
 
 def load_evalset_config(config_path: str = None) -> dict:
     """Load dataset meta info from JSON config file."""
     if config_path is None:
         config_path = EVALSET_CONFIG_PATH
+        logging.info(f"No dataset_json_path provided")
+    logging.info(f"Loading evalset config from {config_path}")
     with open(config_path, 'r') as f:
         return json.load(f)
-
-
-from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
 
 def find_generated_files(audio_dir, prefix, extension):

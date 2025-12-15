@@ -50,9 +50,6 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
 from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
 from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_magpie_model
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
-from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
-from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_magpie_model
-from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 
 __all__ = [
     # Utils

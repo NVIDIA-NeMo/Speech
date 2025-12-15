@@ -143,6 +143,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
+
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
         check_existance_of_required_attributes(self, ['vocabulary', 'conf_func'])
@@ -397,7 +398,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             final_frames, final_fbuffers = [], []
             nonfinal_frames, nonfinal_fbuffers = [], []
             final_right_paddings = []
-            
+
             for jdx, bfeature in enumerate(all_fbuffers):
                 bframe = frames[jdx]
 

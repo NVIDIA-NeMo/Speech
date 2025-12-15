@@ -65,7 +65,6 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     load_magpie_model,
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
-
 from nemo.utils import logging
 
 # Default evaluation datasets

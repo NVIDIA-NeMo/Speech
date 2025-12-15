@@ -310,11 +310,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         self._codebook_size = self.tts_model.config.codebook_size
 
-        # compute source fps
-        self.source_fps = self.source_sample_rate / (
-            self.source_sample_rate * cfg.data.frame_length
-        )  # conver frame rate in fps
-        self.source_samples_per_frame = int(self.source_sample_rate // self.source_fps)
+        # compute samples per frame
+        self.source_samples_per_frame = int(self.source_sample_rate * cfg.data.frame_length)
 
         # get codec silence tokens
         codec_silence_tokens = self.get_codec_silence_frame()

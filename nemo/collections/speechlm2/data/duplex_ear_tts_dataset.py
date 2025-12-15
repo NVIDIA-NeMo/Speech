@@ -204,10 +204,8 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         self.num_delay_speech_tokens = num_delay_speech_tokens
 
         # compute source and target samples_per_frame
-        source_fps = self.source_sample_rate / (self.source_sample_rate * self.frame_length)
-        self.source_samples_per_frame = int(self.source_sample_rate // source_fps)
-        target_fps = self.target_sample_rate / (self.target_sample_rate * self.frame_length)
-        self.target_samples_per_frame = int(self.target_sample_rate // target_fps)
+        self.source_samples_per_frame = int(self.source_sample_rate * self.frame_length)
+        self.target_samples_per_frame = int(self.target_sample_rate * self.frame_length)
 
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."

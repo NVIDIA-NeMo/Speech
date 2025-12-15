@@ -47,10 +47,6 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-# Import dataset configuration
-import nemo.collections.tts.modules.magpietts_inference.evalset_config as evalset_config
-from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import load_evalset_config
 
@@ -115,16 +111,6 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
     logging.info(f"Metrics appended to: {csv_path}")
-
-
-def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
-    """Create formatted metrics mean CI."""
-    for k, v in metrics_mean_ci.items():
-        if isinstance(v, list):
-            mean, ci = float(v[0]), float(v[1])
-            logging.info(f"Metric {k}: {mean:.4f} ± {ci:.4f}")
-            metrics_mean_ci[k] = f"{mean:.4f} ± {ci:.4f}"
-    return metrics_mean_ci
 
 
 def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:

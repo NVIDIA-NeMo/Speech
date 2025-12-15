@@ -37,6 +37,7 @@ from nemo.utils import logging
 # Optional import for UTMOSv2 (audio quality metric)
 try:
     from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
+
     UTMOSV2_AVAILABLE = True
 except (ImportError, ModuleNotFoundError) as e:
     UTMOSV2_AVAILABLE = False
@@ -178,7 +179,7 @@ def compute_utmosv2_scores(audio_dir, device):
     if not UTMOSV2_AVAILABLE:
         logging.warning("UTMOSv2Calculator not available. Skipping UTMOSv2 score computation.")
         return {}
-    
+
     logging.info(f"\nComputing UTMOSv2 scores for files in {audio_dir}...")
     start_time = time.time()
     utmosv2_calculator = UTMOSv2Calculator(device=device)

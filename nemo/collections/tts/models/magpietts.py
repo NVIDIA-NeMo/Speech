@@ -3031,11 +3031,11 @@ class MagpieTTSModel(ModelPT):
 
     def _get_normalized_text(self, transcript: str, language: str) -> str:
         """Get normalized text using cached normalizer for the specified language.
-        
+
         Args:
             transcript: Raw text to normalize.
             language: Language code (e.g., 'en', 'de', 'es').
-            
+
         Returns:
             Normalized text, or original text if normalization fails/unavailable.
         """
@@ -3060,13 +3060,13 @@ class MagpieTTSModel(ModelPT):
                     f"Failed to initialize text normalizer for language '{language}': {e}. "
                     f"Skipping text normalization. Text will be used as-is."
                 )
-        
+
         # Use cached normalizer if available
         normalizer = self._text_normalizers[language]
         if normalizer is not None:
             normalized_text = normalizer.normalize(transcript, verbose=False)
             return normalized_text
-        
+
         return transcript
 
     def setup_dummy_text_context_in_batch(
@@ -3153,7 +3153,9 @@ class MagpieTTSModel(ModelPT):
             self.has_baked_context_embedding
         ), "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
         # Apply text normalization if requested
-        normalized_text = self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript
+        normalized_text = (
+            self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript
+        )
 
         # Determine tokenizer name based on language
         # Try to find a matching tokenizer, fallback to first available

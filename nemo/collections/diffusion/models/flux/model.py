@@ -494,7 +494,6 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
 
     def setup(self, stage: str):
         super().setup(stage)
-        torch.manual_seed(self.seed + 100 * parallel_state.get_data_parallel_rank())
 
     def configure_model(self):
         # pylint: disable=C0116
@@ -503,6 +502,9 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
         self.configure_vae(self.vae_config)
         self.configure_scheduler()
         self.configure_text_encoders(self.clip_params, self.t5_params)
+
+        # After weight initialization, ensure each dp rank has a different seed
+        torch.cuda.manual_seed(self.seed + 100 * parallel_state.get_data_parallel_rank())
         for name, param in self.module.named_parameters():
             if self.config.num_single_layers == 0:
                 if 'context' in name or 'added' in name:

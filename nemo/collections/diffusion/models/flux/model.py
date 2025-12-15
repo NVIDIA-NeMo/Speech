@@ -492,9 +492,6 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
         self.image_precached = self.vae_config is None
         self.seed = seed
 
-    def setup(self, stage: str):
-        super().setup(stage)
-
     def configure_model(self):
         # pylint: disable=C0116
         if not hasattr(self, "module"):

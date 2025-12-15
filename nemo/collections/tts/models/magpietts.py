@@ -3162,7 +3162,7 @@ class MagpieTTSModel(ModelPT):
         # Try to find a matching tokenizer, fallback to first available
         tokenizer_name = None
         available_tokenizers = list(self.tokenizer.tokenizers.keys())
-        print(f"Available tokenizers: {available_tokenizers}")
+        logging.info(f"Available tokenizers: {available_tokenizers}")
 
         # Common mappings for tokenizer names
         language_tokenizer_map = {

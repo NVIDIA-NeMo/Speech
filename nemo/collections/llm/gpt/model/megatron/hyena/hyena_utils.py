@@ -618,16 +618,16 @@ class ImplicitModalFilter(nn.Module):
                 R = (
                     self.R[rank * local_size : (rank + 1) * local_size].to(torch.float32).contiguous()
                 )  # Overkill, but just in case
-            h = self.implicit_filter(glogp, R, L, context_parallel_group)
+            h = self.implicit_filter(glogp, R, L)
             h = h.unsqueeze(0)  # TODO: Remove this once we have a proper kernel implementation
         else:
             t = self.get_t(L)
             h = self.compute_filter(L, t, context_parallel_group)
         return h
 
-    def forward(self, L, **kwargs):
+    def forward(self, L, context_parallel_group=None, **kwargs):
         """Return the final convolutional filter for the requested sequence length."""
-        return self.filter(L)
+        return self.filter(L, context_parallel_group)
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
         """Sharding along axis 0, bias not sharded."""

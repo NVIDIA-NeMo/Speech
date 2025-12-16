@@ -44,19 +44,14 @@ except (ImportError, ModuleNotFoundError) as e:
     logging.warning(
         f"UTMOSv2Calculator not available: {e}. "
         "UTMOSv2 metrics will be disabled. Install required dependencies to enable."
+        "To install utmosv2 run `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
     )
-
-# Path to evalset config JSON
-# Get project root: from nemo/collections/tts/modules/magpietts_inference/ go up to NeMo/
-_project_root = Path(__file__).resolve().parents[5]
-EVALSET_CONFIG_PATH = _project_root / 'examples' / 'tts' / 'evalset_config.json'
 
 
 def load_evalset_config(config_path: str = None) -> dict:
     """Load dataset meta info from JSON config file."""
-    if config_path is None:
-        config_path = EVALSET_CONFIG_PATH
-        logging.info("No dataset_json_path provided")
+    if config_path is None or not os.path.exists(config_path):
+        raise ValueError("No dataset_json_path provided, please provide a valid path to the evalset config file.")
     logging.info(f"Loading evalset config from {config_path}")
     with open(config_path, 'r') as f:
         return json.load(f)

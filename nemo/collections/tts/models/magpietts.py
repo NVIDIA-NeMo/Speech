@@ -1809,15 +1809,12 @@ class MagpieTTSModel(ModelPT):
             context_audio_embedded, context_text_embedded
         )
 
-        # Interpolate between audio and text embeddings based on has_text_context flag
-        has_text_context = batch['has_text_context'].unsqueeze(-1).unsqueeze(-1).float()  # (B, 1, 1)
-        context_embedded = (
-            has_text_context * context_text_embedded + (1 - has_text_context) * context_audio_embedded
-        )
-        context_lens = (
-            batch['has_text_context'].float() * context_text_lens
-            + (1 - batch['has_text_context'].float()) * context_audio_codes_lens
-        )  # (B,)
+        # For 3D tensor - need to broadcast the boolean mask
+        has_text_context = batch['has_text_context'].unsqueeze(-1).unsqueeze(-1)  # (B, 1, 1), bool
+        context_embedded = torch.where(has_text_context, context_text_embedded, context_audio_embedded)
+
+        # For 1D tensor - direct use
+        context_lens = torch.where(batch['has_text_context'], context_text_lens, context_audio_codes_lens)
 
         return context_embedded, context_lens
 

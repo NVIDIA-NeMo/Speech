@@ -608,10 +608,6 @@ class ImplicitModalFilter(nn.Module):
 
     def filter(self, L, context_parallel_group=None, *args, **kwargs):
         """Get t and the convolution filter for t and the requested sequence length."""
-        # if context_parallel_group is not None:
-        #     rank = torch.distributed.get_rank(context_parallel_group)
-        #     local_size = self.self.d_model // get_context_parallel_world_size()
-        # else:
         if self.use_subquadratic_ops:
             glogp = self.get_logp(context_parallel_group)
             rank = torch.distributed.get_rank(context_parallel_group)

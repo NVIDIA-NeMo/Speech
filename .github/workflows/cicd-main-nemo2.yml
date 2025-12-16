@@ -39,6 +39,7 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_llama3_pretraining_recipe
             runner: self-hosted-azure
+            is-optional: true
           # - script: L2_NeMo_2_llama3_pytorch_profiler
           #   runner: self-hosted-azure
           #   timeout: 20

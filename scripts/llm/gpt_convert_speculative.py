@@ -30,7 +30,7 @@ Available speculative decoding algorithms in Nemo 2.0:
     - Eagle 3 (default): Extrapolation Algorithm for Greater Language-model Efficiency
 
 For more details on speculative decoding algorithms, refer to the NVIDIA Model Optimizer documentation:
-https://nvidia.github.io/Model-Optimizer/guides/7_speculative_decoding.html
+https://github.com/NVIDIA/Model-Optimizer/tree/main/examples/speculative_decoding
 """
 
 from argparse import ArgumentParser

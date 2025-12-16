@@ -568,13 +568,22 @@ class ImplicitModalFilter(nn.Module):
             self.t = t
             return self.t
 
-    def get_logp(self):
+    def get_logp(self, context_parallel_group=None):
         """Compute the log poles for the implicit modal filter."""
-        logp = -torch.exp(self.p.to(torch.float32))
-        glogp = logp * torch.exp(self.gamma.to(torch.float32))
+        if context_parallel_group is not None:
+            rank = torch.distributed.get_rank(context_parallel_group)
+            local_size = self.d_model // get_context_parallel_world_size()    
+            p = self.p[rank * local_size : (rank + 1) * local_size].to(torch.float32)
+            gamma = self.gamma[rank * local_size : (rank + 1) * local_size].to(torch.float32)
+        else:
+            p = self.p.to(torch.float32)
+            gamma = self.gamma.to(torch.float32)
+            
+        logp = -torch.exp(p)
+        glogp = logp * torch.exp(gamma)
         return glogp
 
-    def compute_filter(self, L, t):
+    def compute_filter(self, L, t, context_parallel_group=None):
         """Compute the filter for convolution."""
         assert (
             t.dtype == torch.float32
@@ -590,23 +599,36 @@ class ImplicitModalFilter(nn.Module):
         # assert (
         #     self.R.dtype == torch.float32
         # ), f"R must be float32. At lower precision, indexes will be merged together. Current dtype: {self.R.dtype}"
-
-        logp = -torch.exp(self.p.to(torch.float32))
-        glogp = logp * torch.exp(self.gamma.to(torch.float32))
+        if context_parallel_group is not None:
+            rank = torch.distributed.get_rank(context_parallel_group)
+            local_size = self.d_model // get_context_parallel_world_size()
+            R = self.R[rank * local_size : (rank + 1) * local_size].to(torch.float32)
+        else:
+            R = self.R.to(torch.float32)
+            
+        glogp = self.get_logp(context_parallel_group)
         h = torch.exp(glogp[..., None] * t)
-        h = torch.einsum('do,dot->dt', self.R.to(torch.float32), h)
+        h = torch.einsum('do,dot->dt', R, h)
         h = h[None]
 
         return h, None
 
-    def filter(self, L, *args, **kwargs):
+    def filter(self, L, context_parallel_group=None, *args, **kwargs):
         """Get t and the convolution filter for t and the requested sequence length."""
+        # if context_parallel_group is not None:
+        #     rank = torch.distributed.get_rank(context_parallel_group)
+        #     local_size = self.self.d_model // get_context_parallel_world_size()
+        # else:
         if self.use_subquadratic_ops:
-            h = self.implicit_filter(self.get_logp(), self.R.to(torch.float32), L)
+            glogp = self.get_logp(context_parallel_group)
+            rank = torch.distributed.get_rank(context_parallel_group)
+            local_size = self.d_model // get_context_parallel_world_size()
+            R = self.R[rank * local_size : (rank + 1) * local_size].to(torch.float32).contiguous() # Overkill, but just in case
+            h = self.implicit_filter(glogp, R, L, context_parallel_group)
             h = h.unsqueeze(0)  # TODO: Remove this once we have a proper kernel implementation
         else:
             t = self.get_t(L)
-            h = self.compute_filter(L, t)
+            h = self.compute_filter(L, t, context_parallel_group)
         return h
 
     def forward(self, L, **kwargs):
@@ -1009,8 +1031,8 @@ class ParallelHyenaOperator(nn.Module):
         if self.use_medium_hyena:
             h = self.filter(self.hyena_medium_conv_len)
         else:
-            h = self.filter(_L_kernel)
-
+            h = self.filter(_L_kernel, context_parallel_group=cp_group)
+            
         if isinstance(h, tuple):
             h = h[0]
 
@@ -1035,11 +1057,9 @@ class ParallelHyenaOperator(nn.Module):
             rank = torch.distributed.get_rank(cp_group)
             local_size = self.num_groups // get_context_parallel_world_size()
 
-            if isinstance(self.filter, (ImplicitModalFilter)):
-                h = h[:, rank * local_size : (rank + 1) * local_size]
-            elif isinstance(self.filter, ExplicitSingleDecayFilter):
+            if isinstance(self.filter, ExplicitSingleDecayFilter):
                 h = h[rank * local_size : (rank + 1) * local_size]
-            else:
+            elif not isinstance(self.filter, ImplicitModalFilter):
                 raise ValueError(f"Kernels of type {self.filter.__class__} have not been verified with CP.")
 
             local_bias_size = self.width_per_tp_group // get_context_parallel_world_size()

@@ -22,7 +22,6 @@ import string
 import tempfile
 import time
 from functools import partial
-from pathlib import Path
 
 import librosa
 import numpy as np

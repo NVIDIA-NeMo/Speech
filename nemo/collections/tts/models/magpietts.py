@@ -1720,9 +1720,7 @@ class MagpieTTSModel(ModelPT):
         text_encoder_out = self.encoder(text_embedded, text_mask, cond=None, cond_mask=None)['output']  # (B, T, E)
         return text, text_lens, text_mask, text_embedded, text_encoder_out
 
-    def _get_context_audio_codes(
-        self, batch: Dict[str, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _get_context_audio_codes(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Extract or compute context audio codes from batch.
 
         Args:
@@ -1736,9 +1734,7 @@ class MagpieTTSModel(ModelPT):
             codes = batch['context_audio_codes']
             lens = batch['context_audio_codes_lens']
             if self._codec_converter is not None:
-                codes = self._codec_converter.convert_original_to_new(
-                    audio_tokens=codes, audio_lens=lens
-                ).long()
+                codes = self._codec_converter.convert_original_to_new(audio_tokens=codes, audio_lens=lens).long()
         else:
             codes, lens = self.audio_to_codes(
                 batch['context_audio'], batch['context_audio_lens'], audio_type='context'
@@ -1761,14 +1757,12 @@ class MagpieTTSModel(ModelPT):
         len_a, len_b = tensor_a.size(1), tensor_b.size(1)
         if len_a < len_b:
             padding = torch.zeros(
-                tensor_a.size(0), len_b - len_a, tensor_a.size(2),
-                device=tensor_a.device, dtype=tensor_a.dtype
+                tensor_a.size(0), len_b - len_a, tensor_a.size(2), device=tensor_a.device, dtype=tensor_a.dtype
             )
             tensor_a = torch.cat([tensor_a, padding], dim=1)
         elif len_a > len_b:
             padding = torch.zeros(
-                tensor_b.size(0), len_a - len_b, tensor_b.size(2),
-                device=tensor_b.device, dtype=tensor_b.dtype
+                tensor_b.size(0), len_a - len_b, tensor_b.size(2), device=tensor_b.device, dtype=tensor_b.dtype
             )
             tensor_b = torch.cat([tensor_b, padding], dim=1)
         return tensor_a, tensor_b
@@ -1811,9 +1805,7 @@ class MagpieTTSModel(ModelPT):
 
         # Interpolate between audio and text embeddings based on has_text_context flag
         has_text_context = batch['has_text_context'].unsqueeze(-1).unsqueeze(-1).float()  # (B, 1, 1)
-        context_embedded = (
-            has_text_context * context_text_embedded + (1 - has_text_context) * context_audio_embedded
-        )
+        context_embedded = has_text_context * context_text_embedded + (1 - has_text_context) * context_audio_embedded
         context_lens = (
             batch['has_text_context'].float() * context_text_lens
             + (1 - batch['has_text_context'].float()) * context_audio_codes_lens
@@ -1841,9 +1833,9 @@ class MagpieTTSModel(ModelPT):
         Returns:
             Tuple of (cond, cond_mask, multi_encoder_mapping, attn_prior_list, dec_context_size).
         """
-        context_embeddings = self.context_encoder(
-            context_input_embedded, context_mask, cond=None, cond_mask=None
-        )['output']
+        context_embeddings = self.context_encoder(context_input_embedded, context_mask, cond=None, cond_mask=None)[
+            'output'
+        ]
         cond = [text_encoder_out, context_embeddings]
         cond_mask = [text_mask, context_mask]
         multi_encoder_mapping = self.multi_encoder_mapping
@@ -1979,9 +1971,7 @@ class MagpieTTSModel(ModelPT):
 
         # For decoder_ce with baked context embedding, skip context audio/text processing entirely
         # The baked embedding replaces the context encoder, so we don't need context inputs
-        skip_context_processing = (
-            self.model_type == 'decoder_ce' and self.has_baked_context_embedding
-        )
+        skip_context_processing = self.model_type == 'decoder_ce' and self.has_baked_context_embedding
 
         if skip_context_processing:
             # Use baked context embedding directly - no need for context audio/text
@@ -2000,10 +1990,8 @@ class MagpieTTSModel(ModelPT):
 
         # Step 4: Dispatch to model-type-specific handler
         if self.model_type == 'multi_encoder_context_tts':
-            cond, cond_mask, multi_encoder_mapping, attn_prior, dec_context_size = (
-                self._prepare_multi_encoder_context(
-                    context_input_embedded, context_mask, text_encoder_out, text_mask, _attn_prior
-                )
+            cond, cond_mask, multi_encoder_mapping, attn_prior, dec_context_size = self._prepare_multi_encoder_context(
+                context_input_embedded, context_mask, text_encoder_out, text_mask, _attn_prior
             )
             additional_decoder_input = None
             additional_decoder_mask = None
@@ -2820,9 +2808,7 @@ class MagpieTTSModel(ModelPT):
                     _audio_codes_embedded = torch.cat(
                         [context_tensors.additional_decoder_input, audio_codes_embedded], dim=1
                     )
-                    _audio_codes_mask = torch.cat(
-                        [context_tensors.additional_decoder_mask, audio_codes_mask], dim=1
-                    )
+                    _audio_codes_mask = torch.cat([context_tensors.additional_decoder_mask, audio_codes_mask], dim=1)
                 else:
                     _audio_codes_embedded = audio_codes_embedded
                     _audio_codes_mask = audio_codes_mask
@@ -2846,9 +2832,7 @@ class MagpieTTSModel(ModelPT):
                         ]
                         cfg_cond_mask = [
                             torch.cat([cond_mask_item, dummy_cond_mask_item], dim=0)
-                            for cond_mask_item, dummy_cond_mask_item in zip(
-                                context_tensors.cond_mask, dummy_cond_mask
-                            )
+                            for cond_mask_item, dummy_cond_mask_item in zip(context_tensors.cond_mask, dummy_cond_mask)
                         ]
                     else:
                         cfg_cond = torch.cat([context_tensors.cond, dummy_cond], dim=0)

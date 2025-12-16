@@ -15,8 +15,9 @@ import json
 import os
 import random
 import time
+from dataclasses import dataclass
 from functools import partial
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import soundfile as sf
@@ -51,6 +52,36 @@ from nemo.collections.tts.parts.utils.helpers import (
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+
+
+@dataclass
+class InferBatchOutput:
+    """Output dataclass for MagpieTTS infer_batch method.
+
+    This provides a consistent return type regardless of which optional outputs
+    are requested.
+
+    Attributes:
+        predicted_audio: Generated audio waveforms. Shape: (B, T_audio).
+        predicted_audio_lens: Length of each audio in samples. Shape: (B,).
+        predicted_codes: Generated audio codec tokens. Shape: (B, num_codebooks, T_frames).
+        predicted_codes_lens: Length of each code sequence in frames. Shape: (B,).
+        rtf_metrics: Dictionary containing real-time factor and timing metrics.
+        cross_attention_maps: Optional cross-attention visualization maps.
+            List of numpy arrays, one per batch item. Only populated if
+            return_cross_attn_probs=True.
+        headwise_cross_attention_maps: Optional per-head cross-attention maps.
+            Only populated if return_cross_attn_probs=True and
+            compute_all_heads_attn_maps=True.
+    """
+
+    predicted_audio: torch.Tensor
+    predicted_audio_lens: torch.Tensor
+    predicted_codes: torch.Tensor
+    predicted_codes_lens: torch.Tensor
+    rtf_metrics: Dict[str, Any]
+    cross_attention_maps: Optional[List[Any]] = None
+    headwise_cross_attention_maps: Optional[List[Any]] = None
 
 
 def worker_init_fn(worker_id):
@@ -322,6 +353,12 @@ class MagpieTTSModel(ModelPT):
             self.transcript_decoder_layers = [
                 idx for idx in range(cfg.decoder.n_layers)
             ]  # All layers are used for text
+            # Baked context embedding: nn.Embedding with flattened (N, T*D), reshaped to (N, T, D) at retrieval
+            # register_buffer does not work with nn.Embedding, so we use a regular variable.
+            self.baked_context_embedding: Optional[nn.Embedding] = None
+            self.register_buffer('_baked_embedding_T', None)  # Time dimension
+            self.register_buffer('_baked_embedding_D', None)  # Embedding dimension
+            self.register_buffer('baked_context_embedding_len', None)  # Per-speaker lengths (N,)
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
@@ -365,12 +402,18 @@ class MagpieTTSModel(ModelPT):
 
         _speaker_verification_model is only included in older checkpoints with the older single_encoder_sv_tts
         model_type that is no longer supported and can likely be removed in a future version.
+
+        If the model has a baked context embedding, the context_encoder weights are also excluded
+        since they are no longer needed for inference.
         """
         if hasattr(self, '_no_state_dict') and self._no_state_dict:
             return {}
         # Don't save the speaker verification and codec model in the state dict
         state_dict = super().state_dict(destination, prefix, keep_vars)
         keys_substrings_to_exclude = ['_speaker_verification_model', '_codec_model']
+        # If we have a baked context embedding, exclude context_encoder weights
+        if self.has_baked_context_embedding:
+            keys_substrings_to_exclude.append('context_encoder')
         for key in list(state_dict.keys()):
             if any([substring in key for substring in keys_substrings_to_exclude]):
                 del state_dict[key]
@@ -397,6 +440,123 @@ class MagpieTTSModel(ModelPT):
             if self.use_text_conditioning_encoder:
                 raise ValueError("Text conditioning is not supported for frame stacking")
 
+    @property
+    def has_baked_context_embedding(self) -> bool:
+        """Check if the model has a baked context embedding.
+
+        Returns:
+            True if baked_context_embedding is set with valid dimensions.
+        """
+        return (
+            self.model_type == 'decoder_ce'
+            and self.baked_context_embedding is not None
+            and self._baked_embedding_T is not None
+            and self._baked_embedding_D is not None
+        )
+
+    @property
+    def num_baked_speakers(self) -> int:
+        """Return number of baked speakers.
+
+        Returns:
+            0 if no baked embedding, N for embedding with N speakers.
+        """
+        if not self.has_baked_context_embedding:
+            return 0
+        return self.baked_context_embedding.num_embeddings
+
+    def _normalize_speaker_indices(
+        self,
+        speaker_indices: Optional[Union[int, List[int], torch.Tensor]],
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Normalize speaker_indices to a tensor of shape (batch_size,).
+
+        Args:
+            speaker_indices: Speaker selection. Can be:
+                - None: Use first speaker (index 0) for all batch elements
+                - int: Same speaker for all batch elements
+                - List[int] or Tensor: One speaker index per batch element
+            batch_size: Number of elements in the batch.
+            device: Device to create tensor on.
+
+        Returns:
+            Tensor of shape (batch_size,) with speaker indices.
+
+        Raises:
+            ValueError: If speaker_indices length doesn't match batch_size or indices are out of range.
+        """
+        # Default to first speaker (index 0) if none specified
+        if speaker_indices is None:
+            speaker_indices = 0
+
+        # Normalize to tensor
+        if isinstance(speaker_indices, int):
+            indices = torch.full((batch_size,), speaker_indices, dtype=torch.long, device=device)
+        elif isinstance(speaker_indices, list):
+            if len(speaker_indices) != batch_size:
+                raise ValueError(
+                    f"speaker_indices length ({len(speaker_indices)}) must match batch_size ({batch_size})"
+                )
+            indices = torch.tensor(speaker_indices, dtype=torch.long, device=device)
+        elif isinstance(speaker_indices, torch.Tensor):
+            if speaker_indices.numel() != batch_size:
+                raise ValueError(
+                    f"speaker_indices length ({speaker_indices.numel()}) must match batch_size ({batch_size})"
+                )
+            indices = speaker_indices.to(device=device, dtype=torch.long)
+        else:
+            raise ValueError(f"speaker_indices must be int, list, or tensor, got {type(speaker_indices)}")
+
+        # Validate indices
+        if (indices < 0).any() or (indices >= self.num_baked_speakers).any():
+            raise ValueError(
+                f"speaker_indices values must be in range [0, {self.num_baked_speakers - 1}], "
+                f"got min={indices.min().item()}, max={indices.max().item()}"
+            )
+
+        return indices
+
+    def get_baked_context_embeddings_batch(
+        self,
+        batch_size: int,
+        speaker_indices: Optional[Union[int, List[int], torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get baked context embeddings for a batch, with per-element speaker selection.
+
+        Args:
+            batch_size: Number of elements in the batch.
+            speaker_indices: Speaker selection. Can be:
+                - None: Use first speaker (index 0) for all batch elements
+                - int: Same speaker for all batch elements
+                - List[int] or Tensor: One speaker index per batch element (length must match batch_size)
+
+        Returns:
+            Tuple of (embeddings, lengths) where:
+                - embeddings: (B, T, D) tensor
+                - lengths: (B,) tensor with embedding lengths per batch element
+
+        Raises:
+            ValueError: If speaker_indices length doesn't match batch_size or indices are out of range.
+        """
+        if not self.has_baked_context_embedding:
+            raise ValueError("No baked context embedding available")
+
+        device = self.baked_context_embedding.weight.device
+        indices = self._normalize_speaker_indices(speaker_indices, batch_size, device)
+
+        # Lookup flattened embeddings via nn.Embedding: (B,) -> (B, T*D)
+        flat_embeddings = self.baked_context_embedding(indices)
+
+        # Reshape to 3D: (B, T*D) -> (B, T, D)
+        T = self._baked_embedding_T.item()
+        D = self._baked_embedding_D.item()
+        embeddings = flat_embeddings.view(batch_size, T, D)
+
+        lengths = self.baked_context_embedding_len[indices]  # (B,)
+        return embeddings, lengths
+
     def update_ckpt(self, state_dict):
         """
         Backward compatibility for checkpoints saved with old model names.
@@ -422,20 +582,57 @@ class MagpieTTSModel(ModelPT):
 
         _speaker_verification_model is only included in older checkpoints with the older single_encoder_sv_tts
         model_type that is no longer supported and can likely be removed in a future version.
+
+        Also handles loading baked context embeddings. If the checkpoint contains baked_speaker_embedding.weight,
+        context_encoder weights are not expected to be present. The embedding is stored in flattened format
+        (N, T*D) and reconstructed to (N, T, D) at inference time using stored T and D dimensions.
         """
         state_dict = self.update_ckpt(state_dict)
-        if strict == False:
+
+        # Check if checkpoint has baked context embedding (nn.Embedding format)
+        has_baked_embedding_in_ckpt = 'baked_context_embedding.weight' in state_dict
+
+        # Load baked embedding if present
+        if has_baked_embedding_in_ckpt:
+            weight = state_dict['baked_context_embedding.weight']  # (N, T*D)
+            self._baked_embedding_T = state_dict['_baked_embedding_T']
+            self._baked_embedding_D = state_dict['_baked_embedding_D']
+            self.baked_context_embedding_len = state_dict['baked_context_embedding_len']
+
+            num_speakers = weight.size(0)
+            embedding_dim = weight.size(1)
+            T = self._baked_embedding_T.item()
+            D = self._baked_embedding_D.item()
+
+            # Create nn.Embedding and load weights (no gradients for inference)
+            self.baked_context_embedding = nn.Embedding(num_speakers, embedding_dim)
+            self.baked_context_embedding.weight.data = weight
+            self.baked_context_embedding.weight.requires_grad_(False)
+
+            logging.info(
+                f"Loaded baked context embedding: num_speakers={num_speakers}, T={T}, D={D}, "
+                f"shape=({num_speakers}, {embedding_dim}), lengths={self.baked_context_embedding_len.tolist()}"
+            )
+
+        if not strict:
             super().load_state_dict(state_dict, strict=False)
+
+        # Build list of modules to skip
+        modules_to_skip = [
+            '_speaker_verification_model',
+            '_codec_model',
+            '_reference_model',
+            'eval_asr_model',
+            'eval_speaker_verification_model',
+            'whisper_model',
+            'squim_objective_model',
+        ]
+        # Skip context_encoder if checkpoint has baked embedding (weights won't be in checkpoint)
+        if has_baked_embedding_in_ckpt:
+            modules_to_skip.append('context_encoder')
+
         for name, child in self.named_children():
-            if name in [
-                '_speaker_verification_model',
-                '_codec_model',
-                '_reference_model',
-                'eval_asr_model',
-                'eval_speaker_verification_model',
-                'whisper_model',
-                'squim_objective_model',
-            ]:
+            if name in modules_to_skip:
                 continue
             if any(param.numel() > 0 for param in child.parameters()):
                 # If the module has parameters, we want to change the default mapping so that the state_dict gets
@@ -1395,6 +1592,8 @@ class MagpieTTSModel(ModelPT):
         text_encoder_out = self.encoder(text_embedded, text_mask, cond=None, cond_mask=None)['output']  # (B, T, E)
         _attn_prior = batch.get('align_prior_matrix', None)
         _attn_prior = self.scale_prior(_attn_prior, self.global_step)
+        # Get speaker_indices from batch for multi-speaker baked embeddings
+        speaker_indices = batch.get('speaker_indices', None)
 
         if self.model_type in ['multi_encoder_context_tts', 'decoder_context_tts', 'decoder_ce']:
             if 'context_audio_codes' in batch:
@@ -1460,14 +1659,26 @@ class MagpieTTSModel(ModelPT):
                 attn_prior = [_attn_prior, None]
 
             elif self.model_type in ['decoder_context_tts', 'decoder_ce']:
-                dec_context_size = context_mask.size(1)
                 context_embeddings = None  # Address CodeQL
                 if self.model_type == 'decoder_context_tts':
                     context_embeddings = context_input_embedded
                 elif self.model_type == 'decoder_ce':
-                    context_embeddings = self.context_encoder(
-                        context_input_embedded, context_mask, cond=None, cond_mask=None
-                    )['output']
+                    # Check for baked context embedding first
+                    if self.has_baked_context_embedding:
+                        # Baked context embedding is a fixed embedding that replaces the context encoder.
+                        # For multi-speaker, speaker_indices selects which speaker's embedding to use per batch element.
+                        batch_size = text.size(0)
+                        # Get embeddings for batch (handles single/multi-speaker and per-element selection)
+                        context_embeddings, context_input_lens = self.get_baked_context_embeddings_batch(
+                            batch_size=batch_size, speaker_indices=speaker_indices
+                        )
+                        context_input_lens = context_input_lens.to(text.device)
+                        context_mask = get_mask_from_lengths(context_input_lens)
+                    else:
+                        context_embeddings = self.context_encoder(
+                            context_input_embedded, context_mask, cond=None, cond_mask=None
+                        )['output']
+                dec_context_size = context_mask.size(1)
                 attn_prior = _attn_prior
                 if attn_prior is not None:
                     # B, audio_timesteps, text_timesteps
@@ -2330,10 +2541,6 @@ class MagpieTTSModel(ModelPT):
                             dummy_addition_dec_mask
                         )
 
-                    # print(f"step {idx}")
-                    # print(f"use_cfg {use_cfg}")
-                    # print(f"shape {cfg_audio_codes_embedded.shape}")
-                    # print(f"use kv cahce? {self.use_kv_cache_for_inference}")
                     combined_logits, attn_probs, dec_out = self.forward(
                         dec_input_embedded=cfg_audio_codes_embedded,
                         dec_input_mask=cfg_audio_codes_mask,
@@ -2504,6 +2711,8 @@ class MagpieTTSModel(ModelPT):
                 'batch_size': text.size(0),
             }
             torch.cuda.empty_cache()
+            cross_attention_maps = None
+            headwise_cross_attention_maps = None
             if return_cross_attn_probs:
                 cross_attention_maps, headwise_cross_attention_maps = self.get_inference_attention_plots(
                     cross_attention_scores_all_timesteps,
@@ -2514,18 +2723,16 @@ class MagpieTTSModel(ModelPT):
                     compute_all_heads_attn_maps,
                     last_attended_timesteps,
                 )
-                return (
-                    predicted_audio,
-                    predicted_audio_lens,
-                    predicted_codes,
-                    predicted_codes_lens,
-                    rtf_metrics,
-                    cross_attention_maps,
-                    headwise_cross_attention_maps,
-                )
-            else:
-                # For backward compatibility
-                return predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, rtf_metrics
+
+            return InferBatchOutput(
+                predicted_audio=predicted_audio,
+                predicted_audio_lens=predicted_audio_lens,
+                predicted_codes=predicted_codes,
+                predicted_codes_lens=predicted_codes_lens,
+                rtf_metrics=rtf_metrics,
+                cross_attention_maps=cross_attention_maps,
+                headwise_cross_attention_maps=headwise_cross_attention_maps,
+            )
 
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
@@ -2534,7 +2741,7 @@ class MagpieTTSModel(ModelPT):
             topk = self.cfg.get('inference_topk', 80)
             use_cfg = self.cfg.get('inference_use_cfg', False)
             cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
-            predicted_audio, predicted_audio_lens, predicted_codes, predicted_codes_lens, _ = self.infer_batch(
+            output = self.infer_batch(
                 batch,
                 max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
                 temperature=temperature,
@@ -2542,6 +2749,8 @@ class MagpieTTSModel(ModelPT):
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
             )
+            predicted_audio = output.predicted_audio
+            predicted_audio_lens = output.predicted_audio_lens
 
             for logger in self.loggers:
                 is_wandb = isinstance(logger, WandbLogger)

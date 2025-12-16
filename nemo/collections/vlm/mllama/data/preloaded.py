@@ -26,11 +26,11 @@ from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADER
 from torch.utils import data
 from torch.utils.data import DataLoader, default_collate
 
-from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
 from nemo.collections.vlm.mllama.model.utils import create_vision_mask_tensor
 from nemo.collections.vlm.neva.data.config import DataConfig, ImageDataConfig
 from nemo.collections.vlm.neva.data.preloaded import IGNORE_INDEX, LazySupervisedDataset
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
+from nemo.utils.megatron_utils import get_ltor_masks_and_position_ids
 
 
 class MLlamaDataset(LazySupervisedDataset):

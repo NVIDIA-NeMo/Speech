@@ -18,6 +18,7 @@ import fiddle as fdl
 import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
 
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.llm.recipes.gpt3_175b import pretrain_recipe
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_bf16_b200_h12288_tp4_mbs1_seqlen2048,
@@ -25,7 +26,6 @@ from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_fp8_b200_h12288_tp4_mbs1_seqlen2048,
     userbuffers_fp8_h100_h12288_tp4_mbs1_seqlen2048,
 )
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
 from ..argument_parser import parse_additional_slurm_params, parse_cli_args

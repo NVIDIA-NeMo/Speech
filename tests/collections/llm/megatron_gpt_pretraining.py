@@ -23,9 +23,9 @@ from megatron.core.optimizer import OptimizerConfig
 
 from nemo import lightning as nl
 from nemo.collections import llm
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.llm.api import train
 from nemo.collections.llm.gpt.data import PreTrainingDataModule
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning import AutoResume, NeMoLogger
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint, ModelTrainingStateCallback, ParameterDebugger
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule

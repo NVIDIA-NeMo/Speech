@@ -129,7 +129,7 @@ class BERTPreTrainingDataModule(pl.LightningDataModule, IOMixin):
         self.index_mapping_dir = index_mapping_dir
         self.init_global_step = 0
 
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+        from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
         self.tokenizer = tokenizer or get_nmt_tokenizer("megatron", "BertWordPieceLowerCase")
 

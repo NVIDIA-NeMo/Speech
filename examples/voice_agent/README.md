@@ -61,12 +61,6 @@ conda env create -f environment.yaml
 
 Then you can activate the environment via `conda activate nemo-voice`.
 
-Alternatively, you can install the dependencies manually in an existing environment via:
-```bash
-pip install -r requirements.txt
-```
-The incompatibility errors from pip can be ignored.
-
 ### Configure the server
 
 If you want to just try the default server config, you can skip this step.

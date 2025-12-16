@@ -3298,6 +3298,7 @@ class MagpieTTSModel(ModelPT):
         max_decoder_steps: int = 500,
         use_cfg: bool = True,
         cfg_scale: float = 2.5,
+        speaker_index: Optional[int] = None,
     ) -> tuple:
         """
         Generate speech from raw text transcript.
@@ -3319,6 +3320,9 @@ class MagpieTTSModel(ModelPT):
             max_decoder_steps: Maximum number of decoder steps.
             use_cfg: Whether to use classifier-free guidance.
             cfg_scale: Scale factor for classifier-free guidance.
+            speaker_index: Speaker index for multi-speaker baked embeddings.
+                Valid range: [0, num_baked_speakers - 1]. If None, uses speaker 0.
+                Only applicable for models with baked context embeddings.
 
         Returns:
             Tuple of (audio, audio_len) where:
@@ -3327,6 +3331,7 @@ class MagpieTTSModel(ModelPT):
 
         Raises:
             ValueError: If model does not have a baked context embedding.
+            ValueError: If speaker_index is out of valid range.
             ImportError: If apply_TN=True but nemo_text_processing is not installed.
 
         Example:
@@ -3337,6 +3342,11 @@ class MagpieTTSModel(ModelPT):
             >>> audio, audio_len = model.do_tts(
             ...     "Hello, how are you today?",
             ...     apply_TN=True,
+            ... )
+            >>>
+            >>> # Use a specific speaker (for multi-speaker models)
+            >>> audio, audio_len = model.do_tts(
+            ...     "Hello!", speaker_index=2
             ... )
         """
         if not self.has_baked_context_embedding:
@@ -3390,6 +3400,7 @@ class MagpieTTSModel(ModelPT):
         batch = {
             'text': text_tensor,
             'text_lens': text_lens,
+            'speaker_indices': speaker_index,
         }
 
         # Run inference

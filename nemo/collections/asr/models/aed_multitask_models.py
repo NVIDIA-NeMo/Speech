@@ -503,7 +503,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
         This allows the model to process long audio in manageable chunks and merge the results.
         Args:
-            audio: (a single or list) of paths to audio files or a np.ndarray/tensor audio array or path 
+            audio: (a single or list) of paths to audio files or a np.ndarray/tensor audio array or path
                 to a manifest file.
                 Can also be a dataloader object that provides values that can be consumed by the model.
                 Recommended length per file is between 5 and 25 seconds. \
@@ -513,26 +513,26 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             return_hypotheses: (bool) Either return hypotheses or text
                 With hypotheses can do some postprocessing like getting timestamp or rescoring
             num_workers: (int) number of workers for DataLoader
-            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels 
-                from multi-channel audio. If set to `'average'`, it performs averaging across channels. 
+            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels
+                from multi-channel audio. If set to `'average'`, it performs averaging across channels.
                 Disabled if set to `None`. Defaults to `None`.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
-            timestamps: Optional(Bool): timestamps will be returned if set to True as part of hypothesis 
-                object (output.timestep['segment']/output.timestep['word']). Refer to `Hypothesis` class 
-                for more details. Default is None and would retain the previous state set by using 
-                self.change_decoding_strategy(). 
+            timestamps: Optional(Bool): timestamps will be returned if set to True as part of hypothesis
+                object (output.timestep['segment']/output.timestep['word']). Refer to `Hypothesis` class
+                for more details. Default is None and would retain the previous state set by using
+                self.change_decoding_strategy().
             Note: Currently its not supported for AED models.
             verbose: (bool) whether to display tqdm progress bar
-            override_config: (Optional[MultiTaskTranscriptionConfig]) A config to override the 
+            override_config: (Optional[MultiTaskTranscriptionConfig]) A config to override the
                 default config.
-            **prompt: Optional input to construct the prompts for the model. Accepted formats are: 
-                1) legacy Canary-1B API source_lang=<lang>, target_lang=<lang>, etc. 
-                2) explicit single-turn role=<role>, slots={<slot>: <value>, ...} 
+            **prompt: Optional input to construct the prompts for the model. Accepted formats are:
+                1) legacy Canary-1B API source_lang=<lang>, target_lang=<lang>, etc.
+                2) explicit single-turn role=<role>, slots={<slot>: <value>, ...}
                 3) explicit multi-turn: turns=[{"role": <role>, "slots": {<slot>: <value>, ...}}]
 
         Returns:
-            A list of transcriptions (or raw log probabilities if logprobs is True) in the same order 
-            as paths2audio_files 
+            A list of transcriptions (or raw log probabilities if logprobs is True) in the same order
+            as paths2audio_files
         """
         if timestamps is not None:
             if self.timestamps_asr_model is None:
@@ -574,11 +574,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             # Check if it is provided as a list of strings
             is_one_audio = is_one_audio or (isinstance(audio, list) and len(audio) == 1)
             # Check if chunking will be enabled
-            trcfg.enable_chunking = is_one_audio or (override_config is not None and override_config.batch_size == 1)
+            trcfg.enable_chunking = (is_one_audio or trcfg.batch_size == 1) and self.timestamps_asr_model is not None
             if not trcfg.enable_chunking:
                 logging.warning("Chunking is disabled. Please pass a single audio file or set batch_size to 1")
 
         results = super().transcribe(audio=audio, override_config=trcfg)
+
         if trcfg.enable_chunking:
             results = merge_all_hypotheses(results, trcfg.timestamps, self.encoder.subsampling_factor)
 
@@ -593,6 +594,9 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         global_rank = config.get("global_rank", self.global_rank)
         world_size = config.get("world_size", self.world_size)
         enable_chunking = config.get("enable_chunking", False)
+        # Adding a check for availability of timestamps_asr_model for differentating between Canary versions.
+        enable_chunking = enable_chunking and self.timestamps_asr_model is not None
+
         if enable_chunking:
             # Adding this to support processing audio files of arbitrary length by chunking them into hour-long segments.
             config.cut_into_windows_duration = 3600
@@ -920,7 +924,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         audio_files = self._may_be_make_dict_and_fix_paths(audio_files, manifest_filepath, trcfg)
 
         ds_config = super()._transcribe_input_manifest_processing(audio_files, temp_dir, trcfg)
-        if trcfg.enable_chunking:
+        if trcfg.enable_chunking and self.timestamps_asr_model is not None:
             ds_config['enable_chunking'] = True
         return ds_config
 
@@ -1057,7 +1061,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             hypotheses = process_aed_timestamp_outputs(
                 hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
             )
-        if merge_to_be_done:
+
+        if merge_to_be_done and self.timestamps_asr_model is not None:
             merged_hypotheses = merge_parallel_chunks(
                 hypotheses=hypotheses,
                 encoded_len=encoded_len,
@@ -1068,11 +1073,11 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 decoding=self.decoding,
             )
             # Inject the id of the cut to hypothese to later be used for separate batches
-            setattr(merged_hypotheses, 'id', batch.cuts[0].id.split("-", 1)[0])
+            setattr(merged_hypotheses, 'id', batch.cuts[0].id.rsplit('-', 1)[0])
             return [merged_hypotheses]
 
         if trcfg.enable_chunking and len(hypotheses) == 1:
-            setattr(hypotheses[0], 'id', batch.cuts[0].id.split("-", 1)[0])
+            setattr(hypotheses[0], 'id', batch.cuts[0].id)
         return hypotheses
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
@@ -1097,6 +1102,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             # when using a list of audio files instead of a manifest (added from TranscrptionMixin)
             manifest_filepath = os.path.join(config['temp_dir'], 'manifest.json')
             batch_size = min(config['batch_size'], len(config['paths2audio_files']))
+        enable_chunking = config.get('enable_chunking', False) and self.timestamps_asr_model is not None
         dl_config = {
             'manifest_filepath': manifest_filepath,
             'sample_rate': self.preprocessor._sample_rate,
@@ -1105,7 +1111,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             'shuffle': False,
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
-            'use_lhotse': True,
+            'use_lhotse': config.get('use_lhotse', True),
             'use_bucketing': False,
             'drop_last': False,
             'text_field': config.get('text_field', 'answer'),
@@ -1113,7 +1119,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             'channel_selector': config.get('channel_selector', None),
             'pad_min_duration': config.get('pad_min_duration', 1.0),
             'pad_direction': config.get('pad_direction', 'both'),
-            'enable_chunking': config.get('enable_chunking', False),
+            'enable_chunking': enable_chunking,
         }
 
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))

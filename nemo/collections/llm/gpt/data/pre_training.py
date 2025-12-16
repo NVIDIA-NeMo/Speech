@@ -255,7 +255,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         self.init_global_step = init_global_step
         self.output_log = output_log
 
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+        from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
         self.tokenizer = tokenizer or get_nmt_tokenizer("megatron", "GPT2BPETokenizer")
         self.data_sampler = MegatronDataSampler(

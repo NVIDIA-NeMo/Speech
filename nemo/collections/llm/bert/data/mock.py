@@ -69,7 +69,7 @@ class BERTMockDataModule(pl.LightningDataModule):
         self.global_batch_size = global_batch_size
         self.micro_batch_size = micro_batch_size
         if tokenizer is None:
-            from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+            from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
             self.tokenizer = get_nmt_tokenizer("megatron", "BertWordPieceLowerCase")
         else:

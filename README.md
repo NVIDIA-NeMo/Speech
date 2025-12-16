@@ -7,43 +7,54 @@
 [![PyPi total downloads](https://static.pepy.tech/personalized-badge/nemo-toolkit?period=total&units=international_system&left_color=grey&right_color=brightgreen&left_text=downloads)](https://pepy.tech/project/nemo-toolkit)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-# **NVIDIA NeMo Framework**
+# **NVIDIA NeMo Speech Collection**
 
 ## Latest News
 
 <!-- markdownlint-disable -->
 <details open>
+  <summary><b> <a href=https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16>NVIDIA-Nemotron-3-Nano-30B-A3B</a> is out with full reproducible script and recipes! Checkout <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge/tree/nano-v3>NeMo Megatron-Bridge</a>, <a href=https://github.com/NVIDIA-NeMo/Automodel/blob/main/examples/llm_finetune/nemotron/nemotron_nano_v3_squad.yaml>NeMo AutoModel</a>, <a href=https://github.com/NVIDIA-NeMo/RL>NeMo-RL</a> and <a href=https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=25.11.nemotron_3_nano>NGC container</a> to try them!(2025-12-15)
+</details>
+
+
+
+<details open>
+  <summary><b>Pivot notice: This repo will pivot to focus on speech models collections only. Please refer to <a href=https://github.com/NVIDIA-NeMo>NeMo Framework Github Org</a> for the complete list of repos under NeMo Framework</b></summary>
+      NeMo 2.0, with its support for LLMs and VLMs will be deprecated by 25.11, and replaced by <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge>NeMo Megatron-Bridge</a> and <a href=https://github.com/NVIDIA-NeMo/Automodel>NeMo Automodel</a>. More details can be find in the <a href=https://github.com/NVIDIA-NeMo>NeMo Framework github org readme</a>. (2025-10-10)
+</details>
+
+<details closed>
   <summary><b>Pretrain and finetune :hugs:Hugging Face models via AutoModel</b></summary>
       Nemo Framework's latest feature AutoModel enables broad support for :hugs:Hugging Face models, with 25.04 focusing on
 
   
-- <a href=https://huggingface.co/transformers/v3.5.1/model_doc/auto.html#automodelforcausallm>AutoModelForCausalLM<a> in the <a href="https://huggingface.co/models?pipeline_tag=text-generation&sort=trending">Text Generation<a> category
-- <a href=https://huggingface.co/docs/transformers/main/model_doc/auto#transformers.AutoModelForImageTextToText>AutoModelForImageTextToText<a> in the <a href="https://huggingface.co/models?pipeline_tag=image-text-to-text&sort=trending">Image-Text-to-Text<a> category
+- <a href=https://huggingface.co/transformers/v3.5.1/model_doc/auto.html#automodelforcausallm>AutoModelForCausalLM</a> in the <a href="https://huggingface.co/models?pipeline_tag=text-generation&sort=trending">Text Generation</a> category
+- <a href=https://huggingface.co/docs/transformers/main/model_doc/auto#transformers.AutoModelForImageTextToText>AutoModelForImageTextToText</a> in the <a href="https://huggingface.co/models?pipeline_tag=image-text-to-text&sort=trending">Image-Text-to-Text</a> category
 
-More Details in Blog: <a href=https://developer.nvidia.com/blog/run-hugging-face-models-instantly-with-day-0-support-from-nvidia-nemo-framework>Run Hugging Face Models Instantly with Day-0 Support from NVIDIA NeMo Framework<a>. Future releases will enable support for more model families such as Video Generation models.(2025-05-19)
+More Details in Blog: <a href=https://developer.nvidia.com/blog/run-hugging-face-models-instantly-with-day-0-support-from-nvidia-nemo-framework>Run Hugging Face Models Instantly with Day-0 Support from NVIDIA NeMo Framework</a>. Future releases will enable support for more model families such as Video Generation models.(2025-05-19)
 </details>
 
-<details open>
+<details closed>
   <summary><b>Training on Blackwell using Nemo</b></summary>
-      NeMo Framework has added Blackwell support, with <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/performance/performance_summary.html>performance benchmarks on GB200 & B200<a>. More optimizations to come in the upcoming releases.(2025-05-19)
+      NeMo Framework has added Blackwell support, with <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/performance/performance_summary.html>performance benchmarks on GB200 & B200</a>. More optimizations to come in the upcoming releases.(2025-05-19)
 </details>
 
-<details open>
+<details closed>
   <summary><b>Training Performance on GPU Tuning Guide</b></summary>
-      NeMo Framework has published <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/performance/performance-guide.html>a comprehensive guide for performance tuning to achieve optimal throughput<a>! (2025-05-19)
+      NeMo Framework has published <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/performance/performance-guide.html>a comprehensive guide for performance tuning to achieve optimal throughput</a>! (2025-05-19)
 </details>
 
-<details open>
+<details closed>
   <summary><b>New Models Support</b></summary>
-      NeMo Framework has added support for latest community models - <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/vlms/llama4.html>Llama 4<a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/vision/diffusionmodels/flux.html>Flux<a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/llama_nemotron.html>Llama Nemotron<a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/hyena.html#>Hyena & Evo2<a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/vlms/qwen2vl.html>Qwen2-VL<a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/qwen2.html>Qwen2.5<a>, Gemma3, Qwen3-30B&32B.(2025-05-19)
+      NeMo Framework has added support for latest community models - <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/vlms/llama4.html>Llama 4</a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/vision/diffusionmodels/flux.html>Flux</a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/llama_nemotron.html>Llama Nemotron</a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/hyena.html#>Hyena & Evo2</a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/vlms/qwen2vl.html>Qwen2-VL</a>, <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/qwen2.html>Qwen2.5</a>, Gemma3, Qwen3-30B&32B.(2025-05-19)
 </details>
 
 
-<details open>
+<details closed>
   <summary><b>NeMo Framework 2.0</b></summary>
       We've released NeMo 2.0, an update on the NeMo Framework which prioritizes modularity and ease-of-use. Please refer to the <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/nemo-2.0/index.html>NeMo Framework User Guide</a> to get started.
 </details>
-<details open>
+<details closed>
   <summary><b>New Cosmos World Foundation Models Support</b></summary>
     <details> 
       <summary> <a href="https://developer.nvidia.com/blog/advancing-physical-ai-with-nvidia-cosmos-world-foundation-model-platform">Advancing Physical AI with NVIDIA Cosmos World Foundation Model Platform </a> (2025-01-09) 
@@ -63,7 +74,7 @@ More Details in Blog: <a href=https://developer.nvidia.com/blog/run-hugging-face
       <br><br>
     </details>
 </details>
-<details open>
+<details closed>
   <summary><b>Large Language Models and Multimodal Models</b></summary>
     <details>
       <summary>
@@ -135,7 +146,7 @@ More Details in Blog: <a href=https://developer.nvidia.com/blog/run-hugging-face
         <br><br>
       </details>
 </details>
-<details open>
+<details closed>
   <summary><b>Speech Recognition</b></summary>
   <details>
       <summary>

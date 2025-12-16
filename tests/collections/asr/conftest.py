@@ -380,3 +380,8 @@ def canary_1b_flash():
 @pytest.fixture(scope='session')
 def canary_1b_v2():
     return ASRModel.restore_from("/home/TestData/asr/canary/models/canary-1b-v2_20250809.nemo")
+
+
+@pytest.fixture(scope='session')
+def hybrid_rnnt_ctc_bpe_model_with_prompt():
+    return ASRModel.restore_from("/home/TestData/asr/hybrid_rnnt_ctc_bpe_model_with_prompt.nemo")

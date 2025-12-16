@@ -312,5 +312,5 @@ class AEDBeamInferConfig:
     # fusion models params
     ngram_lm_model: Optional[str] = None
     ngram_lm_alpha: float = 0.0
-    boosting_tree: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
+    boosting_tree: BoostingTreeModelConfig = field(default_factory=lambda: BoostingTreeModelConfig(depth_scaling=1.0))
     boosting_tree_alpha: float = 0.0

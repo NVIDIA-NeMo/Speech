@@ -71,11 +71,7 @@ def sample_audio_segments_repeat(
 
         else:
             # Audio shorter than target → repeat
-            if sample:
-                # Random start position
-                start = torch.randint(0, length, (1,), device=device).item()
-            else:
-                start = 0
+            start = 0
             segment = prompt_audio[b, start:length]
 
             repeat_times = (n_sample + (length - start) - 1) // (length - start)

@@ -102,12 +102,7 @@ def override_recipe_configs(
     gpu_type = args.gpu.lower()
 
     # data module configs
-    if args.hf_token:
-        recipe.data.tokenizer = hf_tokenizer("nvidia/Nemotron-4-340B-Base")
-    else:
-        recipe.data.tokenizer = run.Config(
-            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
-        )
+    recipe.data.tokenizer = hf_tokenizer("nvidia/Nemotron-4-340B-Base")
     recipe.model.tokenizer = recipe.data.tokenizer
 
     comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)

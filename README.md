@@ -13,7 +13,7 @@
 
 <!-- markdownlint-disable -->
 <details open>
-  <summary><b> <a href=https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8>NVIDIA-Nemotron-3-Nano-30B-A3B</a> is out with full reproducible script and recipes! Checkout <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge/tree/nano-v3>NeMo Megatron-Bridge</a>, <a href=https://github.com/NVIDIA-NeMo/Automodel/blob/main/examples/llm_finetune/nemotron/nemotron_nano_v3_squad.yaml>NeMo AutoModel</a>, <a href=https://github.com/NVIDIA-NeMo/RL>NeMo-RL</a> and <a href=https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=25.11.nemotron_3_nano>NGC container</a> to try them!(2025-12-15)
+  <summary><b> <a href=https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16>NVIDIA-Nemotron-3-Nano-30B-A3B</a> is out with full reproducible script and recipes! Checkout <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge/tree/nano-v3>NeMo Megatron-Bridge</a>, <a href=https://github.com/NVIDIA-NeMo/Automodel/blob/main/examples/llm_finetune/nemotron/nemotron_nano_v3_squad.yaml>NeMo AutoModel</a>, <a href=https://github.com/NVIDIA-NeMo/RL>NeMo-RL</a> and <a href=https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=25.11.nemotron_3_nano>NGC container</a> to try them!(2025-12-15)
 </details>
 
 

@@ -565,13 +565,13 @@ class ImplicitModalFilter(nn.Module):
         """Compute the log poles for the implicit modal filter."""
         if context_parallel_group is not None:
             rank = torch.distributed.get_rank(context_parallel_group)
-            local_size = self.d_model // get_context_parallel_world_size()    
+            local_size = self.d_model // get_context_parallel_world_size()
             p = self.p[rank * local_size : (rank + 1) * local_size].to(torch.float32)
             gamma = self.gamma[rank * local_size : (rank + 1) * local_size].to(torch.float32)
         else:
             p = self.p.to(torch.float32)
             gamma = self.gamma.to(torch.float32)
-            
+
         logp = -torch.exp(p)
         glogp = logp * torch.exp(gamma)
         return glogp
@@ -598,7 +598,7 @@ class ImplicitModalFilter(nn.Module):
             R = self.R[rank * local_size : (rank + 1) * local_size].to(torch.float32)
         else:
             R = self.R.to(torch.float32)
-            
+
         glogp = self.get_logp(context_parallel_group)
         h = torch.exp(glogp[..., None] * t)
         h = torch.einsum('do,dot->dt', R, h)
@@ -616,7 +616,9 @@ class ImplicitModalFilter(nn.Module):
             glogp = self.get_logp(context_parallel_group)
             rank = torch.distributed.get_rank(context_parallel_group)
             local_size = self.d_model // get_context_parallel_world_size()
-            R = self.R[rank * local_size : (rank + 1) * local_size].to(torch.float32).contiguous() # Overkill, but just in case
+            R = (
+                self.R[rank * local_size : (rank + 1) * local_size].to(torch.float32).contiguous()
+            )  # Overkill, but just in case
             h = self.implicit_filter(glogp, R, L, context_parallel_group)
             h = h.unsqueeze(0)  # TODO: Remove this once we have a proper kernel implementation
         else:
@@ -1025,7 +1027,7 @@ class ParallelHyenaOperator(nn.Module):
             h = self.filter(self.hyena_medium_conv_len)
         else:
             h = self.filter(_L_kernel, context_parallel_group=cp_group)
-            
+
         if isinstance(h, tuple):
             h = h[0]
 

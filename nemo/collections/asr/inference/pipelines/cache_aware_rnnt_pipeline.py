@@ -61,6 +61,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             itn_model: (AlignmentPreservingInverseNormalizer | None) Inverse Text Normalization model.
         """
         self.copy_asr_model_attributes(asr_model)
+        self.init_prompt_support()
         self.init_parameters(cfg)
         self.init_context_manager()
         self.init_bufferer_for_cache_aware_streaming()
@@ -69,7 +70,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.init_greedy_rnnt_decoder()
         self.init_endpointer()
         self.init_text_processor(cfg, itn_model)
-        self.init_prompt_support()
         super().__init__()
 
     def init_parameters(self, cfg: DictConfig) -> None:

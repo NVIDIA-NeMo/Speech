@@ -62,6 +62,7 @@ class BufferedRNNTPipeline(BasePipeline):
         """
 
         self.copy_asr_model_attributes(asr_model)
+        self.init_prompt_support()
         self.init_parameters(cfg)
         self.init_bufferer_for_buffered_streaming()
         self.conf_func, self.confidence_aggregator = get_confidence_utils(cfg.confidence)
@@ -70,7 +71,6 @@ class BufferedRNNTPipeline(BasePipeline):
         self.init_bpe_decoder()
         self.init_decoding_computer()
         self.init_text_processor(cfg, itn_model)
-        self.init_prompt_support()
         super().__init__()
 
     def init_parameters(self, cfg: DictConfig) -> None:

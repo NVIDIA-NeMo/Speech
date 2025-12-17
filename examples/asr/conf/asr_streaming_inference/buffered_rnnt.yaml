@@ -39,6 +39,27 @@ itn:
   n_jobs: 16                                    # Number of parallel jobs for ITN processing
 
 
+# ================================
+# Neural Machine Translation Configuration
+# ================================
+nmt:
+  model_name: "utter-project/EuroLLM-1.7B-Instruct"  # vLLM-supported model name
+  source_language: "English"                         # Source language code
+  target_language: "Russian"                         # Target language code
+  waitk: -1                                          # Max allowed lag (in words) between ASR transcript and translation; -1 disables it and uses only the longest common prefix between current and previous translations.
+  device: cuda                                       # Device for translation: 'cuda'. 'cpu' is not supported.
+  device_id: 1                                       # GPU device ID for translation
+  batch_size: 16                                     # Batch size for translation, if -1, the batch size is equal to the ASR batch size
+  llm_params:                                        # See https://docs.vllm.ai/en/v0.8.1/api/offline_inference/llm.html for more details
+    dtype: "auto"                                    # Compute precision
+    seed: 42                                         # The seed to initialize the random number generator for sampling
+  sampling_params:                                   # See https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html for more details
+    max_tokens: 100                                  # Maximum number of tokens to generate with LLM
+    temperature: 0.0                                 # LLM sampling temperature, default for translation is 0 (greedy)
+    top_p: 0.9                                       # The cumulative probability threshold for nucleus sampling
+    seed: 42                                         # The seed to initialize the random number generator for sampling
+
+
 # ========================
 # Confidence estimation
 # ========================
@@ -85,14 +106,35 @@ asr_decoding_type: rnnt                    # Decoding method: ctc or rnnt
 
 
 # ========================
-# Runtime arguments defined at runtime   via command line
+# Runtime arguments defined at runtime via command line
 # ========================
 audio_file: null                              # Path to audio file, directory, or manifest JSON
 output_filename: null                         # Path to output transcription JSON file
 output_dir: null                              # Directory to save time-aligned output
 enable_pnc: false                             # Whether to apply punctuation & capitalization
 enable_itn: false                             # Whether to apply inverse text normalization
+enable_nmt: false                             # Whether to apply neural machine translation
 asr_output_granularity: segment               # Output granularity: word or segment
 cache_dir: null                               # Directory to store cache (e.g., .far files)
 lang: null                                    # Language code for ASR model
 return_tail_result: false                     # Whether to return the tail labels left in the right padded side of the buffer
+calculate_wer: true                           # Whether to calculate WER
+calculate_bleu: true                          # Whether to calculate BLEU score
+
+# ========================
+# Metrics
+# ========================
+metrics:
+  asr:
+    gt_text_attr_name: text                     # Attribute name for ground truth text
+    clean_groundtruth_text: false               # Whether to clean ground truth text
+    langid: en                                  # Language code for text normalization; only "en" is supported
+    use_cer: false                              # Whether to use character error rate
+    ignore_capitalization: true                 # Whether to ignore capitalization
+    ignore_punctuation: true                    # Whether to ignore punctuation
+    strip_punc_space: false                     # Whether to strip punctuation and space
+  nmt:
+    gt_text_attr_name: answer                   # Attribute name for ground truth text
+    ignore_capitalization: false                # Whether to ignore capitalization
+    ignore_punctuation: false                   # Whether to ignore punctuation
+    strip_punc_space: false                     # Whether to strip punctuation and space

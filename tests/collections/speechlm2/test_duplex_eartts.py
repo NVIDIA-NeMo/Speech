@@ -96,7 +96,6 @@ test_eartts_config = {
             "num_quantizers": 31,
             "context_hidden_size": None,
             "cas_config": {
-                "pretrained_tokenizer_name": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
                 "backbone_type": "t5gemma",
                 "backbone_model_class": None,
                 "backbone_config_class": None,

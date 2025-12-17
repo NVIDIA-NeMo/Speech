@@ -87,8 +87,13 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # get codec run precision
         self.audio_codec_run_dtype = getattr(torch, self.cfg.get("audio_codec_run_dtype", "float32"), torch.float32)
 
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer(
+            self.cfg.pretrained_lm_name, use_fast=True, trust_remote_code=True, bos_token=self.cfg.get("bos_token", '<s>'), eos_token=self.cfg.get("eos_token", '</s>'), pad_token=self.cfg.get("pad_token", '<SPECIAL_12>')
+        )  # Note that we are using fast tokenizer
+
         # Instantiate TTS model
-        self.tts_model = RVQEARTTSModel(DictConfig(self.cfg.tts_config))
+        self.tts_model = RVQEARTTSModel(DictConfig(self.cfg.tts_config), tokenizer=self.tokenizer)
         # Load and initialize audio codec, and bind RVQ embeddings to the TTS model
         setup_audio_codec(self)
 
@@ -101,15 +106,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         codec_silence_tokens = self.get_codec_silence_frame()
         self.register_buffer("codec_silence_tokens", codec_silence_tokens)
 
-        # Load tokenizer
-        self.tokenizer = AutoTokenizer(
-            self.cfg.pretrained_lm_name, use_fast=True, trust_remote_code=True
-        )  # Note that we are using fast tokenizer
-
-        # set tokenizer special tokens
-        self.tokenizer.bos_token = self.cfg.get("bos_token", '<s>')
-        self.tokenizer.eos_token = self.cfg.get("eos_token", '</s>')
-        self.tokenizer.pad_token = self.cfg.get("pad_token", '<SPECIAL_12>')
 
         # cached for quicker audio decoding
         self.register_buffer(

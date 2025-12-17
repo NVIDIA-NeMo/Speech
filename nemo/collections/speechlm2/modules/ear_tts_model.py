@@ -23,9 +23,10 @@ import transformers
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor, nn
 from torch.nn import functional as F
-from transformers import AutoConfig, AutoModel, AutoModelForTextEncoding, AutoTokenizer, Cache
+from transformers import AutoConfig, AutoModel, AutoModelForTextEncoding, Cache
 from transformers.generation.logits_process import TopKLogitsWarper, TopPLogitsWarper
 
+from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
@@ -394,7 +395,7 @@ def find_and_delete_module(parent_module: nn.Module, target_module: nn.Module, p
 
 
 def build_vocabs(
-    pretrained_tokenizer_name: str, vocab_dir: str | None = None
+    tokenizer: AutoTokenizer, vocab_dir: str | None = None
 ) -> tuple[dict[int, tuple[int, ...]], dict[str, int], int]:
     """
     Builds or loads a character-level vocabulary derived from a subword tokenizer.
@@ -407,7 +408,7 @@ def build_vocabs(
     loaded. Otherwise, it's created from the pretrained tokenizer and saved.
 
     Args:
-        pretrained_tokenizer_name (str): The name or path of the pretrained Hugging Face tokenizer.
+        tokenizer (AutoTokenizer): The pretrained Hugging Face tokenizer class.
         vocab_dir (str | None, optional): The directory to save or load the character
                                           vocabulary from. Defaults to None.
 
@@ -417,11 +418,10 @@ def build_vocabs(
             - The character-to-ID vocabulary dictionary.
             - The ID for the subword padding token.
     """
-    tokenizer = AutoTokenizer.from_pretrained(pretrained_tokenizer_name, trust_remote_code=True)
 
     def _build_char_vocab() -> dict[str, int]:
         # Find all single-character tokens in the original tokenizer's vocabulary
-        single_chars = {subword: subword_id for subword, subword_id in tokenizer.vocab.items() if len(subword) == 1}
+        single_chars = {subword: subword_id for subword, subword_id in tokenizer.tokenizer.vocab.items() if len(subword) == 1}
         # Create a new, dense character vocabulary sorted by the original token ID
         sorted_chars = sorted(single_chars.keys(), key=lambda k: single_chars[k])
         char_vocab = {char: i for i, char in enumerate(sorted_chars)}
@@ -447,13 +447,13 @@ def build_vocabs(
             char_vocab = json.load(f)
     else:
         # No cache directory provided, build in memory.
-        logging.info(f"Building character vocabulary from tokenizer '{pretrained_tokenizer_name}'.")
+        logging.info("Building character vocabulary from tokenizer.")
         char_vocab = _build_char_vocab()
 
     # 2. Reconstruct the subword-to-character mapping on the fly
     subword_id_to_char_ids = {
         subword_id: tuple(char_vocab[char] for char in subword if char in char_vocab)
-        for subword, subword_id in tokenizer.vocab.items()
+        for subword, subword_id in tokenizer.tokenizer.vocab.items()
     }
     # Filter out subwords that contain characters not in our character vocabulary
     subword_id_to_char_ids = {k: v for k, v in subword_id_to_char_ids.items() if v}
@@ -670,13 +670,10 @@ class NeMoSubwordFlagEmbedding(nn.Module):
     Compatible with NeMo AutoTokenizer.
     """
 
-    def __init__(self, model_name: str, d_model: int):
+    def __init__(self, tokenizer: AutoTokenizer, d_model: int):
         super().__init__()
-        # Load tokenizer from NeMo
-        # self.tokenizer_hf = AutoTokenizer.from_pretrained(model_name)
-        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoAutoTokenizer
 
-        self.tokenizer = NeMoAutoTokenizer(model_name, use_fast=True, trust_remote_code=True)
+        self.tokenizer = tokenizer
         self.vocab_size = self.tokenizer.vocab_size
         self.d_model = d_model
 
@@ -713,9 +710,10 @@ class SubwordFlagEmbedding(nn.Module):
     Ignores special tokens (starting with '<') when computing continuation flags.
     """
 
-    def __init__(self, model_name: str, d_model: int):
+    def __init__(self, tokenizer: AutoTokenizer, d_model: int):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        self.tokenizer = tokenizer
         self.vocab_size = self.tokenizer.vocab_size
         self.d_model = d_model
 
@@ -725,7 +723,7 @@ class SubwordFlagEmbedding(nn.Module):
         self.register_buffer("pad_tensor", torch.tensor(self.pad_id, dtype=torch.long))
 
         # Precompute continuation flags
-        tokens = [self.tokenizer.convert_ids_to_tokens(i) for i in range(self.vocab_size)]
+        tokens = [self.tokenizer.ids_to_tokens(i) for i in range(self.vocab_size)]
         cont_flags = [
             1 if not (tok.startswith("Ġ") or tok.startswith("▁") or tok.startswith("<")) else 0 for tok in tokens
         ]
@@ -755,11 +753,12 @@ class BOSEOSEmbedding(nn.Module):
     Compatible with Hugging Face tokenizers that may or may not have BOS/EOS.
     """
 
-    def __init__(self, model_name: str, d_model: int):
+    def __init__(self, tokenizer: AutoTokenizer, d_model: int):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        self.tokenizer = tokenizer
         # vocab size that includes special tokens
-        vocab_dict = self.tokenizer.get_vocab()
+        vocab_dict = self.tokenizer.tokenizer.get_vocab()
         self.vocab_size = max(vocab_dict.values())
         self.d_model = d_model
 
@@ -768,14 +767,7 @@ class BOSEOSEmbedding(nn.Module):
         self.register_buffer("pad_tensor", torch.tensor(self.pad_id, dtype=torch.long))
 
         # Identify BOS and EOS tokens (may be None)
-        tokens = [self.tokenizer.convert_ids_to_tokens(i) for i in range(self.vocab_size)]
-
-        if 'Qwen2.5' in model_name:
-            # For Qwen, '<|im_start|>' is a common choice for a BOS token.
-            # You can check your tokenizer's vocabulary for the best candidate.
-            logging.warning("Tokenizer does not have a `bos_token`. Setting it to '<|im_start|>'.")
-            self.tokenizer.bos_token = '<|im_start|>'
-            self.tokenizer.eos_token = '<|im_end|>'
+        tokens = [self.tokenizer.ids_to_tokens(i) for i in range(self.vocab_size)]
 
         special_flags = []
         for tok in tokens:
@@ -812,12 +804,12 @@ class SubwordEmbedding(nn.Module):
     No special handling for OOVs or padding — assumes token_ids are valid.
     """
 
-    def __init__(self, model_name: str, d_model: int):
+    def __init__(self, tokenizer: AutoTokenizer, d_model: int):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = tokenizer
 
         # Get vocab size from tokenizer
-        vocab_dict = self.tokenizer.get_vocab()
+        vocab_dict = self.tokenizer.tokenizer.get_vocab()
         self.vocab_size = max(vocab_dict.values()) + 1  # +1 for safety
         self.d_model = d_model
 
@@ -848,7 +840,7 @@ class CharAwareSubwordEncoder(nn.Module):
 
     Args:
         out_size (int): The dimensionality of the output embedding vectors.
-        pretrained_tokenizer_name (str): The name of the base Hugging Face tokenizer.
+        tokenizer (AutoTokenizer): The Hugging Face tokenizer class.
         vocab_dir (str | None): Directory to save/load the character vocabulary.
         backbone_type (str | None): The type of backbone model from Hugging Face (e.g., "t5gemma").
         backbone_model_class (str | None): The class name of the backbone model if not using AutoModel.
@@ -859,7 +851,7 @@ class CharAwareSubwordEncoder(nn.Module):
     def __init__(
         self,
         out_size: int,
-        pretrained_tokenizer_name: str,
+        tokenizer: AutoTokenizer,
         vocab_dir: str | None = None,
         backbone_type: str | None = "t5gemma",
         backbone_model_class: str | None = None,
@@ -868,12 +860,13 @@ class CharAwareSubwordEncoder(nn.Module):
         use_subword_flag_emb: bool = True,
         use_bos_eos_emb: bool = True,
         use_cumulative_word_emb: bool = False,
+        
     ):
         super().__init__()
 
         # 1. Build or load the character vocabulary
         self.subword_id_to_char_ids, self.char_vocab, self.subword_padding_idx = build_vocabs(
-            pretrained_tokenizer_name,
+            tokenizer,
             vocab_dir,
         )
 
@@ -902,10 +895,10 @@ class CharAwareSubwordEncoder(nn.Module):
         self.proj_embedding = nn.Linear(self.hidden_size, out_size, bias=False)
 
         if self.use_subword_flag_emb:
-            self.subword_flag_emb = SubwordFlagEmbedding(pretrained_tokenizer_name, self.hidden_size)
+            self.subword_flag_emb = SubwordFlagEmbedding(tokenizer, self.hidden_size)
 
         if self.use_bos_eos_emb:
-            self.bos_eos_emb = BOSEOSEmbedding(pretrained_tokenizer_name, self.hidden_size)
+            self.bos_eos_emb = BOSEOSEmbedding(tokenizer, self.hidden_size)
 
     def prepare_inputs(self, subword_ids: Tensor, padding_mask: Tensor) -> tuple[Tensor, Tensor]:
         """
@@ -1050,7 +1043,7 @@ class RVQEARTTSModel(nn.Module):
     config_class = DictConfig
     rvq_embs: Tensor
 
-    def __init__(self, config: DictConfig | dict[str, Any]):
+    def __init__(self, config: DictConfig | dict[str, Any], tokenizer: AutoTokenizer = None):
         super().__init__()
         self.config = config
 
@@ -1105,6 +1098,7 @@ class RVQEARTTSModel(nn.Module):
 
         self.embed_subword = (
             CharAwareSubwordEncoder(
+                tokenizer=tokenizer,
                 out_size=self.hidden_size,
                 use_subword_flag_emb=self.config.use_subword_flag_emb,
                 use_bos_eos_emb=self.config.use_bos_eos_emb,

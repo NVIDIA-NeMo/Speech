@@ -105,113 +105,9 @@ except ImportError:
     TRITON_IMPORTED = False
 
 USE_TRITON = TRITON_IMPORTED and torch.cuda.is_available()
-logging.info("Triton available & CUDA detected. Using Triton kernel for batch_matmul.")
 
 if USE_TRITON:
-
-    @triton.jit
-    def batch_matmul_kernel(
-        x_ptr,  # Pointer to input tensor x: [batch_size, d_in]
-        w_ptr,  # Pointer to weight tensor w: [num_weights, d_out, d_in]
-        y_ptr,  # Pointer to index tensor y: [batch_size]
-        result_ptr,  # Pointer to output tensor result: [batch_size, d_out]
-        b,
-        d_in,
-        d_out,
-        n,  # Dimensions
-        BLOCK_SIZE_DIN: tl.constexpr,
-        BLOCK_SIZE_DOUT: tl.constexpr,
-    ):
-        """
-        Triton kernel for performing a batched matrix multiplication where each row
-        of the input `x` is multiplied by a different weight matrix selected from `w`
-        by an index in `y`.
-        """
-        # Get the program IDs for the batch and output dimensions
-        batch_id = tl.program_id(axis=0)
-        dout_block_id = tl.program_id(axis=1)
-
-        # Early exit for out-of-bounds batch IDs
-        if batch_id >= b:
-            return
-
-        # Load the index for the current batch item
-        idx = tl.load(y_ptr + batch_id)
-
-        # Compute base offsets for the current batch item
-        x_offset = x_ptr + batch_id * d_in
-        w_offset = w_ptr + idx * d_out * d_in
-
-        # Define the block of output dimensions to compute
-        dout_offsets = dout_block_id * BLOCK_SIZE_DOUT + tl.arange(0, BLOCK_SIZE_DOUT)
-        dout_mask = dout_offsets < d_out
-
-        # Initialize accumulator for the result block
-        result_block = tl.zeros([BLOCK_SIZE_DOUT], dtype=tl.float32)
-
-        # Loop over the input dimension in blocks
-        for din_start in range(0, d_in, BLOCK_SIZE_DIN):
-            din_offsets = din_start + tl.arange(0, BLOCK_SIZE_DIN)
-            din_mask = din_offsets < d_in
-
-            # Load a block of the input vector x
-            x_i = tl.load(x_offset + din_offsets, mask=din_mask, other=0.0)
-
-            # Load a block of the selected weight matrix w
-            w_i_block = tl.load(
-                w_offset + dout_offsets[:, None] * d_in + din_offsets[None, :],
-                mask=(dout_mask[:, None] & din_mask[None, :]),
-                other=0.0,
-            )
-
-            # Compute the partial dot product and accumulate
-            partial = tl.sum(w_i_block * x_i[None, :], axis=1)
-            result_block += partial
-
-        # Store the final result block
-        result_offset = result_ptr + batch_id * d_out + dout_offsets
-        tl.store(result_offset, result_block, mask=dout_mask)
-
-    def batch_matmul_triton(x, w, y, BLOCK_SIZE_DIN: int = 16, BLOCK_SIZE_DOUT: int = 64):
-        """Wrapper function to launch the Triton kernel for batch_matmul."""
-        assert x.is_contiguous() and w.is_contiguous() and y.is_contiguous()
-        assert math.log2(BLOCK_SIZE_DIN).is_integer() and math.log2(BLOCK_SIZE_DOUT).is_integer()
-
-        b, d_in = x.shape
-        n, d_out, _ = w.shape
-        result = torch.empty(b, d_out, device=x.device, dtype=torch.float32)
-
-        batch_matmul_kernel[lambda meta: (b, triton.cdiv(d_out, meta["BLOCK_SIZE_DOUT"]))](
-            x.float(),
-            w.float(),
-            y,
-            result,
-            b,
-            d_in,
-            d_out,
-            n,
-            BLOCK_SIZE_DIN=BLOCK_SIZE_DIN,
-            BLOCK_SIZE_DOUT=BLOCK_SIZE_DOUT,
-        )
-        return result.to(dtype=x.dtype)
-
-    # Set batch_matmul to the optimized Triton version
-    batch_matmul = batch_matmul_triton
-    logging.info("Triton is available. Using optimized Triton kernel for batch_matmul.")
-
-
-try:
-    import triton
-    import triton.language as tl
-
-    TRITON_IMPORTED = True
-except ImportError:
-    TRITON_IMPORTED = False
-
-USE_TRITON = TRITON_IMPORTED and torch.cuda.is_available()
-
-if USE_TRITON:
-    logging.info("Triton+CUDA detected. Using Triton kernel for batch_matmul.")
+    logging.info("Triton available & CUDA detected. Using Triton kernel for batch_matmul.")
 
     @triton.jit
     def batch_matmul_kernel(
@@ -587,7 +483,6 @@ def depthsum_encoding_step(
         emb_i = F.embedding(idx_sel, embs[i])
         r = r - emb_i
 
-        # FIX: assign correctly without shape mismatch
         code[..., i] = idx_sel
 
     return code

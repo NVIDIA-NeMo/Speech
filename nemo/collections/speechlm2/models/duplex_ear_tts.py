@@ -55,222 +55,6 @@ from nemo.collections.speechlm2.parts.pretrained import (
 from nemo.utils import logging
 
 
-def load_audio_librosa(path, sr=None):
-    """
-    Load audio using librosa with torchaudio-like behavior.
-
-    Returns:
-        audio_tensor: torch.FloatTensor of shape [channels, time]
-        sr: sampling rate
-    """
-    # Load with librosa (preserve original sampling rate)
-    audio, sr = librosa.load(path, sr=sr, mono=False)
-
-    # Ensure shape is [channels, time]
-    if audio.ndim == 1:
-        # Mono: (time,) -> (1, time)
-        audio = audio[None, :]
-
-    # Convert to torch float32 (torchaudio behavior)
-    audio_tensor = torch.from_numpy(audio).float()
-    return audio_tensor, sr
-
-
-def maybe_to(x, dtype):
-    if x is None:
-        return None
-    if isinstance(x, torch.Tensor) and torch.is_floating_point(x):
-        return x.to(dtype)
-    return x
-
-
-@contextmanager
-def ensures_target_precision(target_dtype):
-    """
-    Workaround for precision related issues when training with bf16-true PyTorch Lightning precision setting.
-    In bf16-true, PTL changes PyTorch's default dtype, which may break implicit assumptions for some models.
-    This context manager restores default float32 precision and runs the computation in float32 autocast context.
-    """
-    default_dtype = torch.get_default_dtype()
-    torch.set_default_dtype(target_dtype)
-    try:
-        with torch.amp.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", dtype=target_dtype):
-            yield
-    finally:
-        torch.set_default_dtype(default_dtype)
-
-
-def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int = 0, eos_token_id: int = 1):
-    """
-    Efficient, batched speaking mask generator that marks 1 between <bos> and <eos> pairs.
-    If <eos> is missing after a <bos>, mask continues to end. Handles multiple turns.
-
-    Args:
-        input_ids (torch.Tensor): LongTensor of shape (B, T)
-        bos_token_id (int): Token ID for <bos>
-        eos_token_id (int): Token ID for <eos>
-
-    Returns:
-        torch.Tensor: FloatTensor of shape (B, T), with 1.0 for speaking, 0.0 for silence.
-
-    Note BOS is considered as speaking (1) and EOS as non speaking 0
-    """
-    device = input_ids.device
-    bos_mask = (input_ids == bos_token_id).to(torch.int32).to(device)
-    eos_mask = (input_ids == eos_token_id).to(torch.int32).to(device)
-    bos_cumsum = torch.cumsum(bos_mask, dim=1)
-    eos_cumsum = torch.cumsum(eos_mask, dim=1)
-    speaking_mask = (bos_cumsum > eos_cumsum).to(torch.float32)
-    return speaking_mask.long()
-
-
-def replace_control_speech_codes(
-    speech_codes: torch.Tensor, control_codes: torch.Tensor, silence_tokens: torch.Tensor = None
-) -> torch.Tensor:
-    """
-    Replaces control codes (speech BOS, EOS, etc) in `speech_codes` with the first frame which is
-    assumed to consist of 'valid' codes representing silence.
-    """
-    if silence_tokens is not None:
-        # Expand to [B, 1, 74]
-        silence_tokens_expanded = silence_tokens.unsqueeze(0).unsqueeze(1).expand(speech_codes.shape[0], 1, -1)
-        return torch.where(torch.isin(speech_codes, control_codes), silence_tokens_expanded, speech_codes)
-
-    if torch.isin(speech_codes[:, :1], control_codes).any():
-        return torch.where(
-            torch.isin(speech_codes, control_codes), torch.zeros_like(speech_codes[:, :1]), speech_codes
-        )
-    else:
-        return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
-
-
-def ensures_codec_target_dtype(model):
-    """
-    Ensures the audio codec is instantiated with the target dtype.
-
-    This function checks whether `model.audio_codec` exists and whether its
-    parameters match `model.audio_codec_run_dtype`. If the codec is missing
-    or is running with the wrong dtype (e.g., due to PTL auto-downcasting),
-    the codec is reloaded by calling `setup_audio_codec()`.
-
-    Intended to be called at runtime boundaries such as:
-      - `on_train_epoch_start`
-      - `on_validation_epoch_start`
-
-    Args:
-        model: Model instance of DuplexEARTTS
-
-    """
-    if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == model.audio_codec_run_dtype:
-        return  # already correct precision → no-op
-
-    setup_audio_codec(model)
-
-
-def setup_audio_codec(model):
-    """
-    Instantiates the RVQ audio codec and injects codec embeddings into the TTS model.
-
-    This function is responsible only for:
-      - Instantiating the codec model (`RVQVAEModel`).
-      - Loading pretrained codec weights (if configured).
-      - Freezing codec parameters.
-      - Registering RVQ embeddings inside the TTS model via `set_rvq_embs`.
-
-    Args:
-        model: Model instance of DuplexEARTTS
-    """
-    with ensures_target_precision(model.audio_codec_run_dtype):
-        model.audio_codec = RVQVAEModel(DictConfig(model.cfg.codec_config))
-        # load pretrained codec checkpoint
-        if model.cfg.get("pretrained_codec_model", None):
-            checkpoint_state = load_checkpoint(model.cfg.pretrained_codec_model)
-            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.audio_codec.state_dict())
-            model.audio_codec.load_state_dict(checkpoint_state, strict=True)
-
-    for p in model.audio_codec.parameters():
-        p.requires_grad = False
-
-    assert callable(model.tts_model.set_rvq_embs)
-
-    model.tts_model.set_rvq_embs(torch.stack([x.detach() for x in model.audio_codec.prvq.mus_list], 0))
-    model.tts_model.rvq_embs = model.tts_model.rvq_embs.to(next(model.tts_model.parameters()).dtype)
-    # compute target fps
-    model.target_fps = model.target_sample_rate / model.audio_codec.config.wav_to_token_ratio
-    model.target_samples_per_frame = model.audio_codec.config.wav_to_token_ratio
-
-
-def rescale_state_dict(state_dict, target_std=0.02, first_n_layers=None, layer_prefix="tts_model.backbone.layers."):
-    """
-    Rescale trainable weights in a state_dict for BF16/FP16 stability.
-
-    Args:
-        state_dict: PyTorch state_dict
-        target_std: desired target std for weights
-        first_n_layers: if not None, rescale only the first N transformer blocks
-        layer_prefix: prefix for layer names (default: "tts_model.backbone.layers.")
-    Returns:
-        new_state_dict
-    """
-    weight_tensors = []
-
-    # Compute which prefixes to match if first_n_layers is set
-    prefixes_to_match = []
-    if first_n_layers is not None:
-        prefixes_to_match = [f"{layer_prefix}{i}" for i in range(first_n_layers)]
-
-    for name, param in state_dict.items():
-        if not torch.is_tensor(param):
-            continue
-
-        if "rvq_embs" in name:
-            continue
-
-        # Skip biases & 1-dim params (norm weights/gates)
-        if param.ndim <= 1:
-            continue
-
-        # Skip layers not in the first N
-        if first_n_layers is not None and not any(name.startswith(pfx) for pfx in prefixes_to_match):
-            continue
-
-        weight_tensors.append(param.float())
-
-    if not weight_tensors:
-        if first_n_layers is not None:
-            logging.info(f"No weights found for first {first_n_layers} layers with prefix '{layer_prefix}'.")
-        else:
-            logging.info("No weights found to rescale in state_dict.")
-        return state_dict
-
-    # Compute global std across selected weights (on CPU)
-    cpu_weights = [p.detach().cpu() for p in weight_tensors]
-    flat = torch.cat([p.flatten() for p in cpu_weights])
-    current_std = float(torch.std(flat))
-    scale = target_std / (current_std + 1e-8)
-
-    logging.info(
-        f"Rescaling state_dict "
-        f"{'(first N layers)' if first_n_layers else '(all layers)'}: "
-        f"current std = {current_std:.6f}, target = {target_std}, scale = {scale:.6f}"
-    )
-
-    # Apply scaling
-    new_state_dict = {}
-    for name, param in state_dict.items():
-        if (
-            torch.is_tensor(param)
-            and param.ndim > 1
-            and (first_n_layers is None or any(name.startswith(pfx) for pfx in prefixes_to_match))
-        ):
-            new_state_dict[name] = param * scale
-        else:
-            new_state_dict[name] = param
-
-    logging.info("Done: weights rescaled.")
-    return new_state_dict
-
-
 class DuplexEARTTS(LightningModule, HFHubMixin):
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (
@@ -1570,3 +1354,219 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             logging.info("Error loading model state_dict !! Retrying with partial initialization!")
             model_dict = set_model_dict_for_partial_init(state_dict, self.state_dict())
             return super().load_state_dict(model_dict, strict=False)
+
+
+def load_audio_librosa(path, sr=None):
+    """
+    Load audio using librosa with torchaudio-like behavior.
+
+    Returns:
+        audio_tensor: torch.FloatTensor of shape [channels, time]
+        sr: sampling rate
+    """
+    # Load with librosa (preserve original sampling rate)
+    audio, sr = librosa.load(path, sr=sr, mono=False)
+
+    # Ensure shape is [channels, time]
+    if audio.ndim == 1:
+        # Mono: (time,) -> (1, time)
+        audio = audio[None, :]
+
+    # Convert to torch float32 (torchaudio behavior)
+    audio_tensor = torch.from_numpy(audio).float()
+    return audio_tensor, sr
+
+
+def maybe_to(x, dtype):
+    if x is None:
+        return None
+    if isinstance(x, torch.Tensor) and torch.is_floating_point(x):
+        return x.to(dtype)
+    return x
+
+
+@contextmanager
+def ensures_target_precision(target_dtype):
+    """
+    Workaround for precision related issues when training with bf16-true PyTorch Lightning precision setting.
+    In bf16-true, PTL changes PyTorch's default dtype, which may break implicit assumptions for some models.
+    This context manager restores default float32 precision and runs the computation in float32 autocast context.
+    """
+    default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(target_dtype)
+    try:
+        with torch.amp.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", dtype=target_dtype):
+            yield
+    finally:
+        torch.set_default_dtype(default_dtype)
+
+
+def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int = 0, eos_token_id: int = 1):
+    """
+    Efficient, batched speaking mask generator that marks 1 between <bos> and <eos> pairs.
+    If <eos> is missing after a <bos>, mask continues to end. Handles multiple turns.
+
+    Args:
+        input_ids (torch.Tensor): LongTensor of shape (B, T)
+        bos_token_id (int): Token ID for <bos>
+        eos_token_id (int): Token ID for <eos>
+
+    Returns:
+        torch.Tensor: FloatTensor of shape (B, T), with 1.0 for speaking, 0.0 for silence.
+
+    Note BOS is considered as speaking (1) and EOS as non speaking 0
+    """
+    device = input_ids.device
+    bos_mask = (input_ids == bos_token_id).to(torch.int32).to(device)
+    eos_mask = (input_ids == eos_token_id).to(torch.int32).to(device)
+    bos_cumsum = torch.cumsum(bos_mask, dim=1)
+    eos_cumsum = torch.cumsum(eos_mask, dim=1)
+    speaking_mask = (bos_cumsum > eos_cumsum).to(torch.float32)
+    return speaking_mask.long()
+
+
+def replace_control_speech_codes(
+    speech_codes: torch.Tensor, control_codes: torch.Tensor, silence_tokens: torch.Tensor = None
+) -> torch.Tensor:
+    """
+    Replaces control codes (speech BOS, EOS, etc) in `speech_codes` with the first frame which is
+    assumed to consist of 'valid' codes representing silence.
+    """
+    if silence_tokens is not None:
+        # Expand to [B, 1, 74]
+        silence_tokens_expanded = silence_tokens.unsqueeze(0).unsqueeze(1).expand(speech_codes.shape[0], 1, -1)
+        return torch.where(torch.isin(speech_codes, control_codes), silence_tokens_expanded, speech_codes)
+
+    if torch.isin(speech_codes[:, :1], control_codes).any():
+        return torch.where(
+            torch.isin(speech_codes, control_codes), torch.zeros_like(speech_codes[:, :1]), speech_codes
+        )
+    else:
+        return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
+
+
+def ensures_codec_target_dtype(model):
+    """
+    Ensures the audio codec is instantiated with the target dtype.
+
+    This function checks whether `model.audio_codec` exists and whether its
+    parameters match `model.audio_codec_run_dtype`. If the codec is missing
+    or is running with the wrong dtype (e.g., due to PTL auto-downcasting),
+    the codec is reloaded by calling `setup_audio_codec()`.
+
+    Intended to be called at runtime boundaries such as:
+      - `on_train_epoch_start`
+      - `on_validation_epoch_start`
+
+    Args:
+        model: Model instance of DuplexEARTTS
+
+    """
+    if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == model.audio_codec_run_dtype:
+        return  # already correct precision → no-op
+
+    setup_audio_codec(model)
+
+
+def setup_audio_codec(model):
+    """
+    Instantiates the RVQ audio codec and injects codec embeddings into the TTS model.
+
+    This function is responsible only for:
+      - Instantiating the codec model (`RVQVAEModel`).
+      - Loading pretrained codec weights (if configured).
+      - Freezing codec parameters.
+      - Registering RVQ embeddings inside the TTS model via `set_rvq_embs`.
+
+    Args:
+        model: Model instance of DuplexEARTTS
+    """
+    with ensures_target_precision(model.audio_codec_run_dtype):
+        model.audio_codec = RVQVAEModel(DictConfig(model.cfg.codec_config))
+        # load pretrained codec checkpoint
+        if model.cfg.get("pretrained_codec_model", None):
+            checkpoint_state = load_checkpoint(model.cfg.pretrained_codec_model)
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.audio_codec.state_dict())
+            model.audio_codec.load_state_dict(checkpoint_state, strict=True)
+
+    for p in model.audio_codec.parameters():
+        p.requires_grad = False
+
+    assert callable(model.tts_model.set_rvq_embs)
+
+    model.tts_model.set_rvq_embs(torch.stack([x.detach() for x in model.audio_codec.prvq.mus_list], 0))
+    model.tts_model.rvq_embs = model.tts_model.rvq_embs.to(next(model.tts_model.parameters()).dtype)
+    # compute target fps
+    model.target_fps = model.target_sample_rate / model.audio_codec.config.wav_to_token_ratio
+    model.target_samples_per_frame = model.audio_codec.config.wav_to_token_ratio
+
+
+def rescale_state_dict(state_dict, target_std=0.02, first_n_layers=None, layer_prefix="tts_model.backbone.layers."):
+    """
+    Rescale trainable weights in a state_dict for BF16/FP16 stability.
+
+    Args:
+        state_dict: PyTorch state_dict
+        target_std: desired target std for weights
+        first_n_layers: if not None, rescale only the first N transformer blocks
+        layer_prefix: prefix for layer names (default: "tts_model.backbone.layers.")
+    Returns:
+        new_state_dict
+    """
+    weight_tensors = []
+
+    # Compute which prefixes to match if first_n_layers is set
+    prefixes_to_match = []
+    if first_n_layers is not None:
+        prefixes_to_match = [f"{layer_prefix}{i}" for i in range(first_n_layers)]
+
+    for name, param in state_dict.items():
+        if not torch.is_tensor(param):
+            continue
+
+        if "rvq_embs" in name:
+            continue
+
+        # Skip biases & 1-dim params (norm weights/gates)
+        if param.ndim <= 1:
+            continue
+
+        # Skip layers not in the first N
+        if first_n_layers is not None and not any(name.startswith(pfx) for pfx in prefixes_to_match):
+            continue
+
+        weight_tensors.append(param.float())
+
+    if not weight_tensors:
+        if first_n_layers is not None:
+            logging.info(f"No weights found for first {first_n_layers} layers with prefix '{layer_prefix}'.")
+        else:
+            logging.info("No weights found to rescale in state_dict.")
+        return state_dict
+
+    # Compute global std across selected weights (on CPU)
+    cpu_weights = [p.detach().cpu() for p in weight_tensors]
+    flat = torch.cat([p.flatten() for p in cpu_weights])
+    current_std = float(torch.std(flat))
+    scale = target_std / (current_std + 1e-8)
+
+    logging.info(
+        f"Rescaling state_dict "
+        f"{'(first N layers)' if first_n_layers else '(all layers)'}: "
+        f"current std = {current_std:.6f}, target = {target_std}, scale = {scale:.6f}"
+    )
+
+    # Apply scaling
+    new_state_dict = {}
+    for name, param in state_dict.items():
+        if (
+            torch.is_tensor(param)
+            and param.ndim > 1
+            and (first_n_layers is None or any(name.startswith(pfx) for pfx in prefixes_to_match))
+        ):
+            new_state_dict[name] = param * scale
+        else:
+            new_state_dict[name] = param
+
+    logging.info("Done: weights rescaled.")
+    return new_state_dict

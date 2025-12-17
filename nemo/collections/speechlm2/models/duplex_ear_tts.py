@@ -735,7 +735,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 continue
 
             # ----- weights -----
-            w = p.detach().cpu().float()  # ✅ safe offline copy
+            w = p.detach().cpu().float()  # safe offline copy
             total_w_sq += (w * w).sum().item()
             total_w_params += w.numel()
             max_abs_w = max(max_abs_w, w.abs().max().item())
@@ -1553,13 +1553,15 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 self.tts_model.local_transformer_in_projection = fully_shard(
                     self.tts_model.local_transformer_in_projection, **fsdp_config
                 )
-            else:
-                self.embed_text_tokens = fully_shard(self.embed_text_tokens, **fsdp_config)
-                self.tts_model.mog_head = fully_shard(self.tts_model.mog_head, **fsdp_config)
-                self.tts_model.embed_subword = fully_shard(self.tts_model.embed_subword, **fsdp_config)
-                self.tts_model.embed_context = fully_shard(self.tts_model.embed_context, **fsdp_config)
-                self.tts_model.embed_code = fully_shard(self.tts_model.embed_code, **fsdp_config)
-                self.tts_model.lm_head = fully_shard(self.tts_model.lm_head, **fsdp_config)
+
+            self.embed_text_tokens = fully_shard(self.embed_text_tokens, **fsdp_config)
+            self.tts_model.mog_head = fully_shard(self.tts_model.mog_head, **fsdp_config)
+            self.tts_model.embed_subword = fully_shard(self.tts_model.embed_subword, **fsdp_config)
+            self.tts_model.embed_context = fully_shard(self.tts_model.embed_context, **fsdp_config)
+            self.tts_model.embed_code = fully_shard(self.tts_model.embed_code, **fsdp_config)
+            self.tts_model.lm_head = fully_shard(self.tts_model.lm_head, **fsdp_config)
+            self.llm = fully_shard(self.llm, **fsdp_config)
+            self.tts_model = fully_shard(self.tts_model, **fsdp_config)
 
     def load_state_dict(self, state_dict, strict: bool = True):
         try:

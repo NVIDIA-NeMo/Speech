@@ -28,59 +28,6 @@ from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.utils import logging
 
 
-def sample_audio_segments_repeat(
-    prompt_audio: torch.Tensor,
-    prompt_audio_lens: torch.Tensor,
-    n_sample: int,
-    sample: bool = True,
-) -> torch.Tensor:
-    """
-    Extract audio segments of length n_sample.
-    If sample=True: randomly sample segments (repeating if shorter).
-    If sample=False: always take from the beginning (repeating if shorter).
-
-    Args:
-        prompt_audio: Tensor [B, T]
-        prompt_audio_lens: Tensor [B] with valid lengths
-        n_sample: int, target length per segment
-        sample: bool, whether to randomly sample (True) or take first seconds (False)
-
-    Returns:
-        Tensor [B, n_sample]
-    """
-    B, T = prompt_audio.shape
-    device = prompt_audio.device
-    out = torch.zeros(B, n_sample, device=device, dtype=prompt_audio.dtype)
-
-    for b in range(B):
-        length = min(prompt_audio_lens[b].item(), T)
-
-        # Case: empty audio
-        if length <= 0:
-            continue
-
-        if length >= n_sample:
-            if sample:
-                # Random start (safe bounds)
-                max_start = max(1, length - n_sample + 1)
-                start = torch.randint(0, max_start, (1,), device=device).item()
-            else:
-                # Deterministic: take from start
-                start = 0
-            out[b] = prompt_audio[b, start : start + n_sample]
-
-        else:
-            # Audio shorter than target → repeat
-            start = 0
-            segment = prompt_audio[b, start:length]
-
-            repeat_times = (n_sample + (length - start) - 1) // (length - start)
-            repeated = segment.repeat(repeat_times)[:n_sample]
-            out[b] = repeated
-
-    return out
-
-
 class DuplexEARTTSDataset(torch.utils.data.Dataset):
     """
     A dataset for duplex speech-to-speech models that handles bidirectional conversations.
@@ -230,9 +177,6 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         audio_prompt, audio_prompt_lens = get_audio_prompt(
             cuts, self.target_sample_rate, roles=self.output_roles, recording_field="target_audio"
         )
-
-        # ensures that input_text_tokens is not longer than its duration
-        input_text_tokens = input_text_tokens[:, : target_token_lens.max()]
 
         # add speech channel delay if needed
         if self.num_delay_speech_tokens:
@@ -867,3 +811,56 @@ def _strip_timestamps(
     # Regexp pattern args are cached compiled patterns (micro-optimization).
     text = _TIMESTAMP_PATTERN.sub("", text)  # strip timestamp tokens if present
     return _SPACE_PATTERN.sub(" ", text).strip()  # strip multi-whitespaces
+
+
+def sample_audio_segments_repeat(
+    prompt_audio: torch.Tensor,
+    prompt_audio_lens: torch.Tensor,
+    n_sample: int,
+    sample: bool = True,
+) -> torch.Tensor:
+    """
+    Extract audio segments of length n_sample.
+    If sample=True: randomly sample segments (repeating if shorter).
+    If sample=False: always take from the beginning (repeating if shorter).
+
+    Args:
+        prompt_audio: Tensor [B, T]
+        prompt_audio_lens: Tensor [B] with valid lengths
+        n_sample: int, target length per segment
+        sample: bool, whether to randomly sample (True) or take first seconds (False)
+
+    Returns:
+        Tensor [B, n_sample]
+    """
+    B, T = prompt_audio.shape
+    device = prompt_audio.device
+    out = torch.zeros(B, n_sample, device=device, dtype=prompt_audio.dtype)
+
+    for b in range(B):
+        length = min(prompt_audio_lens[b].item(), T)
+
+        # Case: empty audio
+        if length <= 0:
+            continue
+
+        if length >= n_sample:
+            if sample:
+                # Random start (safe bounds)
+                max_start = max(1, length - n_sample + 1)
+                start = torch.randint(0, max_start, (1,), device=device).item()
+            else:
+                # Deterministic: take from start
+                start = 0
+            out[b] = prompt_audio[b, start : start + n_sample]
+
+        else:
+            # Audio shorter than target → repeat
+            start = 0
+            segment = prompt_audio[b, start:length]
+
+            repeat_times = (n_sample + (length - start) - 1) // (length - start)
+            repeated = segment.repeat(repeat_times)[:n_sample]
+            out[b] = repeated
+
+    return out

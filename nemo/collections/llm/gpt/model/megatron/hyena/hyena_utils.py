@@ -618,6 +618,7 @@ class ImplicitModalFilter(nn.Module):
                 )  # Overkill, but just in case
             else:
                 R = self.R.to(torch.float32)
+                
             h = self.implicit_filter(glogp, R, L)
             h = h.unsqueeze(0)  # TODO: Remove this once we have a proper kernel implementation
         else:

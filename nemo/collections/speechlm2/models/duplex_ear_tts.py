@@ -89,7 +89,12 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer(
-            self.cfg.pretrained_lm_name, use_fast=True, trust_remote_code=True, bos_token=self.cfg.get("bos_token", '<s>'), eos_token=self.cfg.get("eos_token", '</s>'), pad_token=self.cfg.get("pad_token", '<SPECIAL_12>')
+            self.cfg.pretrained_lm_name,
+            use_fast=True,
+            trust_remote_code=True,
+            bos_token=self.cfg.get("bos_token", '<s>'),
+            eos_token=self.cfg.get("eos_token", '</s>'),
+            pad_token=self.cfg.get("pad_token", '<SPECIAL_12>'),
         )  # Note that we are using fast tokenizer
 
         # Instantiate TTS model
@@ -105,7 +110,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # get codec silence tokens
         codec_silence_tokens = self.get_codec_silence_frame()
         self.register_buffer("codec_silence_tokens", codec_silence_tokens)
-
 
         # cached for quicker audio decoding
         self.register_buffer(
@@ -363,7 +367,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             eos_mask = target_text_tokens == self.text_eos_id
 
             # Random dropout only on EOS positions
-            dropout_mask = torch.rand(eos_mask.sum(), device=target_text_tokens.device) < self.cfg.text_eos_dropout_prob
+            dropout_mask = (
+                torch.rand(eos_mask.sum(), device=target_text_tokens.device) < self.cfg.text_eos_dropout_prob
+            )
 
             # Scatter dropout decisions into [B, T]
             full_dropout_mask = torch.zeros_like(target_text_tokens, dtype=torch.bool)
@@ -409,7 +415,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             bos_mask = target_text_tokens == self.text_bos_id
 
             # Random dropout only on BOS positions
-            dropout_mask = torch.rand(bos_mask.sum(), device=target_text_tokens.device) < self.cfg.text_bos_dropout_prob
+            dropout_mask = (
+                torch.rand(bos_mask.sum(), device=target_text_tokens.device) < self.cfg.text_bos_dropout_prob
+            )
 
             # Scatter dropout decisions into [B, T]
             full_dropout_mask = torch.zeros_like(target_text_tokens, dtype=torch.bool)

@@ -421,7 +421,9 @@ def build_vocabs(
 
     def _build_char_vocab() -> dict[str, int]:
         # Find all single-character tokens in the original tokenizer's vocabulary
-        single_chars = {subword: subword_id for subword, subword_id in tokenizer.tokenizer.vocab.items() if len(subword) == 1}
+        single_chars = {
+            subword: subword_id for subword, subword_id in tokenizer.tokenizer.vocab.items() if len(subword) == 1
+        }
         # Create a new, dense character vocabulary sorted by the original token ID
         sorted_chars = sorted(single_chars.keys(), key=lambda k: single_chars[k])
         char_vocab = {char: i for i, char in enumerate(sorted_chars)}
@@ -712,7 +714,7 @@ class SubwordFlagEmbedding(nn.Module):
 
     def __init__(self, tokenizer: AutoTokenizer, d_model: int):
         super().__init__()
-        
+
         self.tokenizer = tokenizer
         self.vocab_size = self.tokenizer.vocab_size
         self.d_model = d_model
@@ -860,7 +862,6 @@ class CharAwareSubwordEncoder(nn.Module):
         use_subword_flag_emb: bool = True,
         use_bos_eos_emb: bool = True,
         use_cumulative_word_emb: bool = False,
-        
     ):
         super().__init__()
 

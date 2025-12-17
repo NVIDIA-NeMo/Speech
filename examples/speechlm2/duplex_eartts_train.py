@@ -27,7 +27,7 @@ from nemo.utils.trainer_utils import resolve_trainer_cfg
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-@hydra_runner(config_path="conf", config_name="s2s_duplex_speech_decoder")
+@hydra_runner(config_path="conf", config_name="duplex_eartts")
 def train(cfg):
     OmegaConf.resolve(cfg)
     torch.distributed.init_process_group(backend="nccl")

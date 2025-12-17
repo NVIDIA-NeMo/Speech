@@ -11,6 +11,38 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""
+Evaluation script for Duplex EARTTS models.
+
+This script computes standard speech evaluation metrics for a given Duplex
+EARTTS checkpoint, including Word Error Rate (WER), Character Error Rate (CER),
+speaker encoder cosine similarity (SECS), and ASR BLEU score.
+
+The configuration file must define a valid ``validation_ds`` based on a Lhotse
+dataset using one of the following dataset formats:
+- Duplex S2S standard format
+- ``s2s_duplex_overlap_as_s2s_duplex``
+- ``lhotse_magpietts_data_as_continuation``
+
+During evaluation, the script saves generated audio samples to
+``exp_manager.explicit_log_dir`` as specified in the configuration. For each
+utterance, the following audio files may be produced:
+
+- Autoregressive inference output (``*.wav``)
+- Teacher-forced output (``*_tf.wav``)
+- Ground-truth reference audio (``*_gt.wav``)
+
+Args:
+    config-path (str): Path to the directory containing the YAML configuration file.
+    config-name (str): Name of the YAML configuration file.
+
+Usage:
+    python duplex_eartts_eval.py \
+        --config-path=conf/ \
+        --config-name=duplex_eartts.yaml
+"""
+
 import os
 
 import torch
@@ -27,7 +59,7 @@ from nemo.utils.trainer_utils import resolve_trainer_cfg
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-@hydra_runner(config_path="conf", config_name="s2s_duplex_speech_decoder")
+@hydra_runner(config_path="conf", config_name="duplex_eartts")
 def inference(cfg):
     OmegaConf.resolve(cfg)
     torch.distributed.init_process_group(backend="nccl")

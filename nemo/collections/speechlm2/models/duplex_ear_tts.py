@@ -92,9 +92,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             self.cfg.pretrained_lm_name,
             use_fast=True,
             trust_remote_code=True,
-            bos_token=self.cfg.get("bos_token", '<s>'),
-            eos_token=self.cfg.get("eos_token", '</s>'),
-            pad_token=self.cfg.get("pad_token", '<SPECIAL_12>'),
+            bos_token=self.cfg.get("bos_token", None),
+            eos_token=self.cfg.get("eos_token", None),
+            pad_token=self.cfg.get("pad_token", None),
         )  # Note that we are using fast tokenizer
 
         # Instantiate TTS model

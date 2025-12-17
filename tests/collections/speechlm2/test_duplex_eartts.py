@@ -18,7 +18,11 @@ from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.common.data.utils import move_data_to_device
-from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import DuplexEARTTSDataset, add_speech_delay, sample_audio_segments_repeat
+from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import (
+    DuplexEARTTSDataset,
+    add_speech_delay,
+    sample_audio_segments_repeat,
+)
 from nemo.collections.speechlm2.models import DuplexEARTTS
 
 
@@ -413,6 +417,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
     # Check formatter
     assert batch["formatter"] == ["s2s_duplex"]
 
+
 # test extra functions inside of eartts dataset
 def test_add_speech_delay():
     source_audio = torch.ones(1, 16000)
@@ -448,7 +453,6 @@ def test_add_speech_delay():
     assert out_src_lens.item() == source_lens.item() + expected_extra_src_size
     assert out_tgt_lens.item() == target_lens.item() + expected_extra_tgt_size
 
-
     # --------------------------------------------------
     # Padding direction & content
     # --------------------------------------------------
@@ -457,24 +461,24 @@ def test_add_speech_delay():
     assert torch.all(out_tgt[:, expected_extra_tgt_size:] == 1)
 
     # Source audio is right-padded
-    assert torch.all(out_src[:, :source_audio.size(1)] == 1)
-    assert torch.all(out_src[:, source_audio.size(1):] == 0)
+    assert torch.all(out_src[:, : source_audio.size(1)] == 1)
+    assert torch.all(out_src[:, source_audio.size(1) :] == 0)
 
 
 def test_sample_audio_segments_repeat():
     cases = [
         # (audio, lens, n_sample, expected_when_sample_false)
         (
-            torch.tensor([[1., 2., 3., 4., 5.]]),
+            torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]]),
             torch.tensor([5]),
             3,
-            torch.tensor([[1., 2., 3.]]),
+            torch.tensor([[1.0, 2.0, 3.0]]),
         ),
         (
-            torch.tensor([[1., 2.]]),
+            torch.tensor([[1.0, 2.0]]),
             torch.tensor([2]),
             5,
-            torch.tensor([[1., 2., 1., 2., 1.]]),
+            torch.tensor([[1.0, 2.0, 1.0, 2.0, 1.0]]),
         ),
         (
             torch.zeros(1, 10),

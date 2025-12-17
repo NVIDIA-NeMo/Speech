@@ -219,16 +219,13 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
             # target audio or target codes
             if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
-                # TODO @xueyang: applying Tensor.long(), i.e. torch.int64, is not necessary.
-
                 # Note that we have segmented the audio according to offset and duration so that the audio codes should
                 # not specify start and duration again when calling TemporalArray.load(start, duration). Ensure start
                 # and duration are None to the load function.
                 audio_codes = torch.from_numpy(cut.target_codes.load())  # (C, T)
-                audio_codes = audio_codes.T.long()  # transpose to (T, C) to use collate_matrices to process batch.
-                audio_codes_len = audio_codes.shape[0]
+                audio_codes_len = audio_codes.shape[1]
                 spec_len = audio_codes_len + 1  # +1 for EOS
-                audio_codes_list.append(audio_codes)
+                audio_codes_list.append(audio_codes.T) # transpose to (T, C) to use collate_matrices to process batch.
                 audio_codes_len_list.append(audio_codes_len)
             else:
                 # Only load audio if codes are not available
@@ -249,12 +246,10 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
             # context audio or context codes
             if self.load_cached_codes_if_available and cut.has_custom("context_codes"):
-                # TODO @xueyang: applying Tensor.long(), i.e. torch.int64, is not necessary.
-
                 # Note that we have segmented the audio according to offset and duration so that the audio codes should
                 # not specify start and duration again when calling TemporalArray.load(start, duration). Ensure start
                 # and duration are None to the load function.
-                context_audio_codes = torch.from_numpy(cut.context_codes.load()).long()  # (C, T)
+                context_audio_codes = torch.from_numpy(cut.context_codes.load())  # (C, T)
                 # Sample random duration between self.context_duration_min and self.context_duration_max
                 _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
                 _num_frames_to_slice = int(

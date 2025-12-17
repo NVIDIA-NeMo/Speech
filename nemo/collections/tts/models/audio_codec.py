@@ -296,6 +296,7 @@ class AudioCodecModel(ModelPT):
         Args:
             audio: input time-domain signal
             audio_len: valid length for each example in the batch
+            sample_rate: sample rate of input audio (int)
 
         Returns:
             Encoder output `encoded` and its length in number of frames `encoded_len`
@@ -495,6 +496,7 @@ class AudioCodecModel(ModelPT):
             Padded time-domain signal `padded_audio` and its length `padded_len`.
         """
         num_frames = audio_len / samples_per_frame
+        # Avoid calling torch.ceil when the length is divisible by the frame rate, as torch.ceil will still round up depending on precision
         num_frames = torch.where(audio_len % samples_per_frame == 0, num_frames, torch.ceil(num_frames))
         padded_len = samples_per_frame * num_frames.int()
         max_len = padded_len.max().item()

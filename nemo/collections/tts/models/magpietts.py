@@ -883,12 +883,12 @@ class MagpieTTSModel(ModelPT):
                         new_state_dict[key[len(name_with_dot) :]] = state_dict[key]
                 child.load_state_dict(new_state_dict)
 
-    def add_special_tokens(self, codes, codes_len, bos_id, eos_id, num_bos_tokens=1):
+    def add_special_tokens(self, codes, codes_len, bos_id, eos_id, num_bos_tokens=1, num_eos_tokens=1):
         # codes: (B, C, T')
         # codes_len: (B,)
         codes = torch.nn.functional.pad(input=codes, pad=(num_bos_tokens, 0), value=bos_id)
-        codes = torch.nn.functional.pad(input=codes, pad=(0, 1), value=0)
-        codes_len = codes_len + num_bos_tokens + 1
+        codes = torch.nn.functional.pad(input=codes, pad=(0, num_eos_tokens), value=0)
+        codes_len = codes_len + num_bos_tokens + num_eos_tokens
         # Insert EOS token at new final token entry
         for idx in range(codes.size(0)):
             codes[idx, :, codes_len[idx] - 1] = eos_id
@@ -919,8 +919,8 @@ class MagpieTTSModel(ModelPT):
         return codes, codes_len
 
     def remove_embedded_eos_token(self, embedded, embedded_len):
-        # codes: (B, T', C)
-        # codes_len: (B,)
+        # embedded: (B, T', D)
+        # embedded_len: (B,)
         embedded_len = embedded_len - 1
         embedded = embedded[:, :-1, :]
         mask = get_mask_from_lengths(lengths=embedded_len)
@@ -953,7 +953,7 @@ class MagpieTTSModel(ModelPT):
 
     def embed_audio_tokens(self, audio_tokens, audio_tokens_lens):
         B, C, T = audio_tokens.shape
-        audio_tokens = self.pad_audio_codes(audio_tokens)
+        audio_tokens = self.pad_audio_codes(audio_tokens).long()
         audio_embedding = None
         for i in range(self.frame_stacking_factor):
             for c in range(C):
@@ -998,6 +998,7 @@ class MagpieTTSModel(ModelPT):
         C = self.num_audio_codebooks
         dec_out_all = dec_out.reshape(-1, dec_out.size(-1))  # (B*T', E)
         local_transformer_input = [dec_out_all]
+        audio_codes_target = self.pad_audio_codes(audio_codes_target).long()
         # Build the teacher-forced input to the LT.
         for fs_index in range(self.frame_stacking_factor):
             for codebook_num in range(C):
@@ -1107,7 +1108,7 @@ class MagpieTTSModel(ModelPT):
             # repeat loss mask for each codebook to simplify code below
             loss_mask = loss_mask.unsqueeze(1).repeat(1, audio_codes.size(1), 1)
         total_codebook_loss = None
-        audio_codes = audio_codes.long()
+        audio_codes = self.pad_audio_codes(audio_codes).long()
         for fs_index in range(frame_stacking_factor):
             for codebook in range(audio_codes.size(1)):
                 si = (codebook + self.num_audio_codebooks * fs_index) * self.num_all_tokens_per_codebook
@@ -1307,7 +1308,6 @@ class MagpieTTSModel(ModelPT):
         # initialize to all masked
         codes = self.mask_token_id * torch.ones((B, codebook_seq_len), device=device, dtype=torch.long)
         sampled_codes = codes.clone()
-        topk_indices = None
         if fixed_schedule is not None:
             n_steps = len(fixed_schedule)
         for step in range(n_steps):
@@ -1556,7 +1556,7 @@ class MagpieTTSModel(ModelPT):
                 [local_transformer_input, next_local_transformer_input], dim=1
             )  # (B, T+1, 128)
 
-        all_preds = torch.cat(all_preds, dim=1).long()  # (B, num_codebooks * frame_stacking_factor)
+        all_preds = torch.cat(all_preds, dim=1)  # (B, num_codebooks * frame_stacking_factor)
         all_preds = all_preds.reshape(-1, self.frame_stacking_factor, self.num_audio_codebooks).permute(
             0, 2, 1
         )  # (B, num_codebooks, frame_stacking_factor)
@@ -1633,7 +1633,7 @@ class MagpieTTSModel(ModelPT):
                 all_preds[fs_index].append(codebook_preds)
 
         all_preds = [
-            torch.cat(ds_preds, dim=1).long() for ds_preds in all_preds
+            torch.cat(ds_preds, dim=1) for ds_preds in all_preds
         ]  # list of `frame_stacking_factor` elements, each of shape (B, num_codebooks)
         all_preds = torch.stack(all_preds, dim=2)  # (B, num_codebooks, frame_stacking_factor)
         return all_preds
@@ -1925,12 +1925,11 @@ class MagpieTTSModel(ModelPT):
                 context_embedded: Combined context embedding. Shape: (B, T, E).
                 context_lens: Length of context sequences. Shape: (B,).
         """
-        context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T/frame_stacking, E)
+        context_audio_embedded, context_lens = self.embed_audio_tokens(
+            audio_tokens=context_audio_codes, audio_tokens_lens=context_audio_codes_lens
+        ) # (B, T/frame_stacking, E)
 
         if not self.use_text_conditioning_encoder:
-            context_lens = torch.ceil(context_audio_codes_lens / self.frame_stacking_factor).to(
-                context_audio_codes_lens.dtype
-            )
             return context_audio_embedded, context_lens
 
         # Text conditioning path
@@ -1984,7 +1983,6 @@ class MagpieTTSModel(ModelPT):
     def _prepare_decoder_context(
         self,
         context_input_embedded: Optional[torch.Tensor],
-        context_input_lens: Optional[torch.Tensor],
         context_mask: Optional[torch.Tensor],
         text_encoder_out: torch.Tensor,
         text_mask: torch.Tensor,
@@ -1997,8 +1995,6 @@ class MagpieTTSModel(ModelPT):
         Args:
             batch: Full batch dictionary.
             context_input_embedded: Context embeddings. Shape: (B, T_ctx, E).
-                Can be None if model_type is 'decoder_ce' with baked context embedding.
-            context_input_lens: Context sequence lengths. Shape: (B,).
                 Can be None if model_type is 'decoder_ce' with baked context embedding.
             context_mask: Mask for context. Shape: (B, T_ctx).
                 Can be None if model_type is 'decoder_ce' with baked context embedding.
@@ -2117,7 +2113,6 @@ class MagpieTTSModel(ModelPT):
             context_audio_codes = None
             context_audio_codes_lens = None
             context_input_embedded = None
-            context_input_lens = None
             context_mask = None
         else:
             # Extract context audio codes and compute embeddings
@@ -2145,7 +2140,6 @@ class MagpieTTSModel(ModelPT):
                 additional_decoder_mask,
             ) = self._prepare_decoder_context(
                 context_input_embedded,
-                context_input_lens,
                 context_mask,
                 text_encoder_out,
                 text_mask,
@@ -2307,20 +2301,10 @@ class MagpieTTSModel(ModelPT):
         )  # (B, T/frame_stacking_factor, E)
         # Note: if a tensor lacks the `_unstacked` suffix, it can be assumed to be in the frame-stacked domain
 
-        # Remove BOS tokens from decoder targets
-        audio_codes_target_unstacked, audio_codes_lens_target_unstacked = self.remove_bos_token(
-            codes=audio_codes, codes_len=audio_codes_lens, num_tokens=self.frame_stacking_factor
-        )
-        audio_codes_target_unstacked = self.pad_audio_codes(audio_codes_target_unstacked)
-        # Remove BOS token for aligner targets
-        audio_codes_embedded_target, audio_codes_lens_target = self.remove_embedded_bos_token(
-            embedded=audio_codes_embedded_all, embedded_len=audio_codes_lens_all
-        )
         # Remove EOS token for decoder inputs
         audio_codes_embedded_input, audio_codes_lens_input = self.remove_embedded_eos_token(
             embedded=audio_codes_embedded_all, embedded_len=audio_codes_lens_all
         )
-
         use_cfg = self.training and (self.cfg_unconditional_prob > 0.0) and (context_tensors.cond is not None)
         if use_cfg and torch.rand(1).item() < self.cfg_unconditional_prob:
             cond, cond_mask, additional_decoder_input, additional_decoder_mask, attn_prior = (
@@ -2365,10 +2349,14 @@ class MagpieTTSModel(ModelPT):
                 )
 
         audio_codes_mask = get_mask_from_lengths(audio_codes_lens_input)
-        if context_tensors.additional_decoder_input is not None:
+        if additional_decoder_input is not None:
             audio_codes_embedded_input = torch.cat([additional_decoder_input, audio_codes_embedded_input], dim=1)
             audio_codes_mask = torch.cat([additional_decoder_mask, audio_codes_mask], dim=1)
 
+        # Remove BOS token for aligner targets
+        audio_codes_embedded_target, audio_codes_lens_target = self.remove_embedded_bos_token(
+            embedded=audio_codes_embedded_all, embedded_len=audio_codes_lens_all
+        )
         aligner_encoder_loss = None
         aligner_attn_soft = None
         aligner_attn_hard = None
@@ -2419,6 +2407,10 @@ class MagpieTTSModel(ModelPT):
         dec_context_size = context_tensors.dec_context_size
         logits = logits[:, dec_context_size:, :]  # Remove the context audio embeddings from the logits
 
+        # Remove BOS tokens from decoder targets
+        audio_codes_target_unstacked, audio_codes_lens_target_unstacked = self.remove_bos_token(
+            codes=audio_codes, codes_len=audio_codes_lens, num_tokens=self.frame_stacking_factor
+        )
         # Codebook loss (parallel)
         codebook_loss, loss_mask = self.compute_loss(
             logits,
@@ -2937,7 +2929,7 @@ class MagpieTTSModel(ModelPT):
                 size=(text.size(0), self.num_audio_codebooks, self.frame_stacking_factor),
                 fill_value=self.audio_bos_id,
                 device=text.device,
-            ).long()
+            )
             audio_codes_lens = torch.full(
                 size=[text.size(0)], fill_value=self.frame_stacking_factor, device=text.device, dtype=torch.long
             )

@@ -435,7 +435,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
         if self.load_cached_codes_if_available and 'target_audio_codes_path' in data.manifest_entry:
             audio_codes_path = data.manifest_entry['target_audio_codes_path']
-            audio_codes = torch.load(audio_codes_path).long()  # (C, T)
+            audio_codes = torch.load(audio_codes_path)  # (C, T)
             spec_len = audio_codes.shape[1] + 1  # +1 for EOS
             audio_codes_len = audio_codes.shape[1]
             example['audio_codes'] = audio_codes
@@ -467,7 +467,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
         if self.load_cached_codes_if_available and 'context_audio_codes_path' in data.manifest_entry:
             context_audio_codes_path = data.manifest_entry['context_audio_codes_path']
-            context_audio_codes = torch.load(context_audio_codes_path).long()  # (8, T)
+            context_audio_codes = torch.load(context_audio_codes_path)  # (8, T)
             # Sample random duration between self.context_duration_min and self.context_duration_max
             _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
             _num_frames_to_slice = int(
@@ -515,7 +515,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             # If context audio is not available, just use a dummy context_audio_codes
             # (Will be used in text context scenario)
             if self.load_cached_codes_if_available:
-                context_audio_codes = torch.zeros([0, self.num_audio_codebooks], dtype=torch.int32)
+                context_audio_codes = torch.zeros([self.num_audio_codebooks, 0], dtype=torch.int32)
                 context_audio_codes_len = 0
                 example['context_audio_codes'] = context_audio_codes
                 example['context_audio_codes_len'] = context_audio_codes_len

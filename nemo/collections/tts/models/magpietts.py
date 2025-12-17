@@ -3369,7 +3369,7 @@ class MagpieTTSModel(ModelPT):
             "en": ["english_phoneme", "english"],
             "de": ["german_phoneme", "german"],
             "es": ["spanish_phoneme", "spanish"],
-            "fr": ["french_phoneme", "french"],
+            "fr": ["french_chartokenizer", "french"],
             "it": ["italian_phoneme", "italian"],
             "vi": ["vietnamese_phoneme", "vietnamese"],
             "zh": ["mandarin_phoneme", "mandarin", "chinese"],

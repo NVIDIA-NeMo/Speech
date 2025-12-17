@@ -563,7 +563,7 @@ class ImplicitModalFilter(nn.Module):
 
     def get_logp(self, context_parallel_group=None):
         """Compute the log poles for the implicit modal filter."""
-        if context_parallel_group is not None:
+        if context_parallel_group is not None and  len(torch.distributed.get_process_group_ranks(context_parallel_group)) > 1:
             rank = torch.distributed.get_rank(context_parallel_group)
             local_size = self.d_model // get_context_parallel_world_size()
             p = self.p[rank * local_size : (rank + 1) * local_size].to(torch.float32)
@@ -592,7 +592,7 @@ class ImplicitModalFilter(nn.Module):
         # assert (
         #     self.R.dtype == torch.float32
         # ), f"R must be float32. At lower precision, indexes will be merged together. Current dtype: {self.R.dtype}"
-        if context_parallel_group is not None:
+        if context_parallel_group is not None and len(torch.distributed.get_process_group_ranks(context_parallel_group)) > 1:
             rank = torch.distributed.get_rank(context_parallel_group)
             local_size = self.d_model // get_context_parallel_world_size()
             R = self.R[rank * local_size : (rank + 1) * local_size].to(torch.float32)
@@ -610,14 +610,14 @@ class ImplicitModalFilter(nn.Module):
         """Get t and the convolution filter for t and the requested sequence length."""
         if self.use_subquadratic_ops:
             glogp = self.get_logp(context_parallel_group)
-            if context_parallel_group is None:
-                R = self.R.to(torch.float32)
-            else:
+            if context_parallel_group is not None and len(torch.distributed.get_process_group_ranks(context_parallel_group)) > 1:
                 rank = torch.distributed.get_rank(context_parallel_group)
                 local_size = self.d_model // get_context_parallel_world_size()
                 R = (
                     self.R[rank * local_size : (rank + 1) * local_size].to(torch.float32).contiguous()
                 )  # Overkill, but just in case
+            else:
+                R = self.R.to(torch.float32)
             h = self.implicit_filter(glogp, R, L)
             h = h.unsqueeze(0)  # TODO: Remove this once we have a proper kernel implementation
         else:

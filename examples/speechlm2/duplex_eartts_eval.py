@@ -36,11 +36,13 @@ utterance, the following audio files may be produced:
 Args:
     config-path (str): Path to the directory containing the YAML configuration file.
     config-name (str): Name of the YAML configuration file.
+    checkpoint_path (str): Path to the Duplex EARTTS checkpoint file.
 
 Usage:
     python duplex_eartts_eval.py \
         --config-path=conf/ \
-        --config-name=duplex_eartts.yaml
+        --config-name=duplex_eartts.yaml \
+        ++checkpoint_path=duplex_eartts_results/duplex_eartts/model.ckpt
 """
 
 import os

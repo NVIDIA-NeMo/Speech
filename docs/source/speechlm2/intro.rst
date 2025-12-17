@@ -100,7 +100,7 @@ You can run inference using the loaded pretrained DuplexS2SModel:
     # Prepare audio for model
     audio_signal = audio_signal.to(model.device)
     audio_len = torch.tensor([audio_signal.shape[1]], device=model.device)
-
+    
     # Run offline inference
     results = model.offline_inference(
         input_signal=audio_signal,

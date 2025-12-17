@@ -18,7 +18,7 @@ from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.common.data.utils import move_data_to_device
-from nemo.collections.speechlm2.data import DuplexEARTTSDataset
+from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import DuplexEARTTSDataset, add_speech_delay, sample_audio_segments_repeat
 from nemo.collections.speechlm2.models import DuplexEARTTS
 
 
@@ -36,6 +36,9 @@ test_eartts_config = {
             r"^audio_codec\..+$",  # Keep audio codec frozen as it only provides supervision for training.
             r"^embed_tokens\..+$",  # Keep embed_tokens frozen as done in eartts
         ],
+        "bos_token": "<s>",
+        "eos_token": "</s>",
+        "pad_token": "<SPECIAL_12>",
         "audio_codec_run_dtype": "float32",
         "prevent_freeze_params": [],
         "audio_save_path": "",
@@ -409,6 +412,103 @@ def test_eartts_dataset(dataset, training_cutset_batch):
 
     # Check formatter
     assert batch["formatter"] == ["s2s_duplex"]
+
+# test extra functions inside of eartts dataset
+def test_add_speech_delay():
+    source_audio = torch.ones(1, 16000)
+    target_audio = torch.ones(1, 22050)
+
+    source_lens = torch.tensor([16000])
+    target_lens = torch.tensor([22050])
+
+    num_delays = 2
+
+    # samples per frame (float → int handled explicitly)
+    target_samples_per_frame = source_audio.size(1) / 12.5
+    source_samples_per_frame = target_audio.size(1) / 12.5
+
+    expected_extra_src_size = int(source_samples_per_frame * num_delays)
+    expected_extra_tgt_size = int(target_samples_per_frame * num_delays)
+
+    out_src, out_src_lens, out_tgt, out_tgt_lens = add_speech_delay(
+        source_audio=source_audio,
+        source_audio_lens=source_lens,
+        target_audio=target_audio,
+        target_audio_lens=target_lens,
+        num_delay_speech_tokens=num_delays,
+        target_samples_per_frame=target_samples_per_frame,
+        source_samples_per_frame=source_samples_per_frame,
+    )
+
+    # --------------------------------------------------
+    # Shape & length bookkeeping
+    # --------------------------------------------------
+    assert out_src.shape == (1, source_audio.size(1) + expected_extra_src_size)
+    assert out_tgt.shape == (1, target_audio.size(1) + expected_extra_tgt_size)
+    assert out_src_lens.item() == source_lens.item() + expected_extra_src_size
+    assert out_tgt_lens.item() == target_lens.item() + expected_extra_tgt_size
+
+
+    # --------------------------------------------------
+    # Padding direction & content
+    # --------------------------------------------------
+    # Target audio is left-padded
+    assert torch.all(out_tgt[:, :expected_extra_tgt_size] == 0)
+    assert torch.all(out_tgt[:, expected_extra_tgt_size:] == 1)
+
+    # Source audio is right-padded
+    assert torch.all(out_src[:, :source_audio.size(1)] == 1)
+    assert torch.all(out_src[:, source_audio.size(1):] == 0)
+
+
+def test_sample_audio_segments_repeat():
+    cases = [
+        # (audio, lens, n_sample, expected_when_sample_false)
+        (
+            torch.tensor([[1., 2., 3., 4., 5.]]),
+            torch.tensor([5]),
+            3,
+            torch.tensor([[1., 2., 3.]]),
+        ),
+        (
+            torch.tensor([[1., 2.]]),
+            torch.tensor([2]),
+            5,
+            torch.tensor([[1., 2., 1., 2., 1.]]),
+        ),
+        (
+            torch.zeros(1, 10),
+            torch.tensor([0]),
+            4,
+            torch.zeros(1, 4),
+        ),
+    ]
+
+    for prompt_audio, prompt_audio_lens, n_sample, expected in cases:
+        # --------------------------------------------------
+        # sample=False → deterministic + sequence check
+        # --------------------------------------------------
+        out = sample_audio_segments_repeat(
+            prompt_audio,
+            prompt_audio_lens,
+            n_sample=n_sample,
+            sample=False,
+        )
+
+        assert out.shape == expected.shape
+        assert torch.equal(out, expected)
+
+        # --------------------------------------------------
+        # sample=True → stochastic, shape only
+        # --------------------------------------------------
+        out = sample_audio_segments_repeat(
+            prompt_audio,
+            prompt_audio_lens,
+            n_sample=n_sample,
+            sample=True,
+        )
+
+        assert out.shape == expected.shape
 
 
 def test_eartts_training_step(model, dataset, training_cutset_batch):

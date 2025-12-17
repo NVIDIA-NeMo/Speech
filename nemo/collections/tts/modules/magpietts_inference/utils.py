@@ -227,21 +227,27 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
         checkpoint_name = os.path.basename(config.checkpoint_file).replace(".ckpt", "")
 
     else:
-        # Mode 2: Load from .nemo archive
-        logging.info(f"Loading model from NeMo archive: {config.nemo_file}")
-        model_cfg = MagpieTTSModel.restore_from(config.nemo_file, return_config=True)
+        if config.nemo_file.startswith("nvidia/"):
+            model = MagpieTTSModel.from_pretrained(config.nemo_file)
+            model.use_kv_cache_for_inference = True
+            checkpoint_name = config.nemo_file.split("/")[-1]
+            cfg_sample_rate = None
+        else:
+            # Mode 2: Load from .nemo archive
+            logging.info(f"Loading model from NeMo archive: {config.nemo_file}")
+            model_cfg = MagpieTTSModel.restore_from(config.nemo_file, return_config=True)
 
-        with open_dict(model_cfg):
-            model_cfg, cfg_sample_rate = update_config_for_inference(
-                model_cfg,
-                config.codecmodel_path,
-                config.legacy_codebooks,
-                config.legacy_text_conditioning,
-            )
+            with open_dict(model_cfg):
+                model_cfg, cfg_sample_rate = update_config_for_inference(
+                    model_cfg,
+                    config.codecmodel_path,
+                    config.legacy_codebooks,
+                    config.legacy_text_conditioning,
+                )
 
-        model = MagpieTTSModel.restore_from(config.nemo_file, override_config_path=model_cfg)
-        model.use_kv_cache_for_inference = True
-        checkpoint_name = os.path.basename(config.nemo_file).replace(".nemo", "")
+            model = MagpieTTSModel.restore_from(config.nemo_file, override_config_path=model_cfg)
+            model.use_kv_cache_for_inference = True
+            checkpoint_name = os.path.basename(config.nemo_file).replace(".nemo", "")
 
     # Validate sample rate
     if cfg_sample_rate is not None and cfg_sample_rate != model.sample_rate:

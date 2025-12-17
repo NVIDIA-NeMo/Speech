@@ -84,6 +84,52 @@ class InferBatchOutput:
     headwise_cross_attention_maps: Optional[List[Any]] = None
 
 
+@dataclass
+class ContextTensorsOutput:
+    """Output container for prepare_context_tensors method.
+
+    This dataclass provides typed access to all tensors prepared for the decoder,
+    replacing the previous untyped dictionary return.
+
+    Attributes:
+        text_encoder_out: Encoded text from the encoder. Shape: (B, T_text, E).
+        text_embedded: Embedded text before encoding. Shape: (B, T_text, E).
+        text_mask: Boolean mask for text. Shape: (B, T_text).
+        text_lens: Length of each text sequence. Shape: (B,).
+        text: Original text token IDs. Shape: (B, T_text).
+        cond: Conditioning tensor(s) for decoder cross-attention.
+            Either a single tensor or list of tensors for multi-encoder models.
+        cond_mask: Mask(s) for conditioning tensors.
+        attn_prior: Attention prior matrix for guided attention.
+            Can be None, a tensor, or a list of tensors per layer.
+        prior_used: Whether attention prior is being used.
+        multi_encoder_mapping: Mapping for multi-encoder models (or None).
+        additional_decoder_input: Context embeddings prepended to decoder input.
+        additional_decoder_mask: Mask for additional decoder input.
+        dec_context_size: Number of context frames prepended to decoder.
+        context_audio_codes: Extracted context audio codes. Shape: (B, C, T_ctx).
+        context_audio_codes_lens: Length of context audio codes. Shape: (B,).
+        beta_binomial_attn_prior: Original beta-binomial prior from batch.
+    """
+
+    text_encoder_out: torch.Tensor
+    text_embedded: torch.Tensor
+    text_mask: torch.Tensor
+    text_lens: torch.Tensor
+    text: torch.Tensor
+    cond: Union[torch.Tensor, List[torch.Tensor]]
+    cond_mask: Union[torch.Tensor, List[torch.Tensor]]
+    attn_prior: Optional[Union[torch.Tensor, List[Optional[torch.Tensor]]]] = None
+    prior_used: bool = False
+    multi_encoder_mapping: Optional[Dict[str, Any]] = None
+    additional_decoder_input: Optional[torch.Tensor] = None
+    additional_decoder_mask: Optional[torch.Tensor] = None
+    dec_context_size: int = 0
+    context_audio_codes: Optional[torch.Tensor] = None
+    context_audio_codes_lens: Optional[torch.Tensor] = None
+    beta_binomial_attn_prior: Optional[torch.Tensor] = None
+
+
 def worker_init_fn(worker_id):
     # For mp.set_start_method("spawn", force=True)
     # The dataset class should be picklable, so we initialize non-picklable objects here
@@ -120,13 +166,20 @@ class MagpieTTSModel(ModelPT):
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
 
+        # Register tokenizer artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging
+        self._register_tokenizer_artifacts(cfg)
+
         # load codec, disable loading of loss modules not needed during inference
-        codec_model_cfg = AudioCodecModel.restore_from(cfg.get('codecmodel_path'), return_config=True)
-        if "use_scl_loss" in codec_model_cfg:
-            codec_model_cfg.use_scl_loss = False
-        codec_model = AudioCodecModel.restore_from(
-            cfg.get('codecmodel_path'), strict=False, override_config_path=codec_model_cfg
-        )
+        codec_model_path = cfg.get('codecmodel_path')
+        if codec_model_path.startswith('nvidia/'):
+            codec_model = AudioCodecModel.from_pretrained(codec_model_path)
+        else:
+            codec_model_cfg = AudioCodecModel.restore_from(codec_model_path, return_config=True)
+            if "use_scl_loss" in codec_model_cfg:
+                codec_model_cfg.use_scl_loss = False
+            codec_model = AudioCodecModel.restore_from(
+                codec_model_path, strict=False, override_config_path=codec_model_cfg
+            )
         self.sample_rate = codec_model.sample_rate
         self.codec_model_samples_per_frame = codec_model.samples_per_frame
         # del codec discriminator to free memory
@@ -394,6 +447,85 @@ class MagpieTTSModel(ModelPT):
 
         # Configuration validity checks
         self.check_frame_stacking_config_validity()
+
+        # Class-level cache for text normalizers. Used during inference.
+        self._text_normalizers: Dict[str, Any] = {}
+
+    def _register_tokenizer_artifacts(self, cfg: DictConfig) -> None:
+        """
+        Register tokenizer file artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging.
+
+        This method iterates through all tokenizer configs and registers any local file paths
+        as artifacts. When the model is saved to a .nemo file, these files will be packaged
+        inside the archive and automatically restored when loading from .nemo.
+
+        Supported artifact types:
+        - g2p.phoneme_dict: Phoneme dictionary file for G2P conversion
+        - g2p.heteronyms: Heteronyms file for G2P conversion
+
+        Args:
+            cfg: Model configuration containing text_tokenizers config
+        """
+        if 'text_tokenizers' not in cfg:
+            return
+
+        for tokenizer_name in cfg.text_tokenizers:
+            tokenizer_cfg = cfg.text_tokenizers[tokenizer_name]
+
+            # Skip HuggingFace tokenizers (AutoTokenizer, T5Tokenizer) - they don't need local files
+            if hasattr(tokenizer_cfg, '_target_') and tokenizer_cfg._target_ in ['AutoTokenizer', 'T5Tokenizer']:
+                continue
+
+            # Register G2P artifacts if present
+            if hasattr(tokenizer_cfg, 'g2p') and tokenizer_cfg.g2p is not None:
+                g2p_cfg = tokenizer_cfg.g2p
+
+                # Register phoneme_dict (or resolve nemo: path if restoring from .nemo)
+                phoneme_dict_path = (
+                    g2p_cfg.get('phoneme_dict', None)
+                    if hasattr(g2p_cfg, 'get')
+                    else getattr(g2p_cfg, 'phoneme_dict', None)
+                )
+                if phoneme_dict_path and isinstance(phoneme_dict_path, str) and phoneme_dict_path.strip():
+                    try:
+                        # register_artifact handles both:
+                        # - Local paths: registers for .nemo packaging, returns absolute path
+                        # - nemo: paths: resolves to extracted file location
+                        artifact_path = self.register_artifact(
+                            f'text_tokenizers.{tokenizer_name}.g2p.phoneme_dict',
+                            phoneme_dict_path,
+                            verify_src_exists=True,
+                        )
+                        if artifact_path:
+                            with open_dict(cfg):
+                                cfg.text_tokenizers[tokenizer_name].g2p.phoneme_dict = artifact_path
+                    except FileNotFoundError:
+                        logging.warning(
+                            f"phoneme_dict file not found for tokenizer '{tokenizer_name}': "
+                            f"{phoneme_dict_path}. Artifact will not be packaged in .nemo file."
+                        )
+
+                # Register heteronyms (or resolve nemo: path if restoring from .nemo)
+                heteronyms_path = (
+                    g2p_cfg.get('heteronyms', None)
+                    if hasattr(g2p_cfg, 'get')
+                    else getattr(g2p_cfg, 'heteronyms', None)
+                )
+                if heteronyms_path and isinstance(heteronyms_path, str) and heteronyms_path.strip():
+                    try:
+                        artifact_path = self.register_artifact(
+                            f'text_tokenizers.{tokenizer_name}.g2p.heteronyms',
+                            heteronyms_path,
+                            verify_src_exists=True,
+                        )
+                        if artifact_path:
+                            with open_dict(cfg):
+                                cfg.text_tokenizers[tokenizer_name].g2p.heteronyms = artifact_path
+                    except FileNotFoundError:
+                        logging.warning(
+                            f"heteronyms file not found for tokenizer '{tokenizer_name}': "
+                            f"{heteronyms_path}. Artifact will not be packaged in .nemo file."
+                        )
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """
@@ -1570,163 +1702,340 @@ class MagpieTTSModel(ModelPT):
 
         return context_text_embedded
 
-    def prepare_context_tensors(self, batch):
-        dec_context_size = 0
-        additional_decoder_input = None
-        additional_decoder_mask = None
-        context_audio_codes = None
-        context_audio_codes_lens = None
-        _attn_prior = None
-        attn_prior = None
-        cond = None
-        cond_mask = None
-        multi_encoder_mapping = None
-        text = None
-        text_lens = None
+    def _encode_text_input(
+        self, batch: Dict[str, torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Encode text from batch.
 
-        # self.model_type must be one of [multi_encoder_context_tts, decoder_context_tts, decoder_ce]
+        Args:
+            batch: Dictionary containing 'text' and 'text_lens'.
+
+        Returns:
+            Tuple of (text, text_lens, text_mask, text_embedded, text_encoder_out).
+        """
         text = batch['text']
         text_lens = batch['text_lens']
         text_mask = get_mask_from_lengths(text_lens)  # (B, T)
         text_embedded = self.embed_text(text, text_mask)  # (B, T, E)
         text_encoder_out = self.encoder(text_embedded, text_mask, cond=None, cond_mask=None)['output']  # (B, T, E)
-        _attn_prior = batch.get('align_prior_matrix', None)
-        _attn_prior = self.scale_prior(_attn_prior, self.global_step)
-        # Get speaker_indices from batch for multi-speaker baked embeddings
-        speaker_indices = batch.get('speaker_indices', None)
+        return text, text_lens, text_mask, text_embedded, text_encoder_out
 
-        if self.model_type in ['multi_encoder_context_tts', 'decoder_context_tts', 'decoder_ce']:
-            if 'context_audio_codes' in batch:
-                context_audio_codes = batch['context_audio_codes']
-                context_audio_codes_lens = batch['context_audio_codes_lens']
-                if self._codec_converter is not None:
-                    context_audio_codes = self._codec_converter.convert_original_to_new(
-                        audio_tokens=context_audio_codes, audio_lens=context_audio_codes_lens
-                    ).long()
+    def _get_context_audio_codes(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Extract or compute context audio codes from batch.
+
+        Args:
+            batch: Dictionary containing either 'context_audio_codes' or 'context_audio'.
+
+        Returns:
+            Tuple of (context_audio_codes, context_audio_codes_lens) where codes are
+            padded according to frame_stacking_factor.
+        """
+        if 'context_audio_codes' in batch:
+            codes = batch['context_audio_codes']
+            lens = batch['context_audio_codes_lens']
+            if self._codec_converter is not None:
+                codes = self._codec_converter.convert_original_to_new(audio_tokens=codes, audio_lens=lens).long()
+        else:
+            codes, lens = self.audio_to_codes(
+                batch['context_audio'], batch['context_audio_lens'], audio_type='context'
+            )
+        codes = self.pad_audio_codes(codes, self.frame_stacking_factor, pad_token=0)
+        return codes, lens
+
+    def _pad_tensors_to_match(
+        self, tensor_a: torch.Tensor, tensor_b: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Pad two 3D tensors along dim=1 so they have the same sequence length.
+
+        Args:
+            tensor_a: First tensor of shape (B, T_a, E).
+            tensor_b: Second tensor of shape (B, T_b, E).
+
+        Returns:
+            Tuple of (tensor_a, tensor_b) both with shape (B, max(T_a, T_b), E).
+        """
+        len_a, len_b = tensor_a.size(1), tensor_b.size(1)
+        if len_a < len_b:
+            padding = torch.zeros(
+                tensor_a.size(0), len_b - len_a, tensor_a.size(2), device=tensor_a.device, dtype=tensor_a.dtype
+            )
+            tensor_a = torch.cat([tensor_a, padding], dim=1)
+        elif len_a > len_b:
+            padding = torch.zeros(
+                tensor_b.size(0), len_a - len_b, tensor_b.size(2), device=tensor_b.device, dtype=tensor_b.dtype
+            )
+            tensor_b = torch.cat([tensor_b, padding], dim=1)
+        return tensor_a, tensor_b
+
+    def _get_context_embeddings(
+        self,
+        batch: Dict[str, torch.Tensor],
+        context_audio_codes: torch.Tensor,
+        context_audio_codes_lens: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get context embeddings, handling text conditioning if enabled.
+
+        Args:
+            batch: Batch dictionary containing context tokens if text conditioning is used.
+            context_audio_codes: Context audio codes. Shape: (B, C, T_ctx).
+            context_audio_codes_lens: Length of context audio codes. Shape: (B,).
+
+        Returns:
+            Tuple of (context_embedded, context_lens) where:
+                context_embedded: Combined context embedding. Shape: (B, T, E).
+                context_lens: Length of context sequences. Shape: (B,).
+        """
+        context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T/frame_stacking, E)
+
+        if not self.use_text_conditioning_encoder:
+            context_lens = torch.ceil(context_audio_codes_lens / self.frame_stacking_factor).to(
+                context_audio_codes_lens.dtype
+            )
+            return context_audio_embedded, context_lens
+
+        # Text conditioning path
+        context_text_tokens = batch['context_text_tokens']
+        context_text_lens = batch['context_text_tokens_lens']
+        context_text_embedded = self.embed_context_text(context_text_tokens)  # (B, L, E)
+
+        # Pad tensors to match sequence lengths
+        context_audio_embedded, context_text_embedded = self._pad_tensors_to_match(
+            context_audio_embedded, context_text_embedded
+        )
+
+        # For 3D tensor - need to broadcast the boolean mask
+        has_text_context = batch['has_text_context'].unsqueeze(-1).unsqueeze(-1)  # (B, 1, 1), bool
+        context_embedded = torch.where(has_text_context, context_text_embedded, context_audio_embedded)
+
+        # For 1D tensor - direct use
+        context_lens = torch.where(batch['has_text_context'], context_text_lens, context_audio_codes_lens)
+
+        return context_embedded, context_lens
+
+    def _prepare_multi_encoder_context(
+        self,
+        context_input_embedded: torch.Tensor,
+        context_mask: torch.Tensor,
+        text_encoder_out: torch.Tensor,
+        text_mask: torch.Tensor,
+        attn_prior: Optional[torch.Tensor],
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Optional[Dict], Optional[List], int]:
+        """Prepare context tensors for multi_encoder_context_tts model type.
+
+        Args:
+            context_input_embedded: Context embeddings. Shape: (B, T_ctx, E).
+            context_mask: Mask for context. Shape: (B, T_ctx).
+            text_encoder_out: Text encoder output. Shape: (B, T_text, E).
+            text_mask: Mask for text. Shape: (B, T_text).
+            attn_prior: Attention prior matrix.
+
+        Returns:
+            Tuple of (cond, cond_mask, multi_encoder_mapping, attn_prior_list, dec_context_size).
+        """
+        context_embeddings = self.context_encoder(context_input_embedded, context_mask, cond=None, cond_mask=None)[
+            'output'
+        ]
+        cond = [text_encoder_out, context_embeddings]
+        cond_mask = [text_mask, context_mask]
+        multi_encoder_mapping = self.multi_encoder_mapping
+        attn_prior_list = [attn_prior, None]
+        return cond, cond_mask, multi_encoder_mapping, attn_prior_list, 0
+
+    def _prepare_decoder_context(
+        self,
+        context_input_embedded: Optional[torch.Tensor],
+        context_input_lens: Optional[torch.Tensor],
+        context_mask: Optional[torch.Tensor],
+        text_encoder_out: torch.Tensor,
+        text_mask: torch.Tensor,
+        attn_prior: Optional[torch.Tensor],
+        speaker_indices: Optional[torch.Tensor],
+        text: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, None, Optional[torch.Tensor], int, torch.Tensor, torch.Tensor]:
+        """Prepare context tensors for decoder_context_tts and decoder_ce model types.
+
+        Args:
+            batch: Full batch dictionary.
+            context_input_embedded: Context embeddings. Shape: (B, T_ctx, E).
+                Can be None if model_type is 'decoder_ce' with baked context embedding.
+            context_input_lens: Context sequence lengths. Shape: (B,).
+                Can be None if model_type is 'decoder_ce' with baked context embedding.
+            context_mask: Mask for context. Shape: (B, T_ctx).
+                Can be None if model_type is 'decoder_ce' with baked context embedding.
+            text_encoder_out: Text encoder output. Shape: (B, T_text, E).
+            text_mask: Mask for text. Shape: (B, T_text).
+            attn_prior: Attention prior matrix.
+            speaker_indices: Speaker indices for multi-speaker baked embeddings.
+            text: Text tensor (used for batch_size).
+
+        Returns:
+            Tuple of (cond, cond_mask, multi_encoder_mapping, attn_prior,
+                     dec_context_size, additional_decoder_input, additional_decoder_mask).
+        """
+        if self.model_type == 'decoder_context_tts':
+            context_embeddings = context_input_embedded
+        elif self.model_type == 'decoder_ce':
+            if self.has_baked_context_embedding:
+                # Baked context embedding replaces the context encoder
+                batch_size = text.size(0)
+                context_embeddings, context_input_lens = self.get_baked_context_embeddings_batch(
+                    batch_size=batch_size, speaker_indices=speaker_indices
+                )
+                context_input_lens = context_input_lens.to(text.device)
+                context_mask = get_mask_from_lengths(context_input_lens)
             else:
-                context_audio_codes, context_audio_codes_lens = self.audio_to_codes(
-                    batch['context_audio'], batch['context_audio_lens'], audio_type='context'
-                )
-            context_audio_codes = self.pad_audio_codes(context_audio_codes, self.frame_stacking_factor, pad_token=0)
-            context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T/frame_stacking_factor, E)
-
-            if self.use_text_conditioning_encoder:
-                context_text_tokens = batch['context_text_tokens']
-                context_text_lens = batch['context_text_tokens_lens']
-                context_text_embedded = self.embed_context_text(context_text_tokens)  # (B, L, E)
-
-                # Pad context_audio_embedded or context_text_embedded so that they have same number of timesteps
-                if context_audio_embedded.size(1) < context_text_embedded.size(1):
-                    padding = torch.zeros(
-                        context_audio_embedded.size(0),
-                        context_text_embedded.size(1) - context_audio_embedded.size(1),
-                        context_audio_embedded.size(2),
-                        device=context_audio_embedded.device,
-                    )
-                    context_audio_embedded = torch.cat([context_audio_embedded, padding], dim=1)
-                elif context_audio_embedded.size(1) > context_text_embedded.size(1):
-                    padding = torch.zeros(
-                        context_text_embedded.size(0),
-                        context_audio_embedded.size(1) - context_text_embedded.size(1),
-                        context_text_embedded.size(2),
-                        device=context_text_embedded.device,
-                    )
-                    context_text_embedded = torch.cat([context_text_embedded, padding], dim=1)  # (B, T, E)
-                has_text_context = batch['has_text_context'].unsqueeze(-1).unsqueeze(-1).float()  # (B, 1, 1)
-                context_input_embedded = (
-                    has_text_context * context_text_embedded + (1 - has_text_context) * context_audio_embedded
-                )
-                context_input_lens = (
-                    batch['has_text_context'].float() * context_text_lens
-                    + (1 - batch['has_text_context'].float()) * context_audio_codes_lens
-                )  # (B,)
-            else:
-                context_input_embedded = context_audio_embedded
-                context_input_lens = context_audio_codes_lens
-                context_input_lens = torch.ceil(context_input_lens / self.frame_stacking_factor).to(
-                    context_input_lens.dtype
-                )
-
-            context_mask = get_mask_from_lengths(context_input_lens)
-
-            if self.model_type == 'multi_encoder_context_tts':
                 context_embeddings = self.context_encoder(
                     context_input_embedded, context_mask, cond=None, cond_mask=None
                 )['output']
-                cond = [text_encoder_out, context_embeddings]
-                cond_mask = [text_mask, context_mask]
-                multi_encoder_mapping = self.multi_encoder_mapping
-                attn_prior = [_attn_prior, None]
-
-            elif self.model_type in ['decoder_context_tts', 'decoder_ce']:
-                context_embeddings = None  # Address CodeQL
-                if self.model_type == 'decoder_context_tts':
-                    context_embeddings = context_input_embedded
-                elif self.model_type == 'decoder_ce':
-                    # Check for baked context embedding first
-                    if self.has_baked_context_embedding:
-                        # Baked context embedding is a fixed embedding that replaces the context encoder.
-                        # For multi-speaker, speaker_indices selects which speaker's embedding to use per batch element.
-                        batch_size = text.size(0)
-                        # Get embeddings for batch (handles single/multi-speaker and per-element selection)
-                        context_embeddings, context_input_lens = self.get_baked_context_embeddings_batch(
-                            batch_size=batch_size, speaker_indices=speaker_indices
-                        )
-                        context_input_lens = context_input_lens.to(text.device)
-                        context_mask = get_mask_from_lengths(context_input_lens)
-                    else:
-                        context_embeddings = self.context_encoder(
-                            context_input_embedded, context_mask, cond=None, cond_mask=None
-                        )['output']
-                dec_context_size = context_mask.size(1)
-                attn_prior = _attn_prior
-                if attn_prior is not None:
-                    # B, audio_timesteps, text_timesteps
-                    padding_zeros = torch.zeros(
-                        attn_prior.size(0), dec_context_size, attn_prior.size(2), device=attn_prior.device
-                    )
-                    attn_prior = torch.cat([padding_zeros, attn_prior], dim=1)
-                cond = text_encoder_out
-                cond_mask = text_mask
-                multi_encoder_mapping = None
-                additional_decoder_input = context_embeddings
-                additional_decoder_mask = context_mask
         else:
+            raise ValueError(f"Unsupported model type for decoder context: {self.model_type}")
+
+        dec_context_size = context_mask.size(1)
+
+        # Pad attention prior if present
+        if attn_prior is not None:
+            padding_zeros = torch.zeros(
+                attn_prior.size(0), dec_context_size, attn_prior.size(2), device=attn_prior.device
+            )
+            attn_prior = torch.cat([padding_zeros, attn_prior], dim=1)
+
+        return (
+            text_encoder_out,  # cond
+            text_mask,  # cond_mask
+            None,  # multi_encoder_mapping
+            attn_prior,
+            dec_context_size,
+            context_embeddings,  # additional_decoder_input
+            context_mask,  # additional_decoder_mask
+        )
+
+    def _apply_ctc_prior_layers(
+        self, attn_prior: Optional[Union[torch.Tensor, List]]
+    ) -> Optional[Union[torch.Tensor, List[Optional[torch.Tensor]]]]:
+        """Apply CTC prior layer filtering to attention prior.
+
+        Args:
+            attn_prior: Attention prior tensor or list of tensors.
+
+        Returns:
+            Filtered attention prior with None for layers not in ctc_prior_layer_ids.
+        """
+        if attn_prior is None or self.ctc_prior_layer_ids is None:
+            return attn_prior
+
+        if self.model_type == 'multi_encoder_context_tts':
+            text_attn_prior = [
+                attn_prior[0] if layer_idx in self.ctc_prior_layer_ids else None
+                for layer_idx in range(self.decoder.n_layers)
+            ]
+            return [text_attn_prior, attn_prior[1]]
+        else:
+            return [
+                attn_prior if layer_idx in self.ctc_prior_layer_ids else None
+                for layer_idx in range(self.decoder.n_layers)
+            ]
+
+    def prepare_context_tensors(self, batch: Dict[str, torch.Tensor]) -> ContextTensorsOutput:
+        """Prepare all context tensors for the decoder.
+
+        This method orchestrates text encoding, context extraction, and model-type-specific
+        processing to prepare tensors for decoder inference or training.
+
+        Args:
+            batch: Dictionary containing:
+                - 'text': Text token IDs. Shape: (B, T_text).
+                - 'text_lens': Text lengths. Shape: (B,).
+                - 'context_audio_codes' or 'context_audio': Context audio.
+                - 'align_prior_matrix' (optional): Beta-binomial attention prior.
+                - 'speaker_indices' (optional): Speaker IDs for multi-speaker models.
+                - Text conditioning fields if use_text_conditioning_encoder is True.
+
+        Returns:
+            ContextTensorsOutput dataclass containing all prepared tensors.
+
+        Raises:
+            ValueError: If model_type is not supported.
+        """
+        # Step 1: Encode text input (always needed)
+        text, text_lens, text_mask, text_embedded, text_encoder_out = self._encode_text_input(batch)
+
+        # Step 2: Get and scale attention prior
+        _attn_prior = batch.get('align_prior_matrix', None)
+        _attn_prior = self.scale_prior(_attn_prior, self.global_step)
+        speaker_indices = batch.get('speaker_indices', None)
+
+        # Step 3: Process context based on model type
+        if self.model_type not in ['multi_encoder_context_tts', 'decoder_context_tts', 'decoder_ce']:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
-        if attn_prior is not None and self.ctc_prior_layer_ids is not None:
-            # Convert prior to a list of tensors, one for each layer
-            # Set None for layers not in ctc_prior_layer_ids
-            if self.model_type == 'multi_encoder_context_tts':
-                text_attn_prior = [
-                    attn_prior[0] if layer_idx in self.ctc_prior_layer_ids else None
-                    for layer_idx in range(self.decoder.n_layers)
-                ]
-                attn_prior = [text_attn_prior, attn_prior[1]]
-            else:
-                attn_prior = [
-                    attn_prior if layer_idx in self.ctc_prior_layer_ids else None
-                    for layer_idx in range(self.decoder.n_layers)
-                ]
+        # For decoder_ce with baked context embedding, skip context audio/text processing entirely
+        # The baked embedding replaces the context encoder, so we don't need context inputs
+        skip_context_processing = self.model_type == 'decoder_ce' and self.has_baked_context_embedding
 
-        return {
-            'beta_binomial_attn_prior': batch.get('align_prior_matrix', None),
-            'text_encoder_out': text_encoder_out,
-            'cond': cond,
-            'cond_mask': cond_mask,
-            'attn_prior': attn_prior,
-            'prior_used': _attn_prior is not None,
-            'multi_encoder_mapping': multi_encoder_mapping,
-            'additional_decoder_input': additional_decoder_input,
-            'additional_decoder_mask': additional_decoder_mask,
-            'dec_context_size': dec_context_size,
-            'text': text,
-            'text_embedded': text_embedded,
-            'text_mask': text_mask,
-            'text_lens': text_lens,
-            'context_audio_codes': context_audio_codes,
-            'context_audio_codes_lens': context_audio_codes_lens,
-        }
+        if skip_context_processing:
+            # Use baked context embedding directly - no need for context audio/text
+            context_audio_codes = None
+            context_audio_codes_lens = None
+            context_input_embedded = None
+            context_input_lens = None
+            context_mask = None
+        else:
+            # Extract context audio codes and compute embeddings
+            context_audio_codes, context_audio_codes_lens = self._get_context_audio_codes(batch)
+            context_input_embedded, context_input_lens = self._get_context_embeddings(
+                batch, context_audio_codes, context_audio_codes_lens
+            )
+            context_mask = get_mask_from_lengths(context_input_lens)
+
+        # Step 4: Dispatch to model-type-specific handler
+        if self.model_type == 'multi_encoder_context_tts':
+            cond, cond_mask, multi_encoder_mapping, attn_prior, dec_context_size = self._prepare_multi_encoder_context(
+                context_input_embedded, context_mask, text_encoder_out, text_mask, _attn_prior
+            )
+            additional_decoder_input = None
+            additional_decoder_mask = None
+        else:  # decoder_context_tts or decoder_ce
+            (
+                cond,
+                cond_mask,
+                multi_encoder_mapping,
+                attn_prior,
+                dec_context_size,
+                additional_decoder_input,
+                additional_decoder_mask,
+            ) = self._prepare_decoder_context(
+                context_input_embedded,
+                context_input_lens,
+                context_mask,
+                text_encoder_out,
+                text_mask,
+                _attn_prior,
+                speaker_indices,
+                text,
+            )
+
+        # Step 5: Apply CTC prior layer filtering
+        attn_prior = self._apply_ctc_prior_layers(attn_prior)
+
+        # Step 6: Return typed output
+        return ContextTensorsOutput(
+            text_encoder_out=text_encoder_out,
+            text_embedded=text_embedded,
+            text_mask=text_mask,
+            text_lens=text_lens,
+            text=text,
+            cond=cond,
+            cond_mask=cond_mask,
+            attn_prior=attn_prior,
+            prior_used=_attn_prior is not None,
+            multi_encoder_mapping=multi_encoder_mapping,
+            additional_decoder_input=additional_decoder_input,
+            additional_decoder_mask=additional_decoder_mask,
+            dec_context_size=dec_context_size,
+            context_audio_codes=context_audio_codes,
+            context_audio_codes_lens=context_audio_codes_lens,
+            beta_binomial_attn_prior=batch.get('align_prior_matrix', None),
+        )
 
     def replace_beta_binomial_prior_with_binarized(self, attn_prior, aligner_attn_hard):
         # aligner_attn_hard B, audio_timesteps, text_timesteps
@@ -1876,23 +2185,23 @@ class MagpieTTSModel(ModelPT):
         ]  # (B, T', E) Input to the decoder; this is already in the frame-stacked domain, hence the -1 (not `frame_stacking_factor`)
 
         audio_codes_mask = get_mask_from_lengths(audio_codes_lens_input)
-        use_cfg = (self.cfg_unconditional_prob > 0.0) and (mode == "train") and (context_tensors['cond'] is not None)
+        use_cfg = (self.cfg_unconditional_prob > 0.0) and (mode == "train") and (context_tensors.cond is not None)
         if use_cfg and torch.rand(1).item() < self.cfg_unconditional_prob:
             cond, cond_mask, additional_decoder_input, additional_decoder_mask, attn_prior = (
                 self.prepare_dummy_cond_for_cfg(
-                    context_tensors['cond'],
-                    context_tensors['cond_mask'],
-                    context_tensors['additional_decoder_input'],
-                    context_tensors['additional_decoder_mask'],
+                    context_tensors.cond,
+                    context_tensors.cond_mask,
+                    context_tensors.additional_decoder_input,
+                    context_tensors.additional_decoder_mask,
                 )
             )
             disable_alignment_loss = True
         else:
-            cond = context_tensors['cond']
-            cond_mask = context_tensors['cond_mask']
-            additional_decoder_input = context_tensors['additional_decoder_input']
-            additional_decoder_mask = context_tensors['additional_decoder_mask']
-            attn_prior = context_tensors['attn_prior']
+            cond = context_tensors.cond
+            cond_mask = context_tensors.cond_mask
+            additional_decoder_input = context_tensors.additional_decoder_input
+            additional_decoder_mask = context_tensors.additional_decoder_mask
+            attn_prior = context_tensors.attn_prior
 
             if mode == "train" and self.decoder_input_dropout_prob > 0.0 and torch.rand(1).item() < 0.5:
                 # For some batches (half of them), replace decoder_input_dropout_prob of the timesteps with random tokens
@@ -1914,7 +2223,7 @@ class MagpieTTSModel(ModelPT):
                 )
                 audio_codes_embedded = self.embed_audio_tokens(audio_codes_input_unstacked)  # (B, T', E)
 
-        if context_tensors['additional_decoder_input'] is not None:
+        if context_tensors.additional_decoder_input is not None:
             dec_input_embedded = torch.cat([additional_decoder_input, audio_codes_embedded], dim=1)
             dec_input_mask = torch.cat([additional_decoder_mask, audio_codes_mask], dim=1)
         else:
@@ -1927,19 +2236,19 @@ class MagpieTTSModel(ModelPT):
         if self.use_alignment_encoder and not disable_alignment_loss:
             aligner_prior = None
             if self.use_prior_for_aligner:
-                aligner_prior = context_tensors['beta_binomial_attn_prior']
+                aligner_prior = context_tensors.beta_binomial_attn_prior
             # Passing target audio embeddings to the alignment encoder
             if self.global_step < self.aligner_encoder_train_steps:
                 aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
                     queries=audio_codes_embedded_all[:, 1:, :].permute(0, 2, 1),  # B, E, T'
-                    keys=context_tensors['text_encoder_out'].permute(0, 2, 1),  # B, E, T
-                    mask=~context_tensors['text_mask'].unsqueeze(-1),
+                    keys=context_tensors.text_encoder_out.permute(0, 2, 1),  # B, E, T
+                    mask=~context_tensors.text_mask.unsqueeze(-1),
                     attn_prior=aligner_prior,
                 )
 
                 aligner_encoder_loss = self.alignment_encoder_loss(
                     attn_logprob=aligner_attn_logprobs,
-                    in_lens=context_tensors['text_lens'],
+                    in_lens=context_tensors.text_lens,
                     out_lens=audio_codes_lens_input,
                 )
             else:
@@ -1947,16 +2256,16 @@ class MagpieTTSModel(ModelPT):
                     # Just get the attention matrix without computing the loss or gradients
                     aligner_attn_soft, aligner_attn_logprobs = self.alignment_encoder(
                         queries=audio_codes_embedded_all[:, 1:, :].permute(0, 2, 1),  # B, E, T'
-                        keys=context_tensors['text_encoder_out'].permute(0, 2, 1),  # B, E, T
-                        mask=~context_tensors['text_mask'].unsqueeze(-1),
+                        keys=context_tensors.text_encoder_out.permute(0, 2, 1),  # B, E, T
+                        mask=~context_tensors.text_mask.unsqueeze(-1),
                         attn_prior=aligner_prior,
                     )
 
             with torch.no_grad():
                 aligner_attn_hard = self.get_binarized_prior_matrix(
-                    aligner_attn_soft, audio_codes_lens_input, context_tensors['text_lens']
+                    aligner_attn_soft, audio_codes_lens_input, context_tensors.text_lens
                 )
-                if (self.global_step > self.binarize_prior_after_step) and context_tensors['prior_used']:
+                if (self.global_step > self.binarize_prior_after_step) and context_tensors.prior_used:
                     attn_prior = self.replace_beta_binomial_prior_with_binarized(attn_prior, aligner_attn_hard)
 
         logits, attn_info, dec_out = self.forward(
@@ -1965,11 +2274,11 @@ class MagpieTTSModel(ModelPT):
             cond=cond,
             cond_mask=cond_mask,
             attn_prior=attn_prior,
-            multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
+            multi_encoder_mapping=context_tensors.multi_encoder_mapping,
         )
         # logits: (B, T', num_codebooks * num_tokens_per_codebook)
         # dec_out: (B, T', E)
-        dec_context_size = context_tensors['dec_context_size']
+        dec_context_size = context_tensors.dec_context_size
         logits = logits[:, dec_context_size:, :]  # Remove the context audio embeddings from the logits
 
         # Codebook loss (parallel)
@@ -1982,7 +2291,7 @@ class MagpieTTSModel(ModelPT):
         # Alignment loss
         alignment_loss = None
         if self.alignment_loss_scale > 0.0 and not disable_alignment_loss:
-            text_lens = context_tensors['text_lens']
+            text_lens = context_tensors.text_lens
             cross_attention_scores = [
                 attn['cross_attn_probabilities'][1]
                 for layer_idx, attn in enumerate(attn_info)
@@ -2045,10 +2354,10 @@ class MagpieTTSModel(ModelPT):
             'aligner_encoder_loss': aligner_encoder_loss,
             'audio_codes_target': audio_codes_target_unstacked,
             'audio_codes_lens_target': audio_codes_lens_target_unstacked,
-            'text': context_tensors['text'],
-            'text_lens': context_tensors['text_lens'],
-            'context_audio_codes': context_tensors['context_audio_codes'],
-            'context_audio_codes_lens': context_tensors['context_audio_codes_lens'],
+            'text': context_tensors.text,
+            'text_lens': context_tensors.text_lens,
+            'context_audio_codes': context_tensors.context_audio_codes,
+            'context_audio_codes_lens': context_tensors.context_audio_codes_lens,
             'dec_context_size': dec_context_size,
             'aligner_attn_soft': aligner_attn_soft,
             'aligner_attn_hard': aligner_attn_hard,
@@ -2453,7 +2762,7 @@ class MagpieTTSModel(ModelPT):
             self.decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
 
             context_tensors = self.prepare_context_tensors(batch)
-            text = context_tensors['text']
+            text = context_tensors.text
             audio_codes_bos = torch.full(
                 (text.size(0), self.num_audio_codebooks, self.frame_stacking_factor),
                 self.audio_bos_id,
@@ -2471,10 +2780,10 @@ class MagpieTTSModel(ModelPT):
             if use_cfg:
                 dummy_cond, dummy_cond_mask, dummy_additional_decoder_input, dummy_addition_dec_mask, _ = (
                     self.prepare_dummy_cond_for_cfg(
-                        context_tensors['cond'],
-                        context_tensors['cond_mask'],
-                        context_tensors['additional_decoder_input'],
-                        context_tensors['additional_decoder_mask'],
+                        context_tensors.cond,
+                        context_tensors.cond_mask,
+                        context_tensors.additional_decoder_input,
+                        context_tensors.additional_decoder_mask,
                     )
                 )
 
@@ -2494,13 +2803,11 @@ class MagpieTTSModel(ModelPT):
                 if idx % 20 == 0:
                     print(f"Decoding timestep {idx}")
                 audio_codes_embedded = self.embed_audio_tokens(audio_codes_input)
-                if context_tensors['additional_decoder_input'] is not None:
+                if context_tensors.additional_decoder_input is not None:
                     _audio_codes_embedded = torch.cat(
-                        [context_tensors['additional_decoder_input'], audio_codes_embedded], dim=1
+                        [context_tensors.additional_decoder_input, audio_codes_embedded], dim=1
                     )
-                    _audio_codes_mask = torch.cat(
-                        [context_tensors['additional_decoder_mask'], audio_codes_mask], dim=1
-                    )
+                    _audio_codes_mask = torch.cat([context_tensors.additional_decoder_mask, audio_codes_mask], dim=1)
                 else:
                     _audio_codes_embedded = audio_codes_embedded
                     _audio_codes_mask = audio_codes_mask
@@ -2517,20 +2824,18 @@ class MagpieTTSModel(ModelPT):
 
                 if use_cfg:
                     batch_size = audio_codes_embedded.size(0)
-                    if isinstance(context_tensors['cond'], list):
+                    if isinstance(context_tensors.cond, list):
                         cfg_cond = [
                             torch.cat([cond_item, dummy_cond_item], dim=0)
-                            for cond_item, dummy_cond_item in zip(context_tensors['cond'], dummy_cond)
+                            for cond_item, dummy_cond_item in zip(context_tensors.cond, dummy_cond)
                         ]
                         cfg_cond_mask = [
                             torch.cat([cond_mask_item, dummy_cond_mask_item], dim=0)
-                            for cond_mask_item, dummy_cond_mask_item in zip(
-                                context_tensors['cond_mask'], dummy_cond_mask
-                            )
+                            for cond_mask_item, dummy_cond_mask_item in zip(context_tensors.cond_mask, dummy_cond_mask)
                         ]
                     else:
-                        cfg_cond = torch.cat([context_tensors['cond'], dummy_cond], dim=0)
-                        cfg_cond_mask = torch.cat([context_tensors['cond_mask'], dummy_cond_mask], dim=0)
+                        cfg_cond = torch.cat([context_tensors.cond, dummy_cond], dim=0)
+                        cfg_cond_mask = torch.cat([context_tensors.cond_mask, dummy_cond_mask], dim=0)
                     cfg_audio_codes_embedded = torch.cat([_audio_codes_embedded, _audio_codes_embedded], dim=0)
                     cfg_audio_codes_mask = torch.cat([_audio_codes_mask, _audio_codes_mask], dim=0)
                     if dummy_additional_decoder_input is not None:
@@ -2547,7 +2852,7 @@ class MagpieTTSModel(ModelPT):
                         cond=cfg_cond,
                         cond_mask=cfg_cond_mask,
                         attn_prior=attn_prior,
-                        multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
+                        multi_encoder_mapping=context_tensors.multi_encoder_mapping,
                     )
 
                     cond_logits = combined_logits[:batch_size]
@@ -2558,10 +2863,10 @@ class MagpieTTSModel(ModelPT):
                     all_code_logits, attn_probs, dec_out = self.forward(
                         dec_input_embedded=_audio_codes_embedded,
                         dec_input_mask=_audio_codes_mask,
-                        cond=context_tensors['cond'],
-                        cond_mask=context_tensors['cond_mask'],
+                        cond=context_tensors.cond,
+                        cond_mask=context_tensors.cond_mask,
                         attn_prior=attn_prior,
-                        multi_encoder_mapping=context_tensors['multi_encoder_mapping'],
+                        multi_encoder_mapping=context_tensors.multi_encoder_mapping,
                     )
 
                 if return_cross_attn_probs or apply_attention_prior:
@@ -2581,7 +2886,7 @@ class MagpieTTSModel(ModelPT):
                     text_time_step_attended, attended_timestep_counter = self.get_most_attended_text_timestep(
                         alignment_attention_scores=alignment_attention_scores,
                         last_attended_timesteps=last_attended_timesteps,
-                        text_lens=context_tensors['text_lens'],
+                        text_lens=context_tensors.text_lens,
                         lookahead_window_size=lookahead_window_size,
                         attended_timestep_counter=attended_timestep_counter,
                         batch_size=batch_size,
@@ -2590,7 +2895,7 @@ class MagpieTTSModel(ModelPT):
                     _attn_prior, unfinished_texts, finished_texts_counter = self.construct_inference_prior(
                         prior_epsilon=prior_epsilon,
                         cross_attention_scores=cross_attention_scores,
-                        text_lens=context_tensors['text_lens'],
+                        text_lens=context_tensors.text_lens,
                         text_time_step_attended=text_time_step_attended,
                         attended_timestep_counter=attended_timestep_counter,
                         unfinished_texts=unfinished_texts,
@@ -2717,7 +3022,7 @@ class MagpieTTSModel(ModelPT):
                 cross_attention_maps, headwise_cross_attention_maps = self.get_inference_attention_plots(
                     cross_attention_scores_all_timesteps,
                     all_heads_cross_attn_scores_all_timesteps,
-                    context_tensors['text_lens'],
+                    context_tensors.text_lens,
                     predicted_codes_lens,
                     text.size(0),
                     compute_all_heads_attn_maps,
@@ -2942,6 +3247,174 @@ class MagpieTTSModel(ModelPT):
 
     def setup_test_data(self, dataset_cfg):
         self._test_dl = self._setup_test_dataloader(dataset_cfg)
+
+    def _get_normalized_text(self, transcript: str, language: str) -> str:
+        """Get normalized text using cached normalizer for the specified language.
+
+        Args:
+            transcript: Raw text to normalize.
+            language: Language code (e.g., 'en', 'de', 'es').
+
+        Returns:
+            Normalized text, or original text if normalization fails/unavailable.
+        """
+        # Check if normalizer for this language is already cached
+        if language not in self._text_normalizers:
+            try:
+                from nemo_text_processing.text_normalization.normalize import Normalizer
+
+                normalizer = Normalizer(input_case='cased', lang=language)
+                self._text_normalizers[language] = normalizer
+                logging.info(f"Initialized text normalizer for language: {language}")
+            except ImportError:
+                self._text_normalizers[language] = None
+                logging.warning(
+                    "nemo_text_processing not installed. Skipping text normalization. "
+                    "Install with: pip install nemo_text_processing"
+                )
+            except Exception as e:
+                # Handle unsupported language or other initialization errors
+                self._text_normalizers[language] = None
+                logging.warning(
+                    f"Failed to initialize text normalizer for language '{language}': {e}. "
+                    f"Skipping text normalization. Text will be used as-is."
+                )
+
+        # Use cached normalizer if available
+        normalizer = self._text_normalizers[language]
+        if normalizer is not None:
+            normalized_text = normalizer.normalize(transcript, verbose=False)
+            return normalized_text
+
+        return transcript
+
+    def do_tts(
+        self,
+        transcript: str,
+        language: str = "en",
+        apply_TN: bool = False,
+        temperature: float = 0.7,
+        topk: int = 80,
+        max_decoder_steps: int = 500,
+        use_cfg: bool = True,
+        cfg_scale: float = 2.5,
+        speaker_index: Optional[int] = None,
+    ) -> tuple:
+        """
+        Generate speech from raw text transcript.
+
+        This is a convenience method for single-utterance text-to-speech synthesis.
+        For batch processing, use `infer_batch` directly. Only supports baked context embedding
+        context injection, NO audio conditioning and text conditioning.
+        Custom voice generation is not supported by this method.
+
+        Args:
+            transcript: Raw text to synthesize.
+            language: Language code for text normalization and tokenization.
+                Supported values depend on model's tokenizer configuration.
+                Common: "en" (English), "de" (German), "es" (Spanish), etc.
+            apply_TN: Whether to apply text normalization to the transcript.
+                If True, uses nemo_text_processing for normalization.
+            temperature: Sampling temperature for token generation.
+            topk: Top-k sampling parameter.
+            max_decoder_steps: Maximum number of decoder steps.
+            use_cfg: Whether to use classifier-free guidance.
+            cfg_scale: Scale factor for classifier-free guidance.
+            speaker_index: Speaker index for multi-speaker baked embeddings.
+                Valid range: [0, num_baked_speakers - 1]. If None, uses speaker 0.
+                Only applicable for models with baked context embeddings.
+
+        Returns:
+            Tuple of (audio, audio_len) where:
+                audio: Generated audio waveform. Shape: (1, T_audio).
+                audio_len: Length of generated audio in samples. Shape: (1,).
+
+        Raises:
+            ValueError: If model does not have a baked context embedding.
+            ValueError: If speaker_index is out of valid range.
+            ImportError: If apply_TN=True but nemo_text_processing is not installed.
+
+        Example:
+            >>> # If text does not need to be normalized
+            >>> audio, audio_len = model.do_tts("Hello, how are you today?")
+            >>>
+            >>> # If text needs to be normalized
+            >>> audio, audio_len = model.do_tts(
+            ...     "Hello, how are you today?",
+            ...     apply_TN=True,
+            ... )
+            >>>
+            >>> # Use a specific speaker (for multi-speaker models)
+            >>> audio, audio_len = model.do_tts(
+            ...     "Hello!", speaker_index=2
+            ... )
+        """
+        if not self.has_baked_context_embedding:
+            raise ValueError(
+                "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
+            )
+        # Apply text normalization if requested
+        normalized_text = (
+            self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript
+        )
+
+        # Determine tokenizer name based on language
+        # Try to find a matching tokenizer, fallback to first available
+        tokenizer_name = None
+        available_tokenizers = list(self.tokenizer.tokenizers.keys())
+        logging.info(f"Available tokenizers: {available_tokenizers}")
+
+        # Common mappings for tokenizer names
+        language_tokenizer_map = {
+            "en": ["english_phoneme", "english"],
+            "de": ["german_phoneme", "german"],
+            "es": ["spanish_phoneme", "spanish"],
+            "fr": ["french_phoneme", "french"],
+            "it": ["italian_phoneme", "italian"],
+            "vi": ["vietnamese_phoneme", "vietnamese"],
+            "zh": ["mandarin_phoneme", "mandarin", "chinese"],
+        }
+
+        # Find matching tokenizer
+        if language in language_tokenizer_map:
+            for candidate in language_tokenizer_map[language]:
+                if candidate in available_tokenizers:
+                    tokenizer_name = candidate
+                    break
+
+        # Fallback to first available tokenizer
+        if tokenizer_name is None:
+            tokenizer_name = available_tokenizers[0]
+            logging.info(
+                f"No tokenizer found for language '{language}'. "
+                f"Using '{tokenizer_name}'. Available: {available_tokenizers}"
+            )
+
+        # Tokenize the transcript text
+        tokens = self.tokenizer.encode(text=normalized_text, tokenizer_name=tokenizer_name)
+        tokens = tokens + [self.eos_id]  # Add EOS token (BOS not used per dataset convention)
+        text_tensor = torch.tensor([tokens], device=self.device, dtype=torch.long)
+        text_lens = torch.tensor([len(tokens)], device=self.device, dtype=torch.long)
+
+        # Create batch dictionary
+        batch = {
+            'text': text_tensor,
+            'text_lens': text_lens,
+            'speaker_indices': speaker_index,
+        }
+
+        # Run inference
+        with torch.no_grad():
+            output = self.infer_batch(
+                batch,
+                max_decoder_steps=max_decoder_steps,
+                temperature=temperature,
+                topk=topk,
+                use_cfg=use_cfg,
+                cfg_scale=cfg_scale,
+            )
+
+        return output.predicted_audio, output.predicted_audio_lens
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:

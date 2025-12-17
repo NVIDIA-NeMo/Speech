@@ -259,7 +259,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         "source_audio_lens",
         "target_audio",
         "target_audio_lens",
-        "input_text_tokens",
+        "target_text_tokens",
         "target_token_lens",
         "source_tokens",
         "source_token_lens",
@@ -280,7 +280,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         "source_audio_lens",
         "target_audio",
         "target_audio_lens",
-        "input_text_tokens",
+        "target_text_tokens",
         "target_token_lens",
         "source_tokens",
         "source_token_lens",
@@ -352,7 +352,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         ]
     ]
 
-    assert batch["input_text_tokens"].tolist() == [
+    assert batch["target_text_tokens"].tolist() == [
         [
             2,
             12,

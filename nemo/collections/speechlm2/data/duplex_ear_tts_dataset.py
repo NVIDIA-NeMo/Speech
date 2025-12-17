@@ -94,7 +94,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             - target_audio: Tensor of target waveform samples [B, T]
             - target_audio_lens: Tensor of target audio lengths [B]
 
-            - input_text_tokens: Tensor of frame-aligned input text tokens [B, T],
+            - target_text_tokens: Tensor of frame-aligned input text tokens [B, T],
                 including BOS/EOS/PAD when enabled
             - target_token_lens: Tensor of target token sequence lengths [B]
 
@@ -159,7 +159,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         target_audio, target_audio_lens = collate_audio(
             cuts.resample(self.target_sample_rate), recording_field="target_audio"
         )
-        input_text_tokens, target_token_lens = collate_token_channel(
+        target_text_tokens, target_token_lens = collate_token_channel(
             cuts,
             self.tokenizer,
             self.frame_length,
@@ -192,7 +192,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
 
         # add audio prompt if needed
         (
-            input_text_tokens,
+            target_text_tokens,
             target_token_lens,
             source_tokens,
             source_token_lens,
@@ -202,7 +202,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             target_audio_lens,
             prompt_lens,
         ) = self.maybe_add_audio_prompt(
-            input_text_tokens,
+            target_text_tokens,
             target_token_lens,
             source_tokens,
             source_token_lens,
@@ -260,7 +260,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             "source_audio_lens": source_audio_lens,
             "target_audio": target_audio,
             "target_audio_lens": target_audio_lens,
-            "input_text_tokens": input_text_tokens,
+            "target_text_tokens": target_text_tokens,
             "target_token_lens": target_token_lens,
             "source_tokens": source_tokens,
             "source_token_lens": source_token_lens,
@@ -274,7 +274,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
 
     def maybe_add_audio_prompt(
         self,
-        input_text_tokens: torch.Tensor,
+        target_text_tokens: torch.Tensor,
         target_token_lens: torch.Tensor,
         source_tokens: torch.Tensor,
         source_token_lens: torch.Tensor,
@@ -293,12 +293,12 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         padding is inserted into the text-token streams (input text tokens and source tokens).
 
         Args:
-            input_text_tokens (torch.Tensor):
+            target_text_tokens (torch.Tensor):
                 Tensor of input text tokens with shape [B, T_text].
                 dtype: torch.long.
 
             target_token_lens (torch.Tensor):
-                Lengths of input_text_tokens per batch element (before padding). shape [B].
+                Lengths of target_text_tokens per batch element (before padding). shape [B].
 
             source_tokens (torch.Tensor):
                 Source-side text tokens, shape [B, T_src_text], dtype torch.long.
@@ -326,7 +326,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
 
         Returns:
             Tuple containing:
-                input_text_tokens (torch.Tensor):
+                target_text_tokens (torch.Tensor):
                     Updated text tokens with prepended prompt-aligned tokens. Shape [B, T'].
 
                 target_token_lens (torch.Tensor):
@@ -356,17 +356,17 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
 
         text_pad_id = get_pad_id(self.tokenizer)
 
-        input_text_tokens_ = []
+        target_text_tokens_ = []
         source_tokens_ = []
         source_audio_ = []
         target_audio_ = []
         prompt_lens = []
 
-        for i in range(input_text_tokens.size(0)):
+        for i in range(target_text_tokens.size(0)):
             first_text_frame = torch.tensor(
                 [self.tokenizer.eos],
                 dtype=torch.long,
-                device=input_text_tokens.device,
+                device=target_text_tokens.device,
             )
 
             if self.add_audio_prompt:
@@ -389,21 +389,21 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                 prompt_audio_text_pad = (
                     torch.ones(
                         prompt_audio_text_pad_size,
-                        device=input_text_tokens.device,
-                        dtype=input_text_tokens.dtype,
+                        device=target_text_tokens.device,
+                        dtype=target_text_tokens.dtype,
                     )
                     * text_pad_id
                 )
                 prompt_audio_text_pad[-1] = self.tokenizer.eos
 
-                new_input_text_tokens = torch.cat(
+                new_target_text_tokens = torch.cat(
                     [
-                        first_text_frame.to(input_text_tokens.dtype),
+                        first_text_frame.to(target_text_tokens.dtype),
                         prompt_audio_text_pad,
-                        input_text_tokens[i],
+                        target_text_tokens[i],
                     ]
                 )
-                input_text_tokens_.append(new_input_text_tokens)
+                target_text_tokens_.append(new_target_text_tokens)
                 target_token_lens[i] += len(first_text_frame) + prompt_audio_text_pad_size
 
                 new_source_tokens = torch.cat([first_text_frame, prompt_audio_text_pad, source_tokens[i]])
@@ -434,7 +434,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
 
             else:
                 # Add only a single text-frame (EOS) as prompt
-                input_text_tokens_.append(torch.cat([first_text_frame, input_text_tokens[i]]))
+                target_text_tokens_.append(torch.cat([first_text_frame, target_text_tokens[i]]))
                 target_token_lens[i] += len(first_text_frame)
 
                 source_tokens_.append(torch.cat([first_text_frame, source_tokens[i]]))
@@ -460,13 +460,13 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
 
                 prompt_lens.append(len(first_text_frame))
 
-        input_text_tokens = collate_vectors(input_text_tokens_, padding_value=text_pad_id)
+        target_text_tokens = collate_vectors(target_text_tokens_, padding_value=text_pad_id)
         source_tokens = collate_vectors(source_tokens_, padding_value=text_pad_id)
         source_audio = collate_vectors(source_audio_, padding_value=0)
         target_audio = collate_vectors(target_audio_, padding_value=0)
 
         return (
-            input_text_tokens,
+            target_text_tokens,
             target_token_lens,
             source_tokens,
             source_token_lens,

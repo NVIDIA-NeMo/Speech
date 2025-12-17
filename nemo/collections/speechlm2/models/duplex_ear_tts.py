@@ -296,7 +296,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         target_audio = batch["target_audio"]
         target_audio_lens = batch["target_audio_lens"]
-        input_text_tokens = batch["input_text_tokens"]
+        target_text_tokens = batch["target_text_tokens"]
         non_prompt_mask = batch["non_prompt_mask"]
         aligned_attention_mask = batch["aligned_attention_mask"]
         aligned_position_ids = batch["aligned_position_ids"]
@@ -309,12 +309,12 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
                 # Create mask for tokens we want to drop
                 # Keep BOS and EOS, drop the rest.
-                keep_mask = (input_text_tokens == self.text_bos_id) | (input_text_tokens == self.text_eos_id)
+                keep_mask = (target_text_tokens == self.text_bos_id) | (target_text_tokens == self.text_eos_id)
                 full_dropout_mask = ~keep_mask  # True = positions to replace with PAD
 
                 # Replace all non-BOS/EOS with PAD
-                input_text_tokens = torch.where(
-                    full_dropout_mask, torch.full_like(input_text_tokens, self.text_pad_id), input_text_tokens
+                target_text_tokens = torch.where(
+                    full_dropout_mask, torch.full_like(target_text_tokens, self.text_pad_id), target_text_tokens
                 )
 
         # extract target audio codes
@@ -337,7 +337,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                         return x[:, :target_len]
                 return x  # leave others for now
 
-            input_text_tokens = pad_or_truncate(input_text_tokens, pad_value=self.text_pad_id)
+            target_text_tokens = pad_or_truncate(target_text_tokens, pad_value=self.text_pad_id)
             non_prompt_mask = pad_or_truncate(non_prompt_mask, pad_value=0)
             aligned_position_ids = pad_or_truncate(aligned_position_ids, pad_value=0)
 
@@ -364,25 +364,25 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # EOS dropout to make the model more robust
         if self.training and self.cfg.get("text_eos_dropout_prob", 0.0) > 0:
             # Mask EOS positions
-            eos_mask = input_text_tokens == self.text_eos_id
+            eos_mask = target_text_tokens == self.text_eos_id
 
             # Random dropout only on EOS positions
-            dropout_mask = torch.rand(eos_mask.sum(), device=input_text_tokens.device) < self.cfg.text_eos_dropout_prob
+            dropout_mask = torch.rand(eos_mask.sum(), device=target_text_tokens.device) < self.cfg.text_eos_dropout_prob
 
             # Scatter dropout decisions into [B, T]
-            full_dropout_mask = torch.zeros_like(input_text_tokens, dtype=torch.bool)
+            full_dropout_mask = torch.zeros_like(target_text_tokens, dtype=torch.bool)
             full_dropout_mask[eos_mask] = dropout_mask
 
             # Replace dropped EOS with PAD
-            input_text_tokens = torch.where(
-                full_dropout_mask, torch.full_like(input_text_tokens, self.text_pad_id), input_text_tokens
+            target_text_tokens = torch.where(
+                full_dropout_mask, torch.full_like(target_text_tokens, self.text_pad_id), target_text_tokens
             )
 
         if self.training and self.cfg.get("text_eos_duplicate_prob", 0.0) > 0:
             p = self.cfg.text_eos_duplicate_prob
 
             # [B, T] mask of EOS positions
-            eos_mask = input_text_tokens == self.text_eos_id
+            eos_mask = target_text_tokens == self.text_eos_id
 
             # Flatten EOS positions: tensor of shape [N, 2] where each row = (batch_idx, time_idx)
             eos_positions = eos_mask.nonzero(as_tuple=False)  # [N, 2]
@@ -391,7 +391,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 N = eos_positions.shape[0]
 
                 # One random decision per EOS occurrence
-                duplicate_decision = torch.rand(N, device=input_text_tokens.device) < p  # [N]
+                duplicate_decision = torch.rand(N, device=target_text_tokens.device) < p  # [N]
 
                 # Filter only EOS tokens that will be duplicated and are not at position t=0
                 valid = (eos_positions[:, 1] > 0) & duplicate_decision  # [N]
@@ -405,42 +405,42 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     t_idx = valid_positions[:, 1] - 1
 
                     # Replace token before EOS with an EOS
-                    input_text_tokens[b_idx, t_idx] = self.text_eos_id
+                    target_text_tokens[b_idx, t_idx] = self.text_eos_id
 
         # BOS dropout to make the model more robust
         if self.training and self.cfg.get("text_bos_dropout_prob", 0.0) > 0:
             # Mask BOS positions
-            bos_mask = input_text_tokens == self.text_bos_id
+            bos_mask = target_text_tokens == self.text_bos_id
 
             # Random dropout only on BOS positions
-            dropout_mask = torch.rand(bos_mask.sum(), device=input_text_tokens.device) < self.cfg.text_bos_dropout_prob
+            dropout_mask = torch.rand(bos_mask.sum(), device=target_text_tokens.device) < self.cfg.text_bos_dropout_prob
 
             # Scatter dropout decisions into [B, T]
-            full_dropout_mask = torch.zeros_like(input_text_tokens, dtype=torch.bool)
+            full_dropout_mask = torch.zeros_like(target_text_tokens, dtype=torch.bool)
             full_dropout_mask[bos_mask] = dropout_mask
 
             # Replace dropped BOS with PAD
-            input_text_tokens = torch.where(
+            target_text_tokens = torch.where(
                 full_dropout_mask,
-                torch.full_like(input_text_tokens, self.text_pad_id),
-                input_text_tokens,
+                torch.full_like(target_text_tokens, self.text_pad_id),
+                target_text_tokens,
             )
 
         # shift text tokens
-        subword_ids = F.pad(input_text_tokens[:, 1:], [0, 1])
+        subword_ids = F.pad(target_text_tokens[:, 1:], [0, 1])
         # note that we are using a text mask where we are ignoring the desc + audio prompt but we are keeping 1 until the audio ends to support duplex
         subword_mask = F.pad(non_prompt_mask[:, 1:], [0, 1])
 
         # detach embedding as in eartts
         if self.cfg.tts_config.context_hidden_size is not None:
-            context_hidden_state = self.embed_tokens(input_text_tokens).detach()
+            context_hidden_state = self.embed_tokens(target_text_tokens).detach()
         else:
             context_hidden_state = None
 
         if self._use_tp:
             tp_world_size = self.device_mesh["tensor_parallel"].size()
-            if (remainder := (input_text_tokens.shape[1] - 1) % tp_world_size) != 0:
-                input_text_tokens = input_text_tokens[:, :-remainder]
+            if (remainder := (target_text_tokens.shape[1] - 1) % tp_world_size) != 0:
+                target_text_tokens = target_text_tokens[:, :-remainder]
                 target_codes_aligned = target_codes_aligned[:, :-remainder]
                 target_codes_aligned = target_codes_aligned[:, :-remainder]
                 subword_ids = subword_ids[:, :-remainder]
@@ -456,7 +456,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "context_hidden_state": context_hidden_state,
             "output_lens": target_codes_lens,
             "non_prompt_mask": non_prompt_mask,
-            "input_text_tokens": input_text_tokens,
+            "target_text_tokens": target_text_tokens,
         }
 
     def training_step(self, batch: dict, batch_idx: int):
@@ -644,7 +644,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             )
             init_inputs = self.get_init_inputs(B=inputs["subword_ids"].size(0))
 
-        # remove the prompt from the input_text_tokens to emulate S2S connected inference
+        # remove the prompt from the target_text_tokens to emulate S2S connected inference
         next_subword_ids = torch.stack(
             [
                 inputs["subword_ids"][i, plen:]  # slice each element
@@ -862,7 +862,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         # Prepend an initial text EOS token followed by padding tokens that match
         # the number of audio-prompt frames (in text-token units).
-        input_text_tokens = torch.cat([first_text_frame, prompt_audio_text_pad.to(first_text_frame.dtype)])
+        target_text_tokens = torch.cat([first_text_frame, prompt_audio_text_pad.to(first_text_frame.dtype)])
 
         # create pad audio for the description
         pad_size = first_text_frame.size(-1) * self.target_samples_per_frame
@@ -873,7 +873,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         )
 
         # repeat to reaches the batch size
-        input_text_tokens = input_text_tokens.unsqueeze(0).repeat(prompt_audio.size(0), 1)
+        target_text_tokens = target_text_tokens.unsqueeze(0).repeat(prompt_audio.size(0), 1)
         target_audio = torch.cat([pad_audio, prompt_audio], dim=1)
 
         # extract code codes
@@ -885,16 +885,16 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         # get context hidden
         if self.cfg.tts_config.context_hidden_size is not None:
-            context_hidden_state = self.embed_tokens(input_text_tokens)
+            context_hidden_state = self.embed_tokens(target_text_tokens)
         else:
             context_hidden_state = None
 
         # create masks
         # non_prompt_mask is all zeros, because all processed is prompt
-        non_prompt_mask = torch.zeros_like(input_text_tokens)
+        non_prompt_mask = torch.zeros_like(target_text_tokens)
         non_prompt_mask[:, -2:] = 1  # set last valid prompt frame as 1 to allow the addition of BOS in the right place
         subword_mask = torch.zeros_like(
-            input_text_tokens
+            target_text_tokens
         )  # subword_mask is almost all zeros because on the warmup there is only the prompt
         subword_mask[:, -3:] = (
             1  # -3 because of the it start right after the first valid prompt token and it is shifted by 1
@@ -904,7 +904,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         code[:, 0] = self.speech_pad_id
 
         # shift subword_ids
-        subword_ids = F.pad(input_text_tokens[:, 1:], [0, 1], value=0.0)
+        subword_ids = F.pad(target_text_tokens[:, 1:], [0, 1], value=0.0)
 
         # set special token in the last audio prompt (it will works as a BOS token)
         pos = non_prompt_mask.float().argmax(dim=1)  # shape: [B]

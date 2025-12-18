@@ -214,9 +214,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens
 
-    def run_greedy_decoder(
-        self, state: CacheAwareCTCStreamingState, frame: Frame | FeatureBuffer, log_probs: Tensor
-    ):
+    def run_greedy_decoder(self, state: CacheAwareCTCStreamingState, frame: Frame | FeatureBuffer, log_probs: Tensor):
         """
         Run the greedy CTC decoder on the log_probs and update the state
         Args:
@@ -243,7 +241,11 @@ class CacheAwareCTCPipeline(BasePipeline):
         return eou_detected
 
     def decode_log_probs(
-        self, frames: list[Frame | FeatureBuffer], log_probs: Tensor, tail_log_probs: Tensor | None, ready_state_ids: set
+        self,
+        frames: list[Frame | FeatureBuffer],
+        log_probs: Tensor,
+        tail_log_probs: Tensor | None,
+        ready_state_ids: set,
     ) -> None:
         """
         Decode the log probabilities and update the state

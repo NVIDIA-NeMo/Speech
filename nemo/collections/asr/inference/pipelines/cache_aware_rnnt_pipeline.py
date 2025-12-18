@@ -29,7 +29,7 @@ from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_rnnt_decoder import RNNTGreedyDecoder
 from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_rnnt_endpointing import RNNTGreedyEndpointing
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame
+from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import CacheAwareRNNTStreamingState
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
@@ -231,18 +231,18 @@ class CacheAwareRNNTPipeline(BasePipeline):
         return feature_buffers, feature_buffer_lens
 
     def run_greedy_decoder(
-        self, state: CacheAwareRNNTStreamingState, frame: Frame | FeatureBuffer, hyp: Hypothesis
+        self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis
     ) -> bool:
         """
         Run the greedy RNNT decoder on the hypothesis and update the state
         Args:
             state: (CacheAwareRNNTStreamingState) The state of the stream
-            frame: (Frame | FeatureBuffer) The current frame or feature buffer
-            hyp: (Hypothesis) The hypothesis of the current frame
+            request: (Request) The current request (frame or feature buffer)
+            hyp: (Hypothesis) The hypothesis of the current request
         Returns:
             (bool) Whether EOU is detected.
         """
-        eou_detected = frame.is_last
+        eou_detected = request.is_last
         cur_output, cur_labels, new_offset = self.greedy_rnnt_decoder(
             global_timestamps=hyp.timestamp,
             tokens=hyp.y_sequence,
@@ -266,7 +266,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
     def cache_aware_transcribe_step(
         self,
-        frames: list[Frame | FeatureBuffer],
+        requests: list[Request],
         features: list[Tensor],
         right_paddings: list[int],
         ready_state_ids: set,
@@ -274,7 +274,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
     ) -> None:
         """
         Cache Aware Transcribe Step
-        It receives a list of frames (Frame or FeatureBuffer) and features and do the following:
+        It receives a list of requests (Frame or FeatureBuffer) and features and do the following:
 
         1. Preprocess the features by stacking them and computing the lengths
         2. Collecting previous hypotheses for stateful decoding
@@ -285,7 +285,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         7. Perform greedy RNNT decoding to get the best hypothesis and update the states
         8. Update the ready states to indicate that the state is ready for text post-processing
         Args:
-            frames: (list[Frame | FeatureBuffer]) List of frames or feature buffers to transcribe.
+            requests: (list[Request]) List of requests (frames or feature buffers) to transcribe.
             features: (list[Tensor]) List of feature buffers.
             right_paddings: (list[int] | None) List of right paddings.
             ready_state_ids: (set) Set of ready state IDs.
@@ -294,10 +294,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         feature_buffers, feature_buffer_lens = self.preprocess(features, right_paddings)
         states, stream_ids, eos_flags = [], [], []
-        for frame in frames:
-            states.append(self.get_state(frame.stream_id))
-            stream_ids.append(frame.stream_id)
-            eos_flags.append(frame.is_last)
+        for request in requests:
+            states.append(self.get_state(request.stream_id))
+            stream_ids.append(request.stream_id)
+            eos_flags.append(request.is_last)
 
         previous_hypotheses = [state.get_previous_hypothesis() for state in states]
         context, mapping = self.context_manager.get_context(stream_ids)
@@ -324,20 +324,19 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.context_manager.reset_slots(stream_ids, eos_flags)
 
         # update the previous hypothesis and reset the previous hypothesis for the streams that has ended
-        for i, (state, hyp, eos) in enumerate(zip(states, best_hyp, eos_flags)):
-            hyp_len = len(hyp.y_sequence) if hyp is not None and hasattr(hyp, 'y_sequence') else 0
+        for state, hyp, eos in zip(states, best_hyp, eos_flags):
             if eos:
                 state.reset_previous_hypothesis()
             else:
                 state.set_previous_hypothesis(hyp)
 
-        # run greedy decoder for each frame-state-hypothesis tuple
-        for frame, state, hyp in zip(frames, states, best_hyp):
-            eou_detected = self.run_greedy_decoder(state, frame, hyp)
+        # run greedy decoder for each request-state-hypothesis tuple
+        for request, state, hyp in zip(requests, states, best_hyp):
+            eou_detected = self.run_greedy_decoder(state, request, hyp)
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
-                ready_state_ids.add(frame.stream_id)
+                ready_state_ids.add(request.stream_id)
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

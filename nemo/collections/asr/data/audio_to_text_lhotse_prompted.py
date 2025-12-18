@@ -120,7 +120,10 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
             # Stack all chunks into a batch.
             audio = torch.stack(new_audio)
             audio_lens = torch.tensor(new_audio_lens, dtype=torch.long)
-        # Fast-path: the tokenization and prompt formatting was already done before sampling.
+            # Adding this to allow gathering results of the same audio from different batches
+            if cuts[0].start != 0:
+                cuts[0].id = cuts[0].id + '_cut_segmented'
+        # Fast-path: the tokenization and prompt format ting was already done before sampling.
         attrs = ("input_ids", "context_ids", "answer_ids")
         pre_formatted = all(hasattr(c, a) for c in cuts for a in attrs)
         if pre_formatted:

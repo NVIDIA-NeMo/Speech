@@ -29,7 +29,7 @@ from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_ctc_decoder import CTCGreedyDecoder
 from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_ctc_endpointing import CTCGreedyEndpointing
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame
+from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.cache_aware_ctc_state import CacheAwareCTCStreamingState
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
@@ -215,18 +215,18 @@ class CacheAwareCTCPipeline(BasePipeline):
         return feature_buffers, feature_buffer_lens
 
     def run_greedy_decoder(
-        self, state: CacheAwareCTCStreamingState, frame: Frame | FeatureBuffer, log_probs: Tensor
+        self, state: CacheAwareCTCStreamingState, request: Request, log_probs: Tensor
     ):
         """
         Run the greedy CTC decoder on the log_probs and update the state
         Args:
             state: (CacheAwareCTCStreamingState) The state of the stream
-            frame: (Frame | FeatureBuffer) The current frame or feature buffer
-            log_probs: (Tensor) The log probabilities of the current frame
+            request: (Request) The current request (frame or feature buffer)
+            log_probs: (Tensor) The log probabilities of the current request
         Returns:
             (bool) Whether EOU is detected.
         """
-        eou_detected = frame.is_last
+        eou_detected = request.is_last
         last_token = state.label_buffer[-1] if len(state.label_buffer) > 0 else self.blank_id
         cur_output = self.greedy_ctc_decoder(log_probs, compute_confidence=True, previous=last_token)
         state.update_label_buffer(cur_output["labels"])
@@ -243,25 +243,25 @@ class CacheAwareCTCPipeline(BasePipeline):
         return eou_detected
 
     def decode_log_probs(
-        self, frames: list[Frame | FeatureBuffer], log_probs: Tensor, tail_log_probs: Tensor | None, ready_state_ids: set
+        self, requests: list[Request], log_probs: Tensor, tail_log_probs: Tensor | None, ready_state_ids: set
     ) -> None:
         """
         Decode the log probabilities and update the state
         Args:
-            frames: (list[Frame | FeatureBuffer]) List of frames or feature buffers to transcribe.
+            requests: (list[Request]) List of requests (frames or feature buffers) to transcribe.
             log_probs: (Tensor) Log probabilities.
             tail_log_probs: (Tensor | None) Tail log probabilities.
             ready_state_ids: (set) Set of ready state IDs.
         """
 
-        for idx, frame in enumerate(frames):
-            state = self.get_state(frame.stream_id)
-            eou_detected = self.run_greedy_decoder(state, frame, log_probs[idx])
+        for idx, request in enumerate(requests):
+            state = self.get_state(request.stream_id)
+            eou_detected = self.run_greedy_decoder(state, request, log_probs[idx])
 
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
-                ready_state_ids.add(frame.stream_id)
+                ready_state_ids.add(request.stream_id)
 
             if tail_log_probs is not None:
                 last_token = state.label_buffer[-1] if len(state.label_buffer) > 0 else self.blank_id
@@ -272,7 +272,7 @@ class CacheAwareCTCPipeline(BasePipeline):
 
     def cache_aware_transcribe_step(
         self,
-        frames: list[Frame | FeatureBuffer],
+        requests: list[Request],
         buffered_features: list[Tensor],
         right_paddings: list[int] | None,
         ready_state_ids: set,
@@ -280,7 +280,7 @@ class CacheAwareCTCPipeline(BasePipeline):
     ) -> None:
         """
         Cache Aware Transcribe Step
-        It receives a list of frames (Frame or FeatureBuffer) and features and do the following:
+        It receives a list of requests (Frame or FeatureBuffer) and features and do the following:
 
         1. Preprocess the features by stacking them and computing the lengths
         2. Get the context and mapping from the context manager for cache aware streaming
@@ -289,7 +289,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         5. Decode the log probabilities and update the state
 
         Args:
-            frames: (list[Frame | FeatureBuffer]) List of frames or feature buffers to transcribe.
+            requests: (list[Request]) List of requests (frames or feature buffers) to transcribe.
             buffered_features: (list[Tensor]) List of buffered features.
             right_paddings: (list[int] | None) List of right paddings.
             ready_state_ids: (set) Set of ready state IDs.
@@ -297,8 +297,8 @@ class CacheAwareCTCPipeline(BasePipeline):
         """
         feature_buffers, feature_buffer_lens = self.preprocess(buffered_features, right_paddings)
 
-        stream_ids = [frame.stream_id for frame in frames]
-        eos_flags = [frame.is_last for frame in frames]
+        stream_ids = [request.stream_id for request in requests]
+        eos_flags = [request.is_last for request in requests]
         context, mapping = self.context_manager.get_context(stream_ids)
 
         drop_extra_pre_encoded = 0 if not self.use_cache else self.asr_model.drop_extra_pre_encoded
@@ -317,7 +317,7 @@ class CacheAwareCTCPipeline(BasePipeline):
             log_probs = normalize_log_probs(log_probs)
         self.context_manager.update_cache(stream_ids, new_context, mapping)
         self.context_manager.reset_slots(stream_ids, eos_flags)
-        self.decode_log_probs(frames, log_probs, tail_log_probs, ready_state_ids)
+        self.decode_log_probs(requests, log_probs, tail_log_probs, ready_state_ids)
 
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """

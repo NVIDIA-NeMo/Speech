@@ -25,7 +25,7 @@ import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.audio.models.enhancement  import EncMaskDecAudioToAudioModel
+from nemo.collections.audio.models.enhancement import EncMaskDecAudioToAudioModel
 
 
 @pytest.fixture(params=["nemo_manifest", "lhotse_cuts"])

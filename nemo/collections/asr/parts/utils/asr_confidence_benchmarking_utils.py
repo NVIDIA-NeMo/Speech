@@ -44,7 +44,12 @@ def get_correct_marks(r: Union[List[int], List[str]], h: Union[List[int], List[s
 
     This method considers only insertions and substitutions as incorrect marks.
     """
-    return [a == b for a, b in (align([str(rr) for rr in r], [str(hh) for hh in h], "<eps>")[:-1]) if b != "<eps>"]
+    alignment = align(
+        [str(rr) for rr in r],
+        [str(hh) for hh in h],
+        "<eps>",
+    )
+    return [a == b for a, b in alignment if b != "<eps>"]
 
 
 def get_token_targets_with_confidence(hyp: Hypothesis) -> List[Tuple[str, float]]:

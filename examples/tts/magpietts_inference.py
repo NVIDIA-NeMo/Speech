@@ -21,7 +21,7 @@ Example usage:
     # Inference only (from .nemo file) - default behavior
     python examples/tts/magpietts_inference.py \\
         --nemo_files /path/to/model.nemo \\
-        --datasets libritts_test_clean \\
+        --datasets_json_path /path/to/evalset_config.json \\
         --out_dir /path/to/output \\
         --codecmodel_path /path/to/codec.nemo
 
@@ -29,7 +29,7 @@ Example usage:
     python examples/tts/magpietts_inference.py \\
         --hparams_files /path/to/hparams.yaml \\
         --checkpoint_files /path/to/model.ckpt \\
-        --datasets libritts_test_clean,vctk \\
+        --datasets_json_path /path/to/evalset_config.json \\
         --out_dir /path/to/output \\
         --codecmodel_path /path/to/codec.nemo \\
         --run_evaluation \\
@@ -65,13 +65,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     load_magpie_model,
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
-
 from nemo.utils import logging
-
-# Default evaluation datasets
-EVALUATION_DATASETS = (
-    "riva_hard_digits,riva_hard_letters,riva_hard_money,riva_hard_short,vctk,libritts_seen,libritts_test_clean"
-)
 
 
 def parse_layer_list(layer_str: Optional[str]) -> Optional[List[int]]:
@@ -127,7 +121,7 @@ def run_inference_and_evaluation(
     model_config: ModelLoadConfig,
     inference_config: InferenceConfig,
     eval_config: EvaluationConfig,
-    datasets: List[str],
+    dataset_meta_info: dict,
     out_dir: str,
     num_repeats: int = 1,
     confidence_level: float = 0.95,
@@ -142,7 +136,7 @@ def run_inference_and_evaluation(
         model_config: Configuration for loading the model.
         inference_config: Configuration for inference.
         eval_config: Configuration for evaluation.
-        datasets: List of dataset names to evaluate.
+        dataset_meta_info: Dictionary containing dataset metadata.
         out_dir: Output directory for results.
         num_repeats: Number of times to repeat inference (for CI estimation).
         confidence_level: Confidence level for CI calculation.
@@ -176,7 +170,7 @@ def run_inference_and_evaluation(
     runner = MagpieInferenceRunner(model, inference_config)
 
     # Tracking metrics across datasets
-    dataset_meta_info = load_evalset_config()
+    datasets = list(dataset_meta_info.keys())
     ssim_per_dataset = []
     cer_per_dataset = []
     all_datasets_filewise_metrics = {}
@@ -192,10 +186,6 @@ def run_inference_and_evaluation(
 
     for dataset in datasets:
         logging.info(f"Processing dataset: {dataset}")
-
-        if dataset not in dataset_meta_info:
-            logging.warning(f"Dataset '{dataset}' not found in evalset_config.json, skipping.")
-            continue
 
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
@@ -232,7 +222,7 @@ def run_inference_and_evaluation(
                     f"Dataset length mismatch: {len(test_dataset)} vs {len(manifest_records)} manifest records"
                 )
 
-            rtf_metrics_list, generated_paths = runner.run_inference_on_dataset(
+            rtf_metrics_list, _ = runner.run_inference_on_dataset(
                 dataset=test_dataset,
                 output_dir=repeat_audio_dir,
                 manifest_records=manifest_records,
@@ -377,10 +367,10 @@ def create_argument_parser() -> argparse.ArgumentParser:
     # Dataset and output arguments
     data_group = parser.add_argument_group('Dataset and Output')
     data_group.add_argument(
-        '--datasets',
+        '--datasets_json_path',
         type=str,
         default=None,
-        help=f'Comma-separated dataset names (default: {EVALUATION_DATASETS})',
+        help='Path to dataset configuration JSON file (will process all datasets in the file)',
     )
     data_group.add_argument(
         '--out_dir',
@@ -487,11 +477,10 @@ def main():
     parser = create_argument_parser()
     args = parser.parse_args()
 
-    # Set default datasets if not provided
-    if args.datasets is None:
-        args.datasets = EVALUATION_DATASETS
+    dataset_meta_info = load_evalset_config(args.datasets_json_path)
+    datasets = list(dataset_meta_info.keys())
 
-    datasets = args.datasets.split(",")
+    logging.info(f"Loaded {len(datasets)} datasets: {', '.join(datasets)}")
 
     # Determine mode and validate
     has_checkpoint_mode = (
@@ -559,7 +548,7 @@ def main():
                 model_config=model_config,
                 inference_config=inference_config,
                 eval_config=eval_config,
-                datasets=datasets,
+                dataset_meta_info=dataset_meta_info,
                 out_dir=args.out_dir,
                 num_repeats=args.num_repeats,
                 confidence_level=args.confidence_level,
@@ -584,7 +573,7 @@ def main():
                 model_config=model_config,
                 inference_config=inference_config,
                 eval_config=eval_config,
-                datasets=datasets,
+                dataset_meta_info=dataset_meta_info,
                 out_dir=args.out_dir,
                 num_repeats=args.num_repeats,
                 confidence_level=args.confidence_level,

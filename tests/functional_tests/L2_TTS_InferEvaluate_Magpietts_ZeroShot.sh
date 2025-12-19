@@ -13,7 +13,7 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
     --codecmodel_path /home/TestData/tts/AudioCodec_21Hz_no_eliz_without_wavlm_disc.nemo \
-    --datasets an4_val_ci \
+    --datasets_json_path examples/tts/evalset_config.json \
     --out_dir ./mp_zs_0 \
     --batch_size 4 \
     --use_cfg \

@@ -633,7 +633,7 @@ def _get_sinc_resample_kernel(
     rolloff: float = 0.99,
     resampling_method: str = "sinc_interp_hann",
     beta: Optional[float] = None,
-    device: torch.device = _CPU,
+    device: torch.device = "cpu",
     dtype: Optional[torch.dtype] = None,
 ):
     if not (int(orig_freq) == orig_freq and int(new_freq) == new_freq):
@@ -646,18 +646,7 @@ def _get_sinc_resample_kernel(
             "For more information, please refer to https://github.com/pytorch/audio/issues/1487."
         )
 
-    if resampling_method in ["sinc_interpolation", "kaiser_window"]:
-        method_map = {
-            "sinc_interpolation": "sinc_interp_hann",
-            "kaiser_window": "sinc_interp_kaiser",
-        }
-        warnings.warn(
-            f'"{resampling_method}" resampling method name is being deprecated and replaced by '
-            f'"{method_map[resampling_method]}" in the next release. '
-            "The default behavior remains unchanged.",
-            stacklevel=3,
-        )
-    elif resampling_method not in ["sinc_interp_hann", "sinc_interp_kaiser"]:
+    if resampling_method not in ["sinc_interp_hann", "sinc_interp_kaiser"]:
         raise ValueError("Invalid resampling method: {}".format(resampling_method))
 
     orig_freq = int(orig_freq) // gcd

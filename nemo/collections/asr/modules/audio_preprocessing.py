@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
-from packaging import version
 
 from nemo.collections.asr.parts.numba.spec_augment import SpecAugmentNumba, spec_augment_launch_heuristics
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, FilterbankFeaturesTA
@@ -160,7 +159,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
             Defaults to 0.0
         nb_max_freq (int) : Frequency above which all frequencies will be masked for narrowband augmentation.
             Defaults to 4000
-        use_torchaudio: Deprecated and ignored.
+        use_torchaudio: Whether to use the FilterbankFeatures or FilterbankFeaturesTA class
         mel_norm: Normalization used for mel filterbank weights.
             Defaults to 'slaney' (area normalization)
         stft_exact_pad: Deprecated argument, kept for compatibility with older checkpoints.
@@ -226,7 +225,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         rng=None,
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
-        use_torchaudio: bool = None,
+        use_torchaudio: bool = False,
         mel_norm="slaney",
         stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
         stft_conv=False,  # Deprecated arguments; kept for config compatibility
@@ -245,11 +244,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         super().__init__(n_window_size, n_window_stride)
 
         # Given the long and similar argument list, point to the class and instantiate it by reference
-        if use_torchaudio is not None:
-            logging.warning(
-                f"use of torchaudio in NeMo is deprecated, and this argument will be ignored inside of {self}."
-            )
-        featurizer_class = FilterbankFeatures
+        featurizer_class = FilterbankFeaturesTA if use_torchaudio else FilterbankFeatures
         self.featurizer = featurizer_class(
             sample_rate=self._sample_rate,
             n_window_size=n_window_size,
@@ -727,7 +722,7 @@ class AudioToMelSpectrogramPreprocessorConfig:
     rng: Optional[str] = None
     nb_augmentation_prob: float = 0.0
     nb_max_freq: int = 4000
-    use_torchaudio: bool = None
+    use_torchaudio: bool = False
     mel_norm: str = "slaney"
     stft_exact_pad: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
     stft_conv: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.

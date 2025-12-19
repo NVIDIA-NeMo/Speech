@@ -21,10 +21,10 @@ from typing import Any, Optional
 import torch
 from packaging import version
 
-from nemo.collections.audio.parts.utils.transforms import MFCC
 from nemo.collections.asr.parts.numba.spec_augment import SpecAugmentNumba, spec_augment_launch_heuristics
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, FilterbankFeaturesTA
 from nemo.collections.asr.parts.submodules.spectr_augment import SpecAugment, SpecCutout
+from nemo.collections.audio.parts.utils.transforms import MFCC
 from nemo.core.classes import Exportable, NeuralModule, typecheck
 from nemo.core.neural_types import (
     AudioSignal,
@@ -246,7 +246,9 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
 
         # Given the long and similar argument list, point to the class and instantiate it by reference
         if use_torchaudio is not None:
-            logging.warning(f"use of torchaudio in NeMo is deprecated, and this argument will be ignored inside of {self}.")
+            logging.warning(
+                f"use of torchaudio in NeMo is deprecated, and this argument will be ignored inside of {self}."
+            )
         featurizer_class = FilterbankFeatures
         self.featurizer = featurizer_class(
             sample_rate=self._sample_rate,

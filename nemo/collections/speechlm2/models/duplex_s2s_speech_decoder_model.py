@@ -13,6 +13,7 @@
 # limitations under the License.
 import torch
 import torch.distributed as dist
+from gitrepos.NeMo.nemo.collections.audio.parts.utils.transforms import resample
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from peft import PeftModel
@@ -29,7 +30,6 @@ from torch.distributed.tensor.parallel import (
 )
 from transformers import DynamicCache
 
-from gitrepos.NeMo.nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import replace_control_speech_codes, tokens_to_str

@@ -41,9 +41,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from nemo.collections.audio.parts.utils.transforms import MelSpectrogram
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.audio.parts.utils.transforms import MelSpectrogram
 from nemo.utils import logging
 
 CONSTANT = 1e-5

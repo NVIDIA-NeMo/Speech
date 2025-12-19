@@ -25,7 +25,7 @@ from einops import rearrange
 from transformers import AutoModel
 
 from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
-from nemo.collections.audio.parts.utils.transforms import Resample, MelSpectrogram
+from nemo.collections.audio.parts.utils.transforms import MelSpectrogram, Resample
 from nemo.collections.common.parts.utils import ClampActivation, HalfSnake, Snake, mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule

@@ -185,7 +185,6 @@ class AudioCodecModel(ModelPT):
                 orig_freq=self.sample_rate, new_freq=self.speaker_encoder.audio_config["sample_rate"]
             )
 
-
         # Disabled for now as it is not used in final model
         self.use_asr_consitency_loss = False
         self.acl_loss_scale = False

@@ -14,6 +14,7 @@
 from typing import Any
 
 import torch
+from gitrepos.NeMo.nemo.collections.audio.parts.utils.transforms import resample
 from lightning import LightningModule
 from omegaconf import DictConfig
 from peft import PeftModel
@@ -30,7 +31,6 @@ from torch.distributed.tensor.parallel import (
 )
 from transformers import DynamicCache
 
-from gitrepos.NeMo.nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin

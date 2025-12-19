@@ -18,8 +18,8 @@ from typing import Optional
 
 import torch
 
-from nemo.collections.audio.parts.utils.transforms import resample, MelSpectrogram
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.audio.parts.utils.transforms import MelSpectrogram, resample
 from nemo.core import Loss, Typing, typecheck
 from nemo.core.neural_types import LengthsType, LossType, NeuralType, VoidType
 from nemo.utils import logging

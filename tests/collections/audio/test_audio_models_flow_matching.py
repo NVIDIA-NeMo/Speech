@@ -24,7 +24,7 @@ import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.audio.models import FlowMatchingAudioToAudioModel
+from nemo.collections.audio.models.enhancement import FlowMatchingAudioToAudioModel
 
 
 def convert_to_dictconfig(d):

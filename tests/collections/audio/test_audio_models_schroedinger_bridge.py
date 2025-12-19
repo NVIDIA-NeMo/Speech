@@ -24,7 +24,7 @@ import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.audio.models import SchroedingerBridgeAudioToAudioModel
+from nemo.collections.audio.models.enhancement  import SchroedingerBridgeAudioToAudioModel
 
 
 @pytest.fixture(params=["nemo_manifest", "lhotse_cuts"])

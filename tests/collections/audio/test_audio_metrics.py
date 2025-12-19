@@ -15,6 +15,7 @@ import pytest
 import torch
 from torchmetrics.audio.snr import SignalNoiseRatio
 
+from nemo.collections.audio.parts.utils.transforms import Resample
 from nemo.collections.audio.metrics.audio import AudioMetricWrapper
 from nemo.collections.audio.metrics.squim import SquimMOSMetric, SquimObjectiveMetric
 
@@ -165,7 +166,7 @@ class TestSquimMetrics:
             squim_mos_metric = SquimMOSMetric(fs=fs)
 
             # Helper function
-            resampler = torchaudio.transforms.Resample(
+            resampler = Resample(
                 orig_freq=fs,
                 new_freq=16000,
                 lowpass_filter_width=64,
@@ -222,7 +223,7 @@ class TestSquimMetrics:
             squim_objective_metric = SquimObjectiveMetric(fs=fs, metric=metric)
 
             # Helper function
-            resampler = torchaudio.transforms.Resample(
+            resampler = Resample(
                 orig_freq=fs,
                 new_freq=16000,
                 lowpass_filter_width=64,

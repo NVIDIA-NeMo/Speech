@@ -41,17 +41,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from nemo.collections.audio.parts.utils.transforms import MelSpectrogram
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.utils import logging
-
-try:
-    import torchaudio
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
-
 
 CONSTANT = 1e-5
 
@@ -541,8 +534,6 @@ class FilterbankFeaturesTA(nn.Module):
         stft_conv: bool = False,  # Deprecated arguments; kept for config compatibility
     ):
         super().__init__()
-        if not HAVE_TORCHAUDIO:
-            raise ValueError(f"Need to install torchaudio to instantiate a {self.__class__.__name__}")
 
         # Make sure log zero guard is supported, if given as a string
         supported_log_zero_guard_strings = {"eps", "tiny"}
@@ -577,7 +568,7 @@ class FilterbankFeaturesTA(nn.Module):
         self.pad_to = pad_to
         self.pad_value = pad_value
         self.n_fft = n_fft
-        self._mel_spec_extractor: torchaudio.transforms.MelSpectrogram = torchaudio.transforms.MelSpectrogram(
+        self._mel_spec_extractor: MelSpectrogram = MelSpectrogram(
             sample_rate=self._sample_rate,
             win_length=self.win_length,
             hop_length=self.hop_length,

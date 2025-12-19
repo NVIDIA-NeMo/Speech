@@ -4112,8 +4112,7 @@ class MagpieTTSModel(ModelPT):
 
             # Initialize attention prior for longform generation
             initial_attn_prior = self._initialize_longform_attn_prior(
-                current_chunk_len, batch['text_lens'], max_text_len,
-                batch_size, use_cfg, prior_epsilon, device
+                current_chunk_len, batch['text_lens'], max_text_len, batch_size, use_cfg, prior_epsilon, device
             )
             self.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
 
@@ -4194,22 +4193,20 @@ class MagpieTTSModel(ModelPT):
                         else text_time_step_attended
                     )
 
-                    (
-                        state.attn_prior,
-                        state.unfinished_texts,
-                        state.finished_texts_counter
-                    ) = self.construct_longform_inference_prior(
-                        prior_epsilon=prior_epsilon,
-                        cross_attention_scores=alignment_attention_scores,
-                        text_lens=context_tensors.text_lens,
-                        text_time_step_attended=text_time_step_attended,
-                        attended_timestep_counter=state.attended_timestep_counter,
-                        unfinished_texts=state.unfinished_texts,
-                        finished_texts_counter=state.finished_texts_counter,
-                        end_indices=self.end_indices,
-                        chunk_end_dict=state.chunk_end_dict,
-                        batch_size=batch_size,
-                        left_offset=self.left_offset,
+                    (state.attn_prior, state.unfinished_texts, state.finished_texts_counter) = (
+                        self.construct_longform_inference_prior(
+                            prior_epsilon=prior_epsilon,
+                            cross_attention_scores=alignment_attention_scores,
+                            text_lens=context_tensors.text_lens,
+                            text_time_step_attended=text_time_step_attended,
+                            attended_timestep_counter=state.attended_timestep_counter,
+                            unfinished_texts=state.unfinished_texts,
+                            finished_texts_counter=state.finished_texts_counter,
+                            end_indices=self.end_indices,
+                            chunk_end_dict=state.chunk_end_dict,
+                            batch_size=batch_size,
+                            left_offset=self.left_offset,
+                        )
                     )
 
                 for key in state.finished_texts_counter:
@@ -4228,7 +4225,8 @@ class MagpieTTSModel(ModelPT):
                     unfinished_items = {}
                 else:
                     finished_items = {
-                        k: v for k, v in state.finished_texts_counter.items()
+                        k: v
+                        for k, v in state.finished_texts_counter.items()
                         if v >= self.longform_finished_limit_with_eot
                     }
                     unfinished_items = {k: v for k, v in state.unfinished_texts.items() if v}
@@ -4251,8 +4249,14 @@ class MagpieTTSModel(ModelPT):
 
                 # Check for EOS and update state
                 self._check_eos_and_update_state(
-                    audio_codes_next, all_codes_next_argmax, state.chunk_end_dict,
-                    state.finished_texts_counter, end_of_text, eos_detection_method, idx, batch_size
+                    audio_codes_next,
+                    all_codes_next_argmax,
+                    state.chunk_end_dict,
+                    state.finished_texts_counter,
+                    end_of_text,
+                    eos_detection_method,
+                    idx,
+                    batch_size,
                 )
 
                 state.all_predictions.append(audio_codes_next)
@@ -4271,7 +4275,7 @@ class MagpieTTSModel(ModelPT):
             predicted_codes = predicted_codes.squeeze(2)
             predicted_codes_lens = torch.tensor(
                 [state.chunk_end_dict.get(item_idx, predicted_codes.size(-1)) for item_idx in range(batch_size)],
-                device=device
+                device=device,
             )
 
             return InferBatchOutput(

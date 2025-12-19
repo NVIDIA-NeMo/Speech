@@ -488,8 +488,7 @@ class LongFormInferenceRunner:
 
         # Get codec downsample factor
         codec_downsample_factor = getattr(
-            self.model.cfg, 'codec_model_downsample_factor',
-            getattr(self.model._codec_model, 'samples_per_frame', 320)
+            self.model.cfg, 'codec_model_downsample_factor', getattr(self.model._codec_model, 'samples_per_frame', 320)
         )
 
         dataset = LongFormTTSInferenceDataset(
@@ -588,7 +587,7 @@ class LongFormInferenceRunner:
                     batch, chunk_idx, max_num_chunks, current_tokens_lens, batch_size
                 )
 
-                beginning_of_text = (chunk_idx == 0)
+                beginning_of_text = chunk_idx == 0
 
                 # Call generate_long_form_speech
                 output = self.model.generate_long_form_speech(
@@ -635,9 +634,7 @@ class LongFormInferenceRunner:
                     concatenated = torch.cat(predicted_codes_per_sample[b_idx], dim=1).cuda()
                 else:
                     # Empty placeholder
-                    concatenated = torch.zeros(
-                        (self.model.num_audio_codebooks, 1), dtype=torch.long, device='cuda'
-                    )
+                    concatenated = torch.zeros((self.model.num_audio_codebooks, 1), dtype=torch.long, device='cuda')
                 predicted_codes_list.append(concatenated)
 
             # Stack and convert to audio

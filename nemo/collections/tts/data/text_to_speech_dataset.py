@@ -810,8 +810,8 @@ class LongFormTTSInferenceDataset(torch.utils.data.Dataset):
     - Text tokenization and chunking by sentences
     - Context audio loading (codes or raw audio)
 
-    Unlike LongFormTTSDataset in inference.py, this class does NOT require
-    the model instance. It follows the MagpieTTSDataset pattern:
+    This class is designed to be model-agnostic and does NOT require a model
+    instance at construction time. It follows the MagpieTTSDataset pattern:
     - If context_audio_codes_path exists: load pre-computed codes
     - If context_audio_filepath exists: load raw audio (model converts later)
 

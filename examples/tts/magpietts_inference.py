@@ -58,7 +58,11 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_dir,
 )
-from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
+from nemo.collections.tts.modules.magpietts_inference.inference import (
+    InferenceConfig,
+    LongFormInferenceRunner,
+    MagpieInferenceRunner,
+)
 from nemo.collections.tts.modules.magpietts_inference.utils import (
     ModelLoadConfig,
     get_experiment_name_from_checkpoint_path,
@@ -129,6 +133,7 @@ def run_inference_and_evaluation(
     log_exp_name: bool = False,
     clean_up_disk: bool = False,
     skip_evaluation: bool = False,
+    longform: bool = False,
 ) -> Tuple[Optional[float], Optional[float]]:
     """Run inference and optional evaluation on specified datasets.
 
@@ -144,6 +149,7 @@ def run_inference_and_evaluation(
         log_exp_name: Whether to include experiment name in output paths.
         clean_up_disk: Whether to clean up output directory after completion.
         skip_evaluation: Whether to skip evaluation (inference only mode).
+        longform: Whether to use longform inference (processes text sentence-by-sentence).
 
     Returns:
         Tuple of (mean CER across datasets, mean SSIM across datasets).
@@ -166,8 +172,12 @@ def run_inference_and_evaluation(
     # Build full checkpoint identifier
     full_checkpoint_name = f"{checkpoint_name}_{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
 
-    # Create inference runner
-    runner = MagpieInferenceRunner(model, inference_config)
+    # Create appropriate inference runner based on longform flag
+    if longform:
+        logging.info("Using longform inference mode (sentence-by-sentence processing)")
+        runner = LongFormInferenceRunner(model, inference_config)
+    else:
+        runner = MagpieInferenceRunner(model, inference_config)
 
     # Tracking metrics across datasets
     datasets = list(dataset_meta_info.keys())
@@ -396,6 +406,17 @@ def create_argument_parser() -> argparse.ArgumentParser:
     infer_group.add_argument('--batch_size', type=int, default=32)
     infer_group.add_argument('--use_cfg', action='store_true', help='Enable classifier-free guidance')
     infer_group.add_argument('--cfg_scale', type=float, default=2.5)
+    infer_group.add_argument(
+        '--longform',
+        action='store_true',
+        help='Enable longform inference for long text inputs (processes text sentence-by-sentence)',
+    )
+    infer_group.add_argument(
+        '--longform_max_decoder_steps',
+        type=int,
+        default=50000,
+        help='Maximum decoder steps for longform inference',
+    )
 
     # Attention prior arguments
     prior_group = parser.add_argument_group('Attention Prior')
@@ -495,12 +516,16 @@ def main():
         parser.error("You must provide either:\n" "  1. --hparams_files and --checkpoint_files\n" "  2. --nemo_files")
 
     # Build configurations
+    # Use higher max_decoder_steps for longform inference
+    max_decoder_steps = args.longform_max_decoder_steps if args.longform else 440
+
     inference_config = InferenceConfig(
         temperature=args.temperature,
         topk=args.topk,
         batch_size=args.batch_size,
         use_cfg=args.use_cfg,
         cfg_scale=args.cfg_scale,
+        max_decoder_steps=max_decoder_steps,
         apply_attention_prior=args.apply_attention_prior,
         attention_prior_epsilon=args.attention_prior_epsilon,
         attention_prior_lookahead_window=args.attention_prior_lookahead_window,
@@ -556,6 +581,7 @@ def main():
                 log_exp_name=args.log_exp_name,
                 clean_up_disk=args.clean_up_disk,
                 skip_evaluation=not args.run_evaluation,
+                longform=args.longform,
             )
 
     else:  # nemo mode
@@ -581,6 +607,7 @@ def main():
                 log_exp_name=args.log_exp_name,
                 clean_up_disk=args.clean_up_disk,
                 skip_evaluation=not args.run_evaluation,
+                longform=args.longform,
             )
 
     # Check quality targets

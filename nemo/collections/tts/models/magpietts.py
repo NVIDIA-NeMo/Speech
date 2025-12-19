@@ -4127,42 +4127,49 @@ class MagpieTTSModel(ModelPT):
                 )
 
             # Initialize attention prior for longform generation
-            _attn_prior = self._initialize_longform_attn_prior(
+            initial_attn_prior = self._initialize_longform_attn_prior(
                 current_chunk_len, batch['text_lens'], max_text_len,
                 batch_size, use_cfg, prior_epsilon, device
             )
             self.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
 
-            attended_timestep_counter = [{} for _ in range(batch_size)]
-            all_predictions = []
-            chunk_end_dict = {}
-            unfinished_texts = {}
-            finished_texts_counter = {}
+            # Create decoder state object to track all mutable state
+            state = LongformDecoderState(
+                audio_codes_input=audio_codes_input,
+                audio_codes_lens=audio_codes_lens,
+                audio_codes_mask=audio_codes_mask,
+                attended_timestep_counter=[{} for _ in range(batch_size)],
+                all_predictions=[],
+                chunk_end_dict={},
+                unfinished_texts={},
+                finished_texts_counter={},
+                attn_prior=initial_attn_prior,
+            )
 
             for idx in range(max_decoder_steps):
                 if idx % 30 == 0:
                     logging.info(f"Longform decoding timestep {idx}")
 
                 # Embed audio codes and concatenate with additional decoder input
-                audio_codes_embedded = self.embed_audio_tokens(audio_codes_input)
+                audio_codes_embedded = self.embed_audio_tokens(state.audio_codes_input)
                 if context_tensors.additional_decoder_input is not None:
                     _audio_codes_embedded = torch.cat(
                         [context_tensors.additional_decoder_input, audio_codes_embedded], dim=1
                     )
                     _audio_codes_mask = torch.cat(
-                        [context_tensors.additional_decoder_mask, audio_codes_mask], dim=1
+                        [context_tensors.additional_decoder_mask, state.audio_codes_mask], dim=1
                     )
                 else:
                     _audio_codes_embedded = audio_codes_embedded
-                    _audio_codes_mask = audio_codes_mask
+                    _audio_codes_mask = state.audio_codes_mask
 
                 # Prepare attention prior for layers
                 if apply_prior_to_layers is not None:
                     attn_prior = [None for _ in range(self.cfg.decoder.n_layers)]
                     for layer_idx in apply_prior_to_layers:
-                        attn_prior[layer_idx] = _attn_prior
+                        attn_prior[layer_idx] = state.attn_prior
                 else:
-                    attn_prior = _attn_prior
+                    attn_prior = state.attn_prior
 
                 if self.model_type == 'multi_encoder_context_tts':
                     attn_prior = [attn_prior, None]
@@ -4188,12 +4195,12 @@ class MagpieTTSModel(ModelPT):
                         attn_probs, filter_layers=estimate_alignment_from_layers
                     )  # B, text_timesteps
 
-                    text_time_step_attended, attended_timestep_counter = self.get_most_attended_text_timestep(
+                    text_time_step_attended, state.attended_timestep_counter = self.get_most_attended_text_timestep(
                         alignment_attention_scores=alignment_attention_scores,
                         last_attended_timesteps=self.last_attended_timesteps,
                         text_lens=context_tensors.text_lens,
                         lookahead_window_size=lookahead_window_size,
-                        attended_timestep_counter=attended_timestep_counter,
+                        attended_timestep_counter=state.attended_timestep_counter,
                         batch_size=batch_size,
                         left_offset=self.left_offset,
                     )
@@ -4203,43 +4210,43 @@ class MagpieTTSModel(ModelPT):
                     )
 
                     (
-                        _attn_prior,
-                        unfinished_texts,
-                        finished_texts_counter
+                        state.attn_prior,
+                        state.unfinished_texts,
+                        state.finished_texts_counter
                     ) = self.construct_longform_inference_prior(
                         prior_epsilon=prior_epsilon,
                         cross_attention_scores=alignment_attention_scores,
                         text_lens=context_tensors.text_lens,
                         text_time_step_attended=text_time_step_attended,
-                        attended_timestep_counter=attended_timestep_counter,
-                        unfinished_texts=unfinished_texts,
-                        finished_texts_counter=finished_texts_counter,
+                        attended_timestep_counter=state.attended_timestep_counter,
+                        unfinished_texts=state.unfinished_texts,
+                        finished_texts_counter=state.finished_texts_counter,
                         end_indices=self.end_indices,
-                        chunk_end_dict=chunk_end_dict,
+                        chunk_end_dict=state.chunk_end_dict,
                         batch_size=batch_size,
                         left_offset=self.left_offset,
                     )
 
-                for key in finished_texts_counter:
-                    finished_texts_counter[key] += 1
+                for key in state.finished_texts_counter:
+                    state.finished_texts_counter[key] += 1
                     limit = (
                         self.longform_finished_limit_with_eot
                         if end_of_text[key]
                         else self.longform_finished_limit_without_eot
                     )
-                    if finished_texts_counter[key] > limit:
+                    if state.finished_texts_counter[key] > limit:
                         # We should allow EOS to be predicted now.
-                        unfinished_texts[key] = False
+                        state.unfinished_texts[key] = False
 
                 if ignore_finished_sentence_tracking:
                     finished_items = {}
                     unfinished_items = {}
                 else:
                     finished_items = {
-                        k: v for k, v in finished_texts_counter.items()
+                        k: v for k, v in state.finished_texts_counter.items()
                         if v >= self.longform_finished_limit_with_eot
                     }
-                    unfinished_items = {k: v for k, v in unfinished_texts.items() if v}
+                    unfinished_items = {k: v for k, v in state.unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
                 audio_codes_next = self.sample_codes_from_logits(
@@ -4259,26 +4266,26 @@ class MagpieTTSModel(ModelPT):
 
                 # Check for EOS and update state
                 self._check_eos_and_update_state(
-                    audio_codes_next, all_codes_next_argmax, chunk_end_dict,
-                    finished_texts_counter, end_of_text, eos_detection_method, idx, batch_size
+                    audio_codes_next, all_codes_next_argmax, state.chunk_end_dict,
+                    state.finished_texts_counter, end_of_text, eos_detection_method, idx, batch_size
                 )
 
-                all_predictions.append(audio_codes_next)
+                state.all_predictions.append(audio_codes_next)
 
-                audio_codes_input = torch.cat([audio_codes_input, audio_codes_next], dim=-1)  # (B, C, T')
-                audio_codes_lens = audio_codes_lens + 1
-                audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
+                state.audio_codes_input = torch.cat([state.audio_codes_input, audio_codes_next], dim=-1)  # (B, C, T')
+                state.audio_codes_lens = state.audio_codes_lens + 1
+                state.audio_codes_mask = get_mask_from_lengths(state.audio_codes_lens)
 
                 # Check termination condition
-                if self._should_terminate_loop(chunk_end_dict, end_of_text, batch_size):
+                if self._should_terminate_loop(state.chunk_end_dict, end_of_text, batch_size):
                     break
 
                 self.overall_idx += 1
 
-            predicted_codes = torch.stack(all_predictions, dim=-1)
+            predicted_codes = torch.stack(state.all_predictions, dim=-1)
             predicted_codes = predicted_codes.squeeze(2)
             predicted_codes_lens = torch.tensor(
-                [chunk_end_dict.get(item_idx, predicted_codes.size(-1)) for item_idx in range(batch_size)],
+                [state.chunk_end_dict.get(item_idx, predicted_codes.size(-1)) for item_idx in range(batch_size)],
                 device=device
             )
 

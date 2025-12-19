@@ -1082,9 +1082,7 @@ class LongFormTTSInferenceDataset(torch.utils.data.Dataset):
             batch_dict['context_audio_codes'] = stack_tensors(
                 context_audio_codes_list, max_lens=[context_audio_max_len]
             )
-            batch_dict['context_audio_codes_lens'] = torch.tensor(
-                context_audio_codes_lens_list, dtype=torch.int32
-            )
+            batch_dict['context_audio_codes_lens'] = torch.tensor(context_audio_codes_lens_list, dtype=torch.int32)
         else:
             context_audio_max_len = max(context_audio_lens_list)
             # Stack 1D audio tensors

@@ -2620,7 +2620,9 @@ class MagpieTTSModel(ModelPT):
                 last_attended_timestep += 1
             last_attended_timestep_in_this_window = last_attended_timestep - left_offset[bidx]
             window_size = lookahead_window_size
-            window_end = min(last_attended_timestep_in_this_window + window_size, text_lens[bidx] - 3)  # Ignore the last 3 timesteps
+            window_end = min(
+                last_attended_timestep_in_this_window + window_size, text_lens[bidx] - 3
+            )  # Ignore the last 3 timesteps
             item_attention_scores = alignment_attention_scores[bidx, last_attended_timestep_in_this_window:window_end]
             if item_attention_scores.size(0) == 0:
                 # This means the sentence has ended
@@ -3592,11 +3594,9 @@ class MagpieTTSModel(ModelPT):
 
         for timestep, count in attended_timestep_counter.items():
             if timestep > left_offset and count >= threshold:
-                logging.debug(
-                    f"Attention sink at timestep {timestep} for batch {batch_idx}, count: {count}"
-                )
+                logging.debug(f"Attention sink at timestep {timestep} for batch {batch_idx}, count: {count}")
                 relative_pos = timestep - left_offset
-                attn_prior[batch_idx, 0, :relative_pos + 1] = eps_sq
+                attn_prior[batch_idx, 0, : relative_pos + 1] = eps_sq
 
     def _update_text_completion_state(
         self,
@@ -3690,25 +3690,20 @@ class MagpieTTSModel(ModelPT):
                 attn_prior[bidx, 0, :] = 1.0
             else:
                 # Set attention weights around attended position
-                self._set_attention_prior_weights(
-                    attn_prior, bidx, attended_pos, text_len, eps_sq
-                )
+                self._set_attention_prior_weights(attn_prior, bidx, attended_pos, text_len, eps_sq)
 
             # Penalize attention sinks (stuck positions)
             if not is_finished:
                 self._penalize_attention_sinks(
-                    attn_prior, bidx, attended_timestep_counter[bidx],
-                    left_offset[bidx], eps_sq
+                    attn_prior, bidx, attended_timestep_counter[bidx], left_offset[bidx], eps_sq
                 )
 
             # Update text completion tracking
             self._update_text_completion_state(
-                bidx, attended_pos, text_len, is_finished,
-                unfinished_texts, finished_texts_counter
+                bidx, attended_pos, text_len, is_finished, unfinished_texts, finished_texts_counter
             )
 
         return attn_prior, unfinished_texts, finished_texts_counter
-
 
     @staticmethod
     def _to_int(value: Union[int, torch.Tensor]) -> int:
@@ -3839,14 +3834,8 @@ class MagpieTTSModel(ModelPT):
         if use_cfg:
             # Combine conditional and unconditional inputs
             if isinstance(context_tensors.cond, list):
-                cfg_cond = [
-                    torch.cat([c, d], dim=0)
-                    for c, d in zip(context_tensors.cond, dummy_cond)
-                ]
-                cfg_cond_mask = [
-                    torch.cat([c, d], dim=0)
-                    for c, d in zip(context_tensors.cond_mask, dummy_cond_mask)
-                ]
+                cfg_cond = [torch.cat([c, d], dim=0) for c, d in zip(context_tensors.cond, dummy_cond)]
+                cfg_cond_mask = [torch.cat([c, d], dim=0) for c, d in zip(context_tensors.cond_mask, dummy_cond_mask)]
             else:
                 cfg_cond = torch.cat([context_tensors.cond, dummy_cond], dim=0)
                 cfg_cond_mask = torch.cat([context_tensors.cond_mask, dummy_cond_mask], dim=0)
@@ -3855,12 +3844,10 @@ class MagpieTTSModel(ModelPT):
             cfg_audio_mask = torch.cat([audio_codes_mask, audio_codes_mask], dim=0)
 
             if dummy_additional_decoder_input is not None:
-                cfg_audio_embedded[batch_size:, :dummy_additional_decoder_input.size(1)] = (
+                cfg_audio_embedded[batch_size:, : dummy_additional_decoder_input.size(1)] = (
                     dummy_additional_decoder_input
                 )
-                cfg_audio_mask[batch_size:, :dummy_additional_decoder_input.size(1)] = (
-                    dummy_addition_dec_mask
-                )
+                cfg_audio_mask[batch_size:, : dummy_additional_decoder_input.size(1)] = dummy_addition_dec_mask
 
             combined_logits, attn_probs, _ = self.forward(
                 dec_input_embedded=cfg_audio_embedded,
@@ -3924,9 +3911,7 @@ class MagpieTTSModel(ModelPT):
         for _idx in range(batch_size):
             # Calculate left offset for sliding window
             delta_in_len = self._to_int(current_chunk_len[_idx])
-            len_to_delete = self._to_int(
-                self.previous_attn_len[_idx] + delta_in_len - batch_text_lens[_idx]
-            )
+            len_to_delete = self._to_int(self.previous_attn_len[_idx] + delta_in_len - batch_text_lens[_idx])
             self.left_offset[_idx] = self._to_int(self.left_offset[_idx] + len_to_delete)
 
             # Skip if text has ended
@@ -3974,11 +3959,9 @@ class MagpieTTSModel(ModelPT):
                 continue
             if not beginning_of_text:
                 pad_len_idx = max_text_len - batch_text_lens[_idx]
-                context_tensors.cond[_idx, :-current_chunk_len[_idx] - pad_len_idx] = (
-                    self.history_context_tensor[
-                        _idx, -(context_tensors.cond[_idx].shape[0] - current_chunk_len[_idx] - pad_len_idx):
-                    ]
-                )
+                context_tensors.cond[_idx, : -current_chunk_len[_idx] - pad_len_idx] = self.history_context_tensor[
+                    _idx, -(context_tensors.cond[_idx].shape[0] - current_chunk_len[_idx] - pad_len_idx) :
+                ]
         self.history_context_tensor = context_tensors.cond
 
     def _prepare_longform_text_tensors(
@@ -4015,18 +3998,20 @@ class MagpieTTSModel(ModelPT):
 
             # Combine history with current chunk
             if self.history_text is not None:
-                current_text = torch.cat([
-                    self.history_text[_idx][:self.history_text_lens[_idx]],
-                    batch["text"][_idx][:current_chunk_len[_idx]]
-                ])
+                current_text = torch.cat(
+                    [
+                        self.history_text[_idx][: self.history_text_lens[_idx]],
+                        batch["text"][_idx][: current_chunk_len[_idx]],
+                    ]
+                )
             else:
-                current_text = batch["text"][_idx][:current_chunk_len[_idx]]
+                current_text = batch["text"][_idx][: current_chunk_len[_idx]]
 
             # Apply sliding window
             history_len = min(current_chunk_len[_idx], self.longform_history_len_heuristic)
             true_window_size = current_chunk_len[_idx] + history_len
             if not beginning_of_text:
-                current_text = current_text[max(0, current_text.shape[0] - true_window_size):]
+                current_text = current_text[max(0, current_text.shape[0] - true_window_size) :]
 
             current_text_lens = current_text.shape[0]
             text_tensors.append(current_text)
@@ -4101,13 +4086,12 @@ class MagpieTTSModel(ModelPT):
 
             # Update context with historical embeddings
             self._update_context_from_history(
-                context_tensors, current_chunk_len, max_text_len,
-                beginning_of_text, batch['text_lens'], batch_size
+                context_tensors, current_chunk_len, max_text_len, beginning_of_text, batch['text_lens'], batch_size
             )
 
-            audio_codes_input = torch.full(
-                (batch_size, self.num_audio_codebooks, 1), self.audio_bos_id
-            ).long().to(device)
+            audio_codes_input = (
+                torch.full((batch_size, self.num_audio_codebooks, 1), self.audio_bos_id).long().to(device)
+            )
             audio_codes_lens = torch.full((batch_size,), audio_codes_input.size(2), device=device).long().to(device)
             audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
 
@@ -4205,7 +4189,8 @@ class MagpieTTSModel(ModelPT):
                         left_offset=self.left_offset,
                     )
                     self.last_attended_timesteps.append(
-                        text_time_step_attended.detach() if isinstance(text_time_step_attended, torch.Tensor)
+                        text_time_step_attended.detach()
+                        if isinstance(text_time_step_attended, torch.Tensor)
                         else text_time_step_attended
                     )
 
@@ -4254,14 +4239,14 @@ class MagpieTTSModel(ModelPT):
                     temperature=temperature,
                     topk=topk,
                     unfinished_items=unfinished_items,
-                    finished_items=finished_items
+                    finished_items=finished_items,
                 )  # (B, num_codebooks)
                 all_codes_next_argmax = self.sample_codes_from_logits(
                     all_code_logits_t,
                     temperature=self.longform_argmax_temperature,
                     topk=1,
                     unfinished_items=unfinished_items,
-                    finished_items=finished_items
+                    finished_items=finished_items,
                 )  # (B, num_codebooks)
 
                 # Check for EOS and update state

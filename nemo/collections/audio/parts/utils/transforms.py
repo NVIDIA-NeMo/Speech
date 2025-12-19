@@ -47,17 +47,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 import math
 import warnings
-from typing import Optional, Callable, Union
+from typing import Callable, Optional, Union
 
 import torch
 from torch import Tensor
 
-__all__ = [
-    "Spectrogram",
-    "MelSpectrogram",
-    "MFCC",
-    "Resample"
-]
+__all__ = ["Spectrogram", "MelSpectrogram", "MFCC", "Resample"]
+
 
 class Spectrogram(torch.nn.Module):
     r"""Create a spectrogram from a audio signal.
@@ -96,6 +92,7 @@ class Spectrogram(torch.nn.Module):
         >>> spectrogram = transform(waveform)
 
     """
+
     __constants__ = ["n_fft", "win_length", "hop_length", "pad", "power", "normalized"]
 
     def __init__(
@@ -158,6 +155,7 @@ class Spectrogram(torch.nn.Module):
             self.onesided,
         )
 
+
 class MelSpectrogram(torch.nn.Module):
     r"""Create MelSpectrogram for a raw audio signal.
 
@@ -207,6 +205,7 @@ class MelSpectrogram(torch.nn.Module):
         :py:func:`torchaudio.functional.melscale_fbanks` - The function used to
         generate the filter banks.
     """
+
     __constants__ = ["sample_rate", "n_fft", "win_length", "hop_length", "pad", "n_mels", "f_min"]
 
     def __init__(
@@ -275,6 +274,7 @@ class MelSpectrogram(torch.nn.Module):
         mel_specgram = self.mel_scale(specgram)
         return mel_specgram
 
+
 class MFCC(torch.nn.Module):
     r"""Create the Mel-frequency cepstrum coefficients from an audio signal.
 
@@ -311,6 +311,7 @@ class MFCC(torch.nn.Module):
         :py:func:`torchaudio.functional.melscale_fbanks` - The function used to
         generate the filter banks.
     """
+
     __constants__ = ["sample_rate", "n_mfcc", "dct_type", "top_db", "log_mels"]
 
     def __init__(
@@ -360,6 +361,7 @@ class MFCC(torch.nn.Module):
         # (..., time, n_mels) dot (n_mels, n_mfcc) -> (..., n_nfcc, time)
         mfcc = torch.matmul(mel_specgram.transpose(-1, -2), self.dct_mat).transpose(-1, -2)
         return mfcc
+
 
 class Resample(torch.nn.Module):
     r"""Resample a signal from one frequency to another. A resampling method can be given.
@@ -444,6 +446,7 @@ class Resample(torch.nn.Module):
             return waveform
         return _apply_sinc_resample_kernel(waveform, self.orig_freq, self.new_freq, self.gcd, self.kernel, self.width)
 
+
 class MelScale(torch.nn.Module):
     r"""Turn a normal STFT into a mel frequency STFT with triangular filter banks.
 
@@ -472,6 +475,7 @@ class MelScale(torch.nn.Module):
         :py:func:`torchaudio.functional.melscale_fbanks` - The function used to
         generate the filter banks.
     """
+
     __constants__ = ["n_mels", "sample_rate", "f_min", "f_max"]
 
     def __init__(
@@ -512,6 +516,7 @@ class MelScale(torch.nn.Module):
 
         return mel_specgram
 
+
 class AmplitudeToDB(torch.nn.Module):
     r"""Turn a tensor from the power/amplitude scale to the decibel scale.
 
@@ -534,6 +539,7 @@ class AmplitudeToDB(torch.nn.Module):
         >>> transform = transforms.AmplitudeToDB(stype="amplitude", top_db=80)
         >>> waveform_db = transform(waveform)
     """
+
     __constants__ = ["multiplier", "amin", "ref_value", "db_multiplier"]
 
     def __init__(self, stype: str = "power", top_db: Optional[float] = None) -> None:
@@ -617,6 +623,7 @@ def resample(
     )
     resampled = _apply_sinc_resample_kernel(waveform, orig_freq, new_freq, gcd, kernel, width)
     return resampled
+
 
 def _get_sinc_resample_kernel(
     orig_freq: int,
@@ -717,6 +724,7 @@ def _get_sinc_resample_kernel(
 
     return kernels, width
 
+
 def _apply_sinc_resample_kernel(
     waveform: Tensor,
     orig_freq: int,
@@ -745,6 +753,7 @@ def _apply_sinc_resample_kernel(
     # unpack batch
     resampled = resampled.view(shape[:-1] + resampled.shape[-1:])
     return resampled
+
 
 def spectrogram(
     waveform: Tensor,
@@ -839,6 +848,7 @@ def spectrogram(
         return spec_f.abs().pow(power)
     return spec_f
 
+
 def _get_spec_norms(normalized: Union[str, bool]):
     frame_length_norm, window_norm = False, False
     if torch.jit.isinstance(normalized, str):
@@ -854,6 +864,7 @@ def _get_spec_norms(normalized: Union[str, bool]):
     else:
         raise TypeError("Input type not supported")
     return frame_length_norm, window_norm
+
 
 def amplitude_to_DB(
     x: Tensor, multiplier: float, amin: float, db_multiplier: float, top_db: Optional[float] = None
@@ -905,6 +916,7 @@ def amplitude_to_DB(
 
     return x_db
 
+
 def create_dct(n_mfcc: int, n_mels: int, norm: Optional[str]) -> Tensor:
     r"""Create a DCT transformation matrix with shape (``n_mels``, ``n_mfcc``),
     normalized depending on norm.
@@ -937,6 +949,7 @@ def create_dct(n_mfcc: int, n_mels: int, norm: Optional[str]) -> Tensor:
         dct[0] *= 1.0 / math.sqrt(2.0)
         dct *= math.sqrt(2.0 / float(n_mels))
     return dct.t()
+
 
 def melscale_fbanks(
     n_freqs: int,
@@ -1009,6 +1022,7 @@ def melscale_fbanks(
 
     return fb
 
+
 def _hz_to_mel(freq: float, mel_scale: str = "htk") -> float:
     r"""Convert Hz to Mels.
 
@@ -1042,6 +1056,7 @@ def _hz_to_mel(freq: float, mel_scale: str = "htk") -> float:
 
     return mels
 
+
 def _mel_to_hz(mels: Tensor, mel_scale: str = "htk") -> Tensor:
     """Convert mel bin numbers to frequencies.
 
@@ -1073,6 +1088,7 @@ def _mel_to_hz(mels: Tensor, mel_scale: str = "htk") -> Tensor:
     freqs[log_t] = min_log_hz * torch.exp(logstep * (mels[log_t] - min_log_mel))
 
     return freqs
+
 
 def _create_triangular_filterbank(
     all_freqs: Tensor,

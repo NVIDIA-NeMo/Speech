@@ -17,7 +17,7 @@ Core inference logic for MagpieTTS.
 This module provides:
 - InferenceConfig: Dataclass for inference hyperparameters
 - MagpieInferenceRunner: Class for running batch inference with a loaded model
-- LongFormInferenceRunner: Class for longform batch inference
+  (supports auto-detection of longform text via longform_mode="auto")
 """
 from __future__ import annotations
 
@@ -70,6 +70,10 @@ class InferenceConfig:
         # EOS detection
         eos_detection_method: Method for detecting end-of-sequence.
         ignore_finished_sentence_tracking: Whether to ignore sentence tracking.
+
+        # Longform inference mode
+        longform_mode: Longform inference mode ("auto", "always", "never").
+        longform_word_threshold: Word threshold for auto-detection.
     """
 
     # Core sampling parameters
@@ -98,6 +102,10 @@ class InferenceConfig:
     # EOS detection
     eos_detection_method: str = "argmax_or_multinomial_any"
     ignore_finished_sentence_tracking: bool = False
+
+    # Longform inference mode
+    longform_mode: str = "auto"  # "auto" | "always" | "never"
+    longform_word_threshold: int = 40  # Word threshold for auto-detection
 
     def build_identifier(self) -> str:
         """Build a unique identifier string for this configuration.
@@ -169,6 +177,11 @@ class MagpieInferenceRunner:
         # Set phoneme probability to 1 for inference
         self._configure_tokenizer()
 
+        # Cached state from create_dataset (set when create_dataset is called)
+        self._use_longform: Optional[bool] = None
+        self._manifest_records: Optional[List[dict]] = None
+        self._audio_base_dir: Optional[str] = None
+
     def _configure_tokenizer(self) -> None:
         """Configure the tokenizer for inference (phoneme prob = 1.0)."""
         g2p = None
@@ -180,21 +193,52 @@ class MagpieInferenceRunner:
         if g2p is not None:
             g2p.phoneme_probability = 1.0
 
+    def _needs_longform_inference(self, manifest_records: List[dict]) -> bool:
+        """Determine if any manifest entry needs longform inference.
+
+        Checks if text exceeds character threshold OR has multiple sentences.
+
+        Args:
+            manifest_records: List of manifest record dictionaries.
+
+        Returns:
+            True if longform inference should be used, False otherwise.
+        """
+        if self.config.longform_mode == "always":
+            return True
+        if self.config.longform_mode == "never":
+            return False
+
+        # Auto-detection based on text characteristics
+        for record in manifest_records:
+            text = record.get('text', '')
+
+            # Check word count
+            word_count = len(text.split())
+            if word_count >= self.config.longform_word_threshold:
+                return True
+
+        return False
+
     def create_dataset(
         self,
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
-    ) -> MagpieTTSDataset:
+    ) -> Any:  # Union[MagpieTTSDataset, LongFormTTSInferenceDataset]
         """Create a dataset for inference.
 
+        Automatically creates the appropriate dataset type based on longform detection:
+        - LongFormTTSInferenceDataset if longform text is detected
+        - MagpieTTSDataset for standard inference
+
         Args:
-            dataset_meta: Dataset metadata dictionary.
+            dataset_meta: Dataset metadata dictionary with 'manifest_path' and 'audio_dir'.
             context_duration_min: Minimum context duration (uses model default if None).
             context_duration_max: Maximum context duration (uses model default if None).
 
         Returns:
-            Configured MagpieTTSDataset instance.
+            Configured dataset instance (MagpieTTSDataset or LongFormTTSInferenceDataset).
         """
         # Use model defaults if not specified
         if context_duration_min is None:
@@ -207,37 +251,111 @@ class MagpieInferenceRunner:
             context_duration_min = 5.0
             context_duration_max = 5.0
 
-        dataset = MagpieTTSDataset(
-            dataset_meta=dataset_meta,
-            sample_rate=self.model.sample_rate,
-            min_duration=0.5,
-            max_duration=20,
-            codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
-            bos_id=self.model.bos_id,
-            eos_id=self.model.eos_id,
-            context_audio_bos_id=self.model.context_audio_bos_id,
-            context_audio_eos_id=self.model.context_audio_eos_id,
-            audio_bos_id=self.model.audio_bos_id,
-            audio_eos_id=self.model.audio_eos_id,
-            num_audio_codebooks=self.model.num_audio_codebooks,
-            prior_scaling_factor=None,
-            load_cached_codes_if_available=False,
-            dataset_type='test',
-            tokenizer_config=None,
-            load_16khz_audio=self.model.model_type == 'single_encoder_sv_tts',
-            use_text_conditioning_tokenizer=self.model.use_text_conditioning_encoder,
-            text_conditioning_tokenizer_name=self.model.text_conditioning_tokenizer_name,
-            pad_context_text_to_max_duration=self.model.pad_context_text_to_max_duration,
-            context_duration_min=context_duration_min,
-            context_duration_max=context_duration_max,
-        )
+        # Read manifest and cache for later use
+        dataset_name = list(dataset_meta.keys())[0]
+        dataset_info = dataset_meta[dataset_name]
+        manifest_path = dataset_info.get('manifest_path')
+        audio_dir = dataset_info.get('audio_dir', '')
+        logging.info(f"Dataset name: {dataset_name}, manifest_path: {manifest_path}, audio_dir: {audio_dir}")
 
-        # Attach model's tokenizer
-        dataset.text_tokenizer = self.model.tokenizer
+        self._manifest_records = read_manifest(manifest_path)
+        self._audio_base_dir = audio_dir
+        # Determine longform mode and cache
+        self._use_longform = self._needs_longform_inference(self._manifest_records)
+        logging.info(f"Longform detection: {self._use_longform} (mode: {self.config.longform_mode})")
+
+        # Create appropriate dataset type based on longform detection
+        if self._use_longform:
+            logging.info("Creating LongFormTTSInferenceDataset for longform inference")
+            # Pass flat format with audio_dir for LongFormTTSInferenceDataset
+            flat_meta = {'audio_dir': audio_dir}
+            dataset = self._create_longform_dataset(
+                self._manifest_records, flat_meta, context_duration_min, context_duration_max
+            )
+        else:
+            logging.info("Creating MagpieTTSDataset for standard inference")
+            dataset = MagpieTTSDataset(
+                dataset_meta=dataset_meta,
+                sample_rate=self.model.sample_rate,
+                min_duration=0.5,
+                max_duration=20,
+                codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
+                bos_id=self.model.bos_id,
+                eos_id=self.model.eos_id,
+                context_audio_bos_id=self.model.context_audio_bos_id,
+                context_audio_eos_id=self.model.context_audio_eos_id,
+                audio_bos_id=self.model.audio_bos_id,
+                audio_eos_id=self.model.audio_eos_id,
+                num_audio_codebooks=self.model.num_audio_codebooks,
+                prior_scaling_factor=None,
+                load_cached_codes_if_available=False,
+                dataset_type='test',
+                tokenizer_config=None,
+                load_16khz_audio=self.model.model_type == 'single_encoder_sv_tts',
+                use_text_conditioning_tokenizer=self.model.use_text_conditioning_encoder,
+                text_conditioning_tokenizer_name=self.model.text_conditioning_tokenizer_name,
+                pad_context_text_to_max_duration=self.model.pad_context_text_to_max_duration,
+                context_duration_min=context_duration_min,
+                context_duration_max=context_duration_max,
+            )
+            # Attach model's tokenizer for standard dataset
+            dataset.text_tokenizer = self.model.tokenizer
 
         return dataset
 
     def run_inference_on_dataset(
+        self,
+        dataset: Any,  # Union[MagpieTTSDataset, LongFormTTSInferenceDataset]
+        output_dir: str,
+        manifest_records: Optional[List[dict]] = None,
+        audio_base_dir: Optional[str] = None,
+        save_cross_attention_maps: bool = True,
+        save_context_audio: bool = True,
+    ) -> Tuple[List[dict], List[str]]:
+        """Run inference on a dataset.
+
+        Routes to standard or longform inference based on the cached detection
+        from create_dataset(). Uses cached manifest_records and audio_base_dir
+        if not provided.
+
+        Args:
+            dataset: The inference dataset (created by create_dataset()).
+            output_dir: Directory to save generated audio and artifacts.
+            manifest_records: Original manifest records (uses cached if None).
+            audio_base_dir: Base directory for audio paths (uses cached if None).
+            save_cross_attention_maps: Whether to save attention map images.
+            save_context_audio: Whether to copy context audio files.
+
+        Returns:
+            Tuple of:
+                - rtf_metrics: List of real-time factor metrics per batch.
+                - generated_audio_paths: List of paths to generated audio files.
+        """
+        # Use cached values if not provided
+        if manifest_records is None:
+            if self._manifest_records is None:
+                raise ValueError("manifest_records not provided and not cached from create_dataset()")
+            manifest_records = self._manifest_records
+
+        if audio_base_dir is None:
+            if self._audio_base_dir is None:
+                raise ValueError("audio_base_dir not provided and not cached from create_dataset()")
+            audio_base_dir = self._audio_base_dir
+
+        # Route based on cached longform detection
+        if self._use_longform:
+            logging.info("Using longform inference path")
+            return self._run_longform_inference(
+                dataset, output_dir, manifest_records, audio_base_dir, save_context_audio
+            )
+        else:
+            logging.info("Using standard inference path")
+            return self._run_standard_inference(
+                dataset, output_dir, manifest_records, audio_base_dir,
+                save_cross_attention_maps, save_context_audio
+            )
+
+    def _run_standard_inference(
         self,
         dataset: MagpieTTSDataset,
         output_dir: str,
@@ -246,7 +364,7 @@ class MagpieInferenceRunner:
         save_cross_attention_maps: bool = True,
         save_context_audio: bool = True,
     ) -> Tuple[List[dict], List[str]]:
-        """Run inference on a dataset and save outputs.
+        """Run standard single-pass inference on a dataset.
 
         Args:
             dataset: The inference dataset.
@@ -404,51 +522,9 @@ class MagpieInferenceRunner:
 
         return mean_metrics
 
-
-class LongFormInferenceRunner:
-    """
-    Runner for longform batch inference - same interface as MagpieInferenceRunner.
-
-    This runner processes long text inputs by:
-    1. Splitting text into sentences
-    2. Iteratively calling generate_long_form_speech() for each sentence chunk
-    3. Accumulating predicted codes across chunks
-    4. Converting accumulated codes to audio
-
-    The interface (create_dataset, run_inference_on_dataset) matches MagpieInferenceRunner
-    for polymorphic usage.
-    """
-
-    def __init__(
+    def _create_longform_dataset(
         self,
-        model: MagpieTTSModel,
-        config: InferenceConfig,
-    ):
-        """Initialize the longform inference runner.
-
-        Args:
-            model: Loaded MagpieTTS model (should be on GPU and in eval mode).
-            config: Inference configuration.
-        """
-        self.model = model
-        self.config = config
-
-        # Configure tokenizer for inference
-        self._configure_tokenizer()
-
-    def _configure_tokenizer(self) -> None:
-        """Configure the tokenizer for inference (phoneme prob = 1.0)."""
-        g2p = None
-        if isinstance(self.model.tokenizer, AggregatedTTSTokenizer):
-            g2p = self.model.tokenizer.tokenizers["english_phoneme"].g2p
-        elif isinstance(self.model.tokenizer, IPATokenizer):
-            g2p = self.model.tokenizer.g2p
-
-        if g2p is not None:
-            g2p.phoneme_probability = 1.0
-
-    def create_dataset(
-        self,
+        manifest_records: List[dict],
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
@@ -456,7 +532,8 @@ class LongFormInferenceRunner:
         """Create a longform dataset for inference.
 
         Args:
-            dataset_meta: Dataset metadata dictionary (with manifest_path, audio_dir, etc.).
+            manifest_records: List of manifest record dictionaries.
+            dataset_meta: Dataset metadata dictionary.
             context_duration_min: Minimum context duration (uses model default if None).
             context_duration_max: Maximum context duration (uses model default if None).
 
@@ -474,13 +551,6 @@ class LongFormInferenceRunner:
             context_duration_min = 5.0
             context_duration_max = 5.0
 
-        # Get dataset name (first key in dataset_meta)
-        dataset_name = list(dataset_meta.keys())[0]
-        meta = dataset_meta[dataset_name]
-
-        # Read manifest records
-        manifest_records = read_manifest(meta['manifest_path'])
-
         # Determine tokenizer name
         tokenizer_name = "english_phoneme"
         if isinstance(self.model.tokenizer, AggregatedTTSTokenizer):
@@ -488,7 +558,8 @@ class LongFormInferenceRunner:
 
         # Get codec downsample factor
         codec_downsample_factor = getattr(
-            self.model.cfg, 'codec_model_downsample_factor', getattr(self.model._codec_model, 'samples_per_frame', 320)
+            self.model.cfg, 'codec_model_downsample_factor',
+            getattr(self.model._codec_model, 'samples_per_frame', 320)
         )
 
         dataset = LongFormTTSInferenceDataset(
@@ -496,7 +567,7 @@ class LongFormInferenceRunner:
             text_tokenizer=self.model.tokenizer,
             tokenizer_name=tokenizer_name,
             eos_id=self.model.eos_id,
-            dataset_meta=meta,
+            dataset_meta=dataset_meta,
             context_duration_min=context_duration_min,
             context_duration_max=context_duration_max,
             sample_rate=self.model.sample_rate,
@@ -511,23 +582,23 @@ class LongFormInferenceRunner:
 
         return dataset
 
-    def run_inference_on_dataset(
+    def _run_longform_inference(
         self,
         dataset: LongFormTTSInferenceDataset,
         output_dir: str,
         manifest_records: List[dict],
         audio_base_dir: str,
-        save_cross_attention_maps: bool = True,
         save_context_audio: bool = True,
     ) -> Tuple[List[dict], List[str]]:
-        """Run longform inference on a dataset and save outputs.
+        """Run longform inference with automatic sentence chunking.
+
+        Processes text sentence-by-sentence using generate_long_form_speech().
 
         Args:
-            dataset: The longform inference dataset.
+            dataset: LongFormTTSInferenceDataset created by create_dataset().
             output_dir: Directory to save generated audio and artifacts.
-            manifest_records: Original manifest records for metadata.
+            manifest_records: List of manifest record dictionaries.
             audio_base_dir: Base directory for resolving audio paths.
-            save_cross_attention_maps: Whether to save attention map images (not used in longform).
             save_context_audio: Whether to copy context audio files.
 
         Returns:
@@ -536,7 +607,7 @@ class LongFormInferenceRunner:
                 - generated_audio_paths: List of paths to generated audio files.
         """
         os.makedirs(output_dir, exist_ok=True)
-        MagpieInferenceRunner._delete_old_generated_files(output_dir)
+        self._delete_old_generated_files(output_dir)
 
         dataloader = torch.utils.data.DataLoader(
             dataset,
@@ -554,13 +625,13 @@ class LongFormInferenceRunner:
             logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)} (longform)")
 
             # Move batch tensors to CUDA
-            batch = self._prepare_batch(batch)
+            batch = self._prepare_longform_batch(batch)
 
             batch_size = len(batch['chunked_tokens'])
             max_num_chunks = max(len(tokens) for tokens in batch['chunked_tokens'])
 
-            # Initialize longform state for this batch
-            self.model.set_longform_inference_variables(batch_size=batch_size)
+            # Create longform chunk state for this batch
+            chunk_state = self.model.create_longform_chunk_state(batch_size=batch_size)
 
             # Accumulators for predicted codes
             predicted_codes_per_sample = [[] for _ in range(batch_size)]
@@ -592,6 +663,7 @@ class LongFormInferenceRunner:
                 # Call generate_long_form_speech
                 output = self.model.generate_long_form_speech(
                     batch,
+                    chunk_state=chunk_state,
                     end_of_text=is_end_of_text,
                     beginning_of_text=beginning_of_text,
                     max_decoder_steps=self.config.max_decoder_steps,
@@ -634,7 +706,9 @@ class LongFormInferenceRunner:
                     concatenated = torch.cat(predicted_codes_per_sample[b_idx], dim=1).cuda()
                 else:
                     # Empty placeholder
-                    concatenated = torch.zeros((self.model.num_audio_codebooks, 1), dtype=torch.long, device='cuda')
+                    concatenated = torch.zeros(
+                        (self.model.num_audio_codebooks, 1), dtype=torch.long, device='cuda'
+                    )
                 predicted_codes_list.append(concatenated)
 
             # Stack and convert to audio
@@ -671,7 +745,7 @@ class LongFormInferenceRunner:
 
                 # Copy reference audio if requested
                 if save_context_audio and sample_idx < len(manifest_records):
-                    MagpieInferenceRunner._copy_reference_audio(
+                    self._copy_reference_audio(
                         manifest_records[sample_idx],
                         audio_base_dir,
                         output_dir,
@@ -682,7 +756,7 @@ class LongFormInferenceRunner:
 
         return all_rtf_metrics, generated_audio_paths
 
-    def _prepare_batch(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_longform_batch(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare batch by moving to CUDA and converting raw audio to codes if needed.
 
         Args:
@@ -698,39 +772,21 @@ class LongFormInferenceRunner:
 
         # Handle context audio - convert raw audio to codes if needed
         if 'context_audio_codes' in batch:
-            # Pre-computed codes available
             batch['context_audio_codes'] = batch['context_audio_codes'].cuda()
             batch['context_audio_codes_lens'] = batch['context_audio_codes_lens'].cuda()
         elif 'context_audio' in batch:
-            # Raw audio - convert to codes using model
+            # Convert raw audio to codes using model
             context_audio = batch['context_audio'].cuda()
-            context_audio_lens = batch['context_audio_lens'].cuda()
+            context_audio_len = batch['context_audio_lens'].cuda()
 
-            # Convert to codes
-            context_audio_codes, context_audio_codes_lens = self.model.audio_to_codes(
-                context_audio, context_audio_lens, audio_type='context'
+            # audio_to_codes expects (B, T) audio
+            context_codes, context_codes_lens = self.model.audio_to_codes(
+                context_audio, context_audio_len, audio_type='context'
             )
+            batch['context_audio_codes'] = context_codes
+            batch['context_audio_codes_lens'] = context_codes_lens
 
-            # Add BOS and EOS tokens
-            bos_tensor = torch.full(
-                (context_audio_codes.shape[0], context_audio_codes.shape[1], 1),
-                self.model.context_audio_bos_id,
-                dtype=context_audio_codes.dtype,
-                device=context_audio_codes.device,
-            )
-            eos_tensor = torch.full(
-                (context_audio_codes.shape[0], context_audio_codes.shape[1], 1),
-                self.model.context_audio_eos_id,
-                dtype=context_audio_codes.dtype,
-                device=context_audio_codes.device,
-            )
-            context_audio_codes = torch.cat([bos_tensor, context_audio_codes, eos_tensor], dim=2)
-            context_audio_codes_lens = context_audio_codes_lens + 2  # +2 for BOS and EOS
-
-            batch['context_audio_codes'] = context_audio_codes
-            batch['context_audio_codes_lens'] = context_audio_codes_lens
-
-            # Remove raw audio from batch to save memory
+            # Clean up raw audio from batch
             del batch['context_audio']
             del batch['context_audio_lens']
 
@@ -744,22 +800,17 @@ class LongFormInferenceRunner:
         current_tokens_lens: List[int],
         batch_size: int,
     ) -> List[bool]:
-        """Compute is_end_of_text flags for each sample in the batch.
-
-        A sample's text is considered "ended" if:
-        - This is the last chunk (chunk_idx == max_num_chunks - 1)
-        - Current tokens length is 1 (padding chunk)
-        - Next chunk's tokens length is 1 (next is padding)
+        """Compute end-of-text flags for each sample in batch.
 
         Args:
             batch: Current batch dictionary.
             chunk_idx: Current chunk index.
-            max_num_chunks: Maximum number of chunks in batch.
-            current_tokens_lens: Token lengths for current chunk.
+            max_num_chunks: Maximum number of chunks in this batch.
+            current_tokens_lens: Token lengths for current chunk per sample.
             batch_size: Number of samples in batch.
 
         Returns:
-            List of boolean flags, one per sample.
+            List of booleans indicating if each sample has reached end of text.
         """
         is_end_of_text = []
         for b_idx in range(batch_size):
@@ -776,6 +827,3 @@ class LongFormInferenceRunner:
                 is_end_of_text.append(False)
 
         return is_end_of_text
-
-    # Reuse static methods from MagpieInferenceRunner
-    compute_mean_rtf_metrics = staticmethod(MagpieInferenceRunner.compute_mean_rtf_metrics)

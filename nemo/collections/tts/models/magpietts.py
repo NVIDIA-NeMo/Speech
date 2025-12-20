@@ -4087,7 +4087,7 @@ class MagpieTTSModel(ModelPT):
             batch['text_lens'][_idx] = torch.tensor(current_text_lens).to(device).long()
 
         # Pad and stack text tensors
-        max_text_len = max(batch['text_lens'])
+        max_text_len = max(batch['text_lens']).item()
         batch['text'] = stack_tensors(text_tensors, max_lens=[max_text_len])
 
         # Update history

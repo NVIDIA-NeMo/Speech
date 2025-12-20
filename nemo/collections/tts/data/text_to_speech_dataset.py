@@ -939,7 +939,11 @@ class LongFormTTSInferenceDataset(torch.utils.data.Dataset):
             example['context_audio'] = context_audio
             example['context_audio_len'] = context_audio.shape[0]
         else:
-            raise IndexError(f"No context audio path found in manifest entry: {entry}")
+            raise IndexError(
+                "No context audio found in manifest entry. Expected either "
+                "'context_audio_codes_path' or 'context_audio_filepath' field. "
+                f"Entry: {entry}"
+            )
 
         return example
 

@@ -3819,7 +3819,6 @@ class MagpieTTSModel(ModelPT):
             elif (
                 not end_of_text[item_idx]
                 and finished_texts_counter.get(item_idx, -1) >= self.longform_config.forceful_chunk_end_threshold
-                and item_idx not in chunk_end_dict
             ):
                 chunk_end_dict[item_idx] = current_step
                 logging.info(f"Forceful chunk end detected for item {item_idx} at local timestep {current_step}")
@@ -4088,7 +4087,7 @@ class MagpieTTSModel(ModelPT):
             batch['text_lens'][_idx] = torch.tensor(current_text_lens).to(device).long()
 
         # Pad and stack text tensors
-        max_text_len = max(batch['text_lens'])
+        max_text_len = max(batch['text_lens']).item()
         batch['text'] = stack_tensors(text_tensors, max_lens=[max_text_len])
 
         # Update history

@@ -267,10 +267,8 @@ class MagpieInferenceRunner:
         # Create appropriate dataset type based on longform detection
         if self._use_longform:
             logging.info("Creating LongFormTTSInferenceDataset for longform inference")
-            # Pass flat format with audio_dir for LongFormTTSInferenceDataset
-            flat_meta = {'audio_dir': audio_dir}
             dataset = self._create_longform_dataset(
-                self._manifest_records, flat_meta, context_duration_min, context_duration_max
+                dataset_meta, context_duration_min, context_duration_max
             )
         else:
             logging.info("Creating MagpieTTSDataset for standard inference")
@@ -524,7 +522,6 @@ class MagpieInferenceRunner:
 
     def _create_longform_dataset(
         self,
-        manifest_records: List[dict],
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
@@ -532,8 +529,7 @@ class MagpieInferenceRunner:
         """Create a longform dataset for inference.
 
         Args:
-            manifest_records: List of manifest record dictionaries.
-            dataset_meta: Dataset metadata dictionary.
+            dataset_meta: Dataset metadata dictionary (same format as MagpieTTSDataset).
             context_duration_min: Minimum context duration (uses model default if None).
             context_duration_max: Maximum context duration (uses model default if None).
 
@@ -556,29 +552,28 @@ class MagpieInferenceRunner:
         if isinstance(self.model.tokenizer, AggregatedTTSTokenizer):
             tokenizer_name = "english_phoneme"
 
-        # Get codec downsample factor
-        codec_downsample_factor = getattr(
-            self.model.cfg, 'codec_model_downsample_factor',
-            getattr(self.model._codec_model, 'samples_per_frame', 320)
-        )
-
+        # Create dataset - inherits from MagpieTTSDataset, so uses same dataset_meta format
         dataset = LongFormTTSInferenceDataset(
-            manifest_records=manifest_records,
-            text_tokenizer=self.model.tokenizer,
-            tokenizer_name=tokenizer_name,
-            eos_id=self.model.eos_id,
             dataset_meta=dataset_meta,
-            context_duration_min=context_duration_min,
-            context_duration_max=context_duration_max,
             sample_rate=self.model.sample_rate,
-            codec_model_downsample_factor=codec_downsample_factor,
+            tokenizer_name=tokenizer_name,
+            codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
+            eos_id=self.model.eos_id,
+            audio_bos_id=self.model.audio_bos_id,
+            audio_eos_id=self.model.audio_eos_id,
             context_audio_bos_id=self.model.context_audio_bos_id,
             context_audio_eos_id=self.model.context_audio_eos_id,
             num_audio_codebooks=self.model.num_audio_codebooks,
-            use_text_conditioning_encoder=self.model.use_text_conditioning_encoder,
+            context_duration_min=context_duration_min,
+            context_duration_max=context_duration_max,
+            use_text_conditioning_tokenizer=self.model.use_text_conditioning_encoder,
+            text_conditioning_tokenizer_name=self.model.text_conditioning_tokenizer_name,
             pad_context_text_to_max_duration=self.model.pad_context_text_to_max_duration,
-            codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
+            load_16khz_audio=self.model.model_type == 'single_encoder_sv_tts',
         )
+
+        # Attach model's tokenizer
+        dataset.text_tokenizer = self.model.tokenizer
 
         return dataset
 

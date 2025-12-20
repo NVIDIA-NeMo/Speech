@@ -894,7 +894,7 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
         """
         # Get text for sentence chunking
         data = self.data_samples[idx]
-        text = data.text #entry.get("normalized_text", entry.get("text", ""))
+        text = data.text  # entry.get("normalized_text", entry.get("text", ""))
 
         # Sentence chunking (longform-specific)
         chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(

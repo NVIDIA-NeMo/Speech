@@ -267,9 +267,7 @@ class MagpieInferenceRunner:
         # Create appropriate dataset type based on longform detection
         if self._use_longform:
             logging.info("Creating LongFormTTSInferenceDataset for longform inference")
-            dataset = self._create_longform_dataset(
-                dataset_meta, context_duration_min, context_duration_max
-            )
+            dataset = self._create_longform_dataset(dataset_meta, context_duration_min, context_duration_max)
         else:
             logging.info("Creating MagpieTTSDataset for standard inference")
             dataset = MagpieTTSDataset(

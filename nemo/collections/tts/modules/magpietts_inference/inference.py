@@ -351,8 +351,7 @@ class MagpieInferenceRunner:
         else:
             logging.info("Using standard inference path")
             return self._run_standard_inference(
-                dataset, output_dir, manifest_records, audio_base_dir,
-                save_cross_attention_maps, save_context_audio
+                dataset, output_dir, manifest_records, audio_base_dir, save_cross_attention_maps, save_context_audio
             )
 
     def _run_standard_inference(
@@ -558,8 +557,7 @@ class MagpieInferenceRunner:
 
         # Get codec downsample factor
         codec_downsample_factor = getattr(
-            self.model.cfg, 'codec_model_downsample_factor',
-            getattr(self.model._codec_model, 'samples_per_frame', 320)
+            self.model.cfg, 'codec_model_downsample_factor', getattr(self.model._codec_model, 'samples_per_frame', 320)
         )
 
         dataset = LongFormTTSInferenceDataset(
@@ -706,9 +704,7 @@ class MagpieInferenceRunner:
                     concatenated = torch.cat(predicted_codes_per_sample[b_idx], dim=1).cuda()
                 else:
                     # Empty placeholder
-                    concatenated = torch.zeros(
-                        (self.model.num_audio_codebooks, 1), dtype=torch.long, device='cuda'
-                    )
+                    concatenated = torch.zeros((self.model.num_audio_codebooks, 1), dtype=torch.long, device='cuda')
                 predicted_codes_list.append(concatenated)
 
             # Stack and convert to audio

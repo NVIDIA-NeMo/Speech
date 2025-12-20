@@ -4025,9 +4025,11 @@ class MagpieTTSModel(ModelPT):
                 continue
             if not beginning_of_text:
                 pad_len_idx = max_text_len - batch_text_lens[_idx]
-                context_tensors.cond[_idx, : -current_chunk_len[_idx] - pad_len_idx] = chunk_state.history_context_tensor[
-                    _idx, -(context_tensors.cond[_idx].shape[0] - current_chunk_len[_idx] - pad_len_idx) :
-                ]
+                context_tensors.cond[_idx, : -current_chunk_len[_idx] - pad_len_idx] = (
+                    chunk_state.history_context_tensor[
+                        _idx, -(context_tensors.cond[_idx].shape[0] - current_chunk_len[_idx] - pad_len_idx) :
+                    ]
+                )
         chunk_state.history_context_tensor = context_tensors.cond
 
     def _prepare_longform_text_tensors(
@@ -4157,8 +4159,13 @@ class MagpieTTSModel(ModelPT):
 
             # Update context with historical embeddings
             self._update_context_from_history(
-                chunk_state, context_tensors, current_chunk_len, max_text_len, beginning_of_text,
-                batch['text_lens'], batch_size
+                chunk_state,
+                context_tensors,
+                current_chunk_len,
+                max_text_len,
+                beginning_of_text,
+                batch['text_lens'],
+                batch_size,
             )
 
             audio_codes_input = (
@@ -4184,8 +4191,14 @@ class MagpieTTSModel(ModelPT):
 
             # Initialize attention prior for longform generation
             initial_attn_prior = self._initialize_longform_attn_prior(
-                chunk_state, current_chunk_len, batch['text_lens'], max_text_len, batch_size,
-                use_cfg, prior_epsilon, device
+                chunk_state,
+                current_chunk_len,
+                batch['text_lens'],
+                max_text_len,
+                batch_size,
+                use_cfg,
+                prior_epsilon,
+                device,
             )
             chunk_state.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
 

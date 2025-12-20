@@ -26,7 +26,7 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import soundfile as sf
 import torch
@@ -225,7 +225,7 @@ class MagpieInferenceRunner:
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
-    ) -> Any:  # Union[MagpieTTSDataset, LongFormTTSInferenceDataset]
+    ) -> Union[MagpieTTSDataset, LongFormTTSInferenceDataset]:
         """Create a dataset for inference.
 
         Automatically creates the appropriate dataset type based on longform detection:
@@ -303,7 +303,7 @@ class MagpieInferenceRunner:
 
     def run_inference_on_dataset(
         self,
-        dataset: Any,  # Union[MagpieTTSDataset, LongFormTTSInferenceDataset]
+        dataset: Union[MagpieTTSDataset, LongFormTTSInferenceDataset],
         output_dir: str,
         manifest_records: Optional[List[dict]] = None,
         audio_base_dir: Optional[str] = None,
@@ -619,7 +619,7 @@ class MagpieInferenceRunner:
             logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)} (longform)")
 
             # Move batch tensors to CUDA
-            batch = self._prepare_longform_batch(batch)
+            batch = self._batch_to_cuda(batch)
 
             batch_size = len(batch['chunked_tokens'])
             max_num_chunks = max(len(tokens) for tokens in batch['chunked_tokens'])
@@ -747,42 +747,6 @@ class MagpieInferenceRunner:
                 global_item_idx += 1
 
         return all_rtf_metrics, generated_audio_paths
-
-    def _prepare_longform_batch(self, batch: Dict[str, Any]) -> Dict[str, Any]:
-        """Prepare batch by moving to CUDA and converting raw audio to codes if needed.
-
-        Args:
-            batch: Batch dictionary from dataloader.
-
-        Returns:
-            Prepared batch with tensors on CUDA and context_audio_codes populated.
-        """
-        # Move tensors to CUDA
-        for key in ['context_text_tokens', 'context_text_tokens_lens', 'has_text_context']:
-            if key in batch and isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].cuda()
-
-        # Handle context audio - convert raw audio to codes if needed
-        if 'context_audio_codes' in batch:
-            batch['context_audio_codes'] = batch['context_audio_codes'].cuda()
-            batch['context_audio_codes_lens'] = batch['context_audio_codes_lens'].cuda()
-        elif 'context_audio' in batch:
-            # Convert raw audio to codes using model
-            context_audio = batch['context_audio'].cuda()
-            context_audio_len = batch['context_audio_lens'].cuda()
-
-            # audio_to_codes expects (B, T) audio
-            context_codes, context_codes_lens = self.model.audio_to_codes(
-                context_audio, context_audio_len, audio_type='context'
-            )
-            batch['context_audio_codes'] = context_codes
-            batch['context_audio_codes_lens'] = context_codes_lens
-
-            # Clean up raw audio from batch
-            del batch['context_audio']
-            del batch['context_audio_lens']
-
-        return batch
 
     def _compute_end_of_text_flags(
         self,

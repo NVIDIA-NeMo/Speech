@@ -2672,8 +2672,9 @@ class MagpieTTSModel(ModelPT):
             attended_timestep_counter (list): List of dictionaries (one per batch item) tracking how many
                 times each timestep has been attended. Used to detect attention sinks.
             batch_size (int): Number of items in the batch.
-            left_offset (int, optional): Offset to adjust timestep indices, used in longform inference when
-                text is provided in chunks. Defaults to 0. Relevant only in longform generation.
+            left_offset (list, optional): List of offsets to adjust timestep indices for each batch item,
+                used in longform inference when text is provided in chunks. Relevant only in longform
+                generation.
 
         Returns:
             tuple: A tuple containing:
@@ -4105,10 +4106,10 @@ class MagpieTTSModel(ModelPT):
         topk=80,
         use_cfg=True,
         cfg_scale=1.0,
-        estimate_alignment_from_layers=None,
+        estimate_alignment_from_layers: Optional[List[int]] = None,
         lookahead_window_size=5,
         apply_attention_prior=False,
-        apply_prior_to_layers=None,
+        apply_prior_to_layers: Optional[List[int]] = None,
         prior_epsilon=1e-5,
         eos_detection_method="argmax_or_multinomial_any",
         ignore_finished_sentence_tracking=False,

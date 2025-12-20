@@ -121,8 +121,9 @@ def filter_datasets(dataset_meta_info: dict, datasets: Optional[List[str]]) -> L
     """Select datasets from the dataset meta info."""
     if datasets is None:
         # Dataset filtering not specified, return all datasets
-        return dataset_meta_info.keys()
+        return list(dataset_meta_info.keys())
     else:
+        datasets = datasets.split(",")
         # Check if datasets are valid
         for dataset in datasets:
             if dataset not in dataset_meta_info:
@@ -187,7 +188,6 @@ def run_inference_and_evaluation(
     runner = MagpieInferenceRunner(model, inference_config)
 
     # Tracking metrics across datasets
-    datasets = filter_datasets(dataset_meta_info, datasets)
     ssim_per_dataset = []
     cer_per_dataset = []
     all_datasets_filewise_metrics = {}
@@ -386,15 +386,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
     data_group.add_argument(
         '--datasets_json_path',
         type=str,
+        required=True,
         default=None,
-        help='Path to dataset configuration JSON file (will process all datasets in the file)',
+        help='Path to dataset configuration JSON file (will process all datasets in the file if --datasets is not specified)',
     )
     data_group.add_argument(
         '--datasets',
         type=str,
-        nargs='+',
         default=None,
-        help='Comma-separated list of dataset names to process',
+        help='Comma-separated list of dataset names to process using names from the datasets_json_path file.  If not specified, all datasets in the datasets_json_path will be processed.',
     )
     data_group.add_argument(
         '--out_dir',
@@ -502,7 +502,7 @@ def main():
     args = parser.parse_args()
 
     dataset_meta_info = load_evalset_config(args.datasets_json_path)
-    datasets = list(dataset_meta_info.keys())
+    datasets = filter_datasets(dataset_meta_info, args.datasets)
 
     logging.info(f"Loaded {len(datasets)} datasets: {', '.join(datasets)}")
 
@@ -573,7 +573,7 @@ def main():
                 inference_config=inference_config,
                 eval_config=eval_config,
                 dataset_meta_info=dataset_meta_info,
-                datasets=args.datasets,
+                datasets=datasets,
                 out_dir=args.out_dir,
                 num_repeats=args.num_repeats,
                 confidence_level=args.confidence_level,

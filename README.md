@@ -13,6 +13,12 @@
 
 <!-- markdownlint-disable -->
 <details open>
+  <summary><b> <a href=https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16>NVIDIA-Nemotron-3-Nano-30B-A3B</a> is out with full reproducible script and recipes! Checkout <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge/tree/nano-v3>NeMo Megatron-Bridge</a>, <a href=https://github.com/NVIDIA-NeMo/Automodel/blob/main/examples/llm_finetune/nemotron/nemotron_nano_v3_squad.yaml>NeMo AutoModel</a>, <a href=https://github.com/NVIDIA-NeMo/RL>NeMo-RL</a> and <a href=https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=25.11.nemotron_3_nano>NGC container</a> to try them!(2025-12-15)
+</details>
+
+
+
+<details open>
   <summary><b>Pivot notice: This repo will pivot to focus on speech models collections only. Please refer to <a href=https://github.com/NVIDIA-NeMo>NeMo Framework Github Org</a> for the complete list of repos under NeMo Framework</b></summary>
       NeMo 2.0, with its support for LLMs and VLMs will be deprecated by 25.11, and replaced by <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge>NeMo Megatron-Bridge</a> and <a href=https://github.com/NVIDIA-NeMo/Automodel>NeMo Automodel</a>. More details can be find in the <a href=https://github.com/NVIDIA-NeMo>NeMo Framework github org readme</a>. (2025-10-10)
 </details>

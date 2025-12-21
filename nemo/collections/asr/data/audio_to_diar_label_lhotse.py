@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 from typing import Dict, Optional, Tuple
 
 import torch.utils.data
@@ -24,6 +23,7 @@ from nemo.collections.asr.parts.utils.asr_multispeaker_utils import (
     speaker_to_target,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
+from nemo.utils import logging
 
 
 class LhotseAudioToSpeechE2ESpkDiarDataset(torch.utils.data.Dataset):
@@ -58,11 +58,23 @@ class LhotseAudioToSpeechE2ESpkDiarDataset(torch.utils.data.Dataset):
         self.num_mel_frame_per_target_frame = int(self.cfg.get('subsampling_factor', 8))
 
     def __getitem__(self, cuts) -> Tuple[torch.Tensor, ...]:
-        audio, audio_lens, cuts = self.load_audio(cuts)
+        # NOTE: This end-to-end diarization dataloader only loads the 1st ch of the audio file.
+        # Process cuts in a single loop: convert to mono and compute speaker activities
+        mono_cuts = []
         speaker_activities = []
         for cut in cuts:
+            if cut.num_channels is not None and cut.num_channels > 1:
+                logging.warning(
+                    "Multiple channels detected in cut '%s' (%d channels). "
+                    "Only the first channel will be used; remaining channels are ignored.",
+                    cut.id,
+                    cut.num_channels,
+                )
+            mono_cut = cut.with_channels(channels=[0])
+            mono_cuts.append(mono_cut)
+
             speaker_activity = speaker_to_target(
-                a_cut=cut,
+                a_cut=mono_cut,
                 num_speakers=self.num_speakers,
                 num_sample_per_mel_frame=self.num_sample_per_mel_frame,
                 num_mel_frame_per_asr_frame=self.num_mel_frame_per_target_frame,
@@ -79,6 +91,9 @@ class LhotseAudioToSpeechE2ESpkDiarDataset(torch.utils.data.Dataset):
                 )
                 speaker_activity = speaker_activity[:, : self.num_speakers]
             speaker_activities.append(speaker_activity)
+
+        cuts = type(cuts).from_cuts(mono_cuts)
+        audio, audio_lens, cuts = self.load_audio(cuts)
         targets = collate_matrices(speaker_activities).to(audio.dtype)  # (B, T, N)
 
         if targets.shape[2] > self.num_speakers:

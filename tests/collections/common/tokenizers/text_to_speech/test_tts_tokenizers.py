@@ -25,7 +25,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     VietnameseCharsTokenizer,
 )
 from nemo.collections.tts.g2p.models.i18n_ipa import IpaG2p
-from nemo.collections.tts.g2p.models.ja_jp_ipa import JapaneseG2p
+from nemo.collections.tts.g2p.models.ja_jp_ipa import JapaneseG2p, JapaneseKatakanaAccentG2p
 
 
 class TestTTSTokenizers:
@@ -283,3 +283,22 @@ class TestTTSTokenizers:
         chars, tokens = self._parse_text(tokenizer, input_text)
 
         assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_japanese_katakana_accent_tokenizer(self):
+        input_chopsticks = "箸"
+        input_bridge = "橋"
+
+        g2p = JapaneseKatakanaAccentG2p()
+        tokenizer = JapanesePhonemeTokenizer(g2p=g2p, punct=False)
+
+        chars_chopsticks, _ = self._parse_text(tokenizer, input_chopsticks)
+        chars_bridge, _ = self._parse_text(tokenizer, input_bridge)
+
+        assert chars_chopsticks != chars_bridge, "Homonyms should have different pitch accents"
+
+        # 箸 (1ハ0シ) starts high
+        assert '1' in chars_chopsticks[:2]
+        # 橋 (0ハ1シ) starts low
+        assert '0' in chars_bridge[:2]

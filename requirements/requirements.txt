@@ -2,7 +2,7 @@ fsspec==2024.12.0
 huggingface_hub>=0.24
 numba ; platform_system == 'Darwin'
 numba-cuda==0.15.1 ; platform_system != 'Darwin'
-cuda_bindings==13.0.0 ; platform_system != 'Darwin'
+cuda-bindings ; platform_system != 'Darwin'
 numexpr<2.14.0 # WAR for attempted use of nonexistent numpy.typing
 numpy>=1.22
 onnx>=1.7.0

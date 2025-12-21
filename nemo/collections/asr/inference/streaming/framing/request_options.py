@@ -14,7 +14,8 @@
 
 
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Any, TypeAlias
+
 from nemo.collections.asr.inference.utils.enums import ASROutputGranularity
 
 
@@ -29,6 +30,9 @@ class ASRRequestOptions:
     enable_pnc: bool = None
     stop_history_eou: int = None
     asr_output_granularity: ASROutputGranularity | str = None
+    enable_nmt: bool = None
+    source_language: str = None
+    target_language: str = None
 
     def __post_init__(self) -> None:
         """
@@ -37,6 +41,11 @@ class ASRRequestOptions:
         """
         if isinstance(self.asr_output_granularity, str):
             self.asr_output_granularity = ASROutputGranularity.from_str(self.asr_output_granularity)
+
+        if not self.enable_nmt:
+            # Forcibly set the source and target languages to None
+            self.source_language = None
+            self.target_language = None
 
     def is_word_level_output(self) -> bool:
         """
@@ -50,18 +59,36 @@ class ASRRequestOptions:
         """
         return self.asr_output_granularity is ASROutputGranularity.SEGMENT
 
+    @staticmethod
+    def _with_default(value: Any, default: Any) -> Any:
+        """
+        Return the value if it is not None, otherwise return the default value.
+        Args:
+            value: The value to check.
+            default: The default value to return if the value is None.
+        Returns:
+            The value if it is not None, otherwise return the default value.
+        """
+        return default if value is None else value
+
     def augment_with_defaults(
         self,
         default_enable_itn: bool,
         default_enable_pnc: bool,
+        default_enable_nmt: bool,
+        default_source_language: str,
+        default_target_language: str,
         default_stop_history_eou: int,
         default_asr_output_granularity: ASROutputGranularity | str,
     ) -> "ASRRequestOptions":
         """
-        Augment the options with the default values.
+        Fill unset fields with the passed default values.
         Args:
             default_enable_itn (bool): Default enable ITN.
             default_enable_pnc (bool): Default enable PNC.
+            default_enable_nmt (bool): Default enable NMT.
+            default_source_language (str): Default source language.
+            default_target_language (str): Default target language.
             default_stop_history_eou (int): Default stop history EOU.
             default_asr_output_granularity (ASROutputGranularity | str): Default output granularity.
         Returns:
@@ -69,13 +96,28 @@ class ASRRequestOptions:
         """
         if isinstance(default_asr_output_granularity, str):
             default_asr_output_granularity = ASROutputGranularity.from_str(default_asr_output_granularity)
+
+        enable_itn = self._with_default(self.enable_itn, default_enable_itn)
+        enable_pnc = self._with_default(self.enable_pnc, default_enable_pnc)
+        enable_nmt = self._with_default(self.enable_nmt, default_enable_nmt)
+        if not enable_nmt:
+            # Forcibly set the source and target languages to None
+            source_language, target_language = None, None
+        else:
+            source_language = self._with_default(self.source_language, default_source_language)
+            target_language = self._with_default(self.target_language, default_target_language)
+
+        stop_history_eou = self._with_default(self.stop_history_eou, default_stop_history_eou)
+        granularity = self._with_default(self.asr_output_granularity, default_asr_output_granularity)
+
         return ASRRequestOptions(
-            enable_itn=default_enable_itn if self.enable_itn is None else self.enable_itn,
-            enable_pnc=default_enable_pnc if self.enable_pnc is None else self.enable_pnc,
-            stop_history_eou=default_stop_history_eou if self.stop_history_eou is None else self.stop_history_eou,
-            asr_output_granularity=(
-                default_asr_output_granularity if self.asr_output_granularity is None else self.asr_output_granularity
-            ),
+            enable_itn=enable_itn,
+            enable_pnc=enable_pnc,
+            enable_nmt=enable_nmt,
+            source_language=source_language,
+            target_language=target_language,
+            stop_history_eou=stop_history_eou,
+            asr_output_granularity=granularity,
         )
 
 

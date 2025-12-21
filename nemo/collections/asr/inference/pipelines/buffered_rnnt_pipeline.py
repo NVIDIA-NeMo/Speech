@@ -42,6 +42,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis as NemoHypoth
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
+    from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
 
 
 class BufferedRNNTPipeline(BasePipeline):
@@ -52,6 +53,7 @@ class BufferedRNNTPipeline(BasePipeline):
         cfg: DictConfig,
         asr_model: RNNTInferenceWrapper,
         itn_model: AlignmentPreservingInverseNormalizer | None = None,
+        nmt_model: LLMTranslator | None = None,
     ):
         """
         Initialize the BufferedRNNTPipeline.
@@ -59,6 +61,7 @@ class BufferedRNNTPipeline(BasePipeline):
             cfg: (DictConfig) Configuration parameters.
             asr_model: (RNNTInferenceWrapper) ASR model.
             itn_model: (AlignmentPreservingInverseNormalizer | None) Inverse Text Normalization model.
+            nmt_model: (LLMTranslator | None) LLM based translation model.
         """
 
         self.copy_asr_model_attributes(asr_model)
@@ -70,6 +73,7 @@ class BufferedRNNTPipeline(BasePipeline):
         self.init_bpe_decoder()
         self.init_decoding_computer()
         self.init_text_processor(cfg, itn_model)
+        self.init_nmt_model(nmt_model)
         super().__init__()
 
     def init_parameters(self, cfg: DictConfig) -> None:
@@ -208,6 +212,9 @@ class BufferedRNNTPipeline(BasePipeline):
         new_options = options.augment_with_defaults(
             default_enable_itn=self.text_processor.is_itn_enabled(),
             default_enable_pnc=self.text_processor.is_pnc_enabled(),
+            default_enable_nmt=self.nmt_enabled,
+            default_source_language=self.nmt_model.source_language if self.nmt_enabled else None,
+            default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
         )
@@ -280,7 +287,7 @@ class BufferedRNNTPipeline(BasePipeline):
         # Only final frames have right padding
         # Keep some amount of extra padding to avoid the performance degradation
         right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.extra_padding_in_samples for frame in frames], device=self.device
+            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
         ).clamp(min=0)
 
         # Create and adjust the buffer lens

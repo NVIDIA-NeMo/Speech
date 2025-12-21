@@ -22,7 +22,6 @@ import string
 import tempfile
 import time
 from functools import partial
-from pathlib import Path
 
 import librosa
 import numpy as np
@@ -34,19 +33,27 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.utils import logging
 
-# Path to evalset config JSON
-EVALSET_CONFIG_PATH = Path(__file__).parent / 'evalset_config.json'
+# Optional import for UTMOSv2 (audio quality metric)
+try:
+    from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
+
+    UTMOSV2_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as e:
+    UTMOSV2_AVAILABLE = False
+    logging.warning(
+        f"UTMOSv2Calculator not available: {e}. "
+        "UTMOSv2 metrics will be disabled. Install required dependencies to enable."
+        "To install utmosv2 run `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
+    )
 
 
 def load_evalset_config(config_path: str = None) -> dict:
     """Load dataset meta info from JSON config file."""
-    if config_path is None:
-        config_path = EVALSET_CONFIG_PATH
+    if config_path is None or not os.path.exists(config_path):
+        raise ValueError("No dataset_json_path provided, please provide a valid path to the evalset config file.")
+    logging.info(f"Loading evalset config from {config_path}")
     with open(config_path, 'r') as f:
         return json.load(f)
-
-
-from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
 
 
 def find_generated_files(audio_dir, prefix, extension):
@@ -163,6 +170,10 @@ def extract_embedding(model, extractor, audio_path, device, sv_model_type):
 
 
 def compute_utmosv2_scores(audio_dir, device):
+    if not UTMOSV2_AVAILABLE:
+        logging.warning("UTMOSv2Calculator not available. Skipping UTMOSv2 score computation.")
+        return {}
+
     logging.info(f"\nComputing UTMOSv2 scores for files in {audio_dir}...")
     start_time = time.time()
     utmosv2_calculator = UTMOSv2Calculator(device=device)
@@ -223,6 +234,11 @@ def evaluate(
     speaker_verification_model_alternate.eval()
 
     if with_utmosv2:
+        if not UTMOSV2_AVAILABLE:
+            logging.warning(
+                "UTMOSv2 was requested (with_utmosv2=True) but UTMOSv2Calculator is not available. "
+                "UTMOSv2 scores will be set to 0.0 for all files."
+            )
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
     filewise_metrics = []
     pred_texts = []
@@ -239,7 +255,7 @@ def evaluate(
 
         pred_audio_filepath = audio_file_lists[ridx]
 
-        if with_utmosv2:
+        if with_utmosv2 and UTMOSV2_AVAILABLE:
             utmosv2_score = utmosv2_scores[os.path.normpath(pred_audio_filepath)]
         else:
             utmosv2_score = 0.0

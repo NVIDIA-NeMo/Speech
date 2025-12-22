@@ -457,7 +457,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         Args:
             model_id: boosting model id provided by the `add_model` method
         """
-        logging.info(f"Removing model: {model_id}; total models {self.num_models}")
+        logging.debug(f"Removing model: {model_id}")
         if model_id in self.free_ids or model_id >= self.num_models:
             raise ValueError(
                 f"Trying to remove already deleted or non-existing model {model_id}. Total models in reserve: {self.num_models}"
@@ -473,28 +473,32 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         end_state = start_state + num_states
 
         start_arc = self.model2arcs_offset[model_id].item()
-        num_arcs = self.model2num_arcs[model_id].item()
+        num_arcs = self.model2num_arcs_extended[model_id].item()
         end_arc = start_arc + num_arcs
 
         assert num_arcs > 0 and num_states > 0, "Unexpected zero-size model"
 
-        def _clear_buffer_or_param_range(buffer: nn.Buffer | nn.Parameter, start: int, end: int):
+        def _clear_buffer_or_param_range(
+            buffer: nn.Buffer | nn.Parameter, start: int, end: int, buffer_size: int | None = None
+        ):
+            if buffer_size is None:
+                buffer_size = buffer.shape[0]
             remove_len = end - start
-            buffer[start : buffer.shape[0] - remove_len].copy_(buffer[end:].clone())
-            buffer[-remove_len:].fill_(0)
+            buffer[start : buffer_size - remove_len].copy_(buffer[end:buffer_size].clone())
+            buffer[buffer_size - remove_len : buffer_size].fill_(0)
 
         # clean up arcs-related data
-        _clear_buffer_or_param_range(self.all_arcs_weights, start_arc, end_arc)
-        _clear_buffer_or_param_range(self.all_from_states, start_arc, end_arc)
-        _clear_buffer_or_param_range(self.all_to_states, start_arc, end_arc)
-        _clear_buffer_or_param_range(self.all_ilabels, start_arc, end_arc)
+        _clear_buffer_or_param_range(self.all_arcs_weights, start_arc, end_arc, self.num_arcs_extended_total)
+        _clear_buffer_or_param_range(self.all_from_states, start_arc, end_arc, self.num_arcs_extended_total)
+        _clear_buffer_or_param_range(self.all_to_states, start_arc, end_arc, self.num_arcs_extended_total)
+        _clear_buffer_or_param_range(self.all_ilabels, start_arc, end_arc, self.num_arcs_extended_total)
 
         # clean up states-related data
-        _clear_buffer_or_param_range(self.all_start_end_arcs, start_state, end_state)
-        _clear_buffer_or_param_range(self.all_state_order, start_state, end_state)
-        _clear_buffer_or_param_range(self.all_backoff_to_states, start_state, end_state)
-        _clear_buffer_or_param_range(self.all_backoff_weights, start_state, end_state)
-        _clear_buffer_or_param_range(self.all_final_weights, start_state, end_state)
+        _clear_buffer_or_param_range(self.all_start_end_arcs, start_state, end_state, self.num_states_total)
+        _clear_buffer_or_param_range(self.all_state_order, start_state, end_state, self.num_states_total)
+        _clear_buffer_or_param_range(self.all_backoff_to_states, start_state, end_state, self.num_states_total)
+        _clear_buffer_or_param_range(self.all_backoff_weights, start_state, end_state, self.num_states_total)
+        _clear_buffer_or_param_range(self.all_final_weights, start_state, end_state, self.num_states_total)
 
         # set num states/arcs to zero
         self.num_states_total -= num_states

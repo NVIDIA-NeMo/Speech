@@ -86,8 +86,11 @@ class BufferedPipelineBuilder(BaseBuilder):
         # building ITN model
         itn_model = cls._build_itn(cfg, input_is_lower_cased=True)
 
+        # building NMT model
+        nmt_model = cls._build_nmt(cfg)
+
         # building RNNT pipeline
-        rnnt_pipeline = BufferedRNNTPipeline(cfg, asr_model, itn_model)
+        rnnt_pipeline = BufferedRNNTPipeline(cfg, asr_model, itn_model, nmt_model)
         logging.info(f"`{type(rnnt_pipeline).__name__}` pipeline loaded")
         return rnnt_pipeline
 
@@ -107,7 +110,10 @@ class BufferedPipelineBuilder(BaseBuilder):
         # building ITN model
         itn_model = cls._build_itn(cfg, input_is_lower_cased=True)
 
+        # building NMT model
+        nmt_model = cls._build_nmt(cfg)
+
         # building CTC pipeline
-        ctc_pipeline = BufferedCTCPipeline(cfg, asr_model, itn_model)
+        ctc_pipeline = BufferedCTCPipeline(cfg, asr_model, itn_model, nmt_model)
         logging.info(f"`{type(ctc_pipeline).__name__}` pipeline loaded")
         return ctc_pipeline

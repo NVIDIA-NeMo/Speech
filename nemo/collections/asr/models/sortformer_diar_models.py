@@ -425,6 +425,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             'session_len_sec': config['session_len_sec'],
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
+            'use_lhotse': config.get('use_lhotse', False),
         }
         temporary_datalayer = self.__setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
@@ -1112,6 +1113,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
     def diarize(
         self,
         audio: Union[str, List[str], np.ndarray, DataLoader],
+        sample_rate: Optional[int] = None,
         batch_size: int = 1,
         include_tensor_outputs: bool = False,
         postprocessing_yaml: Optional[str] = None,

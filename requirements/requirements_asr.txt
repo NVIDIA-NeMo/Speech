@@ -1,5 +1,4 @@
 braceexpand
-ctc_segmentation==1.7.4
 diskcache
 editdistance
 einops

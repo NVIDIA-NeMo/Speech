@@ -20,9 +20,9 @@ from megatron.core.distributed import DistributedDataParallelConfig as McoreDDPC
 from megatron.core.transformer.enums import AttnBackend
 from megatron.core.utils import init_method_normal, scaled_init_method_normal
 
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.llm import MixtralConfig8x7B, MixtralModel, PreTrainingDataModule
 from nemo.collections.llm.api import train
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning import MegatronStrategy, NeMoLogger, Trainer
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule as MegatronOptim
 from nemo.lightning.pytorch.optim.megatron import OptimizerConfig

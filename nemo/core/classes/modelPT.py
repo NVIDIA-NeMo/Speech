@@ -594,9 +594,9 @@ class ModelPT(LightningModule, Model):
             val_data_layer_config: validation data layer parameters.
         """
         # Set some placeholder overriden by helper method
-        self._val_dl_idx = 0
-        self._validation_names = None
-        self._validation_dl = None  # type: torch.utils.data.DataLoader
+        self._val_dl_idx: int = 0
+        self._validation_names: Optional[List[str]] = None
+        self._validation_dl: Optional[torch.utils.data.DataLoader] = None
 
         # preserve config
         self._update_dataset_config(dataset_name='validation', config=val_data_config)
@@ -619,9 +619,9 @@ class ModelPT(LightningModule, Model):
             test_data_layer_config: test data layer parameters.
         """
         # Set some placeholder overriden by helper method
-        self._test_dl_idx = 0
-        self._test_names = None
-        self._test_dl = None  # type: torch.utils.data.DataLoader
+        self._test_dl_idx: int = 0
+        self._test_names: Optional[List[str]] = None
+        self._test_dl: Optional[torch.utils.data.DataLoader] = None
 
         # preserve config
         self._update_dataset_config(dataset_name='test', config=test_data_config)

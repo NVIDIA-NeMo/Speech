@@ -349,6 +349,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         _extend_buffer_2x(self.model2states_offset)
         _extend_buffer_2x(self.model2arcs_offset)
 
+    @torch.no_grad()
     def add_model(self, model: GPUBoostingTreeModel, alpha: float = 1.0) -> int:
         """
         Add boosting model with `alpha` weight. Returns id for the added model
@@ -430,6 +431,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
                 reallocation_callback_fn()
         return model_id
 
+    @torch.no_grad()
     def remove_model(self, model_id: int):
         """
         Remove boosting model.

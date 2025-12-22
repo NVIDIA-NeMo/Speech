@@ -13,7 +13,6 @@
 # limitations under the License.
 
 
-from dataclasses import dataclass
 from typing import Any, List, Optional
 
 import numpy as np
@@ -28,6 +27,7 @@ from nemo.collections.asr.parts.context_biasing.biasing_multi_model import (
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
     BatchedLabelLoopingState,
+    FusionModelWithParams,
     GreedyBatchedLabelLoopingComputerBase,
     LabelLoopingStateItem,
     SeparateGraphsLabelLooping,
@@ -193,13 +193,6 @@ class LabelLoopingState:
             or self.max_time < encoder_output_projected.shape[1]
             or self.device.index != encoder_output_projected.device.index
         )
-
-
-@dataclass
-class FusionModelWithParams:
-    model: NGramGPULanguageModel | GPUBiasingMultiModelBase
-    alpha: float | None = None
-    is_multi_model: bool = False
 
 
 class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase, ConfidenceMethodMixin):

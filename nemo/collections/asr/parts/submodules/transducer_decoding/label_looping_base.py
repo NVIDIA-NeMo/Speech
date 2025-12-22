@@ -18,6 +18,8 @@ from typing import Any, Optional
 
 import torch
 
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
+from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
@@ -57,6 +59,13 @@ class LabelLoopingStateItem:
     decoded_length: torch.Tensor
     fusion_state_list: list[torch.Tensor] = field(default_factory=list)
     time_jump: torch.Tensor | None = None
+
+
+@dataclass
+class FusionModelWithParams:
+    model: NGramGPULanguageModel | GPUBiasingMultiModelBase
+    alpha: float | None = None
+    is_multi_model: bool = False
 
 
 class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):

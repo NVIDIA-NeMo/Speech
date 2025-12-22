@@ -111,6 +111,34 @@ def cu_call(f_call_out):
         return tuple(others)
 
 
+def cu_call_capture_info(stream):
+    """
+    Version-compatible wrapper for cudaStreamGetCaptureInfo.
+
+    CUDA 12.8+ changed the return values from cudaStreamGetCaptureInfo.
+    This function handles both old (6 values) and new (5 values) return formats.
+
+    Returns:
+        tuple: (capture_status, graph, dependencies) - the values needed for graph capture
+    """
+    from cuda.bindings import runtime as cudart
+
+    result = cudart.cudaStreamGetCaptureInfo(stream)
+    error = result[0]
+    if error != cudart.cudaError_t.cudaSuccess:
+        raise NeMoCUDAPythonException(f"CUDA failure! {error}")
+
+    # Extract capture_status (index 1), graph (index 3), and dependencies (index 4)
+    # The return format varies by CUDA version:
+    # - CUDA < 12.8: (error, capture_status, id, graph, dependencies, num_dependencies)
+    # - CUDA >= 12.8: (error, capture_status, id, graph, dependencies)
+    capture_status = result[1]
+    graph = result[3]
+    dependencies = result[4]
+
+    return capture_status, graph, dependencies
+
+
 @contextlib.contextmanager
 def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditional_handle, device):
     """
@@ -125,9 +153,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     from cuda.bindings import driver as cuda
     from cuda.bindings import runtime as cudart
 
-    capture_status, _, graph, _, _, _ = cu_call(
-        cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
-    )
+    capture_status, graph, _ = cu_call_capture_info(torch.cuda.current_stream(device=device).cuda_stream)
     assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
 
     cuda.cuLaunchKernel(
@@ -144,9 +170,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
         0,
     )
 
-    capture_status, _, graph, dependencies, _, _ = cu_call(
-        cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
-    )
+    capture_status, graph, dependencies = cu_call_capture_info(torch.cuda.current_stream(device=device).cuda_stream)
     assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
 
     driver_params = cuda.CUgraphNodeParams()
@@ -166,32 +190,62 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     driver_params.conditional.ctx = ctx
 
     # Use driver API here because of bug in cuda-python runtime API: https://github.com/NVIDIA/cuda-python/issues/55
-    # TODO: Change call to this after fix goes in (and we bump minimum cuda-python version to 12.4.0):
-    # node, = cu_call(cudart.cudaGraphAddNode(graph, dependencies, len(dependencies), driver_params))
-    (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
+    # cuda-bindings 13.0+ changed cuGraphAddNode signature from 5 args to 4 args (removed edge data parameter)
+    try:
+        # Try old API first (cuda-bindings < 13.0): 5 arguments with None for edge data
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
+    except TypeError:
+        # Fall back to new API (cuda-bindings 13.0+): 4 arguments
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, len(dependencies), driver_params))
     body_graph = driver_params.conditional.phGraph_out[0]
 
-    cu_call(
-        cudart.cudaStreamUpdateCaptureDependencies(
-            torch.cuda.current_stream(device=device).cuda_stream,
-            [node],
-            None,
-            1,
-            cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+    # cuda-bindings 13.0+ changed cudaStreamUpdateCaptureDependencies from 5 args to 4 (removed edge data)
+    try:
+        # Try old API first (cuda-bindings < 13.0): 5 arguments with None for edge data
+        cu_call(
+            cudart.cudaStreamUpdateCaptureDependencies(
+                torch.cuda.current_stream(device=device).cuda_stream,
+                [node],
+                None,
+                1,
+                cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+            )
         )
-    )
+    except TypeError:
+        # Fall back to new API (cuda-bindings 13.0+): 4 arguments
+        cu_call(
+            cudart.cudaStreamUpdateCaptureDependencies(
+                torch.cuda.current_stream(device=device).cuda_stream,
+                [node],
+                1,
+                cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+            )
+        )
     body_stream = torch.cuda.Stream(device)
     previous_stream = torch.cuda.current_stream(device=device)
-    cu_call(
-        cudart.cudaStreamBeginCaptureToGraph(
-            body_stream.cuda_stream,
-            body_graph,
-            None,
-            None,
-            0,
-            cudart.cudaStreamCaptureMode.cudaStreamCaptureModeThreadLocal,
+    # cuda-bindings 13.0+ changed cudaStreamBeginCaptureToGraph from 6 args to 4 (removed edge data params)
+    try:
+        # Try old API first (cuda-bindings < 13.0): 6 arguments with None for dependencies/edge data
+        cu_call(
+            cudart.cudaStreamBeginCaptureToGraph(
+                body_stream.cuda_stream,
+                body_graph,
+                None,
+                None,
+                0,
+                cudart.cudaStreamCaptureMode.cudaStreamCaptureModeThreadLocal,
+            )
         )
-    )
+    except TypeError:
+        # Fall back to new API (cuda-bindings 13.0+): 4 arguments
+        cu_call(
+            cudart.cudaStreamBeginCaptureToGraph(
+                body_stream.cuda_stream,
+                body_graph,
+                0,
+                cudart.cudaStreamCaptureMode.cudaStreamCaptureModeThreadLocal,
+            )
+        )
     torch.cuda.set_stream(body_stream)
 
     yield body_stream, body_graph

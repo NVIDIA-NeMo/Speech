@@ -29,7 +29,13 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
 )
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.core.utils.cuda_python_utils import NeMoCUDAPythonException, cu_call, run_nvrtc, with_conditional_node
+from nemo.core.utils.cuda_python_utils import (
+    NeMoCUDAPythonException,
+    cu_call,
+    cu_call_capture_info,
+    run_nvrtc,
+    with_conditional_node,
+)
 from nemo.utils import logging
 
 try:
@@ -1038,8 +1044,8 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         ):
             self._before_outer_loop()
 
-            capture_status, _, graph, _, _, _ = cu_call(
-                cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
+            capture_status, graph, _ = cu_call_capture_info(
+                torch.cuda.current_stream(device=self.state.device).cuda_stream
             )
             assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
 

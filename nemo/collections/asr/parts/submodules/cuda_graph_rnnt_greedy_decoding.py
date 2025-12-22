@@ -28,6 +28,7 @@ from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.core.utils.cuda_python_utils import (
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
     cu_call,
+    cu_call_capture_info,
     run_nvrtc,
     with_conditional_node,
 )
@@ -205,8 +206,8 @@ class RNNTGreedyDecodeCudaGraph:
             # Get max sequence length
             self.max_out_len_t = self.encoder_output_length.max()
 
-            capture_status, _, graph, _, _, _ = cu_call(
-                cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.device).cuda_stream)
+            capture_status, graph, _ = cu_call_capture_info(
+                torch.cuda.current_stream(device=self.device).cuda_stream
             )
             assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
 

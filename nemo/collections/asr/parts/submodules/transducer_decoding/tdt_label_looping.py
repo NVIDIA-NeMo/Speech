@@ -343,6 +343,18 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             )
         )
 
+    def _move_fusion_models_to_device(self, device: torch.device):
+        """
+        Move all fusion models to device.
+        We need to do this since `self` is not nn.Module instance, but owns fusion models (nn.Module instances).
+        """
+        with torch.inference_mode(mode=False):
+            # NB: we avoid inference mode since otherwise all model params/buffers will be inference tensors,
+            # which will make further inplace manipulations impossible
+            # (e.g., `remove_model` for multi-model will throw errors)
+            for fusion_model in self._all_fusion_models():
+                fusion_model.to(device)  # fusion_models is nn.Module, but self is not; need to move manually
+
     def torch_impl(
         self,
         encoder_output: torch.Tensor,
@@ -361,10 +373,9 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         """
         batch_size, max_time, _unused = encoder_output.shape
         device = encoder_output.device
+        self._move_fusion_models_to_device(device=device)
         if self.biasing_multi_model is not None and multi_biasing_ids is None:
             multi_biasing_ids = torch.full([batch_size], fill_value=-1, dtype=torch.long, device=device)
-        for fusion_model in self._all_fusion_models():
-            fusion_model.to(device)  # fusion_models is nn.Module, but self is not; need to move manually
 
         # do not recalculate joint projection, project only once
         encoder_output_projected = self.joint.project_encoder(encoder_output)
@@ -965,9 +976,9 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         device = encoder_output_projected.device
         float_dtype = encoder_output_projected.dtype
 
+        self._move_fusion_models_to_device(device=device)
         for fusion_model in self._all_fusion_models():
             vocab_size = fusion_model.vocab_size
-            fusion_model.to(device)  # fusion_models is nn.Module, but self is not; need to move manually
             self.state.fusion_states_list.append(
                 fusion_model.get_init_states(batch_size=self.state.batch_size, bos=True)
             )

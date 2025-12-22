@@ -97,7 +97,7 @@ def create_manifest(data: List[tuple], output_name: str, manifest_path: str):
 
 
 def process_files(csv_file, data_root, num_workers):
-    """ Read *.csv file description, convert mp3 to wav, process text.
+    """Read *.csv file description, convert mp3 to wav, process text.
         Save results to data_root.
 
     Args:

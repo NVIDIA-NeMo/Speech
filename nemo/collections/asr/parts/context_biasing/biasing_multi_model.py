@@ -33,6 +33,8 @@ if TRITON_AVAILABLE:
 
     from nemo.collections.asr.parts.submodules.ngram_lm.ngram_lm_triton import ngram_multi_advance_triton_kernel
 
+_BIASING_MODEL_CACHE = dict()
+
 
 @dataclass
 class BiasingRequestItemConfig:
@@ -40,8 +42,12 @@ class BiasingRequestItemConfig:
     boosting_model_alpha: float = 1.0
     multi_model_id: int | None = None  # compiled model id
     auto_manage_multi_model: bool = True
+    cache_key: str | None = None  # cache key for memory cache; NB: cache key should be unique for (tokenizer, phrases)
 
-    def is_empty(self):
+    def is_empty(self) -> bool:
+        """Return True if biasing request (or model) is empty"""
+        if self.cache_key and self.cache_key in _BIASING_MODEL_CACHE:
+            return False
         if self.multi_model_id is not None:
             return False
         if not self.boosting_model_cfg.is_empty(self.boosting_model_cfg):
@@ -49,18 +55,30 @@ class BiasingRequestItemConfig:
         return True
 
     def get_model(self, tokenizer: TokenizerSpec) -> NGramGPULanguageModel | GPUBoostingTreeModel | None:
+        """Create biasing model or get from cache, return the model. `None` is returned if biasing config is empty"""
+        if self.cache_key and self.cache_key in _BIASING_MODEL_CACHE:
+            return _BIASING_MODEL_CACHE[self.cache_key]
         if self.boosting_model_cfg.is_empty(self.boosting_model_cfg):
             return None
         boosting_model = GPUBoostingTreeModel.from_config(self.boosting_model_cfg, tokenizer=tokenizer)
+        if self.cache_key:
+            _BIASING_MODEL_CACHE[self.cache_key] = boosting_model
         return boosting_model
 
     def add_to_multi_model(self, tokenizer: TokenizerSpec, biasing_multi_model: "GPUBiasingMultiModelBase"):
+        """Add biasing model to biasing multi-model"""
         boosting_model = self.get_model(tokenizer=tokenizer)
         if boosting_model is None:
             raise ValueError("Nothing to add, biasing model is empty")
         self.multi_model_id = biasing_multi_model.add_model(model=boosting_model, alpha=self.boosting_model_alpha)
 
+    def remove_from_cache(self):
+        """Remove model from cache (if cache entry exists)"""
+        if self.cache_key and self.cache_key in _BIASING_MODEL_CACHE:
+            del _BIASING_MODEL_CACHE[self.cache_key]
+
     def remove_from_multi_model(self, biasing_multi_model: "GPUBiasingMultiModelBase"):
+        """Remove biasing model from multi-model"""
         if self.multi_model_id is None:
             # nothing to remove
             return

@@ -102,8 +102,7 @@ class GPUBiasingMultiModelBase(abc.ABC, nn.Module):
         """Return True if the multi-model has at least one model"""
         raise NotImplementedError
 
-    @staticmethod
-    def compatible_with_cuda_graphs() -> bool:
+    def compatible_with_cuda_graphs(self) -> bool:
         """True if model can be compiled as a part of CUDA graph, False otherwise"""
         return False
 
@@ -246,7 +245,9 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
     INIT_NUM_STATES = 1_000_000
     INIT_NUM_MODELS = 128
 
-    def __init__(self, vocab_size: int, reallocation_callback_fn: Callable | None = None):
+    def __init__(
+        self, vocab_size: int, reallocation_callback_fn: Callable | None = None, use_triton: bool | None = None
+    ):
         super().__init__()
         self.vocab_size: int = vocab_size
         self.float_dtype: torch.dtype | None = None
@@ -258,7 +259,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         if reallocation_callback_fn is not None:
             self.reallocation_callbacks.append(reallocation_callback_fn)
 
-        self.use_triton = TRITON_AVAILABLE
+        self.use_triton = use_triton if use_triton is not None else TRITON_AVAILABLE
 
         int_dtype = torch.int64
 
@@ -292,10 +293,9 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.all_backoff_weights = nn.Parameter(torch.zeros([self.num_states_reserved]))
         self.all_final_weights = nn.Parameter(torch.zeros([self.num_states_reserved]))
 
-    @staticmethod
-    def compatible_with_cuda_graphs() -> bool:
+    def compatible_with_cuda_graphs(self) -> bool:
         """True if model can be compiled as a part of CUDA graph, False otherwise"""
-        return TRITON_AVAILABLE
+        return self.use_triton
 
     def has_models(self) -> bool:
         """Return True if the multi-model has at least one model"""

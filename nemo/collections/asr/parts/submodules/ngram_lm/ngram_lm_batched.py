@@ -700,7 +700,7 @@ class NGramGPULanguageModel(ModelPT):
 
                 if ngram_cur_order_i == order2cnt[cur_order]:
                     suffix_tree_np._end_adding_ngrams_for_order(order=cur_order, bos_id=_BOS_ID, unk_id=_UNK_ID)
-                    logging.info(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
+                    logging.debug(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
                     cur_order += 1
                     ngram_cur_order_i = 0
 

@@ -274,6 +274,11 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.all_backoff_weights = nn.Parameter(torch.zeros([self.num_states_reserved]))
         self.all_final_weights = nn.Parameter(torch.zeros([self.num_states_reserved]))
 
+    @staticmethod
+    def compatible_with_cuda_graphs() -> bool:
+        """True if model can be compiled as a part of CUDA graph, False otherwise"""
+        return TRITON_AVAILABLE
+
     def has_models(self) -> bool:
         """Return True if the multi-model has at least one model"""
         return self.num_models > 0
@@ -289,7 +294,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             model._resolve_final()
 
     def _maybe_extend_arcs_and_states(self, add_num_states: int, add_num_arcs_extended: int) -> bool:
-        """Extend memory, return True if any tensor is reallocated"""
+        """Extend memory allocated for arcs and states, return True if any tensor is reallocated"""
         reallocated = False
 
         def _extend_buffer_or_param(buffer: nn.Buffer | nn.Parameter, add_len: int):
@@ -329,6 +334,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         return reallocated
 
     def _extend_num_models(self):
+        """Extend memory allocated for models with properties"""
         assert self.num_models_reserved > 0
         self.num_models_reserved *= 2
 
@@ -344,6 +350,16 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         _extend_buffer_2x(self.model2arcs_offset)
 
     def add_model(self, model: GPUBoostingTreeModel, alpha: float = 1.0) -> int:
+        """
+        Add boosting model with `alpha` weight. Returns id for the added model
+
+        Args:
+            model: boosting model
+            alpha: weight of the boosting model
+
+        Returns:
+            model id (to use in queries)
+        """
         if not self._params_defined:
             # there were no previous models
             self.bos_state = model.bos_state
@@ -415,6 +431,12 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         return model_id
 
     def remove_model(self, model_id: int):
+        """
+        Remove boosting model.
+
+        Args:
+            model_id: boosting model id provided by the `add_model` method
+        """
         logging.info(f"Removing model: {model_id}; total models {self.num_models}")
         if model_id in self.free_ids or model_id >= self.num_models:
             raise ValueError(
@@ -502,7 +524,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         Advance `states` [B]: return scores [B, V] and next states [B, V] for full vocab
         Args:
             states: batch of states
-            model_ids: ids of models for each state
+            model_ids: batch of ids of the models (`-1` to apply dummy model with zero weight)
             eos_id: if not None, for eos symbol use final state weight
 
         Returns:
@@ -531,6 +553,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
 
         Args:
             states: batch of states
+            model_ids: ids of the models (`-1` to apply dummy model with zero weight)
 
         Returns:
             tuple of scores and next states
@@ -567,6 +590,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
 
         Args:
             states: batch of states
+            model_ids: ids of the models (`-1` to apply dummy model with zero weight)
 
         Returns:
             tuple of scores and next states

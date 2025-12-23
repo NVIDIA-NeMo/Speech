@@ -10,7 +10,7 @@ We do all of NeMo's development in the open. Contributions from NeMo community a
 1) Make sure your PR does one thing. Have a clear answer to "What does this PR do?".
 2) Read General Principles and style guide below
 3) Make sure you sign your commits. E.g. use ``git commit -s`` when before your commit
-4) Make sure all unittests finish successfully before sending PR ``pytest`` or (if yor dev box does not have GPU) ``pytest --cpu`` from NeMo's root folder
+4) Make sure all unittests finish successfully before sending PR ``pytest`` or (if your dev box does not have GPU) ``pytest --cpu`` from NeMo's root folder
 5) Send your PR and request a review
 
 ## Unit tests

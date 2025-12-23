@@ -48,7 +48,17 @@ class CodecEmbedder(nn.Module):
 
 
 class FrechetCodecDistance(FrechetInceptionDistance):
-    def __init__(self, codec: AudioCodecModel):
+    def __init__(self, codec_name: str):
+        if codec_name.endswith(".nemo"):
+            codec = AudioCodecModel.restore_from(codec_name, strict=False)
+        elif codec_name.startswith("nvidia/"):
+            # HuggingFace or NGC model name
+            codec = AudioCodecModel.from_pretrained(codec_name)
+        else:
+            raise ValueError(
+                f"Invalid codec name: {codec_name}. Must be a local .nemo file or a HuggingFace or NGC model name starting with 'nvidia/'"
+            )
+        codec.eval()
         feature = CodecEmbedder(codec)
         super().__init__(feature=feature)
         self.codec = codec

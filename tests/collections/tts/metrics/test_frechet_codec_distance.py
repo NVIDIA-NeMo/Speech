@@ -20,17 +20,19 @@ from nemo.collections.tts.models import AudioCodecModel
 
 
 class TestFrechetCodecDistance:
+    codec_name = "nvidia/low-frame-rate-speech-codec-22khz"
+
     @pytest.fixture
     def device(self):
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     @pytest.fixture
     def codec(self, device, scope="session"):
-        return AudioCodecModel.from_pretrained("nvidia/low-frame-rate-speech-codec-22khz").to(device)
+        return AudioCodecModel.from_pretrained(self.codec_name).to(device)
 
     @pytest.fixture
     def metric(self, codec, device):
-        return FrechetCodecDistance(codec=codec).to(device)
+        return FrechetCodecDistance(codec_name=self.codec_name).to(device)
 
     @pytest.mark.unit
     def test_same_distribution(self, metric, device, codec):

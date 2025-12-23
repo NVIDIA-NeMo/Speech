@@ -31,6 +31,7 @@ class ASRRequestOptions:
     enable_pnc: bool = None
     stop_history_eou: int = None
     asr_output_granularity: ASROutputGranularity | str = None
+    language_code: str | None = None
     enable_nmt: bool = None
     source_language: str = None
     target_language: str = None
@@ -82,6 +83,7 @@ class ASRRequestOptions:
         default_target_language: str,
         default_stop_history_eou: int,
         default_asr_output_granularity: ASROutputGranularity | str,
+        default_language_code: str | None = None,
         biasing_cfg: BiasingRequestItemConfig | None = None,
     ) -> "ASRRequestOptions":
         """
@@ -94,6 +96,7 @@ class ASRRequestOptions:
             default_target_language (str): Default target language.
             default_stop_history_eou (int): Default stop history EOU.
             default_asr_output_granularity (ASROutputGranularity | str): Default output granularity.
+            default_language_code (str | None): Default language code for prompt-enabled models.
             biasing_cfg: Default biasing config or None
         Returns:
             ASRRequestOptions: Augmented options.
@@ -113,6 +116,7 @@ class ASRRequestOptions:
 
         stop_history_eou = self._with_default(self.stop_history_eou, default_stop_history_eou)
         granularity = self._with_default(self.asr_output_granularity, default_asr_output_granularity)
+        language_code = self._with_default(self.language_code, default_language_code)
 
         return ASRRequestOptions(
             enable_itn=enable_itn,
@@ -122,6 +126,7 @@ class ASRRequestOptions:
             target_language=target_language,
             stop_history_eou=stop_history_eou,
             asr_output_granularity=granularity,
+            language_code=language_code,
             biasing_cfg=self.biasing_cfg or biasing_cfg,
         )
 

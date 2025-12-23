@@ -183,23 +183,26 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
     # 1) change TranscriptionConfig on top of the executed scripts such as speech_to_text_buffered_infer_rnnt.py, or
     # 2) add command as "decoding.strategy=greedy_batch " to below script
 
-    base_cmd = f"python {script_path} \
-    calculate_wer=False \
-    model_path={cfg.model_path} \
-    pretrained_name={cfg.pretrained_name} \
-    dataset_manifest={cfg.test_ds.manifest_filepath} \
-    output_filename={cfg.output_filename} \
-    random_seed={cfg.random_seed} \
-    batch_size={cfg.test_ds.batch_size} \
-    ++num_workers={cfg.test_ds.num_workers} \
-    chunk_len_in_secs={cfg.inference.chunk_len_in_secs} \
-    ++total_buffer_in_secs={cfg.inference.total_buffer_in_secs} \
-    model_stride={cfg.inference.model_stride} \
-    ++timestamps={cfg.inference.timestamps}"
+    base_cmd = [
+        "python",
+        str(script_path),
+        "calculate_wer=False",
+        f"model_path={cfg.model_path}",
+        f"pretrained_name={cfg.pretrained_name}",
+        f"dataset_manifest={cfg.test_ds.manifest_filepath}",
+        f"output_filename={cfg.output_filename}",
+        f"random_seed={cfg.random_seed}",
+        f"batch_size={cfg.test_ds.batch_size}",
+        f"++num_workers={cfg.test_ds.num_workers}",
+        f"chunk_len_in_secs={cfg.inference.chunk_len_in_secs}",
+        f"++total_buffer_in_secs={cfg.inference.total_buffer_in_secs}",
+        f"model_stride={cfg.inference.model_stride}",
+        f"++timestamps={cfg.inference.timestamps}",
+    ]
 
     subprocess.run(
         base_cmd,
-        shell=True,
+        shell=False,
         check=True,
     )
     return cfg
@@ -239,19 +242,25 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
         # If need to change other config such as decoding strategy, could either:
         # 1) change TranscriptionConfig on top of the executed scripts such as transcribe_speech.py in examples/asr, or
         # 2) add command as "rnnt_decoding.strategy=greedy_batch " to below script
+        base_cmd = [
+            "python",
+            str(script_path),
+            "calculate_wer=False",
+            f"model_path={cfg.model_path}",
+            f"pretrained_name={cfg.pretrained_name}",
+            f"dataset_manifest={cfg.test_ds.manifest_filepath}",
+            f"output_filename={cfg.output_filename}",
+            f"batch_size={cfg.test_ds.batch_size}",
+            f"num_workers={cfg.test_ds.num_workers}",
+            f"random_seed={cfg.random_seed}",
+            f"eval_config_yaml={f.name}",
+            f"decoder_type={cfg.inference.decoder_type}",
+        ]
+        if hydra_overrides:
+            base_cmd.extend(hydra_overrides.split())
         subprocess.run(
-            f"python {script_path} "
-            f"calculate_wer=False "
-            f"model_path={cfg.model_path} "
-            f"pretrained_name={cfg.pretrained_name} "
-            f"dataset_manifest={cfg.test_ds.manifest_filepath} "
-            f"output_filename={cfg.output_filename} "
-            f"batch_size={cfg.test_ds.batch_size} "
-            f"num_workers={cfg.test_ds.num_workers} "
-            f"random_seed={cfg.random_seed} "
-            f"eval_config_yaml={f.name} "
-            f"decoder_type={cfg.inference.decoder_type} {hydra_overrides}",
-            shell=True,
+            base_cmd,
+            shell=False,
             check=True,
         )
 

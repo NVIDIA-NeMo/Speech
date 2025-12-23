@@ -50,9 +50,10 @@ class CodecEmbedder(nn.Module):
 class FrechetCodecDistance(FrechetInceptionDistance):
     def __init__(self, codec_name: str):
         if codec_name.endswith(".nemo"):
+            # Local .nemo file
             codec = AudioCodecModel.restore_from(codec_name, strict=False)
         elif codec_name.startswith("nvidia/"):
-            # HuggingFace or NGC model name
+            # Model on HuggingFace or NGC
             codec = AudioCodecModel.from_pretrained(codec_name)
         else:
             raise ValueError(
@@ -82,7 +83,7 @@ class FrechetCodecDistance(FrechetInceptionDistance):
 
     def update(self, codes: Tensor, codes_len: Tensor, is_real: bool):
         if codes.numel() == 0:
-            logging.warning(f"FCD: No valid codes to update, skipping update")
+            logging.warning("FCD: No valid codes to update, skipping update")
             return
         if codes.shape[1] != self.codec.num_codebooks:
             logging.warning(
@@ -97,7 +98,7 @@ class FrechetCodecDistance(FrechetInceptionDistance):
         # combine into a single tensor. We treat each timestep independently so we can concatenate them all.
         codes_batch_all = torch.cat(codes_batch_all, dim=-1).permute(1, 0)  # (B*T, C)
         if len(codes_batch_all) == 0:
-            logging.warning(f"FCD: No valid codes to update, skipping update")
+            logging.warning("FCD: No valid codes to update, skipping update")
             return
         # update
         super().update(codes_batch_all, real=is_real)
@@ -113,7 +114,7 @@ class FrechetCodecDistance(FrechetInceptionDistance):
 
     def compute(self) -> Tensor:
         if not self.updated_since_last_reset:
-            logging.warning(f"FCD: No updates since last reset, returning 0")
+            logging.warning("FCD: No updates since last reset, returning 0")
             return torch.tensor(0.0, device=self.device)
         fcd = super().compute()
         min_allowed_fcd = -0.01  # a bit of tolerance for numerical issues

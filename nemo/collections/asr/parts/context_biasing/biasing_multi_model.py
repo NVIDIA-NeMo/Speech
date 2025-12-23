@@ -40,9 +40,9 @@ _BIASING_MODEL_CACHE = dict()
 class BiasingRequestItemConfig:
     boosting_model_cfg: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
     boosting_model_alpha: float = 1.0
+    cache_key: str | None = None  # cache key for memory cache; NB: cache key should be unique for (tokenizer, phrases)
     multi_model_id: int | None = None  # compiled model id
     auto_manage_multi_model: bool = True
-    cache_key: str | None = None  # cache key for memory cache; NB: cache key should be unique for (tokenizer, phrases)
 
     def is_empty(self) -> bool:
         """Return True if biasing request (or model) is empty"""
@@ -248,6 +248,13 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
     def __init__(
         self, vocab_size: int, reallocation_callback_fn: Callable | None = None, use_triton: bool | None = None
     ):
+        """
+
+        Args:
+            vocab_size:
+            reallocation_callback_fn:
+            use_triton:
+        """
         super().__init__()
         self.vocab_size: int = vocab_size
         self.float_dtype: torch.dtype | None = None
@@ -302,6 +309,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         return self.num_models > 0
 
     def _check_model_compatibility(self, model: NGramGPULanguageModel):
+        """Check that the new model parameters are the same compared to already stored models"""
         if self.vocab_size != model.vocab_size:
             raise ValueError(f"Inconsistent vocab size: {model.vocab_size}")
         if self.bos_state != model.bos_state:

@@ -233,18 +233,9 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
-        self.allow_cuda_graphs = allow_cuda_graphs
         self._SOS = self._blank_index
         self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
         assert self._SOS == self._blank_index  # "blank as pad" algorithm only
-
-        self.state = None
-        self.full_graph = None
-        self.separate_graphs = None
-
-        self.cuda_graphs_mode = None
-        self.cuda_graphs_allow_fallback = True
-        self.maybe_enable_cuda_graphs()
 
         self.fusion_models = fusion_models or []
         self.fusion_models_alpha = fusion_models_alpha or []
@@ -254,6 +245,25 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             if enable_per_stream_biasing
             else None
         )
+        if allow_cuda_graphs:
+            for fusion_model in self._all_fusion_models():
+                if not fusion_model.compatible_with_cuda_graphs():
+                    logging.warning(
+                        "Fusion model used that is incompatible with CUDA graphs."
+                        " Switching off CUDA graphs, decoding may be slow."
+                    )
+                    allow_cuda_graphs = False
+                    break
+
+        self.allow_cuda_graphs = allow_cuda_graphs
+
+        self.state = None
+        self.full_graph = None
+        self.separate_graphs = None
+
+        self.cuda_graphs_mode = None
+        self.cuda_graphs_allow_fallback = True
+        self.maybe_enable_cuda_graphs()
 
     @property
     def per_stream_biasing_enabled(self):

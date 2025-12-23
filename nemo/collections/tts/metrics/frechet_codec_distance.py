@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Tuple
+
 import numpy as np
 import torch
 from einops import rearrange
@@ -24,18 +26,32 @@ from nemo.utils import logging
 
 
 class CodecEmbedder(nn.Module):
+    """
+    Converts codec codes to dequantized codec embeddings.
+    The class implements the right API to be used as a custom feature extractor
+    provided to `torchmetrics.image.fid`.
+    """
+
     def __init__(self, codec: AudioCodecModel):
         super().__init__()
         self.codec = codec
 
     def forward(self, x: Tensor) -> Tensor:
         """
-        Embeds a batch of audio codec codes into the codec's (dequantized) embedding space.
+        Embeds a batch of audio codes into the codec's (dequantized) embedding space.
+        Each frame is treated independently.
+
+        Args:
+            x: Audio codes tensor of shape (B*T, C)
+
+        Returns:
+            Embeddings tensor of shape (B*T, D)
         """
-        # x: (B*T, C)
-        x_len = torch.tensor(x.shape[0], device=x.device, dtype=torch.long).unsqueeze(0)  # (1, 1)
-        # pretend it's one huge batch element, since codec requires (B, C, T) input and
+        # We treat all frames as one large batch element, since the codec requires (B, C, T) input and
         # we don't have the per-batch-element lengths at this point due to FID API limitations
+
+        # Consturct a length tensor: one batch element, all frames.
+        x_len = torch.tensor(x.shape[0], device=x.device, dtype=torch.long).unsqueeze(0)  # (1, 1)
         tokens = x.permute(1, 0).unsqueeze(0)  # 1, C, B*T
         embeddings = self.codec.dequantize(tokens=tokens, tokens_len=x_len)  # (B, D, T)
         # we treat each time step as a separate example
@@ -48,7 +64,26 @@ class CodecEmbedder(nn.Module):
 
 
 class FrechetCodecDistance(FrechetInceptionDistance):
+    """
+    A metric that measures the Frechet Distance between a collection of real and
+    generated codec frames. The distance is measured in the codec's embedding space,
+    i.e. the continuous vectors obtained by dequantizing the codec frames. Each
+    multi-codebook frame is treated as a separate example.
+
+    We subclass `torchmetrics.image.fid.FrechetInceptionDistance` and use the codec
+    embedder as a custom feature extractor.
+    """
+
     def __init__(self, codec_name: str):
+        """
+        Initializes the FrechetCodecDistance metric.
+
+        Args:
+            codec_name: The name of the codec model to use.
+                Can be a local .nemo file or a HuggingFace or NGC model.
+                If the name ends with ".nemo", it is assumed to be a local .nemo file.
+                Otherwise, it should start with "nvidia/", and is assumed to be a HuggingFace or NGC model.
+        """
         if codec_name.endswith(".nemo"):
             # Local .nemo file
             codec = AudioCodecModel.restore_from(codec_name, strict=False)
@@ -65,9 +100,15 @@ class FrechetCodecDistance(FrechetInceptionDistance):
         self.codec = codec
         self.updated_since_last_reset = False
 
-    def encode_from_file(self, audio_path: str) -> Tensor:
+    def _encode_audio_file(self, audio_path: str) -> Tuple[Tensor, Tensor]:
         """
-        Encodes an audio file into audio codec codes.
+        Encodes an audio file using the audio codec.
+
+        Args:
+            audio_path: Path to the audio file.
+
+        Returns:
+            Tuple of tensors containing the codec codes and the lengths of the codec codes.
         """
         audio_segment = AudioSegment.from_file(audio_path, target_sr=self.codec.sample_rate)
         assert np.issubdtype(audio_segment.samples.dtype, np.floating)
@@ -82,6 +123,14 @@ class FrechetCodecDistance(FrechetInceptionDistance):
         return codes, codes_len
 
     def update(self, codes: Tensor, codes_len: Tensor, is_real: bool):
+        """
+        Updates the metric with a batch of codec frames.
+
+        Args:
+            codes: Tensor of shape (B, C, T) containing the codec codes.
+            codes_len: Tensor of shape (B,) containing the lengths of the codec codes.
+            is_real: Boolean indicating whether the codes are real or generated.
+        """
         if codes.numel() == 0:
             logging.warning("FCD: No valid codes to update, skipping update")
             return
@@ -90,29 +139,46 @@ class FrechetCodecDistance(FrechetInceptionDistance):
                 f"FCD: Number of codebooks mismatch: {codes.shape[1]} != {self.codec.num_codebooks}, skipping update"
             )
             return
-        # keep only valid codes
+
+        # Keep only valid frames
         codes_batch_all = []
         for batch_idx in range(codes.shape[0]):
             codes_batch = codes[batch_idx, :, : codes_len[batch_idx]]  # (C, T)
             codes_batch_all.append(codes_batch)
-        # combine into a single tensor. We treat each timestep independently so we can concatenate them all.
+
+        # Combine into a single tensor. We treat each frame independently so we can concatenate them all.
         codes_batch_all = torch.cat(codes_batch_all, dim=-1).permute(1, 0)  # (B*T, C)
         if len(codes_batch_all) == 0:
             logging.warning("FCD: No valid codes to update, skipping update")
             return
-        # update
+
+        # Update the metric
         super().update(codes_batch_all, real=is_real)
         self.updated_since_last_reset = True
 
     def reset(self):
+        """
+        Resets the metric. Should be called after each compute.
+        """
         super().reset()
         self.updated_since_last_reset = False
 
     def update_from_audio_file(self, audio_path: str, is_real: bool):
-        codes, codes_len = self.encode_from_file(audio_path=audio_path)
+        """
+        Updates the metric with codes representing a single audio file.
+        Uses the codec to encode the audio file into codec codes and updates the metric.
+
+        Args:
+            audio_path: Path to the audio file.
+            is_real: Boolean indicating whether the audio file is real or generated.
+        """
+        codes, codes_len = self._encode_audio_file(audio_path=audio_path)
         self.update(codes=codes, codes_len=codes_len, is_real=is_real)
 
     def compute(self) -> Tensor:
+        """
+        Computes the Frechet Distance between the real and generated codec frame distributions.
+        """
         if not self.updated_since_last_reset:
             logging.warning("FCD: No updates since last reset, returning 0")
             return torch.tensor(0.0, device=self.device)

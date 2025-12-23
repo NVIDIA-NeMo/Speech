@@ -111,6 +111,9 @@ class StreamingState:
         # Request options
         self.options = None
 
+        # Prompt-related index (set by pipelines that use prompts)
+        self.prompt_idx = None
+
     def set_options(self, options: RequestOptions) -> None:
         """
         Set the options
@@ -118,6 +121,14 @@ class StreamingState:
             options: (RequestOptions) The request options to store in the state
         """
         self.options = options
+
+    def set_prompt_index(self, prompt_idx: int) -> None:
+        """
+        Store the resolved prompt index for prompt-enabled models.
+        Args:
+            prompt_idx: (int) The prompt index to store in the state
+        """
+        self.prompt_idx = prompt_idx
 
     def set_incomplete_segment_tokens(self, incomplete_segment_tokens: list) -> None:
         """

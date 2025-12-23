@@ -31,6 +31,11 @@ BASE_PATH = Path(__file__).parent
 
 @hydra.main(version_base=None)
 def main(cfg):
+    """
+    Script to test per-utterance boosting. We boost ground truth tests by using options with `ASR inference pipeline.
+    Sanity check: boosting ground truth should result in better WER (for CTC and RNN-T –
+    not always 0 even with high boosting weight if the transcription is inconsistent with the audio)
+    """
     # Reading audio filepaths
     audio_filepaths, manifest = get_audio_filepaths(cfg.audio_file, sort_by_duration=True)
     logging.info(f"Found {len(audio_filepaths)} audio files")

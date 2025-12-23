@@ -798,7 +798,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             )
         # setup fused biasing ids
         if self.decoding_computer.per_stream_biasing_enabled:
-            multi_biasing_ids = np.full([len(partial_hypotheses)], fill_value=-1)
+            batch_size = out_len.shape[0]
+            multi_biasing_ids = np.full([batch_size], fill_value=-1)
             if partial_hypotheses is not None:
                 for batch_i, hyp in enumerate(partial_hypotheses):
                     if hyp is None or (not hyp.has_biasing_request()):
@@ -2957,7 +2958,8 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             )
         # setup fused biasing ids
         if self.decoding_computer.per_stream_biasing_enabled:
-            multi_biasing_ids = np.full([len(partial_hypotheses)], fill_value=-1)
+            batch_size = out_len.shape[0]
+            multi_biasing_ids = np.full([batch_size], fill_value=-1)
             if partial_hypotheses is not None:
                 for batch_i, hyp in enumerate(partial_hypotheses):
                     if hyp is None or (not hyp.has_biasing_request()):

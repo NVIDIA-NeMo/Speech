@@ -39,10 +39,10 @@ _BIASING_MODEL_CACHE = dict()
 @dataclass
 class BiasingRequestItemConfig:
     boosting_model_cfg: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
-    boosting_model_alpha: float = 1.0
+    boosting_model_alpha: float = 1.0  # boosting weight
     cache_key: str | None = None  # cache key for memory cache; NB: cache key should be unique for (tokenizer, phrases)
     multi_model_id: int | None = None  # compiled model id
-    auto_manage_multi_model: bool = True
+    auto_manage_multi_model: bool = True  # if model should be added to the decoder and removed automatically
 
     def is_empty(self) -> bool:
         """Return True if biasing request (or model) is empty"""
@@ -91,16 +91,16 @@ class GPUBiasingMultiModelBase(abc.ABC, nn.Module):
 
     @abstractmethod
     def add_model(self, model: NGramGPULanguageModel, alpha: float = 1.0) -> int:
-        raise NotImplementedError
+        pass
 
     @abstractmethod
     def remove_model(self, model_id: int):
-        raise NotImplementedError
+        pass
 
     @abstractmethod
     def has_models(self) -> bool:
         """Return True if the multi-model has at least one model"""
-        raise NotImplementedError
+        pass
 
     def compatible_with_cuda_graphs(self) -> bool:
         """True if model can be compiled as a part of CUDA graph, False otherwise"""
@@ -140,7 +140,13 @@ class GPUBiasingMultiModelBase(abc.ABC, nn.Module):
 class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
     """Reference implementation (incompatible with CUDA graphs)"""
 
-    def __init__(self, vocab_size: int):
+    def __init__(self, vocab_size: int, *args, **kwargs):
+        """
+
+        Args:
+            vocab_size: vocabulary size of the model
+            *args, **kwargs: added for easiness of switching between this model and efficient implementation
+        """
         super().__init__()
         self.models = nn.ModuleList([])
         self.buffer_for_device_handling = nn.Buffer(torch.zeros([1], dtype=torch.long))
@@ -251,9 +257,9 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         """
 
         Args:
-            vocab_size:
-            reallocation_callback_fn:
-            use_triton:
+            vocab_size: vocabulary size of the model
+            reallocation_callback_fn: function to call when reallocation occurred (needed for decoders with CUDA graphs)
+            use_triton: allow using Triton, `None` means "auto" (used if available)
         """
         super().__init__()
         self.vocab_size: int = vocab_size
@@ -319,17 +325,23 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         if not model._final_resolved:
             model._resolve_final()
 
+    @staticmethod
+    def _extend_buffer_or_param(buffer_or_param: nn.Buffer | nn.Parameter, add_len: int):
+        """Extend buffer or parameter"""
+        buffer_or_param.data = torch.cat(
+            (
+                buffer_or_param.data,
+                torch.zeros(
+                    [add_len] + list(buffer_or_param.shape)[1:],
+                    dtype=buffer_or_param.dtype,
+                    device=buffer_or_param.device,
+                ),
+            )
+        )
+
     def _maybe_extend_arcs_and_states(self, add_num_states: int, add_num_arcs_extended: int) -> bool:
         """Extend memory allocated for arcs and states, return True if any tensor is reallocated"""
         reallocated = False
-
-        def _extend_buffer_or_param(buffer: nn.Buffer | nn.Parameter, add_len: int):
-            buffer.data = torch.cat(
-                (
-                    buffer.data,
-                    torch.zeros([add_len] + list(buffer.shape)[1:], dtype=buffer.dtype, device=buffer.device),
-                )
-            )
 
         if self.num_arcs_extended_total + add_num_arcs_extended > self.num_arcs_extended_reserved:
             # min allocation: 2x
@@ -337,10 +349,10 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
                 self.num_arcs_extended_reserved,
                 self.num_arcs_extended_total + add_num_arcs_extended - self.num_arcs_extended_reserved,
             )
-            _extend_buffer_or_param(self.all_arcs_weights, add_len=add_num_arcs)
-            _extend_buffer_or_param(self.all_from_states, add_len=add_num_arcs)
-            _extend_buffer_or_param(self.all_to_states, add_len=add_num_arcs)
-            _extend_buffer_or_param(self.all_ilabels, add_len=add_num_arcs)
+            self._extend_buffer_or_param(self.all_arcs_weights, add_len=add_num_arcs)
+            self._extend_buffer_or_param(self.all_from_states, add_len=add_num_arcs)
+            self._extend_buffer_or_param(self.all_to_states, add_len=add_num_arcs)
+            self._extend_buffer_or_param(self.all_ilabels, add_len=add_num_arcs)
             self.num_arcs_extended_reserved += add_num_arcs
             reallocated = True
 
@@ -349,31 +361,32 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
             add_num_states = max(
                 self.num_states_reserved, self.num_states_total + add_num_states - self.num_states_reserved
             )
-            _extend_buffer_or_param(self.all_start_end_arcs, add_len=add_num_states)
-            _extend_buffer_or_param(self.all_state_order, add_len=add_num_states)
-            _extend_buffer_or_param(self.all_backoff_to_states, add_len=add_num_states)
-            _extend_buffer_or_param(self.all_backoff_weights, add_len=add_num_states)
-            _extend_buffer_or_param(self.all_final_weights, add_len=add_num_states)
+            self._extend_buffer_or_param(self.all_start_end_arcs, add_len=add_num_states)
+            self._extend_buffer_or_param(self.all_state_order, add_len=add_num_states)
+            self._extend_buffer_or_param(self.all_backoff_to_states, add_len=add_num_states)
+            self._extend_buffer_or_param(self.all_backoff_weights, add_len=add_num_states)
+            self._extend_buffer_or_param(self.all_final_weights, add_len=add_num_states)
             self.num_states_reserved += add_num_states
             reallocated = True
 
         return reallocated
+
+    @staticmethod
+    def _extend_buffer_2x(buffer: nn.Buffer):
+        buffer.data = torch.cat((buffer.data, torch.zeros_like(buffer.data)), dim=-1)
 
     def _extend_num_models(self):
         """Extend memory allocated for models with properties"""
         assert self.num_models_reserved > 0
         self.num_models_reserved *= 2
 
-        def _extend_buffer_2x(buffer: nn.Buffer):
-            buffer.data = torch.cat((buffer.data, torch.zeros_like(buffer.data)), dim=-1)
-
-        _extend_buffer_2x(self.model2alpha)
-        _extend_buffer_2x(self.model2active)
-        _extend_buffer_2x(self.model2num_states)
-        _extend_buffer_2x(self.model2num_arcs)
-        _extend_buffer_2x(self.model2num_arcs_extended)
-        _extend_buffer_2x(self.model2states_offset)
-        _extend_buffer_2x(self.model2arcs_offset)
+        self._extend_buffer_2x(self.model2alpha)
+        self._extend_buffer_2x(self.model2active)
+        self._extend_buffer_2x(self.model2num_states)
+        self._extend_buffer_2x(self.model2num_arcs)
+        self._extend_buffer_2x(self.model2num_arcs_extended)
+        self._extend_buffer_2x(self.model2states_offset)
+        self._extend_buffer_2x(self.model2arcs_offset)
 
     @torch.no_grad()
     def add_model(self, model: GPUBoostingTreeModel, alpha: float = 1.0) -> int:
@@ -457,6 +470,16 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
                 reallocation_callback_fn()
         return model_id
 
+    @staticmethod
+    def _clear_buffer_or_param_range(
+        buffer_or_param: nn.Buffer | nn.Parameter, start: int, end: int, buffer_len: int | None = None
+    ):
+        if buffer_len is None:
+            buffer_len = buffer_or_param.shape[0]
+        remove_len = end - start
+        buffer_or_param[start : buffer_len - remove_len].copy_(buffer_or_param[end:buffer_len].clone())
+        buffer_or_param[buffer_len - remove_len : buffer_len].fill_(0)
+
     @torch.no_grad()
     def remove_model(self, model_id: int):
         """
@@ -486,27 +509,18 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
 
         assert num_arcs > 0 and num_states > 0, "Unexpected zero-size model"
 
-        def _clear_buffer_or_param_range(
-            buffer: nn.Buffer | nn.Parameter, start: int, end: int, buffer_size: int | None = None
-        ):
-            if buffer_size is None:
-                buffer_size = buffer.shape[0]
-            remove_len = end - start
-            buffer[start : buffer_size - remove_len].copy_(buffer[end:buffer_size].clone())
-            buffer[buffer_size - remove_len : buffer_size].fill_(0)
+        # clean up arcs-related data: cut [start_arc, end_arc) from the buffer (shifting right part to the left)
+        self._clear_buffer_or_param_range(self.all_arcs_weights, start_arc, end_arc, self.num_arcs_extended_total)
+        self._clear_buffer_or_param_range(self.all_from_states, start_arc, end_arc, self.num_arcs_extended_total)
+        self._clear_buffer_or_param_range(self.all_to_states, start_arc, end_arc, self.num_arcs_extended_total)
+        self._clear_buffer_or_param_range(self.all_ilabels, start_arc, end_arc, self.num_arcs_extended_total)
 
-        # clean up arcs-related data
-        _clear_buffer_or_param_range(self.all_arcs_weights, start_arc, end_arc, self.num_arcs_extended_total)
-        _clear_buffer_or_param_range(self.all_from_states, start_arc, end_arc, self.num_arcs_extended_total)
-        _clear_buffer_or_param_range(self.all_to_states, start_arc, end_arc, self.num_arcs_extended_total)
-        _clear_buffer_or_param_range(self.all_ilabels, start_arc, end_arc, self.num_arcs_extended_total)
-
-        # clean up states-related data
-        _clear_buffer_or_param_range(self.all_start_end_arcs, start_state, end_state, self.num_states_total)
-        _clear_buffer_or_param_range(self.all_state_order, start_state, end_state, self.num_states_total)
-        _clear_buffer_or_param_range(self.all_backoff_to_states, start_state, end_state, self.num_states_total)
-        _clear_buffer_or_param_range(self.all_backoff_weights, start_state, end_state, self.num_states_total)
-        _clear_buffer_or_param_range(self.all_final_weights, start_state, end_state, self.num_states_total)
+        # clean up states-related data: cut [start_state, end_state) from the buffer (shifting right part to the left)
+        self._clear_buffer_or_param_range(self.all_start_end_arcs, start_state, end_state, self.num_states_total)
+        self._clear_buffer_or_param_range(self.all_state_order, start_state, end_state, self.num_states_total)
+        self._clear_buffer_or_param_range(self.all_backoff_to_states, start_state, end_state, self.num_states_total)
+        self._clear_buffer_or_param_range(self.all_backoff_weights, start_state, end_state, self.num_states_total)
+        self._clear_buffer_or_param_range(self.all_final_weights, start_state, end_state, self.num_states_total)
 
         # set num states/arcs to zero
         self.num_states_total -= num_states
@@ -518,6 +532,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         # shift model offsets
         self.model2states_offset[model_id] = 0
         self.model2arcs_offset[model_id] = 0
+        # shift states and arcs offsets
         torch.where(
             self.model2states_offset < start_state,
             self.model2states_offset,

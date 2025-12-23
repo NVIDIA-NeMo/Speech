@@ -1118,7 +1118,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         # Note: set to weights_only=True for safety reason
         # It should be switching to safetensor but NeMo is deprecated.
         # Please use Megatron-Bridge for better checkpointing support.
-        return torch.load(os.path.join(ckpt_dir, "common.pt"))
+        return torch.load(os.path.join(ckpt_dir, "common.pt"), weights_only=True)
 
     def _load_fsdp_dtensor_checkpoint(self, path, sharded_state_dict, strict):
         from torch.distributed.checkpoint import default_planner

@@ -30,6 +30,7 @@ from nemo.collections.tts.parts.preprocessing.features import Featurizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _read_audio,
     beta_binomial_prior_distribution,
+    chunk_and_tokenize_text_by_sentence,
     filter_dataset_by_duration,
     get_weighted_sampler,
     load_audio,
@@ -629,6 +630,10 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if "reward" in data.manifest_entry:
             example["reward"] = data.manifest_entry["reward"]
 
+        # Get speaker index if available (for models with baked context embeddings)
+        if 'speaker_index' in data.manifest_entry:
+            example['speaker_index'] = data.manifest_entry['speaker_index']
+
         return example
 
     def collate_fn(self, batch: List[dict]):
@@ -653,6 +658,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         reward_list = []
         raw_text_list = []
         language_list = []
+        speaker_indices_list = []
         for example in batch:
             dataset_name_list.append(example["dataset_name"])
             audio_filepath_list.append(example["audio_filepath"])
@@ -689,6 +695,9 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
             if 'reward' in example:
                 reward_list.append(example['reward'])
+
+            if 'speaker_index' in example:
+                speaker_indices_list.append(example['speaker_index'])
 
             if self.include_align_prior:
                 prior_list.append(example["align_prior"])
@@ -762,6 +771,9 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if len(reward_list) > 0:
             batch_dict['rewards'] = torch.FloatTensor(reward_list)
 
+        if len(speaker_indices_list) > 0:
+            batch_dict['speaker_indices'] = torch.tensor(speaker_indices_list, dtype=torch.int64)
+
         # Assert only ONE of context_audio or context_audio_codes in the batch
         assert ('audio' in batch_dict) ^ ('audio_codes' in batch_dict)
 
@@ -798,3 +810,149 @@ class MagpieTTSDatasetDPO(MagpieTTSDataset):
         chosen_collated = super().collate_fn(chosen_batch)
         rejected_collated = super().collate_fn(rejected_batch)
         return {"chosen": chosen_collated, "rejected": rejected_collated}
+
+
+class LongFormTTSInferenceDataset(MagpieTTSDataset):
+    """
+    Dataset for longform TTS inference with sentence-level text chunking.
+
+    Inherits from MagpieTTSDataset to reuse context audio loading, text conditioning,
+    and other preprocessing logic. Adds sentence-level text chunking on top.
+
+    Args:
+        dataset_meta: Dataset metadata dictionary (same format as MagpieTTSDataset).
+        sample_rate: Audio sample rate.
+        tokenizer_name: Name of the tokenizer to use for sentence chunking.
+        codec_model_samples_per_frame: Samples per codec frame.
+        eos_id: End-of-sequence token ID.
+        audio_bos_id: Audio BOS token ID (for target audio).
+        audio_eos_id: Audio EOS token ID (for target audio).
+        context_audio_bos_id: Context audio BOS token ID.
+        context_audio_eos_id: Context audio EOS token ID.
+        num_audio_codebooks: Number of audio codebooks.
+        context_duration_min: Minimum context duration in seconds.
+        context_duration_max: Maximum context duration in seconds.
+        use_text_conditioning_tokenizer: Whether model uses text conditioning encoder.
+        text_conditioning_tokenizer_name: Name of text conditioning tokenizer.
+        pad_context_text_to_max_duration: Whether to pad context text.
+        load_16khz_audio: Whether to load 16kHz audio for SV model.
+    """
+
+    def __init__(
+        self,
+        dataset_meta: Dict[str, Any],
+        sample_rate: int,
+        tokenizer_name: str,
+        codec_model_samples_per_frame: int,
+        eos_id: int,
+        audio_bos_id: int,
+        audio_eos_id: int,
+        context_audio_bos_id: int,
+        context_audio_eos_id: int,
+        num_audio_codebooks: int,
+        context_duration_min: float = 3.0,
+        context_duration_max: float = 10.0,
+        use_text_conditioning_tokenizer: bool = False,
+        text_conditioning_tokenizer_name: str = None,
+        pad_context_text_to_max_duration: bool = False,
+        load_16khz_audio: bool = False,
+        **kwargs,
+    ):
+        # Initialize parent - handles manifest reading and context audio loading
+        super().__init__(
+            dataset_meta=dataset_meta,
+            sample_rate=sample_rate,
+            codec_model_samples_per_frame=codec_model_samples_per_frame,
+            eos_id=eos_id,
+            audio_bos_id=audio_bos_id,
+            audio_eos_id=audio_eos_id,
+            context_audio_bos_id=context_audio_bos_id,
+            context_audio_eos_id=context_audio_eos_id,
+            num_audio_codebooks=num_audio_codebooks,
+            context_duration_min=context_duration_min,
+            context_duration_max=context_duration_max,
+            use_text_conditioning_tokenizer=use_text_conditioning_tokenizer,
+            text_conditioning_tokenizer_name=text_conditioning_tokenizer_name,
+            pad_context_text_to_max_duration=pad_context_text_to_max_duration,
+            load_16khz_audio=load_16khz_audio,
+            load_cached_codes_if_available=True,  # Prefer codes for inference
+            dataset_type='test',
+            **kwargs,
+        )
+        self.tokenizer_name = tokenizer_name
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Add sentence chunking on top of parent's __getitem__.
+
+        Returns:
+            Dictionary containing all parent fields plus:
+                - idx: Sample index
+                - chunked_tokens: List of tokenized text chunks (per sentence)
+                - chunked_tokens_len: List of token lengths
+                - entry: Original manifest entry
+        """
+        # Get text for sentence chunking
+        data = self.data_samples[idx]
+        text = data.text  # entry.get("normalized_text", entry.get("text", ""))
+
+        # Sentence chunking (longform-specific)
+        chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
+            text,
+            self.tokenizer_name,
+            self.text_tokenizer,
+            self.eos_id,
+        )
+
+        # Handle empty text edge case
+        if not chunked_tokens:
+            chunked_tokens = [torch.tensor([self.eos_id], dtype=torch.int32)]
+            chunked_tokens_len = [1]
+
+        # Call parent to get ALL the context audio, text conditioning, etc.
+        example = super().__getitem__(idx)
+
+        # Add longform-specific fields
+        example['idx'] = idx
+        example['chunked_tokens'] = chunked_tokens
+        example['chunked_tokens_len'] = chunked_tokens_len
+
+        return example
+
+    def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Collate function for batching longform samples.
+
+        Calls parent's collate_fn to handle context audio, text conditioning, etc.,
+        then adds longform-specific fields (chunked_tokens).
+        """
+        # Call parent's collate_fn to handle all standard fields
+        batch_dict = super().collate_fn(batch)
+
+        # Add longform-specific fields
+        indices = []
+        chunked_tokens_list = []
+        chunked_tokens_lens_list = []
+
+        # Find max number of chunks across batch
+        max_num_chunks = max(len(sample['chunked_tokens']) for sample in batch)
+
+        for sample in batch:
+            indices.append(sample['idx'])
+
+            # Pad chunked tokens to max_num_chunks with single EOS token
+            num_padding = max_num_chunks - len(sample['chunked_tokens'])
+            padded_tokens = sample['chunked_tokens'] + [
+                torch.tensor([self.eos_id], dtype=torch.int32) for _ in range(num_padding)
+            ]
+            padded_lens = sample['chunked_tokens_len'] + [1] * num_padding
+
+            chunked_tokens_list.append(padded_tokens)
+            chunked_tokens_lens_list.append(padded_lens)
+
+        # Add longform-specific fields to batch_dict
+        batch_dict['idx'] = indices
+        batch_dict['chunked_tokens'] = chunked_tokens_list
+        batch_dict['chunked_tokens_lens'] = chunked_tokens_lens_list
+
+        return batch_dict

@@ -11,11 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import json
 import os
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -49,6 +50,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     plot_alignment_to_numpy,
 )
+from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
@@ -128,6 +130,106 @@ class ContextTensorsOutput:
     context_audio_codes: Optional[torch.Tensor] = None
     context_audio_codes_lens: Optional[torch.Tensor] = None
     beta_binomial_attn_prior: Optional[torch.Tensor] = None
+
+
+@dataclass
+class LongformDecoderState:
+    """Tracks state during longform speech generation.
+
+    This dataclass encapsulates all the mutable state variables used in the
+    autoregressive decoding loop of generate_long_form_speech, reducing parameter
+    passing and improving code organization.
+
+    Attributes:
+        audio_codes_input: Current audio codes buffer. Shape: (B, num_codebooks, T).
+        audio_codes_lens: Length of each audio sequence. Shape: (B,).
+        audio_codes_mask: Mask for audio codes. Shape: (B, T).
+        attended_timestep_counter: List of dicts tracking attention counts per timestep.
+        all_predictions: List of predicted audio code tensors.
+        chunk_end_dict: Maps batch indices to their chunk end timesteps.
+        unfinished_texts: Maps batch indices to whether text is still being processed.
+        finished_texts_counter: Maps batch indices to counts of timesteps near text end.
+        attn_prior: Current attention prior tensor. Shape: (B, 1, T_text).
+    """
+
+    audio_codes_input: torch.Tensor
+    audio_codes_lens: torch.Tensor
+    audio_codes_mask: torch.Tensor
+    attended_timestep_counter: List[Dict[int, int]]
+    all_predictions: List[torch.Tensor]
+    chunk_end_dict: Dict[int, int]
+    unfinished_texts: Dict[int, bool]
+    finished_texts_counter: Dict[int, int]
+    attn_prior: Optional[torch.Tensor] = None
+
+
+@dataclass
+class LongformConfig:
+    """Immutable configuration for longform inference tuning parameters.
+
+    These parameters control the behavior of longform (multi-chunk) speech generation.
+    Initialized once in MagpieTTSModel.__init__ and accessed via self.longform_config.
+
+    Attributes:
+        history_len_heuristic: Maximum history tokens to retain across chunks.
+        prior_weights_init: Attention prior weights for chunk initialization.
+        prior_weights: Attention prior weights during generation (history, current, +1, +2, +3, +4).
+        finished_limit_with_eot: Steps after text end before allowing EOS.
+        finished_limit_without_eot: Steps after chunk end before allowing EOS.
+        forceful_chunk_end_threshold: Threshold for forceful chunk termination.
+        argmax_temperature: Temperature for argmax sampling in EOS detection.
+        short_sentence_threshold: Sentences shorter than this skip attention prior.
+        attention_sink_threshold: Times attended before position is considered a sink.
+        near_end_threshold: Positions from text end to consider "near end".
+    """
+
+    history_len_heuristic: int = 20
+    prior_weights_init: Tuple[float, ...] = (0.5, 1.0, 0.8, 0.2, 0.2)
+    prior_weights: Tuple[float, ...] = (0.2, 1.0, 0.6, 0.4, 0.2, 0.2)
+    finished_limit_with_eot: int = 5
+    finished_limit_without_eot: int = 1
+    forceful_chunk_end_threshold: int = 3
+    argmax_temperature: float = 0.01
+    short_sentence_threshold: int = 35
+    attention_sink_threshold: int = 10
+    near_end_threshold: int = 3
+
+
+@dataclass
+class LongformChunkState:
+    """Mutable state persisting across chunks during longform generation.
+
+    Created by the inference runner via model.create_longform_chunk_state(),
+    passed to generate_long_form_speech(), and updated in-place across chunk iterations.
+
+    Attributes:
+        batch_size: Number of items in the batch.
+        history_text: Text tokens from previous chunks. Shape: (B, T).
+        history_text_lens: Lengths of history text per batch item. Shape: (B,).
+        history_context_tensor: Encoder output from previous chunks. Shape: (B, T, E).
+        end_indices: Maps batch indices to overall timestep where they ended.
+        overall_idx: Global timestep counter across all chunks.
+        left_offset: Sliding window offset per batch item for attention tracking.
+        previous_attn_len: Attention lengths from previous chunk per batch item.
+        last_attended_timesteps: Tracking of attended positions across decoding.
+    """
+
+    batch_size: int
+    history_text: Optional[torch.Tensor] = None
+    history_text_lens: Optional[torch.Tensor] = None
+    history_context_tensor: Optional[torch.Tensor] = None
+    end_indices: Dict[int, int] = field(default_factory=dict)
+    overall_idx: int = 0
+    left_offset: List[int] = field(default_factory=list)
+    previous_attn_len: List[int] = field(default_factory=list)
+    last_attended_timesteps: List[List[int]] = field(default_factory=list)
+
+    def __post_init__(self):
+        """Initialize batch-sized lists if not provided."""
+        if not self.left_offset:
+            self.left_offset = [0] * self.batch_size
+        if not self.last_attended_timesteps:
+            self.last_attended_timesteps = [[1] * self.batch_size]
 
 
 def worker_init_fn(worker_id):
@@ -450,6 +552,9 @@ class MagpieTTSModel(ModelPT):
 
         # Class-level cache for text normalizers. Used during inference.
         self._text_normalizers: Dict[str, Any] = {}
+
+        # Longform inference configuration (immutable tuning parameters)
+        self.longform_config = LongformConfig()
 
     def _register_tokenizer_artifacts(self, cfg: DictConfig) -> None:
         """
@@ -2547,22 +2652,54 @@ class MagpieTTSModel(ModelPT):
         lookahead_window_size,
         attended_timestep_counter,
         batch_size,
+        left_offset=[],
     ):
         """
         Returns the most attended timestep for each batch item
+
+        This method identifies which text token is most attended to within a lookahead window, starting from
+        the last attended timestep. It includes logic to detect attention sinks (tokens attended to excessively)
+        and move past them. The method also tracks how many times each timestep has been attended.
+
+        Args:
+            alignment_attention_scores (torch.Tensor): Attention scores between audio and text tokens.
+                Shape: (batch_size, text_length).
+            last_attended_timesteps (list): List containing the last attended timestep for each batch item.
+                The last element [-1] should be a list/tensor of length batch_size.
+            text_lens (torch.Tensor): Length of text sequence for each batch item. Shape: (batch_size,).
+            lookahead_window_size (int): Size of the forward-looking window to search for the next attended
+                timestep. Determines how far ahead from the last attended timestep to look.
+            attended_timestep_counter (list): List of dictionaries (one per batch item) tracking how many
+                times each timestep has been attended. Used to detect attention sinks.
+            batch_size (int): Number of items in the batch.
+            left_offset (list, optional): List of offsets to adjust timestep indices for each batch item,
+                used in longform inference when text is provided in chunks. Relevant only in longform
+                generation.
+
+        Returns:
+            tuple: A tuple containing:
+                - text_time_step_attended (list): List of integers, one per batch item, indicating the most
+                  attended text timestep for that item.
+                - attended_timestep_counter (list): Updated counter tracking attendance frequency for each
+                  timestep across all batch items.
         """
+        if len(left_offset) == 0:
+            left_offset = [0 for _ in range(batch_size)]
         text_time_step_attended = []
         for bidx in range(batch_size):
             last_attended_timestep = last_attended_timesteps[-1][bidx]
             if attended_timestep_counter[bidx].get(last_attended_timestep, 0) >= 8:
                 # This is probably an attention sink! Move to the next timestep
                 last_attended_timestep += 1
+            last_attended_timestep_in_this_window = last_attended_timestep - left_offset[bidx]
             window_size = lookahead_window_size
-            window_end = min(last_attended_timestep + window_size, text_lens[bidx] - 3)  # Ignore the last 3 timesteps
-            item_attention_scores = alignment_attention_scores[bidx, last_attended_timestep:window_end]
+            window_end = min(
+                last_attended_timestep_in_this_window + window_size, text_lens[bidx] - 3
+            )  # Ignore the last 3 timesteps
+            item_attention_scores = alignment_attention_scores[bidx, last_attended_timestep_in_this_window:window_end]
             if item_attention_scores.size(0) == 0:
                 # This means the sentence has ended
-                attended_timestep = text_lens[bidx].item() - 1
+                attended_timestep = text_lens[bidx].item() - 1 + left_offset[bidx]
             else:
                 attended_timestep = item_attention_scores.argmax().item() + last_attended_timestep
             text_time_step_attended.append(attended_timestep)
@@ -3419,3 +3556,820 @@ class MagpieTTSModel(ModelPT):
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
         return []
+
+    def create_longform_chunk_state(self, batch_size: int) -> LongformChunkState:
+        """Create fresh state for longform inference over a batch.
+
+        This method creates a LongformChunkState dataclass instance that tracks
+        mutable state across multiple calls to generate_long_form_speech() when
+        processing long text in chunks.
+
+        The returned state object should be:
+        1. Created once per batch by the inference runner
+        2. Passed to each call of generate_long_form_speech()
+        3. Updated in-place during generation
+
+        Args:
+            batch_size: Number of items in the batch.
+
+        Returns:
+            LongformChunkState with initialized state for the batch.
+
+        Example:
+            >>> chunk_state = model.create_longform_chunk_state(batch_size=4)
+            >>> for chunk in text_chunks:
+            ...     output = model.generate_long_form_speech(batch, chunk_state, ...)
+        """
+        return LongformChunkState(batch_size=batch_size)
+
+    def _set_attention_prior_weights(
+        self,
+        attn_prior: torch.Tensor,
+        batch_idx: int,
+        attended_pos: int,
+        text_len: int,
+        eps_sq: float,
+    ) -> None:
+        """
+        Set attention prior weights around the currently attended position.
+
+        Creates a distribution that:
+        - Strongly suppresses positions before (attended - 1)
+        - Peaks at the current attended position
+        - Gradually decays for lookahead positions
+        - Suppresses far-future positions
+
+        Args:
+            attn_prior: Prior tensor to modify in-place. Shape: (B, 1, T_text).
+            batch_idx: Index of current batch item.
+            attended_pos: Currently attended text position (chunk-relative).
+            text_len: Length of text for this batch item.
+            eps_sq: Squared epsilon for strong suppression.
+        """
+        prior_weights = self.longform_config.prior_weights
+
+        # Suppress history (before attended - 1)
+        history_end = max(1, attended_pos - 1)
+        attn_prior[batch_idx, 0, :history_end] = eps_sq
+
+        # Set weights around attended position
+        attn_prior[batch_idx, 0, history_end] = prior_weights[0]  # History exposure
+        attn_prior[batch_idx, 0, attended_pos] = prior_weights[1]  # Current (peak)
+
+        # Lookahead positions with bounds checking
+        for offset, weight in enumerate(prior_weights[2:], start=1):
+            pos = attended_pos + offset
+            if pos < text_len:
+                attn_prior[batch_idx, 0, pos] = weight
+
+        # Suppress far future (position +5 onwards)
+        future_start = attended_pos + len(prior_weights) - 1
+        if future_start < text_len:
+            attn_prior[batch_idx, 0, future_start:] = eps_sq
+
+    def _penalize_attention_sinks(
+        self,
+        attn_prior: torch.Tensor,
+        batch_idx: int,
+        attended_timestep_counter: Dict[int, int],
+        left_offset: int,
+        eps_sq: float,
+    ) -> None:
+        """
+        Penalize timesteps that have been over-attended (attention sinks).
+
+        When a position is attended more than the threshold, suppress all
+        positions up to and including it to force the model to move forward.
+
+        Args:
+            attn_prior: Prior tensor to modify in-place. Shape: (B, 1, T_text).
+            batch_idx: Index of current batch item.
+            attended_timestep_counter: Dict tracking attention counts per timestep.
+            left_offset: Chunk offset for this batch item.
+            eps_sq: Squared epsilon for strong suppression.
+        """
+        threshold = self.longform_config.attention_sink_threshold
+
+        for timestep, count in attended_timestep_counter.items():
+            if timestep > left_offset and count >= threshold:
+                logging.debug(f"Attention sink at timestep {timestep} for batch {batch_idx}, count: {count}")
+                relative_pos = timestep - left_offset
+                attn_prior[batch_idx, 0, : relative_pos + 1] = eps_sq
+
+    def _update_text_completion_state(
+        self,
+        batch_idx: int,
+        attended_pos: int,
+        text_len: int,
+        is_finished: bool,
+        unfinished_texts: Dict[int, bool],
+        finished_texts_counter: Dict[int, int],
+    ) -> None:
+        """
+        Update tracking state for text completion detection.
+
+        A text is considered "near end" when the attended position is within
+        `longform_near_end_threshold` positions of the text end.
+
+        Args:
+            batch_idx: Index of current batch item.
+            attended_pos: Currently attended text position (chunk-relative).
+            text_len: Length of text for this batch item.
+            is_finished: Whether this batch item has already finished.
+            unfinished_texts: Dict to update in-place.
+            finished_texts_counter: Dict to update in-place.
+        """
+        is_near_end = attended_pos >= text_len - self.longform_config.near_end_threshold
+
+        # Text is unfinished if not near end AND not already marked finished
+        unfinished_texts[batch_idx] = not is_near_end and not is_finished
+
+        # Start counting when near end or already finished
+        if is_near_end or is_finished:
+            finished_texts_counter.setdefault(batch_idx, 0)
+
+    def construct_longform_inference_prior(
+        self,
+        prior_epsilon: float,
+        cross_attention_scores: torch.Tensor,
+        text_lens: torch.Tensor,
+        text_time_step_attended: List[int],
+        attended_timestep_counter: List[Dict[int, int]],
+        unfinished_texts: Dict[int, bool],
+        finished_texts_counter: Dict[int, int],
+        end_indices: Dict[int, int],
+        chunk_end_dict: Dict[int, int],
+        batch_size: int,
+        left_offset: Optional[List[int]] = None,
+    ) -> Tuple[torch.Tensor, Dict[int, bool], Dict[int, int]]:
+        """
+        Construct attention prior for longform inference with chunked text.
+
+        Builds a soft attention prior that guides the decoder to attend to appropriate
+        text positions, preventing attention drift and encouraging monotonic progression.
+
+        Args:
+            prior_epsilon: Base probability for non-targeted positions.
+            cross_attention_scores: Attention scores for shape/device inference.
+                Shape: (effective_batch, text_length).
+            text_lens: Length of text for each batch item. Shape: (batch_size,).
+            text_time_step_attended: Most attended text position (absolute) per batch item.
+            attended_timestep_counter: Per-batch dicts tracking attention counts per timestep.
+            unfinished_texts: Updated in-place. True if text still being processed.
+            finished_texts_counter: Updated in-place. Counts consecutive near-end timesteps.
+            end_indices: Batch indices that have reached end-of-sequence.
+            chunk_end_dict: Batch indices that have reached chunk end.
+            batch_size: Number of items in the batch.
+            left_offset: Chunk offset for each batch item. Defaults to zeros.
+
+        Returns:
+            Tuple of (attention_prior, unfinished_texts, finished_texts_counter).
+        """
+        # Initialize with safe default (avoid mutable default argument)
+        if left_offset is None:
+            left_offset = [0] * batch_size
+
+        # Extract shape info and create prior tensor
+        device = cross_attention_scores.device
+        effective_batch = cross_attention_scores.shape[0]  # 2 * batch_size if CFG else batch_size
+        text_dim = cross_attention_scores.shape[1]
+        eps_sq = prior_epsilon * prior_epsilon
+
+        attn_prior = torch.full((effective_batch, 1, text_dim), prior_epsilon, device=device)
+
+        # Process each batch item
+        for bidx in range(min(effective_batch, batch_size)):
+            text_len = int(text_lens[bidx])
+            attended_pos = text_time_step_attended[bidx] - left_offset[bidx]
+            is_finished = bidx in end_indices or bidx in chunk_end_dict
+
+            # Short sentences: uniform prior (no guidance needed)
+            if text_len <= self.longform_config.short_sentence_threshold:
+                attn_prior[bidx, 0, :] = 1.0
+            else:
+                # Set attention weights around attended position
+                self._set_attention_prior_weights(attn_prior, bidx, attended_pos, text_len, eps_sq)
+
+            # Penalize attention sinks (stuck positions)
+            if not is_finished:
+                self._penalize_attention_sinks(
+                    attn_prior, bidx, attended_timestep_counter[bidx], left_offset[bidx], eps_sq
+                )
+
+            # Update text completion tracking
+            self._update_text_completion_state(
+                bidx, attended_pos, text_len, is_finished, unfinished_texts, finished_texts_counter
+            )
+
+        return attn_prior, unfinished_texts, finished_texts_counter
+
+    @staticmethod
+    def _to_int(value: Union[int, torch.Tensor]) -> int:
+        """Convert tensor scalar to Python int if needed."""
+        return value.item() if not isinstance(value, int) else value
+
+    def _check_eos_and_update_state(
+        self,
+        chunk_state: LongformChunkState,
+        audio_codes_next: torch.Tensor,
+        all_codes_next_argmax: torch.Tensor,
+        chunk_end_dict: Dict[int, int],
+        finished_texts_counter: Dict[int, int],
+        end_of_text: List[bool],
+        eos_detection_method: 'EOSDetectionMethod',
+        current_step: int,
+        batch_size: int,
+    ) -> None:
+        """
+        Check for EOS tokens and update chunk/end tracking state.
+
+        Args:
+            chunk_state: Mutable state object tracking history across chunks.
+            audio_codes_next: Sampled audio codes. Shape: (B, num_codebooks).
+            all_codes_next_argmax: Argmax sampled codes for EOS detection.
+            chunk_end_dict: Maps batch indices to chunk end timesteps.
+            finished_texts_counter: Counter for near-end timesteps.
+            end_of_text: Whether text has ended for each batch item.
+            eos_detection_method: Method for detecting end-of-sequence.
+            current_step: Current decoding step index.
+            batch_size: Number of items in the batch.
+        """
+        for item_idx in range(batch_size):
+            if item_idx in chunk_state.end_indices or item_idx in chunk_end_dict:
+                continue
+
+            end_frame_index = self.detect_eos(
+                audio_codes_next[item_idx], all_codes_next_argmax[item_idx], eos_detection_method
+            )
+
+            # End of speech detected. Update the state.
+            if end_frame_index != float('inf'):
+                if end_of_text[item_idx]:
+                    # Speech for entire longform text has ended. Update the state.
+                    chunk_state.end_indices[item_idx] = chunk_state.overall_idx
+                    chunk_end_dict[item_idx] = current_step
+                    logging.info(
+                        f"End detected for item {item_idx} at local timestep {current_step} "
+                        f"and overall timestep {chunk_state.overall_idx}"
+                    )
+                elif item_idx not in chunk_end_dict:
+                    # Chunk end detected. Update the state.
+                    chunk_end_dict[item_idx] = current_step
+                    logging.info(f"Chunk end detected for item {item_idx} at local timestep {current_step}")
+            elif (
+                not end_of_text[item_idx]
+                and finished_texts_counter.get(item_idx, -1) >= self.longform_config.forceful_chunk_end_threshold
+            ):
+                chunk_end_dict[item_idx] = current_step
+                logging.info(f"Forceful chunk end detected for item {item_idx} at local timestep {current_step}")
+
+    def _should_terminate_loop(
+        self,
+        chunk_state: LongformChunkState,
+        chunk_end_dict: Dict[int, int],
+        end_of_text: List[bool],
+        batch_size: int,
+    ) -> bool:
+        """
+        Check if all batch items have reached their end condition.
+
+        Args:
+            chunk_state: Mutable state object tracking history across chunks.
+            chunk_end_dict: Maps batch indices to chunk end timesteps.
+            end_of_text: Whether text has ended for each batch item.
+            batch_size: Number of items in the batch.
+
+        Returns:
+            True if all items have reached end, False otherwise.
+        """
+        if len(chunk_state.end_indices) == batch_size:
+            logging.info("All ends reached")
+            return True
+
+        completed_count = 0
+        for bidx in range(batch_size):
+            if not end_of_text[bidx] and bidx in chunk_end_dict:
+                completed_count += 1
+            elif end_of_text[bidx] and bidx in chunk_state.end_indices:
+                completed_count += 1
+
+        if completed_count == batch_size:
+            logging.info("All ends reached via chunk end")
+            return True
+
+        return False
+
+    def _run_longform_forward_with_cfg(
+        self,
+        context_tensors: Dict[str, Any],
+        audio_codes_embedded: torch.Tensor,
+        audio_codes_mask: torch.Tensor,
+        attn_prior: Any,
+        use_cfg: bool,
+        cfg_scale: float,
+        dummy_cond: Optional[torch.Tensor],
+        dummy_cond_mask: Optional[torch.Tensor],
+        dummy_additional_decoder_input: Optional[torch.Tensor],
+        dummy_addition_dec_mask: Optional[torch.Tensor],
+        batch_size: int,
+    ) -> Tuple[torch.Tensor, Any]:
+        """
+        Run forward pass with optional classifier-free guidance.
+
+        Args:
+            context_tensors: Context tensors from prepare_context_tensors.
+            audio_codes_embedded: Embedded audio codes. Shape: (B, T, E).
+            audio_codes_mask: Mask for audio codes. Shape: (B, T).
+            attn_prior: Attention prior tensor or list.
+            use_cfg: Whether to use classifier-free guidance.
+            cfg_scale: Scale factor for CFG.
+            dummy_cond: Dummy conditioning for unconditional branch.
+            dummy_cond_mask: Mask for dummy conditioning.
+            dummy_additional_decoder_input: Dummy additional decoder input.
+            dummy_addition_dec_mask: Mask for dummy additional input.
+            batch_size: Number of items in the batch.
+
+        Returns:
+            Tuple of (logits, attention_probs).
+        """
+        if use_cfg:
+            # Combine conditional and unconditional inputs
+            if isinstance(context_tensors.cond, list):
+                cfg_cond = [torch.cat([c, d], dim=0) for c, d in zip(context_tensors.cond, dummy_cond)]
+                cfg_cond_mask = [torch.cat([c, d], dim=0) for c, d in zip(context_tensors.cond_mask, dummy_cond_mask)]
+            else:
+                cfg_cond = torch.cat([context_tensors.cond, dummy_cond], dim=0)
+                cfg_cond_mask = torch.cat([context_tensors.cond_mask, dummy_cond_mask], dim=0)
+
+            cfg_audio_embedded = torch.cat([audio_codes_embedded, audio_codes_embedded], dim=0)
+            cfg_audio_mask = torch.cat([audio_codes_mask, audio_codes_mask], dim=0)
+
+            if dummy_additional_decoder_input is not None:
+                cfg_audio_embedded[batch_size:, : dummy_additional_decoder_input.size(1)] = (
+                    dummy_additional_decoder_input
+                )
+                cfg_audio_mask[batch_size:, : dummy_additional_decoder_input.size(1)] = dummy_addition_dec_mask
+
+            combined_logits, attn_probs, _ = self.forward(
+                dec_input_embedded=cfg_audio_embedded,
+                dec_input_mask=cfg_audio_mask,
+                cond=cfg_cond,
+                cond_mask=cfg_cond_mask,
+                attn_prior=attn_prior,
+                multi_encoder_mapping=context_tensors.multi_encoder_mapping,
+            )
+
+            cond_logits = combined_logits[:batch_size]
+            uncond_logits = combined_logits[batch_size:]
+            all_code_logits = (1 - cfg_scale) * uncond_logits + cfg_scale * cond_logits
+        else:
+            all_code_logits, attn_probs, _ = self.forward(
+                dec_input_embedded=audio_codes_embedded,
+                dec_input_mask=audio_codes_mask,
+                cond=context_tensors.cond,
+                cond_mask=context_tensors.cond_mask,
+                attn_prior=attn_prior,
+                multi_encoder_mapping=context_tensors.multi_encoder_mapping,
+            )
+
+        return all_code_logits, attn_probs
+
+    def _initialize_longform_attn_prior(
+        self,
+        chunk_state: LongformChunkState,
+        current_chunk_len: torch.Tensor,
+        batch_text_lens: torch.Tensor,
+        max_text_len: int,
+        batch_size: int,
+        use_cfg: bool,
+        prior_epsilon: float,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """
+        Initialize attention prior for longform generation with left offset tracking.
+
+        This method constructs the initial attention prior when continuing from
+        previous chunks, accounting for the sliding window over text history.
+
+        Args:
+            chunk_state: Mutable state object tracking history across chunks.
+            current_chunk_len: Length of the current text chunk for each batch item.
+            batch_text_lens: Text lengths for each batch item.
+            max_text_len: Maximum text length in the batch.
+            batch_size: Number of items in the batch.
+            use_cfg: Whether classifier-free guidance is being used.
+            prior_epsilon: Base epsilon value for attention prior.
+            device: Target device for tensors.
+
+        Returns:
+            Attention prior tensor or None if no history exists.
+        """
+        if len(chunk_state.previous_attn_len) == 0:
+            return None
+
+        # Initialize prior tensor
+        cfg_multiplier = 2 if use_cfg else 1
+        _attn_prior = torch.zeros(batch_size * cfg_multiplier, 1, max_text_len).to(device) + prior_epsilon
+
+        for _idx in range(batch_size):
+            # Calculate left offset for sliding window
+            delta_in_len = self._to_int(current_chunk_len[_idx])
+            len_to_delete = self._to_int(chunk_state.previous_attn_len[_idx] + delta_in_len - batch_text_lens[_idx])
+            chunk_state.left_offset[_idx] = self._to_int(chunk_state.left_offset[_idx] + len_to_delete)
+
+            # Skip if text has ended
+            if _idx in chunk_state.end_indices and chunk_state.end_indices[_idx] is not None:
+                continue
+
+            # Set prior weights for new chunk
+            current_starting_point = batch_text_lens[_idx] - current_chunk_len[_idx]
+            prior_weights = self.longform_config.prior_weights_init
+            _attn_prior[_idx, :, :current_starting_point] = prior_epsilon * prior_epsilon
+            _attn_prior[_idx, :, current_starting_point] = prior_weights[0]
+            _attn_prior[_idx, :, current_starting_point + 1] = prior_weights[1]
+            _attn_prior[_idx, :, current_starting_point + 2] = prior_weights[2]
+            _attn_prior[_idx, :, current_starting_point + 3] = prior_weights[3]
+            _attn_prior[_idx, :, current_starting_point + 4] = prior_weights[4]
+
+        return _attn_prior
+
+    def _update_context_from_history(
+        self,
+        chunk_state: LongformChunkState,
+        context_tensors: Dict[str, Any],
+        current_chunk_len: torch.Tensor,
+        max_text_len: int,
+        beginning_of_text: bool,
+        batch_text_lens: torch.Tensor,
+        batch_size: int,
+    ) -> None:
+        """
+        Update context tensors with cached history for longform generation.
+
+        This method splices historical context embeddings into the current context
+        tensors to maintain continuity across text chunks.
+
+        Args:
+            chunk_state: Mutable state object tracking history across chunks.
+            context_tensors: ContextTensorsOutput containing 'cond' tensor to update.
+            current_chunk_len: Length of the current text chunk for each batch item.
+            max_text_len: Maximum text length in the batch.
+            beginning_of_text: Whether this is the first chunk.
+            batch_text_lens: Text lengths for each batch item.
+            batch_size: Number of items in the batch.
+        """
+        for _idx in range(batch_size):
+            # Skip if text has ended
+            if _idx in chunk_state.end_indices and chunk_state.end_indices[_idx] is not None:
+                continue
+            if not beginning_of_text:
+                pad_len_idx = max_text_len - batch_text_lens[_idx]
+                context_tensors.cond[_idx, : -current_chunk_len[_idx] - pad_len_idx] = (
+                    chunk_state.history_context_tensor[
+                        _idx, -(context_tensors.cond[_idx].shape[0] - current_chunk_len[_idx] - pad_len_idx) :
+                    ]
+                )
+        chunk_state.history_context_tensor = context_tensors.cond
+
+    def _prepare_longform_text_tensors(
+        self,
+        chunk_state: LongformChunkState,
+        batch: Dict[str, torch.Tensor],
+        current_chunk_len: torch.Tensor,
+        beginning_of_text: bool,
+        device: torch.device,
+    ) -> Tuple[Dict[str, torch.Tensor], int]:
+        """
+        Prepare text tensors with history for longform inference.
+
+        This method handles the sliding window logic for text tokens, combining
+        historical text with new chunks and applying window size constraints.
+
+        Args:
+            chunk_state: Mutable state object tracking history across chunks.
+            batch: Input batch containing 'text' and 'text_lens'.
+            current_chunk_len: Length of the current text chunk for each batch item.
+            beginning_of_text: Whether this is the first chunk.
+            device: Target device for tensors.
+
+        Returns:
+            Tuple of (modified batch, max_text_len).
+        """
+        batch_size = batch["text"].size(0)
+        text_tensors = []
+
+        for _idx in range(batch_size):
+            # If text has ended, use minimal placeholder
+            if _idx in chunk_state.end_indices and chunk_state.end_indices[_idx] is not None:
+                batch['text_lens'][_idx] = torch.tensor(1).to(device).long()
+                text_tensors.append(batch['text'][_idx])
+                continue
+
+            # Combine history with current chunk
+            if chunk_state.history_text is not None:
+                current_text = torch.cat(
+                    [
+                        chunk_state.history_text[_idx][: chunk_state.history_text_lens[_idx]],
+                        batch["text"][_idx][: current_chunk_len[_idx]],
+                    ]
+                )
+            else:
+                current_text = batch["text"][_idx][: current_chunk_len[_idx]]
+
+            # Apply sliding window
+            history_len = min(current_chunk_len[_idx], self.longform_config.history_len_heuristic)
+            true_window_size = current_chunk_len[_idx] + history_len
+            if not beginning_of_text:
+                current_text = current_text[max(0, current_text.shape[0] - true_window_size) :]
+
+            current_text_lens = current_text.shape[0]
+            text_tensors.append(current_text)
+            batch['text_lens'][_idx] = torch.tensor(current_text_lens).to(device).long()
+
+        # Pad and stack text tensors
+        max_text_len = max(batch['text_lens']).item()
+        batch['text'] = stack_tensors(text_tensors, max_lens=[max_text_len])
+
+        # Update history
+        chunk_state.history_text = batch['text']
+        chunk_state.history_text_lens = batch['text_lens']
+
+        return batch, max_text_len
+
+    def generate_long_form_speech(
+        self,
+        batch,
+        chunk_state: LongformChunkState,
+        end_of_text,
+        beginning_of_text,
+        max_decoder_steps=2000,
+        temperature=0.7,
+        topk=80,
+        use_cfg=True,
+        cfg_scale=1.0,
+        estimate_alignment_from_layers: Optional[List[int]] = None,
+        lookahead_window_size=5,
+        apply_attention_prior=False,
+        apply_prior_to_layers: Optional[List[int]] = None,
+        prior_epsilon=1e-5,
+        eos_detection_method="argmax_or_multinomial_any",
+        ignore_finished_sentence_tracking=False,
+    ):
+        """
+        Generates speech for long-form text by progressively shifting through text tokens.
+
+        This method processes long text inputs by generating a fixed number of audio tokens per text token,
+        then shifting to the next text token. It maintains a sliding window over text and audio histories,
+        tracking how many audio tokens were generated for each text position.
+
+        Args:
+            batch (dict): Input batch containing 'text' and 'text_lens'.
+            chunk_state (LongformChunkState): Mutable state object tracking history across chunks.
+                Created via model.create_longform_chunk_state() and updated in-place.
+            end_of_text (List[bool]): Whether entire text has been provided for each batch item.
+            beginning_of_text (bool): Whether this is the first chunk.
+            max_decoder_steps (int): Maximum total audio tokens to generate.
+            temperature (float): Sampling temperature for audio code generation.
+            topk (int): Top-k sampling parameter.
+            use_cfg (bool): Whether to use classifier-free guidance.
+            cfg_scale (float): CFG scale factor.
+            estimate_alignment_from_layers (list, optional): Layers to use for alignment estimation.
+            lookahead_window_size (int): Forward-looking window size for attention prior.
+            apply_attention_prior (bool): Whether to apply attention prior.
+            apply_prior_to_layers (list, optional): Layers to apply prior to.
+            prior_epsilon (float): Base prior probability for non-targeted positions.
+            eos_detection_method (str): Method for detecting end-of-sequence.
+            ignore_finished_sentence_tracking (bool): Whether to ignore finished sentence tracking.
+
+        Returns:
+            InferBatchOutput: Contains predicted_codes, predicted_codes_lens, and empty audio fields.
+        """
+        eos_detection_method = EOSDetectionMethod(eos_detection_method)
+        device = batch['text'].device
+        with torch.no_grad():
+            current_chunk_len = copy.deepcopy(batch['text_lens'].detach())
+            batch_size = batch["text"].size(0)
+
+            # Prepare text tensors with history
+            batch, max_text_len = self._prepare_longform_text_tensors(
+                chunk_state, batch, current_chunk_len, beginning_of_text, device
+            )
+            context_tensors = self.prepare_context_tensors(batch)
+
+            # Update context with historical embeddings
+            self._update_context_from_history(
+                chunk_state,
+                context_tensors,
+                current_chunk_len,
+                max_text_len,
+                beginning_of_text,
+                batch['text_lens'],
+                batch_size,
+            )
+
+            audio_codes_input = (
+                torch.full((batch_size, self.num_audio_codebooks, 1), self.audio_bos_id).long().to(device)
+            )
+            audio_codes_lens = torch.full((batch_size,), audio_codes_input.size(2), device=device).long().to(device)
+            audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
+
+            # Initialize dummy variables for CFG
+            dummy_cond = None
+            dummy_cond_mask = None
+            dummy_additional_decoder_input = None
+            dummy_addition_dec_mask = None
+            if use_cfg:
+                dummy_cond, dummy_cond_mask, dummy_additional_decoder_input, dummy_addition_dec_mask, _ = (
+                    self.prepare_dummy_cond_for_cfg(
+                        context_tensors.cond,
+                        context_tensors.cond_mask,
+                        context_tensors.additional_decoder_input,
+                        context_tensors.additional_decoder_mask,
+                    )
+                )
+
+            # Initialize attention prior for longform generation
+            initial_attn_prior = self._initialize_longform_attn_prior(
+                chunk_state,
+                current_chunk_len,
+                batch['text_lens'],
+                max_text_len,
+                batch_size,
+                use_cfg,
+                prior_epsilon,
+                device,
+            )
+            chunk_state.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
+
+            # Create decoder state object to track all local mutable state
+            state = LongformDecoderState(
+                audio_codes_input=audio_codes_input,
+                audio_codes_lens=audio_codes_lens,
+                audio_codes_mask=audio_codes_mask,
+                attended_timestep_counter=[{} for _ in range(batch_size)],
+                all_predictions=[],
+                chunk_end_dict={},
+                unfinished_texts={},
+                finished_texts_counter={},
+                attn_prior=initial_attn_prior,
+            )
+
+            for idx in range(max_decoder_steps):
+                if idx % 30 == 0:
+                    logging.info(f"Longform decoding timestep {idx}")
+
+                # Embed audio codes and concatenate with additional decoder input
+                audio_codes_embedded = self.embed_audio_tokens(state.audio_codes_input)
+                if context_tensors.additional_decoder_input is not None:
+                    _audio_codes_embedded = torch.cat(
+                        [context_tensors.additional_decoder_input, audio_codes_embedded], dim=1
+                    )
+                    _audio_codes_mask = torch.cat(
+                        [context_tensors.additional_decoder_mask, state.audio_codes_mask], dim=1
+                    )
+                else:
+                    _audio_codes_embedded = audio_codes_embedded
+                    _audio_codes_mask = state.audio_codes_mask
+
+                # Prepare attention prior for layers
+                if apply_prior_to_layers is not None:
+                    attn_prior = [None for _ in range(self.cfg.decoder.n_layers)]
+                    for layer_idx in apply_prior_to_layers:
+                        attn_prior[layer_idx] = state.attn_prior
+                else:
+                    attn_prior = state.attn_prior
+
+                if self.model_type == 'multi_encoder_context_tts':
+                    attn_prior = [attn_prior, None]
+
+                # Run forward pass with optional CFG
+                all_code_logits, attn_probs = self._run_longform_forward_with_cfg(
+                    context_tensors=context_tensors,
+                    audio_codes_embedded=_audio_codes_embedded,
+                    audio_codes_mask=_audio_codes_mask,
+                    attn_prior=attn_prior,
+                    use_cfg=use_cfg,
+                    cfg_scale=cfg_scale,
+                    dummy_cond=dummy_cond,
+                    dummy_cond_mask=dummy_cond_mask,
+                    dummy_additional_decoder_input=dummy_additional_decoder_input,
+                    dummy_addition_dec_mask=dummy_addition_dec_mask,
+                    batch_size=batch_size,
+                )
+
+                if apply_attention_prior:
+                    # Get cross-attention scores (optionally from specific layers for alignment)
+                    alignment_attention_scores, _ = self.get_cross_attention_scores(
+                        attn_probs, filter_layers=estimate_alignment_from_layers
+                    )  # B, text_timesteps
+
+                    text_time_step_attended, state.attended_timestep_counter = self.get_most_attended_text_timestep(
+                        alignment_attention_scores=alignment_attention_scores,
+                        last_attended_timesteps=chunk_state.last_attended_timesteps,
+                        text_lens=context_tensors.text_lens,
+                        lookahead_window_size=lookahead_window_size,
+                        attended_timestep_counter=state.attended_timestep_counter,
+                        batch_size=batch_size,
+                        left_offset=chunk_state.left_offset,
+                    )
+                    chunk_state.last_attended_timesteps.append(
+                        text_time_step_attended.detach()
+                        if isinstance(text_time_step_attended, torch.Tensor)
+                        else text_time_step_attended
+                    )
+
+                    (state.attn_prior, state.unfinished_texts, state.finished_texts_counter) = (
+                        self.construct_longform_inference_prior(
+                            prior_epsilon=prior_epsilon,
+                            cross_attention_scores=alignment_attention_scores,
+                            text_lens=context_tensors.text_lens,
+                            text_time_step_attended=text_time_step_attended,
+                            attended_timestep_counter=state.attended_timestep_counter,
+                            unfinished_texts=state.unfinished_texts,
+                            finished_texts_counter=state.finished_texts_counter,
+                            end_indices=chunk_state.end_indices,
+                            chunk_end_dict=state.chunk_end_dict,
+                            batch_size=batch_size,
+                            left_offset=chunk_state.left_offset,
+                        )
+                    )
+
+                for key in state.finished_texts_counter:
+                    state.finished_texts_counter[key] += 1
+                    limit = (
+                        self.longform_config.finished_limit_with_eot
+                        if end_of_text[key]
+                        else self.longform_config.finished_limit_without_eot
+                    )
+                    if state.finished_texts_counter[key] > limit:
+                        # We should allow EOS to be predicted now.
+                        state.unfinished_texts[key] = False
+
+                if ignore_finished_sentence_tracking:
+                    finished_items = {}
+                    unfinished_items = {}
+                else:
+                    finished_items = {
+                        k: v
+                        for k, v in state.finished_texts_counter.items()
+                        if v >= self.longform_config.finished_limit_with_eot
+                    }
+                    unfinished_items = {k: v for k, v in state.unfinished_texts.items() if v}
+
+                all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
+                audio_codes_next = self.sample_codes_from_logits(
+                    all_code_logits_t,
+                    temperature=temperature,
+                    topk=topk,
+                    unfinished_items=unfinished_items,
+                    finished_items=finished_items,
+                )  # (B, num_codebooks)
+                all_codes_next_argmax = self.sample_codes_from_logits(
+                    all_code_logits_t,
+                    temperature=self.longform_config.argmax_temperature,
+                    topk=1,
+                    unfinished_items=unfinished_items,
+                    finished_items=finished_items,
+                )  # (B, num_codebooks)
+
+                # Check for EOS and update state
+                self._check_eos_and_update_state(
+                    chunk_state,
+                    audio_codes_next,
+                    all_codes_next_argmax,
+                    state.chunk_end_dict,
+                    state.finished_texts_counter,
+                    end_of_text,
+                    eos_detection_method,
+                    idx,
+                    batch_size,
+                )
+
+                state.all_predictions.append(audio_codes_next)
+
+                state.audio_codes_input = torch.cat([state.audio_codes_input, audio_codes_next], dim=-1)  # (B, C, T')
+                state.audio_codes_lens = state.audio_codes_lens + 1
+                state.audio_codes_mask = get_mask_from_lengths(state.audio_codes_lens)
+
+                # Check termination condition
+                if self._should_terminate_loop(chunk_state, state.chunk_end_dict, end_of_text, batch_size):
+                    break
+
+                chunk_state.overall_idx += 1
+
+            predicted_codes = torch.stack(state.all_predictions, dim=-1)
+            predicted_codes = predicted_codes.squeeze(2)
+            predicted_codes_lens = torch.tensor(
+                [state.chunk_end_dict.get(item_idx, predicted_codes.size(-1)) for item_idx in range(batch_size)],
+                device=device,
+            )
+
+            return InferBatchOutput(
+                predicted_audio=torch.empty(0, device=device),
+                predicted_audio_lens=torch.empty(0, device=device, dtype=torch.long),
+                predicted_codes=predicted_codes,
+                predicted_codes_lens=predicted_codes_lens,
+                rtf_metrics={},
+                cross_attention_maps=[],
+                headwise_cross_attention_maps=[],
+            )

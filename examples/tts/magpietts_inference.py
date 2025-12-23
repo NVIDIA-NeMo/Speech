@@ -132,6 +132,10 @@ def run_inference_and_evaluation(
 ) -> Tuple[Optional[float], Optional[float]]:
     """Run inference and optional evaluation on specified datasets.
 
+    Longform inference is automatically detected based on text characteristics
+    when longform_mode="auto" (default). Use longform_mode="always" or "never"
+    for explicit control.
+
     Args:
         model_config: Configuration for loading the model.
         inference_config: Configuration for inference.
@@ -166,7 +170,8 @@ def run_inference_and_evaluation(
     # Build full checkpoint identifier
     full_checkpoint_name = f"{checkpoint_name}_{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
 
-    # Create inference runner
+    # Create inference runner (auto-detects longform based on config.longform_mode)
+    logging.info(f"Longform mode: {inference_config.longform_mode}")
     runner = MagpieInferenceRunner(model, inference_config)
 
     # Tracking metrics across datasets
@@ -396,6 +401,25 @@ def create_argument_parser() -> argparse.ArgumentParser:
     infer_group.add_argument('--batch_size', type=int, default=32)
     infer_group.add_argument('--use_cfg', action='store_true', help='Enable classifier-free guidance')
     infer_group.add_argument('--cfg_scale', type=float, default=2.5)
+    infer_group.add_argument(
+        '--longform_mode',
+        type=str,
+        default='auto',
+        choices=['auto', 'always', 'never'],
+        help='Longform inference mode: auto (detect from text), always, or never',
+    )
+    infer_group.add_argument(
+        '--longform_word_threshold',
+        type=int,
+        default=40,
+        help='Word threshold for auto-detection of longform text',
+    )
+    infer_group.add_argument(
+        '--longform_max_decoder_steps',
+        type=int,
+        default=50000,
+        help='Maximum decoder steps for longform inference',
+    )
 
     # Attention prior arguments
     prior_group = parser.add_argument_group('Attention Prior')
@@ -495,12 +519,22 @@ def main():
         parser.error("You must provide either:\n" "  1. --hparams_files and --checkpoint_files\n" "  2. --nemo_files")
 
     # Build configurations
+    # Use higher max_decoder_steps for longform inference when mode is 'always'
+    if args.longform_mode == 'always':
+        max_decoder_steps = args.longform_max_decoder_steps
+    elif args.longform_mode == 'auto':
+        # Use longform steps if any text appears long (will be checked in runner)
+        max_decoder_steps = args.longform_max_decoder_steps
+    else:  # 'never'
+        max_decoder_steps = 440
+
     inference_config = InferenceConfig(
         temperature=args.temperature,
         topk=args.topk,
         batch_size=args.batch_size,
         use_cfg=args.use_cfg,
         cfg_scale=args.cfg_scale,
+        max_decoder_steps=max_decoder_steps,
         apply_attention_prior=args.apply_attention_prior,
         attention_prior_epsilon=args.attention_prior_epsilon,
         attention_prior_lookahead_window=args.attention_prior_lookahead_window,
@@ -509,6 +543,8 @@ def main():
         start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps,
         use_local_transformer=args.use_local_transformer,
         maskgit_n_steps=args.maskgit_n_steps,
+        longform_mode=args.longform_mode,
+        longform_word_threshold=args.longform_word_threshold,
         maskgit_noise_scale=args.maskgit_noise_scale,
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,

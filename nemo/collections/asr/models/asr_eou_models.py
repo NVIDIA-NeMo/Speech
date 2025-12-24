@@ -213,13 +213,13 @@ class ASREOUModelMixin:
             eob_labels_i, eob_preds_i = self._pad_to_same_length(eob_labels_i, eob_preds_i)
 
             # Calculate EOU metrics
-            eou_metrics = cal_eou_metrics_from_frame_labels(
+            eou_metrics: EOUResult = cal_eou_metrics_from_frame_labels(
                 prediction=eou_preds_i,
                 reference=eou_labels_i,
                 threshold=0.0,
                 collar=0.0,
                 frame_len_in_secs=self.frame_len_in_secs,
-            )  # type: EOUResult
+            )
 
             eob_metrics = cal_eou_metrics_from_frame_labels(
                 prediction=eob_preds_i,
@@ -260,8 +260,8 @@ class ASREOUModelMixin:
             return {}
 
         # Aggregate EOU/EOB metrics
-        eou_metrics = []  # type: List[EOUResult]
-        eob_metrics = []  # type: List[EOUResult]
+        eou_metrics: List[EOUResult] = []
+        eob_metrics: List[EOUResult] = []
         for x in outputs:
             if is_ctc:
                 eou_metrics.extend(x[f'{mode}_eou_metrics_ctc'])

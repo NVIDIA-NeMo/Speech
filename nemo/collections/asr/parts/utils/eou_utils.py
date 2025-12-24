@@ -191,7 +191,12 @@ def get_SegLST_from_frame_labels(frame_labels: List[int], frame_len_in_secs: flo
 
 
 def cal_eou_metrics_from_frame_labels(
-    *, prediction: List, reference: List, threshold: float = 0.5, collar: float = 0, frame_len_in_secs: float = 0.08
+    *,
+    prediction: List[float],
+    reference: List[float],
+    threshold: float = 0.5,
+    collar: float = 0,
+    frame_len_in_secs: float = 0.08,
 ) -> EOUResult:
     """
     Calculate EOU metrics from lists of predictions and references.

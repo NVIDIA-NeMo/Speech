@@ -71,9 +71,10 @@ model:
     # and further global operations that can decide dynamically how to support the requested adapter.
     global_cfg:
       check_encoder_adapter: True  # ASR adapter key, determines whether to check if encoder adapter modules is supported
-      check_decoder_adapter: True  # ASR adapter key, determines whether to check if decoder adapter modules is supported
-      check_joint_adapter: True  # ASR adapter key, determines whether to check if joint adapter modules is supported
+      check_decoder_adapter: False  # ASR adapter key, determines whether to check if decoder adapter modules is supported
+      check_joint_adapter: False  # ASR adapter key, determines whether to check if joint adapter modules is supported
 
+  freeze_encoder: True
   freeze_decoder: ${model.adapter.global_cfg.check_decoder_adapter}
   freeze_joint: ${model.adapter.global_cfg.check_joint_adapter}
 

@@ -99,13 +99,14 @@ model:
 
     random_padding:
       prob: 0.99
-      min_pad_duration: 1.0  # minimum duration of pre/post padding in seconds
-      max_pad_duration: 10.0  # maximum duration of pre/post padding in seconds
+      min_post_pad_duration: 3.0 
+      min_pre_pad_duration: 0.0
+      max_pad_duration: 6.0  # maximum duration of pre/post padding in seconds
       max_total_duration: 40.0  # maximum total duration of the padded audio in seconds
       pad_distribution: 'uniform'  # distribution of padding duration, 'uniform' or 'normal'
       normal_mean: 0.5  # mean of normal distribution used when pad_distribution='normal'
       normal_std: 2.0  # standard deviation of normal distribution  used when pad_distribution='normal'
-  
+      
     augmentor:
       white_noise:
         prob: 0.9

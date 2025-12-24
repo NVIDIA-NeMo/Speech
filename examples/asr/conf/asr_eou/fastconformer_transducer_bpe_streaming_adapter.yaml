@@ -75,8 +75,8 @@ model:
       check_joint_adapter: False  # ASR adapter key, determines whether to check if joint adapter modules is supported
 
   freeze_encoder: True
-  freeze_decoder: ${model.adapter.global_cfg.check_decoder_adapter}
-  freeze_joint: ${model.adapter.global_cfg.check_joint_adapter}
+  freeze_decoder: False
+  freeze_joint: False
 
   train_ds:
     manifest_filepath: ???

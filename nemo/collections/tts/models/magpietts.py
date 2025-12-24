@@ -1869,9 +1869,7 @@ class MagpieTTSModel(ModelPT):
             )
 
         if self._codec_converter is not None:
-            codes = self._codec_converter.convert_original_to_new(
-                audio_tokens=codes, audio_lens=lens
-            )
+            codes = self._codec_converter.convert_original_to_new(audio_tokens=codes, audio_lens=lens)
 
         codes, lens = self.add_special_tokens(
             codes=codes,
@@ -1927,7 +1925,7 @@ class MagpieTTSModel(ModelPT):
         """
         context_audio_embedded, context_lens = self.embed_audio_tokens(
             audio_tokens=context_audio_codes, audio_tokens_lens=context_audio_codes_lens
-        ) # (B, T/frame_stacking, E)
+        )  # (B, T/frame_stacking, E)
 
         if not self.use_text_conditioning_encoder:
             return context_audio_embedded, context_lens

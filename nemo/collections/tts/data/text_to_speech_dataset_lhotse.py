@@ -225,7 +225,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 audio_codes = torch.from_numpy(cut.target_codes.load())  # (C, T)
                 audio_codes_len = audio_codes.shape[1]
                 spec_len = audio_codes_len + 1  # +1 for EOS
-                audio_codes_list.append(audio_codes.T) # transpose to (T, C) to use collate_matrices to process batch.
+                audio_codes_list.append(audio_codes.T)  # transpose to (T, C) to use collate_matrices to process batch.
                 audio_codes_len_list.append(audio_codes_len)
             else:
                 # Only load audio if codes are not available

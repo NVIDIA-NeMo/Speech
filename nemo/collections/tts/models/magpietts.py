@@ -4237,7 +4237,9 @@ class MagpieTTSModel(ModelPT):
                     logging.info(f"Longform decoding timestep {idx}")
 
                 # Embed audio codes and concatenate with additional decoder input
-                audio_codes_embedded, audio_codes_lens = self.embed_audio_tokens(state.audio_codes_input, audio_tokens_lens=audio_codes_lens)
+                audio_codes_embedded, audio_codes_lens = self.embed_audio_tokens(
+                    state.audio_codes_input, audio_tokens_lens=audio_codes_lens
+                )
                 if context_tensors.additional_decoder_input is not None:
                     _audio_codes_embedded = torch.cat(
                         [context_tensors.additional_decoder_input, audio_codes_embedded], dim=1

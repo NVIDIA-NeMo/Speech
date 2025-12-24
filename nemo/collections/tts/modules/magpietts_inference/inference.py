@@ -272,7 +272,7 @@ class MagpieInferenceRunner:
             logging.info("Creating MagpieTTSDataset for standard inference")
             dataset = MagpieTTSDataset(
                 dataset_meta=dataset_meta,
-                sample_rate=self.model.sample_rate,
+                sample_rate=self.model.output_sample_rate,
                 min_duration=0.5,
                 max_duration=20,
                 codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
@@ -389,12 +389,15 @@ class MagpieInferenceRunner:
             logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)}")
 
             # Move batch to GPU
-            batch_cuda = self._batch_to_cuda(batch)
+            batch = self._batch_to_cuda(batch)
+
+            batch['sample_rate'] = self.model.output_sample_rate
+            batch['context_sample_rate'] = self.model.output_sample_rate
 
             # Run inference
             start_time = time.time()
             output = self.model.infer_batch(
-                batch_cuda,
+                batch,
                 max_decoder_steps=self.config.max_decoder_steps,
                 temperature=self.config.temperature,
                 topk=self.config.topk,
@@ -437,7 +440,7 @@ class MagpieInferenceRunner:
                 audio_np = predicted_audio[idx].float().detach().cpu().numpy()
                 audio_np = audio_np[: predicted_audio_lens[idx]]
                 audio_path = os.path.join(output_dir, f"predicted_audio_{item_idx}.wav")
-                sf.write(audio_path, audio_np, self.model.sample_rate)
+                sf.write(audio_path, audio_np, self.model.output_sample_rate)
                 generated_audio_paths.append(audio_path)
 
                 # Copy context and target audio if available
@@ -548,14 +551,10 @@ class MagpieInferenceRunner:
         # Create dataset - inherits from MagpieTTSDataset, so uses same dataset_meta format
         dataset = LongFormTTSInferenceDataset(
             dataset_meta=dataset_meta,
-            sample_rate=self.model.sample_rate,
+            sample_rate=self.model.output_sample_rate,
             tokenizer_name=tokenizer_name,
             codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
             eos_id=self.model.eos_id,
-            audio_bos_id=self.model.audio_bos_id,
-            audio_eos_id=self.model.audio_eos_id,
-            context_audio_bos_id=self.model.context_audio_bos_id,
-            context_audio_eos_id=self.model.context_audio_eos_id,
             num_audio_codebooks=self.model.num_audio_codebooks,
             context_duration_min=context_duration_min,
             context_duration_max=context_duration_max,
@@ -614,6 +613,9 @@ class MagpieInferenceRunner:
 
             # Move batch tensors to CUDA
             batch = self._batch_to_cuda(batch)
+
+            batch['sample_rate'] = self.model.output_sample_rate
+            batch['context_sample_rate'] = self.model.output_sample_rate
 
             batch_size = len(batch['chunked_tokens'])
             max_num_chunks = max(len(tokens) for tokens in batch['chunked_tokens'])
@@ -708,7 +710,7 @@ class MagpieInferenceRunner:
 
             # Compute RTF metrics
             total_audio_samples = sum(predicted_audio_lens.cpu().tolist())
-            total_audio_seconds = total_audio_samples / self.model.sample_rate
+            total_audio_seconds = total_audio_samples / self.model.output_sample_rate
             rtf = elapsed / total_audio_seconds if total_audio_seconds > 0 else 0.0
             rtf_metrics = {
                 'inference_time': elapsed,
@@ -726,7 +728,7 @@ class MagpieInferenceRunner:
                 audio_np = predicted_audio_np[b_idx, :audio_len]
 
                 audio_path = os.path.join(output_dir, f"predicted_audio_{sample_idx}.wav")
-                sf.write(audio_path, audio_np, self.model.sample_rate)
+                sf.write(audio_path, audio_np, self.model.output_sample_rate)
                 generated_audio_paths.append(audio_path)
 
                 # Copy reference audio if requested

@@ -3290,10 +3290,6 @@ class MagpieTTSModel(ModelPT):
             sample_rate=self.sample_rate,
             bos_id=self.bos_id,
             eos_id=self.eos_id,
-            audio_bos_id=self.audio_bos_id,
-            audio_eos_id=self.audio_eos_id,
-            context_audio_bos_id=self.context_audio_bos_id,
-            context_audio_eos_id=self.context_audio_eos_id,
             num_audio_codebooks=self.data_num_audio_codebooks,
             codec_model_samples_per_frame=self.codec_model_samples_per_frame,
             prior_scaling_factor=self.cfg.prior_scaling_factor,
@@ -4241,7 +4237,7 @@ class MagpieTTSModel(ModelPT):
                     logging.info(f"Longform decoding timestep {idx}")
 
                 # Embed audio codes and concatenate with additional decoder input
-                audio_codes_embedded = self.embed_audio_tokens(state.audio_codes_input)
+                audio_codes_embedded, audio_codes_lens = self.embed_audio_tokens(state.audio_codes_input, audio_tokens_lens=audio_codes_lens)
                 if context_tensors.additional_decoder_input is not None:
                     _audio_codes_embedded = torch.cat(
                         [context_tensors.additional_decoder_input, audio_codes_embedded], dim=1

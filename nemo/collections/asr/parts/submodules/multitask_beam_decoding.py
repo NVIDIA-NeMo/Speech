@@ -33,7 +33,10 @@ from nemo.utils import logging
 
 
 def pack_hypotheses(
-    hypotheses: List[Hypothesis], beam_hypotheses: torch.Tensor, scores: List[Optional[float]]
+    hypotheses: List[Hypothesis],
+    beam_hypotheses: torch.Tensor,
+    scores: List[Optional[float]],
+    xatt_scores_list: List[torch.Tensor] = None
 ) -> List[Hypothesis]:
 
     for idx, hyp in enumerate(hypotheses):  # type: Hypothesis
@@ -48,6 +51,9 @@ def pack_hypotheses(
 
         if hyp.dec_state is not None:
             hyp.dec_state = _states_to_device(hyp.dec_state)
+
+        if xatt_scores_list is not None:
+            hyp.xatt_scores = [xatt_layer[idx] for xatt_layer in xatt_scores_list]
 
     return hypotheses
 
@@ -231,7 +237,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
             self.transformer_decoder.eval()
             self.log_softmax_module.eval()
 
-            topk_hypotheses, beam_scores, best_hypo = self.beam_search(
+            topk_hypotheses, beam_scores, best_hypo, xatt_scores_list = self.beam_search(
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_input_mask=encoder_input_mask,
                 decoder_input_ids=decoder_input_ids,
@@ -251,11 +257,13 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
             else:
                 beam_scores = [None for _ in range(len(best_hypo))]
                 best_hypo = best_hypo.detach().cpu()
+                if xatt_scores_list is not None:
+                    xatt_scores_list = [xatt_layer.detach().cpu() for xatt_layer in xatt_scores_list]
                 hypotheses = [
                     Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(encoder_hidden_states.shape[0])
                 ]
                 # Pack results into Hypotheses
-                packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores)
+                packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores, xatt_scores_list)
                 self.format_hypotheses(packed_result, decoder_input_ids)
 
         self.transformer_decoder.train()

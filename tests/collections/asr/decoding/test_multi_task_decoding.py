@@ -85,12 +85,14 @@ def test_greedy_decoding(inputs, nnet, deterministic_rng, with_confidence):
     gen = GreedySequenceGenerator(*nnet, preserve_step_confidence=with_confidence)
     output = gen(*inputs)
 
-    assert len(output) == 3
-    best_path, hypotheses, confidence = output
+    assert len(output) == 4
+    best_path, hypotheses, confidence, xattn_list = output
 
     assert best_path is not None
     assert torch.is_tensor(best_path)
     assert best_path.shape == (1, 25)
+    assert len(xattn_list) == len(nnet[1].layers)
+    assert xattn_list[0].shape == (1, 1, 24, 5)
 
     assert hypotheses is None
 
@@ -106,8 +108,8 @@ def test_temperature_sampling_decoding(inputs, nnet):
     gen = GreedySequenceGenerator(*nnet, temperature=10.0, n_samples=2)
     output = gen(*inputs)
 
-    assert len(output) == 3
-    best_path, hypotheses, _ = output
+    assert len(output) == 4
+    best_path, hypotheses, _, xatt_list = output
 
     assert best_path is not None
     assert torch.is_tensor(best_path)
@@ -118,6 +120,9 @@ def test_temperature_sampling_decoding(inputs, nnet):
     (seq0,) = hypotheses
     assert seq0.shape[0] == 2
     assert (seq0[0] != seq0[1]).any()
+
+    assert len(xatt_list) == len(nnet[1].layers)
+    assert xatt_list[0].shape == (2, 1, 24, 5)
 
 
 def test_beam_decoding_beam_scores_false(inputs, nnet):
@@ -136,8 +141,8 @@ def test_beam_decoding_beam_scores_true(inputs, nnet):
     gen = BeamSearchSequenceGenerator(*nnet, beam_size=2)
     output = gen(*inputs, return_beam_scores=True)
 
-    assert len(output) == 3
-    beam_paths, scores, best_path = output
+    assert len(output) == 4
+    beam_paths, scores, best_path, xatt_scores_list = output
 
     assert beam_paths is not None
     assert isinstance(beam_paths, list)
@@ -156,6 +161,11 @@ def test_beam_decoding_beam_scores_true(inputs, nnet):
     assert best_path is not None
     assert torch.is_tensor(best_path)
     assert best_path.shape == (1, 26)
+
+    assert xatt_scores_list is not None
+    assert isinstance(xatt_scores_list, list)
+    assert torch.is_tensor(xatt_scores_list[0])
+    assert xatt_scores_list[0].shape == (1, 1, 25, 5)
 
 
 def test_beam_decoding_beam_scores_true_with_fusion_models(inputs, nnet):
@@ -174,8 +184,8 @@ def test_beam_decoding_beam_scores_true_with_fusion_models(inputs, nnet):
     )
     output = gen(*inputs, return_beam_scores=True)
 
-    assert len(output) == 3
-    beam_paths, scores, best_path = output
+    assert len(output) == 4
+    beam_paths, scores, best_path, xatt_scores_list = output
 
     assert beam_paths is not None
     assert isinstance(beam_paths, list)
@@ -194,6 +204,11 @@ def test_beam_decoding_beam_scores_true_with_fusion_models(inputs, nnet):
     assert best_path is not None
     assert torch.is_tensor(best_path)
     assert best_path.shape == (1, 26)
+
+    assert xatt_scores_list is not None
+    assert isinstance(xatt_scores_list, list)
+    assert torch.is_tensor(xatt_scores_list[0])
+    assert xatt_scores_list[0].shape == (1, 1, 25, 5)
 
 
 @pytest.fixture()
@@ -223,7 +238,7 @@ def test_transformer_aed_beam_infer_strips_prompt(prompted_inputs, decoder_nm, n
     assert torch.is_tensor(best_path)
 
     # Now run the underlying beam search generator that doesn't trim anything.
-    *_, (untrimmed,) = gen.beam_search(*prompted_inputs, return_beam_scores=True)
+    *_, (untrimmed,), _ = gen.beam_search(*prompted_inputs, return_beam_scores=True)
     assert untrimmed is not None
     assert torch.is_tensor(untrimmed)
 
@@ -251,7 +266,7 @@ def test_transformer_aed_greedy_infer_strips_prompt(prompted_inputs, decoder_nm,
     assert torch.is_tensor(best_path)
 
     # Now run the underlying beam search generator that doesn't trim anything.
-    (untrimmed,), _, _ = gen.greedy_search(*prompted_inputs)
+    (untrimmed,), _, _, _ = gen.greedy_search(*prompted_inputs)
     assert untrimmed is not None
     assert torch.is_tensor(untrimmed)
 

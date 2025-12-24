@@ -209,7 +209,8 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                 if xatt_scores_list is not None:
                     xatt_scores_list = [
                         xatt_layer.view(len(topk_hypotheses), -1, *xatt_layer.shape[1:]).detach().cpu()
-                        for xatt_layer in xatt_scores_list]
+                        for xatt_layer in xatt_scores_list
+                    ]
                 for i in range(len(topk_hypotheses)):
                     # Pack results into Hypotheses
                     hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(self.n_samples)]
@@ -220,7 +221,8 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                     packed_result.append(
                         NBestHypotheses(
                             pack_hypotheses(
-                                hypotheses, topk_hypotheses[i], beam_scores[i], step_confidence, topk_xatt_scores)
+                                hypotheses, topk_hypotheses[i], beam_scores[i], step_confidence, topk_xatt_scores
+                            )
                         )
                     )
             else:

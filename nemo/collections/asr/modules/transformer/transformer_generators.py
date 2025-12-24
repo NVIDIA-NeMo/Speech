@@ -245,8 +245,7 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
             )
             if xatt_scores_list is not None:
                 for layer in range(len(xatt_scores_list)):
-                    xatt_scores_list[layer] = torch.cat(
-                        (xatt_scores_list[layer], new_xatt_scores_list[layer]), dim=2)
+                    xatt_scores_list[layer] = torch.cat((xatt_scores_list[layer], new_xatt_scores_list[layer]), dim=2)
             else:
                 xatt_scores_list = new_xatt_scores_list
 
@@ -492,14 +491,16 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
             # select xatt scores corresponding to chosen hypotheses
             if next_xatt_scores_list is not None:
                 num_heads = xatt_scores_list[0].shape[1]
-                xatt_indices_i = indices_i.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(
-                    1, 1, num_heads, p_len - 1, src_length) // self.beam_size
+                xatt_indices_i = (
+                    indices_i.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, num_heads, p_len - 1, src_length)
+                    // self.beam_size
+                )
                 for layer in range(len(next_xatt_scores_list)):
                     xatt_layer_score_i = torch.cat((xatt_scores_list[layer], next_xatt_scores_list[layer]), dim=2)
-                    xatt_scores_list[layer] = xatt_layer_score_i.view(
-                        -1, self.beam_size, num_heads, p_len - 1, src_length
-                    ).gather(1, xatt_indices_i).view(
-                        -1, num_heads, p_len - 1, src_length
+                    xatt_scores_list[layer] = (
+                        xatt_layer_score_i.view(-1, self.beam_size, num_heads, p_len - 1, src_length)
+                        .gather(1, xatt_indices_i)
+                        .view(-1, num_heads, p_len - 1, src_length)
                     )
 
             # reshuffle cached decoder memory states to restore the order
@@ -532,12 +533,16 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
         # select xatt scores for best hypotheses
         if xatt_scores_list is not None:
             _, num_heads, tgt_len, src_len = xatt_scores_list[0].shape
-            xatt_best_guesses = best_guesses.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(
-                    1, 1, num_heads, tgt_len, src_len)
+            xatt_best_guesses = (
+                best_guesses.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, num_heads, tgt_len, src_len)
+            )
             for layer in range(len(xatt_scores_list)):
-                xatt_scores_list[layer] = xatt_scores_list[layer].view(
-                    -1, self.beam_size, num_heads, tgt_len, src_len
-                ).gather(1, xatt_best_guesses).squeeze(1)
+                xatt_scores_list[layer] = (
+                    xatt_scores_list[layer]
+                    .view(-1, self.beam_size, num_heads, tgt_len, src_len)
+                    .gather(1, xatt_best_guesses)
+                    .squeeze(1)
+                )
 
         if return_beam_scores:
             return prefixes, scores * len_penalties, tgt, xatt_scores_list
@@ -687,14 +692,16 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
             # select xatt scores corresponding to chosen hypotheses
             if next_xatt_scores_list is not None:
                 num_heads = xatt_scores_list[0].shape[1]
-                xatt_indices_i = indices_i.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(
-                    1, 1, num_heads, p_len - 1, src_length) // self.beam_size
+                xatt_indices_i = (
+                    indices_i.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, num_heads, p_len - 1, src_length)
+                    // self.beam_size
+                )
                 for layer in range(len(next_xatt_scores_list)):
                     xatt_layer_score_i = torch.cat((xatt_scores_list[layer], next_xatt_scores_list[layer]), dim=2)
-                    xatt_scores_list[layer] = xatt_layer_score_i.view(
-                        -1, self.beam_size, num_heads, p_len - 1, src_length
-                    ).gather(1, xatt_indices_i).view(
-                        -1, num_heads, p_len - 1, src_length
+                    xatt_scores_list[layer] = (
+                        xatt_layer_score_i.view(-1, self.beam_size, num_heads, p_len - 1, src_length)
+                        .gather(1, xatt_indices_i)
+                        .view(-1, num_heads, p_len - 1, src_length)
                     )
 
             # reshuffle cached decoder memory states to restore the order
@@ -727,12 +734,16 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
         # select xatt scores for best hypotheses
         if xatt_scores_list is not None:
             _, num_heads, tgt_len, src_len = xatt_scores_list[0].shape
-            xatt_best_guesses = best_guesses.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(
-                1, 1, num_heads, tgt_len, src_len)
+            xatt_best_guesses = (
+                best_guesses.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, num_heads, tgt_len, src_len)
+            )
             for layer in range(len(xatt_scores_list)):
-                xatt_scores_list[layer] = xatt_scores_list[layer].view(
-                    -1, self.beam_size, num_heads, tgt_len, src_len
-                ).gather(1, xatt_best_guesses).squeeze(1)
+                xatt_scores_list[layer] = (
+                    xatt_scores_list[layer]
+                    .view(-1, self.beam_size, num_heads, tgt_len, src_len)
+                    .gather(1, xatt_best_guesses)
+                    .squeeze(1)
+                )
 
         if return_beam_scores:
             return prefixes, scores * len_penalties, tgt, xatt_scores_list

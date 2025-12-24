@@ -36,7 +36,7 @@ def pack_hypotheses(
     hypotheses: List[Hypothesis],
     beam_hypotheses: torch.Tensor,
     scores: List[Optional[float]],
-    xatt_scores_list: List[torch.Tensor] = None
+    xatt_scores_list: List[torch.Tensor] = None,
 ) -> List[Hypothesis]:
 
     for idx, hyp in enumerate(hypotheses):  # type: Hypothesis

@@ -42,6 +42,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
+    from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
 
 
 class CacheAwareRNNTPipeline(BasePipeline):
@@ -52,6 +53,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         cfg: DictConfig,
         asr_model: CacheAwareRNNTInferenceWrapper,
         itn_model: AlignmentPreservingInverseNormalizer | None = None,
+        nmt_model: LLMTranslator | None = None,
     ):
         """
         Initialize the CacheAwareRNNTPipeline.
@@ -59,8 +61,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
             cfg: (DictConfig) Configuration parameters.
             asr_model: (CacheAwareRNNTInferenceWrapper) ASR model.
             itn_model: (AlignmentPreservingInverseNormalizer | None) Inverse Text Normalization model.
+            nmt_model: (LLMTranslator | None) LLM based translation model.
         """
         self.copy_asr_model_attributes(asr_model)
+        self.init_prompt_support()
         self.init_parameters(cfg)
         self.init_context_manager()
         self.init_bufferer_for_cache_aware_streaming()
@@ -69,6 +73,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.init_greedy_rnnt_decoder()
         self.init_endpointer()
         self.init_text_processor(cfg, itn_model)
+        self.init_nmt_model(nmt_model)
         super().__init__()
 
     def init_parameters(self, cfg: DictConfig) -> None:
@@ -165,11 +170,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
             residue_tokens_at_end=self.residue_tokens_at_end,
         )
 
-    def reset_session(self) -> None:
-        """Reset the context manager."""
-        self.context_manager.reset()
-        super().reset_session()
-
     def create_state(self, options: ASRRequestOptions) -> CacheAwareRNNTStreamingState:
         """
         Create new empty state.
@@ -183,8 +183,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
         new_options = options.augment_with_defaults(
             default_enable_itn=self.text_processor.is_itn_enabled(),
             default_enable_pnc=self.text_processor.is_pnc_enabled(),
+            default_enable_nmt=self.nmt_enabled,
+            default_source_language=self.nmt_model.source_language if self.nmt_enabled else None,
+            default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
+            default_language_code="en-US" if self.prompt_enabled else None,
         )
 
         eou_label_buffer_size = 0
@@ -196,6 +200,15 @@ class CacheAwareRNNTPipeline(BasePipeline):
         state.setup_label_buffer(eou_label_buffer_size, self.blank_id)
         state.set_previous_hypothesis(None)
         state.set_options(new_options)
+
+        # Create per-stream prompt index for prompt-enabled models
+        if self.prompt_enabled:
+            lang_code = getattr(new_options, "language_code", None)
+            if not isinstance(lang_code, str) or len(lang_code) == 0:
+                raise ValueError("Prompt-enabled model requires a valid language_code in request options.")
+            prompt_idx = self._resolve_prompt_index(lang_code)
+            state.set_prompt_index(prompt_idx)
+
         return state
 
     def get_sep(self) -> str:
@@ -289,6 +302,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
         previous_hypotheses = [state.get_previous_hypothesis() for state in states]
         context, mapping = self.context_manager.get_context(stream_ids)
 
+        prompt_vectors = None
+        if self.prompt_enabled:
+            prompt_vectors = self._build_prompt_vectors(states)
+
         drop_extra_pre_encoded = 0 if not self.use_cache else self.asr_model.drop_extra_pre_encoded
         best_hyp, new_context = self.asr_model.stream_step(
             processed_signal=feature_buffers,
@@ -299,6 +316,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             keep_all_outputs=keep_all_outputs,
             drop_left_context=self.drop_left_context,
             valid_out_len=self.valid_out_len,
+            prompt_vectors=prompt_vectors,
         )
 
         # update the cache and reset the cache slots for the streams that has ended

@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,16 +13,10 @@
 # limitations under the License.
 """
 Builds a .nemo file with average weights over multiple .ckpt files (assumes .ckpt files in same folder as .nemo file).
-
 Usage example for building *-averaged.nemo for a given .nemo file:
-
 NeMo/scripts/checkpoint_averaging/checkpoint_averaging.py my_model.nemo
-
 Usage example for building *-averaged.nemo files for all results in sub-directories under current path:
-
 find . -name '*.nemo' | grep -v -- "-averaged.nemo" | xargs NeMo/scripts/checkpoint_averaging/checkpoint_averaging.py
-
-
 NOTE: if yout get the following error `AttributeError: Can't get attribute '???' on <module '__main__' from '???'>`
       use --import_fname_list <FILE> with all files that contains missing classes.
 """
@@ -127,7 +120,7 @@ def main():
         logging.info(f"Averaging {n} checkpoints ...")
 
         for ix, path in enumerate(tqdm(checkpoint_paths, total=n, desc='Averaging checkpoints')):
-            checkpoint = torch.load(path, map_location=device, weights_only=False)
+            checkpoint = torch.load(path, map_location=device)
 
             if 'state_dict' in checkpoint:
                 checkpoint = checkpoint['state_dict']

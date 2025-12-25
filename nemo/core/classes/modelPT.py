@@ -594,9 +594,9 @@ class ModelPT(LightningModule, Model):
             val_data_layer_config: validation data layer parameters.
         """
         # Set some placeholder overriden by helper method
-        self._val_dl_idx = 0
-        self._validation_names = None
-        self._validation_dl = None  # type: torch.utils.data.DataLoader
+        self._val_dl_idx: int = 0
+        self._validation_names: Optional[List[str]] = None
+        self._validation_dl: Optional[torch.utils.data.DataLoader] = None
 
         # preserve config
         self._update_dataset_config(dataset_name='validation', config=val_data_config)
@@ -619,9 +619,9 @@ class ModelPT(LightningModule, Model):
             test_data_layer_config: test data layer parameters.
         """
         # Set some placeholder overriden by helper method
-        self._test_dl_idx = 0
-        self._test_names = None
-        self._test_dl = None  # type: torch.utils.data.DataLoader
+        self._test_dl_idx: int = 0
+        self._test_names: Optional[List[str]] = None
+        self._test_dl: Optional[torch.utils.data.DataLoader] = None
 
         # preserve config
         self._update_dataset_config(dataset_name='test', config=test_data_config)
@@ -1459,7 +1459,7 @@ class ModelPT(LightningModule, Model):
                 if isinstance(cfg.init_from_ptl_ckpt, str):
                     # Restore checkpoint
                     ckpt_path = cfg.pop('init_from_ptl_ckpt')
-                    ckpt = torch.load(ckpt_path, map_location=map_location, weights_only=False)
+                    ckpt = torch.load(ckpt_path, map_location=map_location)
 
                     # Restore checkpoint into current model
                     self.load_state_dict(ckpt['state_dict'], strict=False)
@@ -1473,7 +1473,7 @@ class ModelPT(LightningModule, Model):
                     for model_load_cfg in model_load_dict.values():
                         ckpt_path = model_load_cfg.path
                         # Restore model
-                        ckpt = torch.load(ckpt_path, map_location=map_location, weights_only=False)
+                        ckpt = torch.load(ckpt_path, map_location=map_location)
 
                         include = model_load_cfg.pop('include', [""])
                         exclude = model_load_cfg.pop('exclude', [])

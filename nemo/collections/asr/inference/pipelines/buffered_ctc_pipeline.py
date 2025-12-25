@@ -40,6 +40,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
+    from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
 
 
 class BufferedCTCPipeline(BasePipeline):
@@ -50,6 +51,7 @@ class BufferedCTCPipeline(BasePipeline):
         cfg: DictConfig,
         asr_model: CTCInferenceWrapper,
         itn_model: AlignmentPreservingInverseNormalizer | None = None,
+        nmt_model: LLMTranslator | None = None,
     ):
         """
         Initialize the BufferedCTCPipeline.
@@ -57,6 +59,7 @@ class BufferedCTCPipeline(BasePipeline):
             cfg: (DictConfig) Configuration parameters.
             asr_model: (CTCInferenceWrapper) ASR model.
             itn_model: (AlignmentPreservingInverseNormalizer | None) Inverse Text Normalization model.
+            nmt_model: (LLMTranslator | None) LLM based translation model.
         """
         self.copy_asr_model_attributes(asr_model)
         self.init_parameters(cfg)
@@ -66,6 +69,7 @@ class BufferedCTCPipeline(BasePipeline):
         self.init_bpe_decoder()
         self.init_greedy_ctc_decoder()
         self.init_text_processor(cfg, itn_model)
+        self.init_nmt_model(nmt_model)
         super().__init__()
 
     def init_parameters(self, cfg: DictConfig) -> None:
@@ -162,6 +166,9 @@ class BufferedCTCPipeline(BasePipeline):
         new_options = options.augment_with_defaults(
             default_enable_itn=self.text_processor.is_itn_enabled(),
             default_enable_pnc=self.text_processor.is_pnc_enabled(),
+            default_enable_nmt=self.nmt_enabled,
+            default_source_language=self.nmt_model.source_language if self.nmt_enabled else None,
+            default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
         )

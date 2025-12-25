@@ -42,6 +42,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis as NemoHypoth
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
+    from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
 
 
 class BufferedRNNTPipeline(BasePipeline):
@@ -52,6 +53,7 @@ class BufferedRNNTPipeline(BasePipeline):
         cfg: DictConfig,
         asr_model: RNNTInferenceWrapper,
         itn_model: AlignmentPreservingInverseNormalizer | None = None,
+        nmt_model: LLMTranslator | None = None,
     ):
         """
         Initialize the BufferedRNNTPipeline.
@@ -59,9 +61,11 @@ class BufferedRNNTPipeline(BasePipeline):
             cfg: (DictConfig) Configuration parameters.
             asr_model: (RNNTInferenceWrapper) ASR model.
             itn_model: (AlignmentPreservingInverseNormalizer | None) Inverse Text Normalization model.
+            nmt_model: (LLMTranslator | None) LLM based translation model.
         """
 
         self.copy_asr_model_attributes(asr_model)
+        self.init_prompt_support()
         self.init_parameters(cfg)
         self.init_bufferer_for_buffered_streaming()
         self.conf_func, self.confidence_aggregator = get_confidence_utils(cfg.confidence)
@@ -70,6 +74,7 @@ class BufferedRNNTPipeline(BasePipeline):
         self.init_bpe_decoder()
         self.init_decoding_computer()
         self.init_text_processor(cfg, itn_model)
+        self.init_nmt_model(nmt_model)
         super().__init__()
 
     def init_parameters(self, cfg: DictConfig) -> None:
@@ -190,9 +195,24 @@ class BufferedRNNTPipeline(BasePipeline):
             buffer_lens=torch.tensor([zero_buffer.shape[1]], device=self.device),
             expected_feature_buffer_len=self.expected_feature_buffer_len,
         )
-        zero_encoded, _ = self.asr_model.encode(
-            processed_signal=zero_features, processed_signal_length=zero_features_len
-        )
+
+        if self.prompt_enabled:
+            # Use "en-US" as the default prompt for zero encoding
+            # This region is sliced out before decoding, so language choice doesn't matter
+            default_prompt_idx = self._resolve_prompt_index("en-US")
+            prompt_indices = torch.tensor([default_prompt_idx], device=self.device, dtype=torch.long)
+            prompt_vector = self._create_one_hot_prompts(prompt_indices)  # [1, num_prompts]
+
+            zero_encoded, _ = self.asr_model.encode_with_prompts(
+                processed_signal=zero_features,
+                processed_signal_length=zero_features_len,
+                prompt_vectors=prompt_vector,
+            )
+        else:
+            zero_encoded, _ = self.asr_model.encode(
+                processed_signal=zero_features, processed_signal_length=zero_features_len
+            )
+
         return zero_encoded[0]
 
     def create_state(self, options: ASRRequestOptions) -> RNNTStreamingState:
@@ -208,10 +228,23 @@ class BufferedRNNTPipeline(BasePipeline):
         new_options = options.augment_with_defaults(
             default_enable_itn=self.text_processor.is_itn_enabled(),
             default_enable_pnc=self.text_processor.is_pnc_enabled(),
+            default_enable_nmt=self.nmt_enabled,
+            default_source_language=self.nmt_model.source_language if self.nmt_enabled else None,
+            default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
+            default_language_code="en-US" if self.prompt_enabled else None,
         )
         state.set_options(new_options)
+
+        # Create per-stream prompt index for prompt-enabled models
+        if self.prompt_enabled:
+            lang_code = getattr(new_options, "language_code", None)
+            if not isinstance(lang_code, str) or len(lang_code) == 0:
+                raise ValueError("Prompt-enabled model requires a valid language_code in request options.")
+            prompt_idx = self._resolve_prompt_index(lang_code)
+            state.set_prompt_index(prompt_idx)
+
         return state
 
     def get_sep(self) -> str:
@@ -280,7 +313,7 @@ class BufferedRNNTPipeline(BasePipeline):
         # Only final frames have right padding
         # Keep some amount of extra padding to avoid the performance degradation
         right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.extra_padding_in_samples for frame in frames], device=self.device
+            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
         ).clamp(min=0)
 
         # Create and adjust the buffer lens
@@ -295,9 +328,21 @@ class BufferedRNNTPipeline(BasePipeline):
             expected_feature_buffer_len=self.expected_feature_buffer_len,
         )
 
-        encoded, encoded_len = self.asr_model.encode(
-            processed_signal=feature_buffers, processed_signal_length=feature_buffer_lens
-        )
+        # Build prompt vectors if prompts are enabled
+        if self.prompt_enabled:
+            requests_states = [self.get_state(f.stream_id) for f in frames]
+            prompt_vectors = self._build_prompt_vectors(requests_states)
+
+            # Use encode_with_prompts which handles dimension expansion
+            encoded, encoded_len = self.asr_model.encode_with_prompts(
+                processed_signal=feature_buffers,
+                processed_signal_length=feature_buffer_lens,
+                prompt_vectors=prompt_vectors,
+            )
+        else:
+            encoded, encoded_len = self.asr_model.encode(
+                processed_signal=feature_buffers, processed_signal_length=feature_buffer_lens
+            )
         encoded = encoded.clone()
         encoded_len = encoded_len.clone()
 
@@ -331,9 +376,21 @@ class BufferedRNNTPipeline(BasePipeline):
         processed_signals = normalize_features(processed_signals, processed_signal_lengths)
         processed_signal_lengths = processed_signal_lengths.clamp(max=processed_signals.shape[2])
 
-        encoded, encoded_len = self.asr_model.encode(
-            processed_signal=processed_signals, processed_signal_length=processed_signal_lengths
-        )
+        # Build prompt vectors if prompts are enabled
+        if self.prompt_enabled:
+            requests_states = [self.get_state(f.stream_id) for f in fbuffers]
+            prompt_vectors = self._build_prompt_vectors(requests_states)
+
+            # Use encode_with_prompts which handles dimension expansion
+            encoded, encoded_len = self.asr_model.encode_with_prompts(
+                processed_signal=processed_signals,
+                processed_signal_length=processed_signal_lengths,
+                prompt_vectors=prompt_vectors,
+            )
+        else:
+            encoded, encoded_len = self.asr_model.encode(
+                processed_signal=processed_signals, processed_signal_length=processed_signal_lengths
+            )
         encoded = encoded.clone()
         encoded_len = encoded_len.clone()
 

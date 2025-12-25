@@ -38,17 +38,18 @@ def make_abs_path(path: str) -> str:
     return path
 
 
-def get_audio_filepaths(audio_file: str, sort_by_duration: bool = True) -> list[str]:
+def get_audio_filepaths(audio_file: str, sort_by_duration: bool = True) -> tuple[list[str], list[dict] | None]:
     """
     Get audio filepaths from a folder or a single audio file
     Args:
         audio_file: (str) Path to the audio file, folder or manifest file
         sort_by_duration: (bool) If True, sort the audio files by duration from shortest to longest
     Returns:
-        (list[str]) List of audio filepaths
+        (list[str], list[dict] | None) List of audio filepaths and manifest
     """
     audio_file = audio_file.strip()
     audio_file = make_abs_path(audio_file)
+    manifest = None
     if os.path.isdir(audio_file):
         filepaths = filter(lambda x: x.endswith(".wav"), os.listdir(audio_file))
         filepaths = [os.path.join(audio_file, x) for x in filepaths]
@@ -61,11 +62,15 @@ def get_audio_filepaths(audio_file: str, sort_by_duration: bool = True) -> list[
         raise ValueError(f"audio_file `{audio_file}` need to be folder, audio file or manifest file")
 
     if sort_by_duration:
-        durations = [librosa.get_duration(path=audio_filepath) for audio_filepath in filepaths]
-        filepaths_with_durations = list(zip(filepaths, durations))
-        filepaths_with_durations.sort(key=lambda x: x[1])
-        filepaths = [x[0] for x in filepaths_with_durations]
-    return filepaths
+        indices = list(range(len(filepaths)))
+        durations = [librosa.get_duration(path=filepaths[i]) for i in indices]
+        indices_with_durations = list(zip(indices, durations))
+        indices_with_durations.sort(key=lambda x: x[1])
+        filepaths = [filepaths[i] for i, duration in indices_with_durations]
+        if manifest is not None:
+            # keep manifest in the same order as filepaths for consistency
+            manifest = [manifest[i] for i, duration in indices_with_durations]
+    return filepaths, manifest
 
 
 def get_stem(file_path: str) -> str:
@@ -79,24 +84,32 @@ def get_stem(file_path: str) -> str:
     return file_path.split('/')[-1]
 
 
-def dump_output(output: dict, output_filename: str, output_dir: str | None = None) -> None:
+def dump_output(
+    output: dict, output_filename: str, output_dir: str | None = None, manifest: list[dict] | None = None
+) -> None:
     """
     Dump the transcriptions to a output file
     Args:
         output (dict): Pipeline output, structured as {stream_id: {"text": str, "segments": list}}
         output_filename: (str) Path to the output file
         output_dir: (str | None) Path to the output directory, if None, will write at the same level as the output file
+        manifest: (list[dict] | None) Original manifest to copy extra fields from
     """
     if output_dir is None:
         # Create default output directory, if not provided
         output_dir = os.path.dirname(output_filename)
         output_dir = os.path.join(output_dir, DEFAULT_OUTPUT_DIR_NAME)
 
+    manifest_index = None
+    if manifest is not None:
+        manifest_index = {entry["audio_filepath"]: i for i, entry in enumerate(manifest)}
+
     os.makedirs(output_dir, exist_ok=True)
     with open(output_filename, 'w') as fout:
         for stream_id, data in sorted(output.items(), key=lambda x: x[0]):
             audio_filepath = data["audio_filepath"]
             text = data["text"]
+            translation = data["translation"]
             segments = data["segments"]
             stem = get_stem(audio_filepath)
             stem = os.path.splitext(stem)[0]
@@ -107,22 +120,36 @@ def dump_output(output: dict, output_filename: str, output_dir: str | None = Non
                     json_line = json.dumps(segment.to_dict(), ensure_ascii=False)
                     json_fout.write(f"{json_line}\n")
 
-            item = {"audio_filepath": audio_filepath, "text": text, "json_filepath": json_filepath}
+            item = {
+                "audio_filepath": audio_filepath,
+                "pred_text": text,
+                "pred_translation": translation,
+                "json_filepath": json_filepath,
+            }
+
+            if manifest_index is not None:
+                for key in manifest[manifest_index[audio_filepath]]:
+                    if key not in item:
+                        item[key] = manifest[manifest_index[audio_filepath]][key]
+
             json.dump(item, fout, ensure_ascii=False)
             fout.write('\n')
             fout.flush()
 
 
-def calculate_duration(audio_filepaths: list[str]) -> float:
+def calculate_duration(audio_filepaths: list[str]) -> tuple[float, dict[str, float]]:
     """
     Calculate the duration of the audio files
     Args:
         audio_filepaths: (list[str]) List of audio filepaths
     Returns:
         (float) Total duration of the audio files
+        (dict[str, float]) Dictionary containing the duration of each audio file
     """
     total_duration = 0
+    durations = {}
     for audio_filepath in audio_filepaths:
         duration = librosa.get_duration(path=audio_filepath)
         total_duration += duration
-    return total_duration
+        durations[audio_filepath] = duration
+    return total_duration, durations

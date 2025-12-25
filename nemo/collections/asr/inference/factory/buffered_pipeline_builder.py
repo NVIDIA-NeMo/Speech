@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from omegaconf.dictconfig import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.inference.factory.base_builder import BaseBuilder
 from nemo.collections.asr.inference.pipelines.buffered_ctc_pipeline import BufferedCTCPipeline
@@ -54,25 +54,9 @@ class BufferedPipelineBuilder(BaseBuilder):
         Returns:
             (RNNTDecodingConfig) Decoding config
         """
-        decoding_cfg = RNNTDecodingConfig()
-
-        # greedy_batch decoding strategy required for stateless streaming
-        decoding_cfg.strategy = "greedy_batch"
-
-        # required to compute the middle token for transducers.
-        decoding_cfg.preserve_alignments = False
-
-        # temporarily stop fused batch during inference.
-        decoding_cfg.fused_batch_size = -1
-
-        # return and write the best hypothesis only
-        decoding_cfg.beam.return_best_hypothesis = True
-
-        # setup ngram language model
-        if hasattr(cfg.asr, "ngram_lm_model") and cfg.asr.ngram_lm_model != "":
-            decoding_cfg.greedy.ngram_lm_model = cfg.asr.ngram_lm_model
-            decoding_cfg.greedy.ngram_lm_alpha = cfg.asr.ngram_lm_alpha
-
+        base_cfg_structured = OmegaConf.structured(RNNTDecodingConfig)
+        base_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg_structured))
+        decoding_cfg = OmegaConf.merge(base_cfg, cfg.asr.decoding)
         return decoding_cfg
 
     @classmethod
@@ -102,8 +86,11 @@ class BufferedPipelineBuilder(BaseBuilder):
         # building ITN model
         itn_model = cls._build_itn(cfg, input_is_lower_cased=True)
 
+        # building NMT model
+        nmt_model = cls._build_nmt(cfg)
+
         # building RNNT pipeline
-        rnnt_pipeline = BufferedRNNTPipeline(cfg, asr_model, itn_model)
+        rnnt_pipeline = BufferedRNNTPipeline(cfg, asr_model, itn_model, nmt_model)
         logging.info(f"`{type(rnnt_pipeline).__name__}` pipeline loaded")
         return rnnt_pipeline
 
@@ -123,7 +110,10 @@ class BufferedPipelineBuilder(BaseBuilder):
         # building ITN model
         itn_model = cls._build_itn(cfg, input_is_lower_cased=True)
 
+        # building NMT model
+        nmt_model = cls._build_nmt(cfg)
+
         # building CTC pipeline
-        ctc_pipeline = BufferedCTCPipeline(cfg, asr_model, itn_model)
+        ctc_pipeline = BufferedCTCPipeline(cfg, asr_model, itn_model, nmt_model)
         logging.info(f"`{type(ctc_pipeline).__name__}` pipeline loaded")
         return ctc_pipeline

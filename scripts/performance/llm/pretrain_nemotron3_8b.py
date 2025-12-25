@@ -16,8 +16,8 @@ from os.path import basename, splitext
 
 import nemo_run as run
 
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.llm.recipes.nemotron3_8b import pretrain_recipe
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
 from ..argument_parser import parse_additional_slurm_params, parse_cli_args

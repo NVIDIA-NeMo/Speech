@@ -20,7 +20,7 @@ from megatron.core.optimizer import OptimizerConfig
 
 from nemo import lightning as nl
 from nemo.collections import llm
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
 
 ## NOTE: This script is present for github-actions testing only.

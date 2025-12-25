@@ -1148,4 +1148,5 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             num_workers=num_workers,
             verbose=verbose,
             override_config=override_config,
+            sample_rate=sample_rate,
         )

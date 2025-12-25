@@ -156,8 +156,10 @@ def setup_adapters(cfg: DictConfig, model: ASRModel):
 
     model.freeze()  # freeze whole model by default
     if not cfg.model.get("freeze_decoder", True):
+        logging.info("Unfreezing decoder weights.")
         model.decoder.unfreeze()
     if hasattr(model, 'joint') and not cfg.model.get(f"freeze_joint", True):
+        logging.info("Unfreezing joint network weights.")
         model.joint.unfreeze()
 
     # Activate dropout() and other modules that depend on train mode.

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Test RNN-T
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     tests/functional_tests/asr_transcribe_boost_ground_truth.py \
     dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10.json" \
     output_filename="/tmp/stt_transcribe_boost_gt_res_rnnt.json" \
@@ -22,7 +22,7 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo
     device='cuda:0'
 
 # Test TDT
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     tests/functional_tests/asr_transcribe_boost_ground_truth.py \
     dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10.json" \
     output_filename="/tmp/stt_transcribe_boost_gt_res_tdt.json" \

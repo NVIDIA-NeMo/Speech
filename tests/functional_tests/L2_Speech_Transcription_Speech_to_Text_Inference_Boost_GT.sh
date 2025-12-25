@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     tests/functional_tests/asr_streaming_infer_boost_ground_truth.py \
     --config-path="../../examples/asr/conf/asr_streaming_inference/" \
     --config-name=buffered_rnnt.yaml \
@@ -26,7 +26,7 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo
     enable_nmt=False \
     asr_output_granularity=segment
 
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     tests/functional_tests/asr_streaming_infer_boost_ground_truth.py \
     --config-path="../../examples/asr/conf/asr_streaming_inference/" \
     --config-name=buffered_rnnt.yaml \

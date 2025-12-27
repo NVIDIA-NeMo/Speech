@@ -82,6 +82,8 @@ class NemoSTTService(STTService):
         self._has_turn_taking = has_turn_taking
         self._backend = backend
         self._decoder_type = decoder_type
+        self._att_context_size = params.att_context_size
+        self._frame_len_in_secs = params.frame_len_in_secs
         if not params:
             raise ValueError("params is required")
 
@@ -94,7 +96,11 @@ class NemoSTTService(STTService):
     def _load_model(self):
         if self._backend == "legacy":
             self._model = NemoStreamingASRService(
-                self._model_name, device=self._device, decoder_type=self._decoder_type
+                self._model_name,
+                self._att_context_size,
+                device=self._device,
+                decoder_type=self._decoder_type,
+                frame_len_in_secs=self._frame_len_in_secs,
             )
         else:
             raise ValueError(f"Invalid ASR backend: {self._backend}")

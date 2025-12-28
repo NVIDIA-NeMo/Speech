@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import total_ordering
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import hydra
@@ -934,7 +934,8 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
                 f"Model {model_name} was not found. Check cls.list_available_models()\n"
                 f"for the list of all available models."
             )
-        filename = location_in_the_cloud.split("/")[-1]
+        # Use PurePosixPath for cloud URLs which always use forward slashes
+        filename = PurePosixPath(location_in_the_cloud).name
         url = location_in_the_cloud.replace(filename, "")
         cache_dir = Path.joinpath(resolve_cache_dir(), f'{filename[:-5]}')
         # If either description and location in the cloud changes, this will force re-download
@@ -972,7 +973,8 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
             -   The path to the NeMo model (.nemo file) in some cached directory (managed by HF Hub).
         """
         # Resolve the model name without origin for filename
-        resolved_model_filename = model_name.split("/")[-1] + '.nemo'
+        # Use PurePosixPath since HuggingFace repo names use forward slashes (e.g., "nvidia/model-name")
+        resolved_model_filename = PurePosixPath(model_name).name + '.nemo'
 
         # Try to take from cache first - if not fallback to options below
         if not refresh_cache:

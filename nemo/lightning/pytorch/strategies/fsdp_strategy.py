@@ -181,17 +181,14 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
         with self.precision_plugin.train_step_context():
             loss, reduced = self._step_proxy("training", batch, batch_idx)
 
-            self.lightning_module.log(
-                'global_step',
-                self.trainer.global_step,
+            # Log global_step and step together using log_dict to prevent W&B from
+            # incrementing its internal _step counter multiple times per training step.
+            # This fixes issue #15204 where W&B showed ~2x the actual global_step.
+            self.lightning_module.log_dict(
+                {'global_step': self.trainer.global_step, 'step': self.trainer.global_step},
                 prog_bar=True,
                 rank_zero_only=True,
                 batch_size=1,
-            )
-
-            self.lightning_module.log(
-                'step',
-                self.trainer.global_step,
             )
             self.lightning_module.log(
                 'reduced_train_loss', reduced['avg'], prog_bar=True, rank_zero_only=True, batch_size=1

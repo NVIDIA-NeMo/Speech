@@ -800,16 +800,13 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 if (torch.is_tensor(self.trainer.global_step) and self.trainer.global_step.is_cuda)
                 else torch.tensor(self.trainer.global_step, pin_memory=True).to("cuda", non_blocking=True)
             )
-            self.lightning_module.log(
-                "global_step",
-                global_step,
+            # Log global_step and step together using log_dict to prevent W&B from
+            # incrementing its internal _step counter multiple times per training step.
+            # This fixes issue #15204 where W&B showed ~2x the actual global_step.
+            self.lightning_module.log_dict(
+                {"global_step": global_step, "step": global_step},
                 prog_bar=True,
                 batch_size=1,
-            )
-
-            self.lightning_module.log(
-                "step",
-                global_step,
             )
 
             if self.log_memory_usage:

@@ -51,6 +51,8 @@ except ModuleNotFoundError as e:
 
 
 class NeMoSTTInputParams(BaseModel):
+    """Input parameters for NeMo STT service."""
+
     language: Optional[Language] = Language.EN_US
     att_context_size: Optional[List] = [70, 1]
     frame_len_in_secs: Optional[float] = 0.08  # 80ms for FastConformer model
@@ -60,6 +62,8 @@ class NeMoSTTInputParams(BaseModel):
 
 
 class NemoSTTService(STTService):
+    """NeMo Speech-to-Text service for Pipecat integration."""
+
     def __init__(
         self,
         *,
@@ -262,6 +266,7 @@ class NemoSTTService(STTService):
         self._load_model()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        """Process incoming frames and handle VAD events."""
         if isinstance(frame, VADUserStoppedSpeakingFrame) and isinstance(self._model, NeMoStreamingDiarService):
             # manualy reset the state of the model when end of utterance is detected by VAD
             logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")

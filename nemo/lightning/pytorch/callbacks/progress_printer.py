@@ -218,7 +218,7 @@ class ProgressPrinter(ProgressBar):
             return
         n = int((batch_idx + 1) / get_num_microbatches())
         if self.should_log(n):
-            print(self.test_description + f": iteration {n}/{self.total_validation_steps}")
+            print(self.test_description + f": iteration {n}/{self.total_test_steps}")
 
     def should_log(self, n):
         return n % self.log_interval == 0

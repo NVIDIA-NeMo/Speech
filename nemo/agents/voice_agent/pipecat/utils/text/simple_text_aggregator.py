@@ -28,7 +28,6 @@ def has_partial_decimal(text: str) -> bool:
     clearly a complete sentence (e.g., "It costs $3.14.") or a bullet point
     (e.g., "1. Alpha; 2.").
     """
-    text = text.strip()
 
     # Check for bullet point pattern: ends with 1-3 digits followed by period
     # Examples: "1.", "12.", "123.", or "text; 2."
@@ -89,6 +88,12 @@ def find_last_period_index(text: str) -> int:
         return idx
     if text[idx - 1].isdigit():
         # if the period is after a digit, it's likely a partial decimal, return -1
+        return -1
+    elif text[idx - 1].isupper():
+        # if the period is after a capital letter (e.g., "Washington, D.C."), it's likely a abbreviation, return -1
+        return -1
+    elif idx > 1 and text[idx - 2 : idx + 1].lower() in ["a.m.", "p.m."]:
+        # if the period is after a.m. or p.m., it's likely a time, return -1
         return -1
     elif idx > 2 and text[idx - 3 : idx + 1] in ["e.g.", "i.e."]:
         # The period is after a character/word that is likely to be a abbreviation, return -1

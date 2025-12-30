@@ -27,11 +27,14 @@ from pipecat.frames.frames import (
     Frame,
     StartFrame,
     TTSAudioRawFrame,
+    TTSSpeakFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
 )
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.tts_service import TTSService
 
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.mixins import ToolCallingMixin
 from nemo.collections.tts.models import FastPitchModel, HifiGanModel
 
 
@@ -414,7 +417,7 @@ class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
             yield audio
 
 
-class KokoroTTSService(BaseNemoTTSService):
+class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
     """Text-to-Speech service using Kokoro-82M model.
 
     Kokoro is an open-weight TTS model with 82 million parameters.
@@ -440,8 +443,13 @@ class KokoroTTSService(BaseNemoTTSService):
         self._lang_code = lang_code
         self._voice = voice
         self._speed = speed
+        assert speed > 0, "Speed must be greater than 0"
         model_name = f"kokoro-{lang_code}-{voice}"
+        self._speed_lambda = 1.0
+        self._original_speed = speed
+        self._original_voice = voice
         super().__init__(model=model_name, device=device, sample_rate=sample_rate, **kwargs)
+        self.setup_tool_calling()
 
     def _setup_model(self):
         """Initialize the Kokoro pipeline."""
@@ -485,3 +493,66 @@ class KokoroTTSService(BaseNemoTTSService):
         except Exception as e:
             logger.error(f"Error generating audio with Kokoro: {e}")
             raise
+
+    async def tool_tts_set_speed_explicitly(self, params: FunctionCallParams, speed_lambda: float):
+        """Set the speaking speed.
+
+        Args:
+            speed_lambda: Set the speaking speed to a relative speed to the original speed. E.g., 1.0 for original speed, 1.25 for 25% faster than original speed, 0.8 for 20% slower than original speed.
+            This toll should be called only when the user specifies the speed explicitly, such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
+            speed_lambda must be a positive number.
+        """
+        if speed_lambda <= 0:
+            result = {
+                "success": False,
+                "message": f"Speed remains unchanged since the change is not a positive number: {speed_lambda}",
+            }
+        else:
+            self._speed = speed_lambda * self._original_speed
+            result = {
+                "success": True,
+                "message": f"Speed set to {speed_lambda} of the original speed {self._original_speed}",
+            }
+        await params.result_callback(result)
+
+    async def tool_tts_reset_speed(self, params: FunctionCallParams):
+        """Reset the speaking speed to the original speed."""
+        self._speed = self._original_speed
+        result = {"success": True, "message": f"Speaking speed is reset to the original one"}
+        await params.result_callback(result)
+
+    async def tool_tts_speak_faster(self, params: FunctionCallParams):
+        """Speak faster by increasing the speaking speed 15% faster each time this function is called."""
+        self._speed_lambda = self._speed_lambda + 0.15
+        self._speed = self._speed_lambda * self._original_speed
+        result = {
+            "success": True,
+            "message": f"Speaking speed is increased to {self._speed_lambda} of the original speed {self._original_speed}",
+        }
+        await params.result_callback(result)
+
+    async def tool_tts_speak_slower(self, params: FunctionCallParams):
+        """Speak slower by decreasing the speaking speed 15% slower each time this function is called."""
+        self._speed_lambda = self._speed_lambda - 0.15
+        if self._speed_lambda < 0.1:
+            self._speed = 0.1 * self._original_speed
+            result = {
+                "success": True,
+                "message": f"Speaking speed is decreased to the minimum speed of 0.1 of the original speed {self._original_speed}",
+            }
+        else:
+            self._speed = self._speed_lambda * self._original_speed
+            result = {
+                "success": True,
+                "message": f"Speaking speed is decreased to {self._speed} of the original speed {self._original_speed}",
+            }
+        await params.result_callback(result)
+
+    def setup_tool_calling(self):
+        """
+        Setup the tool calling mixin by registering all available tools.
+        """
+        self.register_direct_function("tool_tts_reset_speed", self.tool_tts_reset_speed)
+        self.register_direct_function("tool_tts_speak_faster", self.tool_tts_speak_faster)
+        self.register_direct_function("tool_tts_speak_slower", self.tool_tts_speak_slower)
+        self.register_direct_function("tool_tts_set_speed_explicitly", self.tool_tts_set_speed_explicitly)

@@ -34,9 +34,10 @@ turn_taking:
 
 llm:
   type: auto  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
-  model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+  # model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+  model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
   # if `model_config` is not specified, and the llm.model is not in model_registry.yaml, it will use `llm_configs/hf_llm_generic.yaml`
-  model_config: "./server_configs/llm_configs/nemotron_nano_v2.yaml"
+  model_config: "./server_configs/llm_configs/nemotron_nano_v3.yaml"
   # model: "Qwen/Qwen2.5-7B-Instruct" 
   # model_config: "./server_configs/llm_configs/qwen2.5-7B.yaml"
   # model: "Qwen/Qwen3-8B"

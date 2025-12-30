@@ -34,7 +34,6 @@ from pipecat.utils.tracing.service_decorators import traced_stt
 from pydantic import BaseModel
 
 from nemo.agents.voice_agent.pipecat.services.nemo.streaming_asr import NemoStreamingASRService
-from nemo.agents.voice_agent.pipecat.services.nemo.streaming_diar import NeMoStreamingDiarService
 
 try:
     # disable nemo logging
@@ -267,7 +266,7 @@ class NemoSTTService(STTService):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process incoming frames and handle VAD events."""
-        if isinstance(frame, VADUserStoppedSpeakingFrame) and isinstance(self._model, NeMoStreamingDiarService):
+        if isinstance(frame, VADUserStoppedSpeakingFrame) and isinstance(self._model, NemoStreamingASRService):
             # manualy reset the state of the model when end of utterance is detected by VAD
             logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")
             self._model.reset_state()

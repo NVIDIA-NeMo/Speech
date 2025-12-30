@@ -176,6 +176,7 @@ class ConfigManager:
     def _configure_llm(self):
         """Configure LLM parameters."""
         llm_model_id = self.server_config.llm.model
+        is_registry_model = False
 
         # Try to get LLM config file name from server config first
         if self.server_config.llm.get("model_config", None) is not None:
@@ -184,6 +185,7 @@ class ConfigManager:
             # Get LLM configuration from registry
             if llm_model_id in self.model_registry.llm_models:
                 yaml_file_name = self.model_registry.llm_models[llm_model_id].yaml_id
+                is_registry_model = True
             else:
                 logger.warning(
                     f"LLM model {llm_model_id} is not included in the model registry. Using a generic HuggingFace LLM config."
@@ -193,9 +195,11 @@ class ConfigManager:
         # Load and merge LLM configuration
         llm_config_path = f"{os.path.abspath(self._server_base_path)}/server_configs/llm_configs/{yaml_file_name}"
 
-        if self.model_registry.llm_models[llm_model_id].get(
-            "reasoning_supported", False
-        ) and self.server_config.llm.get("enable_reasoning", False):
+        if (
+            is_registry_model
+            and self.model_registry.llm_models[llm_model_id].get("reasoning_supported", False)
+            and self.server_config.llm.get("enable_reasoning", False)
+        ):
             llm_config_path = llm_config_path.replace(".yaml", "_think.yaml")
 
         if not os.path.exists(llm_config_path):

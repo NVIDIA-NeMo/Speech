@@ -1142,6 +1142,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         """
         return super().diarize(
             audio=audio,
+            sample_rate=sample_rate,
             batch_size=batch_size,
             include_tensor_outputs=include_tensor_outputs,
             postprocessing_yaml=postprocessing_yaml,

@@ -523,7 +523,7 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
     async def tool_tts_reset_speed(self, params: FunctionCallParams):
         """Reset the speaking speed to the original speed."""
         self._speed = self._original_speed
-        result = {"success": True, "message": f"Speaking speed is reset to the original one"}
+        result = {"success": True, "message": "Speaking speed is reset to the original one"}
         logger.debug(f"Speaking speed is reset to the original speed {self._original_speed}")
         await params.result_callback(result)
 
@@ -545,7 +545,7 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
             self._speed = 0.1 * self._original_speed
             result = {
                 "success": True,
-                "message": f"Speaking speed is decreased to the minimum of 0.1 of the original speed",
+                "message": "Speaking speed is decreased to the minimum of 0.1 of the original speed",
             }
             logger.debug(f"Speed is set to the minimum of 0.1 of the original speed {self._original_speed}")
         else:

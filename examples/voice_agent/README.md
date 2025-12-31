@@ -41,7 +41,7 @@ As of now, we only support English input and output, but more languages will be 
 
 
 ## 📅 Latest Updates
-- 2025-12-31: Added examples for [tool calling](#tool-calling), such as changing the speaking speed, switching between male/female voices and British/American English, and getting the current weather of a city.
+- 2025-12-31: Added examples for [tool calling](#tool-calling), such as changing the speaking speed, switching between male/female voices and British/American accents, and getting the current weather of a city.
 - 2025-11-14: Added support for joint ASR and EOU detection with [Parakeet-realtime-eou-120m](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) model.
 - 2025-10-10: Added support for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) TTS model.
 - 2025-10-03: Add support for serving LLM with vLLM and auto-switch between vLLM and HuggingFace, add [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) as default LLM.
@@ -221,8 +221,8 @@ We support tool calling for LLMs to use external tools (e.g., getting the curren
    - "Speak twice as fast."
    - "Speak half as slow."
   
-3. Switching between British and American English, and changing the gender of the voice:
-   - "Speak in British English."
+3. Switching between British and American accents, and changing the gender of the voice:
+   - "Speak in British accent."
    - "Switch to a male voice."
    - "Switch to a female voice."
    - "Reset to the original language and voice."

@@ -26,8 +26,7 @@ async def get_city_weather(params: FunctionCallParams, city_name: str):
         city_name: The name of the city to get the weather of. For example, "New York, NY, US" or "London, UK".
         Other examples are: "Paris, TX, US", "Paris, FR"
     """
-    # await params.llm.push_frame(TTSSpeakFrame(f"Looking up weather data for {city_name}, please wait a moment."))
-    await params.llm.push_frame(LLMTextFrame(f"Looking up weather data for {city_name}, please wait a moment."))
+    await params.llm.push_frame(LLMTextFrame(f"Looking up weather data for {city_name}."))
 
     # The measuring unit defaults to metric (Celsius)
     # Use imperial for Fahrenheit: python_weather.IMPERIAL
@@ -55,4 +54,3 @@ async def get_city_weather(params: FunctionCallParams, city_name: str):
         }
         logger.debug(f"Weather results for {city_name}: {results}")
         await params.result_callback(results)
-        await params.llm.push_frame(LLMTextFrame("Thanks for your patience."))

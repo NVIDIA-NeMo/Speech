@@ -227,7 +227,11 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
         ],
     )
 
-    register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts], tools=[get_city_weather])
+    if server_config.llm.get("enable_tools", False):
+        logger.info("Tools calling for LLM is enabled by config, registering tools...")
+        register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts], tools=[get_city_weather])
+    else:
+        logger.info("Tools calling for LLM is disabled by config, skipping tool registration.")
 
     original_messages = copy.deepcopy(context.get_messages())
     original_context = copy.deepcopy(context)

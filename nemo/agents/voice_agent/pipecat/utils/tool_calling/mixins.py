@@ -46,7 +46,10 @@ class ToolCallingMixin:
         """
         if not hasattr(self, "direct_functions"):
             self.direct_functions = {}
-        logger.info(f"[{self.__class__.__name__}] Registering direct function name {function_name} to {function}")
+        logger.info(
+            f"[{self.__class__.__name__}] Registering direct function name {function_name} to "
+            f"{function.__module__ + '.' + function.__qualname__}"
+        )
         self.direct_functions[function_name] = function
 
     @property
@@ -77,6 +80,9 @@ def register_direct_tools_to_llm(
     """
     all_tools = []
     for tool in tool_mixins:
+        if not isinstance(tool, ToolCallingMixin):
+            logger.warning(f"Tool {tool.__class__.__name__} is not a ToolCallingMixin, skipping.")
+            continue
         for function_name, function in tool.available_tools.items():
             logger.info(f"Registering direct function {function_name} from {tool.__class__.__name__}")
             all_tools.append(function)

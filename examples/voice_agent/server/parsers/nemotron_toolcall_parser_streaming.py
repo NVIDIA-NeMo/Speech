@@ -451,13 +451,12 @@ class NemotronToolParser(ToolParser):
                                     delta.tool_calls = [extra]
                             self.streamed_args_for_tool[self.current_tool_id] += remaining_suffix
                             self.tool_args_emitted[self.current_tool_id] = True
-                        else:
-                            pass
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Failure to flush the remaining arguments suffix is non-fatal; log for debugging.
+                    logger.warning(f"Error in flushing remaining suffix for tool call: {e}")
 
             return delta
 
-        except Exception:
-            logger.exception("Error trying to handle streaming tool call.")
+        except Exception as e:
+            logger.exception(f"Error trying to handle streaming tool call: {e}")
             return None

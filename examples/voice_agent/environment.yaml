@@ -332,6 +332,7 @@ dependencies:
     - python-dotenv==1.1.1
     - python-json-logger==3.3.0
     - python-multipart==0.0.20
+    - python-weather==3.0.0
     - pytorch-lightning==2.5.5
     - pytz==2025.2
     - pyyaml==6.0.3

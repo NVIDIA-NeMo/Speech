@@ -1327,11 +1327,24 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         save_restore_connector = SaveRestoreConnector()
 
-        filter_fn = lambda name: "timestamps_asr_model" in name
-        members = save_restore_connector._filtered_tar_info(model_restore_path, filter_fn=filter_fn)
+        # Check if the model_restore_path is already an extracted directory (which happens during restore_from)
+        # If so, use it directly to avoid double extraction
+        if app_state.nemo_file_folder and os.path.isdir(app_state.nemo_file_folder):
+            # Verify that the timestamp model components exist in the extracted folder
+            config_exists = os.path.exists(os.path.join(app_state.nemo_file_folder, "timestamps_asr_model_config.yaml"))
+            weights_exists = os.path.exists(os.path.join(app_state.nemo_file_folder, "timestamps_asr_model_weights.ckpt"))
 
-        if not members:
-            return None
+            if not (config_exists and weights_exists):
+                return None
+
+            save_restore_connector.model_extracted_dir = app_state.nemo_file_folder
+            model_restore_path = app_state.nemo_file_folder
+        else:
+            filter_fn = lambda name: "timestamps_asr_model" in name
+            members = save_restore_connector._filtered_tar_info(model_restore_path, filter_fn=filter_fn)
+
+            if not members:
+                return None
 
         try:
             save_restore_connector.model_config_yaml = "timestamps_asr_model_config.yaml"

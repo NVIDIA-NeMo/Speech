@@ -4,6 +4,24 @@ A fully open-source NVIDIA NeMo Voice Agent example demonstrating a simple way t
 
 As of now, we only support English input and output, but more languages will be supported in the future.
 
+## 📋 Table of Contents
+- [✨ Key Features](#-key-features)
+- [💡 Upcoming Next](#-upcoming-next)
+- [📅 Latest Updates](#-latest-updates)
+- [🚀 Quick Start](#-quick-start)
+- [📑 Supported Models and Features](#-supported-models-and-features)
+  - [🤖 LLM](#-llm)
+    - [Thinking/reasoning Mode for LLMs](#thinkingreasoning-mode-for-llms)
+  - [🎤 ASR](#-asr)
+  - [💬 Speaker Diarization](#-speaker-diarization)
+  - [🔉 TTS](#-tts)
+  - [🔄 Turn-taking](#-turn-taking)
+  - [🔧 Tool Calling](#-tool-calling)
+- [📝 Notes \& FAQ](#-notes--faq)
+- [☁️ NVIDIA NIM Services](#️-nvidia-nim-services)
+- [Acknowledgments](#acknowledgments)
+- [Contributing](#contributing)
+
 
 ## ✨ Key Features
 
@@ -13,6 +31,7 @@ As of now, we only support English input and output, but more languages will be 
 - Low latency TTS for fast audio response generation.
 - Speaker diarization up to 4 speakers in different user turns.
 - WebSocket server for easy deployment.
+- Tool calling for LLMs to use external tools and adjust its own behavior.
 
 
 ## 💡 Upcoming Next
@@ -21,12 +40,13 @@ As of now, we only support English input and output, but more languages will be 
 - Combine ASR and speaker diarization model to handle overlapping speech.
 
 
-## Latest Updates
-- 2025-12-30: Added examples for [tool calling](#tool-calling), such as changing the speaking speed and getting the current weather of a city.
+## 📅 Latest Updates
+- 2025-12-31: Added examples for [tool calling](#tool-calling), such as changing the speaking speed and getting the current weather of a city.
 - 2025-11-14: Added support for joint ASR and EOU detection with [Parakeet-realtime-eou-120m](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) model.
 - 2025-10-10: Added support for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) TTS model.
 - 2025-10-03: Add support for serving LLM with vLLM and auto-switch between vLLM and HuggingFace, add [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) as default LLM.
 - 2025-09-05: First release of NeMo Voice Agent.
+
 
 
 ## 🚀 Quick Start
@@ -111,7 +131,7 @@ You can mute/unmute your microphone via the "Mute" button, and reset the LLM con
 
 If you want to use a different port for client connection, you can modify `client/vite.config.js` to change the `port` variable.
 
-## 📑 Supported Models
+## 📑 Supported Models and Features
 
 ### 🤖 LLM
 
@@ -187,6 +207,35 @@ Additionally, the voice agent supports ignoring back-channel phrases while the b
 
 ### 🔧 Tool Calling
 
+We support tool calling for LLMs to use external tools (e.g., getting the current weather of a city) and adjust its own behavior (e.g., changing the speaking speed). Some example queries to try with the default server config:
+
+1. Getting the current weather of a city:
+   - "What's the weather in New York city?"
+   - "What's the weather in Paris?"
+   - "What's the weather in Paris, Texas, USA?"
+
+2. Changing the speaking speed of the voice agent:
+   - "Can you speak faster?"
+   - "Can you speak slower?"
+   - "Reset to the original speaking speed"
+   - "Speak twice as fast"
+   - "Speak half as slow"
+
+More tools will be added later. However, if you cannot wait to hack and add your own tools, please read the following section.
+
+#### Adding new tools
+
+Additional tools can be added in two ways:
+- Adding a new dirction function such as the `get_city_weather` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/basic_tools.py`.
+- Adding new tools to adjust the behavior of each of the STT/TTS/Diar/LLM/TurnTaking components, by adding the `ToolCallingMixin` to the component and implementing the `setup_tool_calling` method as the `KokoroTTSService` class in `nemo/agents/voice_agent/pipecat/services/nemo/tts.py`.
+
+The tools are then registered to the LLM via the `register_direct_tools_to_llm` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/mixins.py`, as shown in the example in `examples/voice_agent/server/bot_websocket_server.py`.
+
+#### Notes on system prompt with tools
+
+We noticed that sometimes the LLM cannot do anything else that's not related to the provided tools, or it might not actually use the tools even though it says it's using them. To alleviate this issue, we insert two additional instructions in the system prompt:
+- "If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools."
+- "If the purpose of a tool matches well with a user's request, always try to use the tool first."
 
 
 ## 📝 Notes & FAQ

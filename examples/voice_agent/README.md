@@ -41,7 +41,7 @@ As of now, we only support English input and output, but more languages will be 
 
 
 ## 📅 Latest Updates
-- 2025-12-31: Added examples for [tool calling](#tool-calling), such as changing the speaking speed, switching between male/female voices and British/American accents, and getting the current weather of a city.
+- 2025-12-31: Added examples for [tool calling](#tool-calling), such as changing the speaking speed, switching between male/female voices and British/American accents, and getting the current weather of a city. Diarization model is updated to [nvidia/diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) with improved performance.
 - 2025-11-14: Added support for joint ASR and EOU detection with [Parakeet-realtime-eou-120m](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) model.
 - 2025-10-10: Added support for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) TTS model.
 - 2025-10-03: Add support for serving LLM with vLLM and auto-switch between vLLM and HuggingFace, add [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) as default LLM.

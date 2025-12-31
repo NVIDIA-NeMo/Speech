@@ -494,30 +494,37 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
             raise
 
     async def tool_tts_set_speed_explicitly(self, params: FunctionCallParams, speed_lambda: float):
-        """Set the speaking speed.
+        """
+        Set the speaking speed of the assistant's voice.
+        This tool should be called only when the user specifies the speed explicitly,
+        such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
 
         Args:
-            speed_lambda: Set the speaking speed to a relative speed to the original speed. E.g., 1.0 for original speed, 1.25 for 25% faster than original speed, 0.8 for 20% slower than original speed.
-            This toll should be called only when the user specifies the speed explicitly, such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
-            speed_lambda must be a positive number.
+            speed_lambda: positive float, the relative change of the speaking speed to the original speed.
+                        E.g., 1.0 for original speed, 1.25 for 25% faster than original speed,
+                        0.8 for 20% slower than original speed.
+
         """
         if speed_lambda <= 0:
             result = {
                 "success": False,
                 "message": f"Speed remains unchanged since the change is not a positive number: {speed_lambda}",
             }
+            logger.debug(f"Speed remains unchanged since the change is not a positive number: {speed_lambda}")
         else:
             self._speed = speed_lambda * self._original_speed
             result = {
                 "success": True,
-                "message": f"Speed set to {speed_lambda} of the original speed {self._original_speed}",
+                "message": f"Speed set to {speed_lambda} of the original speed",
             }
+            logger.debug(f"Speed set to {speed_lambda} of the original speed {self._original_speed}")
         await params.result_callback(result)
 
     async def tool_tts_reset_speed(self, params: FunctionCallParams):
         """Reset the speaking speed to the original speed."""
         self._speed = self._original_speed
         result = {"success": True, "message": f"Speaking speed is reset to the original one"}
+        logger.debug(f"Speaking speed is reset to the original speed {self._original_speed}")
         await params.result_callback(result)
 
     async def tool_tts_speak_faster(self, params: FunctionCallParams):
@@ -526,8 +533,9 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         self._speed = self._speed_lambda * self._original_speed
         result = {
             "success": True,
-            "message": f"Speaking speed is increased to {self._speed_lambda} of the original speed {self._original_speed}",
+            "message": f"Speaking speed is increased to {self._speed_lambda} of the original speed",
         }
+        logger.debug(f"Speed is set to {self._speed_lambda} of the original speed {self._original_speed}")
         await params.result_callback(result)
 
     async def tool_tts_speak_slower(self, params: FunctionCallParams):
@@ -537,14 +545,16 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
             self._speed = 0.1 * self._original_speed
             result = {
                 "success": True,
-                "message": f"Speaking speed is decreased to the minimum speed of 0.1 of the original speed {self._original_speed}",
+                "message": f"Speaking speed is decreased to the minimum of 0.1 of the original speed",
             }
+            logger.debug(f"Speed is set to the minimum of 0.1 of the original speed {self._original_speed}")
         else:
             self._speed = self._speed_lambda * self._original_speed
             result = {
                 "success": True,
-                "message": f"Speaking speed is decreased to {self._speed} of the original speed {self._original_speed}",
+                "message": f"Speaking speed is decreased to {self._speed_lambda} of the original speed",
             }
+            logger.debug(f"Speed is set to {self._speed_lambda} of the original speed {self._original_speed}")
         await params.result_callback(result)
 
     def setup_tool_calling(self):

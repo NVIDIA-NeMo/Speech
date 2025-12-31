@@ -19,8 +19,8 @@ from pipecat.services.llm_service import FunctionCallParams
 
 
 async def get_city_weather(params: FunctionCallParams, city_name: str):
-    """Get the current weather of a city. The result should include the city name, the weather description,
-    the temperature, the wind speed, the wind direction, the precipitation, the humidity, the visibility, and the UV index.
+    """Get the current weather of a city. The result should include city name, weather description,
+    temperature, wind speed, wind direction, precipitation, humidity, visibility, and UV index.
 
     Args:
         city_name: The name of the city to get the weather of. For example, "New York, NY, US" or "London, UK".

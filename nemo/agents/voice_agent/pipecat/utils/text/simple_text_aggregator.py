@@ -104,6 +104,8 @@ def find_last_period_index(text: str) -> int:
 
 
 class SimpleSegmentedTextAggregator(SimpleTextAggregator):
+    """A simple text aggregator that segments the text into sentences based on punctuation marks."""
+
     def __init__(
         self,
         punctuation_marks: str | list[str] = ".,!?;:\n",
@@ -167,6 +169,14 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         return None
 
     async def aggregate(self, text: str) -> Optional[str]:
+        """Aggregate the input text and return the first complete sentence in the text.
+
+        Args:
+            text: The text to aggregate.
+
+        Returns:
+            The first complete sentence in the text, or None if none is found.
+        """
         result: Optional[str] = None
         self._text += str(text)
 

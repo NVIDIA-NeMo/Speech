@@ -20,12 +20,20 @@ from pipecat.services.openai.llm import OpenAILLMService
 
 
 class ToolCallingMixin:
+    """
+    A mixin class for tool calling.
+    Subclasses must implement the `setup_tool_calling` method to register all available tools
+    using `self.register_direct_function()`. Then the `__init__` method of the subclass should
+    call the `setup_tool_calling` method to register the tools.
+    """
+
     def setup_tool_calling(self):
         """
         Setup the tool calling mixin by registering all available tools using self.register_direct_function().
         """
         raise NotImplementedError(
-            "Subclasses must implement this method to register all available functions using self.register_direct_function()"
+            "Subclasses must implement this method to register all available functions "
+            "using self.register_direct_function()"
         )
 
     def register_direct_function(self, function_name: str, function: DirectFunction):
@@ -44,8 +52,7 @@ class ToolCallingMixin:
     @property
     def available_tools(self) -> dict[str, DirectFunction]:
         """
-        Return a dictionary of available tools, where the key is the tool name
-        and the value is a partial function that calls the tool with the service instance as the first argument.
+        Return a dictionary of available tools, where the key is the tool name and the value is the direct function.
         """
         tools = {}
         for function_name, function in self.direct_functions.items():

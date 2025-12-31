@@ -24,7 +24,7 @@ async def get_city_weather(params: FunctionCallParams, city_name: str):
 
     Args:
         city_name: The name of the city to get the weather of. For example, "New York, NY, US" or "London, UK".
-        Other examples are: "Paris, TX, US", "Paris, FR"
+                Other examples are: "Paris, TX, US", "Paris, FR"
     """
     await params.llm.push_frame(LLMTextFrame(f"Looking up weather data for {city_name}."))
 

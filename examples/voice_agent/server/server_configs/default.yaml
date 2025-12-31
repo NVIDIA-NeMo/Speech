@@ -22,7 +22,7 @@ stt:
 diar:
   type: nemo
   enabled: true # set to false to disable
-  model: "nvidia/diar_streaming_sortformer_4spk-v2"
+  model: "nvidia/diar_streaming_sortformer_4spk-v2.1"
   device: "cuda"
   threshold: 0.4  # threshold value used to determine if a speaker exists or not, setting it to a lower value will increaset the sensitivity of the model
   frame_len_in_secs: 0.08  # default for Sortformer, do not change unless using other architechtures

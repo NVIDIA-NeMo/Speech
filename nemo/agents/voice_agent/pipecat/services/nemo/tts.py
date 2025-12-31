@@ -30,7 +30,6 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
-    TTSTextFrame,
 )
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.tts_service import TTSService
@@ -576,7 +575,7 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
             gender: gender of the assistant's voice. Must be one of 'male', 'female',
                     or 'current' for keeping the current gender.
         """
-        await params.llm.push_frame(LLMTextFrame(f"Just a moment."))
+        await params.llm.push_frame(LLMTextFrame("Just a moment."))
 
         lang_code = "a" if language == "American English" else "b" if language == "British English" else "current"
         new_lang_code = self._lang_code
@@ -609,7 +608,7 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
 
     async def tool_tts_reset_lang_voice(self, params: FunctionCallParams):
         """Reset the language and voice to the original ones."""
-        await params.llm.push_frame(LLMTextFrame(f"Of course."))
+        await params.llm.push_frame(LLMTextFrame("Of course."))
 
         new_model = await asyncio.to_thread(self._setup_model, self._original_lang_code, self._original_voice)
         self._model = new_model

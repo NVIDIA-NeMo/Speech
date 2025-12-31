@@ -214,9 +214,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens
 
-    def run_greedy_decoder(
-        self, state: CacheAwareCTCStreamingState, request: Request, log_probs: Tensor
-    ):
+    def run_greedy_decoder(self, state: CacheAwareCTCStreamingState, request: Request, log_probs: Tensor):
         """
         Run the greedy CTC decoder on the log_probs and update the state
         Args:

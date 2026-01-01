@@ -227,7 +227,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
         ],
     )
 
-    if server_config.llm.get("enable_tools", False):
+    if server_config.llm.get("enable_tool_calling", False):
         logger.info("Tools calling for LLM is enabled by config, registering tools...")
         register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts], tools=[get_city_weather])
     else:

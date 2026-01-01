@@ -207,7 +207,7 @@ Additionally, the voice agent supports ignoring back-channel phrases while the b
 
 ### 🔧 Tool Calling
 
-We support tool calling for LLMs to use external tools (e.g., getting the current weather of a city) and adjust its own behavior (e.g., changing the speaking speed). Some example queries to try with the default server config:
+We support tool calling for LLMs to use external tools (e.g., getting the current weather of a city) or adjust its own behavior (e.g., changing the speaking speed). Some example queries to try with the default server config:
 
 1. Getting the current weather of a city:
    - "What's the weather in New York city?"
@@ -226,6 +226,11 @@ We support tool calling for LLMs to use external tools (e.g., getting the curren
    - "Switch to a male voice."
    - "Switch to a female voice."
    - "Reset to the original language and voice."
+
+Currently, tool calling is only supported for vLLM server and specific LLM models:
+- [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) (default)
+
+More LLMs can be supported by referring to their documentation on how to enable tool calling in vLLM. Note that the system prompt may need to be tuned accordingly.
 
 More tools will be added later. However, if you cannot wait to hack and add your own tools, please read the following section.
 

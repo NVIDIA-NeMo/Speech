@@ -275,6 +275,7 @@ def _normalize_hypothesis_group_id(hypothesis_id: str) -> str:
 
     return f'{prefix}-0'
 
+
 def merge_all_hypotheses(hypotheses_list, timestamps, subsampling_factor, chunk_duration_seconds=3600):
     """
     Group hypotheses by ID and merge each group into a single hypothesis.

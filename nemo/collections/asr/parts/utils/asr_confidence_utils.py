@@ -22,7 +22,6 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
-from nemo.utils import logging
 
 
 class ConfidenceMethodConstants:

@@ -3571,7 +3571,7 @@ class MagpieTTSModel(ModelPT):
                         all_codes.append(output.predicted_codes[0, :, : output.predicted_codes_lens[0]])
 
                 # Concatenate and convert to audio
-                if all_codes:
+                if len(all_codes) > 0:
                     concatenated_codes = torch.cat(all_codes, dim=1).unsqueeze(0)
                     codes_lens = torch.tensor([concatenated_codes.shape[2]], device=self.device, dtype=torch.long)
                     return self.codes_to_audio(concatenated_codes, codes_lens)

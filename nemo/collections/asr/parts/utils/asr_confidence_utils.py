@@ -447,7 +447,7 @@ class ConfidenceMixin(ABC):
             prev_underline = False
             for i, token_id in enumerate(token_ids):
                 token = self.decode_ids_to_tokens([int(token_id)])[0]
-                token_text = self.decode_tokens_to_str([int(token_id)])
+                token_text = self.decode_ids_to_str([int(token_id)])
                 # treat `<unk>` as a separate word regardless of the next token
                 # to match the result of `tokenizer.ids_to_text`
                 if (token != token_text or prev_unk) and i > j:

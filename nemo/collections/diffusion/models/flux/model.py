@@ -16,6 +16,7 @@ import math
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -66,7 +67,7 @@ def flux_data_step(dataloader_iter):
     else:
         _batch = batch
 
-    _batch['loss_mask'] = torch.Tensor([1.0]).cuda(non_blocking=True)
+    _batch['loss_mask'] = torch.ones(1, device="cuda")
     return _batch
 
 
@@ -97,6 +98,7 @@ class FluxConfig(TransformerConfig, io.IOMixin):
     use_cpu_initialization: bool = True
     gradient_accumulation_fusion: bool = False
     enable_cuda_graph: bool = False
+    cuda_graph_scope: Optional[str] = None  # full, full_iteration
     use_te_rng_tracker: bool = False
     cuda_graph_warmup_steps: int = 2
 
@@ -246,29 +248,49 @@ class Flux(VisionModule):
         if not self.config.fp8:
             fp8_context = nullcontext()
         else:
-            import transformer_engine  # To keep out TE dependency when not training in fp8
+            # To keep out TE dependency when not training in fp8
+            from transformer_engine.common.recipe import (
+                DelayedScaling,
+                Float8BlockScaling,
+                Float8CurrentScaling,
+                Format,
+                MXFP8BlockScaling,
+            )
+            from transformer_engine.pytorch import fp8_autocast
 
             if self.config.fp8 == "e4m3":
-                fp8_format = transformer_engine.common.recipe.Format.E4M3
+                fp8_format = Format.E4M3
             elif self.config.fp8 == "hybrid":
-                fp8_format = transformer_engine.common.recipe.Format.HYBRID
+                fp8_format = Format.HYBRID
             else:
                 raise ValueError("E4M3 and HYBRID are the only supported FP8 formats.")
 
-            fp8_recipe = transformer_engine.common.recipe.DelayedScaling(
-                margin=self.config.fp8_margin,
-                interval=self.config.fp8_interval,
-                fp8_format=fp8_format,
-                amax_compute_algo=self.config.fp8_amax_compute_algo,
-                amax_history_len=self.config.fp8_amax_history_len,
-                override_linear_precision=(False, False, not self.config.fp8_wgrad),
-            )
+            # Defaults to delayed scaling for backward compatibility
+            if not self.config.fp8_recipe:
+                self.config.fp8_recipe = "delayed"
+
+            if self.config.fp8_recipe == "delayed":
+                fp8_recipe = DelayedScaling(
+                    margin=self.config.fp8_margin,
+                    interval=self.config.fp8_interval,
+                    fp8_format=fp8_format,
+                    amax_compute_algo=self.config.fp8_amax_compute_algo,
+                    amax_history_len=self.config.fp8_amax_history_len,
+                    override_linear_precision=(False, False, not self.config.fp8_wgrad),
+                )
+            elif self.config.fp8_recipe == "current":
+                fp8_recipe = Float8CurrentScaling(fp8_format=fp8_format)
+            elif self.config.fp8_recipe == "block":
+                fp8_recipe = Float8BlockScaling(fp8_format=fp8_format)
+            elif self.config.fp8_recipe == "mxfp8":
+                fp8_recipe = MXFP8BlockScaling(fp8_format=fp8_format)
+            else:
+                raise ValueError(f"Unsupported FP8 recipe: {self.config.fp8_recipe}")
+
             fp8_group = None
             if parallel_state.model_parallel_is_initialized():
                 fp8_group = parallel_state.get_amax_reduction_group(with_context_parallel=True)
-            fp8_context = transformer_engine.pytorch.fp8_autocast(
-                enabled=True, fp8_recipe=fp8_recipe, fp8_group=fp8_group
-            )
+            fp8_context = fp8_autocast(enabled=True, fp8_recipe=fp8_recipe, fp8_group=fp8_group)
         return fp8_context
 
     def forward(
@@ -370,7 +392,12 @@ class Flux(VisionModule):
         if load_dist_ckpt:
             from megatron.core import dist_checkpointing
 
-            sharded_state_dict = dict(state_dict=self.sharded_state_dict(prefix="module."))
+            sharded_sd_metadata = dist_checkpointing.load_content_metadata(ckpt_path)
+            if sharded_sd_metadata is None:
+                sharded_sd_metadata = {}  # backward-compatibility
+            sharded_state_dict = dict(
+                state_dict=self.sharded_state_dict(prefix="module.", metadata=sharded_sd_metadata)
+            )
             loaded_state_dict = dist_checkpointing.load(
                 sharded_state_dict=sharded_state_dict, checkpoint_dir=ckpt_path
             )
@@ -446,6 +473,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
         self,
         flux_params: FluxModelParams,
         optim: Optional[OptimizerModule] = None,
+        seed: int = 42,
     ):
         # pylint: disable=C0116
         self.params = flux_params
@@ -462,6 +490,11 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
         self.model_type = ModelType.encoder_or_decoder
         self.text_precached = self.t5_params is None or self.clip_params is None
         self.image_precached = self.vae_config is None
+        self.seed = seed
+
+    def setup(self, stage: str):
+        super().setup(stage)
+        torch.manual_seed(self.seed + 100 * parallel_state.get_data_parallel_rank())
 
     def configure_model(self):
         # pylint: disable=C0116
@@ -489,18 +522,21 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
         # pylint: disable=C0116
         if isinstance(vae, nn.Module):
             self.vae = vae.eval().cuda()
-            self.vae_scale_factor = 2 ** (len(self.vae.params.ch_mult))
+            self.vae_scale_factor = 2 ** (len(self.vae.params.ch_mult) - 1)
+            self.vae_channels = self.vae.params.z_channels
             for param in self.vae.parameters():
                 param.requires_grad = False
         elif isinstance(vae, AutoEncoderConfig):
             self.vae = AutoEncoder(vae).eval().cuda()
-            self.vae_scale_factor = 2 ** (len(vae.ch_mult))
+            self.vae_scale_factor = 2 ** (len(vae.ch_mult) - 1)
+            self.vae_channels = vae.z_channels
             for param in self.vae.parameters():
                 param.requires_grad = False
         else:
             logging.info("Vae not provided, assuming the image input is precached...")
             self.vae = None
-            self.vae_scale_factor = 16
+            self.vae_scale_factor = 8
+            self.vae_channels = 16
 
     def configure_text_encoders(self, clip, t5):
         # pylint: disable=C0116
@@ -587,15 +623,14 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
                 guidance=guidance_vec,
             )
 
-        noise_pred = self._unpack_latents(
-            noise_pred.transpose(0, 1),
-            int(latents.shape[2] * self.vae_scale_factor // 2),
-            int(latents.shape[3] * self.vae_scale_factor // 2),
-            vae_scale_factor=self.vae_scale_factor,
-        ).transpose(0, 1)
+            noise_pred = self._unpack_latents(
+                noise_pred.transpose(0, 1),
+                latents.shape[2],
+                latents.shape[3],
+            ).transpose(0, 1)
 
-        target = noise - latents
-        loss = F.mse_loss(noise_pred.float(), target.float(), reduction="mean")
+            target = noise - latents
+            loss = F.mse_loss(noise_pred.float(), target.float(), reduction="mean")
         return loss
 
     def encode_prompt(self, prompt, device='cuda', dtype=torch.float32):
@@ -688,20 +723,19 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
             timesteps,
         )
 
-    def _unpack_latents(self, latents, height, width, vae_scale_factor):
+    def _unpack_latents(self, latents, height, width):
         # pylint: disable=C0116
         batch_size, num_patches, channels = latents.shape
 
-        height = height // vae_scale_factor
-        width = width // vae_scale_factor
-
-        latents = latents.view(batch_size, height, width, channels // 4, 2, 2)
+        # adjust h and w for patching
+        latents = latents.view(batch_size, height // 2, width // 2, channels // 4, 2, 2)
         latents = latents.permute(0, 3, 1, 4, 2, 5)
 
-        latents = latents.reshape(batch_size, channels // (2 * 2), height * 2, width * 2)
+        latents = latents.reshape(batch_size, channels // 4, height, width)
 
         return latents
 
+    @lru_cache
     def _prepare_latent_image_ids(
         self, batch_size: int, height: int, width: int, device: torch.device, dtype: torch.dtype
     ):
@@ -717,7 +751,7 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
             batch_size, latent_image_id_height * latent_image_id_width, latent_image_id_channels
         )
 
-        return latent_image_ids.to(device=device, dtype=dtype)
+        return latent_image_ids.to(device=device, dtype=dtype, non_blocking=True)
 
     def _pack_latents(self, latents, batch_size, num_channels_latents, height, width):
         # pylint: disable=C0116

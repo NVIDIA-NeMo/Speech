@@ -93,10 +93,10 @@ def model_config(cfg):
 @pytest.mark.parametrize(
     "cfg, model_name, train_step_time, expected_value",
     [
-        (LLAMA2_CFG_STR, None, 8, 377.53),
-        (LLAMA2_CFG_STR, "llama2", 8, 377.53),
-        (LLAMA2_CFG_STR, None, [8, 8, 8, 8], 377.53),
-        (NEMOTRON_CFG_STR, None, 1.31, 642.73),
+        (LLAMA2_CFG_STR, None, 8, 351.14),
+        (LLAMA2_CFG_STR, "llama2", 8, 351.14),
+        (LLAMA2_CFG_STR, None, [8, 8, 8, 8], 351.14),
+        (NEMOTRON_CFG_STR, None, 1.31, 602.42),
         (
             UNSUPPORTED_MODEL_CFG_STR,
             None,

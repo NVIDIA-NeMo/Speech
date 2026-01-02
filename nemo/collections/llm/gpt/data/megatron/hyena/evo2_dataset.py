@@ -31,6 +31,47 @@ class Evo2Dataset(GPTDataset):
     DEFAULT_EOD = 0
     TO_UPPER_TOKENS: bool = True  # If set, do an in-place transform to make all tokens capital letters
     RESET_PAD_EOD_MASK: bool = True  # If set, unset the mask for [pad] and [eod] tokens (matches Evo2 paper).
+    # Valid DNA tokens: A, C, G, T, U, W, S, M, K, R, Y, B, D, H, V, N, -,  (both uppercase and lowercase and
+    #   degenerate bases and RNA)
+    MAX_TAG_LEN = 2048
+
+    VALID_DNA_AND_DEGENERATE: ClassVar[set[int]] = {
+        45,
+        45,
+        65,
+        66,
+        67,
+        68,
+        71,
+        72,
+        75,
+        77,
+        78,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        89,
+        97,
+        98,
+        99,
+        100,
+        103,
+        104,
+        107,
+        109,
+        110,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        121,
+    }
+    DNA_TOKENS: list[int] = [65, 67, 71, 84, 97, 99, 103, 116]
 
     def _get_gpt_batch(self, idx: Optional[int]) -> dict[str, torch.Tensor]:
         return super().__getitem__(idx)
@@ -47,12 +88,15 @@ class Evo2Dataset(GPTDataset):
 
         # Mask special label tags in loss.
         control_mask = torch.isin(labels, torch.tensor(self.CONTROL_TAGS, device=labels.device))
-        loss_mask[control_mask] = 0
+        # Mask degenerate (and U) DNA tokens
+        not_dna_mask = ~torch.isin(labels, torch.tensor(self.DNA_TOKENS, device=labels.device))
+        loss_mask[control_mask | not_dna_mask] = 0
         phylotag_mask = self.mask_phylogenetic_tags(
             labels,
             self.TAG_BOUNDS,
             self.TAG_CHARS,
             self.config.tokenizer.eod if self.config.tokenizer is not None else self.DEFAULT_EOD,
+            self.MAX_TAG_LEN,
         )
         databatch["loss_mask"] = loss_mask * phylotag_mask
         if self.TO_UPPER_TOKENS:
@@ -74,6 +118,7 @@ class Evo2Dataset(GPTDataset):
         terminal_tag_char: int,  # e.g. ASCII for '|'
         other_tag_chars: set[int],  # e.g. {95, 59, 32} for '_', ';', space
         eod_token_id: int,  # e.g. 0
+        max_tag_len: int,
     ) -> torch.Tensor:
         """
         Creates a binary mask for sequences containing phylogenetic tags and DNA.
@@ -140,12 +185,9 @@ class Evo2Dataset(GPTDataset):
         if not batched:
             tokenized_sequence = tokenized_sequence.unsqueeze(0)
         batch_size, seq_len = tokenized_sequence.shape
-        first_taxonomy_prefix_token: int = 100
 
-        # Valid DNA tokens: A, C, G, T, N (both uppercase and lowercase)
-        valid_dna = {65, 67, 71, 84, 78, 97, 99, 103, 116, 110}
         valid_dna_or_control_tensor = torch.tensor(
-            list(valid_dna | set(Evo2Dataset.CONTROL_TAGS)), device=device, dtype=dtype
+            list(Evo2Dataset.VALID_DNA_AND_DEGENERATE | set(Evo2Dataset.CONTROL_TAGS)), device=device, dtype=dtype
         )
 
         # Initialize output mask to all ones.
@@ -166,8 +208,8 @@ class Evo2Dataset(GPTDataset):
             pipe_pos = (seg_seq == terminal_tag_char).nonzero(as_tuple=True)[0].cpu().tolist()
             if len(pipe_pos) == 0:
                 # If no pipe exists and any token is a known tag char or not valid DNA,
-                # mask the entire segment.
-                if not region_all_valid_or_control(seg_seq):
+                # mask the entire segment, unless it is longer than the maximum tag len.
+                if len(seg_seq) < max_tag_len and not region_all_valid_or_control(seg_seq):
                     seg_mask.zero_()
                 return seg_mask
 
@@ -177,35 +219,55 @@ class Evo2Dataset(GPTDataset):
             # Does tag start before the first pipe? This determines the starting state of our state machine.
             first_pipe = pipe_pos[0]
             if first_pipe >= 0 and first_pipe < seg_len - 1:
-                # fastest check is to look at the first token after the pipe, if it is a 'd' then the
+                # fastest check is to look at the first token after the pipe, if it is a '*_' then the
                 # tag starts _after_ the pipe, otherwise it starts before.
-                next_tok = seg_seq[first_pipe + 1].item()
-                if next_tok == first_taxonomy_prefix_token:
-                    # 'd' character for domain, which is the first part of a phylo tag.
-                    # tag starts after the pipe.
+                if len(seg_seq) > first_pipe + 2:
+                    first_tok = seg_seq[first_pipe + 1].item()
+                    next_tok = seg_seq[first_pipe + 2].item()
+                    if next_tok == 95 or first_tok == 59:  # ord('_') = 95, ord(';') = 59
+                        # the syntax is [tag char]_ or a missing segment would start with ;
+                        is_tag = False
+                    else:
+                        # tag starts before the pipe.
+                        is_tag = True
+                elif len(seg_seq) > first_pipe + 1:
+                    next_tok = seg_seq[first_pipe + 1].item()
+                    # Much weaker signal since these are sometimes degenerate bases, but at least the length
+                    #  check later will prevent overmasking.
+                    if next_tok in {68, 100, 82, 114, 59}:  # D,d,R,r for domain or realm (viruses) or missing ;
+                        is_tag = False
+                    else:
+                        is_tag = True
+                elif first_pipe >= max_tag_len or region_all_valid_or_control(seg_seq[:first_pipe]):
                     is_tag = False
                 else:
-                    # tag starts before the pipe.
                     is_tag = True
             else:
                 # The sequence ends with a pipe, so just check everything before the pipe and return the seg mask
                 assert first_pipe == seg_len - 1
                 # The sequence ends with a pipe, so just check everything before the pipe.
-                if region_all_valid_or_control(seg_seq[:first_pipe]):
+                if first_pipe >= max_tag_len or region_all_valid_or_control(seg_seq[:first_pipe]):
                     return seg_mask  # Pipe pos has already been masked
                 else:
                     seg_mask[:first_pipe] = 0
                     return seg_mask
             start = 0
             for end in pipe_pos:
-                if is_tag:
+                seg_len = end - start
+                if is_tag and seg_len < max_tag_len:  # Prefer faulty tag mask logic over masking entire seqs
                     seg_mask[start:end] = 0
+                elif is_tag and seg_len >= max_tag_len:
+                    # We were wrong about this segment being a tag, so change the current state to what
+                    #  it should have been
+                    is_tag = False
                 else:
                     pass
-                is_tag = not is_tag  # Flip the state machine.
+                # Done with this segment, now advance the state machine for the next segment
+                is_tag = not is_tag  # Flip the state machine for the next state
                 start = end + 1  # position after the pipe
             # Process the last segment after the last pipe.
-            if is_tag:
+            seg_len = len(seg_mask) - start
+            if is_tag and seg_len < max_tag_len:  # Prefer faulty tag mask logic over overmasking
                 seg_mask[start:] = 0
             return seg_mask
 

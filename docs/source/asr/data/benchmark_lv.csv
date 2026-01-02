@@ -1,0 +1,2 @@
+Model,Model Base Class
+`canary-1b-v2 <https://huggingface.co/nvidia/canary-1b-v2>`_,EncDecMultiTaskModel

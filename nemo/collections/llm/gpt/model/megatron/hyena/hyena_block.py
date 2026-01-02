@@ -22,13 +22,15 @@ from typing import Optional, Union
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
+from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 from megatron.core.inference.contexts import BaseInferenceContext
+from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import sharded_state_dict_default
-from megatron.core.utils import make_viewless_tensor
+from megatron.core.utils import WrappedTensor, deprecate_inference_params, make_viewless_tensor
 from torch import Tensor, nn
 
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_config import HyenaConfig
@@ -87,9 +89,11 @@ class HyenaStack(MegatronModule):
         pre_process: bool = True,
         post_process: bool = True,
         post_layer_norm: bool = False,
+        pg_collection=None,
     ) -> None:
 
         super().__init__(config=transformer_config)
+
         self.transformer_config = transformer_config
         self.hyena_config = hyena_config
         self.submodules = submodules
@@ -97,6 +101,7 @@ class HyenaStack(MegatronModule):
         self.pre_process = pre_process
         self.post_process = post_process
         self.post_layer_norm = post_layer_norm
+        self.pg_collection = pg_collection
 
         # Required for pipeline parallel schedules
         self.input_tensor = None
@@ -117,10 +122,16 @@ class HyenaStack(MegatronModule):
                     operator_type=HYENA_LAYER_MAP.get(layer_type),
                     max_sequence_length=max_sequence_length,
                     layer_number=i + 1 + pp_layer_offset,
+                    pg_collection=self.pg_collection,
                 )
             elif layer_type == LayerSymbols.ATTENTION:
                 # Transformer layers apply their own pp_layer_offset
-                layer = build_module(submodules.attention_layer, config=self.transformer_config, layer_number=i + 1)
+                layer = build_module(
+                    submodules.attention_layer,
+                    config=self.transformer_config,
+                    layer_number=i + 1,
+                    pg_collection=self.pg_collection,
+                )
             else:
                 assert True, "unexpected layer_type"
             self.layers.append(layer)
@@ -167,7 +178,11 @@ class HyenaStack(MegatronModule):
         self,
         hidden_states: Tensor,
         attention_mask: Tensor,
+        context: Tensor,
+        context_mask: Tensor,
         rotary_pos_emb: Tensor,
+        attention_bias: Tensor,
+        packed_seq_params: PackedSeqParams,
     ):
         """Forward method with activation checkpointing."""
 
@@ -175,15 +190,17 @@ class HyenaStack(MegatronModule):
             def custom_forward(hidden_states, attention_mask, context, context_mask, rotary_pos_emb):
                 for index in range(start, end):
                     layer = self._get_layer(index)
-                    hidden_states = layer(
+                    hidden_states, context = layer(
                         hidden_states=hidden_states,
                         attention_mask=attention_mask,
+                        context=context,
+                        context_mask=context_mask,
                         rotary_pos_emb=rotary_pos_emb,
+                        attention_bias=attention_bias,
                         inference_context=None,
+                        packed_seq_params=packed_seq_params,
                     )
-                    if isinstance(hidden_states, tuple):
-                        hidden_states = hidden_states[0]
-                return hidden_states
+                return hidden_states, context
 
             return custom_forward
 
@@ -197,8 +214,8 @@ class HyenaStack(MegatronModule):
                     parallel_state.get_tensor_model_parallel_group(),
                     hidden_states,
                     attention_mask,
-                    None,
-                    None,
+                    context,
+                    context_mask,
                     rotary_pos_emb,
                 )
             else:
@@ -207,8 +224,8 @@ class HyenaStack(MegatronModule):
                     self.config.distribute_saved_activations,
                     hidden_states,
                     attention_mask,
-                    None,
-                    None,
+                    context,
+                    context_mask,
                     rotary_pos_emb,
                 )
 
@@ -218,9 +235,10 @@ class HyenaStack(MegatronModule):
             # A method to further reduce memory usage reducing checkpoints.
             layer_idx = 0
             while layer_idx < self.num_layers_per_pipeline_rank:
-                hidden_states = checkpoint_handler(custom(layer_idx, layer_idx + self.config.recompute_num_layers))
-
-                layer_idx += self.config.recompute_num_layers
+                upper_layer_idx = min(layer_idx + self.config.recompute_num_layers, self.num_layers_per_pipeline_rank)
+                hidden_states, context = checkpoint_handler(custom(layer_idx, upper_layer_idx))
+                new_n_layers = upper_layer_idx - layer_idx
+                layer_idx += new_n_layers
 
         elif self.config.recompute_method == 'block':
             # Checkpoint the input activation of only a set number of individual
@@ -235,9 +253,11 @@ class HyenaStack(MegatronModule):
                     layer_idx >= recompute_skip_num_layers
                     and layer_idx < self.config.recompute_num_layers + recompute_skip_num_layers
                 ):
-                    hidden_states = checkpoint_handler(custom(layer_idx, layer_idx + 1))
+                    hidden_states, context = checkpoint_handler(custom(layer_idx, layer_idx + 1))
                 else:
-                    hidden_states = custom(layer_idx, layer_idx + 1)(hidden_states, attention_mask, rotary_pos_emb)
+                    hidden_states, context = custom(layer_idx, layer_idx + 1)(
+                        hidden_states, attention_mask, context, context_mask, rotary_pos_emb
+                    )
         else:
             raise ValueError("Invalid activation recompute method.")
 
@@ -245,12 +265,26 @@ class HyenaStack(MegatronModule):
 
     def forward(
         self,
-        hidden_states: Tensor,
-        attention_mask: Tensor,
+        hidden_states: Union[Tensor, WrappedTensor],
+        attention_mask: Optional[Tensor],
+        context: Optional[Tensor] = None,
+        context_mask: Optional[Tensor] = None,
+        rotary_pos_emb: Optional[Tensor] = None,
+        rotary_pos_cos: Optional[Tensor] = None,
+        rotary_pos_sin: Optional[Tensor] = None,
+        attention_bias: Optional[Tensor] = None,
         inference_context: Optional[BaseInferenceContext] = None,
-        rotary_pos_emb: Tensor = None,
+        packed_seq_params: Optional[PackedSeqParams] = None,
+        sequence_len_offset: Optional[Tensor] = None,
+        *,
+        inference_params: Optional[BaseInferenceContext] = None,
     ):
         """Forward pass for the HyenaStack."""
+        inference_context = deprecate_inference_params(inference_context, inference_params)
+        # Delete the obsolete reference to the initial input tensor if necessary
+        if isinstance(hidden_states, WrappedTensor):
+            hidden_states = hidden_states.unwrap()
+
         if not self.pre_process:
             # See set_input_tensor()
             hidden_states = self.input_tensor
@@ -295,15 +329,26 @@ class HyenaStack(MegatronModule):
                 hidden_states = self._checkpointed_forward(
                     hidden_states=hidden_states,
                     attention_mask=attention_mask,
+                    context=context,
+                    context_mask=context_mask,
                     rotary_pos_emb=rotary_pos_emb,
+                    attention_bias=attention_bias,
+                    packed_seq_params=packed_seq_params,
                 )
             else:
                 for layer in self.layers:
-                    hidden_states = layer(
-                        hidden_states,
-                        attention_mask,
-                        inference_context=inference_context,
+                    hidden_states, context = layer(
+                        hidden_states=hidden_states,
+                        attention_mask=attention_mask,
+                        context=context,
+                        context_mask=context_mask,
                         rotary_pos_emb=rotary_pos_emb,
+                        rotary_pos_cos=rotary_pos_cos,
+                        rotary_pos_sin=rotary_pos_sin,
+                        attention_bias=attention_bias,
+                        inference_context=inference_context,
+                        packed_seq_params=packed_seq_params,
+                        sequence_len_offset=sequence_len_offset,
                     )
 
             # The attention layer (currently a simplified transformer layer)

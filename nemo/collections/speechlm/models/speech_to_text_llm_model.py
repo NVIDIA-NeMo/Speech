@@ -218,11 +218,15 @@ class SpeechToTextLLMConfig(TransformerConfig, io.IOMixin):
             llm_model_cls(self.language_model_config), f"{self.language_model_hub}{ckpt_path}", on_import_ckpt=False
         )
 
-        sharded_state_dict = dict(state_dict=model.sharded_state_dict(prefix="module."))
+        load_path = ckpt_to_weights_subdir(ckpt_path, is_saving=False)
+        sharded_sd_metadata = dist_checkpointing.load_content_metadata(load_path)
+        if sharded_sd_metadata is None:
+            sharded_sd_metadata = {}  # backward-compatibility
+        sharded_state_dict = dict(state_dict=model.sharded_state_dict(prefix="module.", metadata=sharded_sd_metadata))
 
         loaded_state_dict = dist_checkpointing.load(
             sharded_state_dict=sharded_state_dict,
-            checkpoint_dir=ckpt_to_weights_subdir(ckpt_path, is_saving=False),
+            checkpoint_dir=load_path,
             validate_access_integrity=False,
             **({"strict": "log_all"} if not strict else {}),
         )
@@ -1255,7 +1259,27 @@ class SpeechToTextLLM(SpeechLanguageModel):
                 )
 
     def set_inference_config(self, inference_config: Optional[Dict] = None):
-        self._inference_config = dict(inference_config) if inference_config is not None else None
+        ALLOWED_KEYS = [
+            'tokens_to_generate',
+            'temperature',
+            'top_k',
+            'top_p',
+            'greedy',
+            'repetition_penalty',
+            'min_tokens_to_generate',
+        ]
+        if inference_config is None:
+            return
+        if not isinstance(inference_config, dict):
+            inference_config = dict(inference_config)
+        for key in inference_config.keys():
+            if key not in ALLOWED_KEYS:
+                logging.warning(
+                    f"inference_config key `{key}` is not in allowed keys ({ALLOWED_KEYS}), ignoring it..."
+                )
+                inference_config.pop(key)
+        self._inference_config = inference_config
+        logging.info(f"Setting inference config: {self._inference_config}")
 
     def get_inference_config(self):
         return dict(self._inference_config) if self._inference_config is not None else None

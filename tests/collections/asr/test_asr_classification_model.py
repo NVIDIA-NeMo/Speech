@@ -13,9 +13,15 @@
 # limitations under the License.
 
 import copy
+import json
 import os
 
+import tempfile
+
+import lightning.pytorch as pl
+import numpy as np
 import pytest
+import soundfile as sf
 import torch
 from omegaconf import DictConfig, ListConfig
 
@@ -104,12 +110,20 @@ def frame_classification_model():
         },
     }
 
+    optim = {
+        'name': 'sgd',
+        'lr': 0.01,
+        'weight_decay': 0.001,
+        'momentum': 0.9,
+    }
+
     modelConfig = DictConfig(
         {
             'preprocessor': DictConfig(preprocessor),
             'encoder': DictConfig(encoder),
             'decoder': DictConfig(decoder),
-            'labels': ListConfig(["dummy_cls_{}".format(i + 1) for i in range(5)]),
+            'optim': DictConfig(optim),
+            'labels': ListConfig(["0", "1"]),
         }
     )
     model = EncDecFrameClassificationModel(cfg=modelConfig)
@@ -320,3 +334,57 @@ class TestEncDecFrameClassificationModel(TestEncDecClassificationModel):
         assert signatures_match
         assert cls_subset is None
         assert dataclass_subset is None
+
+    @pytest.mark.unit
+    def test_frame_classification_model(self, frame_classification_model: EncDecFrameClassificationModel):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # generate random audio
+            audio = np.random.randn(16000 * 1)
+            # save the audio
+            audio_path = os.path.join(temp_dir, "audio.wav")
+            sf.write(audio_path, audio, 16000)
+
+            dummy_labels = "0 0 0 0 1 1 1 1 0 0 0 0"
+
+            dummy_sample = {
+                "audio_filepath": audio_path,
+                "offset": 0.0,
+                "duration": 1.0,
+                "label": dummy_labels,
+            }
+
+            # create a manifest file
+            manifest_path = os.path.join(temp_dir, "dummy_manifest.json")
+            with open(manifest_path, "w") as f:
+                for i in range(4):
+                    f.write(json.dumps(dummy_sample) + "\n")
+
+            dataloader_cfg = {
+                "batch_size": 2,
+                "manifest_filepath": manifest_path,
+                "sample_rate": 16000,
+                "num_workers": 0,
+                "shuffle": False,
+                "labels": ["0", "1"],
+            }
+
+            trainer_cfg = {
+                "max_epochs": 1,
+                "devices": 1,
+                "accelerator": "auto",
+            }
+
+            optim = {
+                'name': 'sgd',
+                'lr': 0.01,
+                'weight_decay': 0.001,
+                'momentum': 0.9,
+            }
+
+            trainer = pl.Trainer(**trainer_cfg)
+            frame_classification_model.set_trainer(trainer)
+            frame_classification_model.setup_optimization(DictConfig(optim))
+            frame_classification_model.setup_training_data(dataloader_cfg)
+            frame_classification_model.setup_validation_data(dataloader_cfg)
+
+            trainer.fit(frame_classification_model)

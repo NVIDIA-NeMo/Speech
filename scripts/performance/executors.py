@@ -14,7 +14,7 @@
 
 import os
 import sys
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 import nemo_run as run
 from nemo_run.config import get_nemorun_home
@@ -53,14 +53,23 @@ def slurm_executor(
     wandb_key: str = None,
     network: str = None,
     custom_bash_cmds: List[str] = None,
+    optional_gpus_per_node: Optional[int] = None,
+    additional_slurm_params: Dict[str, Any] = None,
 ) -> run.SlurmExecutor:
     """
     Slurm cluster definition with appropriate cluster params and NeMo container params needed for pre-training
     and fine-tuning experiments
+
+    Args:
+        additional_slurm_params: Dict[str, Any], optional
+            Additional SLURM parameters to pass to sbatch. These will be converted to #SBATCH directives.
+            Example: {"nodelist": "node001,node002", "constraint": "gpu"} will generate:
+                #SBATCH --nodelist=node001,node002
+                #SBATCH --constraint=gpu
     """
     PERF_ENV_VARS = {
         "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",  # Disable caching NCCL communication buffer memory
-        "TRANSFORMERS_OFFLINE": "1",  # Enable online downloads from HuggingFace
+        "HF_HUB_OFFLINE": "1",  # Enable online downloads from HuggingFace
         "TOKENIZERS_PARALLELISM": "False",  # Restrict warning message prints
         "NCCL_NVLS_ENABLE": "0",  # Disable NVLink SHARP to save memory
         "NVTE_FLASH_ATTN": "1",  # Enable Flash Attention, which is needed to enable cuDNN fused attention
@@ -71,7 +80,7 @@ def slurm_executor(
     custom_bash_cmds = [] if custom_bash_cmds is None else custom_bash_cmds
     err_msgs = []
     mounts = []
-    srun_args = custom_srun_args.copy() + ["--mpi=pmix"]
+    srun_args = custom_srun_args.copy() + ["--mpi=pmix", "--no-container-mount-home", "--container-writable"]
 
     if log_dir != get_nemorun_home():
         err_msgs.append(f"\nRun `export NEMORUN_HOME={log_dir}` in your shell environment and rerun this script.")
@@ -95,7 +104,7 @@ def slurm_executor(
         PERF_ENV_VARS["NEMO_HOME"] = nemo_home
         mounts.extend([f"{nemo_home}:{nemo_home}"])
     if hf_token is not None:
-        PERF_ENV_VARS.update({"HF_TOKEN": hf_token, "TRANSFORMERS_OFFLINE": "0"})
+        PERF_ENV_VARS.update({"HF_TOKEN": hf_token, "HF_HUB_OFFLINE": "0"})
 
     PERF_ENV_VARS |= custom_env_vars
     mounts.extend(custom_mounts)
@@ -123,6 +132,7 @@ def slurm_executor(
         tunnel=run.LocalTunnel(job_dir=os.path.join(log_dir, "experiments")),
         nodes=nodes,
         ntasks_per_node=num_gpus_per_node,
+        gpus_per_node=optional_gpus_per_node,
         container_image=container_image,
         container_mounts=mounts,
         env_vars=PERF_ENV_VARS,
@@ -134,6 +144,7 @@ def slurm_executor(
         segment=segment,
         network=network,
         launcher=launcher,
+        additional_parameters=additional_slurm_params,
     )
 
     return executor

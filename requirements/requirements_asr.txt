@@ -1,9 +1,11 @@
 braceexpand
+diskcache
 editdistance
 einops
 jiwer>=3.1.0,<4.0.0
 kaldi-python-io
-lhotse!=1.31.0
+kaldialign<=0.9.1
+lhotse>=1.32.0
 # Align with upstream PyTorch requirements
 librosa>=0.10.1
 marshmallow
@@ -18,8 +20,4 @@ ruamel.yaml
 scipy>=0.14
 soundfile
 sox<=1.5.0
-texterrors<1.0.0 # Version 1.0.6 of texterrors introduces a new StringVector object
-# and only operates on these. We currently feed lists of strings into texterrors,
-# causing it to error. We'd need to figure out how to cast lists into StringVectors -
-# but for now we're just pinning it down.
 whisper_normalizer

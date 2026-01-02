@@ -49,6 +49,7 @@ data:
     concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
     context_key: ${data.common.context_key}
     answer_key: ${data.common.answer_key}
+    text_field: ${data.common.answer_key}
     end_string: ${data.common.end_string}
     add_eos: ${data.common.add_eos}
     add_sep: ${data.common.add_sep}
@@ -83,6 +84,7 @@ data:
     drop_last: true  # no effect, the dataloader will drop last for train and validation anyway
     context_key: ${data.common.context_key}
     answer_key: ${data.common.answer_key}
+    text_field: ${data.common.answer_key}
     add_eos: ${data.common.add_eos}
     end_string: ${data.common.end_string}
     add_sep: ${data.common.add_sep}

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Chatbot</title>
+  <style>
+    .server-selection {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    
+    .server-selection label {
+      font-weight: bold;
+      color: #333;
+    }
+    
+    .server-selection select {
+      padding: 6px 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background-color: white;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    
+    .server-selection select:focus {
+      outline: none;
+      border-color: #2196F3;
+      box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
+    }
+    
+    .server-selection select:disabled {
+      background-color: #f5f5f5;
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+  </style>
+</head>
+
+<body>
+<div class="container">
+  <div class="status-bar">
+    <div class="status">
+      Transport: <span id="connection-status">Disconnected</span>
+    </div>
+    <div class="server-selection">
+      <label for="server-select">Server:</label>
+      <select id="server-select">
+        <option value="websocket">WebSocket Server (Port 8765)</option>
+        <option value="fastapi">FastAPI Server (Port 8000)</option>
+      </select>
+    </div>
+    <div class="controls">
+      <button id="connect-btn">Connect</button>
+      <button id="disconnect-btn" disabled>Disconnect</button>
+      <button id="mute-btn" disabled>Mute</button>
+      <button id="reset-btn" disabled>Reset</button>
+    </div>
+  </div>
+
+  <div class="volume-indicator">
+    <div class="volume-label">Microphone Volume:</div>
+    <div class="volume-bar-container">
+      <div class="volume-bar" id="volume-bar"></div>
+    </div>
+    <div class="volume-text" id="volume-text">0%</div>
+  </div>
+
+  <audio id="bot-audio" autoplay></audio>
+
+  <div class="debug-panel">
+    <h3>Debug Info</h3>
+    <div id="debug-log"></div>
+  </div>
+</div>
+
+<script type="module" src="/src/app.ts"></script>
+<link rel="stylesheet" href="/src/style.css">
+</body>
+
+</html>

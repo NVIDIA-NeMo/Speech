@@ -181,3 +181,8 @@ examples/neural_graphs/*.yml
 nemo_experiments/
 
 slurm*.out
+
+# voice agent
+node_modules/
+.vite/
+bot_server.*

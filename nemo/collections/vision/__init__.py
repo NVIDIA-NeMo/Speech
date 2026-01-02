@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.vision import data, losses, models, modules
+from nemo.collections.vision import data  # noqa: F401
 from nemo.package_info import __version__
 
 # Set collection version equal to NeMo version.
@@ -23,3 +23,12 @@ __author__ = "NVIDIA Corporation"
 
 # Set collection name.
 __description__ = "Computer Vision collection"
+
+import warnings
+
+warnings.warn(
+    "nemo.collections.nlp is deprecated and will be removed in a future major NeMo FW container release. "
+    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
+    DeprecationWarning,
+    stacklevel=2,
+)

@@ -12,8 +12,8 @@ NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build
 - Flash Attention
 - Activation Recomputation
 - Positional Embeddings and Positional Interpolation
-- Post-Training Quantization (PTQ) and Quantization Aware Training (QAT) with `TensorRT Model Optimizer <https://github.com/NVIDIA/TensorRT-Model-Optimizer>`_
-- Knowledge Distillation-based training with `TensorRT Model Optimizer <https://github.com/NVIDIA/TensorRT-Model-Optimizer>`_
+- Post-Training Quantization (PTQ) and Quantization Aware Training (QAT) with `Model Optimizer <https://github.com/NVIDIA/Model-Optimizer>`_
+- Knowledge Distillation-based training with `Model Optimizer <https://github.com/NVIDIA/Model-Optimizer>`_
 - Sequence Packing
 
 `NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for:
@@ -22,11 +22,7 @@ NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build
 
 * :doc:`Automatic Speech Recognition (ASR) <asr/intro>`
 
-* :doc:`Multimodal Models (MMs) <multimodal/mllm/intro>`
-
 * :doc:`Text-to-Speech (TTS) <tts/intro>`
-
-* :doc:`Computer Vision (CV)  <vision/intro>`
 
 Each collection consists of prebuilt modules that include everything needed to train on your data.
 Every module can easily be customized, extended, and composed to create new generative AI

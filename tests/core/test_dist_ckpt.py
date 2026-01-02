@@ -23,7 +23,7 @@ import torch
 from lightning.fabric.plugins import TorchCheckpointIO
 from lightning.pytorch.demos.boring_classes import BoringModel
 
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
+from nemo.collections.common.parts.nlp_overrides import NLPDDPStrategy
 from nemo.utils.callbacks.dist_ckpt_io import (
     AsyncFinalizableCheckpointIO,
     AsyncFinalizerCallback,

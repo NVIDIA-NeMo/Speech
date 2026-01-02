@@ -24,10 +24,23 @@ import lightning.pytorch as pl
 import torch
 from lightning.fabric.plugins import ClusterEnvironment
 from lightning.pytorch.callbacks import TQDMProgressBar
-from megatron.core import parallel_state
-from megatron.core.dist_checkpointing.mapping import ShardedBase, ShardedObject, ShardedTensor
-from megatron.core.dist_checkpointing.strategies.torch import sharded_tensor_to_torch_sharded_tensor
-from megatron.core.transformer.utils import _get_extra_state_offsets
+
+try:
+    from megatron.core import parallel_state
+    from megatron.core.dist_checkpointing.mapping import ShardedBase, ShardedObject, ShardedTensor
+    from megatron.core.dist_checkpointing.strategies.torch import sharded_tensor_to_torch_sharded_tensor
+    from megatron.core.transformer.utils import _get_extra_state_offsets
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    ShardedObject = object
+    ShardedBase = object
+    ShardedTensor = object
+    HAVE_MEGATRON_CORE = False
+
+
 from torch import Tensor, nn
 from torch.distributed._sharded_tensor import ShardedTensor as TorchShardedTensor
 from torch.distributed._tensor import DTensor, Replicate, Shard

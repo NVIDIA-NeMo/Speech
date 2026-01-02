@@ -76,6 +76,7 @@ def flux_controlnet_training() -> run.Partial:
             MegatronFluxControlNetModel,
             flux_params=run.Config(FluxModelParams),
             flux_controlnet_config=run.Config(FluxControlNetConfig),
+            seed=42,
         ),
         data=flux_mock_datamodule(),
         trainer=run.Config(
@@ -92,7 +93,6 @@ def flux_controlnet_training() -> run.Partial:
                 pipeline_dtype=torch.bfloat16,
                 ddp=run.Config(
                     DistributedDataParallelConfig,
-                    use_custom_fsdp=True,
                     data_parallel_sharding_strategy='optim_grads_params',
                     check_for_nan_in_grad=True,
                     grad_reduce_in_fp32=True,
@@ -150,35 +150,7 @@ def flux_controlnet_training() -> run.Partial:
 
 
 @run.cli.factory(target=llm.train)
-def convergence_test(custom_fsdp=True) -> run.Partial:
-    '''
-    A convergence recipe with real data loader.
-    Image and text embedding calculated on the fly.
-    '''
-    recipe = flux_controlnet_training()
-    recipe.model.flux_params.t5_params = run.Config(T5Config, version='/ckpts/text_encoder_2')
-    recipe.model.flux_params.clip_params = run.Config(ClipConfig, version='/ckpts/text_encoder')
-    recipe.model.flux_params.vae_config = run.Config(
-        AutoEncoderConfig, ckpt='/ckpts/ae.safetensors', ch_mult=[1, 2, 4, 4], attn_resolutions=[]
-    )
-    recipe.model.flux_params.device = 'cuda'
-    recipe.model.flux_params.flux_config = run.Config(FluxConfig, ckpt_path='/ckpts/transformer')
-    recipe.model.flux_params.flux_config.do_convert_from_hf = True
-    recipe.trainer.devices = 2
-    recipe.data = flux_datamodule('/dataset/fill50k/fill50k_tarfiles/')
-    recipe.model.flux_controlnet_config.num_single_layers = 0
-    recipe.model.flux_controlnet_config.num_joint_layers = 4
-    if custom_fsdp:
-        configure_custom_fsdp(recipe)
-    else:
-        configure_ddp(recipe)
-    recipe.optim.config.lr = 5e-5
-    recipe.data.global_batch_size = 2
-    return recipe
-
-
-@run.cli.factory(target=llm.train)
-def fp8_test(custom_fsdp=True) -> run.Partial:
+def convergence_test(megatron_fsdp=True) -> run.Partial:
     '''
     A convergence recipe with real data loader.
     Image and text embedding calculated on the fly.
@@ -191,15 +163,49 @@ def fp8_test(custom_fsdp=True) -> run.Partial:
     )
     recipe.model.flux_params.device = 'cuda'
     recipe.model.flux_params.flux_config = run.Config(
-        FluxConfig, ckpt_path='/ckpts/nemo_flux_transformer.safetensors', guidance_embed=False
+        FluxConfig, ckpt_path='/ckpts/transformer', calculate_per_token_loss=False, gradient_accumulation_fusion=False
+    )
+    recipe.model.flux_params.flux_config.do_convert_from_hf = True
+    recipe.trainer.devices = 2
+    recipe.data = flux_datamodule('/dataset/fill50k/fill50k_tarfiles/')
+    recipe.model.flux_controlnet_config.num_single_layers = 0
+    recipe.model.flux_controlnet_config.num_joint_layers = 4
+    if megatron_fsdp:
+        configure_megatron_fsdp(recipe)
+    else:
+        configure_ddp(recipe)
+    recipe.optim.config.lr = 5e-5
+    recipe.data.global_batch_size = 2
+    return recipe
+
+
+@run.cli.factory(target=llm.train)
+def fp8_test(megatron_fsdp=True) -> run.Partial:
+    '''
+    A convergence recipe with real data loader.
+    Image and text embedding calculated on the fly.
+    '''
+    recipe = flux_controlnet_training()
+    recipe.model.flux_params.t5_params = run.Config(T5Config, version='/ckpts/text_encoder_2')
+    recipe.model.flux_params.clip_params = run.Config(ClipConfig, version='/ckpts/text_encoder')
+    recipe.model.flux_params.vae_config = run.Config(
+        AutoEncoderConfig, ckpt='/ckpts/ae.safetensors', ch_mult=[1, 2, 4, 4], attn_resolutions=[]
+    )
+    recipe.model.flux_params.device = 'cuda'
+    recipe.model.flux_params.flux_config = run.Config(
+        FluxConfig,
+        ckpt_path='/ckpts/nemo_flux_transformer.safetensors',
+        guidance_embed=False,
+        calculate_per_token_loss=False,
+        gradient_accumulation_fusion=False,
     )
     recipe.trainer.devices = 2
     recipe.data = flux_datamodule('/mingyuanm/dataset/fill50k/fill50k_tarfiles/')
     recipe.model.flux_controlnet_config.num_single_layers = 0
     recipe.model.flux_controlnet_config.num_joint_layers = 4
     recipe.model.flux_controlnet_config.guidance_embed = False
-    if custom_fsdp:
-        configure_custom_fsdp(recipe)
+    if megatron_fsdp:
+        configure_megatron_fsdp(recipe)
     else:
         configure_ddp(recipe)
     recipe.optim.config.lr = 5e-5
@@ -229,7 +235,11 @@ def convergence_tp2() -> run.Partial:
     )
     recipe.model.flux_params.device = 'cuda'
     recipe.model.flux_params.flux_config = run.Config(
-        FluxConfig, ckpt_path='/ckpts/nemo_dist_ckpt/weights/', load_dist_ckpt=True
+        FluxConfig,
+        ckpt_path='/ckpts/nemo_dist_ckpt/weights/',
+        load_dist_ckpt=True,
+        calculate_per_token_loss=False,
+        gradient_accumulation_fusion=False,
     )
     recipe.trainer.devices = 2
     recipe.trainer.max_steps = 30000
@@ -261,7 +271,7 @@ def full_model_tp2_dp4_mock() -> run.Partial:
 
 
 @run.cli.factory(target=llm.train)
-def unit_test(custom_fsdp=True) -> run.Partial:
+def unit_test(megatron_fsdp=True) -> run.Partial:
     '''
     Basic functional test, with mock dataset,
     text/vae encoders not initialized, ddp strategy,
@@ -280,8 +290,8 @@ def unit_test(custom_fsdp=True) -> run.Partial:
     recipe.model.flux_controlnet_config.num_single_layers = 1
     recipe.model.flux_controlnet_config.num_joint_layers = 1
     recipe.data.global_batch_size = 1
-    if custom_fsdp:
-        configure_custom_fsdp(recipe)
+    if megatron_fsdp:
+        configure_megatron_fsdp(recipe)
     else:
         configure_ddp(recipe)
     recipe.trainer.max_steps = 10
@@ -289,15 +299,15 @@ def unit_test(custom_fsdp=True) -> run.Partial:
     return recipe
 
 
-def configure_custom_fsdp(recipe) -> run.Partial:
+def configure_megatron_fsdp(recipe) -> run.Partial:
     recipe.trainer.strategy.ddp = run.Config(
         DistributedDataParallelConfig,
-        use_custom_fsdp=True,
         data_parallel_sharding_strategy='optim_grads_params',  # Custom FSDP
         check_for_nan_in_grad=True,
         grad_reduce_in_fp32=True,
-        overlap_param_gather=True,  # Custom FSDP requires this
-        overlap_grad_reduce=True,  # Custom FSDP requires this
+        overlap_param_gather=True,  # Megatron FSDP requires this
+        overlap_grad_reduce=True,  # Megatron FSDP requires this
+        use_megatron_fsdp=True,
     )
     recipe.trainer.strategy.fsdp = 'megatron'
     return recipe

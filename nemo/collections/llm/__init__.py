@@ -94,7 +94,10 @@ from nemo.collections.llm.gpt.model import (  # noqa: F401
     GPTConfig126M,
     GPTConfig175B,
     GPTModel,
-    HFAutoModelForCausalLM,
+    GPTOSSConfig,
+    GPTOSSConfig20B,
+    GPTOSSConfig120B,
+    GPTOSSModel,
     Hyena1bConfig,
     Hyena7bARCLongContextConfig,
     Hyena7bConfig,
@@ -137,6 +140,7 @@ from nemo.collections.llm.gpt.model import (  # noqa: F401
     MistralConfig7B,
     MistralModel,
     MistralNeMoConfig12B,
+    MistralSmall3Config24B,
     MixtralConfig,
     MixtralConfig8x3B,
     MixtralConfig8x7B,
@@ -153,6 +157,8 @@ from nemo.collections.llm.gpt.model import (  # noqa: F401
     NemotronHConfig47B,
     NemotronHConfig56B,
     NemotronModel,
+    NemotronNano9Bv2,
+    NemotronNano12Bv2,
     NVIDIAMambaConfig8B,
     NVIDIAMambaHybridConfig8B,
     Phi3Config,
@@ -245,6 +251,7 @@ __all__ = [
     "MaskedTokenLossReduction",
     "MistralConfig7B",
     "MistralNeMoConfig12B",
+    "MistralSmall3Config24B",
     "MistralModel",
     "MixtralConfig",
     "MixtralConfig8x3B",
@@ -279,6 +286,8 @@ __all__ = [
     "NemotronHConfig8B",
     "NemotronHConfig47B",
     "NemotronHConfig56B",
+    "NemotronNano9Bv2",
+    "NemotronNano12Bv2",
     "MambaModel",
     "LlamaConfig",
     "Llama2Config7B",
@@ -306,6 +315,10 @@ __all__ = [
     "CodeLlamaConfig70B",
     "LlamaModel",
     "LlamaNemotronModel",
+    "GPTOSSConfig",
+    "GPTOSSConfig120B",
+    "GPTOSSConfig20B",
+    "GPTOSSModel",
     "GemmaConfig",
     "GemmaConfig2B",
     "GemmaConfig7B",
@@ -381,7 +394,6 @@ __all__ = [
     "dolly",
     "peft",
     "hf_dataset",
-    "HFAutoModelForCausalLM",
     "HFMockDataModule",
 ]
 
@@ -435,3 +447,14 @@ try:
     __all__.append("evaluate")
 except ImportError as error:
     logging.warning(f"The evaluate module could not be imported: {error}")
+
+
+import warnings
+
+
+warnings.warn(
+    "nemo.collections.llm is deprecated and will be removed in a future major NeMo FW container release. "
+    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
+    DeprecationWarning,
+    stacklevel=2,
+)

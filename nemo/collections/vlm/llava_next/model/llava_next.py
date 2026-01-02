@@ -336,61 +336,61 @@ class HFLlavaNextExporter(io.ModelConnector[LlavaNextModel, "LlavaNextForConditi
         """
         # Define the state mapping from NeMo to HuggingFace
         mapping = {
-            "language_model.decoder.layers.*.self_attention.linear_proj.weight": "language_model.model.layers.*.self_attn.o_proj.weight",
-            "language_model.decoder.layers.*.mlp.linear_fc2.weight": "language_model.model.layers.*.mlp.down_proj.weight",
-            "language_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "language_model.model.layers.*.input_layernorm.weight",
-            "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "language_model.model.layers.*.post_attention_layernorm.weight",
-            "language_model.decoder.final_layernorm.weight": "language_model.model.norm.weight",
+            "language_model.decoder.layers.*.self_attention.linear_proj.weight": "model.language_model.layers.*.self_attn.o_proj.weight",
+            "language_model.decoder.layers.*.mlp.linear_fc2.weight": "model.language_model.layers.*.mlp.down_proj.weight",
+            "language_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "model.language_model.layers.*.input_layernorm.weight",
+            "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "model.language_model.layers.*.post_attention_layernorm.weight",
+            "language_model.decoder.final_layernorm.weight": "model.language_model.norm.weight",
         }
 
         # Map vision projection components
         if "vision_projection.encoder.linear_fc1.weight" in source.module.state_dict().keys():
             mapping.update(
                 {
-                    "vision_projection.encoder.linear_fc1.weight": "multi_modal_projector.linear_1.weight",
-                    "vision_projection.encoder.linear_fc1.bias": "multi_modal_projector.linear_1.bias",
-                    "vision_projection.encoder.linear_fc2.weight": "multi_modal_projector.linear_2.weight",
-                    "vision_projection.encoder.linear_fc2.bias": "multi_modal_projector.linear_2.bias",
+                    "vision_projection.encoder.linear_fc1.weight": "model.multi_modal_projector.linear_1.weight",
+                    "vision_projection.encoder.linear_fc1.bias": "model.multi_modal_projector.linear_1.bias",
+                    "vision_projection.encoder.linear_fc2.weight": "model.multi_modal_projector.linear_2.weight",
+                    "vision_projection.encoder.linear_fc2.bias": "model.multi_modal_projector.linear_2.bias",
                 }
             )
         elif "vision_projection.0.weight" in source.module.state_dict().keys():
             mapping.update(
                 {
-                    "vision_projection.0.weight": "multi_modal_projector.linear_1.weight",
-                    "vision_projection.0.bias": "multi_modal_projector.linear_1.bias",
-                    "vision_projection.2.weight": "multi_modal_projector.linear_2.weight",
-                    "vision_projection.2.bias": "multi_modal_projector.linear_2.bias",
+                    "vision_projection.0.weight": "model.multi_modal_projector.linear_1.weight",
+                    "vision_projection.0.bias": "model.multi_modal_projector.linear_1.bias",
+                    "vision_projection.2.weight": "model.multi_modal_projector.linear_2.weight",
+                    "vision_projection.2.bias": "model.multi_modal_projector.linear_2.bias",
                 }
             )
 
         # Check for image_newline and add it to mapping if it exists
         if "image_newline" in source.module.state_dict().keys():
-            mapping.update({"image_newline": "image_newline"})
+            mapping.update({"image_newline": "model.image_newline"})
 
         # Map vision model components
         if "vision_model.vision_model.embeddings.class_embedding" in source.module.state_dict().keys():
             mapping.update(
                 {
-                    "vision_model.vision_model.**": "vision_tower.vision_model.**",
+                    "vision_model.vision_model.**": "model.vision_tower.vision_model.**",
                 }
             )
         elif "vision_model.class_token" in source.module.state_dict().keys():
             mapping.update(
                 {
-                    "vision_model.conv1.weight": "vision_tower.vision_model.embeddings.patch_embedding.weight",
-                    "vision_model.position_embeddings.weight": "vision_tower.vision_model.embeddings.position_embedding.weight",
-                    "vision_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "vision_tower.vision_model.encoder.layers.*.layer_norm1.weight",
-                    "vision_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_bias": "vision_tower.vision_model.encoder.layers.*.layer_norm1.bias",
-                    "vision_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "vision_tower.vision_model.encoder.layers.*.layer_norm2.weight",
-                    "vision_model.decoder.layers.*.mlp.linear_fc1.layer_norm_bias": "vision_tower.vision_model.encoder.layers.*.layer_norm2.bias",
-                    "vision_model.decoder.layers.*.self_attention.linear_proj.weight": "vision_tower.vision_model.encoder.layers.*.self_attn.out_proj.weight",
-                    "vision_model.decoder.layers.*.self_attention.linear_proj.bias": "vision_tower.vision_model.encoder.layers.*.self_attn.out_proj.bias",
-                    "vision_model.decoder.layers.*.mlp.linear_fc1.weight": "vision_tower.vision_model.encoder.layers.*.mlp.fc1.weight",
-                    "vision_model.decoder.layers.*.mlp.linear_fc1.bias": "vision_tower.vision_model.encoder.layers.*.mlp.fc1.bias",
-                    "vision_model.decoder.layers.*.mlp.linear_fc2.weight": "vision_tower.vision_model.encoder.layers.*.mlp.fc2.weight",
-                    "vision_model.decoder.layers.*.mlp.linear_fc2.bias": "vision_tower.vision_model.encoder.layers.*.mlp.fc2.bias",
-                    "vision_model.ln_pre.weight": "vision_tower.vision_model.pre_layrnorm.weight",
-                    "vision_model.ln_pre.bias": "vision_tower.vision_model.pre_layrnorm.bias",
+                    "vision_model.conv1.weight": "model.vision_tower.vision_model.embeddings.patch_embedding.weight",
+                    "vision_model.position_embeddings.weight": "model.vision_tower.vision_model.embeddings.position_embedding.weight",
+                    "vision_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "model.vision_tower.vision_model.encoder.layers.*.layer_norm1.weight",
+                    "vision_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_bias": "model.vision_tower.vision_model.encoder.layers.*.layer_norm1.bias",
+                    "vision_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "model.vision_tower.vision_model.encoder.layers.*.layer_norm2.weight",
+                    "vision_model.decoder.layers.*.mlp.linear_fc1.layer_norm_bias": "model.vision_tower.vision_model.encoder.layers.*.layer_norm2.bias",
+                    "vision_model.decoder.layers.*.self_attention.linear_proj.weight": "model.vision_tower.vision_model.encoder.layers.*.self_attn.out_proj.weight",
+                    "vision_model.decoder.layers.*.self_attention.linear_proj.bias": "model.vision_tower.vision_model.encoder.layers.*.self_attn.out_proj.bias",
+                    "vision_model.decoder.layers.*.mlp.linear_fc1.weight": "model.vision_tower.vision_model.encoder.layers.*.mlp.fc1.weight",
+                    "vision_model.decoder.layers.*.mlp.linear_fc1.bias": "model.vision_tower.vision_model.encoder.layers.*.mlp.fc1.bias",
+                    "vision_model.decoder.layers.*.mlp.linear_fc2.weight": "model.vision_tower.vision_model.encoder.layers.*.mlp.fc2.weight",
+                    "vision_model.decoder.layers.*.mlp.linear_fc2.bias": "model.vision_tower.vision_model.encoder.layers.*.mlp.fc2.bias",
+                    "vision_model.ln_pre.weight": "model.vision_tower.vision_model.pre_layrnorm.weight",
+                    "vision_model.ln_pre.bias": "model.vision_tower.vision_model.pre_layrnorm.bias",
                 }
             )
 
@@ -471,9 +471,9 @@ class HFLlavaNextExporter(io.ModelConnector[LlavaNextModel, "LlavaNextForConditi
 @io.state_transform(
     source_key="language_model.decoder.layers.*.self_attention.linear_qkv.weight",
     target_key=(
-        "language_model.model.layers.*.self_attn.q_proj.weight",
-        "language_model.model.layers.*.self_attn.k_proj.weight",
-        "language_model.model.layers.*.self_attn.v_proj.weight",
+        "model.language_model.layers.*.self_attn.q_proj.weight",
+        "model.language_model.layers.*.self_attn.k_proj.weight",
+        "model.language_model.layers.*.self_attn.v_proj.weight",
     ),
 )
 def _export_language_qkv(ctx: io.TransformCTX, linear_qkv):
@@ -507,9 +507,9 @@ def _export_language_qkv(ctx: io.TransformCTX, linear_qkv):
 @io.state_transform(
     source_key="vision_model.decoder.layers.*.self_attention.linear_qkv.weight",
     target_key=(
-        "vision_tower.vision_model.encoder.layers.*.self_attn.q_proj.weight",
-        "vision_tower.vision_model.encoder.layers.*.self_attn.k_proj.weight",
-        "vision_tower.vision_model.encoder.layers.*.self_attn.v_proj.weight",
+        "model.vision_tower.vision_model.encoder.layers.*.self_attn.q_proj.weight",
+        "model.vision_tower.vision_model.encoder.layers.*.self_attn.k_proj.weight",
+        "model.vision_tower.vision_model.encoder.layers.*.self_attn.v_proj.weight",
     ),
 )
 def _export_vision_qkv(ctx: io.TransformCTX, linear_qkv):
@@ -543,9 +543,9 @@ def _export_vision_qkv(ctx: io.TransformCTX, linear_qkv):
 @io.state_transform(
     source_key="vision_model.decoder.layers.*.self_attention.linear_qkv.bias",
     target_key=(
-        "vision_tower.vision_model.encoder.layers.*.self_attn.q_proj.bias",
-        "vision_tower.vision_model.encoder.layers.*.self_attn.k_proj.bias",
-        "vision_tower.vision_model.encoder.layers.*.self_attn.v_proj.bias",
+        "model.vision_tower.vision_model.encoder.layers.*.self_attn.q_proj.bias",
+        "model.vision_tower.vision_model.encoder.layers.*.self_attn.k_proj.bias",
+        "model.vision_tower.vision_model.encoder.layers.*.self_attn.v_proj.bias",
     ),
 )
 def _export_vision_qkv_bias(ctx: io.TransformCTX, linear_qkv_bias):
@@ -587,8 +587,8 @@ def _export_cls_token(ctx: io.TransformCTX, class_token):
 @io.state_transform(
     source_key="language_model.decoder.layers.*.mlp.linear_fc1.weight",
     target_key=(
-        "language_model.model.layers.*.mlp.gate_proj.weight",
-        "language_model.model.layers.*.mlp.up_proj.weight",
+        "model.language_model.layers.*.mlp.gate_proj.weight",
+        "model.language_model.layers.*.mlp.up_proj.weight",
     ),
 )
 def _export_language_linear_fc1(ctx: io.TransformCTX, linear_fc1):
@@ -599,7 +599,7 @@ def _export_language_linear_fc1(ctx: io.TransformCTX, linear_fc1):
 
 @io.state_transform(
     source_key="language_model.embedding.word_embeddings.weight",
-    target_key="language_model.model.embed_tokens.weight",
+    target_key="model.language_model.embed_tokens.weight",
 )
 def _export_embedding(ctx: io.TransformCTX, embedding):
     """Transforms the word embeddings from NeMo to HuggingFace format."""
@@ -610,7 +610,7 @@ def _export_embedding(ctx: io.TransformCTX, embedding):
 
 @io.state_transform(
     source_key="language_model.output_layer.weight",
-    target_key="language_model.lm_head.weight",
+    target_key="lm_head.weight",
 )
 def _export_language_head(ctx: io.TransformCTX, output_weight):
     """Transforms the output layer from NeMo to HuggingFace format."""

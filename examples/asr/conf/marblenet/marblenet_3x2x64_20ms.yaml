@@ -36,7 +36,7 @@ model:
         max_gain_dbfs: 10.0
       noise:
         prob: 0.6
-        manifest_path: /manifests/vad_noise/freesound_nonspeech_train_FL200.json
+        manifest_path: ???
         min_snr_db: 0
         max_snr_db: 20
         max_gain_db: 300.0
@@ -51,15 +51,15 @@ model:
     pin_memory: true
     val_loss_idx: 0
 
-  test_ds:
-    manifest_filepath: null
-    sample_rate: ${model.sample_rate}
-    labels: ${model.labels}
-    batch_size: 128
-    shuffle: False
-    num_workers: 8
-    pin_memory: true
-    test_loss_idx: 0
+  # test_ds:
+  #   manifest_filepath: null
+  #   sample_rate: ${model.sample_rate}
+  #   labels: ${model.labels}
+  #   batch_size: 128
+  #   shuffle: False
+  #   num_workers: 8
+  #   pin_memory: true
+  #   test_loss_idx: 0
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor

@@ -59,8 +59,7 @@ from nemo.collections.llm.gpt.model.gemma3 import (
     Gemma3Config27B,
     Gemma3Model,
 )
-from nemo.collections.llm.gpt.model.hf_auto_model_for_causal_lm import HFAutoModelForCausalLM
-from nemo.collections.llm.gpt.model.hf_llama_embedding import get_llama_bidirectional_hf_model
+from nemo.collections.llm.gpt.model.gpt_oss import GPTOSSConfig, GPTOSSConfig20B, GPTOSSConfig120B, GPTOSSModel
 from nemo.collections.llm.gpt.model.hyena import (
     Hyena1bConfig,
     Hyena7bARCLongContextConfig,
@@ -109,7 +108,12 @@ from nemo.collections.llm.gpt.model.llama_nemotron import (
     Llama33NemotronSuper49BConfig,
     LlamaNemotronModel,
 )
-from nemo.collections.llm.gpt.model.mistral import MistralConfig7B, MistralModel, MistralNeMoConfig12B
+from nemo.collections.llm.gpt.model.mistral import (
+    MistralConfig7B,
+    MistralModel,
+    MistralNeMoConfig12B,
+    MistralSmall3Config24B,
+)
 from nemo.collections.llm.gpt.model.mixtral import (
     MixtralConfig,
     MixtralConfig8x3B,
@@ -166,6 +170,8 @@ from nemo.collections.llm.gpt.model.ssm import (
     NemotronHConfig8B,
     NemotronHConfig47B,
     NemotronHConfig56B,
+    NemotronNano9Bv2,
+    NemotronNano12Bv2,
     NVIDIAMambaConfig8B,
     NVIDIAMambaHybridConfig8B,
     SSMConfig,
@@ -191,6 +197,7 @@ __all__ = [
     "MistralConfig7B",
     "MistralModel",
     "MistralNeMoConfig12B",
+    "MistralSmall3Config24B",
     "MixtralConfig8x3B",
     "MixtralConfig8x7B",
     "MixtralConfig8x22B",
@@ -235,6 +242,10 @@ __all__ = [
     "LlamaEmbeddingModel",
     "Llama32EmbeddingConfig1B",
     "Llama32EmbeddingConfig3B",
+    "GPTOSSConfig",
+    "GPTOSSConfig120B",
+    "GPTOSSConfig20B",
+    "GPTOSSModel",
     "Phi3Config",
     "Phi3ConfigMini",
     "Phi3Model",
@@ -304,6 +315,8 @@ __all__ = [
     "NemotronHConfig8B",
     "NemotronHConfig47B",
     "NemotronHConfig56B",
+    "NemotronNano9Bv2",
+    "NemotronNano12Bv2",
     "MambaModel",
     "DeepSeekModel",
     "DeepSeekV2Config",
@@ -315,8 +328,6 @@ __all__ = [
     "transformer_engine_layer_spec",
     "transformer_engine_full_layer_spec",
     "local_layer_spec",
-    "HFAutoModelForCausalLM",
-    "get_llama_bidirectional_hf_model",
     "HyenaTestConfig",
     "Hyena1bConfig",
     "HyenaNV1bConfig",

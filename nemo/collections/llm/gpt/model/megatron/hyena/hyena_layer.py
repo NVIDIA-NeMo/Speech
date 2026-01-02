@@ -20,10 +20,12 @@ from typing import Optional, Union
 
 import torch
 from megatron.core.inference.contexts import BaseInferenceContext
+from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.utils import deprecate_inference_params
 from torch import Tensor
 
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_config import HyenaConfig
@@ -54,6 +56,7 @@ class HyenaLayer(MegatronModule):
         submodules: HyenaLayerSubmodules,
         layer_number: int = 1,
         residual_in_fp32=False,
+        pg_collection=None,
     ):
         """
         Top level Hyena Layer
@@ -80,7 +83,6 @@ class HyenaLayer(MegatronModule):
         )
 
         self.hyena_bda = build_module(submodules.hyena_bda)
-        self.bias_dropout_add_exec_handler = torch.enable_grad
 
         self.pre_mlp_layernorm = build_module(
             submodules.pre_mlp_layernorm,
@@ -89,22 +91,40 @@ class HyenaLayer(MegatronModule):
             eps=self.transformer_config.layernorm_epsilon,
         )
 
-        self.mlp = build_module(submodules.mlp, config=self.transformer_config)
-        if hasattr(self.mlp, 'set_layer_number'):
-            self.mlp.set_layer_number(self.layer_number)
-
+        self.mlp = build_module(submodules.mlp, config=self.transformer_config, tp_group=pg_collection.tp)
         self.mlp_bda = build_module(submodules.mlp_bda)
 
-        self.bias_dropout_add_exec_handler = torch.enable_grad
+        for layer in [self.mlp, self.mlp_bda, self.hyena_bda]:
+            if hasattr(layer, 'set_layer_number'):
+                layer.set_layer_number(self.layer_number)
+
+    @property
+    def bias_dropout_add_exec_handler(self):
+        """Return the appropriate execution handler for the current mode."""
+        if self.training:
+            return torch.enable_grad
+        else:
+            # Validation, Test, Inference, Etc.
+            return torch.inference_mode
 
     def forward(
         self,
         hidden_states: Tensor,
         attention_mask: Tensor,  # Not used in HyenaLayer
+        context: Optional[Tensor] = None,
+        context_mask: Optional[Tensor] = None,
+        rotary_pos_emb: Optional[Tensor] = None,
+        rotary_pos_cos: Optional[Tensor] = None,
+        rotary_pos_sin: Optional[Tensor] = None,
+        attention_bias: Optional[Tensor] = None,
         inference_context: Optional[BaseInferenceContext] = None,
-        rotary_pos_emb: Tensor = None,  # Not used in HyenaLayer
+        packed_seq_params: Optional[PackedSeqParams] = None,
+        sequence_len_offset: Optional[Tensor] = None,
+        *,
+        inference_params: Optional[BaseInferenceContext] = None,
     ):
         """Forward pass for the HyenaLayer."""
+        inference_context = deprecate_inference_params(inference_context, inference_params)
         if isinstance(hidden_states, tuple):
             hidden_states = hidden_states[0]
 
@@ -133,4 +153,4 @@ class HyenaLayer(MegatronModule):
                 mlp_output_with_bias, residual, self.hidden_dropout
             )
 
-        return hidden_states
+        return hidden_states, context

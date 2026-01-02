@@ -13,7 +13,7 @@ After :ref:`installing NeMo<installation>`, you can transcribe an audio file as 
 .. code-block:: python
 
     import nemo.collections.asr as nemo_asr
-    asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
+    asr_model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
     transcript = asr_model.transcribe(["path/to/audio_file.wav"])[0].text
 
 Obtain timestamps
@@ -33,7 +33,7 @@ With the `timestamps=True` flag, you can obtain timestamps for each character in
     
     # import nemo_asr and instantiate asr_model as above
     import nemo.collections.asr as nemo_asr
-    asr_model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt_ctc-110m")
+    asr_model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
 
     # specify flag `timestamps=True`
     hypotheses = asr_model.transcribe(["path/to/audio_file.wav"], timestamps=True)
@@ -54,7 +54,7 @@ For more control over the timestamps, you can update the decoding config to ment
 
     # import nemo_asr and instantiate asr_model as above
     import nemo.collections.asr as nemo_asr
-    asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
+    asr_model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
 
     # update decoding config to preserve alignments and compute timestamps
     # if necessary also update the segment seperators or word seperator for segment and word level timestamps

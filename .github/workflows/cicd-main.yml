@@ -61,7 +61,7 @@ jobs:
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
           else
-            echo '["nemo2", "automodel", "export-deploy", "speech"]' | tee -a test_modules.json
+            echo '["nemo2", "export-deploy", "speech"]' | tee -a test_modules.json
           fi
 
           components_to_run=$(cat test_modules.json)
@@ -182,9 +182,8 @@ jobs:
           echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout NeMo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
-          repository: NVIDIA/NeMo
           path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
       - name: Run some checks
@@ -205,7 +204,6 @@ jobs:
 
             # Basic Import Checks
             python tests/core_ptl/check_imports.py --domain asr
-            python tests/core_ptl/check_imports.py --domain nlp
             python tests/core_ptl/check_imports.py --domain tts
           '
 
@@ -253,27 +251,6 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-export-deploy:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-export-deploy.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'export-deploy')
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
-
   cicd-main-speech:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-speech.yml
@@ -282,27 +259,6 @@ jobs:
         needs.pre-flight.outputs.test_to_run != '[]'
         && (
           contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech')
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
-
-  cicd-main-automodel:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-automodel.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'automodel')
         )
       )
       && (
@@ -346,8 +302,6 @@ jobs:
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
       - cicd-main-nemo2
-      - cicd-main-export-deploy
-      - cicd-main-automodel
       - cicd-main-speech
     if: always()
     runs-on: ubuntu-latest

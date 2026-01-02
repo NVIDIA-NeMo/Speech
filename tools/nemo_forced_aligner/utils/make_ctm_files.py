@@ -16,12 +16,14 @@ import os
 
 import soundfile as sf
 from utils.constants import BLANK_TOKEN, SPACE_TOKEN
-from utils.data_prep import Segment, Word
+from nemo.collections.asr.parts.utils.aligner_utils import Segment, Word
 from nemo.collections.asr.parts.utils.manifest_utils import get_ctm_line
 
 
 def make_ctm_files(
-    utt_obj, output_dir_root, ctm_file_config,
+    utt_obj,
+    output_dir_root,
+    ctm_file_config,
 ):
     """
     Function to save CTM files for all the utterances in the incoming batch.
@@ -39,15 +41,37 @@ def make_ctm_files(
     else:
         audio_file_duration = None
 
-    utt_obj = make_ctm("tokens", utt_obj, output_dir_root, audio_file_duration, ctm_file_config,)
-    utt_obj = make_ctm("words", utt_obj, output_dir_root, audio_file_duration, ctm_file_config,)
-    utt_obj = make_ctm("segments", utt_obj, output_dir_root, audio_file_duration, ctm_file_config,)
+    utt_obj = make_ctm(
+        "tokens",
+        utt_obj,
+        output_dir_root,
+        audio_file_duration,
+        ctm_file_config,
+    )
+    utt_obj = make_ctm(
+        "words",
+        utt_obj,
+        output_dir_root,
+        audio_file_duration,
+        ctm_file_config,
+    )
+    utt_obj = make_ctm(
+        "segments",
+        utt_obj,
+        output_dir_root,
+        audio_file_duration,
+        ctm_file_config,
+    )
 
     return utt_obj
 
 
 def make_ctm(
-    alignment_level, utt_obj, output_dir_root, audio_file_duration, ctm_file_config,
+    alignment_level,
+    utt_obj,
+    output_dir_root,
+    audio_file_duration,
+    ctm_file_config,
 ):
     output_dir = os.path.join(output_dir_root, "ctm", alignment_level)
     os.makedirs(output_dir, exist_ok=True)

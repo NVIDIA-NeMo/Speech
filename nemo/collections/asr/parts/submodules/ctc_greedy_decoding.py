@@ -20,13 +20,16 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.asr.parts.context_biasing import BoostingTreeModelConfig, GPUBoostingTreeModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodConfig, ConfidenceMethodMixin
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, NeuralType
 from nemo.core.utils.cuda_python_utils import (
+    NeMoCUDAPythonException,
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
     cu_call,
     run_nvrtc,
@@ -36,7 +39,7 @@ from nemo.utils import logging, logging_mode
 from nemo.utils.enum import PrettyStrEnum
 
 try:
-    from cuda import cudart
+    from cuda.bindings import runtime as cudart
 
     HAVE_CUDA_PYTHON = True
 except ImportError:
@@ -446,7 +449,8 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
 
     """
 
-    ngram_lm_batch: Optional[NGramGPULanguageModel]
+    fusion_models: Optional[List[NGramGPULanguageModel]]
+    fusion_models_alpha: Optional[List[float]]
 
     class CudaGraphsMode(PrettyStrEnum):
         FULL_GRAPH = "full_graph"  # Cuda graphs with conditional nodes, fastest implementation
@@ -478,7 +482,10 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         confidence_method_cfg: Optional[DictConfig] = None,
         ngram_lm_model: Optional[str | Path] = None,
         ngram_lm_alpha: float = 0.0,
+        boosting_tree: Optional[BoostingTreeModelConfig] = None,
+        boosting_tree_alpha: float = 0.0,
         allow_cuda_graphs: bool = True,
+        tokenizer: Optional[TokenizerSpec] = None,
     ):
         super().__init__()
 
@@ -491,19 +498,28 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         # set confidence calculation method
         self._init_confidence_method(confidence_method_cfg)
 
-        # init ngram lm
+        # load fusion models from paths (ngram_lm_model and boosting_tree_model)
+        self.fusion_models, self.fusion_models_alpha = [], []
         if ngram_lm_model is not None:
+            self.fusion_models.append(
+                NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=self.blank_id)
+            )
+            self.fusion_models_alpha.append(ngram_lm_alpha)
+        if boosting_tree and not BoostingTreeModelConfig.is_empty(boosting_tree):
+            self.fusion_models.append(GPUBoostingTreeModel.from_config(boosting_tree, tokenizer=tokenizer))
+            self.fusion_models_alpha.append(boosting_tree_alpha)
+
+        if not self.fusion_models:
+            self.fusion_models = None
+            self.fusion_models_alpha = None
+            self.allow_cuda_graphs = False
+            self.cuda_graphs_mode = None
+        else:
             self.allow_cuda_graphs = allow_cuda_graphs
             self.cuda_graphs_mode = None
             self.maybe_enable_cuda_graphs()
-
-            self.ngram_lm_batch = NGramGPULanguageModel.from_file(lm_path=ngram_lm_model, vocab_size=self.blank_id)
-            self.ngram_lm_alpha = ngram_lm_alpha
             self.state: CTCDecoderCudaGraphsState | None = None
-        else:
-            self.allow_cuda_graphs = False
-            self.cuda_graphs_mode = None
-            self.ngram_lm_batch = None
+        self.cuda_graphs_allow_fallback = True
 
     @typecheck()
     def forward(
@@ -540,7 +556,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         decoder_lengths = decoder_lengths.to(decoder_output.device)
 
         if decoder_output.ndim == 2:
-            if self.ngram_lm_batch is not None:
+            if self.fusion_models is not None:
                 raise NotImplementedError
             hypotheses = self._greedy_decode_labels_batched(decoder_output, decoder_lengths)
         else:
@@ -558,19 +574,21 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
 
         predictions = x
 
-        if self.ngram_lm_batch is None:
+        if self.fusion_models is None:
             # In CTC greedy decoding, each output maximum likelihood token
             # is calculated independent of the other tokens.
             predictions_logprobs, predictions_labels = predictions.max(dim=-1)
         else:
-            self.ngram_lm_batch.to(x.device)
-            # decoding with NGPU-LM
+
+            for fusion_model in self.fusion_models:
+                fusion_model.to(x.device)
+            # decoding with NGPU-LM and Boosting Tree
             if self.cuda_graphs_mode is not None and x.device.type == "cuda":
-                predictions_labels, predictions_logprobs = self._greedy_decode_logprobs_batched_lm_cuda_graphs(
-                    logits=x, out_len=out_len
+                predictions_labels, predictions_logprobs = (
+                    self._greedy_decode_logprobs_batched_fusion_models_cuda_graphs(logits=x, out_len=out_len)
                 )
             else:
-                predictions_labels, predictions_logprobs = self._greedy_decode_logprobs_batched_lm_torch(
+                predictions_labels, predictions_logprobs = self._greedy_decode_logprobs_batched_fusion_models_torch(
                     logits=x, out_len=out_len
                 )
 
@@ -664,7 +682,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         return hypotheses
 
     @torch.no_grad()
-    def _greedy_decode_logprobs_batched_lm_torch(self, logits: torch.Tensor, out_len: torch.Tensor):
+    def _greedy_decode_logprobs_batched_fusion_models_torch(self, logits: torch.Tensor, out_len: torch.Tensor):
         batch_size = logits.shape[0]
         max_time = logits.shape[1]
         device = logits.device
@@ -672,7 +690,9 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         batch_indices = torch.arange(batch_size, device=device, dtype=torch.long)
 
         # Step 1: Initialization
-        batch_lm_states = self.ngram_lm_batch.get_init_states(batch_size=batch_size, bos=True)
+        batch_fusion_states_list = []
+        for fusion_model in self.fusion_models:
+            batch_fusion_states_list.append(fusion_model.get_init_states(batch_size=batch_size, bos=True))
         last_labels = torch.full([batch_size], fill_value=self.blank_id, device=device, dtype=torch.long)
         # resulting labels and logprobs storage
         predictions_labels = torch.zeros([batch_size, max_time], device=device, dtype=torch.long)
@@ -681,34 +701,40 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         for i in range(max_time):
             # Step 2: Get most likely labels for current frame
             log_probs, labels = logits[:, i].max(dim=-1)
-            log_probs_w_lm = logits[:, i].clone()
+            log_probs_w_fusion = logits[:, i].clone()
 
-            # Step 3: Get LM scores
-            lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(states=batch_lm_states)
-            lm_scores = lm_scores.to(dtype=float_dtype)
-            log_probs_w_lm[:, :-1] += self.ngram_lm_alpha * lm_scores
+            # Step 3: Get fusion scores
+            fusion_states_candidates_list = []
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                fusion_scores, batch_fusion_states_candidates = fusion_model.advance(
+                    states=batch_fusion_states_list[fusion_idx]
+                )
+                fusion_scores = fusion_scores.to(dtype=float_dtype)
+                log_probs_w_fusion[:, :-1] += self.fusion_models_alpha[fusion_idx] * fusion_scores
+                fusion_states_candidates_list.append(batch_fusion_states_candidates)
 
-            # Step 4: Get most likely labels with LM scores. Labels that are blank or repeated are ignored.
-            # Note: no need to mask blank labels log_probs_w_lm[:, -1] = NEG_INF, as argmax is without blanks
-            # Note: for efficiency, use scatter instead of log_probs_w_lm[batch_indices, last_labels] = NEG_INF
-            log_probs_w_lm.scatter_(dim=1, index=last_labels.unsqueeze(-1), value=NEG_INF)
-            log_probs_w_lm, labels_w_lm = log_probs_w_lm[:, :-1].max(dim=-1)
+            # Step 4: Get most likely labels with fusion scores. Labels that are blank or repeated are ignored.
+            # Note: no need to mask blank labels log_probs_w_fusion[:, -1] = NEG_INF, as argmax is without blanks
+            # Note: for efficiency, use scatter instead of log_probs_w_fusion[batch_indices, last_labels] = NEG_INF
+            log_probs_w_fusion.scatter_(dim=1, index=last_labels.unsqueeze(-1), value=NEG_INF)
+            log_probs_w_fusion, labels_w_fusion = log_probs_w_fusion[:, :-1].max(dim=-1)
 
             # Step 5: Update labels if they initially weren't blank or repeated
             blank_or_repeated = (labels == self.blank_id) | (labels == last_labels)
-            torch.where(blank_or_repeated, labels, labels_w_lm, out=labels)
-            torch.where(blank_or_repeated, log_probs, log_probs_w_lm, out=log_probs_w_lm)
+            torch.where(blank_or_repeated, labels, labels_w_fusion, out=labels)
+            torch.where(blank_or_repeated, log_probs, log_probs_w_fusion, out=log_probs_w_fusion)
 
-            # Step 6: Update LM states and scores for non-blank and non-repeated labels
-            torch.where(
-                blank_or_repeated,
-                batch_lm_states,
-                batch_lm_states_candidates[batch_indices, labels * ~blank_or_repeated],
-                out=batch_lm_states,
-            )
+            # Step 6: Update fusion states and scores for non-blank and non-repeated labels
+            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+                torch.where(
+                    blank_or_repeated,
+                    batch_fusion_states_list[fusion_idx],
+                    fusion_states_candidates_list[fusion_idx][batch_indices, labels * ~blank_or_repeated],
+                    out=batch_fusion_states_list[fusion_idx],
+                )
 
             predictions_labels[:, i] = labels
-            predictions_logprobs[:, i] = log_probs_w_lm
+            predictions_logprobs[:, i] = log_probs_w_fusion
             last_labels = labels
 
         return predictions_labels, predictions_logprobs
@@ -718,10 +744,21 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         """
         Initializes the state.
         """
-        # Step 1: Initialization
-        self.state.batch_lm_states.copy_(
-            self.ngram_lm_batch.get_init_states(batch_size=self.state.batch_size, bos=True)
-        )
+
+        # Step 1: Initialization for fusion models
+        self.state.fusion_states_list = []
+        self.state.fusion_states_candidates_list = []
+
+        for fusion_model in self.fusion_models:
+            self.state.fusion_states_list.append(
+                fusion_model.get_init_states(batch_size=self.state.batch_size, bos=True)
+            )
+            self.state.fusion_states_candidates_list.append(
+                torch.zeros(
+                    [self.state.batch_size, fusion_model.vocab_size], dtype=torch.long, device=self.state.device
+                )
+            )
+
         self.state.last_labels.fill_(self.blank_id)
         self.state.frame_idx.fill_(0)
         self.state.active_mask.copy_((self.state.decoder_lengths > 0).any())
@@ -737,34 +774,41 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         # Step 2: Get most likely labels for current frame
         logits = self.state.decoder_outputs[:, self.state.frame_idx.unsqueeze(0)].squeeze(1)
         log_probs, labels = logits.max(dim=-1)
-        log_probs_w_lm = logits.clone()
+        log_probs_w_fusion = logits.clone()
 
-        # Step 3: Get LM scores
-        lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(states=self.state.batch_lm_states)
-        lm_scores = lm_scores.to(dtype=self.state.float_dtype)
-        log_probs_w_lm[:, :-1] += self.ngram_lm_alpha * lm_scores
+        # Step 3: Get fusion scores
+        for fusion_idx, fusion_model in enumerate(self.fusion_models):
+            fusion_scores, fusion_states_candidates = fusion_model.advance(
+                states=self.state.fusion_states_list[fusion_idx]
+            )
+            fusion_scores = fusion_scores.to(dtype=self.state.float_dtype)
+            log_probs_w_fusion[:, :-1] += self.fusion_models_alpha[fusion_idx] * fusion_scores
+            self.state.fusion_states_candidates_list[fusion_idx].copy_(fusion_states_candidates)
 
-        # Step 4: Get most likely labels with LM scores. Labels that are blank or repeated are ignored.
-        # Note: no need to mask blank labels log_probs_w_lm[:, -1] = NEG_INF, as argmax is without blanks
-        # Note: for efficiency, use scatter instead of log_probs_w_lm[batch_indices, last_labels] = NEG_INF
-        log_probs_w_lm.scatter_(dim=1, index=self.state.last_labels.unsqueeze(-1), value=NEG_INF)
-        log_probs_w_lm, labels_w_lm = log_probs_w_lm[:, :-1].max(dim=-1)
+        # Step 4: Get most likely labels with fusion scores. Labels that are blank or repeated are ignored.
+        # Note: no need to mask blank labels log_probs_w_fusion[:, -1] = NEG_INF, as argmax is without blanks
+        # Note: for efficiency, use scatter instead of log_probs_w_fusion[batch_indices, last_labels] = NEG_INF
+        log_probs_w_fusion.scatter_(dim=1, index=self.state.last_labels.unsqueeze(-1), value=NEG_INF)
+        log_probs_w_fusion, labels_w_fusion = log_probs_w_fusion[:, :-1].max(dim=-1)
 
         # Step 5: Update labels if they initially weren't blank or repeated
         blank_or_repeated = (labels == self.blank_id) | (labels == self.state.last_labels)
-        torch.where(blank_or_repeated, labels, labels_w_lm, out=labels)
-        torch.where(blank_or_repeated, log_probs, log_probs_w_lm, out=log_probs_w_lm)
+        torch.where(blank_or_repeated, labels, labels_w_fusion, out=labels)
+        torch.where(blank_or_repeated, log_probs, log_probs_w_fusion, out=log_probs_w_fusion)
 
         self.state.predictions_labels[:, self.state.frame_idx.unsqueeze(0)] = labels.unsqueeze(-1)
-        self.state.predictions_logprobs[:, self.state.frame_idx.unsqueeze(0)] = log_probs_w_lm.unsqueeze(-1)
+        self.state.predictions_logprobs[:, self.state.frame_idx.unsqueeze(0)] = log_probs_w_fusion.unsqueeze(-1)
 
-        # Step 6: Update LM states and scores for non-blank and non-repeated labels
-        torch.where(
-            blank_or_repeated,
-            self.state.batch_lm_states,
-            batch_lm_states_candidates[self.state.batch_indices, labels * ~blank_or_repeated],
-            out=self.state.batch_lm_states,
-        )
+        # Step 6: Update fusion states and scores for non-blank and non-repeated labels
+        for fusion_idx, fusion_model in enumerate(self.fusion_models):
+            torch.where(
+                blank_or_repeated,
+                self.state.fusion_states_list[fusion_idx],
+                self.state.fusion_states_candidates_list[fusion_idx][
+                    self.state.batch_indices, labels * ~blank_or_repeated
+                ],
+                out=self.state.fusion_states_list[fusion_idx],
+            )
 
         self.state.last_labels.copy_(labels)
         self.state.frame_idx += 1
@@ -799,72 +843,88 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
             float_dtype=logits.dtype,
         )
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
-            # compiling full graph
-            stream_for_graph = torch.cuda.Stream(self.state.device)
-            stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
-            self.state.full_graph = torch.cuda.CUDAGraph()
-            with (
-                torch.cuda.stream(stream_for_graph),
-                torch.inference_mode(),
-                torch.cuda.graph(self.state.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
-            ):
-                self._before_loop()
-
-                capture_status, _, graph, _, _ = cu_call(
-                    cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
+            try:
+                self._full_graph_compile()
+            except NeMoCUDAPythonException as e:
+                if not self.cuda_graphs_allow_fallback:
+                    raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from e
+                logging.warning(
+                    f"Full CUDA graph compilation failed: {e}. "
+                    "Falling back to native PyTorch CUDA graphs. Decoding will be slower."
                 )
-                assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
-
-                # capture: while decoding_active:
-                (loop_conditional_handle,) = cu_call(cudart.cudaGraphConditionalHandleCreate(graph, 0, 0))
-                loop_kernel = self._create_while_loop_kernel()
-                decoding_active_ptr = np.array([self.state.active_mask.data_ptr()], dtype=np.uint64)
-                loop_args = np.array(
-                    [loop_conditional_handle.getPtr(), decoding_active_ptr.ctypes.data],
-                    dtype=np.uint64,
-                )
-                # loop while there are active utterances
-                with with_conditional_node(
-                    loop_kernel,
-                    loop_args,
-                    loop_conditional_handle,
-                    device=self.state.device,
-                ):
-                    self._inner_loop()
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+                self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
-            # compiling partial graphs
-            stream_for_graph = torch.cuda.Stream(self.state.device)
-            stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
-            self.state.before_loop_graph = torch.cuda.CUDAGraph()
-            self.state.inner_loop_graph = torch.cuda.CUDAGraph()
-            with (
-                torch.cuda.stream(stream_for_graph),
-                torch.inference_mode(),
-                torch.cuda.graph(
-                    self.state.before_loop_graph,
-                    stream=stream_for_graph,
-                    capture_error_mode="thread_local",
-                ),
-            ):
-                self._before_loop()
-
-            with (
-                torch.cuda.stream(stream_for_graph),
-                torch.inference_mode(),
-                torch.cuda.graph(
-                    self.state.inner_loop_graph,
-                    stream=stream_for_graph,
-                    capture_error_mode="thread_local",
-                ),
-            ):
-                self._inner_loop()
+            self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
             # no graphs needed
             pass
         else:
             raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
 
-    def _greedy_decode_logprobs_batched_lm_cuda_graphs(self, logits: torch.Tensor, out_len: torch.Tensor):
+    def _full_graph_compile(self):
+        """Compiling full graph"""
+        stream_for_graph = torch.cuda.Stream(self.state.device)
+        stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
+        self.state.full_graph = torch.cuda.CUDAGraph()
+        with (
+            torch.cuda.stream(stream_for_graph),
+            torch.inference_mode(),
+            torch.cuda.graph(self.state.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+        ):
+            self._before_loop()
+
+            capture_status, _, graph, _, _, _ = cu_call(
+                cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
+            )
+            assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
+
+            # capture: while decoding_active:
+            (loop_conditional_handle,) = cu_call(cudart.cudaGraphConditionalHandleCreate(graph, 0, 0))
+            loop_kernel = self._create_while_loop_kernel()
+            decoding_active_ptr = np.array([self.state.active_mask.data_ptr()], dtype=np.uint64)
+            loop_args = np.array(
+                [loop_conditional_handle.getPtr(), decoding_active_ptr.ctypes.data],
+                dtype=np.uint64,
+            )
+            # loop while there are active utterances
+            with with_conditional_node(
+                loop_kernel,
+                loop_args,
+                loop_conditional_handle,
+                device=self.state.device,
+            ):
+                self._inner_loop()
+
+    def _partial_graphs_compile(self):
+        """Compiling partial graphs"""
+        stream_for_graph = torch.cuda.Stream(self.state.device)
+        stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
+        self.state.before_loop_graph = torch.cuda.CUDAGraph()
+        self.state.inner_loop_graph = torch.cuda.CUDAGraph()
+        with (
+            torch.cuda.stream(stream_for_graph),
+            torch.inference_mode(),
+            torch.cuda.graph(
+                self.state.before_loop_graph,
+                stream=stream_for_graph,
+                capture_error_mode="thread_local",
+            ),
+        ):
+            self._before_loop()
+
+        with (
+            torch.cuda.stream(stream_for_graph),
+            torch.inference_mode(),
+            torch.cuda.graph(
+                self.state.inner_loop_graph,
+                stream=stream_for_graph,
+                capture_error_mode="thread_local",
+            ),
+        ):
+            self._inner_loop()
+
+    def _greedy_decode_logprobs_batched_fusion_models_cuda_graphs(self, logits: torch.Tensor, out_len: torch.Tensor):
         current_batch_size = logits.shape[0]
         current_max_time = logits.shape[1]
 
@@ -907,13 +967,14 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         For debugging the algorithm use "no_graphs" mode, since it is impossible to debug CUDA graphs directly.
         """
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
+        self.cuda_graphs_allow_fallback = False
         self.state = None
 
     def maybe_enable_cuda_graphs(self):
         """Enable CUDA graphs if conditions met"""
         if self.cuda_graphs_mode is not None:
             # CUDA graphs are already enabled
-            return
+            return False
 
         if not self.allow_cuda_graphs:
             self.cuda_graphs_mode = None
@@ -931,14 +992,16 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
                 )
                 self.cuda_graphs_mode = self.CudaGraphsMode.NO_GRAPHS
         self.reset_cuda_graphs_state()
+        return self.cuda_graphs_mode is not None
 
-    def disable_cuda_graphs(self):
+    def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs, can be used to disable graphs temporary, e.g., in training process"""
         if self.cuda_graphs_mode is None:
             # nothing to disable
-            return
+            return False
         self.cuda_graphs_mode = None
         self.reset_cuda_graphs_state()
+        return True
 
     def reset_cuda_graphs_state(self):
         """Reset state to release memory (for CUDA graphs implementations)"""
@@ -957,6 +1020,8 @@ class GreedyCTCInferConfig:
 
     ngram_lm_model: Optional[str] = None
     ngram_lm_alpha: float = 0.0
+    boosting_tree: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
+    boosting_tree_alpha: Optional[float] = 0.0
     allow_cuda_graphs: bool = True
 
     def __post_init__(self):

@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import difflib
 import os
 from typing import List
 
 import nemo_run as run
 from lightning.pytorch.callbacks.callback import Callback
+from nemo_run.core.serialization.yaml import YamlSerializer
+from nemo_run.run.torchx_backend.packaging import _serialize
 
 from nemo.collections.common.tokenizers.huggingface import AutoTokenizer
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
@@ -41,7 +44,7 @@ def hf_tokenizer(model_name: str) -> run.Config[AutoTokenizer]:
         f"`AutoTokenizer` first searches for tokenizer files locally stored in {DEFAULT_NEMO_HOME}.",
         "(from env var `NEMO_HOME`- can be changed using '-nh/--nemo_home' CLI arg).",
         "If files are missing locally, `AutoTokenizer` will try downloading from HuggingFace. In this case-",
-        "make sure env vars 'TRANSFORMERS_OFFLINE':'0' and 'HF_TOKEN':'<token_value>' are set in your sbatch script.",
+        "make sure env vars 'HF_HUB_OFFLINE':'0' and 'HF_TOKEN':'<token_value>' are set in your sbatch script.",
         "Both of these will be set automatically if you provide '-hf/--hf_token' CLI arg.",
     ]
     logging.warning(" ".join(log_msg))
@@ -189,3 +192,24 @@ def get_comm_overlap_callback_idx(callbacks: List[Callback]) -> int | None:
             if callback.__fn_or_cls__ == MegatronCommOverlapCallback:
                 return idx
     return None
+
+
+def dump_config_diff_from_base_recipe(
+    base_recipe: str, new_recipe: str, output_dir: str, file_name: str = "config_diff.txt"
+):
+    """
+    Dump the config diff from the base recipe.
+    """
+    base_recipe_config = _serialize(base_recipe, serializer_cls=YamlSerializer)
+    new_recipe_config = _serialize(new_recipe, serializer_cls=YamlSerializer)
+    diff = difflib.unified_diff(
+        base_recipe_config.splitlines(keepends=True),
+        new_recipe_config.splitlines(keepends=True),
+        fromfile="base_recipe",
+        tofile="new_recipe",
+        lineterm="",
+    )
+    diff = "".join(diff)
+    print("dumping config diff to ", os.path.join(output_dir, file_name))
+    with open(os.path.join(output_dir, file_name), "w") as f:
+        f.write(diff)

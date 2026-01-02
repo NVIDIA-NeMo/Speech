@@ -1,4 +1,0 @@
-_target_: nemo.collections.multimodal.modules.nerf.guidance.stablediffusion_nemo_pipeline.StableDiffusion
-checkpoint: /sd_checkpoints/nemo-1.5/sd-1.5.nemo
-sampler_type: 'DDIM'
-t_range: [0.02, 0.98]

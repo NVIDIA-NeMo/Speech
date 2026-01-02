@@ -120,6 +120,9 @@ def main(cfg: SalmEvalConfig):
         batch_answers = [model.tokenizer.ids_to_text(ans) for ans in answer_ids]
         for conv, ctx, ans in zip(batch["conversations"], batch_contexts, batch_answers):
             conv.turns.append(TextTurn(role="assistant", value=ans))
+            for k, v in list(conv.custom.items()):
+                if isinstance(v, torch.Tensor):
+                    del conv.custom[k]
             writer.write(conv.to_dict())
 
         num_answer_tokens.extend(batch_num_answer_tokens)

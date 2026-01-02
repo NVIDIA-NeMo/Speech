@@ -45,6 +45,8 @@ from nemo.collections.common.data.lhotse.cutset import (
 )
 from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
+    CERFilter,
+    ContextSpeakerSimilarityFilter,
     DurationFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
@@ -52,6 +54,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     TokenCountFilter,
     TokenPerSecondFilter,
     TokenPerTokenFilter,
+    ValidationStatusFilter,
 )
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn
 from nemo.collections.common.prompts import PromptFormatter
@@ -111,6 +114,7 @@ class LhotseDataLoadingConfig:
     pretokenize: bool = True  # should we apply tokenizer before data sampling
     prompt_format: str | None = None  # when provided, we'll apply the prompt in addition to the tokenizer
     use_multimodal_sampling: bool = False
+    audio_locator_tag: str | None = None  # global audio placeholder token, propagates to datasets in input_cfg
     token_equivalent_duration: float | None = None
     batch_tokens: int | None = None
     quadratic_factor: float | None = None
@@ -129,6 +133,13 @@ class LhotseDataLoadingConfig:
     measure_total_length: bool = True
     min_tpt: int = -1  # allowed tokens per token (text-only)
     max_tpt: Any = float("inf")  # float | list[float]
+
+    # 2.3 Filters on CER and/or cosine speaker similarity of the context audio serving for TTS use cases.
+    max_cer: float | None = float("inf")
+    min_context_speaker_similarity: float | None = -1
+
+    # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
+    keep: str = "pass"
 
     # 3. Supported existing NeMo options.
     shuffle: bool = False
@@ -202,6 +213,14 @@ class LhotseDataLoadingConfig:
     # * use map dataset for non-tarred audio data (we might change this in the future)
     force_map_dataset: bool = False
     force_iterable_dataset: bool = False
+    # Force the dataloader to slice each data source.
+    # This may improve sampling randomness for large-scale runs with many dataset sources and large shards
+    # at the cost of some IO redundancy.
+    # The slicing is achieved with a randomly-selected offset K used to skip the first K examples,
+    # and reading them consecutively for ``slice_length`` iterations.
+    # The first K examples will actually be read and then discarded, incurring the IO cost, due to
+    # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
+    slice_length: Optional[int] = None
 
 
 def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
@@ -221,7 +240,7 @@ def get_lhotse_dataloader_from_config(
     tokenizer=None,
 ) -> torch.utils.data.DataLoader:
     """
-    Set up a Lhotse training dataloder.
+    Set up a Lhotse training dataloader.
 
     Expects a typical NeMo dataset configuration format, with additional fields: "use_lhotse=True".
     Some fields in the original NeMo configuration may be ignored.
@@ -267,7 +286,7 @@ def get_lhotse_dataloader_from_single_config(
     tokenizer=None,
 ) -> torch.utils.data.DataLoader:
     """
-    Set up a Lhotse training dataloder.
+    Set up a Lhotse training dataloader.
 
     Expects a typical NeMo dataset configuration format, with additional fields: "use_lhotse=True".
     Some fields in the original NeMo configuration may be ignored.
@@ -463,7 +482,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         cuts = cuts.map(partial(_select_channel, channel_selector=config.channel_selector))
 
     # Resample as a safeguard; it's a no-op when SR is already OK
-    cuts = cuts.resample(config.sample_rate)
+    cuts = cuts.map(partial(resample, sampling_rate=config.sample_rate), apply_fn=None)
 
     # Expands cuts if multiple translations are provided.
     cuts = CutSet(LazyFlattener(cuts.map(_flatten_alt_text, apply_fn=None)))
@@ -539,6 +558,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts = cuts.filter(
         TokenCountFilter(config.min_tokens, config.max_tokens, measure_total_length=config.measure_total_length)
     )
+
+    # validation status filtering
+    cuts = cuts.filter(ValidationStatusFilter(config.keep))
+    # CER filtering, same as native NeMo dataloaders.
+    cuts = cuts.filter(CERFilter(config.max_cer))
+    # Context speaker similarity filtering, same as native NeMo dataloaders.
+    cuts = cuts.filter(ContextSpeakerSimilarityFilter(config.min_context_speaker_similarity))
 
     if tokenizer is not None and config.pretokenize:
         cuts = cuts.filter(TokenPerSecondFilter(config.min_tps, config.max_tps))
@@ -648,6 +674,7 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 token_equivalent_duration=config.token_equivalent_duration,
                 strict_2d=config.bucketing_2d_strict_mode,
                 max_ratio=config.max_tpt if isinstance(config.max_tpt, Sequence) else None,
+                measure_total_length=config.measure_total_length,
             )
             cuts = cuts.filter(BucketingFilter(constraint))
         else:
@@ -656,6 +683,7 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 batch_size=config.batch_size,
                 batch_tokens=config.batch_tokens,
                 quadratic_factor=config.quadratic_factor,
+                measure_total_length=config.measure_total_length,
             )
     else:
         if config.bucket_batch_size is not None:
@@ -834,6 +862,20 @@ def maybe_set_cuda_expandable_segments(enabled: bool):
                 "Failed to set expandable_segments:True for PyTorch CUDA allocator. "
                 "You may get training speed improvements if you enable this "
             )
+
+
+def resample(example, sampling_rate):
+    from nemo.collections.common.data.lhotse.text_adapters import NeMoMultimodalConversation
+
+    if isinstance(example, Cut):
+        return example.resample(sampling_rate)
+    elif isinstance(example, NeMoMultimodalConversation):
+        for turn in example.turns:
+            if hasattr(turn, "cut"):
+                turn.cut = turn.cut.resample(sampling_rate)
+        return example
+    else:
+        return example
 
 
 def _select_channel(cut, channel_selector: int | str) -> list:

@@ -77,3 +77,61 @@ def test_replace_placeholders():
         ])
     )
     # fmt: on
+
+
+def test_replace_placeholders_removes_excessive_left_padding():
+    # fmt: off
+    PAD = 0
+    AUDIO = 100
+    input_ids = torch.tensor([
+        [7  , AUDIO, 1    , 2],
+        [PAD,   PAD, AUDIO, 3]  # note: left padding required
+    ])
+    loss_mask = torch.tensor([
+        [False, False, True , True],  # predict last two tokens
+        [False, False, False, True]   # predict last token
+    ])
+    embeds = torch.ones(2, 4, 2)
+    embeds[1, :2] = 0  # note: indicate left padding
+    # 3 embedding sequences with varying shapes, corresponding to 3 AUDIO tokens
+    replacements = [
+        torch.full((3, 2), fill_value=2.0),
+        torch.full((5, 2), fill_value=4.0),
+    ]
+
+    embeds_r, targets_r, attention_mask_r = replace_placeholders_and_build_targets(
+        input_ids=input_ids,
+        embeds=embeds,
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        replacements=replacements,
+        target_ids=input_ids.where(loss_mask, -100)
+    )
+
+    assert embeds_r.shape == (2, 6, 2)
+    # batch item 0
+    assert (embeds_r[0, 0  ]  == 1.0).all()  # 1=orig
+    assert (embeds_r[0, 1:4]  == 2.0).all()  # 2=repl
+    assert (embeds_r[0, 4: ]  == 1.0).all()  # 1=orig
+    # batch item 1
+    assert (embeds_r[1, :5]  == 4.0).all()  # 4=repl
+    assert (embeds_r[1, 5 ]  == 1.0).all()  # 1=orig
+
+    assert targets_r.shape == (2, 6)
+    torch.testing.assert_close(
+        targets_r,
+        torch.tensor([
+            [-100, -100, -100, -100,    1, 2],
+            [-100, -100, -100, -100, -100, 3],
+        ])
+    )
+
+    assert attention_mask_r.shape == (2, 6)
+    torch.testing.assert_close(
+        attention_mask_r,
+        torch.tensor([
+            [True, True, True, True, True, True],
+            [True, True, True, True, True, True],
+        ])
+    )
+    # fmt: on

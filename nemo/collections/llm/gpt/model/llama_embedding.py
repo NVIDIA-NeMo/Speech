@@ -30,12 +30,13 @@ from nemo.collections.llm.bert.loss import BERTInBatchExclusiveHardNegativesRank
 from nemo.collections.llm.gpt.model import GPTConfig
 from nemo.collections.llm.gpt.model.llama import (
     HFLlamaImporter,
+    Llama31Config,
     Llama32Config1B,
     Llama32Config3B,
     LlamaConfig,
     LlamaModel,
 )
-from nemo.collections.llm.utils import Config
+from nemo.collections.llm.utils import Config, is_safe_repo
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
@@ -303,19 +304,35 @@ class LlamaEmbeddingImporter(HFLlamaImporter):
 
         return output
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         """Apply the conversion from HF to NeMo format.
         Args:
             output_path: Path where the converted model will be saved
+            trust_remote_code: Whether remote code execution should be trusted for a given HF path
         Returns:
             Path: Path to the saved NeMo model
         """
         from transformers import AutoModel, AutoModelForCausalLM
 
+        self.trust_remote_code = trust_remote_code
         try:
-            source = AutoModelForCausalLM.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+            source = AutoModelForCausalLM.from_pretrained(
+                str(self),
+                torch_dtype='auto',
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+            )
         except:
-            source = AutoModel.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+            source = AutoModel.from_pretrained(
+                str(self),
+                torch_dtype='auto',
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+            )
 
             # Wrap the source in a model for causal LM
             class ModelWrapper(nn.Module):
@@ -357,7 +374,8 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
         with no_init_weights():
             return LlamaBidirectionalModel._from_config(self.config, torch_dtype=dtype)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         source_dtype = source.module.embedding.word_embeddings.weight.dtype
         target = self.init(source_dtype)
@@ -385,6 +403,16 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
         from nemo.collections.llm.gpt.model.hf_llama_embedding import LlamaBidirectionalConfig
 
         LlamaBidirectionalConfig.register_for_auto_class("AutoConfig")
+        rope_scaling = None
+        # For Llama 3.1 and Llama 3.2, rope_scaling is used and thus needed to parsed to the config
+        if isinstance(source, Llama31Config):
+            rope_scaling = {
+                'factor': source.scale_factor,
+                'low_freq_factor': source.low_freq_factor,
+                'high_freq_factor': source.high_freq_factor,
+                'original_max_position_embeddings': source.old_context_len,
+                'rope_type': 'llama3',
+            }
         return LlamaBidirectionalConfig(
             num_hidden_layers=source.num_layers,
             hidden_size=source.hidden_size,
@@ -397,6 +425,7 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
             rope_theta=source.rotary_base,
             vocab_size=self.tokenizer.vocab_size,
             tie_word_embeddings=source.share_embeddings_and_output_weights,
+            rope_scaling=rope_scaling,
         )
 
     def convert_state(self, source, target):

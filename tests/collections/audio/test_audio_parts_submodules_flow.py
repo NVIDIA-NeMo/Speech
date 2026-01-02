@@ -24,7 +24,8 @@ TIMES_MAX = [0.5, 0.7, 0.99, 1.0 - 1e-8, 1.0]
 
 
 @pytest.mark.parametrize("num_steps", NUM_STEPS)
-def test_euler_sampler_nfe(num_steps):
+@pytest.mark.parametrize("estimator_target", ['conditional_vector_field', 'data'])
+def test_euler_sampler_nfe(num_steps, estimator_target):
     """
     For this specific solver the number of steps should be equal to the number of function (estimator) evaluations
     """
@@ -44,7 +45,10 @@ def test_euler_sampler_nfe(num_steps):
     counter_hook = ForwardCounterHook()
     estimator.register_forward_hook(counter_hook)
 
-    sampler = ConditionalFlowMatchingEulerSampler(estimator=estimator, num_steps=num_steps)
+    flow = OptimalTransportFlow()
+    sampler = ConditionalFlowMatchingEulerSampler(
+        estimator=estimator, num_steps=num_steps, estimator_target=estimator_target, flow=flow
+    )
 
     b, c, d, l = 2, 3, 4, 5
     lengths = [5, 3]

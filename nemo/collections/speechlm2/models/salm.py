@@ -19,7 +19,6 @@ from typing import Any, Optional
 
 import torch
 from lhotse import CutSet
-from lhotse.dataset.collation import collate_vectors
 from lightning import LightningModule
 from omegaconf import DictConfig
 from peft import PeftModel
@@ -38,6 +37,7 @@ from transformers import GenerationConfig
 
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
+from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
@@ -184,8 +184,6 @@ class SALM(LightningModule, HFHubMixin):
                 target_ids = target_ids[:, :-remainder]
 
         return {
-            "audio_embeds": audio_embs,
-            "text_embeds": text_embs,
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
@@ -371,7 +369,7 @@ class SALM(LightningModule, HFHubMixin):
                 ), "Audios cannot be provided via ``prompts`` and ``audios``/``audio_lens`` arguments simultaneously."
                 audios, audio_lens = maybe_audio
             formatter = PromptFormatter.resolve(self.cfg.prompt_format)(self.tokenizer)
-            tokens = collate_vectors(
+            tokens = left_collate_vectors(
                 [formatter.encode_dialog(turns=prompt)["input_ids"] for prompt in prompts],
                 padding_value=self.text_pad_id,
             ).to(self.device)
@@ -576,6 +574,9 @@ def replace_placeholders_and_build_targets(
     device, dtype = embeds.device, embeds.dtype
     ignore_index = -100  # Standard ignore_index value for CrossEntropyLoss
 
+    # Un-pad the tensors because we'll need to re-apply new padding after replacements anyway.
+    input_ids, embeds, target_ids = _unpad_inputs(input_ids, embeds, target_ids, padding_id)
+
     output_sequences = []
     output_target_ids = []
     output_att_masks = []
@@ -606,14 +607,14 @@ def replace_placeholders_and_build_targets(
         for pos in placeholder_positions:
             # Add segment before placeholder (if any)
             if pos > prev_pos:
-                segments.append(embeds[i, prev_pos:pos])
+                segments.append(embeds[i][prev_pos:pos])
 
                 # For target IDs: keep original targets but mark positions that were padding in input
                 if target_ids is not None:
-                    segment_target_ids = target_ids[i, prev_pos:pos].clone()
+                    segment_target_ids = target_ids[i][prev_pos:pos].clone()
                     segment_target_ids[segment_target_ids == padding_id] = ignore_index
                     target_segments.append(segment_target_ids)
-                att_masks.append(input_ids[i, prev_pos:pos] != padding_id)
+                att_masks.append(input_ids[i][prev_pos:pos] != padding_id)
 
             # Add replacement for embeddings
             rep = replacements[replacement_idx]
@@ -628,14 +629,14 @@ def replace_placeholders_and_build_targets(
 
         # Add remaining segment after last placeholder (if any)
         if prev_pos < seq_len:
-            segments.append(embeds[i, prev_pos:seq_len])
+            segments.append(embeds[i][prev_pos:seq_len])
 
             # For target IDs: keep original targets but mark positions that were padding in input
             if target_ids is not None:
-                segment_target_ids = target_ids[i, prev_pos:seq_len].clone()
+                segment_target_ids = target_ids[i][prev_pos:seq_len].clone()
                 segment_target_ids[segment_target_ids == padding_id] = ignore_index
                 target_segments.append(segment_target_ids)
-            att_masks.append(input_ids[i, prev_pos:seq_len] != padding_id)
+            att_masks.append(input_ids[i][prev_pos:seq_len] != padding_id)
 
         # Concatenate all segments for this example
         output_sequences.append(torch.cat(segments, dim=0))
@@ -666,6 +667,31 @@ def replace_placeholders_and_build_targets(
         attention_masks[i, -seq_len:] = att
 
     return output, new_target_ids, attention_masks
+
+
+def _unpad_inputs(
+    input_ids: torch.Tensor,
+    embeds: torch.Tensor,
+    target_ids: Optional[torch.Tensor],
+    padding_id: int,
+) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    def first_index_not_value(tensor, value):
+        mask = tensor != value
+        indices = torch.nonzero(mask, as_tuple=False)
+        if indices.numel() > 0:
+            return indices[0].item()
+        else:
+            return -1
+
+    input_ids_unpad, embeds_unpad = [], []
+    target_ids_unpad = [] if target_ids is not None else None
+    for i in range(input_ids.shape[0]):
+        idx = first_index_not_value(input_ids[i], padding_id)
+        input_ids_unpad.append(input_ids[i, idx:])
+        embeds_unpad.append(embeds[i, idx:])
+        if target_ids is not None:
+            target_ids_unpad.append(target_ids[i, idx:])
+    return input_ids_unpad, embeds_unpad, target_ids_unpad
 
 
 def _resolve_audios_in_prompt(

@@ -214,7 +214,7 @@ class TestWordErrorRate:
         tokens_decoded = wer.decoding.decode_ids_to_tokens(tokens)
         assert tokens_decoded == ['c', 'a', 't']
 
-        str_decoded = wer.decoding.decode_tokens_to_str(tokens)
+        str_decoded = wer.decoding.decode_ids_to_str(tokens)
         assert str_decoded == 'cat'
 
     @pytest.mark.unit
@@ -290,7 +290,7 @@ class TestWordErrorRate:
                 blank_id=self.char_tokenizer.tokenizer.vocab_size,
                 tokenizer=deepcopy(self.char_tokenizer),
                 ctc_decoder_predictions_tensor=ctc_decoder_predictions_tensor_mock,
-                decode_tokens_to_str=self.char_tokenizer.ids_to_text,
+                decode_ids_to_str=self.char_tokenizer.ids_to_text,
                 spec=CTCBPEDecoding,
             )
             wer = WER(decoding, use_cer=False)
@@ -299,7 +299,7 @@ class TestWordErrorRate:
                 blank_id=len(self.vocabulary),
                 labels_map=self.vocabulary.copy(),
                 ctc_decoder_predictions_tensor=ctc_decoder_predictions_tensor_mock,
-                decode_tokens_to_str=self.decode_token_to_str_with_vocabulary_mock,
+                decode_ids_to_str=self.decode_token_to_str_with_vocabulary_mock,
                 spec=CTCDecoding,
             )
             wer = WER(decoding, use_cer=False)
@@ -330,7 +330,7 @@ class TestWordErrorRate:
                 blank_id=self.char_tokenizer.tokenizer.vocab_size,
                 tokenizer=deepcopy(self.char_tokenizer),
                 rnnt_decoder_predictions_tensor=rnnt_decoder_predictions_tensor_mock,
-                decode_tokens_to_str=self.char_tokenizer.ids_to_text,
+                decode_ids_to_str=self.char_tokenizer.ids_to_text,
                 spec=RNNTBPEDecoding,
             )
             wer = WER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
@@ -339,7 +339,7 @@ class TestWordErrorRate:
                 blank_id=len(self.vocabulary),
                 labels_map=self.vocabulary.copy(),
                 rnnt_decoder_predictions_tensor=rnnt_decoder_predictions_tensor_mock,
-                decode_tokens_to_str=self.decode_token_to_str_with_vocabulary_mock,
+                decode_ids_to_str=self.decode_token_to_str_with_vocabulary_mock,
                 spec=RNNTDecoding,
             )
             wer = WER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
@@ -614,19 +614,19 @@ class TestBLEUMetric:
         decoding = None
         if decode_type == "ctc":
             decoding = Mock(spec=AbstractCTCDecoding)
-            decoding.decode_tokens_to_str = lambda tokens: ''.join([self.vocabulary[id_] for id_ in tokens])
+            decoding.decode_ids_to_str = lambda tokens: ''.join([self.vocabulary[id_] for id_ in tokens])
             decoding.ctc_decoder_predictions_tensor = Mock(
                 return_value=[Hypothesis(score=1.0, y_sequence=[], text="hello world")]
             )
         elif decode_type == "rnnt":
             decoding = Mock(spec=AbstractRNNTDecoding)
-            decoding.decode_tokens_to_str = lambda tokens: ''.join([self.vocabulary[id_] for id_ in tokens])
+            decoding.decode_ids_to_str = lambda tokens: ''.join([self.vocabulary[id_] for id_ in tokens])
             decoding.rnnt_decoder_predictions_tensor = Mock(
                 return_value=[Hypothesis(score=1.0, y_sequence=[], text="hello world")]
             )
         elif decode_type == "multitask":
             decoding = Mock(spec=AbstractMultiTaskDecoding)
-            decoding.decode_tokens_to_str = lambda tokens: ''.join([self.vocabulary[id_] for id_ in tokens])
+            decoding.decode_ids_to_str = lambda tokens: ''.join([self.vocabulary[id_] for id_ in tokens])
             decoding.decode_predictions_tensor = Mock(
                 return_value=[Hypothesis(score=1.0, y_sequence=[], text="hello world")]
             )
@@ -1327,7 +1327,7 @@ class TestBLEUEdgeCases:
     def create_mock_decoding(self):
         """Create minimal mock decoding"""
         decoding = Mock(spec=AbstractCTCDecoding)
-        decoding.decode_tokens_to_str = lambda tokens: ''.join([self.vocabulary[id_] for id_ in tokens])
+        decoding.decode_ids_to_str = lambda tokens: ''.join([self.vocabulary[id_] for id_ in tokens])
         decoding.ctc_decoder_predictions_tensor = Mock(return_value=[])
         return decoding
 

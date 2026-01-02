@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prune utilities for using TensorRT Model Optimizer."""
+"""Prune utilities for using Model Optimizer."""
 
-from .pruner import PruningConfig, prune_gpt_model, save_pruned_model
+from .pruner import PruningConfig, prune_language_model, save_pruned_model
 
-__all__ = ["PruningConfig", "prune_gpt_model", "save_pruned_model"]
+__all__ = ["PruningConfig", "prune_language_model", "save_pruned_model"]

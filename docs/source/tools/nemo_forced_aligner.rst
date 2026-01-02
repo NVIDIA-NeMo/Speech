@@ -64,9 +64,9 @@ Optional parameters:
 
 * ``use_local_attention``: boolean flag specifying whether to try to use local attention for the ASR Model (will only work if the ASR Model is a Conformer model). If local attention is used, we will set the local attention context size to [64,64].
 
-* ``additional_segment_grouping_separator``: an optional string used to separate the text into smaller segments. If this is not specified, then the whole text will be treated as a single segment. (Default: ``None``. Cannot be empty string or space (" "), as NFA will automatically produce word-level timestamps for substrings separated by spaces).
+* ``additional_segment_grouping_separator``: a list of strings used to separate the text into smaller segments. If set to ``None``, then the whole text will be treated as a single segment. (Default: ``['.', '?', '!', '...']``. Cannot be empty string or space (" "), as NFA will automatically produce word-level timestamps for substrings separated by spaces).
 
-	.. note:: the ``additional_segment_grouping_separator`` will be removed from the reference text and all the output files, ie it is treated as a marker which is not part of the reference text. The separator will essentially be treated as a space, and any additional spaces around it will be amalgamated into one, i.e. if ``additional_segment_grouping_separator="|"``, the following texts will be treated equivalently: ``“abc|def”``, ``“abc |def”``, ``“abc| def”``, ``“abc | def"``.
+	.. note:: Starting in NeMo 2.5.0, separators are preserved in segment text after splitting. if ``additional_segment_grouping_separator="['.', '?', '!', '...']"`` (as is the default), then the text ``"Hi, have you updated your NeMo? Yes. Sure!"`` will result in the following segments ``["Hi, have you updated your NeMo?", "Yes.", "Sure!"]``.
 
 * ``remove_blank_tokens_from_ctm``: a boolean denoting whether to remove <blank> tokens from token-level output CTMs. (Default: False). 
 

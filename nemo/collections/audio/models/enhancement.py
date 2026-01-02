@@ -643,11 +643,13 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         # Neural estimator
         self.estimator = self.from_config_dict(self._cfg.estimator)
 
+        self.estimator_target = self._cfg.get('estimator_target', 'conditional_vector_field')
+
         # Flow
         self.flow = self.from_config_dict(self._cfg.flow)
 
         # Sampler
-        self.sampler = hydra.utils.instantiate(self._cfg.sampler, estimator=self.estimator)
+        self.sampler = hydra.utils.instantiate(self._cfg.sampler, estimator=self.estimator, flow=self.flow)
 
         # probability that the conditional input will be feed into the
         # estimator in the training stage
@@ -846,9 +848,14 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         # Estimate the vector  using the neural estimator
         estimate, estimate_len = self.estimator(input=estimator_input, input_length=input_enc_len, condition=time)
 
-        conditional_vector_field = self.flow.vector_field(time=time, x_start=x_start, x_end=target_enc, point=sample)
+        if self.estimator_target == 'conditional_vector_field':
+            loss_target = self.flow.vector_field(time=time, x_start=x_start, x_end=target_enc, point=sample)
+        elif self.estimator_target == 'data':
+            loss_target = target_enc
+        else:
+            raise ValueError(f'Invalid estimator target: {self.estimator_target}')
 
-        return self.loss(estimate=estimate, target=conditional_vector_field, input_length=input_enc_len)
+        return self.loss(estimate=estimate, target=loss_target, input_length=input_enc_len)
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):

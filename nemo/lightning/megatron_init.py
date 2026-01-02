@@ -60,15 +60,17 @@ try:
 
 except (ImportError, ModuleNotFoundError):
     logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
-    from apex.transformer.microbatches import ConstantNumMicroBatches as ConstantNumMicroBatchesCalculator
-    from apex.transformer.pipeline_parallel.utils import (
-        get_current_global_batch_size,
-        get_micro_batch_size,
-        get_num_microbatches,
-    )
-    from apex.transformer.pipeline_parallel.utils import (
-        setup_microbatch_calculator as init_num_microbatches_calculator,
-    )
+
+    if HAVE_APEX:
+        from apex.transformer.microbatches import ConstantNumMicroBatches as ConstantNumMicroBatchesCalculator
+        from apex.transformer.pipeline_parallel.utils import (
+            get_current_global_batch_size,
+            get_micro_batch_size,
+            get_num_microbatches,
+        )
+        from apex.transformer.pipeline_parallel.utils import (
+            setup_microbatch_calculator as init_num_microbatches_calculator,
+        )
 
     MCORE_MB_CALCULATOR = False
 
@@ -499,16 +501,24 @@ def fake_initialize_model_parallel(
     # EP rank
     expert_model_parallel_rank = 0
     if expert_model_parallel_size_ is not None and expert_model_parallel_size_ > 1:
+        all_expert_model_parallel_ranks = []
         for ranks in generator_wrapper('ep', is_expert=True):
+            all_expert_model_parallel_ranks.append(ranks)
             if rank in ranks:
                 expert_model_parallel_rank = list(ranks).index(rank)
+        logging.info(f'All expert model parallel group ranks: {all_expert_model_parallel_ranks}')
+        logging.info(f'Rank {rank} has expert model parallel rank: {expert_model_parallel_rank}')
 
     # ETP
     expert_tensor_parallel_rank = 0
     if expert_tensor_parallel_size_ is not None and expert_tensor_parallel_size_ > 1:
+        all_expert_tensor_parallel_ranks = []
         for ranks in generator_wrapper('tp', is_expert=True):
+            all_expert_tensor_parallel_ranks.append(ranks)
             if rank in ranks:
                 expert_tensor_parallel_rank = list(ranks).index(rank)
+        logging.info(f'All expert tensor parallel group ranks: {all_expert_tensor_parallel_ranks}')
+        logging.info(f'Rank {rank} has expert tensor parallel rank: {expert_tensor_parallel_rank}')
 
     # Build the pipeline model-parallel groups and embedding groups
     # (first and last rank in each pipeline model-parallel group).

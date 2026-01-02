@@ -1,3 +1,0 @@
-_target_: nemo.collections.multimodal.modules.nerf.background.random_background.RandomBackground
-base_background: [1, 1, 1]
-random_ratio: 0.5

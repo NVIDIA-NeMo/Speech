@@ -32,6 +32,7 @@ from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import (
     compute_output_filename,
+    get_inference_dtype,
     prepare_audio_data,
     restore_transcription_order,
     setup_model,
@@ -276,15 +277,11 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
     amp_dtype = torch.float16 if cfg.amp_dtype == "float16" else torch.bfloat16
 
     compute_dtype: torch.dtype
-    if cfg.compute_dtype is None:
-        can_use_bfloat16 = (not cfg.amp) and map_location.type == "cuda" and torch.cuda.is_bf16_supported()
-        if can_use_bfloat16:
-            compute_dtype = torch.bfloat16
-        else:
-            compute_dtype = torch.float32
+    if cfg.amp:
+        # with amp model weights required to be in float32
+        compute_dtype = torch.float32
     else:
-        assert cfg.compute_dtype in {"float32", "bfloat16", "float16"}
-        compute_dtype = getattr(torch, cfg.compute_dtype)
+        compute_dtype = get_inference_dtype(compute_dtype=cfg.compute_dtype, device=map_location)
 
     asr_model.to(compute_dtype)
 

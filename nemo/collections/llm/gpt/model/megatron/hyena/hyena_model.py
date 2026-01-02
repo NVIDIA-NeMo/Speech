@@ -15,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 from copy import deepcopy
 from typing import Literal, Optional
 
@@ -25,10 +26,14 @@ from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.common.language_module.language_module import LanguageModule
+from megatron.core.packed_seq_params import PackedSeqParams
+from megatron.core.process_groups_config import ProcessGroupCollection
+from megatron.core.quantization.utils import get_quant_config_or_none
 from megatron.core.transformer.enums import ModelType
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import TransformerLayer
+from megatron.core.utils import WrappedTensor, deprecate_inference_params
 from torch import Tensor
 from torch.nn.parameter import Parameter
 
@@ -69,11 +74,25 @@ class HyenaModel(LanguageModule):
         hyena_output_layer_init_method: str = None,
         remove_activation_post_first_layer: bool = True,
         add_attn_proj_bias: bool = True,
+        pg_collection: Optional[ProcessGroupCollection] = None,
+        vp_stage: Optional[int] = None,
     ) -> None:
-        super().__init__(config=transformer_config)
+        # Check if super().__init__ accepts pg_collection parameter
+        super_init_signature = inspect.signature(super().__init__)
+        if 'pg_collection' in super_init_signature.parameters:
+            super().__init__(config=transformer_config, pg_collection=pg_collection)
+        else:
+            # Older version of Megatron does not initialize pg_collection yet.
+            super().__init__(config=transformer_config)
+            # Store pg_collection for use in submodules
+            if pg_collection is None:
+                pg_collection = ProcessGroupCollection.use_mpu_process_groups()
+            self.pg_collection = pg_collection
+            self.pp_group = pg_collection.pp
 
         self.transformer_config = transformer_config
         self.hyena_config = HyenaConfig()
+        self.vp_stage = vp_stage
 
         # Override HyenaConfig fields with user provided values
         self.hyena_config.num_groups_hyena = num_groups_hyena
@@ -112,8 +131,10 @@ class HyenaModel(LanguageModule):
                 vocab_size=self.vocab_size,
                 max_sequence_length=self.max_sequence_length,
                 position_embedding_type=position_embedding_type,
+                tp_group=self.pg_collection.tp,
             )
-
+        # Cache for RoPE tensors which do not change between iterations.
+        self.rotary_pos_emb_cache = {}
         if self.position_embedding_type == 'rope':
             self.rotary_pos_emb = RotaryEmbedding(
                 kv_channels=self.transformer_config.kv_channels,
@@ -121,6 +142,7 @@ class HyenaModel(LanguageModule):
                 seq_len_interpolation_factor=seq_len_interpolation_factor,
                 rotary_base=rotary_base,
                 use_cpu_initialization=self.transformer_config.use_cpu_initialization,
+                cp_group=self.pg_collection.cp,
             )
 
         self.decoder = build_module(
@@ -132,6 +154,7 @@ class HyenaModel(LanguageModule):
             pre_process=self.pre_process,
             post_process=self.post_process,
             post_layer_norm=self.post_layer_norm,
+            pg_collection=self.pg_collection,
         )
 
         # In some Hyena species, the published checkpoint has identity activations after the first
@@ -196,12 +219,18 @@ class HyenaModel(LanguageModule):
                 skip_bias_add=False,
                 gather_output=not self.parallel_output,
                 skip_weight_param_allocation=self.pre_process and self.share_embeddings_and_output_weights,
+                tp_group=self.pg_collection.tp,
             )
             if self.config.add_bias_output:
                 self.output_layer.bias.data.zero_()
 
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
+
+        for name, module in self.named_modules():
+            if hasattr(module, 'finish_init'):
+                quant_config = get_quant_config_or_none(name, self.config.quant_recipe)
+                module.finish_init(quant_config)
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
@@ -219,20 +248,24 @@ class HyenaModel(LanguageModule):
         assert len(input_tensor) == 1, 'input_tensor should only be length 1 for gpt/bert'
         self.decoder.set_input_tensor(input_tensor[0])
 
-    def forward(
+    def _preprocess(
         self,
         input_ids: Tensor,
         position_ids: Tensor,
-        attention_mask: Tensor,
-        decoder_input: Tensor = None,
-        labels: Tensor = None,
-        loss_mask: Tensor = None,
-        inference_context: Optional[BaseInferenceContext] = None,
-        runtime_gather_output: Optional[bool] = None,
-    ) -> Tensor:
-        """Forward pass for the HyenaModel."""
+        decoder_input: Tensor | None = None,
+        inference_context: BaseInferenceContext | None = None,
+        packed_seq_params: PackedSeqParams | None = None,
+    ):
+        """Preprocesses inputs for the transformer decoder.
+
+        Applies embeddings to input tokens, or uses `decoder_input` from a previous
+        pipeline stage. Also sets up rotary positional embeddings.
+        """
+
         # If decoder_input is provided (not None), then input_ids and position_ids are ignored.
         # Otherwise, apply embedding layer on input_ids and position_ids to get decoder_input.
+
+        in_inference_mode = inference_context is not None and not self.training
 
         # Decoder embedding.
         if decoder_input is not None:
@@ -244,22 +277,86 @@ class HyenaModel(LanguageModule):
             # decoder will get hidden_states from encoder.input_tensor
             decoder_input = None
 
+        # Rotary positional embeddings (embedding is None for PP intermediate devices)
         rotary_pos_emb = None
-        if self.position_embedding_type == 'rope':
-            rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
-                inference_context, self.decoder, decoder_input, self.transformer_config, None
-            )
-            rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
+        rotary_pos_cos = None
+        rotary_pos_sin = None
+        if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
+            if in_inference_mode and self.config.flash_decode:
+                assert (
+                    inference_context.is_static_batching()
+                ), "GPTModel currently only supports static inference batching."
+                # Flash decoding uses precomputed cos and sin for RoPE
+                rotary_pos_cos, rotary_pos_sin = self.rotary_pos_emb_cache.setdefault(
+                    inference_context.max_sequence_length,
+                    self.rotary_pos_emb.get_cos_sin(inference_context.max_sequence_length),
+                )
+            else:
+                rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
+                    inference_context, self.decoder, decoder_input, self.config, packed_seq_params
+                )
+                rotary_pos_emb = self.rotary_pos_emb(
+                    rotary_seq_len,
+                    packed_seq=packed_seq_params is not None and packed_seq_params.qkv_format == 'thd',
+                )
 
-        # The following assert will currently fail when running inference.
-        # Commented out for now.
-        # TODO (duncan/rwaleffe): (1) confirm that the externally-generated
-        #   attention mask is not needed and is ignored by the model in
-        #   inference mode, (2) reduce the size of the externally-generated
-        #   attention mask to prevent CPU OOM (as we did for training), (3)
-        #   force the attention mask passed to the model in inference mode to
-        #   be None, so this assert will succeed.
-        # assert attention_mask is None, "The attention mask is ignored and should be set to None"
+        if (
+            in_inference_mode
+            and (self.config.enable_cuda_graph or self.config.flash_decode)
+            and rotary_pos_cos is not None
+            and inference_context.is_static_batching()
+        ):
+            current_batch_size = input_ids.shape[0]
+            sequence_len_offset = torch.tensor(
+                [inference_context.sequence_len_offset] * current_batch_size,
+                dtype=torch.int32,
+                device=rotary_pos_cos.device,  # Co-locate this with the rotary tensors
+            )
+        else:
+            sequence_len_offset = None
+
+        # Wrap decoder_input to allow the decoder (TransformerBlock) to delete the
+        # reference held by this caller function, enabling early garbage collection for
+        # inference. Skip wrapping if decoder_input is logged after decoder completion.
+        if in_inference_mode and not has_config_logger_enabled(self.config):
+            decoder_input = WrappedTensor(decoder_input)
+
+        return decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        attention_mask: Tensor,
+        decoder_input: Tensor = None,
+        labels: Tensor = None,
+        loss_mask: Tensor = None,
+        inference_context: Optional[BaseInferenceContext] = None,
+        packed_seq_params: PackedSeqParams = None,
+        runtime_gather_output: Optional[bool] = None,
+        *,
+        inference_params=None,
+        extra_block_kwargs=None,
+    ) -> Tensor:
+        """Forward pass for the HyenaModel."""
+        # If decoder_input is provided (not None), then input_ids and position_ids are ignored.
+        # Otherwise, apply embedding layer on input_ids and position_ids to get decoder_input.
+        inference_context = deprecate_inference_params(inference_context, inference_params)
+        in_inference_mode = inference_context is not None and not self.training
+        if in_inference_mode:
+            assert runtime_gather_output, "Inference must always gather TP logits"
+        else:
+            assert (
+                not self.config.flash_decode
+            ), "Flash decode is only supported in inference mode, but no inference_context is provided"
+
+        decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset = self._preprocess(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            decoder_input=decoder_input,
+            inference_context=inference_context,
+            packed_seq_params=packed_seq_params,
+        )
 
         # Run decoder.
         hidden_states = self.decoder(
@@ -267,6 +364,11 @@ class HyenaModel(LanguageModule):
             attention_mask=attention_mask,
             inference_context=inference_context,
             rotary_pos_emb=rotary_pos_emb,
+            rotary_pos_cos=rotary_pos_cos,
+            rotary_pos_sin=rotary_pos_sin,
+            packed_seq_params=packed_seq_params,
+            sequence_len_offset=sequence_len_offset,
+            **(extra_block_kwargs or {}),
         )
 
         if not self.post_process:
@@ -276,8 +378,17 @@ class HyenaModel(LanguageModule):
         output_weight = None
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
-        logits, _ = self.output_layer(hidden_states, weight=output_weight)
 
+        if in_inference_mode and inference_context.materialize_only_last_token_logits:
+            if inference_context.is_static_batching():
+                hidden_states = hidden_states[-1:, :, :]
+            else:
+                # Reshape [B, 1, H] to [1, B, H] → extract each sample’s true last‐token hidden
+                # state ([B, H]) → unsqueeze back to [1, B, H]
+                # (so that the output layer, which expects S×B×H, receives only the final token)
+                hidden_states = inference_context.last_token_logits(hidden_states.squeeze(1).unsqueeze(0)).unsqueeze(1)
+
+        logits, _ = self.output_layer(hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output)
         if labels is None:
             # [s b h] => [b s h]
             return logits.transpose(0, 1).contiguous()

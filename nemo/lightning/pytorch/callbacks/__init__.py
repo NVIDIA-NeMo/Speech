@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from nemo.lightning.pytorch.callbacks.ddp_parity_checker import DdpParityChecker
-from nemo.lightning.pytorch.callbacks.debugging import ParameterDebugger
+from nemo.lightning.pytorch.callbacks.debugging import ModelTrainingStateCallback, ParameterDebugger
 from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
 from nemo.lightning.pytorch.callbacks.jit_transform import JitConfig, JitTransform
 from nemo.lightning.pytorch.callbacks.memory_callback import MemoryMonitor
@@ -44,6 +44,7 @@ __all__ = [
     "DdpParityChecker",
     "GarbageCollectionCallback",
     "ParameterDebugger",
+    "ModelTrainingStateCallback",
     "ModelCallback",
     "JitTransform",
     "JitConfig",

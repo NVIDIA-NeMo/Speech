@@ -27,8 +27,7 @@
 # limitations under the License.
 
 import copy
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -36,7 +35,8 @@ import torch
 from tqdm import tqdm
 
 from nemo.collections.asr.modules import rnnt_abstract
-from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET
+from nemo.collections.asr.parts.context_biasing import BoostingTreeModelConfig
+from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET, NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.rnnt_maes_batched_computer import ModifiedAESBatchedRNNTComputer
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
@@ -82,9 +82,10 @@ def pack_hypotheses(hypotheses: List[Hypothesis]) -> List[Hypothesis]:
         if hyp.dec_state is not None:
             hyp.dec_state = _states_to_device(hyp.dec_state)
 
-        # Remove -1 from timestep
         if hyp.timestamp is not None and len(hyp.timestamp) > 0 and hyp.timestamp[0] == -1:
+            # Remove -1 from timestep
             hyp.timestamp = hyp.timestamp[1:]
+            hyp.y_sequence = hyp.y_sequence[1:]  # remove <sos> to have equal lengths with timestamps
 
     return hypotheses
 
@@ -383,13 +384,8 @@ class BeamRNNTInfer(Typing):
         self.token_offset = 0
 
         if ngram_lm_model:
-            if KENLM_AVAILABLE:
-                self.ngram_lm = kenlm.Model(ngram_lm_model)
-                self.ngram_lm_alpha = ngram_lm_alpha
-            else:
-                raise ImportError(
-                    "KenLM package (https://github.com/kpu/kenlm) is not installed. " "Use ngram_lm_model=None."
-                )
+            self.ngram_lm = ngram_lm_model
+            self.ngram_lm_alpha = ngram_lm_alpha
         else:
             self.ngram_lm = None
 
@@ -1550,8 +1546,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         maes_expansion_beta: Optional[int] = 2,
         max_symbols_per_step: Optional[int] = 10,
         preserve_alignments: bool = False,
-        ngram_lm_model: Optional[str | Path] = None,
-        ngram_lm_alpha: float = 0.0,
+        fusion_models: Optional[List[NGramGPULanguageModel]] = None,
+        fusion_models_alpha: Optional[List[float]] = None,
         blank_lm_score_mode: Optional[str | BlankLMScoreMode] = BlankLMScoreMode.LM_WEIGHTED_FULL,
         pruning_mode: Optional[str | PruningMode] = PruningMode.LATE,
         allow_cuda_graphs: Optional[bool] = True,
@@ -1581,12 +1577,13 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                 and affects the speed of inference since large values will perform large beam search in the next step.
             max_symbols_per_step: max symbols to emit on each step (to avoid infinite looping)
             preserve_alignments: if alignments are needed
-            ngram_lm_model: path to the NGPU-LM n-gram LM model: .arpa or .nemo formats
-            ngram_lm_alpha: weight for the n-gram LM scores
+            fusion_models: list of fusion models to use for decoding
+            fusion_models_alpha: list of alpha values for fusion models
             blank_lm_score_mode: mode for scoring blank symbol with LM
             pruning_mode: mode for pruning hypotheses with LM
             allow_cuda_graphs: whether to allow CUDA graphs
             return_best_hypothesis: whether to return the best hypothesis or N-best hypotheses
+            tokenizer: tokenizer for the model
         """
 
         super().__init__()
@@ -1614,8 +1611,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                 blank_index=self._blank_index,
                 max_symbols_per_step=self.max_symbols,
                 preserve_alignments=preserve_alignments,
-                ngram_lm_model=ngram_lm_model,
-                ngram_lm_alpha=ngram_lm_alpha,
+                fusion_models=fusion_models,
+                fusion_models_alpha=fusion_models_alpha,
                 blank_lm_score_mode=blank_lm_score_mode,
                 pruning_mode=pruning_mode,
                 allow_cuda_graphs=allow_cuda_graphs,
@@ -1630,22 +1627,24 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                 maes_expansion_beta=maes_expansion_beta,
                 maes_expansion_gamma=maes_expansion_gamma,
                 preserve_alignments=preserve_alignments,
-                ngram_lm_model=ngram_lm_model,
-                ngram_lm_alpha=ngram_lm_alpha,
+                ngram_lm_model=fusion_models[0] if fusion_models is not None else None,
+                ngram_lm_alpha=fusion_models_alpha[0] if fusion_models_alpha is not None else 0.0,
                 blank_lm_score_mode=blank_lm_score_mode,
                 pruning_mode=pruning_mode,
                 allow_cuda_graphs=allow_cuda_graphs,
             )
 
-    def disable_cuda_graphs(self):
+    def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs (e.g., for decoding in training)"""
         if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            self._decoding_computer.disable_cuda_graphs()
+            return self._decoding_computer.disable_cuda_graphs()
+        return False
 
-    def maybe_enable_cuda_graphs(self):
+    def maybe_enable_cuda_graphs(self) -> bool:
         """Enable CUDA graphs (if allowed)"""
         if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            self._decoding_computer.maybe_enable_cuda_graphs()
+            return self._decoding_computer.maybe_enable_cuda_graphs()
+        return False
 
     @property
     def output_types(self):
@@ -1675,6 +1674,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                     - If `return_best_hypothesis` is True, returns the best hypothesis for each batch.
                     - Otherwise, returns the N-best hypotheses for each batch.
         """
+        if partial_hypotheses is not None:
+            raise NotImplementedError("Partial hypotheses feature is not yet supported in batched beam search.")
         # Preserve decoder and joint training state
         decoder_training_state = self.decoder.training
         joint_training_state = self.joint.training
@@ -1725,6 +1726,8 @@ class BeamRNNTInferConfig:
     preserve_alignments: bool = False
     ngram_lm_model: Optional[str] = None
     ngram_lm_alpha: Optional[float] = 0.0
+    boosting_tree: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
+    boosting_tree_alpha: Optional[float] = 0.0
     hat_subtract_ilm: bool = False
     hat_ilm_weight: float = 0.0
     max_symbols_per_step: Optional[int] = 10

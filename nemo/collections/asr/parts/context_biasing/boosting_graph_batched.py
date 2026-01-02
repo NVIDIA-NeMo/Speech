@@ -41,7 +41,9 @@ class BoostingTreeModelConfig:
         None  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
     )
     context_score: float = 1.0  # The score for each arc transition in the context graph
-    depth_scaling: float = 1.0  # The scaling factor for the depth of the context graph
+    depth_scaling: float = (
+        2.0  # The scaling factor for the depth of the context graph (2.0 for CTC, RNN-T and TDT, 1.0 for Canary)
+    )
     unk_score: float = (
         0.0  # The score for unknown tokens (tokens that are not presented in the beginning of context-biasing phrases)
     )
@@ -57,6 +59,10 @@ class BoostingTreeModelConfig:
         5  # The number of alternative transcriptions to generate for each context-biasing phrase
     )
     bpe_alpha: float = 0.3  # The alpha parameter for BPE dropout
+
+    @staticmethod
+    def is_empty(cfg: "BoostingTreeModelConfig") -> bool:
+        return cfg.model_path is None and cfg.key_phrases_file is None and cfg.key_phrases_list is None
 
 
 class TBranch(NamedTuple):

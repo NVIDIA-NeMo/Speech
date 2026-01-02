@@ -372,9 +372,9 @@ class TestRNNTDecoding:
     @pytest.mark.parametrize(
         "beam_config",
         [
-            {"search_type": "malsd_batch", "allow_cuda_graphs": False, "ngram_lm_alpha": 0.3},
-            {"search_type": "maes_batch", "allow_cuda_graphs": False, "ngram_lm_alpha": 0.3},
-            {"search_type": "malsd_batch", "allow_cuda_graphs": True, "ngram_lm_alpha": 0.3},
+            {"search_type": "malsd_batch", "allow_cuda_graphs": False},
+            {"search_type": "maes_batch", "allow_cuda_graphs": False},
+            {"search_type": "malsd_batch", "allow_cuda_graphs": True},
         ],
     )
     @pytest.mark.parametrize("batch_size", [4])
@@ -395,7 +395,6 @@ class TestRNNTDecoding:
         blank_lm_score_mode,
     ):
         device = torch.device("cuda")
-        beam_config["ngram_lm_model"] = kenlm_model_path
 
         num_samples = min(batch_size, len(test_audio_filenames))
         model = rnnt_model.to(device)
@@ -405,6 +404,10 @@ class TestRNNTDecoding:
         )
 
         vocab_size = model.tokenizer.vocab_size
+
+        fusion_models = [NGramGPULanguageModel.from_file(lm_path=kenlm_model_path, vocab_size=vocab_size)]
+        fusion_models_alpha = [0.3]
+
         decoding = BeamBatchedRNNTInfer(
             model.decoder,
             model.joint,
@@ -414,6 +417,8 @@ class TestRNNTDecoding:
             return_best_hypothesis=True,
             pruning_mode=pruning_mode,
             blank_lm_score_mode=blank_lm_score_mode,
+            fusion_models=fusion_models,
+            fusion_models_alpha=fusion_models_alpha,
             **beam_config,
         )
 
@@ -557,16 +562,8 @@ class TestTDTDecoding:
     @pytest.mark.parametrize(
         "beam_config",
         [
-            {
-                "search_type": "malsd_batch",
-                "allow_cuda_graphs": False,
-                "ngram_lm_alpha": 0.3,
-            },
-            {
-                "search_type": "malsd_batch",
-                "allow_cuda_graphs": True,
-                "ngram_lm_alpha": 0.3,
-            },
+            {"search_type": "malsd_batch", "allow_cuda_graphs": False},
+            {"search_type": "malsd_batch", "allow_cuda_graphs": True},
         ],
     )
     @pytest.mark.parametrize("batch_size", [4])
@@ -587,7 +584,6 @@ class TestTDTDecoding:
         blank_lm_score_mode,
     ):
         device = torch.device("cuda")
-        beam_config["ngram_lm_model"] = kenlm_model_path
 
         num_samples = min(batch_size, len(test_audio_filenames))
         model = tdt_model.to(device)
@@ -600,6 +596,10 @@ class TestTDTDecoding:
         durations = list(model_config["model_defaults"]["tdt_durations"])
 
         vocab_size = model.tokenizer.vocab_size
+
+        fusion_models = [NGramGPULanguageModel.from_file(lm_path=kenlm_model_path, vocab_size=vocab_size)]
+        fusion_models_alpha = [0.3]
+
         decoding = BeamBatchedTDTInfer(
             model.decoder,
             model.joint,
@@ -610,6 +610,8 @@ class TestTDTDecoding:
             return_best_hypothesis=True,
             pruning_mode=pruning_mode,
             blank_lm_score_mode=blank_lm_score_mode,
+            fusion_models=fusion_models,
+            fusion_models_alpha=fusion_models_alpha,
             **beam_config,
         )
 

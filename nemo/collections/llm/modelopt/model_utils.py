@@ -18,6 +18,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Callable, Optional, Union
 
 import lightning.pytorch as L
+import modelopt.torch.opt as mto
 import torch
 import torch.nn as nn
 from lightning.pytorch.plugins.io.wrapper import _WrappingCheckpointIO
@@ -31,8 +32,6 @@ from nemo.lightning.io.pl import ckpt_to_weights_subdir
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
-
-mto, HAVE_MODELOPT = safe_import("modelopt.torch.opt")
 
 _, HAVE_TE = safe_import("transformer_engine")
 if HAVE_TE:
@@ -71,7 +70,11 @@ def _set_gpt_mamba_modelopt_spec(
     logging.info("Setting model layer specification to the modelopt layer spec")
 
     if isinstance(model_cfg, llm.GPTConfig):
-        model_cfg.transformer_layer_spec = partial(get_gpt_modelopt_spec, remap_te_layernorm=True)
+        model_cfg.transformer_layer_spec = partial(
+            get_gpt_modelopt_spec,
+            remap_te_layernorm=True,
+            local_core_attention=getattr(model_cfg, "softmax_type", "vanilla") != "vanilla",
+        )
     elif isinstance(model_cfg, llm.SSMConfig):
         model_cfg.mamba_stack_spec = partial(get_mamba_stack_modelopt_spec, remap_te_layernorm=True)
     else:
@@ -192,7 +195,7 @@ def setup_trainer_and_restore_model_with_modelopt_spec(
 
     tokenizer = None
     if tokenizer_path:
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
+        from nemo.collections.common.tokenizers.tokenizer_utils import get_tokenizer
 
         tokenizer = get_tokenizer(tokenizer_path)
 
@@ -214,8 +217,6 @@ def restore_modelopt_state(
         path (str): The path to the checkpoint.
         trainer (pl.Trainer): The trainer object, in case path not provided.
     """
-    if not HAVE_MODELOPT:
-        return
     if not path:
         if trainer is None:
             return
@@ -234,6 +235,7 @@ def restore_modelopt_state(
         mto.plugins.restore_sharded_modelopt_state(
             [core_model],
             ckpt_to_weights_subdir(path, is_saving=False),
+            prefix="module.",
         )
     if mto.ModeloptStateManager.is_converted(core_model):
         logging.info("Restored Model Optimizer state from checkpoint.")
@@ -253,9 +255,6 @@ def save_modelopt_state(model: "MegatronParallel", path: str, checkpoint_io: "Ch
         path (str): The path to the checkpoint.
         checkpoint_io (CheckpointIO): The checkpoint IO object from MegatronStrategy.
     """
-    if not HAVE_MODELOPT:
-        return
-
     # Save ModelOpt state too, if it exists.
     core_model = unwrap_model(model)
     if not mto.ModeloptStateManager.is_converted(core_model):

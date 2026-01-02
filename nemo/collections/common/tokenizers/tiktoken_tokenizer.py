@@ -62,6 +62,7 @@ def reload_mergeable_ranks(
     return ranks
 
 
+# pylint: disable=C0301
 PATTERN_TIKTOKEN = "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
 DEFAULT_TIKTOKEN_MAX_VOCAB = 2**17  # 131072
 SPECIAL_TOKENS = ["<unk>", "<s>", "</s>", "<mask>", "<pad>", "<cls>", "<sep>"]
@@ -69,71 +70,126 @@ SPECIAL_TOKEN_TEMPLATE = "<SPECIAL_{id}>"
 
 
 class TiktokenTokenizer(TokenizerSpec):
+    # pylint: disable=C0115,C0116
     """
     TiktokenTokenizer https://github.com/openai/tiktoken.
 
+    Usage 1 (vocab_file-based):
+        tokenizer = TiktokenTokenizer(
+            vocab_file="path/to/vocab.json",
+            vocab_size=131072,
+            num_special_tokens=1000,
+            special_tokens=["<unk>", "<s>", "</s>", "<mask>", "<pad>", "<cls>", "<sep>"],
+        )
+
+    Usage 2 (encoding_name-based):
+        tokenizer = TiktokenTokenizer(
+            encoding_name="o200_harmony",
+            bos_token="<|startoftext|>",
+            eos_token="<|endoftext|>",
+            pad_token="<|endoftext|>",
+        )
+
     Args:
-        model_path: path to tokenizer vocabulary
+        vocab_file: path to tokenizer vocabulary
+        encoding_name: name of the encoding to use
+        pattern: Regex pattern to split the text
+        vocab_size: size of the vocabulary
         num_special_tokens: number of special tokens to generate
         special_tokens: template for user-defined special tokens
-        pattern: Regex pattern to split the text
+        bos_token: beginning of sentence token
+        eos_token: end of sentence token
+        pad_token: padding token (default is eos_token)
     """
 
     def __init__(
         self,
-        vocab_file: str,
+        vocab_file: Optional[str] = None,
+        encoding_name: Optional[str] = None,
         pattern: str = PATTERN_TIKTOKEN,
         vocab_size: int = DEFAULT_TIKTOKEN_MAX_VOCAB,  # 131072
         num_special_tokens: int = 1000,
         special_tokens: Optional[List[str]] = None,
+        bos_token: str = "<|startoftext|>",
+        eos_token: str = "<|endoftext|>",
+        pad_token: str = "<|endoftext|>",
     ):
-        if not vocab_file or not os.path.exists(vocab_file):
-            raise ValueError(f"vocab_file: {vocab_file} is invalid")
+        if not encoding_name:
+            if not vocab_file or not os.path.exists(vocab_file):
+                raise ValueError(f"vocab_file: {vocab_file} is invalid")
 
-        if special_tokens is None:
-            special_tokens = SPECIAL_TOKENS.copy()
+        if vocab_file is not None:
+            if special_tokens is None:
+                special_tokens = SPECIAL_TOKENS.copy()
 
-        assert len(special_tokens) == len(set(special_tokens)), f"Special tokens should be unique: {special_tokens}"
-        assert len(special_tokens) <= num_special_tokens < vocab_size
-        assert set(SPECIAL_TOKENS) <= set(special_tokens), f"Custom special tokens should include {SPECIAL_TOKENS}"
+            assert len(special_tokens) == len(
+                set(special_tokens)
+            ), f"Special tokens should be unique: {special_tokens}"
+            assert len(special_tokens) <= num_special_tokens < vocab_size
+            assert set(SPECIAL_TOKENS) <= set(special_tokens), f"Custom special tokens should include {SPECIAL_TOKENS}"
 
-        self._unk_id = special_tokens.index("<unk>")
-        self._bos_id = special_tokens.index("<s>")
-        self._eos_id = special_tokens.index("</s>")
-        self._mask_id = special_tokens.index("<mask>")
-        self._pad_id = special_tokens.index("<pad>")
-        self._cls_id = special_tokens.index("<cls>")
-        self._sep_id = special_tokens.index("<sep>")
+            self._unk_id = special_tokens.index("<unk>")
+            self._bos_id = special_tokens.index("<s>")
+            self._eos_id = special_tokens.index("</s>")
+            self._mask_id = special_tokens.index("<mask>")
+            self._pad_id = special_tokens.index("<pad>")
+            self._cls_id = special_tokens.index("<cls>")
+            self._sep_id = special_tokens.index("<sep>")
 
-        self._vocab_size = vocab_size
-        print(f'{self._vocab_size = }')
-        self.num_special_tokens = num_special_tokens
-        special_filler = [SPECIAL_TOKEN_TEMPLATE.format(id=i) for i in range(len(special_tokens), num_special_tokens)]
-        self.special_filler = special_filler
-        if special_filler:
-            print(f"Adding special tokens {special_filler[0]}, ..., {special_filler[-1]}")
-        self.special_tokens = special_tokens + special_filler
-        assert len(set(self.special_tokens)) == len(self.special_tokens) == num_special_tokens, self.special_tokens
-        self.inner_vocab_size = vocab_size - num_special_tokens
+            # reload vocab
+            self._vocab_size = vocab_size
+            self.inner_vocab_size = self._vocab_size - num_special_tokens
+            self.token2id = reload_mergeable_ranks(vocab_file, max_vocab=self.inner_vocab_size)
+            tokenizer_name = Path(vocab_file).parent.name
 
-        # reload vocab
-        self.token2id = reload_mergeable_ranks(vocab_file, max_vocab=self.inner_vocab_size)
-        self.id2token = {v: k for k, v in self.token2id.items()}
-        assert set(range(self.inner_vocab_size)) == set(self.id2token.keys())
+            print(f'{self._vocab_size = }')
+            self.num_special_tokens = num_special_tokens
+            special_filler = [
+                SPECIAL_TOKEN_TEMPLATE.format(id=i) for i in range(len(special_tokens), num_special_tokens)
+            ]
+            self.special_filler = special_filler
+            if special_filler:
+                print(f"Adding special tokens {special_filler[0]}, ..., {special_filler[-1]}")
+            self.special_tokens = special_tokens + special_filler
+            assert len(set(self.special_tokens)) == len(self.special_tokens) == num_special_tokens, self.special_tokens
+            encoding_special_tokens = {}  # special tokens are handled manually
+            self.allowed_special = set()
+        else:
+            tokenizer_base = tiktoken.get_encoding(encoding_name)
+            self.token2id = tokenizer_base._mergeable_ranks
+            pattern = tokenizer_base._pat_str
+            tokenizer_name = encoding_name
+            self.inner_vocab_size = len(tokenizer_base._mergeable_ranks) + len(tokenizer_base._special_tokens)
+            self.num_special_tokens = 0  # special tokens handled inside tiktoken
+            self._vocab_size = self.inner_vocab_size
+            self.special_filler = []
+            self.special_tokens = []
+            self._bos_id = tokenizer_base.encode(bos_token, allowed_special="all")
+            self._eos_id = tokenizer_base.encode(eos_token, allowed_special="all")
+            self._pad_id = tokenizer_base.encode(pad_token, allowed_special="all")
+            self._unk_id = -1
+            self._mask_id = -1
+            self._cls_id = -1
+            self._sep_id = -1
+            self.allowed_special = "all"
+            encoding_special_tokens = tokenizer_base._special_tokens
+
+        id2token = {v: k for k, v in self.token2id.items()}
+        assert set(range(self.inner_vocab_size)) == set(id2token.keys())
 
         self.shifted_id2token = {i: tok for i, tok in enumerate(self.special_tokens)}
-        for key, value in self.id2token.items():
+        for key, value in id2token.items():
             self.shifted_id2token[key + self.num_special_tokens] = value.decode('utf-8', errors='replace')
 
         self.tokenizer = tiktoken.Encoding(
-            name=Path(vocab_file).parent.name,
+            name=tokenizer_name,
             pat_str=pattern,
             mergeable_ranks=self.token2id,
-            special_tokens={},  # special tokens are handled manually
+            special_tokens=encoding_special_tokens,
         )
 
     def text_to_tokens(self, text: str):
-        token_ids = self.tokenizer.encode(text)
+        token_ids = self.tokenizer.encode(text, allowed_special=self.allowed_special)
         return [self.tokenizer.decode_single_token_bytes(token) for token in token_ids]
 
     def tokens_to_text(self, tokens: List[int]):
@@ -165,7 +221,7 @@ class TiktokenTokenizer(TokenizerSpec):
         return tokens
 
     def text_to_ids(self, text: str):
-        tokens = self.tokenizer.encode(text)
+        tokens = self.tokenizer.encode(text, allowed_special=self.allowed_special)
         tokens = [t + self.num_special_tokens for t in tokens]
         return tokens
 

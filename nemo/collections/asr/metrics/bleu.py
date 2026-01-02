@@ -184,7 +184,7 @@ class BLEU(SacreBLEUScore):
             tgt_lenths_cpu_tensor = targets_lengths.long().cpu()
             for idx, tgt_len in enumerate(tgt_lenths_cpu_tensor):
                 target = targets_cpu_tensor[idx][:tgt_len].tolist()
-                reference = self.decoding.decode_tokens_to_str(target)
+                reference = self.decoding.decode_ids_to_str(target)
                 tok = tokenizers[idx] if tokenizers else None  # `None` arg uses default tokenizer
 
                 # TODO: the backend implementation of this has a lot of cpu to gpu operations. Should reimplement

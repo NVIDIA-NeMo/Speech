@@ -13,15 +13,18 @@
 # limitations under the License.
 
 import os
-import shutil
 from pathlib import Path
 from typing import Union
+
 import fiddle as fdl
 
 from nemo.lightning.io.artifact.base import Artifact
+from nemo.utils.file_utils import robust_copy
 
 
 class PathArtifact(Artifact[Path]):
+    """An artifact representing a `pathlib.Path` to a file."""
+
     def dump(self, instance, value: Path, absolute_dir: Path, relative_dir: Path) -> Path:
         new_value = copy_file(value, absolute_dir, relative_dir)
         return new_value
@@ -31,6 +34,8 @@ class PathArtifact(Artifact[Path]):
 
 
 class FileArtifact(Artifact[str]):
+    """An artifact representing a file path as a string."""
+
     def dump(self, instance, value: str, absolute_dir: Path, relative_dir: Path) -> str:
         if not pathize(value).exists():
             # This is Artifact is just a string.
@@ -43,21 +48,38 @@ class FileArtifact(Artifact[str]):
 
 
 def pathize(s):
+    """Converts a string to a Path object if it is not already one."""
     if not isinstance(s, Path):
         return Path(s)
     return s
 
 
 def copy_file(src: Union[Path, str], path: Union[Path, str], relative_dst: Union[Path, str]):
+    """
+    Copies a source file to a destination path within a relative directory structure.
+
+    Args:
+        src: The source file path.
+        path: The absolute base path for the destination.
+        relative_dst: The relative path within the base path.
+
+    Returns:
+        The relative path to the copied file.
+
+    Raises:
+        FileExistsError: If the destination file already exists.
+    """
     relative_path = pathize(relative_dst) / pathize(src).name
     output = pathize(path) / relative_path
     if output.exists():
         raise FileExistsError(f"Dst file already exists {str(output)}")
-    shutil.copy2(src, output)
+    robust_copy(src, output)
     return relative_path
 
 
 class DirArtifact(Artifact[str]):
+    """An artifact representing a directory path as a string."""
+
     def dump(self, instance, value: str, absolute_dir: Path, relative_dir: Path) -> str:
         value = pathize(value)
         absolute_dir = pathize(absolute_dir)
@@ -76,6 +98,8 @@ class DirArtifact(Artifact[str]):
 
 
 class DirOrStringArtifact(DirArtifact):
+    """An artifact that can be either a directory path or a plain string."""
+
     def dump(self, instance, value: str, absolute_dir: Path, relative_dir: Path) -> str:
         if not pathize(value).exists():
             # This is Artifact is just a string.

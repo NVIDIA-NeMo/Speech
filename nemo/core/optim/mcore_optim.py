@@ -14,6 +14,7 @@
 
 import torch
 
+from nemo.utils import logging
 from nemo.utils.nvtx import nvtx_range_pop, nvtx_range_push
 
 
@@ -64,11 +65,14 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
         """
         self.mcore_optimizer.zero_grad(set_to_none)
 
-    def reload_model_params(self):
+    def reload_model_params(self, state_dict=None):
         """
         Reloads model parameters from the optimizer.
         """
-        self.mcore_optimizer.reload_model_params()
+        if state_dict is None:
+            self.mcore_optimizer.reload_model_params()
+        else:
+            self.mcore_optimizer.reload_model_params(state_dict=state_dict)
 
     def state_dict(self):
         """
@@ -91,7 +95,12 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
         self.mcore_optimizer.load_state_dict(state_dict)
 
     def sharded_state_dict(
-        self, model_sharded_state_dict, optimizer_state_dict=None, is_loading=False, dist_ckpt_parallel_save=False
+        self,
+        model_sharded_state_dict,
+        optimizer_state_dict=None,
+        is_loading=False,
+        dist_ckpt_parallel_save=None,
+        **kwargs,
     ):
         """
         Returns the sharded state dictionary for distributed checkpointing.
@@ -106,10 +115,15 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
         Returns:
             dict: The sharded optimizer state dictionary.
         """
-        sharding_type = 'fully_sharded_model_space' if dist_ckpt_parallel_save else 'dp_zero_gather_scatter'
-        return self.mcore_optimizer.sharded_state_dict(
-            model_sharded_state_dict, is_loading=is_loading, sharding_type=sharding_type
-        )
+        if dist_ckpt_parallel_save is not None:
+            logging.warning(
+                "dist_ckpt_parallel_save is deprecated, please use `metadata['distrib_optim_sharding_type']`"
+                " to specify DistributedOptimizer format details instead."
+            )
+            kwargs['sharding_type'] = (
+                'fully_sharded_model_space' if dist_ckpt_parallel_save else 'dp_zero_gather_scatter'
+            )
+        return self.mcore_optimizer.sharded_state_dict(model_sharded_state_dict, is_loading=is_loading, **kwargs)
 
     def step(self, closure=None):
         """

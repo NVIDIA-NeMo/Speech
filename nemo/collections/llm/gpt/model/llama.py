@@ -903,6 +903,13 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
                     "decoder.layers.*.mlp.experts.linear_fc1.weight": "model.layers.*.feed_forward.experts.gate_up_proj",
                 }
             )
+
+            # Remove the transform with source_key "decoder.layers.*.mlp.linear_fc1.weight" from transforms
+            # Llama4's HF model has a different mapping for the MLP weights (map to feed_forward instead of mlp)
+            transforms = [
+                t for t in transforms if getattr(t, "source_key", None) != "decoder.layers.*.mlp.linear_fc1.weight"
+            ]
+
             transforms.extend(
                 [
                     io.state_transform(

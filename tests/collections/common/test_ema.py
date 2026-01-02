@@ -14,6 +14,7 @@
 
 import os.path
 from typing import Any, Dict, Union
+from unittest.mock import patch
 
 import lightning.pytorch as pl
 import pytest
@@ -31,6 +32,12 @@ from nemo.utils.exp_manager import exp_manager
 DEVICE_CAPABILITY = None
 if torch.cuda.is_available():
     DEVICE_CAPABILITY = torch.cuda.get_device_capability()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _mock_onelogger_update_config():
+    with patch('nemo.lightning.callback_group.CallbackGroup.update_config', return_value=None):
+        yield
 
 
 def extract_ema_weights(pl_module, trainer):

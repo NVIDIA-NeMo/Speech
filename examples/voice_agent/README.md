@@ -137,7 +137,7 @@ If you want to use a different port for client connection, you can modify `clien
 
 Most LLMs from HuggingFace are supported. A few examples are:
 - [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) (default)
-    - Please use `server/server_configs/llm_configs/nemotron-nano-v2.yaml` as the server config.
+    - Please use `server/server_configs/llm_configs/nemotron_nano_v2.yaml` as the server config.
 - [Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
     - Please use `server/server_configs/llm_configs/qwen2.5-7B.yaml` as the server config.
 - [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)
@@ -202,7 +202,7 @@ We will support more TTS models in the future.
 
 As the new turn-taking prediction model is not yet released, we use the VAD-based turn-taking prediction for now. You can set the `vad.stop_secs` to the desired value in `server/server_configs/default.yaml` to control the amount of silence needed to indicate the end of a user's turn.
 
-Additionally, the voice agent supports ignoring back-channel phrases while the bot is talking, which it means phrases such as "uh-huh", "yeah", "okay"  will not interrupt the bot while it's talking. To control the backchannel phrases to be used, you can set the `turn_taking.backchannel_phrases` in the server config to the desired list of phrases or a file path to a yaml file containing the list of phrases. By default, it will use the phrases in `server/backchannel_phrases.yaml`. Setting it to `null` will disable detecting backchannel phrases, and that the VAD will interrupt the bot immediately when the user starts speaking.
+Additionally, the voice agent supports ignoring back-channel phrases while the bot is talking, which means phrases such as "uh-huh", "yeah", "okay"  will not interrupt the bot while it's talking. To control the backchannel phrases to be used, you can set the `turn_taking.backchannel_phrases` in the server config to the desired list of phrases or a file path to a yaml file containing the list of phrases. By default, it will use the phrases in `server/backchannel_phrases.yaml`. Setting it to `null` will disable detecting backchannel phrases, and that the VAD will interrupt the bot immediately when the user starts speaking.
 
 
 ### 🔧 Tool Calling
@@ -237,7 +237,7 @@ More tools will be added later. However, if you cannot wait to hack and add your
 #### Adding new tools
 
 Additional tools can be added in two ways:
-- Adding a new dirction function such as the `get_city_weather` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/basic_tools.py`.
+- Adding a new direct function such as the `get_city_weather` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/basic_tools.py`.
 - Adding new tools to adjust the behavior of each of the STT/TTS/Diar/LLM/TurnTaking components, by adding the `ToolCallingMixin` to the component and implementing the `setup_tool_calling` method as the `KokoroTTSService` class in `nemo/agents/voice_agent/pipecat/services/nemo/tts.py`.
 
 The tools are then registered to the LLM via the `register_direct_tools_to_llm` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/mixins.py`, as shown in the example in `examples/voice_agent/server/bot_websocket_server.py`.
@@ -264,7 +264,7 @@ We noticed that sometimes the LLM cannot do anything else that's not related to 
 
 NVIDIA also provides a variety of [NIM](https://developer.nvidia.com/nim?sortBy=developer_learning_library%2Fsort%2Ffeatured_in.nim%3Adesc%2Ctitle%3Aasc&hitsPerPage=12) services for better ASR, TTS and LLM performance with more efficient deployment on either cloud or local servers.
 
-You can also modify the `server/bot_websocket_server.py` to use NVIDIA NIM services for better LLM,ASR and TTS performance, by refering to these Pipecat services:
+You can also modify the `server/bot_websocket_server.py` to use NVIDIA NIM services for better LLM, ASR and TTS performance, by referring to these Pipecat services:
 - [NVIDIA NIM LLM Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/nim/llm.py)
 - [NVIDIA Riva ASR Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/riva/stt.py)
 - [NVIDIA Riva TTS Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/riva/tts.py)

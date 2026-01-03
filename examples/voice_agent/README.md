@@ -237,10 +237,12 @@ More tools will be added later. However, if you cannot wait to hack and add your
 #### Adding new tools
 
 Additional tools can be added in two ways:
-- Adding a new direct function such as the `get_city_weather` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/basic_tools.py`.
+- Adding a new [direct function](https://docs.pipecat.ai/guides/learn/function-calling#using-direct-functions-shorthand) such as the `get_city_weather` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/basic_tools.py`.
 - Adding new tools to adjust the behavior of each of the STT/TTS/Diar/LLM/TurnTaking components, by adding the `ToolCallingMixin` to the component and implementing the `setup_tool_calling` method as the `KokoroTTSService` class in `nemo/agents/voice_agent/pipecat/services/nemo/tts.py`.
 
 The tools are then registered to the LLM via the `register_direct_tools_to_llm` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/mixins.py`, as shown in the example in `examples/voice_agent/server/bot_websocket_server.py`.
+
+More details on tool calling with Pipecat can be found in the [Pipecat documentation](https://docs.pipecat.ai/guides/learn/function-calling).
 
 #### Notes on system prompt with tools
 

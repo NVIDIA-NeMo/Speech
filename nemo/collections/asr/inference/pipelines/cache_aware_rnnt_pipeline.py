@@ -437,9 +437,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
             sample_rate=self.sample_rate,
             batch_size=self.batch_size,
             request_type=self.request_type,
-            preprocessor=None,
-            buffer_size_in_secs=None,
-            device=None,
+            preprocessor=self.preprocessor,
+            buffer_size_in_secs=self.buffer_size_in_secs,
+            device=self.device,
             pad_last_frame=True,
         )
         return request_generator

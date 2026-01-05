@@ -405,8 +405,12 @@ class MagpieInferenceRunner:
             self.model.inference_parameters.lookahead_window_size = self.config.lookahead_window_size
             self.model.inference_parameters.estimate_alignment_from_layers = self.config.estimate_alignment_from_layers
             self.model.inference_parameters.apply_prior_to_layers = self.config.apply_prior_to_layers
-            self.model.inference_parameters.start_prior_after_n_audio_steps = self.config.start_prior_after_n_audio_steps
-            self.model.inference_parameters.ignore_finished_sentence_tracking = self.config.ignore_finished_sentence_tracking
+            self.model.inference_parameters.start_prior_after_n_audio_steps = (
+                self.config.start_prior_after_n_audio_steps
+            )
+            self.model.inference_parameters.ignore_finished_sentence_tracking = (
+                self.config.ignore_finished_sentence_tracking
+            )
             self.model.inference_parameters.eos_detection_method = self.config.eos_detection_method
 
             # Run inference

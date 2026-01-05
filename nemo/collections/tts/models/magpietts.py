@@ -264,20 +264,20 @@ class InferenceParameters:
         min_generated_frames=4,
     """
 
-    max_decoder_steps: int=500
-    temperature: float=0.7
-    topk: int=80
-    cfg_scale: float =2.5
-    apply_attention_prior: bool =True
-    prior_epsilon: float =1e-5
-    lookahead_window_size: int=10
-    estimate_alignment_from_layers: Optional[List[int]]=None
-    apply_prior_to_layers: Optional[List[int]]=None
-    start_prior_after_n_audio_steps:int =10
-    use_LT_kv_cache:bool=True
-    ignore_finished_sentence_tracking:bool=False
-    eos_detection_method:str="argmax_or_multinomial_any"
-    min_generated_frames:int=4
+    max_decoder_steps: int = 500
+    temperature: float = 0.7
+    topk: int = 80
+    cfg_scale: float = 2.5
+    apply_attention_prior: bool = True
+    prior_epsilon: float = 1e-5
+    lookahead_window_size: int = 10
+    estimate_alignment_from_layers: Optional[List[int]] = None
+    apply_prior_to_layers: Optional[List[int]] = None
+    start_prior_after_n_audio_steps: int = 10
+    use_LT_kv_cache: bool = True
+    ignore_finished_sentence_tracking: bool = False
+    eos_detection_method: str = "argmax_or_multinomial_any"
+    min_generated_frames: int = 4
 
 
 def worker_init_fn(worker_id):

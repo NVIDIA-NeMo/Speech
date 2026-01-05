@@ -61,9 +61,26 @@ def _is_fn_name_regex_support(model_tokenizer: AnyTokenizer) -> bool:
 @ToolParserManager.register_module("nemotron_json")
 class NemotronToolParser(ToolParser):
     """
-    Tool call parser for Nemotron-Nano-V2
+    Streaming tool call parser specifically designed for the Nemotron-Nano-V2 model.
 
-    Used when --enable-auto-tool-choice --tool-call-parser nemotron_json are all set
+    This parser functions as an active reconstruction engine, managing the realtime
+    transition from text generation to structured tool execution. Its primary responsibilities
+    during token streaming include:
+
+    - Interception: Detects and consumes the `<TOOLCALL>` control tokens to switch parsing modes.
+    - Buffering: Manages a lookahead buffer to prevent ambiguous partial tags (like `<TOO`)
+                 from leaking to the user.
+    - Restoration: Utilizes `partial_json_parser` to reconstruct valid objects from incomplete
+                   JSON fragments.
+    - Differentiation: Computes the precise "delta" between the current and previous JSON states
+                       to ensure monotonic streaming.
+    - Sanitization: Strips premature auto-completed closing characters (e.g., `}`)
+                    to prevent malformed updates.
+
+    Configuration:
+        Activate this parser in the vLLM server by setting the following mandatory arguments:
+        - `--enable-auto-tool-choice`
+        - `--tool-call-parser nemotron_json`
     """
 
     def __init__(self, tokenizer: AnyTokenizer):
@@ -94,6 +111,13 @@ class NemotronToolParser(ToolParser):
         Remove parser auto-completed closing braces/brackets plus trailing whitespace.
         These should be flushed only when a tool call completes to avoid duplicate
         argument fragments.
+
+        Args:
+            chunk (str):
+                The chunk of text to strip.
+        Return:
+            (str): The chunk of text with trailing auto-completed closing braces/brackets
+                   plus trailing whitespace removed.
         """
         idx = len(chunk)
         while idx > 0 and chunk[idx - 1] in " \t\r\n}]":
@@ -109,7 +133,18 @@ class NemotronToolParser(ToolParser):
     @staticmethod
     def _common_prefix_len(left: str, right: str) -> int:
         """
-        Return the length of the shared prefix between left and right strings.
+        Calculate the length of the longest initial substring shared by two strings.
+
+        This utility is used to determine how much of the tool arguments have already
+        been streamed to the client, allowing the system to send only the new 'delta'.
+
+        Args:
+            left (str): The first string to compare (typically the full current arguments).
+            right (str): The second string to compare (typically the previously streamed arguments).
+
+        Returns:
+            int: The count of identical characters starting from index 0.
+                 Returns 0 if the strings share no common prefix.
         """
         max_len = min(len(left), len(right))
         idx = 0
@@ -122,9 +157,25 @@ class NemotronToolParser(ToolParser):
         Determine the incremental suffix to stream for the current tool call.
         Ensures we only emit monotonic chunks by trimming our tracked prefix to
         the longest common prefix with the latest JSON snapshot.
+
+        Args:
+            cur_arguments_json (str):
+                The current arguments JSON in string format.
+            end_of_call (bool):
+                Whether the current tool call is the last one in the array.
+
+        Return:
+            (str): The incremental suffix to stream for the current tool call.
         """
         tool_idx = self.current_tool_id
         if tool_idx < 0 or tool_idx >= len(self.streamed_args_for_tool):
+            if tool_idx < 0:
+                logger.debug(f"current_tool_id is negative ({tool_idx}), no tool designated yet")
+            else:
+                logger.warning(
+                    f"tool_idx ({tool_idx}) is out of bounds for streamed_args_for_tool "
+                    f"(length: {len(self.streamed_args_for_tool)})"
+                )
             return ""
 
         streamed_prefix = self.streamed_args_for_tool[tool_idx]
@@ -167,9 +218,28 @@ class NemotronToolParser(ToolParser):
         self, delta_text: str, start_token: Optional[str], end_token: Optional[str]
     ) -> str:
         """
-        Consume characters that could begin a tool tag. Only suppress the exact
-        <TOOLCALL> / </TOOLCALL> sequences, and let everything else (e.g. </think>)
-        pass through untouched.
+        Filters incoming streaming text to hide incomplete or complete tool call tags.
+
+        This method acts as a buffer for the streaming response. It consumes and holds
+        characters that resemble the start of `start_token` or `end_token` (e.g., "<", "<T", "<TOO").
+
+        - If the buffer eventually matches the full token exactly (e.g., "<TOOLCALL>"),
+          the buffer is discarded (suppressed).
+        - If the buffer diverges from the expected tokens (e.g., user types "<Think>"),
+          the buffered text is released (flushed) alongside the current character.
+        - Regular text that does not start with "<" passes through immediately.
+
+        Args:
+            delta_text (str):
+                The new chunk of text generated by the model in this streaming step.
+            start_token (Optional[str]):
+                The opening tag to suppress (e.g., "<TOOLCALL>"). If None, no start tag is tracked.
+            end_token (Optional[str]):
+                The closing tag to suppress (e.g., "</TOOLCALL>"). If None, no end tag is tracked.
+
+        Returns:
+            str: The portion of `delta_text` (plus any previously buffered ambiguous characters)
+            that has been confirmed as *not* being part of a tool call tag.
         """
         if not delta_text:
             return delta_text
@@ -213,11 +283,24 @@ class NemotronToolParser(ToolParser):
         request: ChatCompletionRequest,
     ) -> ExtractedToolCallInformation:
         """
-        Extract the tool calls from a complete model response. Requires
-        find-and-replacing single quotes with double quotes for JSON parsing,
-        make sure your tool call arguments don't ever include quotes!
-        """
+        Parses a complete (non-streaming) model response to extract tool execution instructions.
 
+        This method attempts to convert the raw text output from the model into structured
+        `NemotronToolCall` objects. It employs a robust two-stage parsing strategy:
+        - Direct JSON Parsing: First attempts to parse the content following the
+           `<TOOLCALL>` token as valid JSON.
+        - Regex Fallback: If direct parsing fails (e.g., due to extra text or noise),
+           it uses a regular expression to locate and extract the specific JSON array pattern.
+
+        Args:
+            model_output (str): The full text generated by the model.
+            request (ChatCompletionRequest): The original request object (used for context if needed).
+
+        Returns:
+            ExtractedToolCallInformation: An object containing the parsed list of tool calls
+            and any preceding text content. If parsing fails entirely, it returns the raw
+            content as a standard text message.
+        """
         # case -- if a tool call token is not present, return a text response
         if self.bot_token not in model_output:
             return ExtractedToolCallInformation(tools_called=False, tool_calls=[], content=model_output)
@@ -245,9 +328,12 @@ class NemotronToolParser(ToolParser):
             except json.JSONDecodeError:
                 # use a regex to find the part corresponding to the tool call.
                 # NOTE: This use case should not happen if the model is trained
-                # correctly. It's a easy possible fix so it's included, but
+                # correctly. It's an easy possible fix so it's included, but
                 # can be brittle for very complex / highly nested tool calls
-                raw_tool_call = self.tool_call_regex.findall(tool_content)[0]
+                matches = self.tool_call_regex.findall(tool_content)
+                if not matches:
+                    raise ValueError(f"No tool call pattern found in: {tool_content[:100]} ...")
+                raw_tool_call = matches[0]
                 function_call_arr = json.loads(raw_tool_call)
 
             # Tool Call
@@ -284,6 +370,26 @@ class NemotronToolParser(ToolParser):
         delta_token_ids: Sequence[int],
         request: ChatCompletionRequest,
     ) -> Union[DeltaMessage, None]:
+        """
+        Parses the raw text stream to identify and extract tool calls in real-time.
+        This method monitors for the `<TOOLCALL>` trigger to switch parsing modes, buffers
+        ambiguous tag prefixes to prevent leakage, and utilizes partial JSON parsing to
+        compute and emit precise incremental updates (deltas) for tool arguments while
+        suppressing auto-generated artifacts.
+
+        Args:
+            previous_text (str): (Placeholder) The generated text prior to the current step.
+            current_text (str): The total generated text including the new token.
+            delta_text (str): The specific text chunk generated in this step.
+            previous_token_ids (Sequence[int]): (Placeholder) Token IDs for previous text.
+            current_token_ids (Sequence[int]): (Placeholder) Token IDs for current text.
+            delta_token_ids (Sequence[int]): (Placeholder) Token IDs for the delta.
+            request (ChatCompletionRequest): (Placeholder) The original client request object.
+
+        Returns:
+            Union[DeltaMessage, None]: A `DeltaMessage` containing visible content or
+            tool call updates, or `None` if the output is currently buffered or unchanged.
+        """
         # if candidates tool call tokens are in the tokens generated so far, that
         # means we're parsing as tool calls now. Suppress streaming if we are
         # currently generating any prefix of the start or end tag.
@@ -337,7 +443,9 @@ class NemotronToolParser(ToolParser):
             except (partial_json_parser.core.exceptions.MalformedJSON, json.JSONDecodeError, ValueError):
                 return None
 
-            current_tool_call: dict = tool_call_arr[self.current_tool_id] if len(tool_call_arr) > 0 else {}
+            current_tool_call: dict = (
+                tool_call_arr[self.current_tool_id] if len(tool_call_arr) > 0 and self.current_tool_id >= 0 else {}
+            )
 
             # case -- if no tokens have been streamed for the tool, e.g.
             #   only the array brackets, stream nothing
@@ -352,7 +460,7 @@ class NemotronToolParser(ToolParser):
                 # haven't missed anything in the previous one that was
                 # auto-generated due to JSON completions, but wasn't
                 # streamed to the client yet.
-                if self.current_tool_id >= 0:
+                if self.current_tool_id >= 0 and self.current_tool_id < len(self.streamed_args_for_tool):
                     diff: Union[str, None] = current_tool_call.get("arguments")
 
                     if diff:
@@ -404,12 +512,13 @@ class NemotronToolParser(ToolParser):
             # now we know we're on the same tool call and we're streaming
             # arguments
             else:
-
-                prev_arguments = self.prev_tool_call_arr[self.current_tool_id].get("arguments")
+                if self.current_tool_id < 0 or self.current_tool_id >= len(self.prev_tool_call_arr):
+                    prev_arguments = None
+                else:
+                    prev_arguments = self.prev_tool_call_arr[self.current_tool_id].get("arguments")
                 cur_arguments = current_tool_call.get("arguments")
 
                 if not cur_arguments and not prev_arguments:
-
                     delta = None
                 elif not cur_arguments and prev_arguments:
                     logger.error("INVARIANT - impossible to have arguments reset " "mid-arguments")
@@ -428,8 +537,20 @@ class NemotronToolParser(ToolParser):
                                 )
                             ]
                         )
-                        self.streamed_args_for_tool[self.current_tool_id] += arguments_delta
-                        self.tool_args_emitted[self.current_tool_id] = True
+                        if self.current_tool_id >= 0 and self.current_tool_id < len(self.streamed_args_for_tool):
+                            self.streamed_args_for_tool[self.current_tool_id] += arguments_delta
+                        else:
+                            logger.warning(
+                                f"current_tool_id ({self.current_tool_id}) is out of bounds for streamed_args_for_tool "
+                                f"(length: {len(self.streamed_args_for_tool)})"
+                            )
+                        if self.current_tool_id >= 0 and self.current_tool_id < len(self.tool_args_emitted):
+                            self.tool_args_emitted[self.current_tool_id] = True
+                        else:
+                            logger.warning(
+                                f"current_tool_id ({self.current_tool_id}) is out of bounds for tool_args_emitted "
+                                f"(length: {len(self.tool_args_emitted)})"
+                            )
                     else:
                         # Do not flush final JSON here; let the serving layer
                         # compute a minimal remaining suffix on finish.
@@ -465,8 +586,20 @@ class NemotronToolParser(ToolParser):
                                     delta.tool_calls.append(extra)
                                 else:
                                     delta.tool_calls = [extra]
-                            self.streamed_args_for_tool[self.current_tool_id] += remaining_suffix
-                            self.tool_args_emitted[self.current_tool_id] = True
+                            if self.current_tool_id >= 0 and self.current_tool_id < len(self.streamed_args_for_tool):
+                                self.streamed_args_for_tool[self.current_tool_id] += remaining_suffix
+                            else:
+                                logger.warning(
+                                    f"current_tool_id ({self.current_tool_id}) is out of bounds for streamed_args_for_tool "
+                                    f"(length: {len(self.streamed_args_for_tool)})"
+                                )
+                            if self.current_tool_id >= 0 and self.current_tool_id < len(self.tool_args_emitted):
+                                self.tool_args_emitted[self.current_tool_id] = True
+                            else:
+                                logger.warning(
+                                    f"current_tool_id ({self.current_tool_id}) is out of bounds for tool_args_emitted "
+                                    f"(length: {len(self.tool_args_emitted)})"
+                                )
                 except Exception as e:
                     # Failure to flush the remaining arguments suffix is non-fatal; log for debugging.
                     logger.warning(f"Error in flushing remaining suffix for tool call: {e}")

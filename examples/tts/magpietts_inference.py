@@ -117,11 +117,27 @@ def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
     return metrics_mean_ci
 
 
+def filter_datasets(dataset_meta_info: dict, datasets: Optional[List[str]]) -> List[str]:
+    """Select datasets from the dataset meta info."""
+    if datasets is None:
+        # Dataset filtering not specified, return all datasets
+        return list(dataset_meta_info.keys())
+    else:
+        datasets = datasets.split(",")
+        # Check if datasets are valid
+        for dataset in datasets:
+            if dataset not in dataset_meta_info:
+                raise ValueError(f"Dataset {dataset} not found in dataset meta info")
+        # Return all requsted datasets
+        return datasets
+
+
 def run_inference_and_evaluation(
     model_config: ModelLoadConfig,
     inference_config: InferenceConfig,
     eval_config: EvaluationConfig,
     dataset_meta_info: dict,
+    datasets: Optional[List[str]],
     out_dir: str,
     num_repeats: int = 1,
     confidence_level: float = 0.95,
@@ -132,11 +148,17 @@ def run_inference_and_evaluation(
 ) -> Tuple[Optional[float], Optional[float]]:
     """Run inference and optional evaluation on specified datasets.
 
+    Longform inference is automatically detected based on text characteristics
+    when longform_mode="auto" (default). Use longform_mode="always" or "never"
+    for explicit control.
+
     Args:
         model_config: Configuration for loading the model.
         inference_config: Configuration for inference.
         eval_config: Configuration for evaluation.
         dataset_meta_info: Dictionary containing dataset metadata.
+        datasets: List of dataset names to run inference and evaluation on. If None, all datasets in the
+                  dataset meta info will be processed.
         out_dir: Output directory for results.
         num_repeats: Number of times to repeat inference (for CI estimation).
         confidence_level: Confidence level for CI calculation.
@@ -166,11 +188,11 @@ def run_inference_and_evaluation(
     # Build full checkpoint identifier
     full_checkpoint_name = f"{checkpoint_name}_{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
 
-    # Create inference runner
+    # Create inference runner (auto-detects longform based on config.longform_mode)
+    logging.info(f"Longform mode: {inference_config.longform_mode}")
     runner = MagpieInferenceRunner(model, inference_config)
 
     # Tracking metrics across datasets
-    datasets = list(dataset_meta_info.keys())
     ssim_per_dataset = []
     cer_per_dataset = []
     all_datasets_filewise_metrics = {}
@@ -369,8 +391,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
     data_group.add_argument(
         '--datasets_json_path',
         type=str,
+        required=True,
         default=None,
-        help='Path to dataset configuration JSON file (will process all datasets in the file)',
+        help='Path to dataset configuration JSON file (will process all datasets in the file if --datasets is not specified)',
+    )
+    data_group.add_argument(
+        '--datasets',
+        type=str,
+        default=None,
+        help='Comma-separated list of dataset names to process using names from the datasets_json_path file.  If not specified, all datasets in the datasets_json_path will be processed.',
     )
     data_group.add_argument(
         '--out_dir',
@@ -396,6 +425,25 @@ def create_argument_parser() -> argparse.ArgumentParser:
     infer_group.add_argument('--batch_size', type=int, default=32)
     infer_group.add_argument('--use_cfg', action='store_true', help='Enable classifier-free guidance')
     infer_group.add_argument('--cfg_scale', type=float, default=2.5)
+    infer_group.add_argument(
+        '--longform_mode',
+        type=str,
+        default='auto',
+        choices=['auto', 'always', 'never'],
+        help='Longform inference mode: auto (detect from text), always, or never',
+    )
+    infer_group.add_argument(
+        '--longform_word_threshold',
+        type=int,
+        default=40,
+        help='Word threshold for auto-detection of longform text',
+    )
+    infer_group.add_argument(
+        '--longform_max_decoder_steps',
+        type=int,
+        default=50000,
+        help='Maximum decoder steps for longform inference',
+    )
 
     # Attention prior arguments
     prior_group = parser.add_argument_group('Attention Prior')
@@ -478,7 +526,7 @@ def main():
     args = parser.parse_args()
 
     dataset_meta_info = load_evalset_config(args.datasets_json_path)
-    datasets = list(dataset_meta_info.keys())
+    datasets = filter_datasets(dataset_meta_info, args.datasets)
 
     logging.info(f"Loaded {len(datasets)} datasets: {', '.join(datasets)}")
 
@@ -495,12 +543,22 @@ def main():
         parser.error("You must provide either:\n" "  1. --hparams_files and --checkpoint_files\n" "  2. --nemo_files")
 
     # Build configurations
+    # Use higher max_decoder_steps for longform inference when mode is 'always'
+    if args.longform_mode == 'always':
+        max_decoder_steps = args.longform_max_decoder_steps
+    elif args.longform_mode == 'auto':
+        # Use longform steps if any text appears long (will be checked in runner)
+        max_decoder_steps = args.longform_max_decoder_steps
+    else:  # 'never'
+        max_decoder_steps = 440
+
     inference_config = InferenceConfig(
         temperature=args.temperature,
         topk=args.topk,
         batch_size=args.batch_size,
         use_cfg=args.use_cfg,
         cfg_scale=args.cfg_scale,
+        max_decoder_steps=max_decoder_steps,
         apply_attention_prior=args.apply_attention_prior,
         attention_prior_epsilon=args.attention_prior_epsilon,
         attention_prior_lookahead_window=args.attention_prior_lookahead_window,
@@ -509,6 +567,8 @@ def main():
         start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps,
         use_local_transformer=args.use_local_transformer,
         maskgit_n_steps=args.maskgit_n_steps,
+        longform_mode=args.longform_mode,
+        longform_word_threshold=args.longform_word_threshold,
         maskgit_noise_scale=args.maskgit_noise_scale,
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,
@@ -549,6 +609,7 @@ def main():
                 inference_config=inference_config,
                 eval_config=eval_config,
                 dataset_meta_info=dataset_meta_info,
+                datasets=datasets,
                 out_dir=args.out_dir,
                 num_repeats=args.num_repeats,
                 confidence_level=args.confidence_level,

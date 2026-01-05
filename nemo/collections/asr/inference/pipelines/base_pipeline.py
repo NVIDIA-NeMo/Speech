@@ -21,7 +21,9 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable
 
+import torch
 from omegaconf import DictConfig
+from torch import Tensor
 
 from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
 from nemo.collections.asr.inference.pipelines.pipeline_interface import PipelineInterface
@@ -480,6 +482,90 @@ class BasePipeline(PipelineInterface):
         self.context_manager = CacheAwareContextManager(
             cache_aware_model=self.asr_model, num_slots=self.num_slots, use_cache=self.use_cache
         )
+
+    def init_prompt_support(self) -> None:
+        """Initialize prompt support for multilingual models."""
+        self.prompt_enabled = hasattr(self.asr_model.asr_model, 'concat') and self.asr_model.asr_model.concat
+
+        if self.prompt_enabled:
+            self._prompt_config = self._load_prompt_config()
+
+    def _load_prompt_config(self) -> dict:
+        """
+        Load prompt configuration from model.
+        Returns:
+            (dict) Prompt configuration containing num_prompts, prompt_dict, and compute_dtype.
+        """
+        cfg = self.asr_model.asr_model.cfg
+        if cfg and hasattr(cfg, 'model_defaults'):
+            model_defaults = cfg.model_defaults
+            num_prompts = model_defaults.get('num_prompts', None)
+            prompt_dict = model_defaults.get('prompt_dictionary', None)
+
+            # Validate and convert types once
+            num_prompts_int = int(num_prompts) if num_prompts is not None else 0
+
+            is_dict_like = isinstance(prompt_dict, dict) or (
+                hasattr(prompt_dict, 'get') and hasattr(prompt_dict, '__contains__')
+            )
+
+            if num_prompts_int > 0 and is_dict_like:
+                return {
+                    'num_prompts': num_prompts_int,
+                    'prompt_dict': prompt_dict,
+                    'compute_dtype': getattr(self.asr_model.asr_model, 'dtype', torch.float32),
+                }
+
+        return {}
+
+    def _resolve_prompt_index(self, language_code: str) -> int:
+        """
+        Resolve language_code to a strict prompt index; raise if invalid.
+        Args:
+            language_code: (str) Language code to resolve (e.g., "en-US", "es-ES").
+        Returns:
+            (int) Prompt index corresponding to the language code.
+        Raises:
+            RuntimeError: If prompt configuration is missing.
+            ValueError: If language_code is not found in prompt dictionary.
+        """
+        if not hasattr(self, '_prompt_config') or not self._prompt_config:
+            raise RuntimeError("Prompt configuration is missing for a prompt-enabled model.")
+        prompt_dict = self._prompt_config['prompt_dict']
+        lang_index = prompt_dict.get(language_code, None)
+        if lang_index is None:
+            raise ValueError(
+                f"Language code '{language_code}' not found in prompt dictionary. "
+                f"Available languages: {list(prompt_dict.keys())}"
+            )
+        return lang_index
+
+    def _create_one_hot_prompts(self, indices: Tensor) -> Tensor:
+        """
+        Create one-hot prompt vectors from indices.
+        Args:
+            indices: (Tensor) Prompt indices of shape [B].
+        Returns:
+            (Tensor) One-hot prompt vectors of shape [B, num_prompts].
+        """
+        num_prompts = self._prompt_config['num_prompts']
+        return torch.nn.functional.one_hot(indices, num_classes=num_prompts).to(self._prompt_config['compute_dtype'])
+
+    def _build_prompt_vectors(self, states: list) -> Tensor:
+        """
+        Build prompt vectors for a batch of states using one-hot encoding.
+        Args:
+            states: (list) List of streaming states.
+        Returns:
+            (Tensor) Prompt vectors of shape [B, num_prompts].
+        Raises:
+            ValueError: If any prompt index is out of range.
+        """
+        indices = torch.tensor([getattr(s, 'prompt_idx', 0) for s in states], device=self.device, dtype=torch.long)
+        num_prompts = self._prompt_config['num_prompts']
+        if torch.any((indices < 0) | (indices >= num_prompts)):
+            raise ValueError("Found out-of-range prompt index in batch.")
+        return self._create_one_hot_prompts(indices)
 
     def run(
         self,

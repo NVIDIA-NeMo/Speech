@@ -3425,6 +3425,34 @@ class MagpieTTSModel(ModelPT):
 
         return transcript
 
+    def _needs_longform_inference(self, text: str, language: str) -> bool:
+        """Determine if longform inference is needed for the given text.
+        """
+        # Average Number of words in 20 seconds of audio for each supported language.
+        longform_word_thresholds = {
+            "en": 45,
+            "es": 73,
+            "fr": 69,
+            "vi": 50,
+            "it": 53,
+            "de": 50,
+            "zh": 100,
+        }
+        # For Zh word count cannot be calculated by split(), hence calculating character count.
+        if language == "zh":
+            word_count = len(list(text))
+        else:
+            word_count = len(text.split())
+        is_longform = word_count >= longform_word_thresholds[language]
+        
+        if is_longform:
+            if language == "zh":
+                logging.info("Longform inference is not supported for Mandarin, attempting to use standard inference.")
+                is_longform = False
+            elif language != "en":
+                logging.info("Longform is best supported for English. For other languages, longform performance may not be optimal.")
+        return is_longform
+
     def do_tts(
         self,
         transcript: str,
@@ -3530,11 +3558,10 @@ class MagpieTTSModel(ModelPT):
             )
 
         # Detect if longform inference is needed based on word count
-        word_count = len(normalized_text.split())
-        longform_word_threshold = 40
+        is_longform = self._needs_longform_inference(normalized_text, language)
 
         with torch.no_grad():
-            if word_count >= longform_word_threshold:
+            if is_longform:
                 # Longform path - process text - sentence by sentence
                 chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
                     normalized_text, tokenizer_name, self.tokenizer, self.eos_id

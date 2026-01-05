@@ -94,17 +94,13 @@ class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
             test_dl_batch_size = self._test_dl.batch_size
-            temperature = self.cfg.get('inference_temperature', 0.7)
-            topk = self.cfg.get('inference_topk', 80)
-            use_cfg = self.cfg.get('inference_use_cfg', False)
-            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+            self.inference_parameters.max_decoder_steps = self.cfg.get('max_decoder_steps', 500)
+            self.inference_parameters.temperature = self.cfg.get('inference_temperature', 0.7)
+            self.inference_parameters.topk = self.cfg.get('inference_topk', 80)
+            self.inference_parameters.cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
             output = self.infer_batch(
                 batch,
-                max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
-                temperature=temperature,
-                topk=topk,
-                use_cfg=use_cfg,
-                cfg_scale=cfg_scale,
+                use_cfg=self.cfg.get('inference_use_cfg', False),
             )
             predicted_audio = output.predicted_audio
             predicted_audio_lens = output.predicted_audio_lens
@@ -605,26 +601,24 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         self, batch, num_generations_per_item, mode='train', use_local_transformer_for_inference=False
     ):
         batch_repeated = self.repeat_items_in_batch(batch, num_generations_per_item)
-        temperature = self.cfg.get('inference_temperature', 0.7)
-        topk = self.cfg.get('inference_topk', 80)
         use_cfg = False
-        cfg_scale = 1.0
+        self.inference_parameters.cfg_scale = 1.0
         use_pesq = self.cfg.get('use_pesq', False)
         inference_cfg_prob = self.cfg.get('inference_cfg_prob', 0.0)
         if (inference_cfg_prob == 1.0) or (inference_cfg_prob > 0.0 and mode == 'train'):
             # Randomly set use_cfg based on the given probability
             use_cfg = random.random() < self.cfg.inference_cfg_prob
-            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+            self.inference_parameters.cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+
+        self.inference_parameters.max_decoder_steps = self.max_decoder_steps
+        self.inference_parameters.temperature = self.cfg.get('inference_temperature', 0.7)
+        self.inference_parameters.topk = self.cfg.get('inference_topk', 80)
+        self.inference_parameters.use_LT_kv_cache = False
 
         output = self.infer_batch(
             batch_repeated,
-            max_decoder_steps=self.max_decoder_steps,
-            temperature=temperature,
-            topk=topk,
             use_cfg=use_cfg,
-            cfg_scale=cfg_scale,
             use_local_transformer_for_inference=use_local_transformer_for_inference,
-            use_LT_kv_cache=False,  # We don't use KV caching for local transformer in GRPO due to issues.
         )
         predicted_audio = output.predicted_audio
         predicted_audio_lens = output.predicted_audio_lens

@@ -232,6 +232,54 @@ class LongformChunkState:
             self.last_attended_timesteps = [[1] * self.batch_size]
 
 
+@dataclass
+class InferenceParameters:
+    """Arguments sent to the infer_batch function.
+
+    Attributes:
+        max_decoder_steps (int): Maximum number of decoder steps. Autoregressive for loop will terminate here.
+        temperature (float): Sampling temperature
+        topk (int): Number of top-probability tokens to consider in sampling.
+        use_cfg (bool): Enables or disables classifier free guidance
+        cfg_scale=1.0,
+        return_cross_attn_probs=False,
+        apply_attention_prior=False,
+        prior_epsilon=1e-5,
+        lookahead_window_size=10,
+        estimate_alignment_from_layers=None,
+        apply_prior_to_layers=None,
+        start_prior_after_n_audio_steps=10,
+        compute_all_heads_attn_maps=False,
+        use_local_transformer_for_inference=False,
+        use_LT_kv_cache=True,
+        maskgit_n_steps=3,
+        maskgit_noise_scale=0.0,
+        maskgit_fixed_schedule=None,
+        maskgit_dynamic_cfg_scale=False,
+        maskgit_sampling_type=None,
+        ignore_finished_sentence_tracking=False,
+        eos_detection_method="argmax_or_multinomial_any",
+        # Setting this greater than 0 prevents rare cases of first-frame termination. Any number greater between 1 and 4 should work, but 4
+        # lines up with the codec's minimum frame requirement.
+        min_generated_frames=4,
+    """
+
+    max_decoder_steps: int=500
+    temperature: float=0.7
+    topk: int=80
+    cfg_scale: float =2.5
+    apply_attention_prior: bool =True
+    prior_epsilon: float =1e-5
+    lookahead_window_size: int=10
+    estimate_alignment_from_layers: Optional[List[int]]=None
+    apply_prior_to_layers: Optional[List[int]]=None
+    start_prior_after_n_audio_steps:int =10
+    use_LT_kv_cache:bool=True
+    ignore_finished_sentence_tracking:bool=False
+    eos_detection_method:str="argmax_or_multinomial_any"
+    min_generated_frames:int=4
+
+
 def worker_init_fn(worker_id):
     # For mp.set_start_method("spawn", force=True)
     # The dataset class should be picklable, so we initialize non-picklable objects here
@@ -270,6 +318,7 @@ class MagpieTTSModel(ModelPT):
 
         # Register tokenizer artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging
         self._register_tokenizer_artifacts(cfg)
+        self._setup_inference_parameters(cfg)
 
         # load codec, disable loading of loss modules not needed during inference
         codec_model_path = cfg.get('codecmodel_path')
@@ -631,6 +680,12 @@ class MagpieTTSModel(ModelPT):
                             f"heteronyms file not found for tokenizer '{tokenizer_name}': "
                             f"{heteronyms_path}. Artifact will not be packaged in .nemo file."
                         )
+
+    def _setup_inference_parameters(self, cfg: DictConfig) -> None:
+        """
+        Create the self.inference_parameters which instantiates the InferenceParameters dataclass
+        """
+        self.inference_parameters = InferenceParameters(**cfg.get("inference_parameters", {}))
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """
@@ -2867,32 +2922,31 @@ class MagpieTTSModel(ModelPT):
     def infer_batch(
         self,
         batch,
-        max_decoder_steps=500,
-        temperature=0.7,
-        topk=80,
         use_cfg=False,
-        cfg_scale=1.0,
         return_cross_attn_probs=False,
-        apply_attention_prior=False,
-        prior_epsilon=1e-5,
-        lookahead_window_size=10,
-        estimate_alignment_from_layers=None,
-        apply_prior_to_layers=None,
-        start_prior_after_n_audio_steps=10,
         compute_all_heads_attn_maps=False,
         use_local_transformer_for_inference=False,
-        use_LT_kv_cache=True,
         maskgit_n_steps=3,
         maskgit_noise_scale=0.0,
         maskgit_fixed_schedule=None,
         maskgit_dynamic_cfg_scale=False,
         maskgit_sampling_type=None,
-        ignore_finished_sentence_tracking=False,
-        eos_detection_method="argmax_or_multinomial_any",
-        # Setting this greater than 0 prevents rare cases of first-frame termination. Any number greater between 1 and 4 should work, but 4
-        # lines up with the codec's minimum frame requirement.
-        min_generated_frames=4,
     ):
+        # TODO: Quick fix for now. Remove local vars and access parameters instead in future PR
+        max_decoder_steps = self.inference_parameters.max_decoder_steps
+        temperature = self.inference_parameters.temperature
+        topk = self.inference_parameters.topk
+        cfg_scale = self.inference_parameters.cfg_scale
+        apply_attention_prior = self.inference_parameters.apply_attention_prior
+        prior_epsilon = self.inference_parameters.prior_epsilon
+        lookahead_window_size = self.inference_parameters.lookahead_window_size
+        estimate_alignment_from_layers = self.inference_parameters.estimate_alignment_from_layers
+        apply_prior_to_layers = self.inference_parameters.apply_prior_to_layers
+        start_prior_after_n_audio_steps = self.inference_parameters.start_prior_after_n_audio_steps
+        use_LT_kv_cache = self.inference_parameters.use_LT_kv_cache
+        ignore_finished_sentence_tracking = self.inference_parameters.ignore_finished_sentence_tracking
+        eos_detection_method = self.inference_parameters.eos_detection_method
+        min_generated_frames = self.inference_parameters.min_generated_frames
         eos_detection_method = EOSDetectionMethod(eos_detection_method)
         with torch.no_grad():
             start_time = time.time()
@@ -3179,17 +3233,15 @@ class MagpieTTSModel(ModelPT):
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
             test_dl_batch_size = self._test_dl.batch_size
-            temperature = self.cfg.get('inference_temperature', 0.7)
-            topk = self.cfg.get('inference_topk', 80)
             use_cfg = self.cfg.get('inference_use_cfg', False)
-            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+            self.inference_parameters.max_decoder_steps = self.cfg.get('max_decoder_steps', 500)
+            self.inference_parameters.temperature = self.cfg.get('inference_temperature', 0.7)
+            self.inference_parameters.topk = self.cfg.get('inference_topk', 80)
+            self.inference_parameters.cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+
             output = self.infer_batch(
                 batch,
-                max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
-                temperature=temperature,
-                topk=topk,
                 use_cfg=use_cfg,
-                cfg_scale=cfg_scale,
             )
             predicted_audio = output.predicted_audio
             predicted_audio_lens = output.predicted_audio_lens
@@ -3430,11 +3482,7 @@ class MagpieTTSModel(ModelPT):
         transcript: str,
         language: str = "en",
         apply_TN: bool = False,
-        temperature: float = 0.7,
-        topk: int = 80,
-        max_decoder_steps: int = 500,
         use_cfg: bool = True,
-        cfg_scale: float = 2.5,
         speaker_index: Optional[int] = None,
     ) -> tuple:
         """
@@ -3452,11 +3500,7 @@ class MagpieTTSModel(ModelPT):
                 Common: "en" (English), "de" (German), "es" (Spanish), etc.
             apply_TN: Whether to apply text normalization to the transcript.
                 If True, uses nemo_text_processing for normalization.
-            temperature: Sampling temperature for token generation.
-            topk: Top-k sampling parameter.
-            max_decoder_steps: Maximum number of decoder steps.
             use_cfg: Whether to use classifier-free guidance.
-            cfg_scale: Scale factor for classifier-free guidance.
             speaker_index: Speaker index for multi-speaker baked embeddings.
                 Valid range: [0, num_baked_speakers - 1]. If None, uses speaker 0.
                 Only applicable for models with baked context embeddings.
@@ -3544,11 +3588,7 @@ class MagpieTTSModel(ModelPT):
         with torch.no_grad():
             output = self.infer_batch(
                 batch,
-                max_decoder_steps=max_decoder_steps,
-                temperature=temperature,
-                topk=topk,
                 use_cfg=use_cfg,
-                cfg_scale=cfg_scale,
             )
 
         return output.predicted_audio, output.predicted_audio_lens

@@ -395,29 +395,31 @@ class MagpieInferenceRunner:
             # Move batch to GPU
             batch_cuda = self._batch_to_cuda(batch)
 
+            # TODO: fix this part to make a new dataclass instead of overwriting
+            self.model.inference_parameters.max_decoder_steps = self.config.max_decoder_steps
+            self.model.inference_parameters.temperature = self.config.temperature
+            self.model.inference_parameters.topk = self.config.topk
+            self.model.inference_parameters.cfg_scale = self.config.cfg_scale
+            self.model.inference_parameters.apply_attention_prior = self.config.apply_attention_prior
+            self.model.inference_parameters.attention_prior_epsilon = self.config.attention_prior_epsilon
+            self.model.inference_parameters.lookahead_window_size = self.config.lookahead_window_size
+            self.model.inference_parameters.estimate_alignment_from_layers = self.config.estimate_alignment_from_layers
+            self.model.inference_parameters.apply_prior_to_layers = self.config.apply_prior_to_layers
+            self.model.inference_parameters.start_prior_after_n_audio_steps = self.config.start_prior_after_n_audio_steps
+            self.model.inference_parameters.ignore_finished_sentence_tracking = self.config.ignore_finished_sentence_tracking
+            self.model.inference_parameters.eos_detection_method = self.config.eos_detection_method
+
             # Run inference
             start_time = time.time()
             output = self.model.infer_batch(
                 batch_cuda,
-                max_decoder_steps=self.config.max_decoder_steps,
-                temperature=self.config.temperature,
-                topk=self.config.topk,
                 use_cfg=self.config.use_cfg,
-                cfg_scale=self.config.cfg_scale,
                 return_cross_attn_probs=save_cross_attention_maps,
-                apply_attention_prior=self.config.apply_attention_prior,
-                prior_epsilon=self.config.attention_prior_epsilon,
-                lookahead_window_size=self.config.attention_prior_lookahead_window,
-                estimate_alignment_from_layers=self.config.estimate_alignment_from_layers,
-                apply_prior_to_layers=self.config.apply_prior_to_layers,
-                start_prior_after_n_audio_steps=self.config.start_prior_after_n_audio_steps,
                 use_local_transformer_for_inference=self.config.use_local_transformer,
                 maskgit_n_steps=self.config.maskgit_n_steps,
                 maskgit_noise_scale=self.config.maskgit_noise_scale,
                 maskgit_fixed_schedule=self.config.maskgit_fixed_schedule,
                 maskgit_sampling_type=self.config.maskgit_sampling_type,
-                ignore_finished_sentence_tracking=self.config.ignore_finished_sentence_tracking,
-                eos_detection_method=self.config.eos_detection_method,
             )
 
             predicted_audio = output.predicted_audio

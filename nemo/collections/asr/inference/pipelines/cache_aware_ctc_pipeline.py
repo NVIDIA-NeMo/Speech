@@ -36,6 +36,7 @@ from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_t
 from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
+    drop_trailing_features,
     get_confidence_utils,
     normalize_log_probs,
 )
@@ -138,6 +139,9 @@ class CacheAwareCTCPipeline(BasePipeline):
             )
             self.drop_left_context = left_context_size
             self.valid_out_len = self.tokens_per_frame
+
+        # Expected feature buffer length for trimming (safeguard for feature buffer inputs)
+        self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
     def init_greedy_ctc_decoder(self) -> None:
         """Initialize the CTC decoder."""
@@ -378,7 +382,9 @@ class CacheAwareCTCPipeline(BasePipeline):
 
         for fbuffer in fbuffers:
             feature = fbuffer.features
-            right_padding = fbuffer.size - fbuffer.valid_size
+            # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
+            feature = drop_trailing_features(feature.unsqueeze(0), self.expected_feature_buffer_len).squeeze(0)
+            right_padding = max(0, self.expected_feature_buffer_len - fbuffer.valid_size)
 
             if fbuffer.is_last:
                 final_fbuffers.append(fbuffer)

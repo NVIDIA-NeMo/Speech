@@ -240,28 +240,19 @@ class InferenceParameters:
         max_decoder_steps (int): Maximum number of decoder steps. Autoregressive for loop will terminate here.
         temperature (float): Sampling temperature
         topk (int): Number of top-probability tokens to consider in sampling.
-        use_cfg (bool): Enables or disables classifier free guidance
-        cfg_scale=1.0,
-        return_cross_attn_probs=False,
-        apply_attention_prior=False,
-        prior_epsilon=1e-5,
-        lookahead_window_size=10,
-        estimate_alignment_from_layers=None,
-        apply_prior_to_layers=None,
-        start_prior_after_n_audio_steps=10,
-        compute_all_heads_attn_maps=False,
-        use_local_transformer_for_inference=False,
-        use_LT_kv_cache=True,
-        maskgit_n_steps=3,
-        maskgit_noise_scale=0.0,
-        maskgit_fixed_schedule=None,
-        maskgit_dynamic_cfg_scale=False,
-        maskgit_sampling_type=None,
-        ignore_finished_sentence_tracking=False,
-        eos_detection_method="argmax_or_multinomial_any",
-        # Setting this greater than 0 prevents rare cases of first-frame termination. Any number greater between 1 and 4 should work, but 4
-        # lines up with the codec's minimum frame requirement.
-        min_generated_frames=4,
+        cfg_scale (float): Scale factor for classifier-free guidance. Only used if use_cfg=True.
+        apply_attention_prior (bool): Whether to apply attention prior.
+        prior_epsilon (float): Base probability for non-targeted positions.
+        lookahead_window_size (int): Size of the forward-looking window to search for the next attended
+            timestep. Determines how far ahead from the last attended timestep to look.
+        estimate_alignment_from_layers (Optional[List[int]]): Layers to use for alignment estimation.
+        apply_prior_to_layers (Optional[List[int]]): Layers to apply prior to.
+        start_prior_after_n_audio_steps (int): Which step to start enabling the attention prior
+        use_LT_kv_cache (bool): Whether to use KV cache for the autoregressive local transformer
+        ignore_finished_sentence_tracking (bool): Whether to ignore finished sentence tracking.
+        eos_detection_method (str): EOS detection method. See the EOSDetectionMethod class.
+        min_generated_frames (int): Setting this greater than 0 prevents rare cases of first-frame termination. Any
+            number greater between 1 and 4 should work, but 4 lines up with the codec's minimum frame requirement.
     """
 
     max_decoder_steps: int = 500
@@ -3589,6 +3580,7 @@ class MagpieTTSModel(ModelPT):
             output = self.infer_batch(
                 batch,
                 use_cfg=use_cfg,
+                use_local_transformer_for_inference=True,
             )
 
         return output.predicted_audio, output.predicted_audio_lens

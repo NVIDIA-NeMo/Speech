@@ -144,6 +144,7 @@ class ParallelismConfig:
     num_distributed_optimizer_instances: int = 1
     nccl_communicator_config_path: str = None
     use_sharp: bool = False
+    create_all_gather_group: bool = False
     pipeline_model_parallel_layout: Optional[Union[str, List[List[str]]]] = None
     use_gloo_process_groups: bool = True
 
@@ -241,6 +242,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         nccl_communicator_config_path (Optional[str]): Path to the yaml file of NCCL communicator configurations.
             `min_ctas`, `max_ctas`, and `cga_cluster_size` can be set for each communicator.
         use_sharp (bool): Whether to use SHARP. Defaults to False.
+        create_all_gather_group (bool): Whether to create a separate process group for all-gather operations
+            to overlap reduce-scatter and all-gather operations. Defaults to False.
         pipeline_model_parallel_layout (Optional[Union[str, List[List[str]]]]): The layout of all layers among
             different PP and VP stages.
         use_gloo_process_groups (bool): Whether to use Gloo process groups. Defaults to True.
@@ -285,6 +288,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         pipeline_dtype: Optional[torch.dtype] = None,
         use_te_rng_tracker: bool = False,
         use_sharp: bool = False,
+        create_all_gather_group: bool = False,
         save_ckpt_format: str = "torch_dist",
         ckpt_async_save: bool = True,
         ckpt_torch_dist_multiproc: int = None,  ## TODO(ashors): put elsewhere?
@@ -349,6 +353,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.distrib_optim_fully_reshardable_mem_efficient = distrib_optim_fully_reshardable_mem_efficient
         self.use_te_rng_tracker = use_te_rng_tracker
         self.use_sharp = use_sharp
+        self.create_all_gather_group = create_all_gather_group
         self._pipeline_dtype = pipeline_dtype
         self._setup_optimizers = setup_optimizers
         self._init_model_parallel = init_model_parallel
@@ -1407,6 +1412,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             num_distributed_optimizer_instances=self.num_distributed_optimizer_instances,
             nccl_communicator_config_path=self.nccl_communicator_config_path,
             use_sharp=self.use_sharp,
+            create_all_gather_group=self.create_all_gather_group,
             pipeline_model_parallel_layout=self.pipeline_model_parallel_layout,
             use_gloo_process_groups=self.use_gloo_process_groups,
         )

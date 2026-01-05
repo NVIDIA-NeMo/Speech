@@ -193,7 +193,7 @@ test_eartts_config = {
 if os.path.exists("/home/TestData/"):
     test_eartts_config["model"][
         "pretrained_lm_name"
-    ] = "/home/TestData/HF_HOME/hub/models--nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
+    ] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
 
 
 @pytest.fixture(scope="session")

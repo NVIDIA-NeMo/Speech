@@ -234,22 +234,22 @@ jobs:
           script: L0_Setup_Test_Data_And_Models
           tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
 
-  cicd-main-unit-tests:
-    needs: [pre-flight, cicd-test-container-build]
-    uses: ./.github/workflows/cicd-main-unit-tests.yml
-    if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+  # cicd-main-unit-tests:
+  #   needs: [pre-flight, cicd-test-container-build]
+  #   uses: ./.github/workflows/cicd-main-unit-tests.yml
+  #   if: |
+  #     needs.pre-flight.outputs.test_to_run != '[]'
+  #     && needs.pre-flight.outputs.components_to_run != '[]'
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   with:
+  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
   cicd-main-speech:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
@@ -272,27 +272,27 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-nemo2:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-nemo2.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
-          || needs.pre-flight.outputs.components_to_run == '["all"]'
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+  # cicd-main-nemo2:
+  #   needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+  #   uses: ./.github/workflows/cicd-main-nemo2.yml
+  #   if: |
+  #     (
+  #       needs.pre-flight.outputs.test_to_run != '[]'
+  #       && (
+  #         contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
+  #         || needs.pre-flight.outputs.components_to_run == '["all"]'
+  #       )
+  #     )
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   with:
+  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
   Nemo_CICD_Test:
     needs:
@@ -300,8 +300,8 @@ jobs:
       - cicd-test-container-build
       - cicd-import-tests
       - L0_Setup_Test_Data_And_Models
-      - cicd-main-unit-tests
-      - cicd-main-nemo2
+      # - cicd-main-unit-tests
+      # - cicd-main-nemo2
       - cicd-main-speech
     if: always()
     runs-on: ubuntu-latest

@@ -34,7 +34,6 @@ from pipecat.utils.tracing.service_decorators import traced_stt
 from pydantic import BaseModel
 
 from nemo.agents.voice_agent.pipecat.services.nemo.streaming_asr import NemoStreamingASRService
-from nemo.agents.voice_agent.pipecat.services.nemo.streaming_diar import NeMoStreamingDiarService
 
 try:
     # disable nemo logging
@@ -51,6 +50,8 @@ except ModuleNotFoundError as e:
 
 
 class NeMoSTTInputParams(BaseModel):
+    """Input parameters for NeMo STT service."""
+
     language: Optional[Language] = Language.EN_US
     att_context_size: Optional[List] = [70, 1]
     frame_len_in_secs: Optional[float] = 0.08  # 80ms for FastConformer model
@@ -60,6 +61,8 @@ class NeMoSTTInputParams(BaseModel):
 
 
 class NemoSTTService(STTService):
+    """NeMo Speech-to-Text service for Pipecat integration."""
+
     def __init__(
         self,
         *,
@@ -94,7 +97,11 @@ class NemoSTTService(STTService):
     def _load_model(self):
         if self._backend == "legacy":
             self._model = NemoStreamingASRService(
-                self._model_name, device=self._device, decoder_type=self._decoder_type
+                self._model_name,
+                self._params.att_context_size,
+                device=self._device,
+                decoder_type=self._decoder_type,
+                frame_len_in_secs=self._params.frame_len_in_secs,
             )
         else:
             raise ValueError(f"Invalid ASR backend: {self._backend}")
@@ -258,7 +265,8 @@ class NemoSTTService(STTService):
         self._load_model()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(frame, VADUserStoppedSpeakingFrame) and isinstance(self._model, NeMoStreamingDiarService):
+        """Process incoming frames and handle VAD events."""
+        if isinstance(frame, VADUserStoppedSpeakingFrame) and isinstance(self._model, NemoStreamingASRService):
             # manualy reset the state of the model when end of utterance is detected by VAD
             logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")
             self._model.reset_state()

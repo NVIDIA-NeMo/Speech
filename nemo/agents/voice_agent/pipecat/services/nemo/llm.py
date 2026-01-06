@@ -65,7 +65,7 @@ class LLMUtilsMixin:
         return messages
 
     def _maybe_merge_consecutive_turns(
-        self, messages: List[ChatCompletionMessageParam]
+        self, messages: List[ChatCompletionMessageParam], user_only: bool = True
     ) -> List[ChatCompletionMessageParam]:
         """
         Merge consecutive turns of the same role into a single turn,
@@ -82,7 +82,7 @@ class LLMUtilsMixin:
             role = message["role"]
             content = message["content"]
 
-            if role == current_role:
+            if role == current_role and (not user_only or role == "user"):
                 # Merge with previous message of same role
                 current_content += "; " + content
             else:
@@ -656,6 +656,10 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         self, messages: List[ChatCompletionMessageParam], params: dict
     ) -> AsyncStream[ChatCompletionChunk]:
         """Get a response from the client."""
+
+        # Always try to merge consecutive user turns if possible.
+        messages = self._maybe_merge_consecutive_turns(messages, user_only=True)
+
         try:
             chunks = await self._client.chat.completions.create(**params)
         except Exception as e:
@@ -665,7 +669,7 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
             )
             logger.debug(f"LLM messages before fixing: {messages}")
             messages = self._maybe_add_user_message(messages)
-            messages = self._maybe_merge_consecutive_turns(messages)
+            # messages = self._maybe_merge_consecutive_turns(messages, user_only=True)
             logger.debug(f"LLM messages after fixing: {messages}")
             params["messages"] = messages
             chunks = await self._client.chat.completions.create(**params)

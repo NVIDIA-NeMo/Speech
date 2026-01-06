@@ -26,7 +26,7 @@ pytest -m "not pleasefixme" --with_downloads  path/to/relevant_tests
 ```
 
 Replace `path/to/relevant_tests` with the test directory to run such as `tests/collections/asr`. Check the test scripts in `tests/functional_tests`
-tht begin with `L0_Unit_Tests_` for the specific test configuration used by different parts of the unit test suite. Different suites may expect
+that begin with `L0_Unit_Tests_` for the specific test configuration used by different parts of the unit test suite. Different suites may expect
 different environment variables to be set.
 
 ## Running the Github CI

@@ -1277,6 +1277,10 @@ def configure_loggers(
         logging.info("WandBLogger has been set up")
 
     if create_mlflow_logger:
+        # Fix: Convert DictConfig to dict and remove run_name to avoid duplicate kwarg
+        if hasattr(mlflow_kwargs, '_metadata'):  # Check if it's a DictConfig
+            mlflow_kwargs = OmegaConf.to_container(mlflow_kwargs, resolve=True)
+        mlflow_kwargs.pop('run_name', None)
         mlflow_logger = MLFlowLogger(run_name=version, **mlflow_kwargs)
 
         logger_list.append(mlflow_logger)

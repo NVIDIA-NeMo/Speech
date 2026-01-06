@@ -25,8 +25,8 @@ async def get_city_weather(params: FunctionCallParams, city_name: str, timeout: 
     temperature, wind speed, wind direction, precipitation, humidity, visibility, and UV index.
 
     Args:
-        city_name: The name of the city to get the weather of. For example, "New York, NY, US" or "London, UK".
-                Other examples are: "Paris, TX, US", "Paris, FR"
+        city_name: The name of the city to get the weather of. For example, "London", "Beijing", "Paris".
+                Other examples are: "Paris, TX, US", "Paris, FR" and "Tokyo, JP".
         timeout: The timeout in seconds to wait for the weather API call, default to 15 seconds.
     """
     message = f"Looking up weather data for {city_name}. Please wait a moment..."

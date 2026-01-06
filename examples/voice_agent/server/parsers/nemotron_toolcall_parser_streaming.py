@@ -105,6 +105,18 @@ class NemotronToolParser(ToolParser):
         # a forthcoming <TOOLCALL> or </TOOLCALL> tag in streaming.
         self._pending_tag_buffer: str = ""
 
+    def _reset_state(self) -> None:
+        """
+        Reset the parser state for a new request.
+        This is used to prevent state corruption across multiple sequential requests.
+        """
+        self.prev_tool_call_arr: list[dict] = []
+        self.current_tool_id: int = -1
+        self.current_tool_name_sent: bool = False
+        self.streamed_args_for_tool: list[str] = []
+        self.tool_args_emitted: list[bool] = []
+        self._pending_tag_buffer: str = ""
+
     @staticmethod
     def _strip_trailing_auto_closers(chunk: str) -> str:
         """
@@ -301,6 +313,9 @@ class NemotronToolParser(ToolParser):
             and any preceding text content. If parsing fails entirely, it returns the raw
             content as a standard text message.
         """
+        # Reset state for each new non-streaming request
+        self._reset_state()
+
         # case -- if a tool call token is not present, return a text response
         if self.bot_token not in model_output:
             return ExtractedToolCallInformation(tools_called=False, tool_calls=[], content=model_output)
@@ -390,6 +405,14 @@ class NemotronToolParser(ToolParser):
             Union[DeltaMessage, None]: A `DeltaMessage` containing visible content or
             tool call updates, or `None` if the output is currently buffered or unchanged.
         """
+        # Reset state at the start of a new streaming request
+        # Detect new request: if we have stale state but previous_text indicates this is a fresh start
+        if not previous_text and (
+            self.current_tool_id != -1 or self.prev_tool_call_arr or self.streamed_args_for_tool
+        ):
+            logger.debug("Detected new streaming request, resetting parser state")
+            self._reset_state()
+
         # if candidates tool call tokens are in the tokens generated so far, that
         # means we're parsing as tool calls now. Suppress streaming if we are
         # currently generating any prefix of the start or end tag.
@@ -444,7 +467,9 @@ class NemotronToolParser(ToolParser):
                 return None
 
             current_tool_call: dict = (
-                tool_call_arr[self.current_tool_id] if len(tool_call_arr) > 0 and self.current_tool_id >= 0 else {}
+                tool_call_arr[self.current_tool_id]
+                if len(tool_call_arr) > 0 and self.current_tool_id >= 0 and self.current_tool_id < len(tool_call_arr)
+                else {}
             )
 
             # case -- if no tokens have been streamed for the tool, e.g.

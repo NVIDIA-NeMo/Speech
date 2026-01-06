@@ -669,6 +669,7 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
             logger.debug(f"LLM messages after fixing: {messages}")
             params["messages"] = messages
             chunks = await self._client.chat.completions.create(**params)
+
         return chunks
 
 

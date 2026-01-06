@@ -776,9 +776,9 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if len(speaker_indices_list) > 0:
             batch_dict['speaker_indices'] = torch.tensor(speaker_indices_list, dtype=torch.int64)
 
-        # Assert no more than one of audio or audio_filepath in the batch
+        # Assert no more than one of audio or audio_codes in the batch
         if 'audio' in batch_dict:
-            assert 'audio_filepath' not in batch_dict
+            assert 'audio_codes' not in batch_dict
 
         # Assert no more than one of context_audio or context_audio_codes in the batch
         if 'context_audio' in batch_dict:

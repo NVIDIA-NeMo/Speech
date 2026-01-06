@@ -3161,7 +3161,7 @@ class MagpieTTSModel(ModelPT):
                 end_indices.get(idx, max_decoder_steps) for idx in range(text.size(0))
             ]  #  Ensure that the codec is atleast of length 4
             predicted_codes_lens = torch.tensor(predicted_lens, device=text.device).long()
-            predicted_codes = predicted_codes[:, :, :predicted_codes_lens.max()]
+            predicted_codes = predicted_codes[:, :, : predicted_codes_lens.max()]
 
             predicted_audio, predicted_audio_lens, predicted_codes = self.codes_to_audio(
                 predicted_codes, predicted_codes_lens

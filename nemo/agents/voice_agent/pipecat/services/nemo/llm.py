@@ -654,15 +654,13 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
     ) -> AsyncStream[ChatCompletionChunk]:
         """Get a response from the client."""
 
-        # Always try to merge consecutive user turns if possible.
-        messages = self._maybe_merge_consecutive_user_turns(messages)
-
         try:
             chunks = await self._client.chat.completions.create(**params)
         except Exception as e:
-            logger.error(f"Error in get_chat_completions: {e}, trying to fix by adding dummy user message")
+            logger.error(f"Error in get_chat_completions: {e}, trying to fix...")
             logger.debug(f"LLM messages before fixing: {messages}")
             messages = self._maybe_add_user_message(messages)
+            messages = self._maybe_merge_consecutive_user_turns(messages)
             logger.debug(f"LLM messages after fixing: {messages}")
             params["messages"] = messages
             chunks = await self._client.chat.completions.create(**params)

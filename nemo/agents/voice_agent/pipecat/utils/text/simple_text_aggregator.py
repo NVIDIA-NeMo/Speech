@@ -103,6 +103,37 @@ def find_last_period_index(text: str) -> int:
     return idx
 
 
+def find_last_comma_index(text: str, min_residual_length: int = 5) -> int:
+    """
+    Find the last occurrence of a valid comma in the text,
+    ignoring the commas in the numbers (e.g., "1,234,567").
+    If the leftover text after the comma is too short, it may be an abbreviation, return -1.
+
+    Args:
+        text: The text to find the last occurrence of a valid comma.
+        min_residual_length: The minimum length of the leftover text after the rightmost comma
+                             to be considered as a valid sentence (e.g., "Santa Clara, CA, US.").
+    Returns:
+        The index of the last occurrence of a valid comma, or -1 if no valid comma is found.
+    """
+    # find the last occurrence of a comma in the text
+    idx = text.rfind(",")
+    if idx == -1:
+        return -1
+    # check if the comma is in a number
+    if re.search(r'\d+,\d+', text[: idx + 1]):
+        # the comma is in a number, return -1
+        return -1
+
+    # check if the leftover text after the comma is too short
+    if len(text[idx + 1 :]) <= min_residual_length:
+        # the leftover text is too short, it may be an abbreviation, return -1
+        return -1
+
+    # the comma is not in a number, return the index of the comma
+    return idx
+
+
 class SimpleSegmentedTextAggregator(SimpleTextAggregator):
     """A simple text aggregator that segments the text into sentences based on punctuation marks."""
 
@@ -161,6 +192,8 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         for punc in self._punctuation_marks:
             if punc == ".":
                 idx = find_last_period_index(text)
+            elif punc == ",":
+                idx = find_last_comma_index(text)
             else:
                 idx = text.find(punc)
             if idx != -1:

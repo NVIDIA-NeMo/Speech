@@ -6,7 +6,7 @@ type: vllm  # Overwrite to vllm to enable tool calling, the HF backend currently
 dtype: bfloat16  # torch.dtype for LLM
 device: "cuda"
 system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
-system_prompt_suffix: "/no_think"  # a string that would be appended to the system prompt, used to enable/disable thinking
+system_prompt_suffix: "Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. /no_think"  # a string that would be appended to the system prompt, `/think` and `/no_think` are used to enable/disable thinking
 enable_tool_calling: True  # set to True since the vllm config below supports tool calling
 
 ##############################

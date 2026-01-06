@@ -246,9 +246,8 @@ More details on tool calling with Pipecat can be found in the [Pipecat documenta
 
 #### Notes on system prompt with tools
 
-We noticed that sometimes the LLM cannot do anything else that's not related to the provided tools, or it might not actually use the tools even though it says it's using them. To alleviate this issue, we insert two additional instructions in the system prompt:
-- "If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools."
-- "If the purpose of a tool matches well with a user's request, always try to use the tool first."
+We notice that sometimes the LLM cannot do anything that's not related to the provided tools, or it might not actually use the tools even though it says it's using them. To alleviate this issue, we insert additional instructions to the system prompt (e.g., in `server/server_configs/llm_configs/nemotron_nano_v2.yaml`):
+- "Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases."
 
 
 ## 📝 Notes & FAQ

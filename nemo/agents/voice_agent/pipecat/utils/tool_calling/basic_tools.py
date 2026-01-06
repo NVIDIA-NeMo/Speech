@@ -15,38 +15,43 @@
 import asyncio
 import python_weather
 from loguru import logger
-from pipecat.frames.frames import LLMTextFrame
+from pipecat.frames.frames import LLMTextFrame, TTSSpeakFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 
-async def get_city_weather(params: FunctionCallParams, city_name: str, timeout: float = 10.0):
+async def get_city_weather(params: FunctionCallParams, city_name: str, timeout: float = 15.0):
     """Get the current weather of a city. The result should include city name, weather description,
     temperature, wind speed, wind direction, precipitation, humidity, visibility, and UV index.
 
     Args:
         city_name: The name of the city to get the weather of. For example, "New York, NY, US" or "London, UK".
                 Other examples are: "Paris, TX, US", "Paris, FR"
-        timeout: The timeout in seconds for the weather API call, default to 10 seconds.
+        timeout: The timeout in seconds to wait for the weather API call, default to 15 seconds.
     """
-    await params.llm.push_frame(LLMTextFrame(f"Looking up weather data for {city_name}.\n"))
+    message = f"Looking up weather data for {city_name}. Please wait a moment..."
+    # Send the message to upstream so that RTVI can log it while doesn't block the actual tool call.
+    await params.llm.push_frame(LLMTextFrame(message), direction=FrameDirection.UPSTREAM)
+    # Send the message to TTS directly so that the user can hear it immediately.
+    await params.llm.push_frame(TTSSpeakFrame(message))
 
     # The measuring unit defaults to metric (Celsius)
     # Use imperial for Fahrenheit: python_weather.IMPERIAL
     async with python_weather.Client(unit=python_weather.METRIC) as client:
         # Fetch a weather forecast from a city
-        logger.debug(f"Fetching weather forecast for {city_name}")
+        logger.debug(f"Fetching weather forecast for `{city_name}`")
         try:
             weather: python_weather.Forecast = await asyncio.wait_for(
                 client.get(city_name),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
-            error_msg = f"python_weather API request timed out after {timeout} seconds for {city_name}"
+            error_msg = f"python_weather API request timed out after {timeout} seconds for `{city_name}`"
             logger.error(error_msg)
             await params.result_callback({"error": error_msg})
             return
         except Exception as e:
-            error_msg = f"Error fetching weather forecast for {city_name}: {str(e)}"
+            error_msg = f"Error fetching weather forecast for `{city_name}`: {str(e)}"
             logger.error(error_msg)
             await params.result_callback({"error": error_msg})
             return

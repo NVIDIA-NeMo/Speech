@@ -48,6 +48,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import load_evalset_config
 
 # Import the modular components
@@ -553,27 +554,29 @@ def main():
         max_decoder_steps = 440
 
     inference_config = InferenceConfig(
-        temperature=args.temperature,
-        topk=args.topk,
+        model_inference_parameters=ModelInferenceParameters(
+            max_decoder_steps=max_decoder_steps,
+            temperature=args.temperature,
+            topk=args.topk,
+            cfg_scale=args.cfg_scale,
+            attention_prior_epsilon=args.attention_prior_epsilon,
+            attention_prior_lookahead_window=args.attention_prior_lookahead_window,
+            estimate_alignment_from_layers=parse_layer_list(args.estimate_alignment_from_layers),
+            apply_prior_to_layers=parse_layer_list(args.apply_prior_to_layers),
+            start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps,
+            ignore_finished_sentence_tracking=args.ignore_finished_sentence_tracking,
+            eos_detection_method=args.eos_detection_method,
+        ),
         batch_size=args.batch_size,
         use_cfg=args.use_cfg,
-        cfg_scale=args.cfg_scale,
-        max_decoder_steps=max_decoder_steps,
         apply_attention_prior=args.apply_attention_prior,
-        attention_prior_epsilon=args.attention_prior_epsilon,
-        attention_prior_lookahead_window=args.attention_prior_lookahead_window,
-        estimate_alignment_from_layers=parse_layer_list(args.estimate_alignment_from_layers),
-        apply_prior_to_layers=parse_layer_list(args.apply_prior_to_layers),
-        start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps,
         use_local_transformer=args.use_local_transformer,
         maskgit_n_steps=args.maskgit_n_steps,
-        longform_mode=args.longform_mode,
-        longform_word_threshold=args.longform_word_threshold,
         maskgit_noise_scale=args.maskgit_noise_scale,
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,
-        eos_detection_method=args.eos_detection_method,
-        ignore_finished_sentence_tracking=args.ignore_finished_sentence_tracking,
+        longform_mode=args.longform_mode,
+        longform_word_threshold=args.longform_word_threshold,
     )
 
     eval_config = EvaluationConfig(

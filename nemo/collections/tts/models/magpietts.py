@@ -3072,7 +3072,10 @@ class MagpieTTSModel(ModelPT):
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
                     all_heads_cross_attn_scores_all_timesteps.append(all_heads_cross_attn_scores)
 
-                if self.inference_parameters.apply_attention_prior and idx >= self.inference_parameters.start_prior_after_n_audio_steps:
+                if (
+                    self.inference_parameters.apply_attention_prior
+                    and idx >= self.inference_parameters.start_prior_after_n_audio_steps
+                ):
                     text_time_step_attended, attended_timestep_counter = self.get_most_attended_text_timestep(
                         alignment_attention_scores=alignment_attention_scores,
                         last_attended_timesteps=last_attended_timesteps,

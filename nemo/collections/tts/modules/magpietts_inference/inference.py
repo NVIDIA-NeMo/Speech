@@ -620,7 +620,6 @@ class MagpieInferenceRunner:
 
                 beginning_of_text = chunk_idx == 0
 
-
                 # Call generate_long_form_speech
                 output = self.model.generate_long_form_speech(
                     batch,

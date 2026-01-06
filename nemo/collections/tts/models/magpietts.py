@@ -262,7 +262,7 @@ class ModelInferenceParameters:
     topk: int = 80
     cfg_scale: float = 2.5
     apply_attention_prior: bool = True
-    attention_prior_epsilon: float = 1e-5
+    attention_prior_epsilon: float = 0.1
     attention_prior_lookahead_window: int = 5
     estimate_alignment_from_layers: Optional[List[int]] = None
     apply_prior_to_layers: Optional[List[int]] = None

@@ -271,7 +271,7 @@ def evaluate(
                         ].text
                         gt_audio_text = process_text(gt_audio_text)
                     else:
-                        gt_audio_text = ""
+                        gt_audio_text = None
             else:
                 pred_text = transcribe_with_whisper(
                     whisper_model, whisper_processor, pred_audio_filepath, language, device
@@ -283,7 +283,7 @@ def evaluate(
                     )
                     gt_audio_text = process_text(gt_audio_text)
                 else:
-                    gt_audio_text = ""
+                    gt_audio_text = None
         except Exception as e:
             logging.info("Error during ASR: {}".format(e))
             pred_text = ""
@@ -326,14 +326,14 @@ def evaluate(
                 sv_model_type=sv_model_type,
             )
 
-            # Initialize SSIMs with a default since the contest or ground truth audio
+            # Initialize SSIMs with a default since the context or ground truth audio
             # may be unavailable.
-            pred_context_ssim = 0.0
-            gt_context_ssim = 0.0
-            pred_context_ssim_alternate = 0.0
-            gt_context_ssim_alternate = 0.0
-            pred_gt_ssim = 0.0
-            pred_gt_ssim_alternate = 0.0
+            pred_context_ssim = float('NaN')
+            gt_context_ssim = float('NaN')
+            pred_context_ssim_alternate = float('NaN')
+            gt_context_ssim_alternate = float('NaN')
+            pred_gt_ssim = float('NaN')
+            pred_gt_ssim_alternate = float('NaN')
 
             if gt_audio_filepath is not None:
                 # Ground truth vs. predicted
@@ -435,12 +435,20 @@ def evaluate(
     avg_metrics['ssim_gt_context_avg_alternate'] = sum(
         [m['gt_context_ssim_alternate'] for m in filewise_metrics]
     ) / len(filewise_metrics)
-    avg_metrics["cer_gt_audio_cumulative"] = word_error_rate_detail(
-        hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
-    )[0]
-    avg_metrics["wer_gt_audio_cumulative"] = word_error_rate_detail(
-        hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
-    )[0]
+    if not None in gt_audio_texts:
+        avg_metrics["cer_gt_audio_cumulative"] = word_error_rate_detail(
+            hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
+        )[0]
+        avg_metrics["wer_gt_audio_cumulative"] = word_error_rate_detail(
+            hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
+        )[0]
+    else:
+        avg_metrics["cer_gt_audio_cumulative"] = float('NaN')
+        avg_metrics["wer_gt_audio_cumulative"] = float('NaN')
+        logging.warning(
+            "Ground truth audio files are missing. Setting cumulative CER and WER for ground truth audio to NaN."
+        )
+
     avg_metrics["utmosv2_avg"] = sum([m['utmosv2'] for m in filewise_metrics]) / len(filewise_metrics)
     avg_metrics["total_gen_audio_seconds"] = total_generated_audio_seconds
     pprint.pprint(avg_metrics)

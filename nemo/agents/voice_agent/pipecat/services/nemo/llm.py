@@ -658,8 +658,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         """Get a response from the client."""
         try:
             chunks = await self._client.chat.completions.create(**params)
-        except BadRequestError as e:
-            logger.warning(
+        except Exception as e:
+            logger.error(
                 f"Error in get_chat_completions: {e}, trying to fix by adding dummy user message"
                 "and merging consecutive turns if possible."
             )

@@ -506,6 +506,9 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         This tool should be called only when the user specifies the speed explicitly,
         such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
 
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+
         Args:
             speed_lambda: positive float, the relative change of the speaking speed to the original speed.
                         E.g., 1.0 for original speed, 1.25 for 25% faster than original speed,
@@ -528,14 +531,24 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         await params.result_callback(result)
 
     async def tool_tts_reset_speed(self, params: FunctionCallParams):
-        """Reset the speaking speed to the original speed."""
+        """
+        Reset the speaking speed to the original speed.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+        """
         self._speed = self._original_speed
         result = {"success": True, "message": "Speaking speed is reset to the original one"}
         logger.debug(f"Speaking speed is reset to the original speed {self._original_speed}")
         await params.result_callback(result)
 
     async def tool_tts_speak_faster(self, params: FunctionCallParams):
-        """Speak faster by increasing the speaking speed 15% faster each time this function is called."""
+        """
+        Speak faster by increasing the speaking speed 15% faster each time this function is called.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+        """
         self._speed_lambda = self._speed_lambda + 0.15
         self._speed = self._speed_lambda * self._original_speed
         result = {
@@ -546,7 +559,12 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         await params.result_callback(result)
 
     async def tool_tts_speak_slower(self, params: FunctionCallParams):
-        """Speak slower by decreasing the speaking speed 15% slower each time this function is called."""
+        """
+        Speak slower by decreasing the speaking speed 15% slower each time this function is called.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+        """
         self._speed_lambda = self._speed_lambda - 0.15
         if self._speed_lambda < 0.1:
             self._speed = 0.1 * self._original_speed
@@ -568,6 +586,9 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         """
         Set the language and voice of the assistant's voice.
         This tool should be called only when the user specifies the language/accent and gender explicitly.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
 
         Args:
             language: Language for the TTS model. Must be one of 'American English' or 'British English'
@@ -607,7 +628,12 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         await params.result_callback({"success": True, "message": "Done. Language and voice are set to the new ones."})
 
     async def tool_tts_reset_lang_voice(self, params: FunctionCallParams):
-        """Reset the language and voice to the original ones."""
+        """
+        Reset the language and voice to the original ones.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+        """
         await params.llm.push_frame(LLMTextFrame("Of course."))
 
         new_model = await asyncio.to_thread(self._setup_model, self._original_lang_code, self._original_voice)

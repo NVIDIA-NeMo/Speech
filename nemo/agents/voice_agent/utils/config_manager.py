@@ -127,11 +127,14 @@ class ConfigManager:
             yaml_file_name = os.path.basename(self.server_config.stt.model_config)
         else:
             # Get STT configuration from registry
-            if self.server_config.stt.type == "nemo" and "stt_en_fastconformer" in self.model_registry.stt_models:
-                yaml_file_name = self.model_registry.stt_models[self.server_config.stt.model].yaml_id
+            if str(self.STT_MODEL_PATH).endswith(".nemo"):
+                model_name = os.path.splitext(os.path.basename(self.STT_MODEL_PATH))[0]
             else:
-                error_msg = f"STT model {self.STT_MODEL_PATH} with type {self.server_config.stt.type} "
-                "is not supported configuration."
+                model_name = self.STT_MODEL_PATH
+            if model_name in self.model_registry.stt_models:
+                yaml_file_name = self.model_registry.stt_models[model_name].yaml_id
+            else:
+                error_msg = f"STT model {model_name} is not in model registry: {self.model_registry.stt_models}."
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -248,11 +251,10 @@ class ConfigManager:
             yaml_file_name = os.path.basename(self.server_config.tts.model_config)
         else:
             # Get TTS configuration from registry
-            if self.server_config.tts.type == "nemo" and "fastpitch-hifigan" in self.server_config.tts.model:
+            if tts_model_id in self.model_registry.tts_models:
                 yaml_file_name = self.model_registry.tts_models[tts_model_id].yaml_id
             else:
-                error_msg = f"TTS model {self.server_config.tts.model} with type {self.server_config.tts.type} "
-                "is not supported configuration."
+                error_msg = f"TTS model {tts_model_id} is not in model registry: {self.model_registry.tts_models}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 

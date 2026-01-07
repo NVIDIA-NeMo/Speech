@@ -656,8 +656,8 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
 
         try:
             chunks = await self._client.chat.completions.create(**params)
-        except Exception as e:
-            logger.error(f"Error in get_chat_completions: {e}, trying to fix...")
+        except BadRequestError as e:
+            logger.error(f"Error in _get_response_from_client: {e}, trying to fix...")
             logger.debug(f"LLM messages before fixing: {messages}")
             messages = self._maybe_add_user_message(messages)
             messages = self._maybe_merge_consecutive_user_turns(messages)

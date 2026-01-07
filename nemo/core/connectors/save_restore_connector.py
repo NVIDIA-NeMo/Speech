@@ -141,9 +141,7 @@ class SaveRestoreConnector:
         use_extracted_dir = self.model_extracted_dir is not None and os.path.isdir(self.model_extracted_dir)
 
         if use_extracted_dir:
-            logging.info(
-                f"Restoration will occur within pre-extracted directory : " f"`{self.model_extracted_dir}`."
-            )
+            logging.info(f"Restoration will occur within pre-extracted directory : " f"`{self.model_extracted_dir}`.")
 
         # Use nullcontext if we have an extracted dir, otherwise create a temp directory
         dir_context = nullcontext(self.model_extracted_dir) if use_extracted_dir else tempfile.TemporaryDirectory()

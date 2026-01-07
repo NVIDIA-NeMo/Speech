@@ -37,6 +37,20 @@ from nemo.utils.data_utils import (  # imported for compatibility: model_utils.r
     resolve_cache_dir,
 )
 
+<<<<<<< HEAD
+=======
+# TODO @blisc: Perhaps refactor instead of import guarding
+
+_HAS_HYDRA = True
+
+try:
+    from omegaconf import DictConfig, ListConfig, OmegaConf
+    from omegaconf import errors as omegaconf_errors
+    from packaging import version
+except ModuleNotFoundError:
+    _HAS_HYDRA = False
+
+>>>>>>> formatter fixes
 if TYPE_CHECKING:
     import lightning.pytorch as pl
 

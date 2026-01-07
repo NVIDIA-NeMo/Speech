@@ -1322,7 +1322,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         app_state = AppState()
         nemo_file_folder = app_state.nemo_file_folder  # Already-extracted temp directory
         model_restore_path = app_state.model_restore_path
-        
+
         if not model_restore_path:
             return None
 
@@ -1356,7 +1356,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 model_restore_path, save_restore_connector=save_restore_connector
             )
             external_timestamps_model.eval()
-            
+
         except Exception as e:
             raise RuntimeError(
                 f"Error restoring external timestamps ASR model with timestamps_asr_model_config.yaml and timestamps_asr_model_weights.ckpt: {e}"

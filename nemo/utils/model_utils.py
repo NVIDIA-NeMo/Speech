@@ -27,16 +27,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple, Type, Union
 
 import wrapt
+from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import errors as omegaconf_errors
+from packaging import version
 
 from nemo.utils import AppState, logging
 from nemo.utils.data_utils import (  # imported for compatibility: model_utils.resolve_cache_dir()  # noqa: F401  # pylint: disable=unused-import,line-too-long
     is_datastore_path,
     resolve_cache_dir,
 )
-
-from omegaconf import DictConfig, ListConfig, OmegaConf
-from omegaconf import errors as omegaconf_errors
-from packaging import version
 
 if TYPE_CHECKING:
     import lightning.pytorch as pl

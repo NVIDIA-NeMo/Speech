@@ -17,9 +17,9 @@ import inspect
 from dataclasses import is_dataclass
 from typing import Dict, List, Optional
 
-from nemo.utils import logging
-
 from omegaconf import DictConfig, OmegaConf, open_dict
+
+from nemo.utils import logging
 
 
 def update_model_config(

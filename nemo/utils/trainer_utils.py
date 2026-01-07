@@ -14,12 +14,11 @@
 
 from typing import Any, Mapping, Sequence
 
+import hydra
 import torch
 from lightning.pytorch.plugins import HalfPrecision
-from typing_extensions import override
-
-import hydra
 from omegaconf import DictConfig, OmegaConf
+from typing_extensions import override
 
 
 def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:

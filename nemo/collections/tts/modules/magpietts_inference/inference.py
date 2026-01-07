@@ -627,7 +627,6 @@ class MagpieInferenceRunner:
                     end_of_text=is_end_of_text,
                     beginning_of_text=beginning_of_text,
                     use_cfg=self.config.use_cfg,
-                    apply_attention_prior=self.config.apply_attention_prior,
                 )
 
                 # Unpack output - generate_long_form_speech returns InferBatchOutput

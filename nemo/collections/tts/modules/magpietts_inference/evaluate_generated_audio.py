@@ -246,9 +246,9 @@ def evaluate(
     gt_audio_texts = []
     total_generated_audio_seconds = 0.0
     for ridx, record in enumerate(records):
-        gt_audio_filepath = record['audio_filepath']
+        gt_audio_filepath = record.get('audio_filepath', None)
         context_audio_filepath = record.get('context_audio_filepath', None)
-        if audio_dir is not None:
+        if audio_dir is not None and gt_audio_filepath is not None:
             gt_audio_filepath = os.path.join(audio_dir, gt_audio_filepath)
             if context_audio_filepath is not None:
                 context_audio_filepath = os.path.join(audio_dir, context_audio_filepath)
@@ -265,17 +265,25 @@ def evaluate(
                 with torch.inference_mode():
                     pred_text = asr_model.transcribe([pred_audio_filepath], batch_size=1, use_lhotse=False)[0].text
                     pred_text = process_text(pred_text)
-                    gt_audio_text = asr_model.transcribe([gt_audio_filepath], batch_size=1, use_lhotse=False)[0].text
-                    gt_audio_text = process_text(gt_audio_text)
+                    if gt_audio_filepath is not None:
+                        gt_audio_text = asr_model.transcribe([gt_audio_filepath], batch_size=1, use_lhotse=False)[
+                            0
+                        ].text
+                        gt_audio_text = process_text(gt_audio_text)
+                    else:
+                        gt_audio_text = None
             else:
                 pred_text = transcribe_with_whisper(
                     whisper_model, whisper_processor, pred_audio_filepath, language, device
                 )
                 pred_text = process_text(pred_text)
-                gt_audio_text = transcribe_with_whisper(
-                    whisper_model, whisper_processor, gt_audio_filepath, language, device
-                )
-                gt_audio_text = process_text(gt_audio_text)
+                if gt_audio_filepath is not None:
+                    gt_audio_text = transcribe_with_whisper(
+                        whisper_model, whisper_processor, gt_audio_filepath, language, device
+                    )
+                    gt_audio_text = process_text(gt_audio_text)
+                else:
+                    gt_audio_text = None
         except Exception as e:
             logging.info("Error during ASR: {}".format(e))
             pred_text = ""
@@ -318,19 +326,29 @@ def evaluate(
                 sv_model_type=sv_model_type,
             )
 
-            # Ground truth vs. predicted
-            gt_speaker_embedding = extract_embedding_fn(audio_path=gt_audio_filepath)
-            pred_speaker_embedding = extract_embedding_fn(audio_path=pred_audio_filepath)
-            pred_gt_ssim = torch.nn.functional.cosine_similarity(
-                gt_speaker_embedding, pred_speaker_embedding, dim=0
-            ).item()
+            # Initialize SSIMs with a default since the context or ground truth audio
+            # may be unavailable.
+            pred_context_ssim = float('NaN')
+            gt_context_ssim = float('NaN')
+            pred_context_ssim_alternate = float('NaN')
+            gt_context_ssim_alternate = float('NaN')
+            pred_gt_ssim = float('NaN')
+            pred_gt_ssim_alternate = float('NaN')
 
-            # Ground truth vs. predicted (alternate model)
-            gt_speaker_embedding_alternate = extract_embedding_fn_alternate(audio_path=gt_audio_filepath)
-            pred_speaker_embedding_alternate = extract_embedding_fn_alternate(audio_path=pred_audio_filepath)
-            pred_gt_ssim_alternate = torch.nn.functional.cosine_similarity(
-                gt_speaker_embedding_alternate, pred_speaker_embedding_alternate, dim=0
-            ).item()
+            if gt_audio_filepath is not None:
+                # Ground truth vs. predicted
+                gt_speaker_embedding = extract_embedding_fn(audio_path=gt_audio_filepath)
+                pred_speaker_embedding = extract_embedding_fn(audio_path=pred_audio_filepath)
+                pred_gt_ssim = torch.nn.functional.cosine_similarity(
+                    gt_speaker_embedding, pred_speaker_embedding, dim=0
+                ).item()
+
+                # Ground truth vs. predicted (alternate model)
+                gt_speaker_embedding_alternate = extract_embedding_fn_alternate(audio_path=gt_audio_filepath)
+                pred_speaker_embedding_alternate = extract_embedding_fn_alternate(audio_path=pred_audio_filepath)
+                pred_gt_ssim_alternate = torch.nn.functional.cosine_similarity(
+                    gt_speaker_embedding_alternate, pred_speaker_embedding_alternate, dim=0
+                ).item()
 
             if context_audio_filepath is not None:
                 context_speaker_embedding = extract_embedding_fn(audio_path=context_audio_filepath)
@@ -341,18 +359,20 @@ def evaluate(
                     pred_speaker_embedding, context_speaker_embedding, dim=0
                 ).item()
                 # Ground truth vs. context
-                gt_context_ssim = torch.nn.functional.cosine_similarity(
-                    gt_speaker_embedding, context_speaker_embedding, dim=0
-                ).item()
+                if gt_audio_filepath is not None:
+                    gt_context_ssim = torch.nn.functional.cosine_similarity(
+                        gt_speaker_embedding, context_speaker_embedding, dim=0
+                    ).item()
 
                 # Predicted vs. context (alternate model)
                 pred_context_ssim_alternate = torch.nn.functional.cosine_similarity(
                     pred_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
                 ).item()
                 # Ground truth vs. context (alternate model)
-                gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
-                    gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
-                ).item()
+                if gt_audio_filepath is not None:
+                    gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
+                        gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
+                    ).item()
             total_generated_audio_seconds += get_wav_file_duration(pred_audio_filepath)
 
         filewise_metrics.append(
@@ -415,12 +435,20 @@ def evaluate(
     avg_metrics['ssim_gt_context_avg_alternate'] = sum(
         [m['gt_context_ssim_alternate'] for m in filewise_metrics]
     ) / len(filewise_metrics)
-    avg_metrics["cer_gt_audio_cumulative"] = word_error_rate_detail(
-        hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
-    )[0]
-    avg_metrics["wer_gt_audio_cumulative"] = word_error_rate_detail(
-        hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
-    )[0]
+    if not None in gt_audio_texts:
+        avg_metrics["cer_gt_audio_cumulative"] = word_error_rate_detail(
+            hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
+        )[0]
+        avg_metrics["wer_gt_audio_cumulative"] = word_error_rate_detail(
+            hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
+        )[0]
+    else:
+        avg_metrics["cer_gt_audio_cumulative"] = float('NaN')
+        avg_metrics["wer_gt_audio_cumulative"] = float('NaN')
+        logging.warning(
+            "Ground truth audio files are missing. Setting cumulative CER and WER for ground truth audio to NaN."
+        )
+
     avg_metrics["utmosv2_avg"] = sum([m['utmosv2'] for m in filewise_metrics]) / len(filewise_metrics)
     avg_metrics["total_gen_audio_seconds"] = total_generated_audio_seconds
     pprint.pprint(avg_metrics)

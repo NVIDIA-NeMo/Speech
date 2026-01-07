@@ -459,7 +459,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             if 'audio_filepath' in data.manifest_entry:
                 # If audio_filepath is available, then use the actual audio file path.
                 example['audio_filepath'] = data.manifest_entry['audio_filepath']
-        else:
+        elif 'audio_filepath' in data.manifest_entry:
             # Only load audio if codes are not available
             audio_array, _, audio_filepath_rel = load_audio(
                 manifest_entry=data.manifest_entry,
@@ -661,12 +661,14 @@ class MagpieTTSDataset(TextToSpeechDataset):
         speaker_indices_list = []
         for example in batch:
             dataset_name_list.append(example["dataset_name"])
-            audio_filepath_list.append(example["audio_filepath"])
             raw_text_list.append(example["raw_text"])
             language_list.append(example["language"])
 
             token_list.append(example["tokens"])
             token_len_list.append(example["text_len"])
+
+            if 'audio_filepath' in example:
+                audio_filepath_list.append(example["audio_filepath"])
 
             if 'audio' in example:
                 audio_list.append(example["audio"])
@@ -774,14 +776,13 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if len(speaker_indices_list) > 0:
             batch_dict['speaker_indices'] = torch.tensor(speaker_indices_list, dtype=torch.int64)
 
-        # Assert only ONE of context_audio or context_audio_codes in the batch
-        assert ('audio' in batch_dict) ^ ('audio_codes' in batch_dict)
+        # Assert no more than one of audio or audio_codes in the batch
+        if 'audio' in batch_dict:
+            assert 'audio_codes' not in batch_dict
 
-        # Assert only ONE of context_audio or context_audio_codes in the batch
+        # Assert no more than one of context_audio or context_audio_codes in the batch
         if 'context_audio' in batch_dict:
             assert 'context_audio_codes' not in batch_dict
-        if 'context_audio_codes' in batch_dict:
-            assert 'context_audio' not in batch_dict
 
         return batch_dict
 

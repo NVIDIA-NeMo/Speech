@@ -16,8 +16,9 @@
 Unit tests for MagpieTTSModel longform inference detection.
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from nemo.collections.tts.models.magpietts import MagpieTTSModel
 

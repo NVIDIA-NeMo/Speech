@@ -635,6 +635,7 @@ def main():
                 inference_config=inference_config,
                 eval_config=eval_config,
                 dataset_meta_info=dataset_meta_info,
+                datasets=datasets,
                 out_dir=args.out_dir,
                 num_repeats=args.num_repeats,
                 confidence_level=args.confidence_level,

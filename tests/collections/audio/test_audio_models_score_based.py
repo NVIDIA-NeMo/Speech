@@ -87,7 +87,7 @@ def score_based_base_config():
         'snr': 0.5,
     }
 
-    loss = {'_target_': 'nemo.collections.audio.losses.MSELoss', 'ndim': 4}
+    loss = {'_target_': 'nemo.collections.audio.losses.audio.MSELoss', 'ndim': 4}
 
     trainer = {
         'max_epochs': -1,

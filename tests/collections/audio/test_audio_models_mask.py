@@ -111,7 +111,7 @@ def mask_model_rnn_params():
     }
 
     loss = {
-        '_target_': 'nemo.collections.audio.losses.SDRLoss',
+        '_target_': 'nemo.collections.audio.losses.audio.SDRLoss',
         'scale_invariant': True,
     }
 
@@ -212,7 +212,7 @@ def mask_model_flexarray():
     }
 
     loss = {
-        '_target_': 'nemo.collections.audio.losses.SDRLoss',
+        '_target_': 'nemo.collections.audio.losses.audio.SDRLoss',
         'scale_invariant': True,
     }
 

@@ -79,7 +79,7 @@ def flow_matching_base_config(request):
         'time_max': flow['time_max'],
     }
 
-    loss = {'_target_': 'nemo.collections.audio.losses.MSELoss', 'ndim': 4}
+    loss = {'_target_': 'nemo.collections.audio.losses.audio.MSELoss', 'ndim': 4}
 
     estimator = {
         '_target_': 'nemo.collections.audio.parts.submodules.transformerunet.SpectrogramTransformerUNet',

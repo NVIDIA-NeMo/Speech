@@ -227,6 +227,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
             (tuple[Tensor, Tensor]) Processed feature buffers and their lengths.
         """
         feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
+        # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
+        feature_buffers = [
+            drop_trailing_features(f_buffer, self.expected_feature_buffer_len) for f_buffer in feature_buffers
+        ]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
             right_paddings = torch.tensor(right_paddings, device=feature_buffer_lens.device)
@@ -356,8 +360,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         for fbuffer in fbuffers:
             feature = fbuffer.features
-            # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
-            feature = drop_trailing_features(feature.unsqueeze(0), self.expected_feature_buffer_len).squeeze(0)
             right_padding = max(0, self.expected_feature_buffer_len - fbuffer.valid_size)
 
             if fbuffer.is_last:

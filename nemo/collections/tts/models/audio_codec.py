@@ -25,7 +25,7 @@ from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-from nemo.collections.audio.parts.utils.transforms import Resample
+from nemo.collections.audio.parts.utils.transforms import Resample, resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.collections.tts.losses.audio_codec_loss import (
     FeatureMatchingLoss,
@@ -489,10 +489,7 @@ class AudioCodecModel(ModelPT):
 
     def preprocess_audio(self, audio, audio_len, sample_rate):
         if sample_rate and sample_rate != self.sample_rate:
-            if not HAVE_TORCHAUDIO:
-                raise ModuleNotFoundError("Must install torchaudio for resampling.")
-
-            audio = torchaudio.functional.resample(waveform=audio, orig_freq=sample_rate, new_freq=self.sample_rate)
+            audio = resample(waveform=audio, orig_freq=sample_rate, new_freq=self.sample_rate)
             audio_len_scaled = audio_len.long() * self.sample_rate
             new_audio_len = audio_len_scaled / sample_rate
             # To avoid rounding issues at lower precisions, do not call torch.ceil when the length is divisible by the sample rate

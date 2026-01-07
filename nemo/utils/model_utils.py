@@ -469,20 +469,6 @@ def wrap_training_step(wrapped, instance: 'pl.LightningModule', args, kwargs):
     return output_dict
 
 
-def _is_nemo_processed(cfg, attr):
-    curr = cfg
-    while True:
-        if getattr(curr, attr, False):
-            return True
-        if not hasattr(curr, '_get_parent'):
-            break
-        parent = curr._get_parent()
-        if parent is None:
-            break
-        curr = parent
-    return False
-
-
 def convert_model_config_to_dict_config(cfg: Union['DictConfig', 'NemoConfig']) -> 'DictConfig':
     """
     Converts its input into a standard DictConfig.
@@ -499,18 +485,19 @@ def convert_model_config_to_dict_config(cfg: Union['DictConfig', 'NemoConfig']) 
     if not isinstance(cfg, (OmegaConf, DictConfig)) and is_dataclass(cfg):
         cfg = OmegaConf.structured(cfg)
 
-    # Return dicts directly to avoid unnecessary DictConfig conversion overhead
-    if isinstance(cfg, dict):
-        return cfg
-
     if not isinstance(cfg, DictConfig):
         raise ValueError(f"cfg constructor argument must be of type DictConfig/dict but got {type(cfg)} instead.")
 
-    # In-place resolution is much faster than to_container + create cycle
-    OmegaConf.resolve(cfg)
-    object.__setattr__(cfg, '_nemo_resolved', True)
+    # Check if already resolved using a marker KEY
+    if cfg.get('_nemo_resolved', False):
+        return cfg
 
-    return cfg
+    # Create resolved copy (preserves original function semantics)
+    config = OmegaConf.to_container(cfg, resolve=True)
+    config['_nemo_resolved'] = True
+    config = OmegaConf.create(config)
+
+    return config
 
 
 def _convert_config(cfg: 'OmegaConf'):
@@ -558,19 +545,23 @@ def maybe_update_config_version(cfg: 'DictConfig', make_copy: bool = True):
             # Cannot be cast to DictConfig, skip updating.
             return cfg
 
-    # Make a copy of model config.
+    # Skip if already updated using a marker KEY
+    if cfg.get('_nemo_hydra_updated', False):
+        return cfg
+
+    # Make a copy if requested
     if make_copy:
         cfg = copy.deepcopy(cfg)
-    
+
     OmegaConf.set_struct(cfg, False)
 
-    # Convert config.
+    # Convert config
     _convert_config(cfg)
 
-    # Update model config.
-    OmegaConf.set_struct(cfg, True)
+    # Mark as updated using a marker KEY
+    cfg['_nemo_hydra_updated'] = True
 
-    object.__setattr__(cfg, '_nemo_hydra_updated', True)
+    OmegaConf.set_struct(cfg, True)
 
     return cfg
 

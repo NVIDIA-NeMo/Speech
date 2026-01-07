@@ -39,6 +39,10 @@ from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import Si
 
 
 class RTVIObserver(_RTVIObserver):
+    """
+    An observer that processes RTVI frames and pushes them to the transport.
+    """
+
     def __init__(
         self, rtvi: RTVIProcessor, text_aggregator: Optional[SimpleSegmentedTextAggregator] = None, *args, **kwargs
     ):

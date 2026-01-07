@@ -51,7 +51,6 @@ import numpy as np
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import load_evalset_config
-from nemo.collections.tts.modules.magpietts_modules import EOSDetectionMethod
 
 # Import the modular components
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
@@ -68,6 +67,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     load_magpie_model,
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
+from nemo.collections.tts.modules.magpietts_modules import EOSDetectionMethod
 from nemo.utils import logging
 
 
@@ -434,10 +434,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
             extra_args["type"] = str
         elif field.name == "eos_detection_method":
             extra_args["choices"] = [m.value for m in EOSDetectionMethod]
-        infer_group.add_argument(
-            f"--{field.name}",
-            **extra_args
-        )
+        infer_group.add_argument(f"--{field.name}", **extra_args)
     infer_group.add_argument('--batch_size', type=int, default=32)
     infer_group.add_argument('--use_cfg', action='store_true', help='Enable classifier-free guidance')
     infer_group.add_argument(

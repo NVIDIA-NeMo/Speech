@@ -95,8 +95,11 @@ def find_last_period_index(text: str) -> int:
     elif idx > 1 and text[idx - 2 : idx + 1].lower() in ["a.m.", "p.m."]:
         # if the period is after a.m. or p.m., it's likely a time, return -1
         return -1
-    elif idx > 2 and text[idx - 3 : idx + 1] in ["e.g.", "i.e."]:
+    elif idx > 2 and text[idx - 3 : idx + 1] in ["e.g.", "i.e.", "etc."]:
         # The period is after a character/word that is likely to be a abbreviation, return -1
+        return -1
+    elif idx >= 2 and text[idx - 2 : idx + 1].lower() in ["st.", "mr.", "mrs.", "ms.", "dr."]:
+        # if the period is after a character/word that is likely to be a abbreviation, return -1
         return -1
 
     # the text seems to have a complete sentence, return the index of the last period

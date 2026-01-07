@@ -119,7 +119,7 @@ class ConfigManager:
 
     def _configure_stt(self):
         """Configure STT parameters."""
-        self.STT_MODEL_PATH = self.server_config.stt.model
+        self.STT_MODEL = self.server_config.stt.model
         self.STT_DEVICE = self.server_config.stt.device
         # Apply STT-specific configuration based on model type
         # Try to get STT config file name from server config first
@@ -127,10 +127,10 @@ class ConfigManager:
             yaml_file_name = os.path.basename(self.server_config.stt.model_config)
         else:
             # Get STT configuration from registry
-            if str(self.STT_MODEL_PATH).endswith(".nemo"):
-                model_name = os.path.splitext(os.path.basename(self.STT_MODEL_PATH))[0]
+            if str(self.STT_MODEL).endswith(".nemo"):
+                model_name = os.path.splitext(os.path.basename(self.STT_MODEL))[0]
             else:
-                model_name = self.STT_MODEL_PATH
+                model_name = self.STT_MODEL
             if model_name in self.model_registry.stt_models:
                 yaml_file_name = self.model_registry.stt_models[model_name].yaml_id
             else:
@@ -237,7 +237,7 @@ class ConfigManager:
             logger.info(f"No system prompt provided, using default system prompt: {self.SYSTEM_PROMPT}")
 
         if self.server_config.llm.get("system_prompt_suffix", None) is not None:
-            self.SYSTEM_PROMPT += self.server_config.llm.system_prompt_suffix
+            self.SYSTEM_PROMPT += "\n" + self.server_config.llm.system_prompt_suffix
             logger.info(f"Adding system prompt suffix: {self.server_config.llm.system_prompt_suffix}")
 
         logger.info(f"System prompt: {self.SYSTEM_PROMPT}")

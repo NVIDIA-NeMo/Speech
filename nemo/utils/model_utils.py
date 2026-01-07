@@ -34,16 +34,9 @@ from nemo.utils.data_utils import (  # imported for compatibility: model_utils.r
     resolve_cache_dir,
 )
 
-# TODO @blisc: Perhaps refactor instead of import guarding
-
-_HAS_HYDRA = True
-
-try:
-    from omegaconf import DictConfig, ListConfig, OmegaConf
-    from omegaconf import errors as omegaconf_errors
-    from packaging import version
-except ModuleNotFoundError:
-    _HAS_HYDRA = False
+from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import errors as omegaconf_errors
+from packaging import version
 
 if TYPE_CHECKING:
     import lightning.pytorch as pl
@@ -303,9 +296,6 @@ def resolve_validation_dataloaders(model: 'ModelPT'):
     Args:
         model: ModelPT subclass, which requires >=1 Validation Dataloaders to be setup.
     """
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
     cfg = copy.deepcopy(model._cfg)
     dataloaders = []
 
@@ -398,9 +388,6 @@ def resolve_test_dataloaders(model: 'ModelPT'):
     Args:
         model: ModelPT subclass, which requires >=1 Test Dataloaders to be setup.
     """
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
     cfg = copy.deepcopy(model._cfg)
     dataloaders = []
 
@@ -496,9 +483,6 @@ def convert_model_config_to_dict_config(cfg: Union['DictConfig', 'NemoConfig']) 
     Returns:
         The equivalent DictConfig
     """
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
     if not isinstance(cfg, (OmegaConf, DictConfig)) and is_dataclass(cfg):
         cfg = OmegaConf.structured(cfg)
 
@@ -512,10 +496,6 @@ def convert_model_config_to_dict_config(cfg: Union['DictConfig', 'NemoConfig']) 
 
 def _convert_config(cfg: 'OmegaConf'):
     """Recursive function convertint the configuration from old hydra format to the new one."""
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
-
     # Get rid of cls -> _target_.
     if 'cls' in cfg and '_target_' not in cfg:
         cfg._target_ = cfg.pop('cls')
@@ -550,9 +530,6 @@ def maybe_update_config_version(cfg: 'DictConfig'):
     Returns:
         An updated DictConfig that conforms to Hydra 1.x format.
     """
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
     if cfg is not None and not isinstance(cfg, DictConfig):
         try:
             temp_cfg = OmegaConf.create(cfg)

@@ -18,15 +18,8 @@ import torch
 from lightning.pytorch.plugins import HalfPrecision
 from typing_extensions import override
 
-_HAS_HYDRA = True
-
-try:
-    import hydra
-    from omegaconf import DictConfig, OmegaConf
-except ModuleNotFoundError:
-    DictConfig = Mapping
-    OmegaConf = None
-    _HAS_HYDRA = False
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 
 def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
@@ -45,8 +38,6 @@ def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
         A processed DictConfig with resolved configuration values
     """
     trainer_cfg = OmegaConf.to_container(trainer_cfg, resolve=True)
-    if not _HAS_HYDRA:
-        return trainer_cfg
 
     # Avoids downcasting 'audio' tensors in 'true' half precision setups.
     precision = trainer_cfg.get("precision")

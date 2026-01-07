@@ -112,7 +112,10 @@ def schroedinger_bridge_model_ncsn_params():
         'pad_dimension_to': 0,  # no padding in the frequency dimension
     }
 
-    loss_encoded = {'_target_': 'nemo.collections.audio.losses.audio.MSELoss', 'ndim': 4}  # computed in the time domain
+    loss_encoded = {
+        '_target_': 'nemo.collections.audio.losses.audio.MSELoss',
+        'ndim': 4,
+    }  # computed in the time domain
 
     loss_time = {'_target_': 'nemo.collections.audio.losses.audio.MAELoss'}
 

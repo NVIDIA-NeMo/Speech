@@ -51,9 +51,7 @@ def load_extra_state_from_bytes(val: Optional[Union[torch.Tensor, BytesIO]]) -> 
     Returns:
         Optional[dict]: Deserialized extra_state, or None if the bytes storage is empty.
     """
-    raise Exception(
-        "nemo.export is deprecated. Please use the repo https://github.com/NVIDIA-NeMo/Export-Deploy."
-    )
+    raise Exception("nemo.export is deprecated. Please use the repo https://github.com/NVIDIA-NeMo/Export-Deploy.")
 
 
 def preprocess_scaling_factors_for_local_export(state_dict: Dict[str, Any]) -> Dict[str, Any]:

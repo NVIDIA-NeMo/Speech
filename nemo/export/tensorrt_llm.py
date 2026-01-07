@@ -1667,9 +1667,7 @@ class TensorRTLLM(ITritonDeployable):
             self.p_table = None
 
     def _load_prompt_tables(self):
-        raise Exception(
-            "nemo.export is deprecated. Please use the repo https://github.com/NVIDIA-NeMo/Export-Deploy."
-        )
+        raise Exception("nemo.export is deprecated. Please use the repo https://github.com/NVIDIA-NeMo/Export-Deploy.")
 
     def _get_prompt_embedding_table_ckpt(self, prompt_embeddings_checkpoint_path):
         with TarPath(prompt_embeddings_checkpoint_path) as checkpoint_archive:

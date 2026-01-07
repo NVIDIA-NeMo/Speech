@@ -515,7 +515,7 @@ def main():
     has_nemo_mode = args.nemo_files is not None and args.nemo_files != "null"
 
     if not has_checkpoint_mode and not has_nemo_mode:
-        parser.error("You must provide either:\n" "  1. --hparams_files and --checkpoint_files\n" "  2. --nemo_files")
+        parser.error("You must provide either:\n 1. --hparams_files and --checkpoint_files\n 2. --nemo_files")
 
     # Build configurations
     # Use higher max_decoder_steps for longform inference when mode is 'always'
@@ -526,12 +526,21 @@ def main():
         max_decoder_steps = args.longform_max_decoder_steps
     else:  # 'never'
         max_decoder_steps = 440
-    args.max_decoder_steps = max_decoder_steps
-    args.estimate_alignment_from_layers = parse_layer_list(args.estimate_alignment_from_layers)
-    args.apply_prior_to_layers = parse_layer_list(args.apply_prior_to_layers)
+    model_inference_parameters = {}
+    for field in fields(ModelInferenceParameters):
+        field = field.name
+        if field == "max_decoder_steps":
+            model_inference_parameters[field] = max_decoder_steps
+            continue
+        arg_from_cmdline = vars(args)[field]
+        if arg_from_cmdline is not None:
+            if field in ["estimate_alignment_from_layers", "apply_prior_to_layers"]:
+                model_inference_parameters[field] = parse_layer_list(vars(args)[field])
+            else:
+                model_inference_parameters[field] = vars(args)[field]
 
     inference_config = InferenceConfig(
-        model_inference_parameters=ModelInferenceParameters.from_dict(vars(args)),
+        model_inference_parameters=ModelInferenceParameters.from_dict(model_inference_parameters),
         batch_size=args.batch_size,
         use_cfg=args.use_cfg,
         apply_attention_prior=args.apply_attention_prior,

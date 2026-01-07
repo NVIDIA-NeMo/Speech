@@ -307,6 +307,7 @@ class MagpieInferenceRunner:
         audio_base_dir: Optional[str] = None,
         save_cross_attention_maps: bool = True,
         save_context_audio: bool = True,
+        save_predicted_codes: bool = True,
     ) -> Tuple[List[dict], List[str]]:
         """Run inference on a dataset.
 
@@ -321,11 +322,13 @@ class MagpieInferenceRunner:
             audio_base_dir: Base directory for audio paths (uses cached if None).
             save_cross_attention_maps: Whether to save attention map images.
             save_context_audio: Whether to copy context audio files.
+            save_predicted_codes: Whether to save predicted code files.
 
         Returns:
             Tuple of:
                 - rtf_metrics: List of real-time factor metrics per batch.
                 - generated_audio_paths: List of paths to generated audio files.
+                - codec_file_paths: List of paths to predicted codes files.
         """
         # Use cached values if not provided
         if manifest_records is None:
@@ -342,12 +345,18 @@ class MagpieInferenceRunner:
         if self._use_longform:
             logging.info("Using longform inference path")
             return self._run_longform_inference(
-                dataset, output_dir, manifest_records, audio_base_dir, save_context_audio
+                dataset, output_dir, manifest_records, audio_base_dir, save_context_audio, save_predicted_codes
             )
         else:
             logging.info("Using standard inference path")
             return self._run_standard_inference(
-                dataset, output_dir, manifest_records, audio_base_dir, save_cross_attention_maps, save_context_audio
+                dataset,
+                output_dir,
+                manifest_records,
+                audio_base_dir,
+                save_cross_attention_maps,
+                save_context_audio,
+                save_predicted_codes,
             )
 
     def _run_standard_inference(
@@ -592,7 +601,8 @@ class MagpieInferenceRunner:
         manifest_records: List[dict],
         audio_base_dir: str,
         save_context_audio: bool = True,
-    ) -> Tuple[List[dict], List[str]]:
+        save_predicted_codes: bool = True,
+    ) -> Tuple[List[dict], List[str], List[str]]:
         """Run longform inference with automatic sentence chunking.
 
         Processes text sentence-by-sentence using generate_long_form_speech().
@@ -603,11 +613,13 @@ class MagpieInferenceRunner:
             manifest_records: List of manifest record dictionaries.
             audio_base_dir: Base directory for resolving audio paths.
             save_context_audio: Whether to copy context audio files.
+            save_predicted_codes: Whether to save predicted code files.
 
         Returns:
             Tuple of:
                 - rtf_metrics: List of real-time factor metrics per batch.
                 - generated_audio_paths: List of paths to generated audio files.
+                - codec_file_paths: List of paths to predicted codes files.
         """
         os.makedirs(output_dir, exist_ok=True)
         self._delete_old_generated_files(output_dir)
@@ -622,6 +634,7 @@ class MagpieInferenceRunner:
 
         all_rtf_metrics = []
         generated_audio_paths = []
+        codec_file_paths = []
         global_item_idx = 0
 
         for batch_idx, batch in enumerate(dataloader):
@@ -753,9 +766,15 @@ class MagpieInferenceRunner:
                         sample_idx,
                     )
 
+                if save_predicted_codes:
+                    codes_path = os.path.join(output_dir, f"predicted_codes_{sample_idx}.pt")
+                    predicted_codes_current = predicted_codes[b_idx, :, : predicted_codes_lens[b_idx]]  # C, T
+                    torch.save(predicted_codes_current, codes_path)
+                    codec_file_paths.append(codes_path)
+
                 global_item_idx += 1
 
-        return all_rtf_metrics, generated_audio_paths
+        return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
     def _compute_end_of_text_flags(
         self,

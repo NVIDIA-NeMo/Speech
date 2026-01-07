@@ -252,6 +252,7 @@ def run_inference_and_evaluation(
                 audio_base_dir=meta['audio_dir'],
                 save_cross_attention_maps=True,
                 save_context_audio=(repeat_idx == 0),  # Only save context audio once
+                save_predicted_codes=eval_config.with_fcd,  # Code files are only needed for FCD computation
             )
 
             # Compute mean RTF metrics
@@ -269,6 +270,7 @@ def run_inference_and_evaluation(
                 asr_model_name=eval_config.asr_model_name,
                 language=language,
                 with_utmosv2=eval_config.with_utmosv2,
+                with_fcd=eval_config.with_fcd,
                 codec_model_path=eval_config.codec_model_path,
             )
 
@@ -587,6 +589,7 @@ def main():
         sv_model=args.sv_model,
         asr_model_name=args.asr_model_name,
         with_utmosv2=not args.disable_utmosv2,
+        with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
     )
 

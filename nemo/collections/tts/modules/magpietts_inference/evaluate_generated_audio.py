@@ -194,12 +194,15 @@ def evaluate(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
+    with_fcd=True,
     codec_model_path=None,
 ):
     audio_file_lists = find_generated_audio_files(generated_audio_dir)
     records = read_manifest(manifest_path)
     assert len(audio_file_lists) == len(records)
-    if codec_model_path is not None:
+    if with_fcd:
+        if codec_model_path is None:
+            raise ValueError("codec_model_path is required when with_fcd is True")
         codes_file_lists = find_generated_codec_files(generated_audio_dir)
         assert len(codes_file_lists) == len(records)
 
@@ -240,10 +243,9 @@ def evaluate(
     speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
     speaker_verification_model_alternate.eval()
 
-    if codec_model_path is not None:
+    if with_fcd:
         fcd_metric = FrechetCodecDistance(codec_name=codec_model_path).to(device)
     else:
-        logging.info("No codec model provided, skipping FCD metric")
         fcd_metric = None
 
     if with_utmosv2:
@@ -405,7 +407,7 @@ def evaluate(
         fcd = fcd_metric.compute().cpu().item()
         fcd_metric.reset()
     else:
-        fcd = 0.0
+        fcd = float('nan')
 
     filewise_metrics_keys_to_save = [
         'cer',

@@ -39,6 +39,7 @@ class EvaluationConfig:
         asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
         language: Language code for transcription (e.g., "en").
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
+        with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
     """
 
@@ -46,6 +47,7 @@ class EvaluationConfig:
     asr_model_name: str = "nvidia/parakeet-tdt-1.1b"
     language: str = "en"
     with_utmosv2: bool = True
+    with_fcd: bool = True
     codec_model_path: str = None
 
 
@@ -61,7 +63,7 @@ def evaluate_generated_audio_dir(
     - ASR-based metrics: Character Error Rate (CER), Word Error Rate (WER)
     - Speaker similarity: Cosine similarity using speaker embeddings
     - Audio quality: UTMOSv2 scores (if enabled)
-    - Freceht Codec Distance (FCD) metric (if a codec model path is provided)
+    - Freceht Codec Distance (FCD) metric (if enabled)
 
     Args:
         manifest_path: Path to the evaluation manifest (NDJSON format).
@@ -84,6 +86,7 @@ def evaluate_generated_audio_dir(
         sv_model_type=config.sv_model,
         asr_model_name=config.asr_model_name,
         with_utmosv2=config.with_utmosv2,
+        with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
     )
 

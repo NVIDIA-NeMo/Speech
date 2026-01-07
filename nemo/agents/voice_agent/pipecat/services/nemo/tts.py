@@ -25,13 +25,16 @@ from pipecat.frames.frames import (
     EndFrame,
     ErrorFrame,
     Frame,
+    LLMTextFrame,
     StartFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
 )
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.tts_service import TTSService
 
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.mixins import ToolCallingMixin
 from nemo.collections.tts.models import FastPitchModel, HifiGanModel
 
 
@@ -414,7 +417,7 @@ class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
             yield audio
 
 
-class KokoroTTSService(BaseNemoTTSService):
+class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
     """Text-to-Speech service using Kokoro-82M model.
 
     Kokoro is an open-weight TTS model with 82 million parameters.
@@ -440,10 +443,18 @@ class KokoroTTSService(BaseNemoTTSService):
         self._lang_code = lang_code
         self._voice = voice
         self._speed = speed
+        assert speed > 0, "Speed must be greater than 0"
         model_name = f"kokoro-{lang_code}-{voice}"
+        self._speed_lambda = 1.0
+        self._original_speed = speed
+        self._original_voice = voice
+        self._gender = 'female' if voice[1] == 'f' else 'male'
+        self._original_gender = self._gender
+        self._original_lang_code = self._lang_code
         super().__init__(model=model_name, device=device, sample_rate=sample_rate, **kwargs)
+        self.setup_tool_calling()
 
-    def _setup_model(self):
+    def _setup_model(self, lang_code: Optional[str] = None, voice: Optional[str] = None):
         """Initialize the Kokoro pipeline."""
         try:
             from kokoro import KPipeline
@@ -451,9 +462,12 @@ class KokoroTTSService(BaseNemoTTSService):
             raise ImportError(
                 "kokoro package is required for KokoroTTSService. " "Install it with: pip install kokoro>=0.9.2"
             )
-
-        logger.info(f"Loading Kokoro TTS model with lang_code={self._lang_code}, voice={self._voice}")
-        pipeline = KPipeline(lang_code=self._lang_code)
+        if lang_code is None:
+            lang_code = self._lang_code
+        if voice is None:
+            voice = self._voice
+        logger.info(f"Loading Kokoro TTS model with lang_code={lang_code}, voice={voice}")
+        pipeline = KPipeline(lang_code=lang_code)
         return pipeline
 
     def _generate_audio(self, text: str) -> Iterator[np.ndarray]:
@@ -485,3 +499,136 @@ class KokoroTTSService(BaseNemoTTSService):
         except Exception as e:
             logger.error(f"Error generating audio with Kokoro: {e}")
             raise
+
+    async def tool_tts_set_speed_explicitly(self, params: FunctionCallParams, speed_lambda: float):
+        """
+        Set the speaking speed of the assistant's voice.
+        This tool should be called only when the user specifies the speed explicitly,
+        such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
+
+        Args:
+            speed_lambda: positive float, the relative change of the speaking speed to the original speed.
+                        E.g., 1.0 for original speed, 1.25 for 25% faster than original speed,
+                        0.8 for 20% slower than original speed.
+
+        """
+        if speed_lambda <= 0:
+            result = {
+                "success": False,
+                "message": f"Speed remains unchanged since the change is not a positive number: {speed_lambda}",
+            }
+            logger.debug(f"Speed remains unchanged since the change is not a positive number: {speed_lambda}")
+        else:
+            self._speed = speed_lambda * self._original_speed
+            result = {
+                "success": True,
+                "message": f"Speed set to {speed_lambda} of the original speed",
+            }
+            logger.debug(f"Speed set to {speed_lambda} of the original speed {self._original_speed}")
+        await params.result_callback(result)
+
+    async def tool_tts_reset_speed(self, params: FunctionCallParams):
+        """Reset the speaking speed to the original speed."""
+        self._speed = self._original_speed
+        result = {"success": True, "message": "Speaking speed is reset to the original one"}
+        logger.debug(f"Speaking speed is reset to the original speed {self._original_speed}")
+        await params.result_callback(result)
+
+    async def tool_tts_speak_faster(self, params: FunctionCallParams):
+        """Speak faster by increasing the speaking speed 15% faster each time this function is called."""
+        self._speed_lambda = self._speed_lambda + 0.15
+        self._speed = self._speed_lambda * self._original_speed
+        result = {
+            "success": True,
+            "message": f"Speaking speed is increased to {self._speed_lambda} of the original speed",
+        }
+        logger.debug(f"Speed is set to {self._speed_lambda} of the original speed {self._original_speed}")
+        await params.result_callback(result)
+
+    async def tool_tts_speak_slower(self, params: FunctionCallParams):
+        """Speak slower by decreasing the speaking speed 15% slower each time this function is called."""
+        self._speed_lambda = self._speed_lambda - 0.15
+        if self._speed_lambda < 0.1:
+            self._speed = 0.1 * self._original_speed
+            result = {
+                "success": True,
+                "message": "Speaking speed is decreased to the minimum of 0.1 of the original speed",
+            }
+            logger.debug(f"Speed is set to the minimum of 0.1 of the original speed {self._original_speed}")
+        else:
+            self._speed = self._speed_lambda * self._original_speed
+            result = {
+                "success": True,
+                "message": f"Speaking speed is decreased to {self._speed_lambda} of the original speed",
+            }
+            logger.debug(f"Speed is set to {self._speed_lambda} of the original speed {self._original_speed}")
+        await params.result_callback(result)
+
+    async def tool_tts_set_lang_voice(self, params: FunctionCallParams, language: str, gender: str):
+        """
+        Set the language and voice of the assistant's voice.
+        This tool should be called only when the user specifies the language/accent and gender explicitly.
+
+        Args:
+            language: Language for the TTS model. Must be one of 'American English' or 'British English'
+                    or 'current' for keeping the current language.
+            gender: gender of the assistant's voice. Must be one of 'male', 'female',
+                    or 'current' for keeping the current gender.
+        """
+        await params.llm.push_frame(LLMTextFrame("Just a moment."))
+
+        lang_code = "a" if language == "American English" else "b" if language == "British English" else "current"
+        new_lang_code = self._lang_code
+        new_gender = self._gender
+        if lang_code != 'current':
+            new_lang_code = lang_code
+        if gender != 'current':
+            new_gender = gender
+
+        if new_lang_code == 'a':
+            new_voice = 'af_heart' if new_gender == 'female' else 'am_michael'
+        elif new_lang_code == 'b':
+            new_voice = 'bf_emma' if new_gender == 'female' else 'bm_george'
+        else:
+            await params.result_callback(
+                {
+                    "success": False,
+                    "message": f"Invalid language code: {new_lang_code} or gender: {new_gender}",
+                }
+            )
+            return
+
+        new_model = await asyncio.to_thread(self._setup_model, new_lang_code, new_voice)
+        self._model = new_model
+        self._lang_code = new_lang_code
+        self._gender = new_gender
+        self._voice = new_voice
+        logger.debug(f"Language and voice are set to {new_lang_code} and {new_voice}")
+        await params.result_callback({"success": True, "message": "Done. Language and voice are set to the new ones."})
+
+    async def tool_tts_reset_lang_voice(self, params: FunctionCallParams):
+        """Reset the language and voice to the original ones."""
+        await params.llm.push_frame(LLMTextFrame("Of course."))
+
+        new_model = await asyncio.to_thread(self._setup_model, self._original_lang_code, self._original_voice)
+        self._model = new_model
+        self._lang_code = self._original_lang_code
+        self._gender = self._original_gender
+        self._voice = self._original_voice
+        logger.debug(
+            f"Language and voice are reset to the original ones {self._original_lang_code} and {self._original_voice}"
+        )
+        await params.result_callback(
+            {"success": True, "message": "Done. Language and voice are reset to the original ones."}
+        )
+
+    def setup_tool_calling(self):
+        """
+        Setup the tool calling mixin by registering all available tools.
+        """
+        self.register_direct_function("tool_tts_reset_speed", self.tool_tts_reset_speed)
+        self.register_direct_function("tool_tts_speak_faster", self.tool_tts_speak_faster)
+        self.register_direct_function("tool_tts_speak_slower", self.tool_tts_speak_slower)
+        self.register_direct_function("tool_tts_set_speed_explicitly", self.tool_tts_set_speed_explicitly)
+        self.register_direct_function("tool_tts_set_lang_voice", self.tool_tts_set_lang_voice)
+        self.register_direct_function("tool_tts_reset_lang_voice", self.tool_tts_reset_lang_voice)

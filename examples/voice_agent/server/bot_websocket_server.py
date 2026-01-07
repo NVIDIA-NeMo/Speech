@@ -20,7 +20,6 @@ import signal
 import sys
 
 from loguru import logger
-
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import EndTaskFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -41,6 +40,8 @@ from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import 
     WebsocketServerTransport,
 )
 from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.basic_tools import get_city_weather
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.mixins import register_direct_tools_to_llm
 from nemo.agents.voice_agent.utils.config_manager import ConfigManager
 
 
@@ -218,13 +219,19 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
     logger.info("TTS service initialized")
 
     context = OpenAILLMContext(
-        [
+        messages=[
             {
                 "role": SYSTEM_ROLE,
                 "content": SYSTEM_PROMPT,
             }
         ],
     )
+
+    if server_config.llm.get("enable_tool_calling", False):
+        logger.info("Tools calling for LLM is enabled by config, registering tools...")
+        register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts], tools=[get_city_weather])
+    else:
+        logger.info("Tools calling for LLM is disabled by config, skipping tool registration.")
 
     original_messages = copy.deepcopy(context.get_messages())
     original_context = copy.deepcopy(context)

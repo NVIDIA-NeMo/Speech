@@ -1076,6 +1076,13 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
             )
 
+        # Determine the cut id to inject into hypotheses for chunking
+        if trcfg.enable_chunking:
+            if isinstance(batch, PromptedAudioToTextMiniBatch):
+                cut_id = batch.cuts[0].id
+            else:
+                cut_id = 'audio_0'
+
         if merge_to_be_done and self.timestamps_asr_model is not None:
             merged_hypotheses = merge_parallel_chunks(
                 hypotheses=hypotheses,
@@ -1087,11 +1094,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 decoding=self.decoding,
             )
             # Inject the id of the cut to hypothese to later be used for separate batches
-            setattr(merged_hypotheses, 'id', batch.cuts[0].id)
+            setattr(merged_hypotheses, 'id', cut_id)
             return [merged_hypotheses]
 
-        if trcfg.enable_chunking and len(hypotheses) == 1:
-            setattr(hypotheses[0], 'id', batch.cuts[0].id)
+        if trcfg.enable_chunking:
+            for hyp in hypotheses:
+                setattr(hyp, 'id', cut_id)
         return hypotheses
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':

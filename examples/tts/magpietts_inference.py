@@ -104,6 +104,7 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('wer_gt_audio_cumulative', ''),
         metrics.get('utmosv2_avg', ''),
         metrics.get('total_gen_audio_seconds', ''),
+        metrics.get('frechet_codec_distance', ''),
     ]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
@@ -206,7 +207,7 @@ def run_inference_and_evaluation(
         "wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
-        "utmosv2_avg,total_gen_audio_seconds"
+        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance"
     )
 
     for dataset in datasets:
@@ -247,13 +248,14 @@ def run_inference_and_evaluation(
                     f"Dataset length mismatch: {len(test_dataset)} vs {len(manifest_records)} manifest records"
                 )
 
-            rtf_metrics_list, _ = runner.run_inference_on_dataset(
+            rtf_metrics_list, _, codec_file_paths = runner.run_inference_on_dataset(
                 dataset=test_dataset,
                 output_dir=repeat_audio_dir,
                 manifest_records=manifest_records,
                 audio_base_dir=meta['audio_dir'],
                 save_cross_attention_maps=True,
                 save_context_audio=(repeat_idx == 0),  # Only save context audio once
+                save_predicted_codes=eval_config.with_fcd,  # Code files are only needed for FCD computation
             )
 
             # Compute mean RTF metrics
@@ -271,6 +273,8 @@ def run_inference_and_evaluation(
                 asr_model_name=eval_config.asr_model_name,
                 language=language,
                 with_utmosv2=eval_config.with_utmosv2,
+                with_fcd=eval_config.with_fcd,
+                codec_model_path=eval_config.codec_model_path,
             )
 
             metrics, filewise_metrics = evaluate_generated_audio_dir(
@@ -296,6 +300,10 @@ def run_inference_and_evaluation(
             # Create violin plot for this repeat
             violin_path = Path(eval_dir) / f"{dataset}_violin_{repeat_idx}.png"
             create_violin_plot(filewise_metrics, violin_plot_metrics, violin_path)
+
+            # Delete temporary predicted codes files
+            for codec_file_path in codec_file_paths:
+                os.remove(codec_file_path)
 
         if skip_evaluation or not metrics_all_repeats:
             continue
@@ -486,6 +494,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         nargs='*',
         default=['cer', 'pred_context_ssim', 'utmosv2'],
     )
+    eval_group.add_argument('--disable_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
 
     # Quality targets (for CI/CD)
     target_group = parser.add_argument_group('Quality Targets')
@@ -557,6 +566,8 @@ def main():
         sv_model=args.sv_model,
         asr_model_name=args.asr_model_name,
         with_utmosv2=not args.disable_utmosv2,
+        with_fcd=not args.disable_fcd,
+        codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
     )
 
     cer, ssim = None, None

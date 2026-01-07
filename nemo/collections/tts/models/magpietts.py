@@ -3426,8 +3426,7 @@ class MagpieTTSModel(ModelPT):
         return transcript
 
     def _needs_longform_inference(self, text: str, language: str) -> bool:
-        """Determine if longform inference is needed for the given text.
-        """
+        """Determine if longform inference is needed for the given text."""
         # Average Number of words in 20 seconds of audio for each supported language.
         longform_word_thresholds = {
             "en": 45,
@@ -3444,13 +3443,15 @@ class MagpieTTSModel(ModelPT):
         else:
             word_count = len(text.split())
         is_longform = word_count >= longform_word_thresholds[language]
-        
+
         if is_longform:
             if language == "zh":
                 logging.info("Longform inference is not supported for Mandarin, attempting to use standard inference.")
                 is_longform = False
             elif language != "en":
-                logging.info("Longform is best supported for English. For other languages, longform performance may not be optimal.")
+                logging.info(
+                    "Longform is best supported for English. For other languages, longform performance may not be optimal."
+                )
         return is_longform
 
     def do_tts(

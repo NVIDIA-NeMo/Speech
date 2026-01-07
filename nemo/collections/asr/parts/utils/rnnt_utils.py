@@ -88,8 +88,8 @@ class Hypothesis:
 
     last_frame (Optional): Index of the last decoding step hypothesis was updated including blank token prediction.
 
-    xatt_scores (Optional): List of cross-attention scores for each decoder layer. Each element of the list
-        is a Tensor of shape num heads x decoder input len x encoder output len (HxUxT).
+    xatt_scores (Optional): List of cross-attention scores for each decoder layer. Each element of the list is a
+        Tensor of shape num heads x decoder input len x encoder output len (HxUxT). This is useful only for AED models.
     """
 
     score: float

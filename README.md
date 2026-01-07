@@ -376,10 +376,10 @@ pip install nemo_toolkit['multimodal'] # or pip install "nemo_toolkit['multimoda
 
 ### NGC PyTorch container
 
-**NOTE: The following steps are supported beginning with 25.11 (NeMo-Toolkit 2.6.0)**
+**NOTE: The following steps are supported beginning with 25.09 (NeMo-Toolkit 2.6.0)**
 
 We recommended that you start with a base NVIDIA PyTorch container:
-nvcr.io/nvidia/pytorch:25.11-py3.
+nvcr.io/nvidia/pytorch:25.09-py3.
 
 If starting with a base NVIDIA PyTorch container, you must first launch
 the container:

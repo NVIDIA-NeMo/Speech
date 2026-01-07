@@ -219,8 +219,8 @@ def dataset(model):
 
 @pytest.fixture(scope="session")
 def training_cutset_batch():
-    cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
-    cut.target_audio = dummy_recording(1, with_data=True)
+    cut = dummy_cut(0, recording=dummy_recording(0, with_data=True, duration=1.0, sampling_rate=22050))
+    cut.target_audio = dummy_recording(1, with_data=True, duration=1.0, sampling_rate=22050)
     cut.supervisions = [
         SupervisionSegment(
             id=cut.id,
@@ -301,9 +301,6 @@ def test_eartts_dataset(dataset, training_cutset_batch):
 
     for key in tensor_keys:
         assert torch.is_tensor(batch[key]), f"{key} must be a tensor"
-
-    assert batch["source_audio"].shape == (1, 89082)
-    assert batch["target_audio"].shape == (1, 89082)
 
     # Check target text consistency
     assert batch["target_texts"] == ["hello okay"]

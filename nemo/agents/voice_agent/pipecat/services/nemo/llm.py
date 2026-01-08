@@ -64,39 +64,36 @@ class LLMUtilsMixin:
             messages.append({"role": "user", "content": "Hi"})
         return messages
 
-    def _maybe_merge_consecutive_turns(
+    def _maybe_merge_consecutive_user_turns(
         self, messages: List[ChatCompletionMessageParam]
     ) -> List[ChatCompletionMessageParam]:
         """
-        Merge consecutive turns of the same role into a single turn,
-        since some LLMs like "nvidia/Llama-3.1-Nemotron-Nano-8B-v1" do not support consecutive turns of the same role.
+        Merge consecutive user turns into a single turn,
+        since some LLMs like "nvidia/Llama-3.1-Nemotron-Nano-8B-v1" do not support consecutive user turns.
         """
         if not messages:
             return messages
 
         merged_messages = []
-        current_role = None
-        current_content = ""
 
+        user_content = ""
         for message in messages:
             role = message["role"]
-            content = message["content"]
-
-            if role == current_role:
-                # Merge with previous message of same role
-                current_content += "; " + content
+            if role != "user":
+                # check if there's any preceeding user content, add them first
+                if user_content:
+                    merged_messages.append({"role": "user", "content": user_content})
+                    user_content = ""
+                merged_messages.append(message)
             else:
-                # Save previous message if exists
-                if current_role is not None:
-                    merged_messages.append({"role": current_role, "content": current_content})
+                if user_content:
+                    user_content += "; " + message["content"]
+                else:
+                    user_content = message["content"]
 
-                # Start new message
-                current_role = role
-                current_content = content
-
-        # Add the last message
-        if current_role is not None:
-            merged_messages.append({"role": current_role, "content": current_content})
+        # add the last user content
+        if user_content:
+            merged_messages.append({"role": "user", "content": user_content})
 
         return merged_messages
 
@@ -167,7 +164,7 @@ class HuggingFaceLLMLocalService(LLMUtilsMixin):
                 logger.warning(f"Got TemplateError: {e}. Trying to fix by merging consecutive turns if possible.")
 
         try:
-            new_messages = self._maybe_merge_consecutive_turns(messages)
+            new_messages = self._maybe_merge_consecutive_user_turns(messages)
             logger.debug(f"LLM messages after merging consecutive user turns: {new_messages}")
             prompt = self._apply_chat_template(new_messages)
             # Update the messages in place if successful
@@ -656,19 +653,18 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         self, messages: List[ChatCompletionMessageParam], params: dict
     ) -> AsyncStream[ChatCompletionChunk]:
         """Get a response from the client."""
+
         try:
             chunks = await self._client.chat.completions.create(**params)
         except BadRequestError as e:
-            logger.warning(
-                f"Error in get_chat_completions: {e}, trying to fix by adding dummy user message"
-                "and merging consecutive turns if possible."
-            )
+            logger.error(f"Error in _get_response_from_client: {e}, trying to fix...")
             logger.debug(f"LLM messages before fixing: {messages}")
             messages = self._maybe_add_user_message(messages)
-            messages = self._maybe_merge_consecutive_turns(messages)
+            messages = self._maybe_merge_consecutive_user_turns(messages)
             logger.debug(f"LLM messages after fixing: {messages}")
             params["messages"] = messages
             chunks = await self._client.chat.completions.create(**params)
+
         return chunks
 
 

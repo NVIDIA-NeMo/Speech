@@ -481,6 +481,19 @@ class TestEncDecMultiTaskModel:
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.alignments is None
 
+    # test transcribe with canary2 model with torch tensor input
+    @pytest.mark.unit
+    def test_transcribe_with_canary2_model_with_torch_tensor_input(self, canary_1b_v2, test_data_dir):
+        import soundfile as sf
+
+        audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
+        audio, sr = sf.read(audio_file, dtype='float32')
+
+        # Numpy array test
+        outputs = canary_1b_v2.transcribe(audio, batch_size=1)
+        assert len(outputs) == 1
+        assert isinstance(outputs[0].text, str)
+
     @pytest.mark.unit
     def test_transcribe_tensor(self, asr_model, test_data_dir):
         # Load audio file

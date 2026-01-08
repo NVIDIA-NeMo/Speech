@@ -3666,7 +3666,8 @@ class MagpieTTSModel(ModelPT):
                 if len(all_codes) > 0:
                     concatenated_codes = torch.cat(all_codes, dim=1).unsqueeze(0)
                     codes_lens = torch.tensor([concatenated_codes.shape[2]], device=self.device, dtype=torch.long)
-                    return self.codes_to_audio(concatenated_codes, codes_lens)
+                    predicted_audio, predicted_audio_lens, _ = self.codes_to_audio(concatenated_codes, codes_lens)
+                    return predicted_audio, predicted_audio_lens
                 else:
                     return torch.zeros(1, 0, device=self.device), torch.zeros(1, device=self.device, dtype=torch.long)
 

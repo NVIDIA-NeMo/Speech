@@ -18,7 +18,6 @@ Tests for MagpieTTS inference CLI options.
 
 import csv
 import os
-from glob import glob
 
 import pytest
 

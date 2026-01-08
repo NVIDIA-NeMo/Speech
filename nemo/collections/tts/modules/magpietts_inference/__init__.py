@@ -36,7 +36,7 @@ Example Usage:
     model, checkpoint_name = load_magpie_model(model_config)
 
     # Create runner and run inference
-    inference_config = InferenceConfig(temperature=0.6, topk=80)
+    inference_config = InferenceConfig()
     runner = MagpieInferenceRunner(model, inference_config)
 """
 

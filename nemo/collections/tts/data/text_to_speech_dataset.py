@@ -30,6 +30,7 @@ from nemo.collections.tts.parts.preprocessing.features import Featurizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _read_audio,
     beta_binomial_prior_distribution,
+    chunk_and_tokenize_text_by_sentence,
     filter_dataset_by_duration,
     get_weighted_sampler,
     load_audio,
@@ -37,14 +38,13 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 )
 from nemo.core.classes import Dataset
 from nemo.utils import logging
-from nemo.utils.decorators import experimental
 
 
 @dataclass
 class DatasetMeta:
     manifest_path: Path
     audio_dir: Path
-    feature_dir: Path
+    feature_dir: Path = None
     sample_weight: float = 1.0
     tokenizer_names: List[str] = None
 
@@ -53,15 +53,14 @@ class DatasetMeta:
 class DatasetSample:
     dataset_name: str
     manifest_entry: Dict[str, Any]
-    audio_dir: Path
-    feature_dir: Path
+    audio_dir: Optional[Path]
+    feature_dir: Optional[Path]
     text: str
     speaker: str
     speaker_index: int = None
     tokenizer_names: List[str] = None
 
 
-@experimental
 class TextToSpeechDataset(Dataset):
     """
     Class for processing and loading text to speech training examples.
@@ -195,8 +194,8 @@ class TextToSpeechDataset(Dataset):
             sample = DatasetSample(
                 dataset_name=dataset_name,
                 manifest_entry=entry,
-                audio_dir=Path(dataset.audio_dir),
-                feature_dir=Path(dataset.feature_dir),
+                audio_dir=None if dataset.audio_dir is None else Path(dataset.audio_dir),
+                feature_dir=None if dataset.feature_dir is None else Path(dataset.feature_dir),
                 text=text,
                 speaker=speaker,
                 speaker_index=speaker_index,
@@ -338,13 +337,9 @@ class MagpieTTSDataset(TextToSpeechDataset):
         max_duration: Optional float, if provided audio files in the training manifest longer than 'max_duration'
             will be ignored.
         volume_norm: Whether to apply volume normalization to loaded audio.
-        codec_model_downsample_factor: Downsample factor of the codec model (Num samples in waveform per codec frame).
+        codec_model_samples_per_frame: Num samples in waveform per codec frame (codec downsample factor).
         bos_id: Text BOS token id.
         eos_id: Text EOS token id.
-        audio_bos_id: Audio BOS token id.
-        audio_eos_id: Audio EOS token id.
-        context_audio_bos_id: Context audio BOS token id.
-        context_audio_eos_id: Context audio EOS token id.
         num_audio_codebooks: Number of audio codebooks.
         prior_scaling_factor: Scaling factor for the beta binomial prior distribution.
         load_cached_codes_if_available: Whether to load cached audio codes if available *_codes_path keys are available in the manifest.
@@ -355,6 +350,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         pad_context_text_to_max_duration: Whether to pad context text to max context audio frames.
         context_duration_min: Minimum duration of context audio in seconds.
         context_duration_max: Maximum duration of context audio in seconds.
+        text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
+        text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
     """
 
     def __init__(
@@ -365,13 +362,9 @@ class MagpieTTSDataset(TextToSpeechDataset):
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
         volume_norm: bool = True,
-        codec_model_downsample_factor: int = None,
+        codec_model_samples_per_frame: int = None,
         bos_id: int = None,
         eos_id: int = None,
-        audio_bos_id: int = None,
-        audio_eos_id: int = None,
-        context_audio_bos_id: int = None,
-        context_audio_eos_id: int = None,
         num_audio_codebooks: int = None,
         prior_scaling_factor: float = None,
         load_cached_codes_if_available: bool = True,
@@ -379,9 +372,12 @@ class MagpieTTSDataset(TextToSpeechDataset):
         tokenizer_config=None,
         load_16khz_audio: bool = True,
         use_text_conditioning_tokenizer: bool = False,
+        text_conditioning_tokenizer_name: str = None,
         pad_context_text_to_max_duration: bool = False,
         context_duration_min: float = 3.0,
         context_duration_max: float = 10.0,
+        text_context_remapping: Dict[str, str] = None,
+        text_context_remapping_prob: float = 0.0,
     ):
         super().__init__(
             dataset_meta=dataset_meta,
@@ -396,14 +392,10 @@ class MagpieTTSDataset(TextToSpeechDataset):
             max_duration=max_duration,
             volume_norm=volume_norm,
         )
-        self.bos_id = bos_id
+        self.bos_id = bos_id  # TODO @xueyang: this should be removed since no other places used it.
         self.eos_id = eos_id
-        self.audio_bos_id = audio_bos_id
-        self.audio_eos_id = audio_eos_id
-        self.context_audio_bos_id = context_audio_bos_id
-        self.context_audio_eos_id = context_audio_eos_id
         self.num_audio_codebooks = num_audio_codebooks
-        self.codec_model_downsample_factor = codec_model_downsample_factor
+        self.codec_model_samples_per_frame = codec_model_samples_per_frame
         self.include_align_prior = prior_scaling_factor is not None
         self.prior_scaling_factor = prior_scaling_factor
         self.load_cached_codes_if_available = load_cached_codes_if_available
@@ -412,16 +404,16 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.text_tokenizer = None  # Assigned in worker_init_fn in model file
         self.load_16khz_audio = load_16khz_audio
         self.use_text_conditioning_tokenizer = use_text_conditioning_tokenizer
-        self.text_conditioning_tokenizer = (
-            None  # Assigned in worker_init_fn in model file if use_text_conditioning_tokenizer is True
-        )
+        self.text_conditioning_tokenizer_name = text_conditioning_tokenizer_name
         self.pad_context_text_to_max_duration = pad_context_text_to_max_duration
         self.context_duration_min = context_duration_min
         self.context_duration_max = context_duration_max
+        self.text_context_remapping = text_context_remapping
+        self.text_context_remapping_prob = text_context_remapping_prob
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
-        num_codec_frames = int(duration * sample_rate / self.codec_model_downsample_factor)
-        num_audio_samples = num_codec_frames * self.codec_model_downsample_factor
+        num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
+        num_audio_samples = num_codec_frames * self.codec_model_samples_per_frame
         return num_audio_samples
 
     def __getitem__(self, index):
@@ -443,16 +435,16 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
         if self.load_cached_codes_if_available and 'target_audio_codes_path' in data.manifest_entry:
             audio_codes_path = data.manifest_entry['target_audio_codes_path']
-            audio_codes = torch.load(audio_codes_path).long()  # (C, T)
+            audio_codes = torch.load(audio_codes_path)  # (C, T)
             spec_len = audio_codes.shape[1] + 1  # +1 for EOS
-            auidio_bos_tensor = torch.full((audio_codes.shape[0], 1), self.audio_bos_id, dtype=audio_codes.dtype)
-            audio_eos_tensor = torch.full((audio_codes.shape[0], 1), self.audio_eos_id, dtype=audio_codes.dtype)
-            audio_codes = torch.cat([auidio_bos_tensor, audio_codes, audio_eos_tensor], dim=1)
             audio_codes_len = audio_codes.shape[1]
             example['audio_codes'] = audio_codes
             example['audio_codes_len'] = audio_codes_len
             example['audio_filepath'] = audio_codes_path
-        else:
+            if 'audio_filepath' in data.manifest_entry:
+                # If audio_filepath is available, then use the actual audio file path.
+                example['audio_filepath'] = data.manifest_entry['audio_filepath']
+        elif 'audio_filepath' in data.manifest_entry:
             # Only load audio if codes are not available
             audio_array, _, audio_filepath_rel = load_audio(
                 manifest_entry=data.manifest_entry,
@@ -464,22 +456,22 @@ class MagpieTTSDataset(TextToSpeechDataset):
             # Pad audio to be multiple of downsample factor
             audio = torch.nn.functional.pad(
                 audio,
-                (0, self.codec_model_downsample_factor - (audio.shape[0] % self.codec_model_downsample_factor)),
+                (0, self.codec_model_samples_per_frame - (audio.shape[0] % self.codec_model_samples_per_frame)),
                 value=0,
             )
             audio_len = audio.shape[0]
             example['audio_filepath'] = data.manifest_entry['audio_filepath']
             example['audio'] = audio
             example['audio_len'] = audio_len
-            spec_len = int(audio_len / self.codec_model_downsample_factor) + 1  # +1 for EOS
+            spec_len = int(audio_len / self.codec_model_samples_per_frame) + 1  # +1 for EOS
 
         if self.load_cached_codes_if_available and 'context_audio_codes_path' in data.manifest_entry:
             context_audio_codes_path = data.manifest_entry['context_audio_codes_path']
-            context_audio_codes = torch.load(context_audio_codes_path).long()  # (8, T)
+            context_audio_codes = torch.load(context_audio_codes_path)  # (8, T)
             # Sample random duration between self.context_duration_min and self.context_duration_max
             _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
             _num_frames_to_slice = int(
-                _context_duration_to_slice * self.sample_rate / self.codec_model_downsample_factor
+                _context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame
             )
             if _num_frames_to_slice < context_audio_codes.shape[1]:
                 start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
@@ -491,13 +483,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
                 context_audio_codes_repeated = context_audio_codes.repeat(1, _num_repeats)
                 context_audio_codes = context_audio_codes_repeated[:, :_num_frames_to_slice]
 
-            context_bos_tensor = torch.full(
-                (context_audio_codes.shape[0], 1), self.context_audio_bos_id, dtype=context_audio_codes.dtype
-            )
-            context_eos_tensor = torch.full(
-                (context_audio_codes.shape[0], 1), self.context_audio_eos_id, dtype=context_audio_codes.dtype
-            )
-            context_audio_codes = torch.cat([context_bos_tensor, context_audio_codes, context_eos_tensor], dim=1)
             context_audio_codes_len = context_audio_codes.shape[1]
             example['context_audio_codes'] = context_audio_codes
             example['context_audio_codes_len'] = context_audio_codes_len
@@ -530,19 +515,15 @@ class MagpieTTSDataset(TextToSpeechDataset):
             # If context audio is not available, just use a dummy context_audio_codes
             # (Will be used in text context scenario)
             if self.load_cached_codes_if_available:
-                context_bos_tensor = torch.full(
-                    (self.num_audio_codebooks, 1), self.context_audio_bos_id, dtype=torch.int32
-                )
-                context_eos_tensor = torch.full(
-                    (self.num_audio_codebooks, 1), self.context_audio_eos_id, dtype=torch.int32
-                )
-                context_audio_codes = torch.cat([context_bos_tensor, context_eos_tensor], dim=1)
-                context_audio_codes_len = context_audio_codes.shape[1]
+                context_audio_codes = torch.zeros([self.num_audio_codebooks, 0], dtype=torch.int32)
+                context_audio_codes_len = 0
                 example['context_audio_codes'] = context_audio_codes
                 example['context_audio_codes_len'] = context_audio_codes_len
             else:
                 # @shehzeenh: Added this condition so that a batch does not have a mix of context_audio and context_audio_codes
-                context_audio = torch.zeros(self.codec_model_downsample_factor, dtype=torch.float32)
+                # @blisc: Added a +1. If we send in exactly 882 samples, then a conv layer complains about padding.
+                #         Adding 883 works. This occurs when we use text context during inference.
+                context_audio = torch.zeros(self.codec_model_samples_per_frame + 1, dtype=torch.float32)
                 context_audio_len = context_audio.shape[0]
                 example['context_audio'] = context_audio
                 example['context_audio_len'] = context_audio_len
@@ -576,17 +557,22 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
         if self.use_text_conditioning_tokenizer:
             if 'context_text' in data.manifest_entry:
-                context_tokens = self.text_conditioning_tokenizer(data.manifest_entry['context_text'])['input_ids']
+                context_text = data.manifest_entry['context_text']
+                if self.text_context_remapping is not None and context_text in self.text_context_remapping:
+                    if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:
+                        # Only remap during training. Give the exact text context during inference.
+                        context_text = self.text_context_remapping[context_text]
+                context_tokens = self.text_tokenizer.encode(context_text, self.text_conditioning_tokenizer_name)
                 example['has_text_context'] = True
             else:
-                context_tokens = self.text_conditioning_tokenizer("[NO TEXT CONTEXT]")['input_ids']
+                context_tokens = self.text_tokenizer.encode("[NO TEXT CONTEXT]", self.text_conditioning_tokenizer_name)
                 example['has_text_context'] = False
             if self.pad_context_text_to_max_duration:
                 _required_len = (
-                    int(self.context_duration_max * self.sample_rate / self.codec_model_downsample_factor) + 2
+                    int(self.context_duration_max * self.sample_rate / self.codec_model_samples_per_frame) + 2
                 )  # +2 for BOS and EOS
                 if len(context_tokens) < _required_len:
-                    _pad_id = self.text_conditioning_tokenizer.pad_token_id
+                    _pad_id = self.text_tokenizer.tokenizer_pad_ids[self.text_conditioning_tokenizer_name]
                     context_tokens += [_pad_id] * (_required_len - len(context_tokens))
                 else:
                     context_tokens = context_tokens[:_required_len]
@@ -603,10 +589,22 @@ class MagpieTTSDataset(TextToSpeechDataset):
             align_prior = torch.tensor(align_prior, dtype=torch.float32)
             example["align_prior"] = align_prior
 
-        example['raw_text'] = data.text
+        if "original_text" in data.manifest_entry:
+            # Raw Text is used as the GT for CER/WER computation in DPO pref data generation
+            # and GRPO reward setup. For manifests in which the 'text' field is phonemized,
+            # we use the 'original_text' field as the raw text. Otherwise, we use the regular text field.
+            example['raw_text'] = data.manifest_entry['original_text']
+        else:
+            example['raw_text'] = data.text
+
+        example['language'] = data.manifest_entry.get('language', 'en')
 
         if "reward" in data.manifest_entry:
             example["reward"] = data.manifest_entry["reward"]
+
+        # Get speaker index if available (for models with baked context embeddings)
+        if 'speaker_index' in data.manifest_entry:
+            example['speaker_index'] = data.manifest_entry['speaker_index']
 
         return example
 
@@ -631,13 +629,18 @@ class MagpieTTSDataset(TextToSpeechDataset):
         context_has_text_context_list = []
         reward_list = []
         raw_text_list = []
+        language_list = []
+        speaker_indices_list = []
         for example in batch:
             dataset_name_list.append(example["dataset_name"])
-            audio_filepath_list.append(example["audio_filepath"])
             raw_text_list.append(example["raw_text"])
+            language_list.append(example["language"])
 
             token_list.append(example["tokens"])
             token_len_list.append(example["text_len"])
+
+            if 'audio_filepath' in example:
+                audio_filepath_list.append(example["audio_filepath"])
 
             if 'audio' in example:
                 audio_list.append(example["audio"])
@@ -667,6 +670,9 @@ class MagpieTTSDataset(TextToSpeechDataset):
             if 'reward' in example:
                 reward_list.append(example['reward'])
 
+            if 'speaker_index' in example:
+                speaker_indices_list.append(example['speaker_index'])
+
             if self.include_align_prior:
                 prior_list.append(example["align_prior"])
 
@@ -677,6 +683,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         batch_dict = {
             "dataset_names": dataset_name_list,
             "raw_texts": raw_text_list,
+            "languages": language_list,
             "audio_filepaths": audio_filepath_list,
             "text": batch_tokens,
             "text_lens": batch_token_len,
@@ -713,6 +720,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if len(context_audio_codes_list) > 0:
             batch_context_audio_codes_len = torch.IntTensor(context_audio_codes_len_list)
             context_audio_codes_max_len = int(batch_context_audio_codes_len.max().item())
+            # TODO @xueyang: verify if batch_context_audio_codes are integer.
             batch_context_audio_codes = stack_tensors(context_audio_codes_list, max_lens=[context_audio_codes_max_len])
             batch_dict['context_audio_codes'] = batch_context_audio_codes
             batch_dict['context_audio_codes_lens'] = batch_context_audio_codes_len
@@ -720,6 +728,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if self.use_text_conditioning_tokenizer:
             batch_context_text_tokens_len = torch.IntTensor(context_text_tokens_len_list)
             context_text_tokens_max_len = int(batch_context_text_tokens_len.max().item())
+            # TODO @xueyang: potential bugs if self.tokenizer.pad is not 0.0. verify if batch_context_text_tokens are integer.
             batch_context_text_tokens = stack_tensors(context_text_tokens_list, max_lens=[context_text_tokens_max_len])
             batch_dict['context_text_tokens'] = batch_context_text_tokens
             batch_dict['context_text_tokens_lens'] = batch_context_text_tokens_len
@@ -736,14 +745,16 @@ class MagpieTTSDataset(TextToSpeechDataset):
         if len(reward_list) > 0:
             batch_dict['rewards'] = torch.FloatTensor(reward_list)
 
-        # Assert only ONE of context_audio or context_audio_codes in the batch
-        assert ('audio' in batch_dict) ^ ('audio_codes' in batch_dict)
+        if len(speaker_indices_list) > 0:
+            batch_dict['speaker_indices'] = torch.tensor(speaker_indices_list, dtype=torch.int64)
 
-        # Assert only ONE of context_audio or context_audio_codes in the batch
+        # Assert no more than one of audio or audio_codes in the batch
+        if 'audio' in batch_dict:
+            assert 'audio_codes' not in batch_dict
+
+        # Assert no more than one of context_audio or context_audio_codes in the batch
         if 'context_audio' in batch_dict:
             assert 'context_audio_codes' not in batch_dict
-        if 'context_audio_codes' in batch_dict:
-            assert 'context_audio' not in batch_dict
 
         return batch_dict
 
@@ -772,3 +783,141 @@ class MagpieTTSDatasetDPO(MagpieTTSDataset):
         chosen_collated = super().collate_fn(chosen_batch)
         rejected_collated = super().collate_fn(rejected_batch)
         return {"chosen": chosen_collated, "rejected": rejected_collated}
+
+
+class LongFormTTSInferenceDataset(MagpieTTSDataset):
+    """
+    Dataset for longform TTS inference with sentence-level text chunking.
+
+    Inherits from MagpieTTSDataset to reuse context audio loading, text conditioning,
+    and other preprocessing logic. Adds sentence-level text chunking on top.
+
+    Args:
+        dataset_meta: Dataset metadata dictionary (same format as MagpieTTSDataset).
+        sample_rate: Audio sample rate.
+        tokenizer_name: Name of the tokenizer to use for sentence chunking.
+        codec_model_samples_per_frame: Samples per codec frame.
+        eos_id: End-of-sequence token ID.
+        audio_bos_id: Audio BOS token ID (for target audio).
+        audio_eos_id: Audio EOS token ID (for target audio).
+        context_audio_bos_id: Context audio BOS token ID.
+        context_audio_eos_id: Context audio EOS token ID.
+        num_audio_codebooks: Number of audio codebooks.
+        context_duration_min: Minimum context duration in seconds.
+        context_duration_max: Maximum context duration in seconds.
+        use_text_conditioning_tokenizer: Whether model uses text conditioning encoder.
+        text_conditioning_tokenizer_name: Name of text conditioning tokenizer.
+        pad_context_text_to_max_duration: Whether to pad context text.
+        load_16khz_audio: Whether to load 16kHz audio for SV model.
+    """
+
+    def __init__(
+        self,
+        dataset_meta: Dict[str, Any],
+        sample_rate: int,
+        tokenizer_name: str,
+        codec_model_samples_per_frame: int,
+        eos_id: int,
+        num_audio_codebooks: int,
+        context_duration_min: float = 3.0,
+        context_duration_max: float = 10.0,
+        use_text_conditioning_tokenizer: bool = False,
+        text_conditioning_tokenizer_name: str = None,
+        pad_context_text_to_max_duration: bool = False,
+        load_16khz_audio: bool = False,
+        **kwargs,
+    ):
+        # Initialize parent - handles manifest reading and context audio loading
+        super().__init__(
+            dataset_meta=dataset_meta,
+            sample_rate=sample_rate,
+            codec_model_samples_per_frame=codec_model_samples_per_frame,
+            eos_id=eos_id,
+            num_audio_codebooks=num_audio_codebooks,
+            context_duration_min=context_duration_min,
+            context_duration_max=context_duration_max,
+            use_text_conditioning_tokenizer=use_text_conditioning_tokenizer,
+            text_conditioning_tokenizer_name=text_conditioning_tokenizer_name,
+            pad_context_text_to_max_duration=pad_context_text_to_max_duration,
+            load_16khz_audio=load_16khz_audio,
+            load_cached_codes_if_available=True,  # Prefer codes for inference
+            dataset_type='test',
+            **kwargs,
+        )
+        self.tokenizer_name = tokenizer_name
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """
+        Add sentence chunking on top of parent's __getitem__.
+
+        Returns:
+            Dictionary containing all parent fields plus:
+                - idx: Sample index
+                - chunked_tokens: List of tokenized text chunks (per sentence)
+                - chunked_tokens_len: List of token lengths
+                - entry: Original manifest entry
+        """
+        # Get text for sentence chunking
+        data = self.data_samples[idx]
+        text = data.text  # entry.get("normalized_text", entry.get("text", ""))
+
+        # Sentence chunking (longform-specific)
+        chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
+            text,
+            self.tokenizer_name,
+            self.text_tokenizer,
+            self.eos_id,
+        )
+
+        # Handle empty text edge case
+        if not chunked_tokens:
+            chunked_tokens = [torch.tensor([self.eos_id], dtype=torch.int32)]
+            chunked_tokens_len = [1]
+
+        # Call parent to get ALL the context audio, text conditioning, etc.
+        example = super().__getitem__(idx)
+
+        # Add longform-specific fields
+        example['idx'] = idx
+        example['chunked_tokens'] = chunked_tokens
+        example['chunked_tokens_len'] = chunked_tokens_len
+
+        return example
+
+    def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Collate function for batching longform samples.
+
+        Calls parent's collate_fn to handle context audio, text conditioning, etc.,
+        then adds longform-specific fields (chunked_tokens).
+        """
+        # Call parent's collate_fn to handle all standard fields
+        batch_dict = super().collate_fn(batch)
+
+        # Add longform-specific fields
+        indices = []
+        chunked_tokens_list = []
+        chunked_tokens_lens_list = []
+
+        # Find max number of chunks across batch
+        max_num_chunks = max(len(sample['chunked_tokens']) for sample in batch)
+
+        for sample in batch:
+            indices.append(sample['idx'])
+
+            # Pad chunked tokens to max_num_chunks with single EOS token
+            num_padding = max_num_chunks - len(sample['chunked_tokens'])
+            padded_tokens = sample['chunked_tokens'] + [
+                torch.tensor([self.eos_id], dtype=torch.int32) for _ in range(num_padding)
+            ]
+            padded_lens = sample['chunked_tokens_len'] + [1] * num_padding
+
+            chunked_tokens_list.append(padded_tokens)
+            chunked_tokens_lens_list.append(padded_lens)
+
+        # Add longform-specific fields to batch_dict
+        batch_dict['idx'] = indices
+        batch_dict['chunked_tokens'] = chunked_tokens_list
+        batch_dict['chunked_tokens_lens'] = chunked_tokens_lens_list
+
+        return batch_dict

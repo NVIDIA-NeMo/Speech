@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
-from nemo.collections.llm.utils import Config
+from nemo.collections.llm.utils import Config, is_safe_repo
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
@@ -215,10 +215,18 @@ class HFQwen2Importer(io.ModelConnector["AutoModelForCausalLM", Qwen2Model]):
     def init(self) -> Qwen2Model:
         return Qwen2Model(self.config, tokenizer=self.tokenizer)
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
         from transformers import AutoModelForCausalLM
 
-        source = AutoModelForCausalLM.from_pretrained(str(self), torch_dtype='auto', trust_remote_code=True)
+        self.trust_remote_code = trust_remote_code
+        source = AutoModelForCausalLM.from_pretrained(
+            str(self),
+            torch_dtype='auto',
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -273,14 +281,26 @@ class HFQwen2Importer(io.ModelConnector["AutoModelForCausalLM", Qwen2Model]):
     def tokenizer(self) -> "AutoTokenizer":
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
-        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)), trust_remote_code=True)
+        return AutoTokenizer(
+            self.save_hf_tokenizer_assets(str(self)),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
 
     @property
     def config(self) -> Qwen2Config:
         from transformers import AutoConfig as HFAutoConfig
         from transformers import GenerationConfig
 
-        source = HFAutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        source = HFAutoConfig.from_pretrained(
+            str(self),
+            trust_remote_code=is_safe_repo(
+                trust_remote_code=self.trust_remote_code,
+                hf_path=str(self),
+            ),
+        )
         generation_config = GenerationConfig.from_pretrained(str(self))
 
         output = Qwen2Config(
@@ -314,9 +334,17 @@ class HFQwen2Exporter(io.ModelConnector[Qwen2Model, "AutoModelForCausalLM"]):
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights():
-            return AutoModelForCausalLM.from_config(self.config, trust_remote_code=True, torch_dtype=dtype)
+            return AutoModelForCausalLM.from_config(
+                self.config,
+                trust_remote_code=is_safe_repo(
+                    trust_remote_code=self.trust_remote_code,
+                    hf_path=str(self),
+                ),
+                torch_dtype=dtype,
+            )
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
+        self.trust_remote_code = trust_remote_code
         source, _ = self.nemo_load(str(self))
         target = self.init(torch_dtype_from_mcore_config(source.config))
         target = self.convert_state(source, target)

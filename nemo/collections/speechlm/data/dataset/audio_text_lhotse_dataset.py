@@ -134,7 +134,7 @@ class MultimodalConversationDataset(torch.utils.data.Dataset):
     def _get_metadata(self, all_cuts: CutSet) -> List[dict]:
         metadata = []
         for cut in all_cuts:
-            metadata.append({"type": type(cut).__name__, "id": getattr(cut, "id", "n/a")})
+            metadata.append({"type": type(cut).__name__, "id": getattr(cut, "id", "n/a"), "cut": str(cut)})
         return metadata
 
     def _process_sample(self, sample: Any) -> dict:

@@ -29,6 +29,7 @@ from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
 )
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import (
+    NeMoCUDAPythonException,
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
     cu_call,
     run_nvrtc,
@@ -38,7 +39,7 @@ from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
 
 try:
-    from cuda import cudart
+    from cuda.bindings import runtime as cudart
 
     HAVE_CUDA_PYTHON = True
 except ImportError:
@@ -275,6 +276,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.separate_graphs = None
 
         self.cuda_graphs_mode = None
+        self.cuda_graphs_allow_fallback = True
         self.maybe_enable_cuda_graphs()
 
         if fusion_models is not None:
@@ -301,6 +303,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         For debugging the algorithm use "no_graphs" mode, since it is impossible to debug CUDA graphs directly.
         """
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
+        self.cuda_graphs_allow_fallback = False
         self.state = None
 
     def maybe_enable_cuda_graphs(self) -> bool:
@@ -726,9 +729,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         """
         kernel_string = r"""\
         typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
-    
+
         extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
-    
+
         extern "C" __global__
         void loop_conditional(cudaGraphConditionalHandle handle, const bool *active_mask_any)
         {
@@ -839,7 +842,17 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 self.state.fusion_states_prev_list.append(init_fusion_states.clone())
 
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
-            self._full_graph_compile()
+            try:
+                self._full_graph_compile()
+            except NeMoCUDAPythonException as e:
+                if not self.cuda_graphs_allow_fallback:
+                    raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from e
+                logging.warning(
+                    f"Full CUDA graph compilation failed: {e}. "
+                    "Falling back to native PyTorch CUDA graphs. Decoding will be slower."
+                )
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+                self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
             self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
@@ -893,7 +906,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
         ):
             self._before_loop()
-            capture_status, _, graph, _, _ = cu_call(
+            capture_status, _, graph, _, _, _ = cu_call(
                 cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
             )
 

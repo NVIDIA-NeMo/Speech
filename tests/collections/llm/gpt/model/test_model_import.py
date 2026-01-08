@@ -16,6 +16,8 @@ import os
 
 import torch
 
+from nemo.collections.llm.utils import is_safe_repo
+
 torch.set_grad_enabled(False)
 
 
@@ -55,7 +57,7 @@ def get_modulename_from_config_name(config_name):
 def generate_twolayer_checkpoints(config_name, hf_id):
     from transformers import AutoConfig, AutoModel, AutoTokenizer
 
-    config = AutoConfig.from_pretrained(hf_id, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(hf_id, trust_remote_code=is_safe_repo(hf_path=hf_id))
     # Reduce number of layers to two.
     if hasattr(config, 'num_hidden_layers'):
         print(config.num_hidden_layers)
@@ -69,7 +71,7 @@ def generate_twolayer_checkpoints(config_name, hf_id):
 
     # Calling random init is slow.
     with torch.device('meta'):
-        model_2l = AutoModel.from_config(config, trust_remote_code=True)
+        model_2l = AutoModel.from_config(config, trust_remote_code=is_safe_repo(hf_path=hf_id))
 
     model_2l = model_2l.to_empty(device='cpu')
     state = model_2l.state_dict()
@@ -80,8 +82,8 @@ def generate_twolayer_checkpoints(config_name, hf_id):
         state[key] = value
     model_2l.load_state_dict(state)
     model_2l.save_pretrained(f'hf_ckpts/{config_name}/', safe_serialization=False)
-    hf_tokenizer = AutoTokenizer.from_pretrained(hf_id, trust_remote_code=True)
-    hf_tokenizer.save_pretrained(f'hf_ckpts/{config_name}/', trust_remote_code=True)
+    hf_tokenizer = AutoTokenizer.from_pretrained(hf_id, trust_remote_code=is_safe_repo(hf_path=hf_id))
+    hf_tokenizer.save_pretrained(f'hf_ckpts/{config_name}/', trust_remote_code=is_safe_repo(hf_path=hf_id))
 
 
 def import_from_hf(config_name, hf_path):

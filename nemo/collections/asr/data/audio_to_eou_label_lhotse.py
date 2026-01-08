@@ -67,6 +67,13 @@ class AudioToTextEOUBatch:
 
 
 @dataclass
+class DisentangledAudioToTextEOUBatch(AudioToTextEOUBatch):
+    num_eou_audios: int = 0
+    eou_text_tokens: torch.Tensor | None = None
+    eou_text_token_lengths: torch.Tensor | None = None
+
+
+@dataclass
 class RandomPaddingConfig:
     prob: float = 0.9  # probability of applying padding
     min_pad_duration: float = 0.0  # minimum duration of pre/post padding in seconds
@@ -743,3 +750,156 @@ class LhotseEOURandomPadding(RandomPaddingConfig):
     def __call__(self, cuts: CutSet) -> CutSet:
         config = OmegaConf.create(self.__dict__)
         return CutSet(LazyLhotseEOURandomPadding(cuts, config))
+
+
+class LhotseSpeechToTextBpeDisentangledEOUDataset(LhotseSpeechToTextBpeEOUDataset):
+
+    def has_eou_labels(self, cut: Cut) -> bool:
+        if cut.has_custom("sou_time") and cut.has_custom("eou_time"):
+            return True
+        elif cut.has_custom("taskname") and cut.custom["taskname"] == "eou":
+            return True
+        else:
+            return False
+
+    def __getitem__(self, cuts: CutSet) -> DisentangledAudioToTextEOUBatch:
+        if self.skip_augment:
+            raise ValueError("Skip augmentations is not supported for disentangled EOU dataset")
+
+        audio, audio_lens, cuts = self.load_audio(cuts)
+        audio_signals = []
+        audio_lengths = []
+        eou_audio_signals = []
+        eou_audio_lengths = []
+        eou_text_tokens = []
+        eou_targets = []
+        text_tokens = []
+        sample_ids = []
+        audio_filepaths = []
+
+        for i in range(len(cuts)):
+            c = cuts[i]
+            if isinstance(c, MixedCut):
+                c = c.first_non_padding_cut
+
+            sample_ids.append(c.id)
+            audio_filepaths.append(c.recording.sources[0].source)
+
+            audio_i = audio[i]
+            audio_len_i = audio_lens[i]
+
+            if self.has_eou_labels(c):
+                audio_i, audio_len_i, text_tokens_i, eou_targets_i = self._process_eou_audio(c, audio_i, audio_len_i)
+                eou_audio_signals.append(audio_i)
+                eou_audio_lengths.append(audio_len_i)
+                eou_text_tokens.append(text_tokens_i)
+                eou_targets.append(eou_targets_i)
+            else:
+                audio_i, audio_len_i, text_tokens_i = self._process_asr_audio(c, audio_i, audio_len_i)
+                audio_signals.append(audio_i)
+                audio_lengths.append(audio_len_i)
+                text_tokens.append(text_tokens_i)
+
+        num_eou_audios = len(eou_audio_signals)
+
+        has_asr_audios = len(audio_signals) > 0
+        has_eou_audios = len(eou_audio_signals) > 0
+
+        # Put EOU audios after ASR audios for easier processing in the model
+        audio_signals.extend(eou_audio_signals)
+        audio_lengths.extend(eou_audio_lengths)
+        audio_signals = collate_vectors(audio_signals, padding_value=0)
+        audio_lengths = torch.tensor(audio_lengths, dtype=torch.long)
+
+        if has_asr_audios:
+            text_token_lens = torch.tensor([t.size(0) for t in text_tokens], dtype=torch.long)
+            text_tokens = collate_vectors(text_tokens, padding_value=0)
+        else:
+            text_token_lens = None
+            text_tokens = None
+
+        if has_eou_audios:
+            eou_text_token_lens = torch.tensor([t.size(0) for t in eou_text_tokens], dtype=torch.long)
+            eou_text_tokens = collate_vectors(eou_text_tokens, padding_value=0)
+            eou_target_lens = torch.tensor([t.size(0) for t in eou_targets], dtype=torch.long)
+            eou_targets = collate_vectors(eou_targets, padding_value=0)
+        else:
+            eou_text_tokens = None
+            eou_text_token_lens = None
+            eou_target_lens = None
+            eou_targets = None
+
+        if self.return_cuts:
+            return audio_signals, audio_lengths, cuts
+
+        return DisentangledAudioToTextEOUBatch(
+            sample_ids=sample_ids,
+            audio_filepaths=audio_filepaths,
+            audio_signal=audio_signals,
+            audio_lengths=audio_lengths,
+            text_tokens=text_tokens,
+            text_token_lengths=text_token_lens,
+            num_eou_audios=num_eou_audios,
+            eou_text_tokens=eou_text_tokens,
+            eou_text_token_lengths=eou_text_token_lens,
+            eou_targets=eou_targets,
+            eou_target_lengths=eou_target_lens,
+        )
+
+    def _process_asr_audio(
+        self, cut: Cut, audio: torch.Tensor, audio_len: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Process the ASR audio signal and return the processed audio signal, audio length and text tokens.
+        Args:
+            cut: Cut object
+            audio: torch.Tensor of audio signal, shape [T]
+            audio_len: torch.Tensor of audio signal length, shape [1]
+        Returns:
+            audio: torch.Tensor of processed audio signal, shape [T]
+            audio_len: torch.Tensor of processed audio signal length, shape [1]
+            text_tokens: torch.Tensor of text tokens, shape [T]
+        """
+        # Maybe apply speed perturbation, this has to be done before getting the EOU labels
+        audio, audio_len = self._maybe_augment_length(audio, audio_len)
+
+        text = cut.supervisions[0].text
+        if self.drop_pnc:
+            text = drop_pnc(text)
+        text = text.strip()
+        text_tokens = torch.as_tensor(self.tokenizer(text))
+
+        # Maybe apply augmentations to the audio signal after padding
+        audio, audio_len = self._maybe_augment_audio(audio, audio_len)
+
+        return audio, audio_len, text_tokens
+
+    def _process_eou_audio(
+        self, cut: Cut, audio: torch.Tensor, audio_len: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Process the EOU audio signal and return the processed audio signal, audio length, text tokens and eou targets.
+        Args:
+            cut: Cut object
+            audio: torch.Tensor of audio signal, shape [T]
+            audio_len: torch.Tensor of audio signal length, shape [1]
+        Returns:
+            audio: torch.Tensor of processed audio signal, shape [T]
+            audio_len: torch.Tensor of processed audio signal length, shape [1]
+            text_tokens: torch.Tensor of text tokens, shape [T]
+            eou_targets: torch.Tensor of eou targets, shape [T]
+        """
+        # Maybe apply speed perturbation, this has to be done before getting the EOU labels
+        audio, audio_len = self._maybe_augment_length(audio, audio_len)
+
+        # Get EOU labels and text tokens
+        eou_targets = self._get_frame_labels(cut, audio_len)
+        text_tokens = self._get_text_tokens(cut)
+
+        # Maybe apply random padding to both sides of the audio
+        audio, audio_len, eou_targets = self._random_pad_audio(audio, audio_len, eou_targets)
+
+        # Maybe apply augmentations to the audio signal after padding
+        audio, audio_len = self._maybe_augment_audio(audio, audio_len)
+
+        return audio, audio_len, text_tokens, eou_targets

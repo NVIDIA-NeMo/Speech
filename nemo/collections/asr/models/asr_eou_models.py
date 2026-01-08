@@ -28,8 +28,11 @@ from nemo.collections.asr.data.audio_to_eou_label_lhotse import (
     EOU_LABEL,
     EOU_STRING,
     AudioToTextEOUBatch,
+    DisentangledAudioToTextEOUBatch,
+    LhotseSpeechToTextBpeDisentangledEOUDataset,
     LhotseSpeechToTextBpeEOUDataset,
 )
+from nemo.collections.asr.losses.rnnt import RNNTLoss
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel, EncDecRNNTBPEModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
@@ -1461,3 +1464,560 @@ class EncDecHybridASRFrameEOUModel(EncDecHybridRNNTCTCBPEModel, ASREOUModelMixin
 
     def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
         return self.multi_inference_epoch_end(outputs, dataloader_idx, mode='test')
+
+
+class EncDecDualRNNTBPEEOUModel(EncDecRNNTBPEEOUModel):
+    def __init__(self, cfg: DictConfig, trainer):
+        super().__init__(cfg=cfg, trainer=trainer)
+
+        self.asr_weight = cfg.get("asr_weight", 1.0)
+        self.eou_weight = cfg.get("eou_weight", 1.0)
+
+        logging.info(f"Using ASR weight: {self.asr_weight}, EOU weight: {self.eou_weight}")
+
+        # Setup separate decoder and joint network for EOU prediction
+        self.eou_decoder = EncDecDualRNNTBPEEOUModel.from_config_dict(self.cfg.decoder)
+        self.eou_joint = EncDecDualRNNTBPEEOUModel.from_config_dict(self.cfg.joint)
+
+        self.eou_wer = WER(
+            decoding=self.decoding,
+            batch_dim_index=0,
+            use_cer=self._cfg.get('use_cer', False),
+            log_prediction=self._cfg.get('log_prediction', True),
+            dist_sync_on_step=True,
+            return_hypotheses=True,
+        )
+
+        # Setup RNNT Loss
+        loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
+
+        num_classes = self.eou_joint.num_classes_with_blank - 1  # for standard RNNT and multi-blank
+
+        if loss_name == 'tdt':
+            num_classes = num_classes - self.eou_joint.num_extra_outputs
+
+        self.eou_loss = RNNTLoss(
+            num_classes=num_classes,
+            loss_name=loss_name,
+            loss_kwargs=loss_kwargs,
+            reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
+        )
+
+        # Setup fused Joint step if flag is set
+        if self.eou_joint.fuse_loss_wer or (
+            self.decoding.joint_fused_batch_size is not None and self.decoding.joint_fused_batch_size > 0
+        ):
+            self.eou_joint.set_loss(self.loss)
+            self.eou_joint.set_wer(self.eou_wer)
+
+    def _setup_dataloader_from_config(self, config: Optional[Dict]):
+        cfg = OmegaConf.create(config) if not isinstance(config, DictConfig) else config
+        dataset = LhotseSpeechToTextBpeDisentangledEOUDataset(
+            cfg=cfg, tokenizer=self.tokenizer, return_cuts=config.get("do_transcribe", False)
+        )
+        return get_lhotse_dataloader_from_config(
+            config,
+            # During transcription, the model is initially loaded on the CPU.
+            # To ensure the correct global_rank and world_size are set,
+            # these values must be passed from the configuration.
+            global_rank=self.global_rank if not config.get("do_transcribe", False) else config.get("global_rank"),
+            world_size=self.world_size if not config.get("do_transcribe", False) else config.get("world_size"),
+            dataset=dataset,
+            tokenizer=self.tokenizer,
+        )
+
+    def _transcribe_forward(self, batch: DisentangledAudioToTextEOUBatch, trcfg: TranscribeConfig):
+        encoded, encoded_len = self.forward(input_signal=batch.audio_signal, input_signal_length=batch.audio_lengths)
+        output = dict(encoded=encoded, encoded_len=encoded_len)
+        return output
+
+    def training_step(self, batch: DisentangledAudioToTextEOUBatch, batch_nb: int):
+        audio_signal = batch.audio_signal
+        audio_lengths = batch.audio_lengths
+        num_eou_audios = batch.num_eou_audios
+        text_tokens = batch.text_tokens
+        text_token_lengths = batch.text_token_lengths
+        eou_text_tokens = batch.eou_text_tokens
+        eou_text_token_lengths = batch.eou_text_token_lengths
+
+        encoded_all, encoded_len_all = self.forward(input_signal=audio_signal, input_signal_length=audio_lengths)
+        del audio_signal
+
+        if hasattr(self, '_trainer') and self._trainer is not None:
+            log_every_n_steps = self._trainer.log_every_n_steps
+            sample_id = self._trainer.global_step
+        else:
+            log_every_n_steps = 1
+            sample_id = batch_nb
+
+        if num_eou_audios > 0 and num_eou_audios < len(encoded_all):
+            encoded_asr_signals = encoded_all[:-num_eou_audios]
+            encoded_asr_lengths = encoded_len_all[:-num_eou_audios]
+            encoded_eou_signals = encoded_all[-num_eou_audios:]
+            encoded_eou_lengths = encoded_len_all[-num_eou_audios:]
+        elif num_eou_audios == len(encoded_all):
+            encoded_asr_signals = None
+            encoded_asr_lengths = None
+            encoded_eou_signals = encoded_all
+            encoded_eou_lengths = encoded_len_all
+        else:
+            encoded_asr_signals = encoded_all
+            encoded_asr_lengths = encoded_len_all
+            encoded_eou_signals = None
+            encoded_eou_lengths = None
+
+        has_eou_audios = encoded_eou_signals is not None
+        has_asr_audios = encoded_asr_signals is not None
+        asr_loss_value = 0.0
+        asr_tensorboard_logs = {}
+        eou_loss_value = 0.0
+        eou_tensorboard_logs = {}
+
+        if has_asr_audios:
+            # Compute ASR loss
+            self.decoder.unfreeze()
+            self.joint.unfreeze()
+            asr_loss_value, asr_tensorboard_logs = self.get_asr_loss(
+                encoded_asr_signals,
+                encoded_asr_lengths,
+                text_tokens,
+                text_token_lengths,
+                sample_id,
+                log_every_n_steps,
+                reset_registry=not has_eou_audios,
+            )
+        else:
+            self.decoder.freeze()
+            self.joint.freeze()
+
+        if has_eou_audios:
+            # Compute EOU loss
+            self.eou_decoder.unfreeze()
+            self.eou_joint.unfreeze()
+            eou_loss_value, eou_tensorboard_logs = self.get_eou_loss(
+                encoded_eou_signals,
+                encoded_eou_lengths,
+                eou_text_tokens,
+                eou_text_token_lengths,
+                sample_id,
+                log_every_n_steps,
+            )
+        else:
+            self.eou_decoder.freeze()
+            self.eou_joint.freeze()
+
+        tensorboard_logs = {**asr_tensorboard_logs, **eou_tensorboard_logs}
+        self.log_dict(tensorboard_logs)
+
+        # Preserve batch acoustic model T and language model U parameters if normalizing
+        if self._optim_normalize_joint_txu:
+            self._optim_normalize_txu = [encoded_asr_lengths.max(), text_token_lengths.max()]
+
+        loss_value = self.asr_weight * asr_loss_value + self.eou_weight * eou_loss_value
+
+        if batch_nb % log_every_n_steps == 0:
+            logging.info(f"ASR loss: {asr_loss_value}, EOU loss: {eou_loss_value}, Total loss: {loss_value}")
+
+        return {'loss': loss_value}
+
+    def get_asr_loss(
+        self,
+        encoded,
+        encoded_len,
+        text_tokens,
+        text_token_lengths,
+        sample_id,
+        log_every_n_steps,
+        reset_registry: bool = True,
+    ) -> Tuple[torch.Tensor, Dict]:
+
+        # During training, loss must be computed, so decoder forward is necessary
+        decoder, target_length, states = self.decoder(targets=text_tokens, target_length=text_token_lengths)
+
+        if not self.joint.fuse_loss_wer:
+            # Compute full joint and loss
+            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+            loss_value = self.loss(
+                log_probs=joint, targets=text_tokens, input_lengths=encoded_len, target_lengths=target_length
+            )
+
+            # Add auxiliary losses, if registered
+            loss_value = self.add_auxiliary_losses(loss_value)
+
+            # Reset access registry
+            if AccessMixin.is_access_enabled(self.model_guid) and reset_registry:
+                AccessMixin.reset_registry(self)
+
+            tensorboard_logs = {
+                'train_loss_asr': loss_value,
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            }
+
+            if (sample_id + 1) % log_every_n_steps == 0:
+                self.wer.update(
+                    predictions=encoded,
+                    predictions_lengths=encoded_len,
+                    targets=text_tokens,
+                    targets_lengths=target_length,
+                )
+                _, scores, words = self.wer.compute()
+                self.wer.reset()
+                tensorboard_logs.update({'training_batch_wer_asr': scores.float() / words})
+
+        else:
+            # If experimental fused Joint-Loss-WER is used
+            if (sample_id + 1) % log_every_n_steps == 0:
+                compute_wer = True
+            else:
+                compute_wer = False
+
+            # Fused joint step
+            loss_value, wer, _, _ = self.joint(
+                encoder_outputs=encoded,
+                decoder_outputs=decoder,
+                encoder_lengths=encoded_len,
+                transcripts=text_tokens,
+                transcript_lengths=target_length,
+                compute_wer=compute_wer,
+            )
+
+            # Add auxiliary losses, if registered
+            loss_value = self.add_auxiliary_losses(loss_value)
+
+            # Reset access registry
+            if AccessMixin.is_access_enabled(self.model_guid) and reset_registry:
+                AccessMixin.reset_registry(self)
+
+            tensorboard_logs = {
+                'train_loss_asr': loss_value,
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            }
+
+            if compute_wer:
+                tensorboard_logs.update({'training_batch_wer_asr': wer})
+
+        return loss_value, tensorboard_logs
+
+    def get_eou_loss(
+        self, encoded, encoded_len, text_tokens, text_token_lengths, sample_id, log_every_n_steps
+    ) -> Tuple[torch.Tensor, Dict]:
+
+        decoder, target_length, states = self.eou_decoder(targets=text_tokens, target_length=text_token_lengths)
+
+        if not self.eou_joint.fuse_loss_wer:
+            # Compute full joint and loss
+            joint = self.eou_joint(encoder_outputs=encoded, decoder_outputs=decoder)
+            loss_value = self.eou_loss(
+                log_probs=joint, targets=text_tokens, input_lengths=encoded_len, target_lengths=target_length
+            )
+
+            # Add auxiliary losses, if registered
+            loss_value = self.add_auxiliary_losses(loss_value)
+
+            # Reset access registry
+            if AccessMixin.is_access_enabled(self.model_guid):
+                AccessMixin.reset_registry(self)
+
+            tensorboard_logs = {
+                'train_loss_eou': loss_value,
+            }
+
+            if (sample_id + 1) % log_every_n_steps == 0:
+                self.eou_wer.update(
+                    predictions=encoded,
+                    predictions_lengths=encoded_len,
+                    targets=text_tokens,
+                    targets_lengths=target_length,
+                )
+                _, scores, words = self.eou_wer.compute()
+                self.eou_wer.reset()
+                tensorboard_logs.update({'training_batch_wer_eou': scores.float() / words})
+
+        else:
+            # If experimental fused Joint-Loss-WER is used
+            if (sample_id + 1) % log_every_n_steps == 0:
+                compute_wer = True
+            else:
+                compute_wer = False
+
+            # Fused joint step
+            loss_value, wer, _, _ = self.eou_joint(
+                encoder_outputs=encoded,
+                decoder_outputs=decoder,
+                encoder_lengths=encoded_len,
+                transcripts=text_tokens,
+                transcript_lengths=target_length,
+                compute_wer=compute_wer,
+            )
+
+            # Add auxiliary losses, if registered
+            loss_value = self.add_auxiliary_losses(loss_value)
+
+            # Reset access registry
+            if AccessMixin.is_access_enabled(self.model_guid):
+                AccessMixin.reset_registry(self)
+
+            tensorboard_logs = {
+                'train_loss_eou': loss_value,
+            }
+
+            if compute_wer:
+                tensorboard_logs.update({'training_batch_wer_eou': wer})
+
+        return loss_value, tensorboard_logs
+
+    def validation_pass(self, batch: DisentangledAudioToTextEOUBatch, batch_idx: int, dataloader_idx: int = 0):
+        audio_signal = batch.audio_signal
+        audio_lengths = batch.audio_lengths
+        num_eou_audios = batch.num_eou_audios
+        text_tokens = batch.text_tokens
+        text_token_lengths = batch.text_token_lengths
+        eou_text_tokens = batch.eou_text_tokens
+        eou_text_token_lengths = batch.eou_text_token_lengths
+
+        encoded_all, encoded_len_all = self.forward(input_signal=audio_signal, input_signal_length=audio_lengths)
+        del audio_signal
+
+        tensorboard_logs = {}
+        if self.cfg.get('save_pred_to_file', None):
+            text_gt = self._get_text_from_tokens(text_tokens, text_token_lengths)
+            if num_eou_audios > 0:
+                eou_text_gt = self._get_text_from_tokens(eou_text_tokens, eou_text_token_lengths)
+                text_gt = text_gt + eou_text_gt
+
+            tensorboard_logs['val_sample_id'] = batch.sample_ids
+            tensorboard_logs['val_audio_filepath'] = batch.audio_filepaths
+            tensorboard_logs['val_text_gt'] = text_gt
+
+        if num_eou_audios > 0 and num_eou_audios < len(encoded_all):
+            encoded_asr_signals = encoded_all[:-num_eou_audios]
+            encoded_asr_lengths = encoded_len_all[:-num_eou_audios]
+            encoded_eou_signals = encoded_all[-num_eou_audios:]
+            encoded_eou_lengths = encoded_len_all[-num_eou_audios:]
+        elif num_eou_audios == len(encoded_all):
+            encoded_asr_signals = None
+            encoded_asr_lengths = None
+            encoded_eou_signals = encoded_all
+            encoded_eou_lengths = encoded_len_all
+        else:
+            encoded_asr_signals = encoded_all
+            encoded_asr_lengths = encoded_len_all
+            encoded_eou_signals = None
+            encoded_eou_lengths = None
+
+        has_eou_audios = encoded_eou_signals is not None
+        has_asr_audios = encoded_asr_signals is not None
+        asr_tensorboard_logs = {}
+        eou_tensorboard_logs = {}
+
+        if has_asr_audios:
+            asr_tensorboard_logs = self.asr_validation_pass(
+                encoded_asr_signals, encoded_asr_lengths, text_tokens, text_token_lengths
+            )
+
+        if has_eou_audios:
+            eou_tensorboard_logs = self.eou_validation_pass(
+                encoded_eou_signals, encoded_eou_lengths, eou_text_tokens, eou_text_token_lengths
+            )
+
+        tensorboard_logs = {**asr_tensorboard_logs, **eou_tensorboard_logs}
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+        return tensorboard_logs
+
+    def asr_validation_pass(self, encoded, encoded_len, text_tokens, text_token_lengths) -> Tuple[torch.Tensor, Dict]:
+        tensorboard_logs = {}
+        # If experimental fused Joint-Loss-WER is not used
+        if not self.joint.fuse_loss_wer:
+            if self.compute_eval_loss:
+                decoder, target_length, states = self.decoder(targets=text_tokens, target_length=text_token_lengths)
+                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+
+                loss_value = self.loss(
+                    log_probs=joint, targets=text_tokens, input_lengths=encoded_len, target_lengths=target_length
+                )
+
+                tensorboard_logs['val_loss_asr'] = loss_value
+
+            self.wer.update(
+                predictions=encoded,
+                predictions_lengths=encoded_len,
+                targets=text_tokens,
+                targets_lengths=text_token_lengths,
+            )
+            hypotheses = self.wer.get_hypotheses()
+
+            if self.cfg.get('save_pred_to_file', None):
+                text_pred = self._get_text_from_tokens([x.y_sequence for x in hypotheses])
+                tensorboard_logs['val_text_pred_asr'] = text_pred
+
+            wer, wer_num, wer_denom = self.wer.compute()
+            self.wer.reset()
+
+            tensorboard_logs['val_wer_num_asr'] = wer_num
+            tensorboard_logs['val_wer_denom_asr'] = wer_denom
+            tensorboard_logs['val_wer_asr'] = wer
+        else:
+            # If experimental fused Joint-Loss-WER is used
+            compute_wer = True
+
+            if self.compute_eval_loss:
+                decoded, target_len, states = self.decoder(targets=text_tokens, target_length=text_token_lengths)
+            else:
+                decoded = None
+                target_len = text_token_lengths
+
+            # Fused joint step
+            loss_value, wer, wer_num, wer_denom = self.joint(
+                encoder_outputs=encoded,
+                decoder_outputs=decoded,
+                encoder_lengths=encoded_len,
+                transcripts=text_tokens,
+                transcript_lengths=target_len,
+                compute_wer=compute_wer,
+                keep_hypotheses=True,
+            )
+
+            hypotheses = self.joint.get_hypotheses()
+
+            if self.cfg.get('save_pred_to_file', None):
+                text_pred = self._get_text_from_tokens([x.y_sequence for x in hypotheses])
+                tensorboard_logs['val_text_pred_asr'] = text_pred
+
+            if loss_value is not None:
+                tensorboard_logs['val_loss_asr'] = loss_value
+
+            tensorboard_logs['val_wer_num_asr'] = wer_num
+            tensorboard_logs['val_wer_denom_asr'] = wer_denom
+            tensorboard_logs['val_wer_asr'] = wer
+
+        return tensorboard_logs
+
+    def eou_validation_pass(self, batch, encoded, encoded_len, text_tokens, text_token_lengths):
+        tensorboard_logs = {}
+
+        # If experimental fused Joint-Loss-WER is not used
+        if not self.joint.fuse_loss_wer:
+            if self.compute_eval_loss:
+                decoder, target_length, states = self.decoder(targets=text_tokens, target_length=text_token_lengths)
+                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+
+                loss_value = self.loss(
+                    log_probs=joint, targets=text_tokens, input_lengths=encoded_len, target_lengths=target_length
+                )
+
+                tensorboard_logs['val_loss_eou'] = loss_value
+
+            self.eou_wer.update(
+                predictions=encoded,
+                predictions_lengths=encoded_len,
+                targets=text_tokens,
+                targets_lengths=text_token_lengths,
+            )
+            hypotheses = self.eou_wer.get_hypotheses()
+
+            if self.cfg.get('save_pred_to_file', None):
+                text_pred = self._get_text_from_tokens([x.y_sequence for x in hypotheses])
+                tensorboard_logs['val_text_pred_eou'] = text_pred
+
+            if self.cfg.get('calculate_eou_metrics', True):
+                eou_predictions = self._get_eou_predictions_from_hypotheses(hypotheses, batch)
+                eou_metrics_list, eob_metrics_list = self._calculate_eou_metrics(eou_predictions, batch)
+            else:
+                eou_metrics_list = []
+                eob_metrics_list = []
+
+            wer, wer_num, wer_denom = self.eou_wer.compute()
+            self.eou_wer.reset()
+
+            tensorboard_logs['val_wer_num_eou'] = wer_num
+            tensorboard_logs['val_wer_denom_eou'] = wer_denom
+            tensorboard_logs['val_wer_eou'] = wer
+            tensorboard_logs['val_eou_metrics'] = eou_metrics_list
+            tensorboard_logs['val_eob_metrics'] = eob_metrics_list
+
+        else:
+            # If experimental fused Joint-Loss-WER is used
+            compute_wer = True
+
+            if self.compute_eval_loss:
+                decoded, target_len, states = self.decoder(targets=text_tokens, target_length=text_token_lengths)
+            else:
+                decoded = None
+                target_len = text_token_lengths
+
+            # Fused joint step
+            loss_value, wer, wer_num, wer_denom = self.eou_joint(
+                encoder_outputs=encoded,
+                decoder_outputs=decoded,
+                encoder_lengths=encoded_len,
+                transcripts=text_tokens,
+                transcript_lengths=target_len,
+                compute_wer=compute_wer,
+                keep_hypotheses=True,
+            )
+
+            hypotheses = self.eou_joint.get_hypotheses()
+
+            if self.cfg.get('save_pred_to_file', None):
+                text_pred = self._get_text_from_tokens([x.y_sequence for x in hypotheses])
+                tensorboard_logs['val_text_pred_eou'] = text_pred
+
+            if self.cfg.get('calculate_eou_metrics', True):
+                eou_predictions = self._get_eou_predictions_from_hypotheses(hypotheses, batch)
+                eou_metrics_list, eob_metrics_list = self._calculate_eou_metrics(eou_predictions, batch)
+            else:
+                eou_metrics_list = []
+                eob_metrics_list = []
+
+            if loss_value is not None:
+                tensorboard_logs['val_loss_eou'] = loss_value
+
+            tensorboard_logs['val_wer_num_eou'] = wer_num
+            tensorboard_logs['val_wer_denom_eou'] = wer_denom
+            tensorboard_logs['val_wer_eou'] = wer
+            tensorboard_logs['val_eou_metrics'] = eou_metrics_list
+            tensorboard_logs['val_eob_metrics'] = eob_metrics_list
+
+        return tensorboard_logs
+
+    def multi_inference_epoch_end(self, outputs, dataloader_idx: int = 0, mode: str = "val"):
+        assert mode in ['val', 'test'], f"Invalid mode: {mode}. Must be 'val' or 'test'."
+
+        if not outputs:
+            logging.warning(
+                f"No outputs received for {mode} dataloader {dataloader_idx}. Skipping epoch end processing."
+            )
+            return {}
+
+        self._maybe_save_predictions(outputs, mode=mode, dataloader_idx=dataloader_idx)
+
+        # Aggregate WER metrics
+        if self.compute_eval_loss:
+            loss_mean_asr = torch.stack([x[f'{mode}_loss_asr'] for x in outputs]).mean()
+            loss_mean_eou = torch.stack([x[f'{mode}_loss_eou'] for x in outputs]).mean()
+            loss_mean = self.asr_loss_weight * loss_mean_asr + self.eou_loss_weight * loss_mean_eou
+            loss_log = {
+                f'{mode}_loss_asr': loss_mean_asr,
+                f'{mode}_loss_eou': loss_mean_eou,
+                f'{mode}_loss': loss_mean,
+            }
+        else:
+            loss_log = {}
+
+        wer_num_asr = torch.stack([x[f'{mode}_wer_num_asr'] for x in outputs]).sum()
+        wer_denom_asr = torch.stack([x[f'{mode}_wer_denom_asr'] for x in outputs]).sum()
+        wer_num_eou = torch.stack([x[f'{mode}_wer_num_eou'] for x in outputs]).sum()
+        wer_denom_eou = torch.stack([x[f'{mode}_wer_denom_eou'] for x in outputs]).sum()
+
+        tensorboard_logs[f'{mode}_wer_asr'] = wer_num_asr.float() / wer_denom_asr
+        tensorboard_logs[f'{mode}_wer_eou'] = wer_num_eou.float() / wer_denom_eou
+
+        tensorboard_logs = {**loss_log, **tensorboard_logs}
+
+        if self.cfg.get('calculate_eou_metrics', True):
+            eou_metrics = self._aggregate_eou_metrics(outputs, mode=mode)
+        tensorboard_logs.update(eou_metrics)
+
+        return {**loss_log, 'log': tensorboard_logs}

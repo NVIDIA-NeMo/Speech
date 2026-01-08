@@ -85,7 +85,9 @@ class TestDefaultConfigs:
         config_manager = ConfigManager(voice_agent_server_base_path)
 
         # STT_MODEL can be either a fastconformer model or an EOU model (e.g., parakeet_realtime_eou)
-        assert "stt_en_fastconformer" in config_manager.STT_MODEL or "parakeet_realtime_eou" in config_manager.STT_MODEL
+        assert (
+            "stt_en_fastconformer" in config_manager.STT_MODEL or "parakeet_realtime_eou" in config_manager.STT_MODEL
+        )
         assert isinstance(config_manager.stt_params, NeMoSTTInputParams)
 
     @pytest.mark.unit

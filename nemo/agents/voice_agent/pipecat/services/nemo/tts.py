@@ -500,9 +500,9 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
             logger.error(f"Error generating audio with Kokoro: {e}")
             raise
 
-    async def tool_tts_set_speed_explicitly(self, params: FunctionCallParams, speed_lambda: float):
+    async def tool_tts_set_speed(self, params: FunctionCallParams, speed_lambda: float):
         """
-        Set the speaking speed of the assistant's voice.
+        Set a specific speaking speed of the assistant's voice.
         This tool should be called only when the user specifies the speed explicitly,
         such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
 
@@ -582,23 +582,23 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
             logger.debug(f"Speed is set to {self._speed_lambda} of the original speed {self._original_speed}")
         await params.result_callback(result)
 
-    async def tool_tts_set_lang_voice(self, params: FunctionCallParams, language: str, gender: str):
+    async def tool_tts_set_voice(self, params: FunctionCallParams, accent: str, gender: str):
         """
-        Set the language and voice of the assistant's voice.
-        This tool should be called only when the user specifies the language/accent and gender explicitly.
+        Set the accent and gender of the assistant's voice.
+        This tool should be called only when the user specifies the accent and/or gender explicitly.
 
         After calling this tool, continue the previous response if it was unfinished and was
         interrupted by calling this tool, otherwise start a new response.
 
         Args:
-            language: Language for the TTS model. Must be one of 'American English' or 'British English'
-                    or 'current' for keeping the current language.
+            accent: Accent for the TTS model. Must be one of 'American English', 'British English'
+                    or 'current' for keeping the current accent.
             gender: gender of the assistant's voice. Must be one of 'male', 'female',
                     or 'current' for keeping the current gender.
         """
         await params.llm.push_frame(LLMTextFrame("Just a moment."))
 
-        lang_code = "a" if language == "American English" else "b" if language == "British English" else "current"
+        lang_code = "a" if accent == "American English" else "b" if accent == "British English" else "current"
         new_lang_code = self._lang_code
         new_gender = self._gender
         if lang_code != 'current':
@@ -627,9 +627,9 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         logger.debug(f"Language and voice are set to {new_lang_code} and {new_voice}")
         await params.result_callback({"success": True, "message": "Done. Language and voice are set to the new ones."})
 
-    async def tool_tts_reset_lang_voice(self, params: FunctionCallParams):
+    async def tool_tts_reset_voice(self, params: FunctionCallParams):
         """
-        Reset the language and voice to the original ones.
+        Reset the accent and voice to the original ones.
 
         After calling this tool, continue the previous response if it was unfinished and was
         interrupted by calling this tool, otherwise start a new response.
@@ -655,6 +655,6 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         self.register_direct_function("tool_tts_reset_speed", self.tool_tts_reset_speed)
         self.register_direct_function("tool_tts_speak_faster", self.tool_tts_speak_faster)
         self.register_direct_function("tool_tts_speak_slower", self.tool_tts_speak_slower)
-        self.register_direct_function("tool_tts_set_speed_explicitly", self.tool_tts_set_speed_explicitly)
-        self.register_direct_function("tool_tts_set_lang_voice", self.tool_tts_set_lang_voice)
-        self.register_direct_function("tool_tts_reset_lang_voice", self.tool_tts_reset_lang_voice)
+        self.register_direct_function("tool_tts_set_speed", self.tool_tts_set_speed)
+        self.register_direct_function("tool_tts_set_voice", self.tool_tts_set_voice)
+        self.register_direct_function("tool_tts_reset_voice", self.tool_tts_reset_voice)

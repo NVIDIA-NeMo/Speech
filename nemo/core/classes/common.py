@@ -53,8 +53,6 @@ __all__ = ['Typing', 'FileIO', 'Model', 'Serialization', 'typecheck', 'Pretraine
 
 _TYPECHECK_ENABLED = True
 _TYPECHECK_SEMANTIC_CHECK_ENABLED = True
-# TODO @blisc: Remove _HAS_HYDRA
-_HAS_HYDRA = True
 
 
 # Added these for now but these should be updated based on collections
@@ -591,20 +589,19 @@ class Serialization(ABC):
     def from_config_dict(cls, config: 'DictConfig', trainer: Optional['Trainer'] = None):
         """Instantiates object using DictConfig-based configuration"""
         # Resolve the config dict
-        if _HAS_HYDRA:
-            if isinstance(config, DictConfig):
-                config = OmegaConf.to_container(config, resolve=True)
-                config = OmegaConf.create(config)
-                OmegaConf.set_struct(config, True)
+        if isinstance(config, DictConfig):
+            config = OmegaConf.to_container(config, resolve=True)
+            config = OmegaConf.create(config)
+            OmegaConf.set_struct(config, True)
 
-            config = maybe_update_config_version(config)
+        config = maybe_update_config_version(config)
 
         # Hydra 0.x API
-        if ('cls' in config or 'target' in config) and 'params' in config and _HAS_HYDRA:
+        if ('cls' in config or 'target' in config) and 'params' in config:
             # regular hydra-based instantiation
             instance = safe_instantiate(config=config)
         # Hydra 1.x API
-        elif '_target_' in config and _HAS_HYDRA:
+        elif '_target_' in config:
             # regular hydra-based instantiation
             instance = safe_instantiate(config=config)
         else:
@@ -657,7 +654,7 @@ class Serialization(ABC):
         """Returns object's configuration to config dictionary"""
         if hasattr(self, '_cfg') and self._cfg is not None:
             # Resolve the config dict
-            if _HAS_HYDRA and isinstance(self._cfg, DictConfig):
+            if isinstance(self._cfg, DictConfig):
                 config = OmegaConf.to_container(self._cfg, resolve=True)
                 config = OmegaConf.create(config)
                 OmegaConf.set_struct(config, True)

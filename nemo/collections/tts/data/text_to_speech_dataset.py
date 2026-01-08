@@ -340,10 +340,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
         codec_model_samples_per_frame: Num samples in waveform per codec frame (codec downsample factor).
         bos_id: Text BOS token id.
         eos_id: Text EOS token id.
-        audio_bos_id: Audio BOS token id.
-        audio_eos_id: Audio EOS token id.
-        context_audio_bos_id: Context audio BOS token id.
-        context_audio_eos_id: Context audio EOS token id.
         num_audio_codebooks: Number of audio codebooks.
         prior_scaling_factor: Scaling factor for the beta binomial prior distribution.
         load_cached_codes_if_available: Whether to load cached audio codes if available *_codes_path keys are available in the manifest.
@@ -369,10 +365,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
         codec_model_samples_per_frame: int = None,
         bos_id: int = None,
         eos_id: int = None,
-        audio_bos_id: int = None,
-        audio_eos_id: int = None,
-        context_audio_bos_id: int = None,
-        context_audio_eos_id: int = None,
         num_audio_codebooks: int = None,
         prior_scaling_factor: float = None,
         load_cached_codes_if_available: bool = True,
@@ -402,10 +394,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
         )
         self.bos_id = bos_id  # TODO @xueyang: this should be removed since no other places used it.
         self.eos_id = eos_id
-        self.audio_bos_id = audio_bos_id
-        self.audio_eos_id = audio_eos_id
-        self.context_audio_bos_id = context_audio_bos_id
-        self.context_audio_eos_id = context_audio_eos_id
         self.num_audio_codebooks = num_audio_codebooks
         self.codec_model_samples_per_frame = codec_model_samples_per_frame
         self.include_align_prior = prior_scaling_factor is not None
@@ -447,11 +435,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
         if self.load_cached_codes_if_available and 'target_audio_codes_path' in data.manifest_entry:
             audio_codes_path = data.manifest_entry['target_audio_codes_path']
-            audio_codes = torch.load(audio_codes_path).long()  # (C, T)
+            audio_codes = torch.load(audio_codes_path)  # (C, T)
             spec_len = audio_codes.shape[1] + 1  # +1 for EOS
-            audio_bos_tensor = torch.full((audio_codes.shape[0], 1), self.audio_bos_id, dtype=audio_codes.dtype)
-            audio_eos_tensor = torch.full((audio_codes.shape[0], 1), self.audio_eos_id, dtype=audio_codes.dtype)
-            audio_codes = torch.cat([audio_bos_tensor, audio_codes, audio_eos_tensor], dim=1)
             audio_codes_len = audio_codes.shape[1]
             example['audio_codes'] = audio_codes
             example['audio_codes_len'] = audio_codes_len
@@ -482,7 +467,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
         if self.load_cached_codes_if_available and 'context_audio_codes_path' in data.manifest_entry:
             context_audio_codes_path = data.manifest_entry['context_audio_codes_path']
-            context_audio_codes = torch.load(context_audio_codes_path).long()  # (8, T)
+            context_audio_codes = torch.load(context_audio_codes_path)  # (8, T)
             # Sample random duration between self.context_duration_min and self.context_duration_max
             _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
             _num_frames_to_slice = int(
@@ -498,13 +483,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
                 context_audio_codes_repeated = context_audio_codes.repeat(1, _num_repeats)
                 context_audio_codes = context_audio_codes_repeated[:, :_num_frames_to_slice]
 
-            context_bos_tensor = torch.full(
-                (context_audio_codes.shape[0], 1), self.context_audio_bos_id, dtype=context_audio_codes.dtype
-            )
-            context_eos_tensor = torch.full(
-                (context_audio_codes.shape[0], 1), self.context_audio_eos_id, dtype=context_audio_codes.dtype
-            )
-            context_audio_codes = torch.cat([context_bos_tensor, context_audio_codes, context_eos_tensor], dim=1)
             context_audio_codes_len = context_audio_codes.shape[1]
             example['context_audio_codes'] = context_audio_codes
             example['context_audio_codes_len'] = context_audio_codes_len
@@ -537,14 +515,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
             # If context audio is not available, just use a dummy context_audio_codes
             # (Will be used in text context scenario)
             if self.load_cached_codes_if_available:
-                context_bos_tensor = torch.full(
-                    (self.num_audio_codebooks, 1), self.context_audio_bos_id, dtype=torch.int32
-                )
-                context_eos_tensor = torch.full(
-                    (self.num_audio_codebooks, 1), self.context_audio_eos_id, dtype=torch.int32
-                )
-                context_audio_codes = torch.cat([context_bos_tensor, context_eos_tensor], dim=1)
-                context_audio_codes_len = context_audio_codes.shape[1]
+                context_audio_codes = torch.zeros([self.num_audio_codebooks, 0], dtype=torch.int32)
+                context_audio_codes_len = 0
                 example['context_audio_codes'] = context_audio_codes
                 example['context_audio_codes_len'] = context_audio_codes_len
             else:
@@ -846,10 +818,6 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
         tokenizer_name: str,
         codec_model_samples_per_frame: int,
         eos_id: int,
-        audio_bos_id: int,
-        audio_eos_id: int,
-        context_audio_bos_id: int,
-        context_audio_eos_id: int,
         num_audio_codebooks: int,
         context_duration_min: float = 3.0,
         context_duration_max: float = 10.0,
@@ -865,10 +833,6 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
             sample_rate=sample_rate,
             codec_model_samples_per_frame=codec_model_samples_per_frame,
             eos_id=eos_id,
-            audio_bos_id=audio_bos_id,
-            audio_eos_id=audio_eos_id,
-            context_audio_bos_id=context_audio_bos_id,
-            context_audio_eos_id=context_audio_eos_id,
             num_audio_codebooks=num_audio_codebooks,
             context_duration_min=context_duration_min,
             context_duration_max=context_duration_max,

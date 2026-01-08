@@ -277,7 +277,7 @@ def evaluate(
         if with_utmosv2 and UTMOSV2_AVAILABLE:
             utmosv2_score = utmosv2_scores[os.path.normpath(pred_audio_filepath)]
         else:
-            utmosv2_score = 0.0
+            utmosv2_score = float('nan')
 
         try:
             if language == "en":

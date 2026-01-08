@@ -35,11 +35,24 @@ class TestMagpieTTSInferenceCLI:
     EVALSET_CONFIG = "examples/tts/evalset_config.json"
 
     @pytest.mark.run_only_on('GPU')
-    def test_disable_fcd_produces_nan_metric(self, tmp_path):
+    @pytest.mark.parametrize(
+        "disable_flag,num_repeats,metric_key",
+        [
+            # Test both the --disable_fcd and --disable_utmosv2 flags
+            (
+                "--disable_fcd",
+                "2",
+                "frechet_codec_distance",
+            ),  # multiple repeats to test that NaNs don't crash the confidence interval calculation
+            ("--disable_utmosv2", "1", "utmosv2_avg"),
+        ],
+        ids=["disable_fcd", "disable_utmosv2"],
+    )
+    def test_disable_metric_produces_nan(self, tmp_path, disable_flag, num_repeats, metric_key):
         """
-        Test that the --disable_fcd option:
+        Test that disabling a metric via CLI flag:
         1. Does not cause the script to crash
-        2. Produces NaN for the frechet_codec_distance metric
+        2. Produces NaN for the corresponding metric
         """
         # Build command-line arguments
         args = [
@@ -54,7 +67,7 @@ class TestMagpieTTSInferenceCLI:
             "--batch_size",
             "4",
             "--num_repeats",
-            "2",  # multiple repeats tests that NaNs don't crash the confidence interval calculation
+            num_repeats,
             "--temperature",
             "0.6",
             "--hparams_files",
@@ -65,7 +78,7 @@ class TestMagpieTTSInferenceCLI:
             "--legacy_text_conditioning",
             "--apply_attention_prior",
             "--run_evaluation",
-            "--disable_fcd",
+            disable_flag,
         ]
 
         # Run the main function directly with arguments
@@ -83,59 +96,6 @@ class TestMagpieTTSInferenceCLI:
         assert len(rows) > 0, "No data rows found in metrics CSV"
         metrics = rows[0]  # Get the first data row
 
-        fcd_value = metrics.get("frechet_codec_distance")
-        assert fcd_value is not None, "frechet_codec_distance key not found in metrics"
-        assert "nan" in fcd_value.lower(), f"frechet_codec_distance should be NaN but got: {fcd_value}"
-
-    @pytest.mark.run_only_on('GPU')
-    def test_disable_utmosv2_produces_nan_metric(self, tmp_path):
-        """
-        Test that the --disable_utmosv2 option:
-        1. Does not cause the script to crash
-        2. Produces NaN for the utmosv2 metric
-        """
-        # Build command-line arguments
-        args = [
-            "--codecmodel_path",
-            self.CODEC_MODEL_PATH,
-            "--datasets_json_path",
-            self.EVALSET_CONFIG,
-            "--datasets",
-            "an4_val_tiny_ci",
-            "--out_dir",
-            str(tmp_path),
-            "--batch_size",
-            "4",
-            "--num_repeats",
-            "1",  # single repeat to keep test short
-            "--temperature",
-            "0.6",
-            "--hparams_files",
-            self.HPARAMS_FILE,
-            "--checkpoint_files",
-            self.CHECKPOINT_FILE,
-            "--legacy_codebooks",
-            "--legacy_text_conditioning",
-            "--apply_attention_prior",
-            "--run_evaluation",
-            "--disable_utmosv2",
-        ]
-
-        # Run the main function directly with arguments
-        magpietts_inference_main(args)
-
-        # Look for the metrics file
-        metrics_file = os.path.join(tmp_path, "all_experiment_metrics_with_ci.csv")
-        assert os.path.exists(metrics_file), f"Metrics file not found at {metrics_file}"
-
-        # Load and verify the metrics
-        with open(metrics_file) as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-
-        assert len(rows) > 0, "No data rows found in metrics CSV"
-        metrics = rows[0]  # Get the first data row
-
-        utmosv2_value = metrics.get("utmosv2_avg")
-        assert utmosv2_value is not None, "utmosv2 key not found in metrics"
-        assert "nan" in utmosv2_value.lower(), f"utmosv2 should be NaN but got: {utmosv2_value}"
+        metric_value = metrics.get(metric_key)
+        assert metric_value is not None, f"{metric_key} key not found in metrics"
+        assert "nan" in metric_value.lower(), f"{metric_key} should be NaN but got: {metric_value}"

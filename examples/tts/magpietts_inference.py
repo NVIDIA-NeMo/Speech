@@ -505,7 +505,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
-    """Main entry point.
+    """Entry point for MagpieTTS inference and evaluation.
 
     Args:
         argv: Command-line arguments. If None, uses sys.argv.

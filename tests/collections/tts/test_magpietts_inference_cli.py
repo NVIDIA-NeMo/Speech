@@ -71,9 +71,9 @@ class TestMagpieTTSInferenceCLI:
         # Run the main function directly with arguments
         magpietts_inference_main(args)
 
-        # Find the metrics JSON file
+        # Find the metrics file
         metrics_files = glob(os.path.join(tmp_path, "**/all_experiment_metrics_with_ci.csv"), recursive=True)
-        assert len(metrics_files) > 0, f"No metrics JSON file found in {tmp_path}"
+        assert len(metrics_files) > 0, f"No metrics file found in {tmp_path}"
 
         metrics_file = metrics_files[0]
 
@@ -126,9 +126,9 @@ class TestMagpieTTSInferenceCLI:
         # Run the main function directly with arguments
         magpietts_inference_main(args)
 
-        # Find the metrics JSON file
+        # Find the metrics file
         metrics_files = glob(os.path.join(tmp_path, "**/all_experiment_metrics.csv"), recursive=True)
-        assert len(metrics_files) > 0, f"No metrics JSON file found in {tmp_path}"
+        assert len(metrics_files) > 0, f"No metrics file found in {tmp_path}"
 
         metrics_file = metrics_files[0]
 

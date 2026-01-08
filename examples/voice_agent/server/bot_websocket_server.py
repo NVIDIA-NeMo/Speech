@@ -20,9 +20,7 @@ import signal
 import sys
 
 from loguru import logger
-from omegaconf import OmegaConf
-
-from pipecat.audio.vad.silero import SileroVADAnalyzer, VADParams
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import EndTaskFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -30,7 +28,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
-from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
+from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger, RTVIAudioLoggerObserver
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
 from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config
@@ -42,6 +40,8 @@ from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import 
     WebsocketServerTransport,
 )
 from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.basic_tools import get_city_weather
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.mixins import register_direct_tools_to_llm
 from nemo.agents.voice_agent.utils.config_manager import ConfigManager
 
 
@@ -114,7 +114,10 @@ def signal_handler(signum, frame):
     shutdown_event.set()
 
 
-async def run_bot_websocket_server():
+async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
+    logger.info(f"Starting websocket server on {host}:{port}")
+    logger.info(f"Server configured to run indefinitely with no timeouts, use Ctrl+C to quit.")
+
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -145,6 +148,9 @@ async def run_bot_websocket_server():
     else:
         logger.info("Audio logging is disabled")
 
+    if audio_logger is None:
+        raise ValueError("Audio logger is not initialized")
+
     vad_analyzer = SileroVADAnalyzer(
         sample_rate=SAMPLE_RATE,
         params=vad_params,
@@ -164,8 +170,8 @@ async def run_bot_websocket_server():
             is None,  # if backchannel phrases are disabled, we can use VAD to interrupt the bot immediately
             audio_out_10ms_chunks=TRANSPORT_AUDIO_OUT_10MS_CHUNKS,
         ),
-        host="0.0.0.0",  # Bind to all interfaces
-        port=8765,
+        host=host,
+        port=port,
     )
 
     logger.info("Initializing STT service...")
@@ -240,13 +246,19 @@ async def run_bot_websocket_server():
     logger.info("TTS service initialized")
 
     context = OpenAILLMContext(
-        [
+        messages=[
             {
                 "role": SYSTEM_ROLE,
                 "content": SYSTEM_PROMPT,
             }
         ],
     )
+
+    if server_config.llm.get("enable_tool_calling", False):
+        logger.info("Tools calling for LLM is enabled by config, registering tools...")
+        register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts], tools=[get_city_weather])
+    else:
+        logger.info("Tools calling for LLM is disabled by config, skipping tool registration.")
 
     original_messages = copy.deepcopy(context.get_messages())
     original_context = copy.deepcopy(context)
@@ -303,7 +315,7 @@ async def run_bot_websocket_server():
 
     pipeline = Pipeline(pipeline)
 
-    rtvi_text_aggregator = SimpleSegmentedTextAggregator("\n?!.", min_sentence_length=5)
+    rtvi_text_aggregator = SimpleSegmentedTextAggregator(punctuation_marks=".!?\n")
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
@@ -314,7 +326,8 @@ async def run_bot_websocket_server():
             report_only_initial_ttfb=True,
             idle_timeout=None,  # Disable idle timeout
         ),
-        observers=[RTVIObserver(rtvi, text_aggregator=rtvi_text_aggregator)],
+        observers=[RTVIObserver(rtvi, text_aggregator=rtvi_text_aggregator), RTVIAudioLoggerObserver(audio_logger=audio_logger)],
+        # observers=[RTVIObserver(rtvi, text_aggregator=rtvi_text_aggregator)],
         idle_timeout_secs=None,
         cancel_on_idle_timeout=False,
     )

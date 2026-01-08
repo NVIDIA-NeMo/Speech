@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from datetime import datetime
 from typing import AsyncGenerator, List, Optional
 
 from loguru import logger
@@ -35,7 +36,7 @@ from pipecat.utils.tracing.service_decorators import traced_stt
 from pydantic import BaseModel
 
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
-from nemo.agents.voice_agent.pipecat.services.nemo.legacy_asr import NemoLegacyASRService
+from nemo.agents.voice_agent.pipecat.services.nemo.streaming_asr import NemoStreamingASRService
 
 try:
     # disable nemo logging
@@ -52,6 +53,8 @@ except ModuleNotFoundError as e:
 
 
 class NeMoSTTInputParams(BaseModel):
+    """Input parameters for NeMo STT service."""
+
     language: Optional[Language] = Language.EN_US
     att_context_size: Optional[List] = [70, 1]
     frame_len_in_secs: Optional[float] = 0.08  # 80ms for FastConformer model
@@ -61,6 +64,8 @@ class NeMoSTTInputParams(BaseModel):
 
 
 class NemoSTTService(STTService):
+    """NeMo Speech-to-Text service for Pipecat integration."""
+
     def __init__(
         self,
         *,
@@ -76,7 +81,6 @@ class NemoSTTService(STTService):
         **kwargs,
     ):
         super().__init__(**kwargs)
-
         self._queue = asyncio.Queue()
         self._sample_rate = sample_rate
         params.buffer_size = params.frame_len_in_secs // params.raw_audio_frame_len_in_secs
@@ -96,13 +100,17 @@ class NemoSTTService(STTService):
         self._load_model()
 
         self.audio_buffer = []
-        # Buffers for accumulating audio and transcriptions for a complete turn (for logging)
-        self._turn_audio_buffer = []
-        self._turn_transcription_buffer = []
+        self.user_is_speaking = False
 
     def _load_model(self):
         if self._backend == "legacy":
-            self._model = NemoLegacyASRService(self._model_name, device=self._device, decoder_type=self._decoder_type)
+            self._model = NemoStreamingASRService(
+                self._model_name,
+                self._params.att_context_size,
+                device=self._device,
+                decoder_type=self._decoder_type,
+                frame_len_in_secs=self._params.frame_len_in_secs,
+            )
         else:
             raise ValueError(f"Invalid ASR backend: {self._backend}")
 
@@ -158,37 +166,67 @@ class NemoSTTService(STTService):
         """
         await self.start_ttfb_metrics()
         await self.start_processing_metrics()
+        if self._audio_logger.first_audio_timestamp is None:
+            self._audio_logger.first_audio_timestamp = datetime.now()
 
         try:
             is_final = False
+            user_has_finished = False
             transcription = None
             self.audio_buffer.append(audio)
             if len(self.audio_buffer) >= self._params.buffer_size:
                 audio = b"".join(self.audio_buffer)
                 self.audio_buffer = []
 
-                transcription, is_final = self._model.transcribe(audio)
-                if self._record_audio_data and self._audio_logger and self._is_vad_active:
-                    self._turn_audio_buffer.append(audio)
-                    # Accumulate transcriptions for turn-based logging
-                    if transcription:
-                        self._turn_transcription_buffer.append(transcription)
-                        self._stage_turn_audio_and_transcription()
+                # Append to continuous user audio buffer for stereo conversation recording
+                if self._audio_logger and self._record_audio_data:
+                    self._audio_logger.append_continuous_user_audio(audio)
 
+                asr_result = self._model.transcribe(audio)
+                transcription = asr_result.text
+                is_final = asr_result.is_final
+                if self._audio_logger and self._record_audio_data:
+                    if self._is_vad_active:
+                        is_first_frame = False
+                        self._audio_logger.turn_audio_buffer.append(audio)
+                        # Accumulate transcriptions for turn-based logging
+                        if transcription:
+                            self._audio_logger.turn_transcription_buffer.append(transcription)
+                            self._stage_turn_audio_and_transcription(is_first_frame=is_first_frame)
+                eou_latency = asr_result.eou_latency
+                eob_latency = asr_result.eob_latency
+                eou_prob = asr_result.eou_prob
+                eob_prob = asr_result.eob_prob
+                if eou_latency is not None:
+                    logger.debug(
+                        f"EOU latency: {eou_latency: .4f} seconds. EOU probability: {eou_prob: .2f}."
+                        f"Processing time: {asr_result.processing_time: .4f} seconds."
+                    )
+                    user_has_finished = True
+                if eob_latency is not None:
+                    logger.debug(
+                        f"EOB latency: {eob_latency: .4f} seconds. EOB probability: {eob_prob: .2f}."
+                        f"Processing time: {asr_result.processing_time: .4f} seconds."
+                    )
+                    user_has_finished = True
                 await self.stop_ttfb_metrics()
                 await self.stop_processing_metrics()
 
             if transcription:
                 logger.debug(f"Transcription (is_final={is_final}): `{transcription}`")
+                self.user_is_speaking = True if not user_has_finished else False
 
                 # Get the language from params or default to EN_US
                 language = self._params.language if self._params else Language.EN_US
 
                 # Create and push the transcription frame
-                if self._has_turn_taking or not is_final:
+                if self._has_turn_taking:
+                    # if turn taking is enabled, we push interim transcription frames
+                    # and let the turn taking service handle the final transcription
                     frame_type = InterimTranscriptionFrame
                 else:
-                    frame_type = TranscriptionFrame
+                    # otherwise, we use the is_final flag to determine the frame type
+                    frame_type = TranscriptionFrame if not is_final else InterimTranscriptionFrame
                 await self.push_frame(
                     frame_type(
                         transcription,
@@ -218,25 +256,25 @@ class NemoSTTService(STTService):
             )
             yield None
 
-    def _stage_turn_audio_and_transcription(self):
+    def _stage_turn_audio_and_transcription(self, is_first_frame: bool, is_backchannel: bool = False):
         """
         Stage the complete turn audio and accumulated transcriptions.
 
         This method is called when a final transcription is received.
         It joins all accumulated audio and transcription chunks and logs them together.
         """
-        if not self._turn_audio_buffer or not self._turn_transcription_buffer:
+        if not self._audio_logger.turn_audio_buffer or not self._audio_logger.turn_transcription_buffer:
             logger.debug("No audio or transcription to log")
             return
 
         try:
             # Join all accumulated audio and transcriptions for this turn
-            complete_turn_audio = b"".join(self._turn_audio_buffer)
-            complete_transcription = "".join(self._turn_transcription_buffer)
+            complete_turn_audio = b"".join(self._audio_logger.turn_audio_buffer)
+            complete_transcription = "".join(self._audio_logger.turn_transcription_buffer)
 
             logger.debug(
-                f"Staging a turn with: {len(self._turn_audio_buffer)} audio chunks, "
-                f"{len(self._turn_transcription_buffer)} transcription chunks"
+                f"Staging a turn with: {len(self._audio_logger.turn_audio_buffer)} audio chunks, "
+                f"{len(self._audio_logger.turn_transcription_buffer)} transcription chunks"
             )
 
             self._audio_logger.stage_user_audio(
@@ -244,13 +282,14 @@ class NemoSTTService(STTService):
                 transcription=complete_transcription,
                 sample_rate=self._sample_rate,
                 num_channels=1,
+                is_first_frame=is_first_frame,
                 is_final=True,
                 additional_metadata={
                     "model": self._model_name,
                     "backend": self._backend,
                     "audio_duration_sec": len(complete_turn_audio) / (self._sample_rate * 2),
-                    "num_transcription_chunks": len(self._turn_transcription_buffer),
-                    "num_audio_chunks": len(self._turn_audio_buffer),
+                    "num_transcription_chunks": len(self._audio_logger.turn_transcription_buffer),
+                    "num_audio_chunks": len(self._audio_logger.turn_audio_buffer),
                 },
             )
 
@@ -294,18 +333,17 @@ class NemoSTTService(STTService):
         self._load_model()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(self._model, NemoLegacyASRService):
-            if isinstance(frame, VADUserStoppedSpeakingFrame):
-                self._is_vad_active = False
-                # manualy reset the state of the model when end of utterance is detected by VAD
-                logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")
-                self._model.reset_state()
-                # Clear turn buffers if logging wasn't completed (e.g., no final transcription)
-                if len(self._turn_audio_buffer) > 0 or len(self._turn_transcription_buffer) > 0:
-                    logger.debug("Clearing turn audio and transcription buffers due to VAD user stopped speaking")
-                    self._turn_audio_buffer = []
-                    self._turn_transcription_buffer = []
-            elif isinstance(frame, VADUserStartedSpeakingFrame):
-                self._is_vad_active = True
+        """Process incoming frames and handle VAD events."""
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._is_vad_active = False
+            # manually reset the state of the model when end of utterance is detected by VAD
+            logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")
+            if self.user_is_speaking:
+                logger.debug(
+                    "[EOU missing] STT failed to detect end of utterance before VAD detected user stopped speaking"
+                )
+            self._model.reset_state()
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._is_vad_active = True
 
         await super().process_frame(frame, direction)

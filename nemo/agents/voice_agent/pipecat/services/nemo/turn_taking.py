@@ -141,6 +141,10 @@ class NeMoTurnTakingService(FrameProcessor):
         elif isinstance(frame, BotStartedSpeakingFrame):
             logger.debug("BotStartedSpeakingFrame received")
             self._bot_speaking = True
+            # Capture the actual start time when audio starts playing
+            # This is more accurate than capturing during TTS generation
+            if self._audio_logger:
+                self._audio_logger.set_agent_turn_start_time()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             logger.debug("BotStoppedSpeakingFrame received")
             self._bot_stop_time = time.time()
@@ -183,6 +187,10 @@ class NeMoTurnTakingService(FrameProcessor):
                 if self._bot_speaking and self.is_backchannel(completed_text):
                     logger.debug(f"<EOU> detected for a backchannel phrase while bot is speaking: `{completed_text}`")
                     await self._handle_backchannel_text(completed_text)
+                    if self._audio_logger:
+                        self._audio_logger.save_user_audio(is_backchannel=True)
+                        logger.debug(f"[TurnTakingService] Saved backchannel audio also has EOU: {completed_text}")
+
                 else:
                     await self._handle_completed_text(completed_text, direction)
                     await self._handle_user_interruption(UserStoppedSpeakingFrame())
@@ -191,6 +199,9 @@ class NeMoTurnTakingService(FrameProcessor):
             elif has_eob and self._bot_speaking:
                 logger.debug(f"<EOB> detected while bot is speaking: `{self._user_speaking_buffer}`")
                 await self._handle_backchannel_text(str(self._user_speaking_buffer))
+                if self._audio_logger:
+                    self._audio_logger.save_user_audio(is_backchannel=True)
+                    logger.debug(f"[TurnTakingService] Saved backchannel audio for EOB while bot is speaking: `{self._user_speaking_buffer}`")
                 self._user_speaking_buffer = ""
                 self._have_sent_user_started_speaking = False  # user is done speaking, so we reset the flag
             else:
@@ -239,6 +250,9 @@ class NeMoTurnTakingService(FrameProcessor):
                     ),
                     direction=FrameDirection.UPSTREAM,
                 )
+                if self._audio_logger:
+                    self._audio_logger.save_user_audio(is_backchannel=True)
+                    logger.debug(f"[TurnTakingService] Saved backchannel audio (no VAD): {curr_text}")
             else:
                 # if the text segment is not empty and have non-space characters, we append it to the buffer
                 self._user_speaking_buffer += text_segment
@@ -272,6 +286,9 @@ class NeMoTurnTakingService(FrameProcessor):
             result={"text": completed_text},
         )
         logger.debug(f"Pushing text frame: {text_frame}")
+        # if self._audio_logger and is_final:
+        #     self._audio_logger.save_user_audio()
+        #     logger.debug(f"[TurnTakingService-HandleCompletedText] is_final: {is_final}, frame_type: {frame_type}, Saved user audio for text: {completed_text}")
         await self.push_frame(text_frame, direction)
 
     async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame, direction: FrameDirection):
@@ -317,8 +334,9 @@ class NeMoTurnTakingService(FrameProcessor):
         elif is_backchannel:
             logger.debug(f"Backchannel detected: `{self._user_speaking_buffer}`")
             if self._audio_logger:
-                self._audio_logger.save_user_audio()
-            # push the backchannel string upstream, not downstream
+                self._audio_logger.save_user_audio(is_backchannel=True)
+                logger.debug(f"[TurnTakingService] Saved backchannel audio (VAD stopped): {self._user_speaking_buffer}")
+    
             await self.push_frame(
                 TranscriptionFrame(
                     text=f"({self._user_speaking_buffer})",
@@ -338,10 +356,16 @@ class NeMoTurnTakingService(FrameProcessor):
             logger.debug("User started speaking")
             await self.push_frame(frame)
             await self.push_frame(StartInterruptionFrame(), direction=FrameDirection.DOWNSTREAM)
+            # Record cutoff time for agent audio when TTS is interrupted
+            if self._audio_logger and self._bot_speaking:
+                self._audio_logger.set_agent_cutoff_time()
+            # Increment turn index when user starts speaking (only if speaker changed)
+            if self._audio_logger:
+                self._audio_logger.increment_turn_index(speaker="user")
         elif isinstance(frame, UserStoppedSpeakingFrame):
             logger.debug("User stopped speaking")
-            if self._audio_logger:
-                self._audio_logger.save_user_audio()
+            # if self._audio_logger:
+            #     self._audio_logger.save_user_audio()
             await self.push_frame(frame)
         else:
             logger.debug(f"Unknown frame type for _handle_user_interruption: {type(frame)}")

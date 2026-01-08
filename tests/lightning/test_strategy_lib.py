@@ -201,6 +201,7 @@ def test_init_model_parallel(mock_mpu, *args):
         expert_model_parallel_size=2,
         expert_tensor_parallel_size=1,
         use_sharp=False,
+        create_all_gather_group=False,
         order="tp-cp-ep-dp-pp",
         num_distributed_optimizer_instances=1,
         nccl_communicator_config_path=None,
@@ -240,6 +241,7 @@ def test_init_model_parallel_with_tp_pp_dp(mock_mpu, *args):
         expert_model_parallel_size=2,
         expert_tensor_parallel_size=1,
         use_sharp=False,
+        create_all_gather_group=False,
         order="tp-cp-ep-pp-dp",
         num_distributed_optimizer_instances=1,
         nccl_communicator_config_path=None,
@@ -278,6 +280,64 @@ def test_grad_scaler(mock_mpu, *args):
         scaler.update()
     except AssertionError:
         pass
+
+
+@patch('torch.distributed.is_initialized', return_value=True)
+@patch('megatron.core.parallel_state')
+def test_init_model_parallel_with_all_gather_group(mock_mpu, *args):
+    """Test that create_all_gather_group parameter is properly passed to initialize_model_parallel."""
+    from nemo.utils import AppState
+
+    app_state = AppState()
+    app_state.model_parallel_size = 1
+    app_state.tensor_model_parallel_size = 2
+    app_state.pipeline_model_parallel_size = 1
+    app_state.pipeline_model_parallel_comm_backend = None
+    app_state.context_parallel_size = 2
+    app_state.expert_model_parallel_size = 2
+    app_state.expert_tensor_parallel_size = 1
+    app_state.expert_tensor_parallel_rank = 0
+    app_state.init_mpi_proc_group = False
+    app_state.tensor_model_parallel_rank = 2
+    app_state.pipeline_model_parallel_rank = 0
+    app_state.create_all_gather_group = True
+
+    _mpu_tp_2(mock_mpu)
+    _strategy_lib.init_model_parallel(nn.Identity())
+
+    mock_mpu.initialize_model_parallel.assert_called_once_with(
+        tensor_model_parallel_size=2,
+        pipeline_model_parallel_size=1,
+        virtual_pipeline_model_parallel_size=None,
+        pipeline_model_parallel_comm_backend=None,
+        context_parallel_size=2,
+        expert_model_parallel_size=2,
+        expert_tensor_parallel_size=1,
+        use_sharp=False,
+        create_all_gather_group=True,
+        order="tp-cp-ep-dp-pp",
+        num_distributed_optimizer_instances=1,
+        nccl_communicator_config_path=None,
+        create_gloo_process_groups=True,
+    )
+
+
+def test_app_state_create_all_gather_group() -> None:
+    """Test that AppState properly stores and retrieves create_all_gather_group value."""
+    from nemo.utils import AppState
+
+    app_state = AppState()
+
+    # Test default value
+    assert app_state.create_all_gather_group == False
+
+    # Test setter
+    app_state.create_all_gather_group = True
+    assert app_state.create_all_gather_group == True
+
+    # Test setter with False
+    app_state.create_all_gather_group = False
+    assert app_state.create_all_gather_group == False
 
 
 # TODO @chcui uncomment after fabric API is merged

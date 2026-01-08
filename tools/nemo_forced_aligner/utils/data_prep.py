@@ -69,6 +69,7 @@ def get_manifest_lines_batch(manifest_filepath, start, end):
         for line_i, line in enumerate(f):
             if line_i >= start and line_i <= end:
                 data = json.loads(line)
+                data["audio_filepath"] = get_full_path(data["audio_filepath"], manifest_filepath)
                 if "text" in data:
                     # remove any BOM, any duplicated spaces, convert any
                     # newline chars to spaces

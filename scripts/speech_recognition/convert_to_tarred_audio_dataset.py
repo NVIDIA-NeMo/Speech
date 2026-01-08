@@ -563,15 +563,42 @@ class ASRTarredDatasetBuilder:
         metadata_yaml = OmegaConf.structured(metadata)
         OmegaConf.save(metadata_yaml, new_metadata_path, resolve=True)
 
-    def _read_manifest(self, manifest_path: str, config: ASRTarredDatasetConfig):
+    def _read_manifest(self, manifest_path: str | list, config: ASRTarredDatasetConfig):
         """Read and filters data from the manifest"""
+        entries = []
+        total_duration = 0.0
+        filtered_entries = []
+        filtered_duration = 0.0
+
+        if isinstance(manifest_path, str):
+            manifest_paths = manifest_path.split(",")
+        else:
+            manifest_paths = manifest_path
+
+        print(f"Found {len(manifest_paths)} manifest files to be processed")
+        for manifest_file in manifest_paths:
+            entries_i, total_dur_i, filtered_ent_i, filtered_dur_i = self._read_single_manifest(
+                str(manifest_file), config
+            )
+            entries.extend(entries_i)
+            total_duration += total_dur_i
+            filtered_entries.extend(filtered_ent_i)
+            filtered_duration += filtered_dur_i
+
+        return entries, total_duration, filtered_entries, filtered_duration
+
+    def _read_single_manifest(self, manifest_path: str, config: ASRTarredDatasetConfig):
         # Read the existing manifest
         entries = []
         total_duration = 0.0
         filtered_entries = []
         filtered_duration = 0.0
+        print(f"Reading manifest: {manifest_path}")
         with open(manifest_path, 'r', encoding='utf-8') as m:
             for line in m:
+                line = line.strip()
+                if not line:
+                    continue
                 entry = json.loads(line)
                 audio_key = "audio_filepath" if "audio_filepath" in entry else "audio_file"
                 if config.slice_with_offset and "offset" not in entry:

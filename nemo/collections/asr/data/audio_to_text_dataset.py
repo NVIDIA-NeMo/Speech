@@ -32,6 +32,7 @@ from nemo.collections.asr.data.huggingface.hf_audio_to_text_dataset import (
     get_hf_audio_to_text_char_dataset,
 )
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor, process_augmentations
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.data.dataset import CodeSwitchedDataset, ConcatDataset
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.utils import logging
@@ -866,6 +867,8 @@ class ASRPredictionWriter(BasePredictionWriter):
 
         for sample_id, hypotheses in prediction:
             item = {}
+            if isinstance(transcribed_text, Hypothesis):
+                transcribed_text = transcribed_text.text
             if isinstance(sample_id, lhotse.cut.Cut):
                 sample = sample_id
                 if isinstance(sample, lhotse.cut.MixedCut):

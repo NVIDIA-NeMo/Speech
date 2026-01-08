@@ -1284,10 +1284,17 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
     ):
         super().__init__()
         self.encoder = encoder
-        self.layer_idx_list = [int(lyr_idx) for lyr_idx in layer_idx_list]
-        for x in self.layer_idx_list:
-            if x < 0 or x >= len(encoder.layers):
-                raise ValueError(f"layer index {x} out of range [0, {len(encoder.layers)})")
+        self.num_layers = len(encoder.layers)
+        self.layer_idx_list = []
+        if not layer_idx_list:
+            layer_idx_list = list(range(self.num_layers))
+        for lid in layer_idx_list:
+            if lid < -self.num_layers or lid >= self.num_layers:
+                raise ValueError(f"Invalid layer index {lid} for ConformerEncoder with {self.num_layers} layers.")
+            if lid < 0:
+                lid = self.num_layers + lid
+            self.layer_idx_list.append(lid)
+        self.layer_idx_list.sort()
         self.enc_access_cfg = {
             "interctc": {
                 "capture_layers": self.layer_idx_list,
@@ -1324,6 +1331,8 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         encoded_list = []
         encoded_len_list = []
         for layer_idx in self.layer_idx_list:
+            if layer_idx < 0:
+                layer_idx = self.num_layers + layer_idx
             try:
                 layer_outputs = total_registry[f"interctc/layer_output_{layer_idx}"]
                 layer_lengths = total_registry[f"interctc/layer_length_{layer_idx}"]

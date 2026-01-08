@@ -120,7 +120,7 @@ def main():
         logging.info(f"Averaging {n} checkpoints ...")
 
         for ix, path in enumerate(tqdm(checkpoint_paths, total=n, desc='Averaging checkpoints')):
-            checkpoint = torch.load(path, map_location=device)
+            checkpoint = torch.load(path, map_location=device, weights_only=False)
 
             if 'state_dict' in checkpoint:
                 checkpoint = checkpoint['state_dict']

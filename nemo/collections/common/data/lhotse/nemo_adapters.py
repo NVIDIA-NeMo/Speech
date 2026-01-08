@@ -120,6 +120,7 @@ class LazyNeMoIterator:
             cut = self._create_cut(
                 audio_path=audio_path, offset=offset, duration=duration, sampling_rate=data.pop("sampling_rate", None)
             )
+            assert isinstance(cut, MonoCut)
             # Note that start=0 and not start=offset because supervision's start if relative to the
             # start of the cut; and cut.start is already set to offset
             cut.supervisions.append(

@@ -92,14 +92,17 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable):
         super().__init__()
         self.encoder = encoder
         self.aggregator = aggregator
-        self.layer_idx_list = (
-            [int(l) for l in layer_idx_list]
-            if layer_idx_list is not None
-            else [i for i in range(len(self.encoder.layers))]
-        )
-        for x in self.layer_idx_list:
-            if x < 0 or x >= len(self.encoder.layers):
-                raise ValueError(f"layer index {x} out of range [0, {len(self.encoder.layers)})")
+        self.num_layers = len(encoder.layers)
+        self.layer_idx_list = []
+        if not layer_idx_list:
+            layer_idx_list = list(range(self.num_layers))
+        for lid in layer_idx_list:
+            if lid < -self.num_layers or lid >= self.num_layers:
+                raise ValueError(f"Invalid layer index {lid} for ConformerEncoder with {self.num_layers} layers.")
+            if lid < 0:
+                lid = self.num_layers + lid
+            self.layer_idx_list.append(lid)
+        self.layer_idx_list.sort()
         logging.info(f"Extracting features from layers {self.layer_idx_list}")
         self.access_cfg = {
             "interctc": {

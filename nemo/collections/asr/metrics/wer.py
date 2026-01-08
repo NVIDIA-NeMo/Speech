@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from copy import deepcopy
 from typing import List, Optional, Tuple, Union
 
 import editdistance
@@ -255,7 +256,7 @@ class WER(Metric):
         batch_dim_index=0,
         dist_sync_on_step=False,
         sync_on_compute=True,
-        **kwargs,
+        return_hypotheses=False,
     ):
         super().__init__(dist_sync_on_step=dist_sync_on_step, sync_on_compute=sync_on_compute)
 
@@ -264,30 +265,33 @@ class WER(Metric):
         self.log_prediction = log_prediction
         self.fold_consecutive = fold_consecutive
         self.batch_dim_index = batch_dim_index
+        self.return_hypotheses = return_hypotheses
 
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
             self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids: self.decoding.rnnt_decoder_predictions_tensor(
-                encoder_output=predictions, encoded_lengths=predictions_lengths
+                encoder_output=predictions, encoded_lengths=predictions_lengths, return_hypotheses=return_hypotheses
             )
         elif isinstance(self.decoding, AbstractCTCDecoding):
             self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids: self.decoding.ctc_decoder_predictions_tensor(
                 decoder_outputs=predictions,
                 decoder_lengths=predictions_lengths,
                 fold_consecutive=self.fold_consecutive,
+                return_hypotheses=return_hypotheses,
             )
         elif isinstance(self.decoding, AbstractMultiTaskDecoding):
             self.decode = lambda predictions, prediction_lengths, predictions_mask, input_ids: self.decoding.decode_predictions_tensor(
                 encoder_hidden_states=predictions,
                 encoder_input_mask=predictions_mask,
                 decoder_input_ids=input_ids,
-                return_hypotheses=False,
+                return_hypotheses=return_hypotheses,
             )
         else:
             raise TypeError(f"WER metric does not support decoding of type {type(self.decoding)}")
 
         self.add_state("scores", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
         self.add_state("words", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
+        self.hypotheses = None
 
     def update(
         self,
@@ -352,8 +356,22 @@ class WER(Metric):
 
         self.scores = torch.tensor(scores, device=self.scores.device, dtype=self.scores.dtype)
         self.words = torch.tensor(words, device=self.words.device, dtype=self.words.dtype)
+        self.hypotheses = hypotheses
+        return None
 
     def compute(self):
         scores = self.scores.detach().float()
         words = self.words.detach().float()
         return scores / words, scores, words
+
+    def reset(self):
+        super().reset()
+        self.hypotheses = None
+
+    def get_hypotheses(self):
+        """
+        Returns the hypotheses generated during the last call to update.
+        """
+        if self.hypotheses is None:
+            raise ValueError("No hypotheses available. Please call update() first.")
+        return deepcopy(self.hypotheses)

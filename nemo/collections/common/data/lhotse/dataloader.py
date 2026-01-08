@@ -222,6 +222,10 @@ class LhotseDataLoadingConfig:
     # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
     slice_length: Optional[int] = None
 
+    # 6. EOU related options.
+    random_padding: Any | None = None
+    use_dataloader_augment: bool = False
+
 
 def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
     """Determine whether to use iterable dataset for a given configuration."""
@@ -513,9 +517,31 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             cuts = cuts.map(partial(tokenize, tokenizer=tokenizer), apply_fn=None)
 
     # 2. Optional augmentations.
+
+    if config.get("random_padding", None) is not None and config.get("use_dataloader_augment", False):
+        # put this here to avoid circular import
+        logging.info("Using dataloader augmentations for EOU random padding.")
+        from nemo.collections.asr.data.audio_to_eou_label_lhotse import (
+            LhotseEOURandomPadding,
+            lhotse_asr_eou_cut_random_pad_transform,
+        )
+
+        # random_padding_augmentation = LhotseEOURandomPadding(**config.random_padding)
+        # cuts = random_padding_augmentation(cuts)
+        cuts = cuts.map(
+            partial(lhotse_asr_eou_cut_random_pad_transform, config.random_padding),
+        )
+
     # 2.a. Noise mixing.
     if config.noise_path is not None:
         noise = guess_parse_cutset(config.noise_path)
+        noise = noise.resample(config.sample_rate)
+
+        def mark_as_mixed_in_noise(cut):
+            cut.is_mixed_noise = True
+            return cut
+
+        noise = noise.map(mark_as_mixed_in_noise)
         cuts = cuts.mix(
             cuts=noise,
             snr=tuple(config.noise_snr),

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import random
 import re
 import tarfile
@@ -242,6 +243,11 @@ class LazyNeMoTarredIterator:
     Override with an integer value for deterministic behaviour and consult Lhotse documentation for details:
     https://lhotse.readthedocs.io/en/latest/datasets.html#handling-random-seeds
 
+    Set ``slice_length`` to enable random slicing mode: for each shard, we'll randomly select an offset K
+    and skip the first K examples (but will actually read them first). Then, we'll yield only ``slice_length``
+    examples. This setting can improve the sampling randomness when there are many datasets with many shards
+    but only a limited run time.
+
     Example of CutSet with inter-shard shuffling enabled::
 
         >>> cuts = lhotse.CutSet(LazyNeMoTarredIterator(
@@ -279,6 +285,7 @@ class LazyNeMoTarredIterator:
         lang_field: str = "lang",
         skip_missing_manifest_entries: bool = False,
         extra_fields: list[dict[str, str]] | None = None,
+        slice_length: int = None,
     ) -> None:
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
         self.shard_id_to_manifest: dict[int, Iterable[dict]]
@@ -322,7 +329,10 @@ class LazyNeMoTarredIterator:
         self.text_field = text_field
         self.lang_field = lang_field
         self.extra_fields = extra_fields
+        self.slice_length = slice_length
+        self.epoch = 0
         self._validate()
+        self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
 
     def to_shards(self) -> List["LazyNeMoTarredIterator"]:
         """Convert this iterator to a list of separate iterators for each shard."""
@@ -355,17 +365,120 @@ class LazyNeMoTarredIterator:
         )
         validate_extra_fields(self.extra_fields)
 
+    def _get_seed(self) -> int:
+        return resolve_seed(self.shard_seed) + self.epoch
+
     @property
     def shard_ids(self) -> List[int]:
         return sorted(self.shard_id_to_manifest.keys())
 
-    def _iter_sequential(self, tar_path, shard_manifest, manifest_path) -> Generator[tuple[dict, bytes], None, None]:
+    def _iter_batch_for_ais_get_batch(
+        self, tar_path, shard_manifest, manifest_path, rng, extra_fields
+    ) -> Generator[Cut, None, None]:
+        """
+        Iterator for batch reading mode (AIS get batch).
+        Yields cuts with URL-based recordings without opening tar files.
+        """
+        # Calculate slice offset for random skipping
+        total_entries = sum(len(entries) for entries in shard_manifest.values())
+        slice_offset = (
+            rng.randint(0, total_entries - self.slice_length)
+            if self.slice_length is not None and self.slice_length < total_entries
+            else -1
+        )
+        cntr = 0
+        entries_processed = 0
+
+        for audio_filename, manifest_entries in shard_manifest.items():
+            for data in manifest_entries:
+                # Skip entries if we haven't reached the slice offset yet
+                if entries_processed < slice_offset:
+                    entries_processed += 1
+                    continue
+                # Stop if we've reached the slice length limit
+                elif cntr == self.slice_length:
+                    break
+
+                # filter out entries with valid "_skipme" values.
+                if data.get("_skipme", False):
+                    entries_processed += 1
+                    continue
+
+                # Construct URL: tar_path/audio_filename
+                audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
+
+                # Get metadata from manifest
+                duration = data.get("duration")
+                if duration is None:
+                    logging.warning(f"Skipping '{audio_filename}' - missing duration in manifest")
+                    entries_processed += 1
+                    continue
+
+                offset = data.get("offset", 0.0)
+                sampling_rate = data.get("sampling_rate", 16000)  # default to 16kHz if not specified
+
+                # Create URL-based recording
+                recording = Recording(
+                    id=audio_filename,
+                    sources=[AudioSource(type="url", channels=[0], source=audio_url)],
+                    sampling_rate=sampling_rate,
+                    num_samples=compute_num_samples(duration, sampling_rate),
+                    duration=duration,
+                )
+
+                # Create cut from recording (audio will be loaded lazily from URL when needed)
+                cut = recording.to_cut()
+                if offset > 0:
+                    cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+                    cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+
+                # Add supervision (transcript metadata)
+                cut.supervisions.append(
+                    SupervisionSegment(
+                        id=cut.id,
+                        recording_id=cut.recording_id,
+                        start=0,
+                        duration=cut.duration,
+                        text=data.get(self.text_field),
+                        language=data.get(self.lang_field),
+                    )
+                )
+
+                # Attach custom fields and metadata
+                cut.custom = _to_custom_attr_dict(data)
+                cut.manifest_origin = manifest_path
+                cut.tar_origin = tar_path
+                for extra_field in extra_fields:
+                    extra_field.attach_to(cut)
+
+                cntr += 1
+                entries_processed += 1
+                yield cut
+
+            # Break outer loop if we've reached the slice length limit
+            if cntr == self.slice_length:
+                break
+
+    def _iter_sequential(
+        self, tar_path, shard_manifest, manifest_path, rng
+    ) -> Generator[tuple[dict, bytes], None, None]:
+        slice_offset = (
+            rng.randint(0, len(shard_manifest) - self.slice_length)
+            if self.slice_length is not None and self.slice_length < len(shard_manifest)
+            else -1
+        )
+        cntr = 0
         with tarfile.open(fileobj=open_best(tar_path, mode="rb"), mode="r|*") as tar:
-            for tar_info in tar:
+            for idx, tar_info in enumerate(tar):
+                if idx < slice_offset:
+                    continue
+                elif cntr == self.slice_length:
+                    break
                 try:
                     data = shard_manifest[tar_info.name]
                     raw_audio = tar.extractfile(tar_info).read()
                     yield data, raw_audio, tar_info
+                    cntr += 1
                 except KeyError as e:
                     if self.skip_missing_manifest_entries:
                         continue
@@ -378,9 +491,10 @@ class LazyNeMoTarredIterator:
     def __iter__(self) -> Generator[Cut, None, None]:
         shard_ids = self.shard_ids
 
-        seed = resolve_seed(self.shard_seed)
+        seed = self._get_seed()
+        rng = random.Random(seed)
         if self.shuffle_shards:
-            random.Random(seed).shuffle(shard_ids)
+            rng.shuffle(shard_ids)
 
         # Propagate the random seed
         extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
@@ -401,8 +515,15 @@ class LazyNeMoTarredIterator:
 
             shard_manifest: dict[str, list[dict]] = groupby(basename, self.shard_id_to_manifest[sid])
             tar_path = self.shard_id_to_tar_path[sid]
+
+            if self.use_ais_get_batch:
+                # Use batch reading mode - URL-based recordings without opening tar files
+                yield from self._iter_batch_for_ais_get_batch(
+                    tar_path, shard_manifest, manifest_path, rng, extra_fields
+                )
+                continue
             try:
-                for data, raw_audio, tar_info in self._iter_sequential(tar_path, shard_manifest, manifest_path):
+                for data, raw_audio, tar_info in self._iter_sequential(tar_path, shard_manifest, manifest_path, rng):
                     try:
                         meta = soundfile.info(BytesIO(raw_audio))
                     except Exception:
@@ -447,6 +568,8 @@ class LazyNeMoTarredIterator:
                 logging.warning(
                     f"Skipping tar file due to read errors (unstable storage or bad file?): {tar_path=}",
                 )
+
+        self.epoch += 1
 
     def __len__(self) -> int:
         return len(self.source)

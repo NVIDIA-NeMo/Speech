@@ -23,10 +23,11 @@ from lightning.pytorch.overrides.distributed import _IndexBatchSamplerWrapper
 from torch.utils.data import DataLoader, Dataset
 
 
-## TODO: remove? unused
+# TODO: remove? unused
 def create_dataloader(
     dataset: "Dataset", drop_last: bool = True, pad_samples_to_global_batch_size=False, **kwargs
 ) -> DataLoader:
+    """ """
     output = DataLoader(dataset, collate_fn=dataset.collate_fn, **kwargs)
 
     output._drop_last = drop_last  # noqa: SLF001
@@ -202,9 +203,7 @@ def add_megatron_sampler(
             # data_sharding=data_sharding
         )
     elif dataloader_type == 'batch':
-        from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_samplers import (
-            MegatronPretrainingBatchSampler,
-        )
+        from nemo.collections.common.data.data_samplers import MegatronPretrainingBatchSampler
 
         batch_sampler = MegatronPretrainingBatchSampler(
             total_samples=len(dataloader.dataset),
@@ -242,6 +241,8 @@ class WrappedDataLoader(DataLoader):
 
 # TODO: Replace this with megatron.core.data.data_samplers after we upgrade
 class BaseMegatronSampler:
+    """ """
+
     def __init__(
         self,
         total_samples: int,
@@ -263,7 +264,8 @@ class BaseMegatronSampler:
             raise RuntimeError(f"data parallel size must be greater than 0, but {data_parallel_size}")
         if data_parallel_rank >= data_parallel_size:
             raise RuntimeError(
-                f"data_parallel_rank should be smaller than data size, but {data_parallel_rank} >= {data_parallel_size}"
+                "data_parallel_rank should be smaller than data size, but "
+                f"{data_parallel_rank} >= {data_parallel_size}"
             )
         if global_batch_size is not None and rampup_batch_size is None:
             if global_batch_size % (micro_batch_size * data_parallel_size) != 0:
@@ -310,6 +312,8 @@ class BaseMegatronSampler:
 
 
 class MegatronPretrainingSampler(BaseMegatronSampler):
+    """ """
+
     def __init__(
         self,
         total_samples: int,
@@ -337,6 +341,7 @@ class MegatronPretrainingSampler(BaseMegatronSampler):
             raise RuntimeError(f"no samples left to consume: {consumed_samples}, {total_samples}")
 
     def get_start_end_idx(self):
+        """ """
         start_idx = self.data_parallel_rank * self.micro_batch_size
         end_idx = start_idx + self.micro_batch_size
         return start_idx, end_idx
@@ -367,6 +372,8 @@ class MegatronPretrainingSampler(BaseMegatronSampler):
 
 
 class MegatronPretrainingRandomSampler(BaseMegatronSampler):
+    """ """
+
     def __init__(
         self,
         total_samples: int,
@@ -394,8 +401,10 @@ class MegatronPretrainingRandomSampler(BaseMegatronSampler):
         ), "`MegatronPretrainingRandomSampler` does not support sample padding"
         if (not drop_last) and self.micro_batch_times_data_parallel_size > 1:
             raise RuntimeError(
-                "`MegatronPretrainingRandomSampler` does not support drop_last=False when micro_batch_size * data_parallel_size > 1. \
-                  please reduce your MBS and data parallelism to 1 if you want to use drop_last=False, or switch to drop_last=True to avoid this error"
+                "`MegatronPretrainingRandomSampler` does not support drop_last=False when "
+                "micro_batch_size * data_parallel_size > 1. "
+                "Please reduce your MBS and data parallelism to 1 if you want to use drop_last=False, "
+                "or switch to drop_last=True to avoid this error."
             )
         self.last_batch_size = self.total_samples % self.micro_batch_times_data_parallel_size
         self.seed = seed

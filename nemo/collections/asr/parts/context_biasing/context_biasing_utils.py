@@ -16,7 +16,7 @@ import os
 from typing import List, Union
 
 import numpy as np
-import texterrors
+from kaldialign import align
 
 from nemo.collections.asr.parts.context_biasing.ctc_based_word_spotter import WSHyp
 from nemo.collections.asr.parts.utils import rnnt_utils
@@ -163,7 +163,7 @@ def compute_fscore(
         recognition_results_manifest: path to nemo manifest file with recognition results in pred_text field.
         key_words_list: list of context biasing words/phrases.
         return_scores: if True, return precision, recall and fscore (not only print).
-        eps: epsilon symbol for alignment ('<eps>' in case of texterrors aligner).
+        eps: epsilon symbol for alignment.
     Returns:
         Returns tuple of precision, recall and fscore.
     """
@@ -187,10 +187,7 @@ def compute_fscore(
         # get alignment by texterrors
         ref = item['text'].split()
         hyp = item['pred_text'].split()
-        texterrors_ali = texterrors.align_texts(ref, hyp, False)
-        ali = []
-        for i in range(len(texterrors_ali[0])):
-            ali.append((texterrors_ali[0][i], texterrors_ali[1][i]))
+        ali = align(ref, hyp, eps)
 
         # 1-grams
         for idx in range(len(ali)):

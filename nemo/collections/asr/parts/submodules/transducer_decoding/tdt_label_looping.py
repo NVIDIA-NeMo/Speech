@@ -29,10 +29,11 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
 )
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.core.utils.cuda_python_utils import cu_call, run_nvrtc, with_conditional_node
+from nemo.core.utils.cuda_python_utils import NeMoCUDAPythonException, cu_call, run_nvrtc, with_conditional_node
+from nemo.utils import logging
 
 try:
-    from cuda import cudart
+    from cuda.bindings import runtime as cudart
 
     HAVE_CUDA_PYTHON = True
 except ImportError:
@@ -102,6 +103,7 @@ class LabelLoopingState:
         preserve_alignments=False,
         preserve_frame_confidence=False,
         include_duration_confidence: bool = False,
+        include_duration: bool = False,
     ):
         """
 
@@ -122,6 +124,7 @@ class LabelLoopingState:
         self.float_dtype = float_dtype
         self.batch_size = batch_size
         self.max_time = max_time
+        self.include_duration = include_duration
 
         self.encoder_output_projected = torch.zeros(
             (self.batch_size, self.max_time, encoder_dim),
@@ -156,6 +159,7 @@ class LabelLoopingState:
             init_length=self.max_time * max_symbols,
             device=self.device,
             float_dtype=float_dtype,
+            is_with_durations=include_duration,
         )
         if preserve_alignments or preserve_frame_confidence:
             self.alignments = rnnt_utils.BatchedAlignments(
@@ -239,6 +243,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
+        self.preserve_alignments = preserve_alignments or preserve_frame_confidence
         self.allow_cuda_graphs = allow_cuda_graphs
         self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
@@ -251,6 +256,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.separate_graphs = None
 
         self.cuda_graphs_mode = None
+        self.cuda_graphs_allow_fallback = True
         self.maybe_enable_cuda_graphs()
 
         self.fusion_models = fusion_models
@@ -315,6 +321,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             init_length=max_time * self.max_symbols if self.max_symbols is not None else max_time,
             device=device,
             float_dtype=float_dtype,
+            is_with_durations=self.include_duration,
         )
         # init alignments if necessary
         use_alignments = self.preserve_alignments or self.preserve_frame_confidence
@@ -759,7 +766,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         if self.state is None or self.state.need_reinit(encoder_output):
             self._graph_reinitialize(encoder_output, encoder_output_length)
 
-        # copy (projected) encoder output and lenghts
+        # copy (projected) encoder output and lengths
         self.state.encoder_output_projected[:current_batch_size, :current_max_time, ...].copy_(encoder_output)
         self.state.encoder_output_length[: encoder_output_length.shape[0]].copy_(encoder_output_length)
         # set length to zero for elements outside the current batch
@@ -842,9 +849,9 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         """
         kernel_string = r"""\
         typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
-    
+
         extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
-    
+
         extern "C" __global__
         void outer_label_looping_conditional(cudaGraphConditionalHandle handle, const bool *active_mask_any)
         {
@@ -861,9 +868,9 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         """
         kernel_string = r"""\
         typedef __device_builtin__ unsigned long long cudaGraphConditionalHandle;
-    
+
         extern "C" __device__ __cudart_builtin__ void cudaGraphSetConditional(cudaGraphConditionalHandle handle, unsigned int value);
-    
+
         extern "C" __global__
         void inner_find_non_blank_conditional(cudaGraphConditionalHandle handle, const bool *advance_mask_any)
         {
@@ -890,6 +897,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             preserve_alignments=self.preserve_alignments,
             preserve_frame_confidence=self.preserve_frame_confidence,
             include_duration_confidence=self.include_duration_confidence,
+            include_duration=self.include_duration,
         )
         self.state.model_durations = self.durations.to(self.state.device, non_blocking=True)
 
@@ -937,7 +945,17 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             self._warmup_for_cuda_graphs()
 
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
-            self._full_graph_compile()
+            try:
+                self._full_graph_compile()
+            except NeMoCUDAPythonException as e:
+                if not self.cuda_graphs_allow_fallback:
+                    raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from e
+                logging.warning(
+                    f"Full CUDA graph compilation failed: {e}. "
+                    "Falling back to native PyTorch CUDA graphs. Decoding will be slower."
+                )
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+                self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
             self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
@@ -1020,7 +1038,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         ):
             self._before_outer_loop()
 
-            capture_status, _, graph, _, _ = cu_call(
+            capture_status, _, graph, _, _, _ = cu_call(
                 cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
             )
             assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive

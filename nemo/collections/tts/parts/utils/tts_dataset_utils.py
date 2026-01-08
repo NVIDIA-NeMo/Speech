@@ -358,3 +358,102 @@ def sample_audio(
         audio = normalize_volume(audio)
 
     return audio, audio_filepath_abs, audio_filepath_rel
+
+
+def split_by_sentence(
+    paragraph: str,
+    sentence_separators: Optional[List[str]] = None,
+) -> List[str]:
+    """
+    Split a paragraph into sentences based on sentence-ending punctuation.
+
+    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by checking
+    if the separator is followed by a space before splitting. Sentence-ending
+    punctuation is preserved with each sentence.
+
+    Args:
+        paragraph: The input text paragraph to split into sentences.
+        sentence_separators: A list of strings representing sentence-ending
+            punctuation marks. Defaults to ['.', '?', '!', '...'].
+
+    Returns:
+        List of sentence strings with punctuation preserved.
+
+    Examples:
+        >>> split_by_sentence("Hello world. How are you?")
+        ["Hello world.", "How are you?"]
+
+        >>> split_by_sentence("Dr. Smith is here. Good morning!")
+        ["Dr. Smith is here.", "Good morning!"]
+    """
+    if sentence_separators is None:
+        sentence_separators = ['.', '?', '!', '...']
+
+    if not paragraph or not paragraph.strip():
+        return []
+
+    # Normalize text: replace hyphens with spaces, remove asterisks
+    paragraph = paragraph.replace('-', ' ')
+    paragraph = paragraph.replace('*', '')
+
+    sentences = []
+    last_sep_idx = -1
+
+    for i, char in enumerate(paragraph):
+        # Check if current char is a separator and next char is a space
+        # This avoids splitting abbreviations like "Dr." or "a.m."
+        next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
+        if char in sentence_separators and next_char == " ":
+            sentences.append(paragraph[last_sep_idx + 1 : i + 1].strip())
+            last_sep_idx = i + 1
+
+    # Add remaining text as the last sentence
+    if last_sep_idx < len(paragraph):
+        remaining = paragraph[last_sep_idx + 1 :].strip()
+        if remaining:
+            sentences.append(remaining)
+
+    # Remove empty sentences and capitalize first letter
+    sentences = [sent for sent in sentences if len(sent) > 0]
+    sentences = [sent if sent[0].isupper() else sent[0].upper() + sent[1:] for sent in sentences if sent]
+
+    return sentences
+
+
+def chunk_and_tokenize_text_by_sentence(
+    text: str,
+    tokenizer_name: str,
+    text_tokenizer: Any,
+    eos_token_id: int,
+) -> Tuple[List[torch.Tensor], List[int], List[str]]:
+    """
+    Tokenize text split by sentences, adding EOS token after each sentence.
+
+    Args:
+        text: Input text to tokenize.
+        tokenizer_name: Name of the tokenizer to use (e.g., "english_phoneme").
+        text_tokenizer: The tokenizer instance.
+        eos_token_id: End-of-sequence token ID to append.
+
+    Returns:
+        Tuple of:
+            - chunked_tokens: List of token tensors, one per sentence.
+            - chunked_tokens_len: List of token lengths.
+            - chunked_text: List of sentence strings.
+    """
+    split_sentences = split_by_sentence(text)
+
+    chunked_tokens = []
+    chunked_tokens_len = []
+    chunked_text = []
+
+    for sentence in split_sentences:
+        chunked_text.append(sentence)
+        tokens = text_tokenizer.encode(text=sentence, tokenizer_name=tokenizer_name)
+        tokens = tokens + [eos_token_id]
+        tokens = torch.tensor(tokens, dtype=torch.int32)
+        tokens_len = tokens.shape[0]
+        chunked_tokens.append(tokens)
+        chunked_tokens_len.append(tokens_len)
+
+    return chunked_tokens, chunked_tokens_len, chunked_text

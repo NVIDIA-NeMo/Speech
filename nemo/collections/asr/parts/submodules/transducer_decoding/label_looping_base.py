@@ -75,16 +75,20 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         NO_WHILE_LOOPS = "no_while_loops"  # Decoding with PyTorch while loops + partial Cuda graphs
         NO_GRAPHS = "no_graphs"  # decoding without graphs, stateful implementation, only for testing purposes
 
-    cuda_graphs_mode: Optional[CudaGraphsMode] = None
+    cuda_graphs_mode: Optional[CudaGraphsMode]
+    cuda_graphs_allow_fallback: bool
     max_symbols: Optional[int]
     allow_cuda_graphs: bool
 
     def force_cuda_graphs_mode(self, mode: Optional[str | CudaGraphsMode]):
         """
         Method to set graphs mode. Use only for testing purposes.
-        For debugging the algorithm use "no_graphs" mode, since it is impossible to debug CUDA graphs directly.
+        For debugging and testing the algorithm:
+            - use "no_graphs" mode for debugging, since it is impossible to debug CUDA graphs directly.
+            - forced mode disallows fallback to native PyTorch CUDA graphs
         """
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
+        self.cuda_graphs_allow_fallback = False
         self.state = None
 
     def maybe_enable_cuda_graphs(self) -> bool:

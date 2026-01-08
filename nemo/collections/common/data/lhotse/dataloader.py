@@ -45,6 +45,8 @@ from nemo.collections.common.data.lhotse.cutset import (
 )
 from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
+    CERFilter,
+    ContextSpeakerSimilarityFilter,
     DurationFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
@@ -52,6 +54,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     TokenCountFilter,
     TokenPerSecondFilter,
     TokenPerTokenFilter,
+    ValidationStatusFilter,
 )
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn
 from nemo.collections.common.prompts import PromptFormatter
@@ -131,6 +134,13 @@ class LhotseDataLoadingConfig:
     min_tpt: int = -1  # allowed tokens per token (text-only)
     max_tpt: Any = float("inf")  # float | list[float]
 
+    # 2.3 Filters on CER and/or cosine speaker similarity of the context audio serving for TTS use cases.
+    max_cer: float | None = float("inf")
+    min_context_speaker_similarity: float | None = -1
+
+    # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
+    keep: str = "pass"
+
     # 3. Supported existing NeMo options.
     shuffle: bool = False
     sample_rate: int = 16000
@@ -203,6 +213,14 @@ class LhotseDataLoadingConfig:
     # * use map dataset for non-tarred audio data (we might change this in the future)
     force_map_dataset: bool = False
     force_iterable_dataset: bool = False
+    # Force the dataloader to slice each data source.
+    # This may improve sampling randomness for large-scale runs with many dataset sources and large shards
+    # at the cost of some IO redundancy.
+    # The slicing is achieved with a randomly-selected offset K used to skip the first K examples,
+    # and reading them consecutively for ``slice_length`` iterations.
+    # The first K examples will actually be read and then discarded, incurring the IO cost, due to
+    # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
+    slice_length: Optional[int] = None
 
 
 def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
@@ -222,7 +240,7 @@ def get_lhotse_dataloader_from_config(
     tokenizer=None,
 ) -> torch.utils.data.DataLoader:
     """
-    Set up a Lhotse training dataloder.
+    Set up a Lhotse training dataloader.
 
     Expects a typical NeMo dataset configuration format, with additional fields: "use_lhotse=True".
     Some fields in the original NeMo configuration may be ignored.
@@ -268,7 +286,7 @@ def get_lhotse_dataloader_from_single_config(
     tokenizer=None,
 ) -> torch.utils.data.DataLoader:
     """
-    Set up a Lhotse training dataloder.
+    Set up a Lhotse training dataloader.
 
     Expects a typical NeMo dataset configuration format, with additional fields: "use_lhotse=True".
     Some fields in the original NeMo configuration may be ignored.
@@ -540,6 +558,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts = cuts.filter(
         TokenCountFilter(config.min_tokens, config.max_tokens, measure_total_length=config.measure_total_length)
     )
+
+    # validation status filtering
+    cuts = cuts.filter(ValidationStatusFilter(config.keep))
+    # CER filtering, same as native NeMo dataloaders.
+    cuts = cuts.filter(CERFilter(config.max_cer))
+    # Context speaker similarity filtering, same as native NeMo dataloaders.
+    cuts = cuts.filter(ContextSpeakerSimilarityFilter(config.min_context_speaker_similarity))
 
     if tokenizer is not None and config.pretokenize:
         cuts = cuts.filter(TokenPerSecondFilter(config.min_tps, config.max_tps))

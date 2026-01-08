@@ -12,21 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.speechlm.models import HFAutoModelForSpeechSeq2Seq
 from nemo.collections.speechlm.recipes.pipeline import speech_to_text_llm_train, speech_to_text_llm_validate
 from nemo.utils import logging
 
 __all__ = [
-    "HFAutoModelForSpeechSeq2Seq",
     "speech_to_text_llm_train",
     "speech_to_text_llm_validate",
 ]
 
 try:
-    import nemo_run as run
+    import nemo_run as run  # noqa: F401
 
-    from nemo.collections.speechlm.api import finetune, generate, pretrain, train, validate
-    from nemo.collections.speechlm.recipes.optim import adam
+    from nemo.collections.speechlm.api import finetune, generate, pretrain, train, validate  # noqa: F401
+    from nemo.collections.speechlm.recipes.optim import adam  # noqa
 
     __all__.extend(
         [

@@ -32,7 +32,7 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo script
     --max_steps 5 \
     --gbs 4 \
     --mbs 1 \
-    --seq_length 4096 \
+    --seq_length 1024 \
     --val_check_interval 5 \
     --log_interval 5 \
     --limit_val_batches 2 \

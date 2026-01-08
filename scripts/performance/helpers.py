@@ -185,7 +185,17 @@ def set_mcore_fsdp_configs(recipe, comm_overlap_callback_idx: int | None, tp_siz
     # At fp32 gradient, `recipe.trainer.strategy.ddp.gradient_reduce_div_fusion` is used for fusion
     if recipe.trainer.plugins.grad_reduce_in_fp32:
         recipe.trainer.strategy.ddp.average_in_collective = False
-    recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = False
+    recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = False
+
+    try:
+        recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = False
+    except AttributeError:
+        recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = False
+        logging.warning(
+            "Deprecation Notice: `keep_fp8_transpose_cache_when_using_custom_fsdp` "
+            "will be deprecated in M-Core 0.14. "
+            "Please use `keep_fsdp_fp8_transpose_cache` instead."
+        )
     recipe.model.config.gradient_accumulation_fusion = False
     if (
         comm_overlap_callback_idx is not None
@@ -396,9 +406,17 @@ def set_perf_optimization_configs(
         recipe.trainer.strategy.ddp.check_for_large_grads = False
         recipe.trainer.strategy.ddp.nccl_ub = bool(use_user_buffer_registration)
         recipe.trainer.strategy.ddp.fsdp_double_buffer = bool(use_fsdp_double_buffer)
-        recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = bool(
-            keep_fsdp_fp8_transpose_cache
-        )
+        try:
+            recipe.trainer.strategy.ddp.keep_fp8_transpose_cache = bool(keep_fsdp_fp8_transpose_cache)
+        except AttributeError:
+            recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = bool(
+                keep_fsdp_fp8_transpose_cache
+            )
+            logging.warning(
+                "Deprecation Notice: `keep_fp8_transpose_cache_when_using_custom_fsdp` "
+                "will be deprecated in M-Core 0.14. "
+                "Please use `keep_fsdp_fp8_transpose_cache` instead."
+            )
 
     return recipe
 
@@ -429,6 +447,7 @@ def set_primary_perf_configs(
     recompute_modules: Optional[List[str]] = None,
     nccl_communicator_config_path: str = None,
     keep_fsdp_fp8_transpose_cache: Optional[bool] = None,
+    use_te_op_fuser: Optional[bool] = None,
     use_te_act_func: Optional[bool] = None,
     act_func_fp8_input_store: Optional[bool] = None,
 ):
@@ -466,6 +485,14 @@ def set_primary_perf_configs(
         recipe.trainer.callbacks[comm_overlap_callback_idx].overlap_param_gather_with_optimizer_step = bool(
             dp_size > 1 and pp_size > 1 and vp_size and vp_size > 1
         )
+
+    # te op fuser for MLP part
+    if use_te_op_fuser:
+        assert recipe.model.config.num_moe_experts is None, "use_te_op_fuser is not supported for MOE models"
+        if hasattr(recipe.model.config, "use_transformer_engine_op_fuser"):
+            recipe.model.config.use_transformer_engine_op_fuser = True
+        else:
+            logging.warning("use_transformer_engine_op_fuser is not supported for this version of MCORE.")
 
     # te activation function for MLP part
     recipe.model.config.use_te_activation_func = use_te_act_func or False

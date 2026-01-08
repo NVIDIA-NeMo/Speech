@@ -15,6 +15,7 @@
 
 
 import contextlib
+import copy
 import importlib.util
 import os
 
@@ -24,10 +25,12 @@ import torch.distributed as dist
 from einops import rearrange
 from megatron.core import parallel_state
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
+
 from nemo.collections.llm.gpt.model.hyena import HyenaNVTestConfig, HyenaTestConfig
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_config import HyenaConfig
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_layer_specs import hyena_stack_spec_no_te
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_mixer import HyenaMixer
+from nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils import ImplicitModalFilter
 
 
 @contextlib.contextmanager
@@ -173,6 +176,121 @@ def mixer_kernel(test_config: HyenaTestConfig, hyena_config: HyenaConfig, operat
             hyena_config, test_config, seq_len=512, use_subquadratic_ops=True, operator_type=operator_type
         )
         yield mixer_kernel
+
+
+@pytest.fixture
+def mixer_kernel_hyena_only(test_config: HyenaTestConfig, hyena_config: HyenaConfig):
+    """Create a HyenaMixer instance for testing with CUDA kernel implementation - only for hyena operator"""
+    with init_distributed_parallel_state(world_size=1):
+        # Create the mixer
+        mixer_kernel = MixerModuleWrapper(
+            hyena_config, test_config, seq_len=512, use_subquadratic_ops=True, operator_type="hyena"
+        )
+        yield mixer_kernel
+
+
+@pytest.mark.skipif(importlib.util.find_spec("subquadratic_ops") is None, reason="subquadratic_ops is not installed")
+def test_implicit_filter(mixer_kernel_hyena_only: MixerModuleWrapper):
+    """Test that the implicit filter is properly initialized with correct parameters and attributes."""
+    # Check that the filter is the correct type
+    assert isinstance(mixer_kernel_hyena_only.mixer.mixer.filter, ImplicitModalFilter), (
+        f"mixer_kernel_hyena_only.mixer.mixer.filter must be an ImplicitModalFilter, "
+        f"got {type(mixer_kernel_hyena_only.mixer.mixer.filter)}"
+    )
+
+    filter_obj = mixer_kernel_hyena_only.mixer.mixer.filter
+
+    # Check that the filter has the required attributes
+    assert hasattr(filter_obj, "implicit_filter"), "Filter must have 'implicit_filter' attribute"
+    assert callable(filter_obj.implicit_filter), "implicit_filter attribute must be callable"
+    assert hasattr(filter_obj, "use_subquadratic_ops"), "Filter must have 'use_subquadratic_ops' attribute"
+
+    # Verify that use_subquadratic_ops is True for kernel implementation
+    assert filter_obj.use_subquadratic_ops is True, (
+        f"Filter use_subquadratic_ops should be True for kernel implementation, "
+        f"got {filter_obj.use_subquadratic_ops}"
+    )
+
+    # create a reference filter with use_subquadratic_ops = False
+    reference_filter = copy.deepcopy(filter_obj)
+    reference_filter.use_subquadratic_ops = False
+    reference_filter.implicit_filter = None
+    reference_filter.t = None
+
+    # Test forward pass comparison
+    L = 10
+
+    # Get outputs from both filters - handle the return value correctly
+    filter_output = filter_obj.filter(L)
+    reference_output = reference_filter.filter(L)
+
+    # Handle case where compute_filter returns (h, None) but implicit_filter returns just h
+    if isinstance(filter_output, tuple):
+        filter_output = filter_output[0]
+    if isinstance(reference_output, tuple):
+        reference_output = reference_output[0]
+
+    # Verify forward pass output properties
+    assert filter_output is not None, "Filter output should not be None"
+    assert reference_output is not None, "Reference filter output should not be None"
+    assert filter_output.shape == (
+        1,
+        filter_obj.d_model,
+        L,
+    ), f"Filter output should have shape (1, {filter_obj.d_model}, {L}), got {filter_output.shape}"
+    assert reference_output.shape == (
+        1,
+        filter_obj.d_model,
+        L,
+    ), f"Reference filter output should have shape (1, {filter_obj.d_model}, {L}), got {reference_output.shape}"
+
+    # Compare forward outputs between the two implementations
+    torch.testing.assert_close(filter_output, reference_output, msg=f"Filter outputs do not match for L={L}")
+
+    # Test backward pass comparison between filter and reference filter
+    # Create input tensor that requires gradients
+    input_tensor = torch.randn(1, filter_obj.d_model, L, device=filter_obj.device, requires_grad=True)
+
+    # Test filter backward pass
+    filter_loss = torch.sum(filter_output * input_tensor)
+    filter_loss.backward()
+
+    # Check that gradients were computed for the filter parameters
+    assert filter_obj.gamma.grad is not None, f"gamma.grad should not be None for L={L}"
+    assert filter_obj.R.grad is not None, f"R.grad should not be None for L={L}"
+    assert filter_obj.p.grad is not None, f"p.grad should not be None for L={L}"
+
+    # Store filter gradients
+    filter_gamma_grad = filter_obj.gamma.grad.clone()
+    filter_R_grad = filter_obj.R.grad.clone()
+    filter_p_grad = filter_obj.p.grad.clone()
+
+    # Clear gradients
+    filter_obj.zero_grad()
+    input_tensor.grad = None
+
+    # Test reference filter backward pass
+    reference_loss = torch.sum(reference_output * input_tensor)
+    reference_loss.backward()
+
+    # Check that gradients were computed for the reference filter parameters
+    assert reference_filter.gamma.grad is not None, f"reference_filter.gamma.grad should not be None for L={L}"
+    assert reference_filter.R.grad is not None, f"reference_filter.R.grad should not be None for L={L}"
+    assert reference_filter.p.grad is not None, f"reference_filter.p.grad should not be None for L={L}"
+
+    # Store reference filter gradients
+    reference_gamma_grad = reference_filter.gamma.grad.clone()
+    reference_R_grad = reference_filter.R.grad.clone()
+    reference_p_grad = reference_filter.p.grad.clone()
+
+    # Clear gradients
+    reference_filter.zero_grad()
+    input_tensor.grad = None
+
+    # Compare gradients between filter and reference filter
+    torch.testing.assert_close(filter_gamma_grad, reference_gamma_grad, msg=f"gamma gradients do not match for L={L}")
+    torch.testing.assert_close(filter_R_grad, reference_R_grad, msg=f"R gradients do not match for L={L}")
+    torch.testing.assert_close(filter_p_grad, reference_p_grad, msg=f"p gradients do not match for L={L}")
 
 
 @pytest.mark.skipif(importlib.util.find_spec("subquadratic_ops") is None, reason="subquadratic_ops is not installed")

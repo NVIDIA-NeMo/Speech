@@ -1,5 +1,5 @@
 einops
-lhotse>=1.22.0
+lhotse>=1.31.1
 librosa>=0.10.0
 matplotlib
 pesq; (platform_machine != 'x86_64' or platform_system != 'Darwin')

@@ -18,6 +18,7 @@ import fiddle as fdl
 import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
 
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.llm.recipes.gpt3_175b import pretrain_recipe
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_bf16_b200_h12288_tp4_mbs1_seqlen2048,
@@ -25,10 +26,9 @@ from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_fp8_b200_h12288_tp4_mbs1_seqlen2048,
     userbuffers_fp8_h100_h12288_tp4_mbs1_seqlen2048,
 )
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin
 
-from ..argument_parser import parse_cli_args
+from ..argument_parser import parse_additional_slurm_params, parse_cli_args
 from ..executors import slurm_executor
 from ..helpers import (
     args_sanity_check,
@@ -84,6 +84,7 @@ def override_recipe_configs(
         compute_dtype=args.compute_dtype,
         fp8_recipe=args.fp8_recipe,
         nccl_communicator_config_path=args.nccl_communicator_config_path,
+        use_te_op_fuser=args.use_te_op_fuser or use_mcore_fsdp,
         use_te_act_func=args.use_te_act_func,
         act_func_fp8_input_store=args.act_func_fp8_input_store,
     )
@@ -132,6 +133,10 @@ def override_recipe_configs(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
     args_sanity_check(args)
+    # Parse additional SLURM parameters if provided
+    additional_slurm_params = None
+    if hasattr(args, 'additional_slurm_params') and args.additional_slurm_params:
+        additional_slurm_params = parse_additional_slurm_params(args.additional_slurm_params)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "gpt3", "175b", args)
     (
@@ -184,6 +189,7 @@ if __name__ == "__main__":
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,
         network='sharp' if args.use_sharp else None,
+        additional_slurm_params=additional_slurm_params,
     )
 
     plugins = [build_perf_env_plugin(args, pp_size=pp_size)]
@@ -202,7 +208,7 @@ if __name__ == "__main__":
         )
 
         if not args.dryrun:
-            exp.run(sequential=True, detach=True)
+            exp.run(sequential=True, detach=args.detach)
         else:
             exp.dryrun()
 

@@ -24,6 +24,7 @@ import omegaconf
 from lhotse import CutSet, Features, Recording
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
+from lhotse.serialization import load_yaml
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.nemo_adapters import (
@@ -203,6 +204,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
+        "slice_length": config.get("slice_length", None),
     }
     cuts, is_tarred = parse_and_combine_datasets(config.input_cfg, propagate_attrs=propagate_attrs)
     return cuts, is_tarred
@@ -241,7 +243,7 @@ def read_txt_paths(config: DictConfig) -> tuple[CutSet, bool]:
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -261,7 +263,7 @@ def read_txt_pair_paths(config: DictConfig) -> tuple[CutSet, bool]:
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -277,7 +279,7 @@ def read_nemo_sft_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -293,10 +295,11 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             system_prompt=config.get("tags", {}).get("system_prompt"),
+            slice_length=config.get("slice_length"),
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -312,10 +315,11 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             token_equivalent_duration=config.get("token_equivalent_duration"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
+            slice_length=config.get("slice_length"),
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat()
+        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -343,12 +347,11 @@ def parse_and_combine_datasets(
     tarred_status = []
 
     if isinstance(config_list, (str, Path)):
-        # Resolve /path/to/input_cfg.yaml into config contents if needed.
-        config_list = OmegaConf.load(config_list)
+        # Resolve local filepath /path/to/input_cfg.yaml or remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
+        config_list = OmegaConf.create(load_yaml(config_list))
     assert len(config_list) > 0, "Empty group in dataset config list."
 
     for item in config_list:
-
         # Check if we have any attributes that are propagated downwards to each item in the group.
         # If a key already exists in the item, it takes precedence (we will not overwrite);
         # otherwise we will assign it.
@@ -425,10 +428,13 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         if isinstance(config.shar_path, (str, Path)):
             logging.info(f"Initializing Lhotse Shar CutSet (tarred) from a single data source: '{config.shar_path}'")
             cuts = CutSet.from_shar(
-                **_resolve_shar_inputs(config.shar_path, metadata_only), shuffle_shards=True, seed=shard_seed
+                **_resolve_shar_inputs(config.shar_path, metadata_only),
+                shuffle_shards=True,
+                seed=shard_seed,
+                slice_length=config.get("slice_length", None),
             )
             if not metadata_only and not force_finite:
-                cuts = cuts.repeat()
+                cuts = cuts.repeat(preserve_id=True)
         elif isinstance(config.shar_path, Sequence):
             # Multiple datasets in Lhotse Shar format: we will dynamically multiplex them
             # with probability approximately proportional to their size
@@ -442,7 +448,10 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 if isinstance(item, (str, Path)):
                     path = item
                     cs = CutSet.from_shar(
-                        **_resolve_shar_inputs(path, metadata_only), shuffle_shards=True, seed=shard_seed
+                        **_resolve_shar_inputs(path, metadata_only),
+                        shuffle_shards=True,
+                        seed=shard_seed,
+                        slice_length=config.get("slice_length", None),
                     )
                     weight = len(cs)
                 else:
@@ -454,7 +463,10 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                     )
                     path, weight = item
                     cs = CutSet.from_shar(
-                        **_resolve_shar_inputs(path, metadata_only), shuffle_shards=True, seed=shard_seed
+                        **_resolve_shar_inputs(path, metadata_only),
+                        shuffle_shards=True,
+                        seed=shard_seed,
+                        slice_length=config.get("slice_length", None),
                     )
                 logging.info(f"- {path=} {weight=}")
                 cutsets.append(cs)
@@ -475,9 +487,14 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
             )
             if metadata_only:
                 fields = {"cuts": fields["cuts"]}
-            cuts = CutSet.from_shar(fields=fields, shuffle_shards=True, seed=shard_seed)
+            cuts = CutSet.from_shar(
+                fields=fields,
+                shuffle_shards=True,
+                seed=shard_seed,
+                slice_length=config.get("slice_length", None),
+            )
             if not metadata_only and not force_finite:
-                cuts = cuts.repeat()
+                cuts = cuts.repeat(preserve_id=True)
         else:
             raise RuntimeError(
                 f"Unexpected value for key 'shar_path'. We support string, list of strings, "
@@ -711,11 +728,12 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     config.manifest_filepath,
                     tar_paths=config.tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    slice_length=config.get("slice_length", None),
                     **common_kwargs,
                 )
             )
             if not force_finite:
-                cuts = cuts.repeat()
+                cuts = cuts.repeat(preserve_id=True)
         else:
             cuts = CutSet(LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **common_kwargs))
     else:
@@ -755,6 +773,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    slice_length=config.get("slice_length", None),
                     **common_kwargs,
                 )
             else:
@@ -796,6 +815,28 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     return cuts, is_tarred
 
 
+@data_type_parser("multi_speaker_simulator")
+def read_multi_speaker_simulator(config: DictConfig) -> tuple[CutSet, bool]:
+    # Import here to avoid circular dependency
+    from nemo.collections.asr.parts.utils.asr_multispeaker_utils import MultiSpeakerMixtureGenerator
+
+    multi_speaker_cuts = CutSet(
+        MultiSpeakerMixtureGenerator(
+            manifest_filepath=config.manifest_filepath,
+            simulator_type=config.simulator_type,
+            sample_rate=config.get("sample_rate", 16000),
+            min_delay=config.get("min_delay", 0.5),
+            min_duration=config.get("min_duration", 0.1),
+            max_duration=config.get("max_duration", 60),
+            num_speakers=config.get("num_speakers", 2),
+            global_rank=config.get("global_rank", 0),
+            world_size=config.get("world_size", 1),
+        )
+    )
+    is_tarred = config.get("is_tarred", False)
+    return multi_speaker_cuts, is_tarred
+
+
 def mux(
     *cutsets: CutSet,
     weights: list[Union[int, float]],
@@ -813,7 +854,7 @@ def mux(
         cuts = CutSet.infinite_mux(*cutsets, weights=weights, seed=seed, max_open_streams=max_open_streams)
     else:
         if not force_finite:
-            cutsets = [cs.repeat() for cs in cutsets]
+            cutsets = [cs.repeat(preserve_id=True) for cs in cutsets]
         if len(cutsets) == 1:
             # CutSet.mux must take more than one CutSet.
             cuts = cutsets[0]

@@ -19,7 +19,8 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/
     --experiment-dir=/tmp/llm_tests/llama_pretrain_results \
     --data-path=/home/TestData/nlp/megatron_llama/data/rp2_sample_sentencepiece_preproc_text_document \
     --tokenizer-path=/home/TestData/nlp/megatron_llama/tokenizer.model \
-    --index-mapping-dir=/tmp/llm_tests/llama_index_mappings
+    --index-mapping-dir=/tmp/llm_tests/llama_index_mappings \
+    --ckpt-optim-fully-reshardable  # we change TP and CP in the subsequent call
 
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/llama3_pretraining.py \
     --seq-length 1024 \

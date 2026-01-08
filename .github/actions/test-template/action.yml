@@ -79,11 +79,10 @@ runs:
         echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
     - name: Checkout NeMo
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       env:
         DIR: ${{ github.run_id }}
       with:
-        repository: NVIDIA/NeMo
         path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
     - name: Start container

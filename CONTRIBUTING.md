@@ -41,7 +41,7 @@ Lint checks using flake8 and pylint are ran on the code based on the files that 
 to ignore the lint errors by adding the "skip-linting" label to the PR.
 
 ## Whom should you ask for review:
-Tag @nithinraok or @blisc initially for a review.
+Please tag @nithinraok for NeMo core and ASR related PRs and @blisc for TTS related PRs.
 
 Note that some people may self-assign to review your PR - in which case, please wait for them to add a review.
 

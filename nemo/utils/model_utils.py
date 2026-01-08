@@ -502,13 +502,7 @@ def convert_model_config_to_dict_config(cfg: Union['DictConfig', 'NemoConfig']) 
     if not isinstance(cfg, DictConfig):
         raise ValueError(f"cfg constructor argument must be of type DictConfig/dict but got {type(cfg)} instead.")
 
-    # Check if already resolved using a marker KEY
-    if cfg.get('_nemo_resolved', False):
-        return cfg
-
-    # Create resolved copy (preserves original function semantics)
     config = OmegaConf.to_container(cfg, resolve=True)
-    config['_nemo_resolved'] = True
     config = OmegaConf.create(config)
 
     return config
@@ -559,10 +553,6 @@ def maybe_update_config_version(cfg: 'DictConfig', make_copy: bool = True):
             # Cannot be cast to DictConfig, skip updating.
             return cfg
 
-    # Skip if already updated using a marker KEY
-    if cfg.get('_nemo_hydra_updated', False):
-        return cfg
-
     # Make a copy if requested
     if make_copy:
         cfg = copy.deepcopy(cfg)
@@ -571,9 +561,6 @@ def maybe_update_config_version(cfg: 'DictConfig', make_copy: bool = True):
 
     # Convert config
     _convert_config(cfg)
-
-    # Mark as updated using a marker KEY
-    cfg['_nemo_hydra_updated'] = True
 
     OmegaConf.set_struct(cfg, True)
 

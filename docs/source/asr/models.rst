@@ -261,6 +261,80 @@ Or, if ``<NeMo_git_root>/scripts/export.py`` is being used:
 `python export.py cache_aware_conformer.nemo cache_aware_conformer.onnx --export-config cache_support=True`
 
 
+Multitalker Cache-aware Streaming FastConformer 
+-----------------------------------------------
+
+This model is a streaming multitalker ASR model based on the :ref:`Cache-aware Streaming FastConformer <Cache-aware Streaming Conformer>` architecture. The model only takes the speaker diarization outputs as external information and eliminates the need for explicit speaker queries or enrollment audio :cite:`asr-models-wang25y_interspeech`. Unlike conventional target-speaker ASR approaches that require speaker embeddings, this model dynamically adapts to individual speakers through speaker-wise speech activity prediction.
+
+
+Self-Speaker Adaptation Technique
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
+
+The key innovation involves injecting learnable speaker kernels into the pre-encode layer of the FastConformer encoder :cite:`asr-models-rekesh2023fastconformer`. These speaker kernels are generated via speaker supervision activations, enabling instantaneous adaptation to target speakers. This approach leverages the inherent tendency of streaming ASR systems to prioritize specific speakers, repurposing this mechanism to achieve robust speaker-focused recognition.
+
+The model architecture requires deploying one model instance per speaker, meaning the number of model instances matches the number of speakers in the conversation. While this necessitates additional computational resources, it achieves state-of-the-art performance in handling fully overlapped speech in both offline and streaming scenarios.
+
+This self-speaker adaptation approach offers several advantages over traditional multitalker ASR methods:
+
+* |  No Speaker Enrollment: Unlike target-speaker ASR systems that require pre-enrollment audio or speaker embeddings, this model only needs speaker activity information from diarization
+* |  Handles Severe Overlap: Each instance focuses on a single speaker, enabling accurate transcription even during fully overlapped speech
+* | Streaming Capable: Designed for real-time streaming scenarios with configurable latency-accuracy tradeoffs
+* | Leverages Single-Speaker Models: Can be fine-tuned from strong pre-trained single-speaker ASR models, and single speaker ASR performance is also preserved
+
+Speaker Kernel Injection
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The streaming multitalker Parakeet model employs a speaker kernel injection mechanism at some layers of the FastConformer encoder. The learnable speaker kernels are injected into selected encoder layers, enabling the model to dynamically adapt to specific speakers.
+
+The speaker kernels are generated through speaker supervision activations that detect speech activity for each target speaker. This enables the encoder states to become more responsive to the targeted speaker's speech characteristics, even during periods of fully overlapped speech.
+
+Multi-Instance Architecture
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The model is based on the Parakeet architecture and consists of a NeMo Encoder for Speech Tasks (NEST) :cite:`asr-models-huang2025nest` which is based on FastConformer :cite:`asr-models-rekesh2023fastconformer` encoder. The key architectural park2024nestinnovation is the **multi-instance approach**, where one model instance is deployed per speaker.
+
+Each model instance has the following characteristics: 
+
+* | Receives the identical speaker-mixed audio input.
+* | Injects speaker-specific kernels at the pre-encode layer.
+* | Produces transcription output specific to its target speaker.
+* | Operates independently and can run in parallel with other instances.
+
+This architecture enables the model to handle severe speech overlap by having each instance focus exclusively on one speaker, eliminating the permutation problem that affects other multitalker ASR approaches.
+Find more details in the :cite:`asr-models-wang25y_interspeech` paper.
+
+The real-time multitalker ASR model is built on RNNT model structure. :class:`~nemo.collections.asr.models.EncDecMultiTalkerRNNTBPEModel` class inherits from :class:`~nemo.collections.asr.models.EncDecRNNTBPEModel` class and speaker kernel :class:`~nemo.collections.asr.parts.mixins.SpeakerKernel` class. 
+
+Try real-time multitalker ASR with the tutorial notebook: `Streaming Multitalker ASR tutorial notebook <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Streaming_Multitalker_ASR.ipynb>`_.
+
+You can simulate the streaming audio stream and streaming multitalker ASR with the script:
+``<NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_multitalker_streaming_infer.py``
+
+For an individual audio file:  
+
+.. code-block:: bash
+
+    python <NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_multitalker_streaming_infer.py \
+            asr_model="/path/to/multitalker-parakeet-streaming-0.6b-v1.nemo" \
+            diar_model="/path/to/nvidia/diar_streaming_sortformer_4spk-v2.nemo" \
+            audio_file="/path/to/your/example.wav" \
+            output_path="/path/to/your/example_output.json"
+
+If you want to simulate the system on multiple files, use NeMo manifest:  
+
+.. code-block:: bash
+
+    python <NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_multitalker_streaming_infer.py \
+            asr_model="/path/to/multitalker-parakeet-streaming-0.6b-v1.nemo" \
+            diar_model="/path/to/nvidia/diar_streaming_sortformer_4spk-v2.nemo" \
+            manifest_file="/path/to/your/example_manifest.json" \
+            output_path="/path/to/your/example_output.json"
+
+
+Download model checkpoint and more details can be found on Huggingface model card: `Multitalker Parakeet (Cache-aware FastConformer) Streaming <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__.
+
+
+
 .. _Hybrid-Transducer_CTC_model:
 
 Hybrid-Transducer-CTC
@@ -290,6 +364,122 @@ Note Hybrid models are being exported as RNNT (encoder and decoder+joint parts) 
 To export as CTC (single encoder+decoder graph), `model.set_export_config({'decoder_type' : 'ctc'})` should be called before export.
 Or, if ``<NeMo_git_root>/scripts/export.py`` is being used:
 `python export.py hybrid_transducer.nemo hybrid_transducer.onnx --export-config decoder_type=ctc`
+
+.. _Hybrid-Transducer-CTC-Prompt_model:
+
+Hybrid-Transducer-CTC with Prompt Conditioning
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Hybrid RNNT-CTC model with prompt conditioning (``EncDecHybridRNNTCTCBPEModelWithPrompt``) extends the base Hybrid-Transducer-CTC model
+to support multi-language and multi-domain ASR through prompt conditioning. This model leverages prompts to guide the transcription process,
+enabling language-specific or domain-specific transcription from a single unified model.
+
+Key features of this model include:
+
+* **Prompt Feature**: Uses learnable prompt embeddings that are concatenated with acoustic features to guide transcription
+* **Multi-language Support**: Can transcribe audio in multiple languages based on language prompts
+* **Offline and Buffered Streaming Inference Support**: Can be used in offline and buffered streaming mode 
+
+The model can be instantiated using the :class:`~nemo.collections.asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt` class.
+
+Architecture Overview
+^^^^^^^^^^^^^^^^^^^^^
+
+The model architecture builds upon the standard Hybrid-Transducer-CTC model by incorporating prompt information directly into the decoder through a concatenation-based approach. This design enables scalable multilingual ASR/AST capabilities.
+
+**Core Components:**
+
+1. **Prompt Supervision Source**: Prompt label information extracted from training and inference manifests or provided as an input
+2. **Prompt Vector Representation**: One-hot binary vectors where one element is 1 (prompt) and all others are 0
+3. **Concatenation-Based Prompt Encoding**: Direct combination of prompt vectors with acoustic features
+
+**Detailed Architecture:**
+
+**Prompt Vector Design:**
+- **Dimensionality**: Default to 128-dimensional vectors for scalability (supports current target language and future prompts) without the need to change the architecture
+- **Representation**: Binary one-hot encoding where each position represents a prompt ID
+- **Expansion**: Prompt vectors are expanded at each time step to match acoustic feature temporal dimensions
+
+**Concatenation Method Implementation:**
+The model adopts a concatenation approach where language vectors and ASR acoustic features are directly combined:
+
+1. **Feature Stacking**: Language vectors and encoded acoustic features are stacked along the feature dimension
+2. **Projection**: The concatenated representation passes through a projection network (``prompt_kernel``)
+
+
+**Inference Capabilities:**
+
+The model supports both offline and buffered streaming inference modes:
+
+- **Offline Mode**: Full context processing for maximum accuracy
+- **Buffered Streaming**: Real-time multilingual speech-to-text processing with language-aware decoding
+
+
+Configuration
+^^^^^^^^^^^^^
+
+The model supports several prompt-specific configuration parameters:
+
+* ``initialize_prompt_feature``: Boolean flag to enable prompt conditioning
+* ``num_prompts``: Number of supported prompt categories (default: 128)
+* ``prompt_dictionary``: Mapping from language/domain identifiers to prompt indices
+* ``prompt_field``: Field name used for prompt extraction from manifest files
+
+Example config files for this model can be found at:
+``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml``
+
+Training
+^^^^^^^^
+
+To train the Hybrid-Transducer-CTC model with prompt feature, use the training script:
+
+``<NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe_prompt.py``
+
+Example training command:
+
+.. code-block:: bash
+
+    python <NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe_prompt.py \
+        --config-path=<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/ \
+        --config-name=fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml \
+        model.train_ds.manifest_filepath=<path_to_train_manifest> \
+        model.validation_ds.manifest_filepath=<path_to_val_manifest> \
+        model.tokenizer.dir=<path_to_tokenizer> \
+        model.test_ds.manifest_filepath=<path_to_test_manifest> 
+
+Usage Examples
+^^^^^^^^^^^^^^
+
+**Basic Transcription with Language Prompts:**
+
+.. code-block:: python
+
+    # Load the model
+    asr_model = nemo_asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt.restore_from("path/to/model.nemo")
+    
+    # Transcribe with specific target language
+    transcriptions = asr_model.transcribe(
+        paths2audio_files=["audio1.wav", "audio2.wav"],
+        target_lang="en-US",  # Specify target language
+    )
+
+
+Training Data Requirements
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The model requires training data with prompt annotations. The recommended dataset format uses Lhotse with the 
+:class:`~nemo.collections.asr.data.audio_to_text_lhotse_prompt.LhotseSpeechToTextBpeDatasetWithPrompt` dataset class.
+
+Manifest files should include prompt information:
+
+.. code-block:: json
+
+    {
+        "audio_filepath": "path/to/audio.wav",
+        "text": "transcription text",
+        "duration": 10.5,
+        "target_lang": "en-US"
+    }
 
 .. _Hybrid-ASR-TTS_model:
 

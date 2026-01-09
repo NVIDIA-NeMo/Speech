@@ -1259,7 +1259,27 @@ class SpeechToTextLLM(SpeechLanguageModel):
                 )
 
     def set_inference_config(self, inference_config: Optional[Dict] = None):
-        self._inference_config = dict(inference_config) if inference_config is not None else None
+        ALLOWED_KEYS = [
+            'tokens_to_generate',
+            'temperature',
+            'top_k',
+            'top_p',
+            'greedy',
+            'repetition_penalty',
+            'min_tokens_to_generate',
+        ]
+        if inference_config is None:
+            return
+        if not isinstance(inference_config, dict):
+            inference_config = dict(inference_config)
+        for key in inference_config.keys():
+            if key not in ALLOWED_KEYS:
+                logging.warning(
+                    f"inference_config key `{key}` is not in allowed keys ({ALLOWED_KEYS}), ignoring it..."
+                )
+                inference_config.pop(key)
+        self._inference_config = inference_config
+        logging.info(f"Setting inference config: {self._inference_config}")
 
     def get_inference_config(self):
         return dict(self._inference_config) if self._inference_config is not None else None

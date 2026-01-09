@@ -15,7 +15,7 @@
 import os
 import tarfile
 from contextlib import nullcontext
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -30,7 +30,6 @@ except (ImportError, ModuleNotFoundError):
 
     MegatronGPTModel = ABC
 
-from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.utils import logging
 from nemo.utils.distributed import temporary_directory
 from nemo.utils.model_utils import save_artifacts, unwrap_model
@@ -59,6 +58,21 @@ except (ImportError, ModuleNotFoundError) as e:
 SUPPORTED_DTYPE = [16, "16", "bf16"]  # Default precision for non-quantized layers
 
 
+def torch_dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Optional[bool] = None) -> torch.dtype:
+    """Mapping from PTL precision types to corresponding PyTorch parameter datatype."""
+    if megatron_amp_O2 is not None and megatron_amp_O2 is False:
+        return torch.float32
+
+    if precision in ['bf16', 'bf16-mixed']:
+        return torch.bfloat16
+    elif precision in [16, '16', '16-mixed']:
+        return torch.float16
+    elif precision in [32, '32', '32-true']:
+        return torch.float32
+    else:
+        raise ValueError(f"Could not parse the precision of `{precision}` to a valid torch.dtype")
+
+
 class Quantizer:
     """Post-training quantization (PTQ) and TRT-LLM export of Nemo checkpoints.
 
@@ -78,7 +92,7 @@ class Quantizer:
     model families is experimental and might not be fully supported.
 
     Available quantization methods are listed in `QUANT_CFG_CHOICES` dictionary above.
-    Please consult Model Optimizer documentation https://nvidia.github.io/TensorRT-Model-Optimizer/ for details.
+    Please consult Model Optimizer documentation https://nvidia.github.io/Model-Optimizer/ for details.
     You can also inspect different choices in examples/nlp/language_modeling/conf/megatron_gpt_ptq.yaml
     for quantization algorithms and calibration data as well as recommended settings.
 

@@ -12,12 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+# pylint: skip-file
+
 import logging
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import lightning.pytorch as pl
+from lightning.pytorch.utilities.exceptions import MisconfigurationException
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from torch.utils import data
 
@@ -145,7 +149,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
 
         # create tokenizer if tokenizer is None
         if tokenizer is None:
-            from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+            from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
             special_tokens = {}
             special_tokens['additional_special_tokens'] = [f'<extra_id_{i}>' for i in range(100)]

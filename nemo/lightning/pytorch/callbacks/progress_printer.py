@@ -17,7 +17,16 @@ from typing import Any
 
 from lightning.pytorch.callbacks.progress import ProgressBar
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+try:
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 from typing_extensions import override
 
 

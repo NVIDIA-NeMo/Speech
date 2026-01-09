@@ -11,6 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Model optimization utilities for VLM models using TensorRT Model Optimizer."""
+"""Model optimization utilities for VLM models using Model Optimizer."""
 
 from .model_utils import *  # noqa: F401

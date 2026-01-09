@@ -98,7 +98,6 @@ from nemo.collections.llm.gpt.model import (  # noqa: F401
     GPTOSSConfig20B,
     GPTOSSConfig120B,
     GPTOSSModel,
-    HFAutoModelForCausalLM,
     Hyena1bConfig,
     Hyena7bARCLongContextConfig,
     Hyena7bConfig,
@@ -395,7 +394,6 @@ __all__ = [
     "dolly",
     "peft",
     "hf_dataset",
-    "HFAutoModelForCausalLM",
     "HFMockDataModule",
 ]
 
@@ -449,3 +447,14 @@ try:
     __all__.append("evaluate")
 except ImportError as error:
     logging.warning(f"The evaluate module could not be imported: {error}")
+
+
+import warnings
+
+
+warnings.warn(
+    "nemo.collections.llm is deprecated and will be removed in a future major NeMo FW container release. "
+    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
+    DeprecationWarning,
+    stacklevel=2,
+)

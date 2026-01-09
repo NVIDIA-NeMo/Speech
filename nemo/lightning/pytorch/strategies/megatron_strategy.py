@@ -52,11 +52,19 @@ from lightning.pytorch.plugins.io.wrapper import _WrappingCheckpointIO
 from lightning.pytorch.strategies.ddp import DDPStrategy
 from lightning.pytorch.trainer.states import RunningStage, TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from megatron.core import Timers
-from megatron.core.dist_checkpointing.validation import StrictHandling
-from megatron.core.distributed import DistributedDataParallelConfig
-from megatron.core.optimizer import OptimizerConfig
-from megatron.core.utils import get_torch_version, is_torch_min_version
+
+try:
+    from megatron.core import Timers
+    from megatron.core.dist_checkpointing.validation import StrictHandling
+    from megatron.core.distributed import DistributedDataParallelConfig
+    from megatron.core.optimizer import OptimizerConfig
+
+    HAVE_MEGATRON_CORE = True
+except (ImportError, ModuleNotFoundError):
+
+    DistributedDataParallelConfig = object
+    HAVE_MEGATRON_CORE = False
+
 from torch import nn
 from torch.distributed.algorithms.ddp_comm_hooks.debugging_hooks import noop_hook
 from torch.distributed.checkpoint.utils import CheckpointException
@@ -98,6 +106,11 @@ URL = "https://docs.nvidia.com/nemo-framework/user-guide/latest/knownissues.html
 LOAD_ERROR = f"""
     (1) To resolve this issue, try to set `trainer.strategy.ckpt_load_strictness` to False. This setting enables loading older checkpoints.
     (2) For more details and troubleshooting guidance, please refer to the framework documentation: {URL}.
+"""
+RESHARDING_LOAD_ERROR = """
+    Most likely the error is caused by the parallelism configuration mismatch.
+    To resolve this issue, re-save the checkpoint with `ckpt_optim_fully_reshardable=True` flag
+    in order to enable a fully-reshardable optimizer checkpoint format.
 """
 
 
@@ -202,11 +215,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             If not None, overwrites the `strict` flag passed to `load_checkpoint`.
             Defaults to None. For a list of supported values, refer to the Megatron Core documentation:
             https://github.com/NVIDIA/Megatron-LM/blob/d4e72c0d33edc0c53aeb624f617eb77cebce6ae9/megatron/core/dist_checkpointing/validation.py#L46
-        ckpt_save_pre_mcore_014 (bool, optional): if True, brings back sharded state dict definition from
-            before Megatron-Core v0.14 versions for checkpoint saving. It doesn't affect loading as the
-            loading format is determined based on metadata stored in the checkpoint. This flag  is provided
-            temporarily as a fallback to previous behavior in case of unexpected issues with the new formats.
-            Defaults to False.
         ckpt_optim_fully_reshardable (bool, optional): switches to a fully reshardable (TP/PP/DP/EP)
             optimizer format. Defaults to False, in which case a DP-only reshardable format is used.
         distrib_optim_fully_reshardable_mem_efficient (bool, optional): minimizes CUDA and host memory
@@ -287,7 +295,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         ckpt_parallel_save_optim: Optional[bool] = None,
         ckpt_load_directly_on_device: bool = True,
         ckpt_load_strictness: Optional['StrictHandling'] = None,
-        ckpt_save_pre_mcore_014: bool = False,
         ckpt_optim_fully_reshardable: bool = False,
         distrib_optim_fully_reshardable_mem_efficient: bool = False,
         setup_optimizers: bool = True,
@@ -338,7 +345,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.ckpt_save_optimizer = ckpt_save_optimizer
         self.ckpt_load_main_params = ckpt_load_main_params
         self.ckpt_load_strictness = ckpt_load_strictness
-        self.ckpt_save_pre_mcore_014 = ckpt_save_pre_mcore_014
         self.ckpt_optim_fully_reshardable = ckpt_optim_fully_reshardable
         self.distrib_optim_fully_reshardable_mem_efficient = distrib_optim_fully_reshardable_mem_efficient
         self.use_te_rng_tracker = use_te_rng_tracker
@@ -428,11 +434,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         if self.ckpt_load_optimizer and self.ckpt_load_main_params:
             raise ValueError("ckpt_load_optimizer and ckpt_load_main_params cannot be both set to True.")
 
-        if self.parallel_save_optim is not None and not self.ckpt_save_pre_mcore_014:
+        if self.parallel_save_optim is not None:
             logging.warning(
                 "`ckpt_parallel_save_optim` argument is replaced with"
                 " `ckpt_optim_fully_reshardable` and does not have any effect"
-                " (unless used together with `ckpt_save_pre_mcore_014=True`)"
             )
 
         if isinstance(self.ddp_config, DistributedDataParallelConfig):
@@ -1110,7 +1115,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         torch.save(state_dict, os.path.join(ckpt_dir, "common.pt"))
 
     def _load_fsdp_dtensor_common_state(self, ckpt_dir):
-        return torch.load(os.path.join(ckpt_dir, "common.pt"), weights_only=False)
+        # Note: set to weights_only=True for safety reason
+        # It should be switching to safetensor but NeMo is deprecated.
+        # Please use Megatron-Bridge for better checkpointing support.
+        return torch.load(os.path.join(ckpt_dir, "common.pt"), weights_only=True)
 
     def _load_fsdp_dtensor_checkpoint(self, path, sharded_state_dict, strict):
         from torch.distributed.checkpoint import default_planner
@@ -1182,7 +1190,13 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                     checkpoint_path, sharded_state_dict=sharded_state_dict, strict=strict
                 )
         except CheckpointException as e:
-            error_message = f"{e}\n{LOAD_ERROR}"
+            if (
+                "optimizer.distributed.dp_group_idx_" in str(e)
+                and sharded_sd_metadata.get("distrib_optim_sharding_type") == "dp_reshardable"
+            ):
+                error_message = f"{e}\n{RESHARDING_LOAD_ERROR}"
+            else:
+                error_message = f"{e}\n{LOAD_ERROR}"
             raise RuntimeError(error_message)
 
         if selective_restore:
@@ -1208,28 +1222,14 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         if use_distributed_optimizer and use_megatron_fsdp:
             metadata["distrib_optim_sharding_type"] = "fsdp_dtensor"
 
-        force_pre_mcore_014 = not is_torch_min_version("2.6a0")
-        if force_pre_mcore_014:
-            logging.warning(
-                f"PyTorch version {get_torch_version()} below 2.6 detected."
-                f" Forcing ckpt_save_pre_mcore_014 behavior."
-            )
-
-        if self.ckpt_save_pre_mcore_014 or force_pre_mcore_014:
-            if use_distributed_optimizer and not use_megatron_fsdp:
-                if self.parallel_save_optim:
-                    metadata["distrib_optim_sharding_type"] = "fully_sharded_model_space"
-                else:
-                    metadata["distrib_optim_sharding_type"] = "dp_zero_gather_scatter"
-        else:
-            if use_distributed_optimizer and not use_megatron_fsdp:
-                if self.ckpt_optim_fully_reshardable:
-                    metadata['distrib_optim_sharding_type'] = 'fully_reshardable'
-                    metadata['distrib_optim_fully_reshardable_mem_efficient'] = (
-                        self.distrib_optim_fully_reshardable_mem_efficient
-                    )
-                else:
-                    metadata['distrib_optim_sharding_type'] = 'dp_reshardable'
+        if use_distributed_optimizer and not use_megatron_fsdp:
+            if self.ckpt_optim_fully_reshardable:
+                metadata['distrib_optim_sharding_type'] = 'fully_reshardable'
+                metadata['distrib_optim_fully_reshardable_mem_efficient'] = (
+                    self.distrib_optim_fully_reshardable_mem_efficient
+                )
+            else:
+                metadata['distrib_optim_sharding_type'] = 'dp_reshardable'
         return metadata
 
     def selective_restore(self) -> None:

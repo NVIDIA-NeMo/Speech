@@ -38,6 +38,8 @@ from pydantic import BaseModel
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
 from nemo.agents.voice_agent.pipecat.services.nemo.streaming_asr import NemoStreamingASRService
 
+ASR_EOU_MODELS = ["nvidia/parakeet_realtime_eou_120m-v1"]
+
 try:
     # disable nemo logging
     from nemo.utils import logging
@@ -73,7 +75,7 @@ class NemoSTTService(STTService):
         device: Optional[str] = "cuda:0",
         sample_rate: Optional[int] = 16000,
         params: Optional[NeMoSTTInputParams] = None,
-        has_turn_taking: bool = False,
+        has_turn_taking: Optional[bool] = None,  # if None, it will be set by the model name
         backend: Optional[str] = "legacy",
         decoder_type: Optional[str] = "rnnt",
         record_audio_data: Optional[bool] = False,
@@ -86,6 +88,9 @@ class NemoSTTService(STTService):
         params.buffer_size = params.frame_len_in_secs // params.raw_audio_frame_len_in_secs
         self._params = params
         self._model_name = model
+        if has_turn_taking is None:
+            has_turn_taking = True if model in ASR_EOU_MODELS else False
+            logger.info(f"Setting has_turn_taking to `{has_turn_taking}` based on model name: `{model}`")
         self._has_turn_taking = has_turn_taking
         self._backend = backend
         self._decoder_type = decoder_type
@@ -334,9 +339,8 @@ class NemoSTTService(STTService):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process incoming frames and handle VAD events."""
-        if isinstance(frame, VADUserStoppedSpeakingFrame):
-            self._is_vad_active = False
-            # manually reset the state of the model when end of utterance is detected by VAD
+        if isinstance(frame, VADUserStoppedSpeakingFrame) and isinstance(self._model, NemoStreamingASRService):
+            # manualy reset the state of the model when end of utterance is detected by VAD
             logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")
             if self.user_is_speaking:
                 logger.debug(

@@ -1148,7 +1148,7 @@ class MultiSpeakerSimulator(object):
         if self._params.data_simulator.background_noise.add_bg:
             if len(self._noise_samples) > 0:
                 avg_power_array = torch.mean(array[is_speech == 1] ** 2)
-                bg, snr = get_background_noise(
+                bg, snr, _ = get_background_noise(
                     len_array=len(array),
                     power_array=avg_power_array,
                     noise_samples=self._noise_samples,
@@ -1466,6 +1466,8 @@ class RIRMultiSpeakerSimulator(MultiSpeakerSimulator):
         if self._params.data_simulator.rir_generation.mic_config.mic_pattern == 'omni':
             mic_pattern = DirectivityPattern.OMNI
             dir_vec = DirectionVector(azimuth=0, colatitude=90, degrees=True)
+        else:
+            raise Exception("Currently, microphone pattern must be omni. Aborting RIR generation.")
         dir_obj = CardioidFamily(
             orientation=dir_vec,
             pattern_enum=mic_pattern,
@@ -1509,6 +1511,8 @@ class RIRMultiSpeakerSimulator(MultiSpeakerSimulator):
                 out_channel = convolve(input, RIR[speaker_turn, channel, : len(input)]).tolist()
             elif self._params.data_simulator.rir_generation.toolkit == 'pyroomacoustics':
                 out_channel = convolve(input, RIR[channel][speaker_turn][: len(input)]).tolist()
+            else:
+                raise Exception("Toolkit must be pyroomacoustics or gpuRIR. Aborting RIR convolution.")
             if len(out_channel) > length:
                 length = len(out_channel)
             output_sound.append(torch.tensor(out_channel))
@@ -1644,7 +1648,11 @@ class RIRMultiSpeakerSimulator(MultiSpeakerSimulator):
             self.annotator.annote_lists['json'].append(new_json_entry)
 
             new_ctm_entries, _ = self.annotator.create_new_ctm_entry(
-                filename, speaker_ids[speaker_turn], start / self._params.data_simulator.sr
+                words=self._text,
+                alignments=self._alignments,
+                session_name=filename,
+                speaker_id=speaker_ids[speaker_turn],
+                start=start / self._params.data_simulator.sr,
             )
             self.annotator.annote_lists['ctm'].extend(new_ctm_entries)
 
@@ -1659,23 +1667,21 @@ class RIRMultiSpeakerSimulator(MultiSpeakerSimulator):
             array = perturb_audio(array, self._params.data_simulator.sr, self.session_augmentor)
 
         # Step 7-2: Additive background noise from noise manifest files
-        if self._params.data_simulator.background_noise.add_bg:
-            if len(self._noise_samples) > 0:
-                avg_power_array = torch.mean(array[is_speech == 1] ** 2)
-                bg, snr = get_background_noise(
-                    len_array=len(array),
-                    power_array=avg_power_array,
-                    noise_samples=self._noise_samples,
-                    audio_read_buffer_dict=self._audio_read_buffer_dict,
-                    snr_min=self._params.data_simulator.background_noise.snr_min,
-                    snr_max=self._params.data_simulator.background_noise.snr_max,
-                    background_noise_snr=self._params.data_simulator.background_noise.snr,
-                    seed=(random_seed + idx),
-                    device=self._device,
-                )
-                array += bg
+        if self._params.data_simulator.background_noise.add_bg and len(self._noise_samples) > 0:
+            avg_power_array = torch.mean(array[is_speech == 1] ** 2)
+            bg, snr, _ = get_background_noise(
+                len_array=len(array),
+                power_array=avg_power_array,
+                noise_samples=self._noise_samples,
+                audio_read_buffer_dict=self._audio_read_buffer_dict,
+                snr_min=self._params.data_simulator.background_noise.snr_min,
+                snr_max=self._params.data_simulator.background_noise.snr_max,
+                background_noise_snr=self._params.data_simulator.background_noise.snr,
+                seed=(random_seed + idx),
+                device=self._device,
+            )
+            array += bg
             length = array.shape[0]
-            bg, snr = self._get_background(length, avg_power_array)
             augmented_bg, _ = self._convolve_rir(bg, -1, RIR)
             for channel in range(self._params.data_simulator.rir_generation.mic_config.num_channels):
                 array[:, channel] += augmented_bg[channel][:length]

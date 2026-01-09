@@ -50,12 +50,23 @@ import torch
 import torch.distributed
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities import move_data_to_device
-from megatron.core import parallel_state
-from megatron.core.distributed import DistributedDataParallel as McoreDDP
-from megatron.core.distributed import DistributedDataParallelConfig
-from megatron.core.optimizer import OptimizerConfig
-from megatron.core.transformer.moe.moe_utils import get_moe_layer_wise_logging_tracker
-from megatron.core.transformer.transformer_config import TransformerConfig
+
+try:
+    from megatron.core import parallel_state
+    from megatron.core.distributed import DistributedDataParallel as McoreDDP
+    from megatron.core.distributed import DistributedDataParallelConfig
+    from megatron.core.optimizer import OptimizerConfig
+    from megatron.core.transformer.moe.moe_utils import get_moe_layer_wise_logging_tracker
+    from megatron.core.transformer.transformer_config import TransformerConfig
+
+    HAVE_MEGATRON_CORE = True
+except (ImportError, ModuleNotFoundError):
+
+    McoreDDP = object
+    DistributedDataParallelConfig = object
+    TransformerConfig = object
+    HAVE_MEGATRON_CORE = False
+
 from torch import Tensor, nn
 from typing_extensions import override
 
@@ -1477,7 +1488,7 @@ class MegatronStep(Generic[ModelT, DataT]):
 
             # finetuning can have dynamic sequence lengths
             seq_length = batch['tokens'].size(1) if 'tokens' in batch else None
-            from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_split
+            from nemo.utils.megatron_utils import get_iterator_k_split
 
             data = get_iterator_k_split(batch, self.num_microbatches, True)
 

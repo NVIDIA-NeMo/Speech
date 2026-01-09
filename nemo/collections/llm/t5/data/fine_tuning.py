@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+# pylint: skip-file
+
 import math
 from functools import lru_cache
 from pathlib import Path
@@ -73,7 +76,7 @@ class FineTuningDataModule(pl.LightningDataModule):
 
         # create tokenizer if tokenizer is None
         if tokenizer is None:
-            from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+            from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
             special_tokens = {}
             special_tokens['additional_special_tokens'] = [f'<extra_id_{i}>' for i in range(100)]

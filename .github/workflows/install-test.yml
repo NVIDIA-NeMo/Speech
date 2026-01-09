@@ -130,6 +130,54 @@ jobs:
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
 
+  test-asr-install-linux-amd:
+    name: ubuntu-22.04-amd-py${{ matrix.python }}-asr
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+
+      - name: Check disk space before cleanup
+        run: df -h
+
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary packages and files on Ubuntu
+          sudo apt-get clean
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/az || true
+          # Clear pip and npm caches
+          pip cache purge || true
+          sudo npm cache clean --force || true
+
+      - name: Check disk space after cleanup
+        run: df -h
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install NeMo
+        run: |
+          pip install --no-cache-dir --upgrade pip
+          pip install --no-cache-dir ".[asr]"
+
+      - name: Check disk space after installation
+        run: df -h
+
+      - name: Run import checks
+        run: |
+          # Run import checks
+          python tests/core_ptl/check_imports.py --domain asr
+
   test-installs-linux-arm:
     name: ubuntu-22.04-arm-py${{ matrix.python }}-${{ matrix.installer }}
     runs-on: ubuntu-22.04-arm
@@ -188,3 +236,51 @@ jobs:
           for collection in "asr" "tts" "lightning" "core"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
+
+  test-asr-installs-linux-arm:
+    name: ubuntu-22.04-arm-py${{ matrix.python }}-asr
+    runs-on: ubuntu-22.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+
+      - name: Check disk space before cleanup
+        run: df -h
+
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary packages and files on Ubuntu ARM
+          sudo apt-get clean
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/az || true
+          # Clear pip and npm caches
+          pip cache purge || true
+          sudo npm cache clean --force || true
+
+      - name: Check disk space after cleanup
+        run: df -h
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install NeMo
+        run: |
+          pip install --no-cache-dir --upgrade pip
+          pip install --no-cache-dir ".[asr]"
+
+      - name: Check disk space after installation
+        run: df -h
+
+      - name: Run import checks
+        run: |
+          # Run import checks
+          python tests/core_ptl/check_imports.py --domain asr

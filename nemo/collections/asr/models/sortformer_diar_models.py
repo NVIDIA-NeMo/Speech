@@ -112,8 +112,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             self.sortformer_modules.encoder_proj = None
         self._init_loss_weights()
 
-        self.eps = 1e-3
-        self.negative_init_val = -99
+        self.eps = self._cfg.get("eps", 1e-3)
+        self.negative_init_val = self._cfg.get("negative_init_val", -99)
         self.loss = instantiate(self._cfg.loss)
 
         self.async_streaming = self._cfg.get("async_streaming", False)
@@ -425,6 +425,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             'session_len_sec': config['session_len_sec'],
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
+            'use_lhotse': config.get('use_lhotse', False),
         }
         temporary_datalayer = self.__setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
@@ -832,6 +833,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         Returns:
             (dict): A dictionary containing the following training metrics.
         """
+        targets = targets.to(preds.dtype)
         if preds.shape[1] < targets.shape[1]:
             logging.info(
                 f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "
@@ -904,6 +906,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         Returns:
             val_metrics (dict): A dictionary containing the following validation metrics
         """
+        targets = targets.to(preds.dtype)
         if preds.shape[1] < targets.shape[1]:
             logging.info(
                 f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "
@@ -1035,6 +1038,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             target_lens (torch.Tensor): Lengths of target sequences.
                 Shape: (batch_size,)
         """
+        targets = targets.to(preds.dtype)
         if preds.shape[1] < targets.shape[1]:
             logging.info(
                 f"WARNING! preds has less frames than targets ({preds.shape[1]} < {targets.shape[1]}). "
@@ -1109,6 +1113,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
     def diarize(
         self,
         audio: Union[str, List[str], np.ndarray, DataLoader],
+        sample_rate: Optional[int] = None,
         batch_size: int = 1,
         include_tensor_outputs: bool = False,
         postprocessing_yaml: Optional[str] = None,
@@ -1137,6 +1142,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         """
         return super().diarize(
             audio=audio,
+            sample_rate=sample_rate,
             batch_size=batch_size,
             include_tensor_outputs=include_tensor_outputs,
             postprocessing_yaml=postprocessing_yaml,

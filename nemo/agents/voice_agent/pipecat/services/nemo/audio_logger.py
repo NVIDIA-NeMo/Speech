@@ -24,6 +24,8 @@ import numpy as np
 from loguru import logger
 from pipecat.frames.frames import TranscriptionFrame
 from pipecat.observers.base_observer import BaseObserver, FramePushed
+
+
 class AudioLogger:
     """
     Utility class for logging audio data and transcriptions during voice agent interactions.
@@ -51,11 +53,11 @@ class AudioLogger:
         session_id: Optional custom session ID. If None, auto-generated from timestamp
         enabled: Whether logging is enabled (default: True)
 
-    # 12/19/2025 Note: Stereo conversation recording is implemented, but -0.8 seconds offset needs to be applied to make the session sound synced. 
-        TODO: 
+    # 12/19/2025 Note: Stereo conversation recording is implemented, but -0.8 seconds offset needs to be applied to make the session sound synced.
+        TODO:
         1. Make offset compensated conversation_stereo.wav file: Start time is the first turn's start time.
         2. Remove the segment based wav files. (Both TTS and STT, make it configurable, but default to False)
-        3. Do the testing on Jetson. 
+        3. Do the testing on Jetson.
     """
 
     def __init__(
@@ -105,7 +107,7 @@ class AudioLogger:
         self._stereo_conversation_filename = "conversation_stereo.wav"
         self._stereo_conversation_file = self.session_dir / self._stereo_conversation_filename
         self._stereo_sample_rate = user_audio_sample_rate  # Use user audio sample rate (downsample agent audio)
-        self._stereo_audio_buffer_left: list = []   # Agent audio (left channel)
+        self._stereo_audio_buffer_left: list = []  # Agent audio (left channel)
         self._stereo_audio_buffer_right: list = []  # User audio (right channel)
 
         # Session metadata
@@ -123,16 +125,16 @@ class AudioLogger:
     def append_continuous_user_audio(self, audio_data: bytes):
         """
         Append audio data to the continuous user audio buffer for stereo conversation.
-        
+
         This method should be called for EVERY audio frame received from the user,
         regardless of VAD state, to record the complete conversation audio.
-        
+
         Args:
             audio_data: Raw audio data as bytes
         """
         if not self.enabled:
             return
-        
+
         self.continuous_user_audio_buffer.append(audio_data)
 
     def _resample_audio(
@@ -143,12 +145,12 @@ class AudioLogger:
     ) -> np.ndarray:
         """
         Resample audio data to a target sample rate using librosa.
-        
+
         Args:
             audio_data: Audio data as bytes (int16) or numpy array
             orig_sr: Original sample rate
             target_sr: Target sample rate
-            
+
         Returns:
             Resampled audio as numpy array (float32)
         """
@@ -159,11 +161,11 @@ class AudioLogger:
             audio_array = audio_data.astype(np.float32) / 32768.0
         else:
             audio_array = audio_data.astype(np.float32)
-        
+
         # Resample if needed
         if orig_sr != target_sr:
             audio_array = librosa.resample(audio_array, orig_sr=orig_sr, target_sr=target_sr)
-        
+
         return audio_array
 
     def _append_to_stereo_conversation(
@@ -175,7 +177,7 @@ class AudioLogger:
     ):
         """
         Append audio to the stereo conversation buffer at the correct time position.
-        
+
         Args:
             audio_data: Audio data as bytes or numpy array
             channel: "left" for agent, "right" for user
@@ -184,25 +186,25 @@ class AudioLogger:
         """
         if not self.enabled:
             return
-        
+
         try:
             # Resample to stereo sample rate if needed
             audio_float = self._resample_audio(audio_data, sample_rate, self._stereo_sample_rate)
-            
+
             # Calculate the sample position for this audio
             start_sample = int(start_time * self._stereo_sample_rate)
-            
+
             # Get the appropriate buffer
             if channel == "left":
                 buffer = self._stereo_audio_buffer_left
             else:
                 buffer = self._stereo_audio_buffer_right
-            
+
             # Extend buffer with zeros if needed to reach start position
             current_length = len(buffer)
             if start_sample > current_length:
                 buffer.extend([0.0] * (start_sample - current_length))
-            
+
             # Append or overwrite audio samples
             for i, sample in enumerate(audio_float):
                 pos = start_sample + i
@@ -211,12 +213,12 @@ class AudioLogger:
                     buffer[pos] = np.clip(buffer[pos] + sample, -1.0, 1.0)
                 else:
                     buffer.append(sample)
-            
+
             logger.debug(
                 f"[AudioLogger] Appended {len(audio_float)} samples to {channel} channel "
                 f"at position {start_sample} (buffer now {len(buffer)} samples)"
             )
-            
+
         except Exception as e:
             logger.error(f"[AudioLogger] Error appending to stereo conversation: {e}")
 
@@ -224,16 +226,16 @@ class AudioLogger:
         """
         Save the stereo conversation buffer to a WAV file.
         Left channel = Agent, Right channel = User.
-        
+
         User audio comes from continuous_user_audio_buffer (not affected by VAD).
         """
         if not self.enabled:
             return
-        
+
         if not self._stereo_audio_buffer_left and not self.continuous_user_audio_buffer:
             logger.warning("[AudioLogger] No stereo conversation audio to save")
             return
-        
+
         try:
             # Build right channel (user) from continuous buffer
             # This is raw bytes at user sample rate, no resampling needed since stereo uses user sample rate
@@ -242,37 +244,37 @@ class AudioLogger:
                 right_array = np.frombuffer(continuous_audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             else:
                 right_array = np.array([], dtype=np.float32)
-            
+
             left_array = np.array(self._stereo_audio_buffer_left, dtype=np.float32)
-            
+
             # Pad the shorter buffer with zeros
             max_length = max(len(left_array), len(right_array))
-            
+
             # Pad to same length
             if len(left_array) < max_length:
                 left_array = np.pad(left_array, (0, max_length - len(left_array)))
             if len(right_array) < max_length:
                 right_array = np.pad(right_array, (0, max_length - len(right_array)))
-            
+
             # Create stereo array (interleaved: L, R, L, R, ...)
             stereo_array = np.column_stack((left_array, right_array))
-            
+
             # Convert to int16
             stereo_int16 = (stereo_array * 32767).astype(np.int16)
-            
+
             # Save as WAV
             with wave.open(str(self._stereo_conversation_file), 'wb') as wav_file:  # type: ignore[union-attr]
                 wav_file.setnchannels(2)  # Stereo
                 wav_file.setsampwidth(2)  # 16-bit
                 wav_file.setframerate(self._stereo_sample_rate)
                 wav_file.writeframes(stereo_int16.tobytes())
-            
+
             duration_sec = max_length / self._stereo_sample_rate
             logger.info(
                 f"[AudioLogger] Saved stereo conversation: {self._stereo_conversation_file} "
                 f"({duration_sec:.2f} seconds, {max_length} samples)"
             )
-            
+
         except Exception as e:
             logger.error(f"[AudioLogger] Error saving stereo conversation: {e}")
 
@@ -297,12 +299,12 @@ class AudioLogger:
     def increment_turn_index(self, speaker: str = None) -> int:
         """
         Increment the turn index if the speaker has changed.
-        
+
         Args:
             speaker: "user" or "agent". If provided, only increments
                     if this is different from the current speaker.
                     If None, always increments.
-        
+
         Returns:
             The current turn index after any increment.
         """
@@ -318,21 +320,23 @@ class AudioLogger:
                 # Reset agent turn start time when speaker changes
                 if speaker == "agent":
                     self._agent_turn_start_time = None
-                logger.debug(f"[AudioLogger] Speaker changed to {speaker}, turn index incremented to {self._turn_index}")
+                logger.debug(
+                    f"[AudioLogger] Speaker changed to {speaker}, turn index incremented to {self._turn_index}"
+                )
             # else: same speaker, no increment
             return self._turn_index
 
     def set_agent_turn_start_time(self):
         """
         Set the start time for the current agent turn.
-        
+
         This should be called when BotStartedSpeakingFrame is received,
         which indicates the audio is actually starting to play (not just generated).
         This provides more accurate timing than capturing time during TTS generation.
         """
         if not self.enabled:
             return
-        
+
         # Only set if not already set for this turn
         if self._agent_turn_start_time is None:
             self._agent_turn_start_time = self.get_time_from_start_of_session()
@@ -390,12 +394,14 @@ class AudioLogger:
             raise
 
     def clear_user_audio_buffer(self):
-        """ 
+        """
         Clear the user audio buffer if the user stopped speaking detected by VAD.
         """
         # Clear turn buffers if logging wasn't completed (e.g., no final transcription)
         if len(self.turn_audio_buffer) > 0 or len(self.turn_transcription_buffer) > 0:
-            logger.debug("[AudioLogger] Clearing turn audio and transcription buffers due to VAD user stopped speaking")
+            logger.debug(
+                "[AudioLogger] Clearing turn audio and transcription buffers due to VAD user stopped speaking"
+            )
             self.turn_audio_buffer = []
             self.turn_transcription_buffer = []
 
@@ -445,7 +451,7 @@ class AudioLogger:
             else:
                 # start_time is stored as float (seconds from session start), not ISO string
                 _start_time = self._staged_metadata["start_time"]
-                
+
             if isinstance(audio_data, bytes):
                 audio_duration_sec = len(audio_data) / (sample_rate * num_channels * 2)
             else:
@@ -486,7 +492,7 @@ class AudioLogger:
 
     def save_user_audio(self, is_backchannel: bool = False):
         """Save the user audio to the disk.
-        
+
         Args:
             is_backchannel: Whether this audio is a backchannel utterance (default: False)
         """
@@ -494,20 +500,22 @@ class AudioLogger:
         if self._staged_metadata is None:
             logger.warning("[AudioLogger] Attempted to save user audio but no staged metadata found")
             return
-        
+
         if self._staged_audio_data is None:
             logger.warning("[AudioLogger] Attempted to save user audio but no staged audio data found")
             return
-        
+
         try:
             # Add backchannel metadata
             self._staged_metadata["is_backchannel"] = is_backchannel
-            
+
             audio_file = self.user_dir / f"{self._staged_metadata['base_name']}.wav"
             metadata_file = self.user_dir / f"{self._staged_metadata['base_name']}.json"
 
             self._save_audio_wav(
-                audio_data=self._staged_audio_data, file_path=audio_file, sample_rate=self._staged_metadata["sample_rate"]
+                audio_data=self._staged_audio_data,
+                file_path=audio_file,
+                sample_rate=self._staged_metadata["sample_rate"],
             )
 
             self._save_metadata_json(metadata=self._staged_metadata, file_path=metadata_file)
@@ -515,17 +523,17 @@ class AudioLogger:
             logger.info(
                 f"[AudioLogger] Saved user audio #{self._staged_metadata['counter']}{backchannel_label}: '{self._staged_metadata['transcription'][:50]}{'...' if len(self._staged_metadata['transcription']) > 50 else ''}'"
             )
-            
+
             # Note: User audio for stereo conversation is handled via continuous_user_audio_buffer
             # which is populated in append_continuous_user_audio() (not affected by VAD)
-            
+
             # Update session metadata
             with self._lock:
                 self.session_metadata["user_entries"].append(self._staged_metadata)
                 self._save_session_metadata()
 
             self.clear_user_audio_buffer()
-            
+
             # Clear staged data after successful save
             self._staged_metadata = None
             self._staged_audio_data = None
@@ -578,7 +586,7 @@ class AudioLogger:
                 if isinstance(audio_data, bytes)
                 else len(audio_data) / sample_rate
             )
-            
+
             # Determine start_time based on previous segment in the same turn
             # If this is the first segment of the turn, use tts_generation_time
             # Otherwise, use the previous segment's end_time for sequential playback
@@ -591,7 +599,7 @@ class AudioLogger:
                     if last_segment["turn_index"] == self._turn_index:
                         # Same turn - start after previous segment ends
                         start_time = last_segment["end_time"]
-            
+
             if start_time is None:
                 # First segment of the turn - use agent_turn_start_time (from BotStartedSpeakingFrame)
                 # This is more accurate than tts_generation_time as it reflects actual playback start
@@ -602,7 +610,7 @@ class AudioLogger:
                     start_time = tts_generation_time
                 else:
                     start_time = self.get_time_from_start_of_session(timestamp=timestamp_now)
-            
+
             end_time = start_time + audio_duration_sec
 
             # Prepare metadata
@@ -666,31 +674,31 @@ class AudioLogger:
     def set_agent_cutoff_time(self, cutoff_time: Optional[float] = None):
         """
         Set the cutoff time for the most recent agent audio entry.
-        
+
         This method should be called when TTS is interrupted by user speech.
         The cutoff_time represents when the agent audio was actually cut off,
         which may be earlier than the natural end_time.
-        
+
         Args:
             cutoff_time: The cutoff time in seconds from session start.
                         If None, uses current time from session start.
         """
         if not self.enabled:
             return
-        
+
         if cutoff_time is None:
             cutoff_time = self.get_time_from_start_of_session()
-        
+
         with self._lock:
             agent_entries = self.session_metadata["agent_entries"]
             if not agent_entries or not agent_entries[-1]:
                 logger.warning("[AudioLogger] No agent entries to set cutoff time")
                 return
-            
+
             # Get the current turn (last sublist) and update ALL segments in it
             current_turn = agent_entries[-1]
             turn_index = current_turn[0]["turn_index"]
-            
+
             # Update cutoff_time for ALL segments in the current turn
             for segment in current_turn:
                 segment["cutoff_time"] = cutoff_time
@@ -700,7 +708,7 @@ class AudioLogger:
                     self._save_metadata_json(segment, metadata_file)
                 except Exception as e:
                     logger.error(f"[AudioLogger] Error updating agent cutoff time for segment: {e}")
-            
+
             # Truncate the stereo buffer (left channel = agent) at the cutoff point
             cutoff_sample = int(cutoff_time * self._stereo_sample_rate)
             if cutoff_sample < len(self._stereo_audio_buffer_left):
@@ -711,12 +719,12 @@ class AudioLogger:
                     f"[AudioLogger] Truncated agent stereo buffer at sample {cutoff_sample} "
                     f"(cutoff_time={cutoff_time:.3f}s)"
                 )
-            
+
             logger.info(
                 f"[AudioLogger] Set cutoff_time={cutoff_time:.3f}s for turn {turn_index} "
                 f"({len(current_turn)} segments)"
             )
-            
+
             # Save updated session metadata
             self._save_session_metadata()
 
@@ -751,6 +759,7 @@ class AudioLogger:
             f"{len(self.session_metadata['agent_entries'])} turns)"
         )
 
+
 class RTVIAudioLoggerObserver(BaseObserver):
     def __init__(self, audio_logger: AudioLogger):
         super().__init__()
@@ -761,4 +770,4 @@ class RTVIAudioLoggerObserver(BaseObserver):
         if isinstance(frame, TranscriptionFrame) and self._audio_logger:
             self._audio_logger.save_user_audio()
         # Call parent class's on_push_frame method
-        await super().on_push_frame(data) 
+        await super().on_push_frame(data)

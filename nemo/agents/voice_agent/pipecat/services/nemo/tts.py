@@ -13,14 +13,14 @@
 # limitations under the License.
 
 import asyncio
-import uuid
 import inspect
+import uuid
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import Iterator, List, Optional
 
 import numpy as np
 import torch
-from datetime import datetime
 from loguru import logger
 from pipecat.frames.frames import (
     CancelFrame,
@@ -254,7 +254,7 @@ class BaseNemoTTSService(TTSService):
         try:
             await self.start_ttfb_metrics()
             yield TTSStartedFrame()
-            
+
             # Increment turn index at the start of agent speaking (only if speaker changed)
             if self._audio_logger and self._record_audio_data:
                 self._audio_logger.increment_turn_index(speaker="agent")

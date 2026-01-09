@@ -38,11 +38,8 @@ class TestMagpieTTSInferenceCLI:
         "disable_flag,num_repeats,metric_key",
         [
             # Test both the --disable_fcd and --disable_utmosv2 flags
-            (
-                "--disable_fcd",
-                "2",
-                "frechet_codec_distance",
-            ),  # multiple repeats to test that NaNs don't crash the confidence interval calculation
+            ("--disable_fcd", "2", "frechet_codec_distance"),
+            # Multiple repeats to test that NaNs don't crash the confidence interval calculation
             ("--disable_utmosv2", "1", "utmosv2_avg"),
         ],
         ids=["disable_fcd", "disable_utmosv2"],
@@ -55,30 +52,21 @@ class TestMagpieTTSInferenceCLI:
         """
         # Build command-line arguments
         args = [
-            "--codecmodel_path",
-            self.CODEC_MODEL_PATH,
-            "--datasets_json_path",
-            self.EVALSET_CONFIG,
-            "--datasets",
-            "an4_val_tiny_ci",
-            "--out_dir",
-            str(tmp_path),
-            "--batch_size",
-            "4",
-            "--num_repeats",
-            num_repeats,
-            "--temperature",
-            "0.6",
-            "--hparams_files",
-            self.HPARAMS_FILE,
-            "--checkpoint_files",
-            self.CHECKPOINT_FILE,
+            "--codecmodel_path", self.CODEC_MODEL_PATH,
+            "--datasets_json_path", self.EVALSET_CONFIG,
+            "--datasets", "an4_val_tiny_ci",
+            "--out_dir", str(tmp_path),
+            "--batch_size", "4",
+            "--num_repeats", num_repeats,
+            "--temperature", "0.6",
+            "--hparams_files", self.HPARAMS_FILE,
+            "--checkpoint_files", self.CHECKPOINT_FILE,
             "--legacy_codebooks",
             "--legacy_text_conditioning",
             "--apply_attention_prior",
             "--run_evaluation",
             disable_flag,
-        ]
+        ]  # fmt: skip
 
         # Run the main function directly with arguments
         magpietts_inference_main(args)

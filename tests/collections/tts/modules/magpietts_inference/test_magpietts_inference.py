@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Tests for MagpieTTS inference CLI options.
+Tests for MagpieTTS inference.
 """
 
 import csv
@@ -26,12 +26,6 @@ from examples.tts.magpietts_inference import main as magpietts_inference_main
 
 class TestMagpieTTSInferenceCLI:
     """Tests for MagpieTTS inference command-line interface options."""
-
-    # Test data paths - these should match CI environment
-    CODEC_MODEL_PATH = "/home/TestData/tts/AudioCodec_21Hz_no_eliz_without_wavlm_disc.nemo"
-    HPARAMS_FILE = "/home/TestData/tts/2506_ZeroShot/lrhm_short_yt_prioralways_alignement_0.002_priorscale_0.1.yaml"
-    CHECKPOINT_FILE = "/home/TestData/tts/2506_ZeroShot/dpo-T5TTS--val_loss=0.4513-epoch=3.ckpt"
-    EVALSET_CONFIG = "examples/tts/evalset_config.json"
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.parametrize(
@@ -50,17 +44,26 @@ class TestMagpieTTSInferenceCLI:
         1. Does not cause the script to crash
         2. Produces NaN for the corresponding metric
         """
+
+        # Test data paths in CI environment
+        codec_model_path = "/home/TestData/tts/AudioCodec_21Hz_no_eliz_without_wavlm_disc.nemo"
+        hparams_file = (
+            "/home/TestData/tts/2506_ZeroShot/lrhm_short_yt_prioralways_alignement_0.002_priorscale_0.1.yaml"
+        )
+        checkpoint_file = "/home/TestData/tts/2506_ZeroShot/dpo-T5TTS--val_loss=0.4513-epoch=3.ckpt"
+        datasets_json_path = "examples/tts/evalset_config.json"
+
         # Build command-line arguments
         args = [
-            "--codecmodel_path", self.CODEC_MODEL_PATH,
-            "--datasets_json_path", self.EVALSET_CONFIG,
+            "--codecmodel_path", codec_model_path,
+            "--datasets_json_path", datasets_json_path,
             "--datasets", "an4_val_tiny_ci",
             "--out_dir", str(tmp_path),
             "--batch_size", "4",
             "--num_repeats", "1",
             "--temperature", "0.6",
-            "--hparams_files", self.HPARAMS_FILE,
-            "--checkpoint_files", self.CHECKPOINT_FILE,
+            "--hparams_files", hparams_file,
+            "--checkpoint_files", checkpoint_file,
             "--legacy_codebooks",
             "--legacy_text_conditioning",
             "--apply_attention_prior",

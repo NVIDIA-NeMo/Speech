@@ -334,6 +334,7 @@ class AudioTurn:
             "type": "audio",
             "from": self.role.title(),
             "duration": self.cut.duration,
+            "offset": self.cut.start,
             "value": self.cut.recording.sources[0].source,
             "text": self.text,
         }
@@ -567,7 +568,7 @@ class NeMoMultimodalConversationJsonlAdapter:
                 for turn in audio_turns:
                     recording, audio_path = next(tar)
                     audio_path = str(audio_path)
-                    cut = recording.to_cut()
+                    cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
                     assert audio_path == turn['value'], (
                         f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got "
                         f"the following from tar {audio_path=}.\nBad inputs in: {jsonl_path=} {tar_path=}"
@@ -629,7 +630,7 @@ class NeMoMultimodalConversationJsonlAdapter:
                         )
                         if turn["type"] == "text"
                         else AudioTurn(
-                            cut=(cut := Recording.from_file(get_full_path(turn["value"], path)).to_cut()),
+                            cut=(cut := Recording.from_file(get_full_path(turn["value"], path)).to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))),
                             text=cut.supervisions[0].text if cut.supervisions else None,
                             role=turn["from"].lower(),
                             audio_locator_tag=self.audio_locator_tag,

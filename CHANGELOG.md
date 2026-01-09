@@ -1,6 +1,61 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.6.1
+
+### Highlights
+
+- This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- Enable numpy 2.0 for ASR
+
+### Detailed Changelogs:
+
+#### ASR
+
+<details><summary>Changelog</summary>
+
+- cp: Remove nlp module by @chtruong814 :: PR: #15258
+- cp: Enable numpy 2.0 for ASR by @chtruong814 :: PR: #15259
+
+</details>
+
+#### TTS
+
+<details><summary>Changelog</summary>
+
+- cp: Remove nlp module by @chtruong814 :: PR: #15258
+
+</details>
+
+#### NLP / NMT
+
+<details><summary>Changelog</summary>
+
+- cp: Remove nlp module by @chtruong814 :: PR: #15258
+
+</details>
+
+#### Export
+
+<details><summary>Changelog</summary>
+
+- cp: fix: Raise exception in nemo.export instead of allowing pickle.loads (#15266) by @chtruong814 :: PR: #15275
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- Bump version to 2.6.1 by @chtruong814 :: PR: #15244
+- cp: guard trust_remote_code (#15065) by @chtruong814 :: PR: #15256
+- cp: Execute with subprocess list (#15165) by @chtruong814 :: PR: #15257
+- cp: replace pcikle.loads with json.loads (#15232) by @chtruong814 :: PR: #15262
+- cp: update subprocess cmd (#15218) by @chtruong814 :: PR: #15263
+- cp: [Fix] Fix safety issue for fsdp_dtensor (#15227) by @chtruong814 :: PR: #15276
+
+</details>
+
 ## NVIDIA Neural Modules 2.6.0
 
 ### Highlights

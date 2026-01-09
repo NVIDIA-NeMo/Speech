@@ -589,7 +589,9 @@ class Serialization(ABC):
     def from_config_dict(cls, config: 'DictConfig', trainer: Optional['Trainer'] = None):
         """Instantiates object using DictConfig-based configuration"""
         # Resolve the config dict
-        config = model_utils.convert_model_config_to_dict_config(config)
+        if isinstance(config, DictConfig):
+            config = model_utils.convert_model_config_to_dict_config(config)
+
         config = maybe_update_config_version(config, make_copy=False)
 
         # Hydra 0.x API

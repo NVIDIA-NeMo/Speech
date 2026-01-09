@@ -914,6 +914,7 @@ class NeMoMultimodalConversationTarWriter:
         for turn in serialized["conversations"]:
             if turn["type"] == "audio":
                 turn["value"] = Path(turn["value"]).with_suffix(".flac").name
+                turn.pop("offset")  # cut.load_audio() will load the segment based on the offset, so the new turn will start at offset=0
         self.manifest_writer.write(serialized)
         for cut in example.list_cuts():
             assert (

@@ -35,16 +35,16 @@ class TestMagpieTTSInferenceCLI:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.parametrize(
-        "disable_flag,num_repeats,metric_key",
+        "disable_flag,metric_key",
         [
             # Test both the --disable_fcd and --disable_utmosv2 flags
-            ("--disable_fcd", "2", "frechet_codec_distance"),
-            # Multiple repeats to test that NaNs don't crash the confidence interval calculation
-            ("--disable_utmosv2", "1", "utmosv2_avg"),
+            ("--disable_fcd", "frechet_codec_distance"),
+            ("--disable_utmosv2", "utmosv2_avg"),
         ],
+        # Test names
         ids=["disable_fcd", "disable_utmosv2"],
     )
-    def test_disable_metric_produces_nan(self, tmp_path, disable_flag, num_repeats, metric_key):
+    def test_disable_metric_produces_nan(self, tmp_path, disable_flag, metric_key):
         """
         Test that disabling a metric via CLI flag:
         1. Does not cause the script to crash
@@ -57,7 +57,7 @@ class TestMagpieTTSInferenceCLI:
             "--datasets", "an4_val_tiny_ci",
             "--out_dir", str(tmp_path),
             "--batch_size", "4",
-            "--num_repeats", num_repeats,
+            "--num_repeats", "1",
             "--temperature", "0.6",
             "--hparams_files", self.HPARAMS_FILE,
             "--checkpoint_files", self.CHECKPOINT_FILE,

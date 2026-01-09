@@ -1,10 +1,14 @@
 # Changelog
 
 <!-- Next changelog -->
-## NVIDIA Neural Modules 2.6.0
+## NVIDIA Neural Modules 2.6.1
+
+### Highlights
+
+- This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- Enable numpy 2.0 for ASR
 
 ### Detailed Changelogs:
-
 
 #### ASR
 
@@ -51,6 +55,7 @@
 - cp: [Fix] Fix safety issue for fsdp_dtensor (#15227) by @chtruong814 :: PR: #15276
 
 </details>
+
 ## NVIDIA Neural Modules 2.6.0
 
 ### Highlights

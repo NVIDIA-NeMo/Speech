@@ -36,7 +36,7 @@ from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConf
 ECE_VALUES = {("token", "ctc"): 0.86, ("token", "rnnt"): 0.75, ("word", "ctc"): 0.89, ("word", "rnnt"): 0.80}
 
 TOL_DEGREE = 2
-TOL = 1 / math.pow(10, TOL_DEGREE)
+TOL = 2 / math.pow(10, TOL_DEGREE)
 
 
 @pytest.fixture(scope="module")

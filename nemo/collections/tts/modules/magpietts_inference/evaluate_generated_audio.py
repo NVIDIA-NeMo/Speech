@@ -251,8 +251,8 @@ def evaluate(
     if with_utmosv2:
         if not UTMOSV2_AVAILABLE:
             logging.warning(
-                "UTMOSv2 was requested (with_utmosv2=True) but UTMOSv2Calculator is not available. "
-                "UTMOSv2 scores will be set to 0.0 for all files."
+                "UTMOSv2 was requested (with_utmosv2=True) but the UTMOSv2 library is not available. "
+                "UTMOSv2 scores will be set to NaN for all files."
             )
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
     filewise_metrics = []

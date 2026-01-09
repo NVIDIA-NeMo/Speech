@@ -253,7 +253,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         # Setup encoder adapters (from ASRAdapterModelMixin)
         self.setup_adapters()
 
-        timestamps_asr_model = self.__restore_timestamps_asr_model()
+        if self.cfg.get("restore_timestamps_model", True):
+            timestamps_asr_model = self.__restore_timestamps_asr_model()
+        else:
+            timestamps_asr_model = None
         # Using object.__setattr__ to bypass PyTorch's module registration
         object.__setattr__(self, 'timestamps_asr_model', timestamps_asr_model)
 

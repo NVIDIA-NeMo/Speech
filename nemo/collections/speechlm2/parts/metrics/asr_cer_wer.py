@@ -13,27 +13,34 @@
 # limitations under the License.
 from collections import defaultdict
 
-import sacrebleu
 import torch
 from whisper_normalizer.english import EnglishTextNormalizer
 
+from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_nemo
-from nemo.utils import logging
 
 
-class ASRBLEU:
+class Intelligibility:
     """
-    Computes BLEU scores on ASR predictions on generated audio with pretrained NeMo ASR.
+    Computes CER on ASR predictions on generated audio with pretrained NeMo ASR.
     By default, uses Whisper's EnglishTextNormalizer on hypotheses and references.
     """
 
-    def __init__(self, pretrained_asr: str, normalize: bool = True, normalizer=None, verbose: bool = True) -> None:
+    def __init__(
+        self,
+        pretrained_asr: str,
+        normalize: bool = True,
+        normalizer=None,
+        verbose: bool = True,
+        reuse_asr_hyps: bool = False,
+    ) -> None:
         self.asr = None  # load into memory on reset()
         self.pretrained_asr_name = pretrained_asr
         self.verbose = verbose
+        self.reuse_asr_hyps = reuse_asr_hyps
         if normalize:
             if normalizer is None:
                 self.normalizer = EnglishTextNormalizer()
@@ -51,33 +58,38 @@ class ASRBLEU:
         # dynamic shapes during the training epoch.
         torch.cuda.memory.empty_cache()
         with fp32_precision():  # Some NeMo ASR models weren't trained with bfloat16.
-            self.asr = load_pretrained_nemo(ASRModel, self.pretrained_asr_name).eval()
-        WithOptionalCudaGraphs.disable_cuda_graphs_recursive(self.asr, attribute_path="decoding.decoding")
+            if not self.reuse_asr_hyps:
+                self.asr = load_pretrained_nemo(ASRModel, self.pretrained_asr_name).eval()
+                WithOptionalCudaGraphs.disable_cuda_graphs_recursive(self.asr, attribute_path="decoding.decoding")
         return self
 
     def update(
-        self, name: str, refs: list[str], pred_audio: torch.Tensor, pred_audio_lens: torch.Tensor = None
+        self,
+        name: str,
+        refs: list[str],
+        pred_audio: torch.Tensor,
+        pred_audio_lens: torch.Tensor = None,
+        asr_hyps: list[str] = None,
     ) -> list[str]:
-        if self.asr is None:
+        if self.asr is None and not self.reuse_asr_hyps:
             self.reset()
 
-        if pred_audio_lens is None:
+        if pred_audio_lens is None and pred_audio is not None:
             pred_audio_lens = [pred_audio.shape[1]] * pred_audio.shape[0]
 
         with fp32_precision():
-            asr_hyps = self.asr.transcribe(
-                [audio[:alen] for audio, alen in zip(pred_audio, pred_audio_lens)],
-                batch_size=pred_audio.shape[0],
-                verbose=False,
-            )
+            if not self.reuse_asr_hyps:
+                asr_hyps = self.asr.transcribe(
+                    [audio[:alen] for audio, alen in zip(pred_audio, pred_audio_lens)],
+                    batch_size=pred_audio.shape[0],
+                    verbose=False,
+                )
+                asr_hyps = [asr_hyp.text for asr_hyp in asr_hyps]
+
         asr_hyps_texts = []
         for ref, asr_hyp in zip(refs, asr_hyps):
-            asr_hyp = asr_hyp.text
             self._refs[name].append(self.normalizer(ref))
             self._hyps[name].append(self.normalizer(asr_hyp))
-            if self.verbose:
-                asrb = sacrebleu.sentence_bleu(asr_hyp, [ref]).score
-                logging.info(f"[REF]\t{ref}\n[ASR]\t{asr_hyp} [{asrb:.2f}]")
             asr_hyps_texts.append(asr_hyp)
 
         return asr_hyps_texts
@@ -85,10 +97,18 @@ class ASRBLEU:
     def compute(self) -> dict[str, torch.Tensor]:
         """Computes the final score and deallocates ASR and partial results."""
         corpus_metric = {}
+        corpus_metric["cer"] = []
+        corpus_metric["wer"] = []
         for name in self._refs.keys():
-            metric = torch.tensor(sacrebleu.corpus_bleu(self._hyps[name], [self._refs[name]]).score)
-            corpus_metric[f"asr_bleu_{name}"] = metric
-        corpus_metric["asr_bleu"] = torch.stack(list(corpus_metric.values())).mean()
+            cer = torch.tensor(word_error_rate(self._hyps[name], self._refs[name], use_cer=True))
+            wer = torch.tensor(word_error_rate(self._hyps[name], self._refs[name], use_cer=False))
+            corpus_metric[f"cer_{name}"] = cer
+            corpus_metric[f"wer_{name}"] = wer
+            corpus_metric["cer"].append(cer)
+            corpus_metric["wer"].append(wer)
+
+        corpus_metric["cer"] = torch.stack(corpus_metric["cer"]).mean()
+        corpus_metric["wer"] = torch.stack(corpus_metric["wer"]).mean()
         self._refs.clear()
         self._hyps.clear()
         self.asr = None  # free up GPU memory

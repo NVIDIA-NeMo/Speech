@@ -16,7 +16,7 @@ import json
 import os
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -50,7 +50,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     plot_alignment_to_numpy,
 )
-from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
+from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_and_tokenize_text_by_sentence, stack_tensors
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
@@ -232,6 +232,63 @@ class LongformChunkState:
             self.last_attended_timesteps = [[1] * self.batch_size]
 
 
+@dataclass
+class ModelInferenceParameters:
+    """Model specific parameters that are sent to inference functions.
+
+    This dataclass should contain all parameters that are model specific and should not change on a per run basis.
+
+    Attributes:
+        max_decoder_steps (int): Maximum number of decoder steps. Autoregressive for loop will terminate here.
+        temperature (float): Sampling temperature.
+        topk (int): Number of top-probability tokens to consider in sampling.
+        cfg_scale (float): Scale factor for classifier-free guidance. Only used if use_cfg=True.
+        apply_attention_prior (bool): Whether to apply attention prior.
+        attention_prior_epsilon (float): Base probability for non-targeted positions.
+        attention_prior_lookahead_window (int): Size of the forward-looking window to search for the next attended
+            timestep. Determines how far ahead from the last attended timestep to look.
+        estimate_alignment_from_layers (Optional[List[int]]): Layers to use for alignment estimation.
+        apply_prior_to_layers (Optional[List[int]]): Layers to apply prior to.
+        start_prior_after_n_audio_steps (int): Which step to start enabling the attention prior.
+        use_LT_kv_cache (bool): Whether to use KV cache for the autoregressive local transformer.
+        ignore_finished_sentence_tracking (bool): Whether to ignore finished sentence tracking.
+        eos_detection_method (str): EOS detection method. See the EOSDetectionMethod class.
+        min_generated_frames (int): Setting this greater than 0 prevents rare cases of first-frame termination. Any
+            number greater between 1 and 4 should work, but 4 lines up with the codec's minimum frame requirement.
+    """
+
+    max_decoder_steps: int = 500
+    temperature: float = 0.7
+    topk: int = 80
+    cfg_scale: float = 2.5
+    apply_attention_prior: bool = True
+    attention_prior_epsilon: float = 0.1
+    attention_prior_lookahead_window: int = 5
+    estimate_alignment_from_layers: Optional[List[int]] = None
+    apply_prior_to_layers: Optional[List[int]] = None
+    start_prior_after_n_audio_steps: int = 0
+    use_LT_kv_cache: bool = True
+    ignore_finished_sentence_tracking: bool = True
+    eos_detection_method: str = "argmax_or_multinomial_any"
+    min_generated_frames: int = 4
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'ModelInferenceParameters':
+        # Get the names of fields defined in the dataclass
+        field_names = {field.name for field in fields(cls)}
+        # Filter the input dictionary to include only valid fields
+        filtered_data = {k: v for k, v in data.items() if k in field_names}
+        # Instantiate the dataclass with the filtered data
+
+        # Double check for renamed fields: prior_epsilon and lookahead_window_size
+        # These fields are currently used in nvidia/magpie_tts_multilingual_357m with commit hash: 291da79
+        if 'prior_epsilon' in data:
+            filtered_data['attention_prior_epsilon'] = data['prior_epsilon']
+        if 'lookahead_window_size' in data:
+            filtered_data['attention_prior_lookahead_window'] = data['lookahead_window_size']
+        return cls(**filtered_data)
+
+
 def worker_init_fn(worker_id):
     # For mp.set_start_method("spawn", force=True)
     # The dataset class should be picklable, so we initialize non-picklable objects here
@@ -270,6 +327,7 @@ class MagpieTTSModel(ModelPT):
 
         # Register tokenizer artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging
         self._register_tokenizer_artifacts(cfg)
+        self._setup_inference_parameters(cfg)
 
         # load codec, disable loading of loss modules not needed during inference
         codec_model_path = cfg.get('codecmodel_path')
@@ -632,6 +690,12 @@ class MagpieTTSModel(ModelPT):
                             f"heteronyms file not found for tokenizer '{tokenizer_name}': "
                             f"{heteronyms_path}. Artifact will not be packaged in .nemo file."
                         )
+
+    def _setup_inference_parameters(self, cfg: DictConfig) -> None:
+        """
+        Create the self.inference_parameters which instantiates the InferenceParameters dataclass
+        """
+        self.inference_parameters = ModelInferenceParameters.from_dict(cfg.get("inference_parameters", {}))
 
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """
@@ -2899,33 +2963,22 @@ class MagpieTTSModel(ModelPT):
     def infer_batch(
         self,
         batch,
-        max_decoder_steps=500,
-        temperature=0.7,
-        topk=80,
         use_cfg=False,
-        cfg_scale=1.0,
         return_cross_attn_probs=False,
-        apply_attention_prior=False,
-        prior_epsilon=1e-5,
-        lookahead_window_size=10,
-        estimate_alignment_from_layers=None,
-        apply_prior_to_layers=None,
-        start_prior_after_n_audio_steps=10,
         compute_all_heads_attn_maps=False,
         use_local_transformer_for_inference=False,
-        use_LT_kv_cache=True,
         maskgit_n_steps=3,
         maskgit_noise_scale=0.0,
         maskgit_fixed_schedule=None,
         maskgit_dynamic_cfg_scale=False,
         maskgit_sampling_type=None,
-        ignore_finished_sentence_tracking=False,
-        eos_detection_method="argmax_or_multinomial_any",
-        # Setting this greater than 0 prevents rare cases of first-frame termination. Any number greater between 1 and 4 should work, but 4
-        # lines up with the codec's minimum frame requirement.
-        min_generated_frames=4,
     ):
-        eos_detection_method = EOSDetectionMethod(eos_detection_method)
+        """
+        The behaviour of this function is strongly dependent on self.inference_parameters
+        """
+        cfg_scale = self.inference_parameters.cfg_scale
+
+        eos_detection_method = EOSDetectionMethod(self.inference_parameters.eos_detection_method)
         with torch.no_grad():
             start_time = time.time()
             self.decoder.reset_cache(use_cache=self.use_kv_cache_for_inference)
@@ -2964,7 +3017,7 @@ class MagpieTTSModel(ModelPT):
                 [1 for _ in range(text.size(0))]
             ]  # Maintain a list of attended timesteps as we predict audio for each batch item
             time_to_first_prediction = 0.0
-            for idx in range(max_decoder_steps // self.frame_stacking_factor):
+            for idx in range(self.inference_parameters.max_decoder_steps // self.frame_stacking_factor):
                 if idx == 1:
                     time_to_first_prediction = time.time() - start_time
                 if idx % 20 == 0:
@@ -2983,9 +3036,9 @@ class MagpieTTSModel(ModelPT):
                     _audio_codes_embedded = audio_codes_embedded
                     _audio_codes_mask = audio_codes_mask
 
-                if apply_prior_to_layers is not None:
+                if self.inference_parameters.apply_prior_to_layers is not None:
                     attn_prior = [None for _ in range(self.decoder.n_layers)]
-                    for layer_idx in apply_prior_to_layers:
+                    for layer_idx in self.inference_parameters.apply_prior_to_layers:
                         attn_prior[layer_idx] = _attn_prior
                 else:
                     attn_prior = _attn_prior
@@ -3040,31 +3093,34 @@ class MagpieTTSModel(ModelPT):
                         multi_encoder_mapping=context_tensors.multi_encoder_mapping,
                     )
 
-                if return_cross_attn_probs or apply_attention_prior:
+                if return_cross_attn_probs or self.inference_parameters.apply_attention_prior:
                     cross_attention_scores, all_heads_cross_attn_scores = self.get_cross_attention_scores(
                         attn_probs
                     )  # B, text_timesteps
                     alignment_attention_scores = cross_attention_scores
-                    if estimate_alignment_from_layers is not None:
+                    if self.inference_parameters.estimate_alignment_from_layers is not None:
                         alignment_attention_scores, _ = self.get_cross_attention_scores(
-                            attn_probs, filter_layers=estimate_alignment_from_layers
+                            attn_probs, filter_layers=self.inference_parameters.estimate_alignment_from_layers
                         )  # B, text_timesteps
 
                     cross_attention_scores_all_timesteps.append(cross_attention_scores)
                     all_heads_cross_attn_scores_all_timesteps.append(all_heads_cross_attn_scores)
 
-                if apply_attention_prior and idx >= start_prior_after_n_audio_steps:
+                if (
+                    self.inference_parameters.apply_attention_prior
+                    and idx >= self.inference_parameters.start_prior_after_n_audio_steps
+                ):
                     text_time_step_attended, attended_timestep_counter = self.get_most_attended_text_timestep(
                         alignment_attention_scores=alignment_attention_scores,
                         last_attended_timesteps=last_attended_timesteps,
                         text_lens=context_tensors.text_lens,
-                        lookahead_window_size=lookahead_window_size,
+                        lookahead_window_size=self.inference_parameters.attention_prior_lookahead_window,
                         attended_timestep_counter=attended_timestep_counter,
                         batch_size=batch_size,
                     )
                     last_attended_timesteps.append(text_time_step_attended)
                     _attn_prior, unfinished_texts, finished_texts_counter = self.construct_inference_prior(
-                        prior_epsilon=prior_epsilon,
+                        prior_epsilon=self.inference_parameters.attention_prior_epsilon,
                         cross_attention_scores=cross_attention_scores,
                         text_lens=context_tensors.text_lens,
                         text_time_step_attended=text_time_step_attended,
@@ -3072,11 +3128,11 @@ class MagpieTTSModel(ModelPT):
                         unfinished_texts=unfinished_texts,
                         finished_texts_counter=finished_texts_counter,
                         end_indices=end_indices,
-                        lookahead_window_size=lookahead_window_size,
+                        lookahead_window_size=self.inference_parameters.attention_prior_lookahead_window,
                         batch_size=batch_size,
                     )
 
-                if ignore_finished_sentence_tracking:
+                if self.inference_parameters.ignore_finished_sentence_tracking:
                     finished_items = {}
                     unfinished_items = {}
                 else:
@@ -3087,7 +3143,7 @@ class MagpieTTSModel(ModelPT):
 
                 # Don't allow termination until we have generated at least `min_generated_frames` frames (rounded up to the nearest multiple of frame_stacking_factor)
                 # This guards against rare cases of termination right at the start of generation.
-                forbid_audio_eos = idx * self.frame_stacking_factor < min_generated_frames
+                forbid_audio_eos = idx * self.frame_stacking_factor < self.inference_parameters.min_generated_frames
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
                 if use_local_transformer_for_inference:
@@ -3095,20 +3151,20 @@ class MagpieTTSModel(ModelPT):
                         # Autoregressive sampling with local transformer
                         audio_codes_next = self.local_transformer_sample_autoregressive(
                             dec_output=dec_out[:, -1, :],
-                            temperature=temperature,
-                            topk=topk,
+                            temperature=self.inference_parameters.temperature,
+                            topk=self.inference_parameters.topk,
                             unfinished_items=unfinished_items,
                             finished_items=finished_items,
                             use_cfg=use_cfg,
                             cfg_scale=cfg_scale,
-                            use_kv_cache=use_LT_kv_cache,
+                            use_kv_cache=self.inference_parameters.use_LT_kv_cache,
                             forbid_audio_eos=forbid_audio_eos,
                         )
                     elif self.local_transformer_type == LocalTransformerType.MASKGIT:
                         audio_codes_next = self.local_transformer_sample_maskgit(
                             dec_output=dec_out[:, -1, :],
-                            temperature=temperature,
-                            topk=topk,
+                            temperature=self.inference_parameters.temperature,
+                            topk=self.inference_parameters.topk,
                             unfinished_items=unfinished_items,
                             finished_items=finished_items,
                             use_cfg=use_cfg,
@@ -3128,8 +3184,8 @@ class MagpieTTSModel(ModelPT):
                     # Parallel sampling from all codebooks
                     audio_codes_next = self.sample_codes_from_logits(
                         all_code_logits_t,
-                        temperature=temperature,
-                        topk=topk,
+                        temperature=self.inference_parameters.temperature,
+                        topk=self.inference_parameters.topk,
                         unfinished_items=unfinished_items,
                         finished_items=finished_items,
                         forbid_audio_eos=forbid_audio_eos,
@@ -3167,7 +3223,7 @@ class MagpieTTSModel(ModelPT):
             # this also undoes the stacking.
             predicted_codes = torch.cat(all_predictions, dim=-1)  # (B, num_codebooks, T')
             predicted_lens = [
-                end_indices.get(idx, max_decoder_steps) for idx in range(text.size(0))
+                end_indices.get(idx, self.inference_parameters.max_decoder_steps) for idx in range(text.size(0))
             ]  #  Ensure that the codec is atleast of length 4
             predicted_codes_lens = torch.tensor(predicted_lens, device=text.device).long()
             predicted_codes = predicted_codes[:, :, : predicted_codes_lens.max()]
@@ -3215,17 +3271,15 @@ class MagpieTTSModel(ModelPT):
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
             test_dl_batch_size = self._test_dl.batch_size
-            temperature = self.cfg.get('inference_temperature', 0.7)
-            topk = self.cfg.get('inference_topk', 80)
             use_cfg = self.cfg.get('inference_use_cfg', False)
-            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+            self.inference_parameters.max_decoder_steps = self.cfg.get('max_decoder_steps', 500)
+            self.inference_parameters.temperature = self.cfg.get('inference_temperature', 0.7)
+            self.inference_parameters.topk = self.cfg.get('inference_topk', 80)
+            self.inference_parameters.cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+
             output = self.infer_batch(
                 batch,
-                max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
-                temperature=temperature,
-                topk=topk,
                 use_cfg=use_cfg,
-                cfg_scale=cfg_scale,
             )
             predicted_audio = output.predicted_audio
             predicted_audio_lens = output.predicted_audio_lens
@@ -3453,16 +3507,41 @@ class MagpieTTSModel(ModelPT):
 
         return transcript
 
+    def _needs_longform_inference(self, text: str, language: str) -> bool:
+        """Determine if longform inference is needed for the given text."""
+        # Average Number of words in 20 seconds of audio for each supported language.
+        longform_word_thresholds = {
+            "en": 45,
+            "es": 73,
+            "fr": 69,
+            "vi": 50,
+            "it": 53,
+            "de": 50,
+            "zh": 100,
+        }
+        # For Zh word count cannot be calculated by split(), hence calculating character count.
+        if language == "zh":
+            word_count = len(list(text))
+        else:
+            word_count = len(text.split())
+        is_longform = word_count >= longform_word_thresholds[language]
+
+        if is_longform:
+            if language == "zh":
+                logging.info("Longform inference is not supported for Mandarin, attempting to use standard inference.")
+                is_longform = False
+            elif language != "en":
+                logging.info(
+                    "Longform is best supported for English. For other languages, longform performance may not be optimal."
+                )
+        return is_longform
+
     def do_tts(
         self,
         transcript: str,
         language: str = "en",
         apply_TN: bool = False,
-        temperature: float = 0.7,
-        topk: int = 80,
-        max_decoder_steps: int = 500,
         use_cfg: bool = True,
-        cfg_scale: float = 2.5,
         speaker_index: Optional[int] = None,
     ) -> tuple:
         """
@@ -3480,11 +3559,7 @@ class MagpieTTSModel(ModelPT):
                 Common: "en" (English), "de" (German), "es" (Spanish), etc.
             apply_TN: Whether to apply text normalization to the transcript.
                 If True, uses nemo_text_processing for normalization.
-            temperature: Sampling temperature for token generation.
-            topk: Top-k sampling parameter.
-            max_decoder_steps: Maximum number of decoder steps.
             use_cfg: Whether to use classifier-free guidance.
-            cfg_scale: Scale factor for classifier-free guidance.
             speaker_index: Speaker index for multi-speaker baked embeddings.
                 Valid range: [0, num_baked_speakers - 1]. If None, uses speaker 0.
                 Only applicable for models with baked context embeddings.
@@ -3555,31 +3630,67 @@ class MagpieTTSModel(ModelPT):
                 f"Using '{tokenizer_name}'. Available: {available_tokenizers}"
             )
 
-        # Tokenize the transcript text
-        tokens = self.tokenizer.encode(text=normalized_text, tokenizer_name=tokenizer_name)
-        tokens = tokens + [self.eos_id]  # Add EOS token (BOS not used per dataset convention)
-        text_tensor = torch.tensor([tokens], device=self.device, dtype=torch.long)
-        text_lens = torch.tensor([len(tokens)], device=self.device, dtype=torch.long)
+        # Detect if longform inference is needed based on word count
+        is_longform = self._needs_longform_inference(normalized_text, language)
 
-        # Create batch dictionary
-        batch = {
-            'text': text_tensor,
-            'text_lens': text_lens,
-            'speaker_indices': speaker_index,
-        }
-
-        # Run inference
         with torch.no_grad():
-            output = self.infer_batch(
-                batch,
-                max_decoder_steps=max_decoder_steps,
-                temperature=temperature,
-                topk=topk,
-                use_cfg=use_cfg,
-                cfg_scale=cfg_scale,
-            )
+            if is_longform:
+                # Longform path - process text - sentence by sentence
+                chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
+                    normalized_text, tokenizer_name, self.tokenizer, self.eos_id
+                )
 
-        return output.predicted_audio, output.predicted_audio_lens
+                chunk_state = self.create_longform_chunk_state(batch_size=1)
+                all_codes = []
+
+                for chunk_idx, (tokens, tokens_len) in enumerate(zip(chunked_tokens, chunked_tokens_len)):
+                    batch = {
+                        'text': tokens.unsqueeze(0).to(self.device),
+                        'text_lens': torch.tensor([tokens_len], device=self.device, dtype=torch.long),
+                        'speaker_indices': speaker_index,
+                    }
+                    end_of_text = [chunk_idx == len(chunked_tokens) - 1]
+                    beginning_of_text = chunk_idx == 0
+
+                    output = self.generate_long_form_speech(
+                        batch,
+                        chunk_state=chunk_state,
+                        end_of_text=end_of_text,
+                        beginning_of_text=beginning_of_text,
+                        use_cfg=use_cfg,
+                    )
+                    if output.predicted_codes_lens[0] > 0:
+                        all_codes.append(output.predicted_codes[0, :, : output.predicted_codes_lens[0]])
+
+                # Concatenate and convert to audio
+                if len(all_codes) > 0:
+                    concatenated_codes = torch.cat(all_codes, dim=1).unsqueeze(0)
+                    codes_lens = torch.tensor([concatenated_codes.shape[2]], device=self.device, dtype=torch.long)
+                    predicted_audio, predicted_audio_lens, _ = self.codes_to_audio(concatenated_codes, codes_lens)
+                    return predicted_audio, predicted_audio_lens
+                else:
+                    return torch.zeros(1, 0, device=self.device), torch.zeros(1, device=self.device, dtype=torch.long)
+
+            else:
+                # Standard path - single utterance inference
+                tokens = self.tokenizer.encode(text=normalized_text, tokenizer_name=tokenizer_name)
+                tokens = tokens + [self.eos_id]  # Add EOS token (BOS not used per dataset convention)
+                text_tensor = torch.tensor([tokens], device=self.device, dtype=torch.long)
+                text_lens = torch.tensor([len(tokens)], device=self.device, dtype=torch.long)
+
+                batch = {
+                    'text': text_tensor,
+                    'text_lens': text_lens,
+                    'speaker_indices': speaker_index,
+                }
+
+                output = self.infer_batch(
+                    batch,
+                    use_cfg=use_cfg,
+                    use_local_transformer_for_inference=True,
+                )
+
+                return output.predicted_audio, output.predicted_audio_lens
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
@@ -4130,25 +4241,15 @@ class MagpieTTSModel(ModelPT):
         chunk_state: LongformChunkState,
         end_of_text,
         beginning_of_text,
-        max_decoder_steps=2000,
-        temperature=0.7,
-        topk=80,
         use_cfg=True,
-        cfg_scale=1.0,
-        estimate_alignment_from_layers: Optional[List[int]] = None,
-        lookahead_window_size=5,
-        apply_attention_prior=False,
-        apply_prior_to_layers: Optional[List[int]] = None,
-        prior_epsilon=1e-5,
-        eos_detection_method="argmax_or_multinomial_any",
-        ignore_finished_sentence_tracking=False,
     ):
         """
         Generates speech for long-form text by progressively shifting through text tokens.
 
         This method processes long text inputs by generating a fixed number of audio tokens per text token,
         then shifting to the next text token. It maintains a sliding window over text and audio histories,
-        tracking how many audio tokens were generated for each text position.
+        tracking how many audio tokens were generated for each text position. The behaviour of this function is
+        strongly dependent on self.inference_parameters.
 
         Args:
             batch (dict): Input batch containing 'text' and 'text_lens'.
@@ -4156,23 +4257,14 @@ class MagpieTTSModel(ModelPT):
                 Created via model.create_longform_chunk_state() and updated in-place.
             end_of_text (List[bool]): Whether entire text has been provided for each batch item.
             beginning_of_text (bool): Whether this is the first chunk.
-            max_decoder_steps (int): Maximum total audio tokens to generate.
-            temperature (float): Sampling temperature for audio code generation.
-            topk (int): Top-k sampling parameter.
             use_cfg (bool): Whether to use classifier-free guidance.
-            cfg_scale (float): CFG scale factor.
-            estimate_alignment_from_layers (list, optional): Layers to use for alignment estimation.
-            lookahead_window_size (int): Forward-looking window size for attention prior.
-            apply_attention_prior (bool): Whether to apply attention prior.
-            apply_prior_to_layers (list, optional): Layers to apply prior to.
-            prior_epsilon (float): Base prior probability for non-targeted positions.
-            eos_detection_method (str): Method for detecting end-of-sequence.
-            ignore_finished_sentence_tracking (bool): Whether to ignore finished sentence tracking.
 
         Returns:
             InferBatchOutput: Contains predicted_codes, predicted_codes_lens, and empty audio fields.
         """
-        eos_detection_method = EOSDetectionMethod(eos_detection_method)
+        cfg_scale = self.inference_parameters.cfg_scale
+
+        eos_detection_method = EOSDetectionMethod(self.inference_parameters.eos_detection_method)
         device = batch['text'].device
         with torch.no_grad():
             current_chunk_len = copy.deepcopy(batch['text_lens'].detach())
@@ -4224,7 +4316,7 @@ class MagpieTTSModel(ModelPT):
                 max_text_len,
                 batch_size,
                 use_cfg,
-                prior_epsilon,
+                self.inference_parameters.attention_prior_epsilon,
                 device,
             )
             chunk_state.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
@@ -4242,7 +4334,7 @@ class MagpieTTSModel(ModelPT):
                 attn_prior=initial_attn_prior,
             )
 
-            for idx in range(max_decoder_steps):
+            for idx in range(self.inference_parameters.max_decoder_steps):
                 if idx % 30 == 0:
                     logging.info(f"Longform decoding timestep {idx}")
 
@@ -4262,9 +4354,9 @@ class MagpieTTSModel(ModelPT):
                     _audio_codes_mask = state.audio_codes_mask
 
                 # Prepare attention prior for layers
-                if apply_prior_to_layers is not None:
+                if self.inference_parameters.apply_prior_to_layers is not None:
                     attn_prior = [None for _ in range(self.cfg.decoder.n_layers)]
-                    for layer_idx in apply_prior_to_layers:
+                    for layer_idx in self.inference_parameters.apply_prior_to_layers:
                         attn_prior[layer_idx] = state.attn_prior
                 else:
                     attn_prior = state.attn_prior
@@ -4287,17 +4379,17 @@ class MagpieTTSModel(ModelPT):
                     batch_size=batch_size,
                 )
 
-                if apply_attention_prior:
+                if self.inference_parameters.apply_attention_prior:
                     # Get cross-attention scores (optionally from specific layers for alignment)
                     alignment_attention_scores, _ = self.get_cross_attention_scores(
-                        attn_probs, filter_layers=estimate_alignment_from_layers
+                        attn_probs, filter_layers=self.inference_parameters.estimate_alignment_from_layers
                     )  # B, text_timesteps
 
                     text_time_step_attended, state.attended_timestep_counter = self.get_most_attended_text_timestep(
                         alignment_attention_scores=alignment_attention_scores,
                         last_attended_timesteps=chunk_state.last_attended_timesteps,
                         text_lens=context_tensors.text_lens,
-                        lookahead_window_size=lookahead_window_size,
+                        lookahead_window_size=self.inference_parameters.attention_prior_lookahead_window,
                         attended_timestep_counter=state.attended_timestep_counter,
                         batch_size=batch_size,
                         left_offset=chunk_state.left_offset,
@@ -4310,7 +4402,7 @@ class MagpieTTSModel(ModelPT):
 
                     (state.attn_prior, state.unfinished_texts, state.finished_texts_counter) = (
                         self.construct_longform_inference_prior(
-                            prior_epsilon=prior_epsilon,
+                            prior_epsilon=self.inference_parameters.attention_prior_epsilon,
                             cross_attention_scores=alignment_attention_scores,
                             text_lens=context_tensors.text_lens,
                             text_time_step_attended=text_time_step_attended,
@@ -4335,7 +4427,7 @@ class MagpieTTSModel(ModelPT):
                         # We should allow EOS to be predicted now.
                         state.unfinished_texts[key] = False
 
-                if ignore_finished_sentence_tracking:
+                if self.inference_parameters.ignore_finished_sentence_tracking:
                     finished_items = {}
                     unfinished_items = {}
                 else:
@@ -4349,8 +4441,8 @@ class MagpieTTSModel(ModelPT):
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
                 audio_codes_next = self.sample_codes_from_logits(
                     all_code_logits_t,
-                    temperature=temperature,
-                    topk=topk,
+                    temperature=self.inference_parameters.temperature,
+                    topk=self.inference_parameters.topk,
                     unfinished_items=unfinished_items,
                     finished_items=finished_items,
                 )  # (B, num_codebooks)

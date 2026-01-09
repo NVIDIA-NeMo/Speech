@@ -25,7 +25,7 @@ import glob
 import os
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import soundfile as sf
@@ -36,6 +36,7 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import LongFormTTSInferenceDataset, MagpieTTSDataset
 from nemo.collections.tts.models import MagpieTTSModel
+from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.utils import logging
 
@@ -45,20 +46,12 @@ class InferenceConfig:
     """Configuration for MagpieTTS inference.
 
     Attributes:
-        temperature: Sampling temperature for token generation.
-        topk: Top-k sampling parameter.
-        max_decoder_steps: Maximum number of decoder steps.
-        use_cfg: Whether to use classifier-free guidance.
-        cfg_scale: Scale factor for classifier-free guidance.
         batch_size: Batch size for inference.
-
-        # Attention prior parameters
+        use_cfg: Whether to use classifier-free guidance.
         apply_attention_prior: Whether to apply attention prior during decoding.
-        attention_prior_epsilon: Epsilon value for attention prior.
-        attention_prior_lookahead_window: Lookahead window size for prior.
-        estimate_alignment_from_layers: Layer indices for alignment estimation.
-        apply_prior_to_layers: Layer indices to apply prior to.
-        start_prior_after_n_audio_steps: When to start applying the prior.
+
+        # Model specific inference parameters
+        model_inference_parameters: See ModelInferenceParameters dataclass
 
         # Local transformer / MaskGit parameters
         use_local_transformer: Whether to use local transformer for inference.
@@ -67,30 +60,16 @@ class InferenceConfig:
         maskgit_fixed_schedule: Fixed schedule for MaskGit (optional).
         maskgit_sampling_type: Type of MaskGit sampling.
 
-        # EOS detection
-        eos_detection_method: Method for detecting end-of-sequence.
-        ignore_finished_sentence_tracking: Whether to ignore sentence tracking.
-
         # Longform inference mode
         longform_mode: Longform inference mode ("auto", "always", "never").
         longform_word_threshold: Word threshold for auto-detection.
     """
 
     # Core sampling parameters
-    temperature: float = 0.6
-    topk: int = 80
-    max_decoder_steps: int = 440
-    use_cfg: bool = False
-    cfg_scale: float = 2.5
     batch_size: int = 32
-
-    # Attention prior parameters
+    use_cfg: bool = False
     apply_attention_prior: bool = False
-    attention_prior_epsilon: float = 0.1
-    attention_prior_lookahead_window: int = 5
-    estimate_alignment_from_layers: Optional[List[int]] = None
-    apply_prior_to_layers: Optional[List[int]] = None
-    start_prior_after_n_audio_steps: int = 0
+    model_inference_parameters: ModelInferenceParameters = field(default_factory=ModelInferenceParameters)
 
     # Local transformer / MaskGit parameters
     use_local_transformer: bool = False
@@ -98,10 +77,6 @@ class InferenceConfig:
     maskgit_noise_scale: float = 0.0
     maskgit_fixed_schedule: Optional[List[int]] = None
     maskgit_sampling_type: Optional[str] = None
-
-    # EOS detection
-    eos_detection_method: str = "argmax_or_multinomial_any"
-    ignore_finished_sentence_tracking: bool = False
 
     # Longform inference mode
     longform_mode: str = "auto"  # "auto" | "always" | "never"
@@ -116,20 +91,20 @@ class InferenceConfig:
             String identifier incorporating key config values.
         """
         parts = [
-            f"Temp{self.temperature}",
-            f"Topk{self.topk}",
-            f"Cfg_{self.use_cfg}_{self.cfg_scale}",
+            f"Temp{self.model_inference_parameters.temperature}",
+            f"Topk{self.model_inference_parameters.topk}",
+            f"Cfg_{self.use_cfg}_{self.model_inference_parameters.cfg_scale}",
             f"Prior_{self.apply_attention_prior}",
         ]
 
         if self.apply_attention_prior:
             parts.extend(
                 [
-                    f"{self.attention_prior_epsilon}",
-                    f"{self.attention_prior_lookahead_window}",
-                    f"{self.start_prior_after_n_audio_steps}",
-                    self._format_layer_list(self.estimate_alignment_from_layers),
-                    self._format_layer_list(self.apply_prior_to_layers),
+                    f"{self.model_inference_parameters.attention_prior_epsilon}",
+                    f"{self.model_inference_parameters.attention_prior_lookahead_window}",
+                    f"{self.model_inference_parameters.start_prior_after_n_audio_steps}",
+                    self._format_layer_list(self.model_inference_parameters.estimate_alignment_from_layers),
+                    self._format_layer_list(self.model_inference_parameters.apply_prior_to_layers),
                 ]
             )
 
@@ -138,8 +113,8 @@ class InferenceConfig:
                 f"LT_{self.use_local_transformer}",
                 f"MaskGit_{self.maskgit_n_steps}_{self.maskgit_sampling_type}",
                 self._format_layer_list(self.maskgit_fixed_schedule),
-                f"EOS_{self.eos_detection_method}",
-                f"IgnoreFST_{self.ignore_finished_sentence_tracking}",
+                f"EOS_{self.model_inference_parameters.eos_detection_method}",
+                f"IgnoreFST_{self.model_inference_parameters.ignore_finished_sentence_tracking}",
             ]
         )
 
@@ -407,29 +382,20 @@ class MagpieInferenceRunner:
             batch['sample_rate'] = self.model.output_sample_rate
             batch['context_sample_rate'] = self.model.output_sample_rate
 
+            # Overwrite the model's parameters since we want to use the arguments from the commandline
+            self.model.inference_parameters = self.config.model_inference_parameters
+
             # Run inference
             start_time = time.time()
             output = self.model.infer_batch(
                 batch,
-                max_decoder_steps=self.config.max_decoder_steps,
-                temperature=self.config.temperature,
-                topk=self.config.topk,
                 use_cfg=self.config.use_cfg,
-                cfg_scale=self.config.cfg_scale,
                 return_cross_attn_probs=save_cross_attention_maps,
-                apply_attention_prior=self.config.apply_attention_prior,
-                prior_epsilon=self.config.attention_prior_epsilon,
-                lookahead_window_size=self.config.attention_prior_lookahead_window,
-                estimate_alignment_from_layers=self.config.estimate_alignment_from_layers,
-                apply_prior_to_layers=self.config.apply_prior_to_layers,
-                start_prior_after_n_audio_steps=self.config.start_prior_after_n_audio_steps,
                 use_local_transformer_for_inference=self.config.use_local_transformer,
                 maskgit_n_steps=self.config.maskgit_n_steps,
                 maskgit_noise_scale=self.config.maskgit_noise_scale,
                 maskgit_fixed_schedule=self.config.maskgit_fixed_schedule,
                 maskgit_sampling_type=self.config.maskgit_sampling_type,
-                ignore_finished_sentence_tracking=self.config.ignore_finished_sentence_tracking,
-                eos_detection_method=self.config.eos_detection_method,
             )
 
             predicted_audio = output.predicted_audio
@@ -651,8 +617,10 @@ class MagpieInferenceRunner:
             predicted_codes_per_sample = [[] for _ in range(batch_size)]
             predicted_codes_lens = [0 for _ in range(batch_size)]
 
-            start_time = time.time()
+            # Overwrite the model's parameters since we want to use the arguments from the commandline
+            self.model.inference_parameters = self.config.model_inference_parameters
 
+            start_time = time.time()
             # Iterate over text chunks (sentences)
             for chunk_idx in range(max_num_chunks):
                 # Extract current chunk tokens for each sample
@@ -680,18 +648,7 @@ class MagpieInferenceRunner:
                     chunk_state=chunk_state,
                     end_of_text=is_end_of_text,
                     beginning_of_text=beginning_of_text,
-                    max_decoder_steps=self.config.max_decoder_steps,
-                    temperature=self.config.temperature,
-                    topk=self.config.topk,
                     use_cfg=self.config.use_cfg,
-                    cfg_scale=self.config.cfg_scale,
-                    apply_attention_prior=self.config.apply_attention_prior,
-                    prior_epsilon=self.config.attention_prior_epsilon,
-                    lookahead_window_size=self.config.attention_prior_lookahead_window,
-                    estimate_alignment_from_layers=self.config.estimate_alignment_from_layers,
-                    apply_prior_to_layers=self.config.apply_prior_to_layers,
-                    eos_detection_method=self.config.eos_detection_method,
-                    ignore_finished_sentence_tracking=self.config.ignore_finished_sentence_tracking,
                 )
 
                 # Unpack output - generate_long_form_speech returns InferBatchOutput

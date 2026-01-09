@@ -42,12 +42,14 @@ import copy
 import json
 import os
 import shutil
+from dataclasses import fields
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import load_evalset_config
 
 # Import the modular components
@@ -65,6 +67,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     load_magpie_model,
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
+from nemo.collections.tts.modules.magpietts_modules import EOSDetectionMethod
 from nemo.utils import logging
 
 
@@ -428,11 +431,20 @@ def create_argument_parser() -> argparse.ArgumentParser:
 
     # Inference arguments
     infer_group = parser.add_argument_group('Inference Parameters')
-    infer_group.add_argument('--temperature', type=float, default=0.6)
-    infer_group.add_argument('--topk', type=int, default=80)
+    # Add model specific parameters
+    for field in fields(ModelInferenceParameters):
+        extra_args = {"type": field.type}
+        if field.type == bool:
+            extra_args["action"] = "store_true"
+            del extra_args["type"]
+        if field.name == "estimate_alignment_from_layers" or field.name == "apply_prior_to_layers":
+            extra_args["help"] = "Must be a comma separate string. Not enclosed in brackets"
+            extra_args["type"] = str
+        elif field.name == "eos_detection_method":
+            extra_args["choices"] = [m.value for m in EOSDetectionMethod]
+        infer_group.add_argument(f"--{field.name}", **extra_args)
     infer_group.add_argument('--batch_size', type=int, default=32)
     infer_group.add_argument('--use_cfg', action='store_true', help='Enable classifier-free guidance')
-    infer_group.add_argument('--cfg_scale', type=float, default=2.5)
     infer_group.add_argument(
         '--longform_mode',
         type=str,
@@ -453,53 +465,16 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help='Maximum decoder steps for longform inference',
     )
 
-    # Attention prior arguments
-    prior_group = parser.add_argument_group('Attention Prior')
-    prior_group.add_argument('--apply_attention_prior', action='store_true')
-    prior_group.add_argument('--attention_prior_epsilon', type=float, default=0.1)
-    prior_group.add_argument('--attention_prior_lookahead_window', type=int, default=5)
-    prior_group.add_argument(
-        '--estimate_alignment_from_layers',
-        type=str,
-        default=None,
-        help='Comma-separated layer indices for alignment estimation',
-    )
-    prior_group.add_argument(
-        '--apply_prior_to_layers',
-        type=str,
-        default=None,
-        help='Comma-separated layer indices to apply prior',
-    )
-    prior_group.add_argument('--start_prior_after_n_audio_steps', type=int, default=0)
-
     # Local transformer / MaskGit arguments
-    lt_group = parser.add_argument_group('Local Transformer / MaskGit')
-    lt_group.add_argument('--use_local_transformer', action='store_true')
-    lt_group.add_argument('--maskgit_n_steps', type=int, default=3)
-    lt_group.add_argument('--maskgit_noise_scale', type=float, default=0.0)
-    lt_group.add_argument('--maskgit_fixed_schedule', type=int, nargs='+', default=None)
-    lt_group.add_argument(
+    infer_group.add_argument('--use_local_transformer', action='store_true')
+    infer_group.add_argument('--maskgit_n_steps', type=int, default=3)
+    infer_group.add_argument('--maskgit_noise_scale', type=float, default=0.0)
+    infer_group.add_argument('--maskgit_fixed_schedule', type=int, nargs='+', default=None)
+    infer_group.add_argument(
         '--maskgit_sampling_type',
         default=None,
         choices=["default", "causal", "purity_causal", "purity_default"],
     )
-
-    # EOS detection
-    eos_group = parser.add_argument_group('EOS Detection')
-    eos_group.add_argument(
-        '--eos_detection_method',
-        type=str,
-        default="argmax_or_multinomial_any",
-        choices=[
-            "argmax_any",
-            "argmax_or_multinomial_any",
-            "argmax_all",
-            "argmax_or_multinomial_all",
-            "argmax_zero_cb",
-            "argmax_or_multinomial_zero_cb",
-        ],
-    )
-    eos_group.add_argument('--ignore_finished_sentence_tracking', action='store_true')
 
     # Evaluation arguments
     eval_group = parser.add_argument_group('Evaluation')
@@ -549,7 +524,7 @@ def main():
     has_nemo_mode = args.nemo_files is not None and args.nemo_files != "null"
 
     if not has_checkpoint_mode and not has_nemo_mode:
-        parser.error("You must provide either:\n" "  1. --hparams_files and --checkpoint_files\n" "  2. --nemo_files")
+        parser.error("You must provide either:\n 1. --hparams_files and --checkpoint_files\n 2. --nemo_files")
 
     # Build configurations
     # Use higher max_decoder_steps for longform inference when mode is 'always'
@@ -560,29 +535,31 @@ def main():
         max_decoder_steps = args.longform_max_decoder_steps
     else:  # 'never'
         max_decoder_steps = 440
+    model_inference_parameters = {}
+    for field in fields(ModelInferenceParameters):
+        field = field.name
+        if field == "max_decoder_steps":
+            model_inference_parameters[field] = max_decoder_steps
+            continue
+        arg_from_cmdline = vars(args)[field]
+        if arg_from_cmdline is not None:
+            if field in ["estimate_alignment_from_layers", "apply_prior_to_layers"]:
+                model_inference_parameters[field] = parse_layer_list(vars(args)[field])
+            else:
+                model_inference_parameters[field] = vars(args)[field]
 
     inference_config = InferenceConfig(
-        temperature=args.temperature,
-        topk=args.topk,
+        model_inference_parameters=ModelInferenceParameters.from_dict(model_inference_parameters),
         batch_size=args.batch_size,
         use_cfg=args.use_cfg,
-        cfg_scale=args.cfg_scale,
-        max_decoder_steps=max_decoder_steps,
         apply_attention_prior=args.apply_attention_prior,
-        attention_prior_epsilon=args.attention_prior_epsilon,
-        attention_prior_lookahead_window=args.attention_prior_lookahead_window,
-        estimate_alignment_from_layers=parse_layer_list(args.estimate_alignment_from_layers),
-        apply_prior_to_layers=parse_layer_list(args.apply_prior_to_layers),
-        start_prior_after_n_audio_steps=args.start_prior_after_n_audio_steps,
         use_local_transformer=args.use_local_transformer,
         maskgit_n_steps=args.maskgit_n_steps,
-        longform_mode=args.longform_mode,
-        longform_word_threshold=args.longform_word_threshold,
         maskgit_noise_scale=args.maskgit_noise_scale,
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,
-        eos_detection_method=args.eos_detection_method,
-        ignore_finished_sentence_tracking=args.ignore_finished_sentence_tracking,
+        longform_mode=args.longform_mode,
+        longform_word_threshold=args.longform_word_threshold,
     )
 
     eval_config = EvaluationConfig(

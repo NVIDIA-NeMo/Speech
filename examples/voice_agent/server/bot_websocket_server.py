@@ -26,13 +26,13 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIProcessor
+from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIObserverParams, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
 from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config
-from nemo.agents.voice_agent.pipecat.services.nemo.stt import NemoSTTService
+from nemo.agents.voice_agent.pipecat.services.nemo.stt import ASR_EOU_MODELS, NemoSTTService
 from nemo.agents.voice_agent.pipecat.services.nemo.tts import KokoroTTSService, NeMoFastPitchHiFiGANTTSService
 from nemo.agents.voice_agent.pipecat.services.nemo.turn_taking import NeMoTurnTakingService
 from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import (
@@ -40,7 +40,7 @@ from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import 
     WebsocketServerTransport,
 )
 from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
-from nemo.agents.voice_agent.pipecat.utils.tool_calling.basic_tools import get_city_weather
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.basic_tools import tool_get_city_weather
 from nemo.agents.voice_agent.pipecat.utils.tool_calling.mixins import register_direct_tools_to_llm
 from nemo.agents.voice_agent.utils.config_manager import ConfigManager
 
@@ -83,7 +83,7 @@ TRANSPORT_AUDIO_OUT_10MS_CHUNKS = config_manager.TRANSPORT_AUDIO_OUT_10MS_CHUNKS
 vad_params = config_manager.get_vad_params()
 
 # STT configuration
-STT_MODEL_PATH = config_manager.STT_MODEL_PATH
+STT_MODEL = config_manager.STT_MODEL
 STT_DEVICE = config_manager.STT_DEVICE
 stt_params = config_manager.get_stt_params()
 
@@ -137,6 +137,9 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
     )
     logger.info("VAD analyzer initialized")
 
+    has_turn_taking = True if STT_MODEL in ASR_EOU_MODELS else False
+    logger.info(f"Setting STT service has_turn_taking to `{has_turn_taking}` based on model name: `{STT_MODEL}`")
+
     ws_transport = WebsocketServerTransport(
         params=WebsocketServerParams(
             serializer=ProtobufFrameSerializer(),
@@ -146,8 +149,8 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
             vad_analyzer=vad_analyzer,
             session_timeout=None,  # Disable session timeout
             audio_in_sample_rate=SAMPLE_RATE,
-            can_create_user_frames=TURN_TAKING_BACKCHANNEL_PHRASES_PATH
-            is None,  # if backchannel phrases are disabled, we can use VAD to interrupt the bot immediately
+            can_create_user_frames=TURN_TAKING_BACKCHANNEL_PHRASES_PATH is None
+            or not has_turn_taking,  # if backchannel phrases are disabled, we can use VAD to interrupt the bot immediately
             audio_out_10ms_chunks=TRANSPORT_AUDIO_OUT_10MS_CHUNKS,
         ),
         host=host,
@@ -157,12 +160,12 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
     logger.info("Initializing STT service...")
 
     stt = NemoSTTService(
-        model=STT_MODEL_PATH,
+        model=STT_MODEL,
         device=STT_DEVICE,
         params=stt_params,
         sample_rate=SAMPLE_RATE,
         audio_passthrough=True,
-        has_turn_taking=True,
+        has_turn_taking=has_turn_taking,
         backend="legacy",
         decoder_type="rnnt",
     )
@@ -229,7 +232,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
 
     if server_config.llm.get("enable_tool_calling", False):
         logger.info("Tools calling for LLM is enabled by config, registering tools...")
-        register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts], tools=[get_city_weather])
+        register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts], tools=[tool_get_city_weather])
     else:
         logger.info("Tools calling for LLM is disabled by config, skipping tool registration.")
 
@@ -288,7 +291,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
 
     pipeline = Pipeline(pipeline)
 
-    rtvi_text_aggregator = SimpleSegmentedTextAggregator(punctuation_marks=".!?\n")
+    rtvi_params = RTVIObserverParams(bot_llm_enabled=False)
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
@@ -299,7 +302,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
             report_only_initial_ttfb=True,
             idle_timeout=None,  # Disable idle timeout
         ),
-        observers=[RTVIObserver(rtvi, text_aggregator=rtvi_text_aggregator)],
+        observers=[RTVIObserver(rtvi, params=rtvi_params)],
         idle_timeout_secs=None,
         cancel_on_idle_timeout=False,
     )

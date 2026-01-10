@@ -53,8 +53,9 @@ class AudioLogger:
         session_id: Optional custom session ID. If None, auto-generated from timestamp
         enabled: Whether logging is enabled (default: True)
 
-    # 12/19/2025 Note: Stereo conversation recording is implemented, but -0.8 seconds offset needs to be applied to make the session sound synced.
-        TODO:
+    # 12/19/2025 Note: Stereo conversation recording is implemented,
+    # but -0.8 seconds offset needs to be applied to make the session sound synced.
+    # TODO:
         1. Make offset compensated conversation_stereo.wav file: Start time is the first turn's start time.
         2. Remove the segment based wav files. (Both TTS and STT, make it configurable, but default to False)
         3. Do the testing on Jetson.
@@ -543,7 +544,8 @@ class AudioLogger:
                 additional_metadata=metadata,
             )
 
-            logger.info(f"[AudioLogger] Staged the audio and transcription for turn: '{complete_transcription[:50]}...'")
+            transcription_preview = complete_transcription[:50]
+            logger.info(f"[AudioLogger] Staged turn audio: '{transcription_preview}...'")
 
         except Exception as e:
             logger.warning(f"[AudioLogger] Failed to stage user audio: {e}")
@@ -571,7 +573,9 @@ class AudioLogger:
             stt, end = self.staged_metadata["start_time"], self.staged_metadata["end_time"]
             continuous_audio_bytes = b"".join(self.continuous_user_audio_buffer)
             full_audio_array = np.frombuffer(continuous_audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            staged_audio_data = full_audio_array[int(stt * self._stereo_sample_rate):int(end * self._stereo_sample_rate)]
+            start_idx = int(stt * self._stereo_sample_rate)
+            end_idx = int(end * self._stereo_sample_rate)
+            staged_audio_data = full_audio_array[start_idx:end_idx]
 
             self._save_audio_wav(
                 audio_data=staged_audio_data,
@@ -581,8 +585,11 @@ class AudioLogger:
 
             self._save_metadata_json(metadata=self.staged_metadata, file_path=metadata_file)
             backchannel_label = " [BACKCHANNEL]" if is_backchannel else ""
+            transcription_preview = self.staged_metadata['transcription'][:50]
+            ellipsis = '...' if len(self.staged_metadata['transcription']) > 50 else ''
             logger.info(
-                f"[AudioLogger] Saved user audio #{self.staged_metadata['counter']}{backchannel_label}: '{self.staged_metadata['transcription'][:50]}{'...' if len(self.staged_metadata['transcription']) > 50 else ''}'"
+                f"[AudioLogger] Saved user audio #{self.staged_metadata['counter']}"
+                f"{backchannel_label}: '{transcription_preview}{ellipsis}'"
             )
 
             # Note: User audio for stereo conversation is handled via continuous_user_audio_buffer
@@ -822,11 +829,14 @@ class AudioLogger:
 
 
 class RTVIAudioLoggerObserver(BaseObserver):
+    """Observer that triggers audio logging when TranscriptionFrame is pushed."""
+
     def __init__(self, audio_logger: AudioLogger):
         super().__init__()
         self._audio_logger = audio_logger
 
     async def on_push_frame(self, data: FramePushed):
+        """Handle frame push events and save user audio on TranscriptionFrame."""
         frame = data.frame
         if isinstance(frame, TranscriptionFrame) and self._audio_logger:
             self._audio_logger.save_user_audio()

@@ -39,6 +39,8 @@ from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogg
 
 
 class NeMoTurnTakingService(FrameProcessor):
+    """Service for handling turn-taking in voice conversations with backchannel detection."""
+
     def __init__(
         self,
         backchannel_phrases: Union[str, List[str]] = None,
@@ -120,6 +122,7 @@ class NeMoTurnTakingService(FrameProcessor):
         return text in self.backchannel_phrases_nopc
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        """Process incoming frames and handle turn-taking logic."""
         await super().process_frame(frame, direction)
 
         if self._bot_stop_time is not None:
@@ -181,7 +184,7 @@ class NeMoTurnTakingService(FrameProcessor):
             has_eou = self._user_speaking_buffer.endswith(self.eou_string)
             has_eob = self._user_speaking_buffer.endswith(self.eob_string)
             if has_eou:
-                # EOU detected, we assume the user is done speaking, so we push the completed text and interrupt the bot
+                # EOU detected, user is done speaking - push completed text and interrupt bot
                 logger.debug(f"<EOU> Detected: `{self._user_speaking_buffer}`")
                 completed_text = self._user_speaking_buffer[: -len(self.eou_string)].strip()
                 if self._bot_speaking and self.is_backchannel(completed_text):
@@ -214,7 +217,8 @@ class NeMoTurnTakingService(FrameProcessor):
                 logger.debug(f"User is speaking: `{self._user_speaking_buffer}`")
                 if has_eob:
                     logger.debug(
-                        f"{self.eob_string} detected but ignored because bot is NOT speaking: `{self._user_speaking_buffer}`"
+                        f"{self.eob_string} detected but ignored (bot NOT speaking): "
+                        f"`{self._user_speaking_buffer}`"
                     )
                     self._user_speaking_buffer = self._user_speaking_buffer[: -len(self.eob_string)].strip()
                 completed_words = self._user_speaking_buffer.strip().split()[
@@ -282,7 +286,7 @@ class NeMoTurnTakingService(FrameProcessor):
         completed_text = completed_text.replace(self.eou_string, "").replace(self.eob_string, "")
 
         if self.use_diar and not completed_text.startswith("<speaker_") and self._prev_speaker_id is not None:
-            # if the completed text does not start with a speaker tag, we add the previous speaker tag to the beginning of the text
+            # Add the previous speaker tag to the beginning of the text
             completed_text = f"<speaker_{self._prev_speaker_id}> {completed_text}"
 
         frame_type = TranscriptionFrame if is_final else InterimTranscriptionFrame
@@ -310,10 +314,11 @@ class NeMoTurnTakingService(FrameProcessor):
     async def _handle_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame, direction: FrameDirection):
         """
         Handle the user stopped speaking frame.
+
         If the buffer is not empty:
-            If the bot is not speaking, we push the completed text frame regardless of whether it is a backchannel string.
-            If the bot is speaking, we ignore the backchannel string if it is a backchannel string.
-        If the buffer is empty, we do nothing.
+            - If bot is not speaking: push completed text regardless of backchannel
+            - If bot is speaking: ignore backchannel strings
+        If the buffer is empty, do nothing.
         """
         if self.use_vad:
             self._vad_user_speaking = False

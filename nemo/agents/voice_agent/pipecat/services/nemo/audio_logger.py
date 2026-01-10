@@ -470,21 +470,23 @@ class AudioLogger:
             # Prepare metadata (initialize if None to allow update)
             if self.staged_metadata is None:
                 self.staged_metadata = {}
-            self.staged_metadata.update({
-                "base_name": base_name,
-                "counter": counter,
-                "turn_index": self._turn_index,
-                "speaker": "user",
-                "timestamp": timestamp_now.isoformat(),
-                "start_time": _start_time,
-                "end_time": _end_time,
-                "transcription": transcription,
-                "audio_file": audio_file.name,
-                "sample_rate": sample_rate,
-                "num_channels": num_channels,
-                "audio_duration_sec": audio_duration_sec,
-                "is_backchannel": is_backchannel,
-            })
+            self.staged_metadata.update(
+                {
+                    "base_name": base_name,
+                    "counter": counter,
+                    "turn_index": self._turn_index,
+                    "speaker": "user",
+                    "timestamp": timestamp_now.isoformat(),
+                    "start_time": _start_time,
+                    "end_time": _end_time,
+                    "transcription": transcription,
+                    "audio_file": audio_file.name,
+                    "sample_rate": sample_rate,
+                    "num_channels": num_channels,
+                    "audio_duration_sec": audio_duration_sec,
+                    "is_backchannel": is_backchannel,
+                }
+            )
 
             if additional_metadata:
                 self.staged_metadata.update(additional_metadata)
@@ -544,8 +546,9 @@ class AudioLogger:
                 additional_metadata=metadata,
             )
 
-            transcription_preview = complete_transcription[:50]
-            logger.info(f"[AudioLogger] Staged turn audio: '{transcription_preview}...'")
+            logger.info(
+                f"[AudioLogger] Staged the audio and transcription for turn: '{complete_transcription[:50]}...'"
+            )
 
         except Exception as e:
             logger.warning(f"[AudioLogger] Failed to stage user audio: {e}")

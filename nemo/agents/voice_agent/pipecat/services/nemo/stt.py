@@ -269,7 +269,6 @@ class NemoSTTService(STTService):
             )
             yield None
 
-
     @traced_stt
     async def _handle_transcription(self, transcript: str, is_final: bool, language: Optional[str] = None):
         """Handle a transcription result.

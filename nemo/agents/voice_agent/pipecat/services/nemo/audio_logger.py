@@ -469,21 +469,23 @@ class AudioLogger:
             # Prepare metadata (initialize if None to allow update)
             if self.staged_metadata is None:
                 self.staged_metadata = {}
-            self.staged_metadata.update({
-                "base_name": base_name,
-                "counter": counter,
-                "turn_index": self._turn_index,
-                "speaker": "user",
-                "timestamp": timestamp_now.isoformat(),
-                "start_time": _start_time,
-                "end_time": _end_time,
-                "transcription": transcription,
-                "audio_file": audio_file.name,
-                "sample_rate": sample_rate,
-                "num_channels": num_channels,
-                "audio_duration_sec": audio_duration_sec,
-                "is_backchannel": is_backchannel,
-            })
+            self.staged_metadata.update(
+                {
+                    "base_name": base_name,
+                    "counter": counter,
+                    "turn_index": self._turn_index,
+                    "speaker": "user",
+                    "timestamp": timestamp_now.isoformat(),
+                    "start_time": _start_time,
+                    "end_time": _end_time,
+                    "transcription": transcription,
+                    "audio_file": audio_file.name,
+                    "sample_rate": sample_rate,
+                    "num_channels": num_channels,
+                    "audio_duration_sec": audio_duration_sec,
+                    "is_backchannel": is_backchannel,
+                }
+            )
 
             if additional_metadata:
                 self.staged_metadata.update(additional_metadata)
@@ -543,7 +545,9 @@ class AudioLogger:
                 additional_metadata=metadata,
             )
 
-            logger.info(f"[AudioLogger] Staged the audio and transcription for turn: '{complete_transcription[:50]}...'")
+            logger.info(
+                f"[AudioLogger] Staged the audio and transcription for turn: '{complete_transcription[:50]}...'"
+            )
 
         except Exception as e:
             logger.warning(f"[AudioLogger] Failed to stage user audio: {e}")
@@ -571,7 +575,9 @@ class AudioLogger:
             stt, end = self.staged_metadata["start_time"], self.staged_metadata["end_time"]
             continuous_audio_bytes = b"".join(self.continuous_user_audio_buffer)
             full_audio_array = np.frombuffer(continuous_audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            staged_audio_data = full_audio_array[int(stt * self._stereo_sample_rate):int(end * self._stereo_sample_rate)]
+            staged_audio_data = full_audio_array[
+                int(stt * self._stereo_sample_rate) : int(end * self._stereo_sample_rate)
+            ]
 
             self._save_audio_wav(
                 audio_data=staged_audio_data,

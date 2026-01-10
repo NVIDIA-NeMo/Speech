@@ -154,7 +154,7 @@ class NeMoTurnTakingService(FrameProcessor):
             if self.bot_stop_delay is None or self.bot_stop_delay <= 0:
                 # only set the flag if the delay is not set or is 0
                 self._bot_speaking = False
-                logger.debug(f"Setting _bot_speaking to False")
+                logger.debug("Setting _bot_speaking to False")
         elif isinstance(frame, DiarResultFrame):
             logger.debug("DiarResultFrame received")
             await self._handle_diar_result(frame, direction)

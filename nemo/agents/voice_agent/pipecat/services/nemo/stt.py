@@ -169,10 +169,11 @@ class NemoSTTService(STTService):
         Yields:
             Frame: Transcription frames containing the results
         """
+        timestamp_now = datetime.now()
         await self.start_ttfb_metrics()
         await self.start_processing_metrics()
-        if self._audio_logger.first_audio_timestamp is None:
-            self._audio_logger.first_audio_timestamp = datetime.now()
+        if self._audio_logger is not None and self._audio_logger.first_audio_timestamp is None:
+            self._audio_logger.first_audio_timestamp = timestamp_now
 
         try:
             is_final = False
@@ -197,7 +198,14 @@ class NemoSTTService(STTService):
                         # Accumulate transcriptions for turn-based logging
                         if transcription:
                             self._audio_logger.turn_transcription_buffer.append(transcription)
-                            self._stage_turn_audio_and_transcription(is_first_frame=is_first_frame)
+                            self._audio_logger.stage_turn_audio_and_transcription(
+                                timestamp_now=timestamp_now,
+                                is_first_frame=is_first_frame,
+                                additional_metadata={
+                                    "model": self._model_name,
+                                    "backend": self._backend,
+                                },
+                            )
                 eou_latency = asr_result.eou_latency
                 eob_latency = asr_result.eob_latency
                 eou_prob = asr_result.eou_prob
@@ -261,47 +269,6 @@ class NemoSTTService(STTService):
             )
             yield None
 
-    def _stage_turn_audio_and_transcription(self, is_first_frame: bool, is_backchannel: bool = False):
-        """
-        Stage the complete turn audio and accumulated transcriptions.
-
-        This method is called when a final transcription is received.
-        It joins all accumulated audio and transcription chunks and logs them together.
-        """
-        if not self._audio_logger.turn_audio_buffer or not self._audio_logger.turn_transcription_buffer:
-            logger.debug("No audio or transcription to log")
-            return
-
-        try:
-            # Join all accumulated audio and transcriptions for this turn
-            complete_turn_audio = b"".join(self._audio_logger.turn_audio_buffer)
-            complete_transcription = "".join(self._audio_logger.turn_transcription_buffer)
-
-            logger.debug(
-                f"Staging a turn with: {len(self._audio_logger.turn_audio_buffer)} audio chunks, "
-                f"{len(self._audio_logger.turn_transcription_buffer)} transcription chunks"
-            )
-
-            self._audio_logger.stage_user_audio(
-                audio_data=complete_turn_audio,
-                transcription=complete_transcription,
-                sample_rate=self._sample_rate,
-                num_channels=1,
-                is_first_frame=is_first_frame,
-                is_final=True,
-                additional_metadata={
-                    "model": self._model_name,
-                    "backend": self._backend,
-                    "audio_duration_sec": len(complete_turn_audio) / (self._sample_rate * 2),
-                    "num_transcription_chunks": len(self._audio_logger.turn_transcription_buffer),
-                    "num_audio_chunks": len(self._audio_logger.turn_audio_buffer),
-                },
-            )
-
-            logger.info(f"Staged the audio and transcription for turn: '{complete_transcription[:50]}...'")
-
-        except Exception as e:
-            logger.warning(f"Failed to log user audio: {e}")
 
     @traced_stt
     async def _handle_transcription(self, transcript: str, is_final: bool, language: Optional[str] = None):
@@ -347,6 +314,7 @@ class NemoSTTService(STTService):
                     "[EOU missing] STT failed to detect end of utterance before VAD detected user stopped speaking"
                 )
             self._model.reset_state()
+            self._is_vad_active = False
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._is_vad_active = True
 

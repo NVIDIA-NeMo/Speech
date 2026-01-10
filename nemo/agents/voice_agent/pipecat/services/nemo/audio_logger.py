@@ -66,6 +66,8 @@ class AudioLogger:
         session_id: Optional[str] = None,
         enabled: bool = True,
         user_audio_sample_rate: int = 16000,
+        pre_roll_time_sec: float = 0.8,
+        round_precision: int = 2,
     ):
         self.enabled = enabled
         if not self.enabled:
@@ -96,8 +98,10 @@ class AudioLogger:
         self._current_speaker = None  # Track current speaker for turn transitions
         self._agent_turn_start_time = None  # Captured when BotStartedSpeakingFrame is received
         self._lock = threading.Lock()
-        self._staged_metadata = None
+        self.staged_metadata = None
         self._staged_audio_data = None
+        self._pre_roll_time_sec = pre_roll_time_sec
+        self._round_precision = round_precision
 
         self.turn_audio_buffer = []
         self.continuous_user_audio_buffer = []
@@ -407,25 +411,26 @@ class AudioLogger:
 
     def stage_user_audio(
         self,
-        audio_data: Union[bytes, np.ndarray],
+        timestamp_now: datetime,
         transcription: str,
         sample_rate: int = 16000,
         num_channels: int = 1,
         is_first_frame: bool = False,
-        is_final: bool = True,
         is_backchannel: bool = False,
         additional_metadata: Optional[dict] = None,
     ) -> Optional[dict]:
         """
-        Stage log user audio and transcription (from STT).
-        This data will be saved when the turn is complete by `log_user_audio` method.
+        Stage user audio metadata and transcription (from STT).
+        This data will be saved when the turn is complete by `save_user_audio` method.
+        Audio data is retrieved from continuous_user_audio_buffer based on timestamps.
 
         Args:
-            audio_data: Raw audio data as bytes or numpy array
+            timestamp_now: Timestamp when the audio was received
             transcription: Transcribed text
             sample_rate: Audio sample rate in Hz (default: 16000)
             num_channels: Number of audio channels (default: 1)
-            is_final: Whether this is a final transcription (default: True)
+            is_first_frame: Whether this is the first frame of a turn (default: False)
+            is_backchannel: Whether this is a backchannel utterance (default: False)
             additional_metadata: Additional metadata to include
 
         Returns:
@@ -437,30 +442,34 @@ class AudioLogger:
         try:
             # Get counter and generate filenames
             counter = self._get_next_counter("user")
-            timestamp_now = datetime.now()
+            # timestamp_now = datetime.now()
             base_name = f"{counter:05d}_{timestamp_now.strftime('%H%M%S')}"
 
             audio_file = self.user_dir / f"{base_name}.wav"
             metadata_file = self.user_dir / f"{base_name}.json"
 
-            # Save audio
-            self._staged_audio_data = audio_data
-
-            if is_first_frame or self._staged_metadata is None:
-                _start_time = self.get_time_from_start_of_session(timestamp=timestamp_now)
+            if is_first_frame or self.staged_metadata is None:
+                raw_start_time = self.get_time_from_start_of_session(timestamp=timestamp_now)
+                # Apply pre-roll: go back pre_roll_time_sec, but don't go before the last entry's end time
+                pre_roll_start = raw_start_time - self._pre_roll_time_sec
+                if self.session_metadata["user_entries"]:
+                    last_entry_end_time = self.session_metadata["user_entries"][-1]["end_time"]
+                    _start_time = max(pre_roll_start, last_entry_end_time)
+                else:
+                    # No previous entries, just ensure we don't go negative
+                    _start_time = max(pre_roll_start, 0.0)
             else:
                 # start_time is stored as float (seconds from session start), not ISO string
-                _start_time = self._staged_metadata["start_time"]
+                _start_time = self.staged_metadata["start_time"]
 
-            if isinstance(audio_data, bytes):
-                audio_duration_sec = len(audio_data) / (sample_rate * num_channels * 2)
-            else:
-                audio_duration_sec = len(audio_data) / sample_rate
+            # Make end time into float (seconds from session start)
+            _end_time = self.get_time_from_start_of_session(timestamp=datetime.now())
+            audio_duration_sec = round(_end_time - _start_time, self._round_precision)
 
-            _end_time = _start_time + audio_duration_sec
-
-            # Prepare metadata
-            self._staged_metadata = {
+            # Prepare metadata (initialize if None to allow update)
+            if self.staged_metadata is None:
+                self.staged_metadata = {}
+            self.staged_metadata.update({
                 "base_name": base_name,
                 "counter": counter,
                 "turn_index": self._turn_index,
@@ -469,16 +478,15 @@ class AudioLogger:
                 "start_time": _start_time,
                 "end_time": _end_time,
                 "transcription": transcription,
-                "is_final": is_final,
                 "audio_file": audio_file.name,
                 "sample_rate": sample_rate,
                 "num_channels": num_channels,
                 "audio_duration_sec": audio_duration_sec,
                 "is_backchannel": is_backchannel,
-            }
+            })
 
             if additional_metadata:
-                self._staged_metadata.update(additional_metadata)
+                self.staged_metadata.update(additional_metadata)
 
             return {
                 "audio_file": str(audio_file),
@@ -490,38 +498,91 @@ class AudioLogger:
             logger.error(f"Error logging user audio: {e}")
             return None
 
+    def stage_turn_audio_and_transcription(
+        self,
+        timestamp_now: datetime,
+        is_first_frame: bool = False,
+        additional_metadata: Optional[dict] = None,
+    ):
+        """
+        Stage the complete turn audio and accumulated transcriptions.
+
+        This method is called when a final transcription is received.
+        It joins all accumulated audio and transcription chunks and stages them together.
+
+        Args:
+            timestamp_now: Timestamp when the audio was received
+            is_first_frame: Whether this is the first frame of a turn (default: False)
+            additional_metadata: Additional metadata to include (e.g., model, backend info)
+        """
+        if not self.turn_audio_buffer or not self.turn_transcription_buffer:
+            logger.debug("[AudioLogger] No audio or transcription to stage")
+            return
+
+        try:
+            complete_transcription = "".join(self.turn_transcription_buffer)
+
+            logger.debug(
+                f"[AudioLogger] Staging a turn with: {len(self.turn_audio_buffer)} audio chunks, "
+                f"{len(self.turn_transcription_buffer)} transcription chunks"
+            )
+
+            metadata = {
+                "num_transcription_chunks": len(self.turn_transcription_buffer),
+                "num_audio_chunks": len(self.turn_audio_buffer),
+            }
+            if additional_metadata:
+                metadata.update(additional_metadata)
+
+            self.stage_user_audio(
+                timestamp_now=timestamp_now,
+                transcription=complete_transcription,
+                sample_rate=self._stereo_sample_rate,
+                num_channels=1,
+                is_first_frame=is_first_frame,
+                additional_metadata=metadata,
+            )
+
+            logger.info(f"[AudioLogger] Staged the audio and transcription for turn: '{complete_transcription[:50]}...'")
+
+        except Exception as e:
+            logger.warning(f"[AudioLogger] Failed to stage user audio: {e}")
+
     def save_user_audio(self, is_backchannel: bool = False):
         """Save the user audio to the disk.
 
         Args:
             is_backchannel: Whether this audio is a backchannel utterance (default: False)
         """
-        # Safety check: ensure staged metadata and audio data exist
-        if self._staged_metadata is None:
-            logger.warning("[AudioLogger] Attempted to save user audio but no staged metadata found")
-            return
-
-        if self._staged_audio_data is None:
-            logger.warning("[AudioLogger] Attempted to save user audio but no staged audio data found")
+        # Safety check: ensure staged metadata exists and has required fields
+        if self.staged_metadata is None or "base_name" not in self.staged_metadata:
+            logger.warning("[AudioLogger] Attempted to save user audio but no staged metadata found (or incomplete)")
             return
 
         try:
-            # Add backchannel metadata
-            self._staged_metadata["is_backchannel"] = is_backchannel
+            # Add backchannel metadata (only set if not already True to preserve turn-taking detection)
+            if is_backchannel or not self.staged_metadata.get("is_backchannel", False):
+                self.staged_metadata["is_backchannel"] = is_backchannel
 
-            audio_file = self.user_dir / f"{self._staged_metadata['base_name']}.wav"
-            metadata_file = self.user_dir / f"{self._staged_metadata['base_name']}.json"
+            audio_file = self.user_dir / f"{self.staged_metadata['base_name']}.wav"
+            metadata_file = self.user_dir / f"{self.staged_metadata['base_name']}.json"
+
+            # Get the audio data from continuous user audio buffer
+            stt, end = self.staged_metadata["start_time"], self.staged_metadata["end_time"]
+            continuous_audio_bytes = b"".join(self.continuous_user_audio_buffer)
+            full_audio_array = np.frombuffer(continuous_audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            staged_audio_data = full_audio_array[int(stt * self._stereo_sample_rate):int(end * self._stereo_sample_rate)]
 
             self._save_audio_wav(
-                audio_data=self._staged_audio_data,
+                audio_data=staged_audio_data,
                 file_path=audio_file,
-                sample_rate=self._staged_metadata["sample_rate"],
+                sample_rate=self.staged_metadata["sample_rate"],
             )
 
-            self._save_metadata_json(metadata=self._staged_metadata, file_path=metadata_file)
+            self._save_metadata_json(metadata=self.staged_metadata, file_path=metadata_file)
             backchannel_label = " [BACKCHANNEL]" if is_backchannel else ""
             logger.info(
-                f"[AudioLogger] Saved user audio #{self._staged_metadata['counter']}{backchannel_label}: '{self._staged_metadata['transcription'][:50]}{'...' if len(self._staged_metadata['transcription']) > 50 else ''}'"
+                f"[AudioLogger] Saved user audio #{self.staged_metadata['counter']}{backchannel_label}: '{self.staged_metadata['transcription'][:50]}{'...' if len(self.staged_metadata['transcription']) > 50 else ''}'"
             )
 
             # Note: User audio for stereo conversation is handled via continuous_user_audio_buffer
@@ -529,13 +590,13 @@ class AudioLogger:
 
             # Update session metadata
             with self._lock:
-                self.session_metadata["user_entries"].append(self._staged_metadata)
+                self.session_metadata["user_entries"].append(self.staged_metadata)
                 self._save_session_metadata()
 
             self.clear_user_audio_buffer()
 
             # Clear staged data after successful save
-            self._staged_metadata = None
+            self.staged_metadata = None
             self._staged_audio_data = None
         except Exception as e:
             logger.error(f"[AudioLogger] Error saving user audio: {e}")
@@ -622,14 +683,14 @@ class AudioLogger:
                 "turn_index": self._turn_index,
                 "speaker": "agent",
                 "timestamp": timestamp_now.isoformat(),
-                "start_time": start_time,
-                "end_time": end_time,
+                "start_time": round(start_time, self._round_precision),
+                "end_time": round(end_time, self._round_precision),
                 "cutoff_time": None,  # None means not interrupted; float if interrupted
                 "text": text,
                 "audio_file": audio_file.name,
                 "sample_rate": sample_rate,
                 "num_channels": num_channels,
-                "audio_duration_sec": audio_duration_sec,
+                "audio_duration_sec": round(audio_duration_sec, self._round_precision),
             }
 
             if additional_metadata:

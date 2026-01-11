@@ -123,7 +123,6 @@ class TestExportable:
             input_example_length = torch.full(size=(input_example.shape[0],), fill_value=777, device=device)
             model.export(output=filename, input_example=tuple([input_example, input_example_length]), check_trace=True)
 
-    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_EncDecCitrinetModel_limited_SE_export_to_onnx(self, citrinet_model):
@@ -142,7 +141,6 @@ class TestExportable:
             assert onnx_model.graph.input[1].name == 'length'
             assert onnx_model.graph.output[0].name == 'logprobs'
 
-    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_EncDecRNNTModel_export_to_onnx(self, citrinet_rnnt_model):

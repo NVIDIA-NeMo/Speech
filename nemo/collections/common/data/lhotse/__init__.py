@@ -36,7 +36,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
 # Sampler.__init__ to accept it.
 if "data_source" not in inspect.signature(Sampler.__init__).parameters:
 
-    def patched_sampler_init(self, data_source = None):
+    def patched_sampler_init(self, data_source=None):
         pass
 
     Sampler.__init__ = patched_sampler_init

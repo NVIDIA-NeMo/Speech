@@ -11,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-TRANSFORMERS_OFFLINE=1 \
-    coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/vlm/qwen2vl_finetune.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/vlm/qwen2vl_finetune.py \
      --num_nodes 1 \
      --devices=2 \
      --data_type=qwen2vl \

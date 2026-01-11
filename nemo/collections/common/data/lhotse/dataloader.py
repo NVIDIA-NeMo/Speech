@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-import random
 import warnings
 from dataclasses import dataclass
 from functools import partial
@@ -20,14 +19,12 @@ from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 import torch
-from lhotse import CutSet, RecordingSet
+from lhotse import CutSet
 from lhotse.cut import Cut
 from lhotse.dataset import (
-    CutConcatenate,
     DynamicBucketingSampler,
     DynamicCutSampler,
     IterableDatasetWrapper,
-    ReverbWithImpulseResponse,
     RoundRobinSampler,
     ZipSampler,
     make_worker_init_fn,
@@ -38,11 +35,8 @@ from lhotse.lazy import LazyFlattener
 from lhotse.utils import fastcopy, fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.common.data.lhotse.cutset import (
-    IncompleteConfigError,
-    guess_parse_cutset,
-    read_cutset_from_config,
-)
+from nemo.collections.common.data.lhotse.augment import augment_batch, augment_examples
+from nemo.collections.common.data.lhotse.cutset import IncompleteConfigError, read_cutset_from_config
 from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
     CERFilter,
@@ -150,6 +144,10 @@ class LhotseDataLoadingConfig:
     channel_selector: int | str | None = None
 
     # 4. Optional Lhotse data augmentation.
+    # New format: list of augmentations in the order user wants them.
+    # If this is specified, we'll ignore the other settings.
+    augment_examples: list | None = None
+    augment_batch: list | None = None
     #   a. On-the-fly noise/audio mixing.
     noise_path: Any | None = (
         None  # str | dict where dict can have any of keys:
@@ -513,44 +511,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             cuts = cuts.map(partial(tokenize, tokenizer=tokenizer), apply_fn=None)
 
     # 2. Optional augmentations.
-    # 2.a. Noise mixing.
-    if config.noise_path is not None:
-        noise = guess_parse_cutset(config.noise_path)
-        cuts = cuts.mix(
-            cuts=noise,
-            snr=tuple(config.noise_snr),
-            mix_prob=config.noise_mix_prob,
-            seed=config.shard_seed,
-            random_mix_offset=True,
-        )
-
-    # 2.b. On-the-fly speed perturbation.
-    #    mux here ensures it's uniformly distributed throughout sampling,
-    #    and applying it here (before sampler/dataset) ensures optimal
-    #    bucket allocation.
-    if config.perturb_speed:
-        cuts = CutSet.mux(
-            cuts,
-            cuts.perturb_speed(0.9),
-            cuts.perturb_speed(1.1),
-        )
-
-    # 2.d: truncation/slicing
-    if config.truncate_duration is not None:
-        cuts = cuts.truncate(
-            max_duration=config.truncate_duration,
-            offset_type=config.truncate_offset_type,
-            keep_excessive_supervisions=config.keep_excessive_supervisions,
-        )
-    if config.cut_into_windows_duration is not None:
-        cuts = cuts.cut_into_windows(
-            duration=config.cut_into_windows_duration,
-            hop=config.cut_into_windows_hop,
-            keep_excessive_supervisions=config.keep_excessive_supervisions,
-        )
-
-    if config.pad_min_duration is not None:
-        cuts = cuts.pad(duration=config.pad_min_duration, direction=config.pad_direction, preserve_id=True)
+    cuts = augment_examples(cuts, config)
 
     # Duration filtering, same as native NeMo dataloaders.
     # We can filter after the augmentations because they are applied only when calling load_audio().
@@ -620,33 +581,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             world_size=1 if use_iterable_dataset else world_size,
         )
 
-    if config.concatenate_samples:
-        # Cut concatenation will produce longer samples out of shorter samples
-        # by gluing them together from the shortest to longest not to exceed a duration
-        # of longest_cut * duration_factor (greedy knapsack algorithm for minimizing padding).
-        # Useful e.g. for simulated code-switching in multilingual setups.
-        # We follow concatenation by ``merge_supervisions`` which creates a single supervision
-        # object with texts joined by a whitespace so that "regular" dataset classes don't
-        # have to add a special support for multi-supervision cuts.
-        sampler = sampler.map(
-            CutConcatenate(
-                gap=config.concatenate_gap_seconds,
-                duration_factor=config.concatenate_duration_factor,
-            )
-        )
-        if config.db_norm is not None:
-            sampler = sampler.map(partial(_normalize_loudness, db_norm=config.db_norm))
-        if config.concatenate_merge_supervisions:
-            sampler = sampler.map(_merge_supervisions)
-
-    if config.rir_enabled:
-        sampler = sampler.map(
-            ReverbWithImpulseResponse(
-                rir_recordings=RecordingSet.from_file(config.rir_path) if config.rir_path is not None else None,
-                p=config.rir_prob,
-                randgen=random.Random(config.seed),
-            )
-        )
+    sampler = augment_batch(sampler, config)
 
     return sampler, use_iterable_dataset
 
@@ -801,20 +736,6 @@ def tokenize_with_prompt(example, tokenizer, prompt_format: str | PromptFormatte
     for key, value in encoded.items():
         setattr(example, key, value)
     return example
-
-
-# The helper callables below exist to avoid passing lambdas into lhotse CutSet map/filter methods.
-# Lambdas are not serializable across processes by pickle.
-# Note: lhotse offers LHOTSE_DILL_ENABLED=1 and ``lhotse.lazy.set_dill_enabled(True)``
-# to support pickling lambdas if its ever truly necessary.
-
-
-def _normalize_loudness(cuts: CutSet, db_norm: float) -> CutSet:
-    return cuts.normalize_loudness(target=db_norm, mix_first=False)
-
-
-def _merge_supervisions(cuts: CutSet) -> CutSet:
-    return cuts.merge_supervisions()
 
 
 def _flatten_alt_text(cut) -> list:

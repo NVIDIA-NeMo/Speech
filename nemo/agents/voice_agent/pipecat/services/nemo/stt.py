@@ -35,6 +35,8 @@ from pydantic import BaseModel
 
 from nemo.agents.voice_agent.pipecat.services.nemo.streaming_asr import NemoStreamingASRService
 
+ASR_EOU_MODELS = ["nvidia/parakeet_realtime_eou_120m-v1"]
+
 try:
     # disable nemo logging
     from nemo.utils import logging
@@ -70,7 +72,7 @@ class NemoSTTService(STTService):
         device: Optional[str] = "cuda:0",
         sample_rate: Optional[int] = 16000,
         params: Optional[NeMoSTTInputParams] = None,
-        has_turn_taking: bool = False,
+        has_turn_taking: Optional[bool] = None,  # if None, it will be set by the model name
         backend: Optional[str] = "legacy",
         decoder_type: Optional[str] = "rnnt",
         **kwargs,
@@ -82,6 +84,9 @@ class NemoSTTService(STTService):
         params.buffer_size = params.frame_len_in_secs // params.raw_audio_frame_len_in_secs
         self._params = params
         self._model_name = model
+        if has_turn_taking is None:
+            has_turn_taking = True if model in ASR_EOU_MODELS else False
+            logger.info(f"Setting has_turn_taking to `{has_turn_taking}` based on model name: `{model}`")
         self._has_turn_taking = has_turn_taking
         self._backend = backend
         self._decoder_type = decoder_type
@@ -93,6 +98,7 @@ class NemoSTTService(STTService):
         self._load_model()
 
         self.audio_buffer = []
+        self.user_is_speaking = False
 
     def _load_model(self):
         if self._backend == "legacy":
@@ -161,6 +167,7 @@ class NemoSTTService(STTService):
 
         try:
             is_final = False
+            user_has_finished = False
             transcription = None
             self.audio_buffer.append(audio)
             if len(self.audio_buffer) >= self._params.buffer_size:
@@ -179,16 +186,19 @@ class NemoSTTService(STTService):
                         f"EOU latency: {eou_latency: .4f} seconds. EOU probability: {eou_prob: .2f}."
                         f"Processing time: {asr_result.processing_time: .4f} seconds."
                     )
+                    user_has_finished = True
                 if eob_latency is not None:
                     logger.debug(
                         f"EOB latency: {eob_latency: .4f} seconds. EOB probability: {eob_prob: .2f}."
                         f"Processing time: {asr_result.processing_time: .4f} seconds."
                     )
+                    user_has_finished = True
                 await self.stop_ttfb_metrics()
                 await self.stop_processing_metrics()
 
             if transcription:
                 logger.debug(f"Transcription (is_final={is_final}): `{transcription}`")
+                self.user_is_speaking = True if not user_has_finished else False
 
                 # Get the language from params or default to EN_US
                 language = self._params.language if self._params else Language.EN_US
@@ -269,5 +279,9 @@ class NemoSTTService(STTService):
         if isinstance(frame, VADUserStoppedSpeakingFrame) and isinstance(self._model, NemoStreamingASRService):
             # manualy reset the state of the model when end of utterance is detected by VAD
             logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")
+            if self.user_is_speaking:
+                logger.debug(
+                    "[EOU missing] STT failed to detect end of utterance before VAD detected user stopped speaking"
+                )
             self._model.reset_state()
         await super().process_frame(frame, direction)

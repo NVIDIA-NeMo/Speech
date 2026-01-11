@@ -24,6 +24,7 @@ from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.collections.tts.losses.audio_codec_loss import (
     FeatureMatchingLoss,
     MultiResolutionMelLoss,
@@ -38,7 +39,14 @@ from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
 from nemo.core import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
-from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, LengthsType, TokenIndex
+from nemo.core.neural_types.elements import (
+    AudioSignal,
+    EncodedRepresentation,
+    IntType,
+    LengthsType,
+    Optional,
+    TokenIndex,
+)
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
@@ -62,10 +70,11 @@ class AudioCodecModel(ModelPT):
 
         super().__init__(cfg=cfg, trainer=trainer)
 
-        # Expected sample rate for the input audio
+        # Expected sample rate for input and output audio
         self.sample_rate = cfg.sample_rate
+        self.output_sample_rate = cfg.get("output_sample_rate", self.sample_rate)
 
-        # Number of samples in each audio frame that is encoded
+        # Number of samples of input in each audio frame that is encoded
         self.samples_per_frame = cfg.samples_per_frame
 
         # Discriminator updates
@@ -141,8 +150,6 @@ class AudioCodecModel(ModelPT):
         self.gen_loss_fn = instantiate(cfg.generator_loss)
         self.disc_loss_fn = instantiate(cfg.discriminator_loss)
 
-        self.mmd_loss_start_epoch = cfg.get("mmd_loss_start_epoch", 0)
-
         if "mmd_loss" in cfg:
             self.mmd_loss_fn = instantiate(cfg.mmd_loss)
             self.mmd_loss_scale = cfg.get("mmd_loss_scale", 1.0)
@@ -197,6 +204,7 @@ class AudioCodecModel(ModelPT):
         #     self.phoneme_asr_model.freeze()
         #     # self.acl_loss = CrossEntropyLoss()
         #     print("Phoneme ASR model loaded and frozen !!")
+        self.disc_start_epoch = cfg.get("disc_start_epoch", 0)
 
         # Log setup
         self.log_config = cfg.get("log_config", None)
@@ -272,24 +280,28 @@ class AudioCodecModel(ModelPT):
         input_types={
             "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
             "audio_len": NeuralType(tuple('B'), LengthsType()),
+            "sample_rate": NeuralType(tuple(), IntType(), optional=True),
         },
         output_types={
             "encoded": NeuralType(('B', 'D', 'T_encoded'), EncodedRepresentation()),
             "encoded_len": NeuralType(tuple('B'), LengthsType()),
         },
     )
-    def encode_audio(self, audio: torch.Tensor, audio_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def encode_audio(
+        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply encoder on the input audio signal. Input will be padded with zeros so
         the last frame has full `self.samples_per_frame` samples.
 
         Args:
             audio: input time-domain signal
             audio_len: valid length for each example in the batch
+            sample_rate: sample rate of input audio (int)
 
         Returns:
             Encoder output `encoded` and its length in number of frames `encoded_len`
         """
-        audio, audio_len = self.pad_audio(audio, audio_len)
+        audio, audio_len = self.preprocess_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
         encoded, encoded_len = self.audio_encoder(audio=audio, audio_len=audio_len)
         return encoded, encoded_len
 
@@ -340,7 +352,6 @@ class AudioCodecModel(ModelPT):
 
         # vector quantizer is returning [C, B, T], where C is the number of codebooks
         with default_precision(torch.float32):
-            # vector quantizer is returning [C, B, T], where C is the number of codebooks
             tokens = self.vector_quantizer.encode(inputs=encoded, input_len=encoded_len)
         # use batch first for the output
         tokens = rearrange(tokens, 'C B T -> B C T')
@@ -379,25 +390,29 @@ class AudioCodecModel(ModelPT):
         input_types={
             "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
             "audio_len": NeuralType(tuple('B'), LengthsType()),
+            "sample_rate": NeuralType(tuple(), IntType(), optional=True),
         },
         output_types={
             "tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex()),
             "tokens_len": NeuralType(tuple('B'), LengthsType()),
         },
     )
-    def encode(self, audio: torch.Tensor, audio_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def encode(
+        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Convert input time-domain audio signal into a discrete representation (tokens).
 
         Args:
             audio: input time-domain signal, shape `(batch, number of samples)`
             audio_len: valid length for each example in the batch, shape `(batch size,)`
+            sample_rate: sample rate of input audio (int)
 
         Returns:
             Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,
             and the corresponding valid lengths, shape `(batch,)`
         """
         # Apply encoder to obtain a continuous vector for each frame
-        encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len)
+        encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
         # Apply quantizer to obtain discrete representation per frame
         tokens = self.quantize(encoded=encoded, encoded_len=encoded_len)
         return tokens, encoded_len
@@ -435,23 +450,27 @@ class AudioCodecModel(ModelPT):
         input_types={
             "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
             "audio_len": NeuralType(tuple('B'), LengthsType()),
+            "sample_rate": NeuralType(tuple(), IntType(), optional=True),
         },
         output_types={
             "output_audio": NeuralType(('B', 'T_audio'), EncodedRepresentation()),
             "output_audio_len": NeuralType(tuple('B'), LengthsType()),
         },
     )
-    def forward(self, audio: torch.Tensor, audio_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply encoder, quantizer, decoder on the input time-domain signal.
 
         Args:
             audio: input time-domain signal
             audio_len: valid length for each example in the batch
+            sample_rate: sample rate of input audio (int)
 
         Returns:
             Reconstructed time-domain signal `output_audio` and its length in number of samples `output_audio_len`.
         """
-        encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len)
+        encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
 
         if self.vector_quantizer:
             # quantize to discrete tokens
@@ -464,7 +483,7 @@ class AudioCodecModel(ModelPT):
 
         return output_audio, output_audio_len
 
-    def pad_audio(self, audio, audio_len):
+    def pad_audio(self, audio, audio_len, samples_per_frame):
         """Zero pad the end of the audio so that we do not have a partial end frame.
         The output will be zero-padded to have an integer number of frames of
         length `self.samples_per_frame`.
@@ -476,21 +495,43 @@ class AudioCodecModel(ModelPT):
         Returns:
             Padded time-domain signal `padded_audio` and its length `padded_len`.
         """
-        padded_len = self.samples_per_frame * torch.ceil(audio_len / self.samples_per_frame).int()
+        num_frames = audio_len / samples_per_frame
+        # To avoid rounding issues at lower precisions, do not call torch.ceil when the length is divisible by the frame rate
+        num_frames = torch.where(audio_len % samples_per_frame == 0, num_frames, torch.ceil(num_frames))
+        padded_len = samples_per_frame * num_frames.int()
         max_len = padded_len.max().item()
         num_padding = max_len - audio.shape[1]
         padded_audio = F.pad(audio, (0, num_padding))
         return padded_audio, padded_len
+
+    def preprocess_audio(self, audio, audio_len, sample_rate):
+        if sample_rate and sample_rate != self.sample_rate:
+            if not HAVE_TORCHAUDIO:
+                raise ModuleNotFoundError("Must install torchaudio for resampling.")
+
+            audio = torchaudio.functional.resample(waveform=audio, orig_freq=sample_rate, new_freq=self.sample_rate)
+            audio_len_scaled = audio_len.long() * self.sample_rate
+            new_audio_len = audio_len_scaled / sample_rate
+            # To avoid rounding issues at lower precisions, do not call torch.ceil when the length is divisible by the sample rate
+            audio_len = torch.where(audio_len_scaled % sample_rate == 0, new_audio_len, torch.ceil(new_audio_len))
+            audio_len = audio_len.int()
+            audio = mask_sequence_tensor(audio, audio_len)
+
+        audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=self.samples_per_frame)
+        return audio, audio_len
 
     def _process_batch(self, batch):
         # [B, T_audio]
         audio = batch.get("audio")
         # [B]
         audio_len = batch.get("audio_lens")
-        audio, audio_len = self.pad_audio(audio, audio_len)
+
+        # Pad input audio to the same length as the final output
+        target_samples_per_frame = int(self.samples_per_frame / self.sample_rate * self.output_sample_rate)
+        audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=target_samples_per_frame)
 
         # [B, D, T_encoded]
-        encoded, encoded_len = self.audio_encoder(audio=audio, audio_len=audio_len)
+        encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=self.output_sample_rate)
 
         if self.encoder_noise is not None:
             encoded = self.encoder_noise(encoded)
@@ -508,7 +549,6 @@ class AudioCodecModel(ModelPT):
             commit_loss = 0.0
 
         # [B, T]
-        encoded = encoded.to(self.dtype)  # make sure vector quantizer output is in the model dtype
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
 
         return audio, audio_len, audio_gen, commit_loss, encoded
@@ -522,6 +562,9 @@ class AudioCodecModel(ModelPT):
         """Decide whether to update the descriminator based
         on the batch index and configured discriminator update period.
         """
+        if self.current_epoch < self.disc_start_epoch:
+            return False
+
         disc_update_step = batch_idx % self.disc_update_period
         return disc_update_step < self.disc_updates_per_period
 
@@ -595,7 +638,6 @@ class AudioCodecModel(ModelPT):
         if self.mmd_loss_scale:
             loss_mmd = self.mmd_loss_fn(inputs=codes)
             metrics["g_loss_mmd"] = loss_mmd
-
             if self.current_epoch >= self.mmd_loss_start_epoch:
                 generator_losses.append(self.mmd_loss_scale * loss_mmd)
 

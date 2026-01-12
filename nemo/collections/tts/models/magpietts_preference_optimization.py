@@ -94,17 +94,13 @@ class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
             test_dl_batch_size = self._test_dl.batch_size
-            temperature = self.cfg.get('inference_temperature', 0.7)
-            topk = self.cfg.get('inference_topk', 80)
-            use_cfg = self.cfg.get('inference_use_cfg', False)
-            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+            self.inference_parameters.max_decoder_steps = self.cfg.get('max_decoder_steps', 500)
+            self.inference_parameters.temperature = self.cfg.get('inference_temperature', 0.7)
+            self.inference_parameters.topk = self.cfg.get('inference_topk', 80)
+            self.inference_parameters.cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
             output = self.infer_batch(
                 batch,
-                max_decoder_steps=self.cfg.get('max_decoder_steps', 500),
-                temperature=temperature,
-                topk=topk,
-                use_cfg=use_cfg,
-                cfg_scale=cfg_scale,
+                use_cfg=self.cfg.get('inference_use_cfg', False),
             )
             predicted_audio = output.predicted_audio
             predicted_audio_lens = output.predicted_audio_lens
@@ -605,26 +601,24 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         self, batch, num_generations_per_item, mode='train', use_local_transformer_for_inference=False
     ):
         batch_repeated = self.repeat_items_in_batch(batch, num_generations_per_item)
-        temperature = self.cfg.get('inference_temperature', 0.7)
-        topk = self.cfg.get('inference_topk', 80)
         use_cfg = False
-        cfg_scale = 1.0
+        self.inference_parameters.cfg_scale = 1.0
         use_pesq = self.cfg.get('use_pesq', False)
         inference_cfg_prob = self.cfg.get('inference_cfg_prob', 0.0)
         if (inference_cfg_prob == 1.0) or (inference_cfg_prob > 0.0 and mode == 'train'):
             # Randomly set use_cfg based on the given probability
             use_cfg = random.random() < self.cfg.inference_cfg_prob
-            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+            self.inference_parameters.cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+
+        self.inference_parameters.max_decoder_steps = self.max_decoder_steps
+        self.inference_parameters.temperature = self.cfg.get('inference_temperature', 0.7)
+        self.inference_parameters.topk = self.cfg.get('inference_topk', 80)
+        self.inference_parameters.use_LT_kv_cache = False
 
         output = self.infer_batch(
             batch_repeated,
-            max_decoder_steps=self.max_decoder_steps,
-            temperature=temperature,
-            topk=topk,
             use_cfg=use_cfg,
-            cfg_scale=cfg_scale,
             use_local_transformer_for_inference=use_local_transformer_for_inference,
-            use_LT_kv_cache=False,  # We don't use KV caching for local transformer in GRPO due to issues.
         )
         predicted_audio = output.predicted_audio
         predicted_audio_lens = output.predicted_audio_lens
@@ -877,24 +871,8 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         predicted_codes = predicted_codes[:, :, : predicted_codes_lens.max()]
 
         advantages = generated_codes_and_metrics['advantages']  # B
-        # Add extra tokens for BOS and EOS
-        bos_tensor = torch.full(
-            (predicted_codes.size(0), predicted_codes.size(1), 1),
-            self.audio_bos_id,
-            dtype=predicted_codes.dtype,
-            device=predicted_codes.device,
-        )
-        padding_tensor = torch.full(
-            (predicted_codes.size(0), predicted_codes.size(1), 1),
-            0,
-            dtype=predicted_codes.dtype,
-            device=predicted_codes.device,
-        )
-        predicted_codes = torch.cat([bos_tensor, predicted_codes, padding_tensor], dim=2)
-        for idx in range(predicted_codes.size(0)):
-            predicted_codes[idx, :, predicted_codes_lens[idx] + 1] = self.audio_eos_id  # Accounts for BOS
         batch_repeated['audio_codes'] = predicted_codes
-        batch_repeated['audio_codes_lens'] = predicted_codes_lens + 2  # Accounts for BOS and EOS
+        batch_repeated['audio_codes_lens'] = predicted_codes_lens
         if 'audio' in batch_repeated:
             del batch_repeated['audio']
         if 'audio_lens' in batch_repeated:
@@ -909,6 +887,10 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             with torch.no_grad():
                 reference_model_output = self._reference_model.process_batch(batch_repeated)
 
+        codebook_targets, _ = self.add_eos_token(
+            codes=predicted_codes, codes_len=predicted_codes_lens, eos_id=self.audio_eos_id
+        )
+
         total_loss = None
         total_kl = None
         for codebook_idx in range(self.num_audio_codebooks):
@@ -920,7 +902,7 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             ei = si + self.num_all_tokens_per_codebook
 
             codebook_logits = policy_model_outputs[logits_key][:, :, si:ei]  # B, T, C
-            codebook_labels = batch_repeated['audio_codes'][:, codebook_idx, 1:]
+            codebook_labels = codebook_targets[:, codebook_idx, :]
 
             per_token_codebook_log_probs = self._get_per_token_logps(
                 codebook_logits, codebook_labels, policy_codebook_loss_mask

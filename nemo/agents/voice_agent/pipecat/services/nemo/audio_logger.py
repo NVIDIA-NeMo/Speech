@@ -55,10 +55,6 @@ class AudioLogger:
 
     # 12/19/2025 Note: Stereo conversation recording is implemented,
     # but -0.8 seconds offset needs to be applied to make the session sound synced.
-    # TODO:
-        1. Make offset compensated conversation_stereo.wav file: Start time is the first turn's start time.
-        2. Remove the segment based wav files. (Both TTS and STT, make it configurable, but default to False)
-        3. Do the testing on Jetson.
     """
 
     def __init__(
@@ -449,7 +445,7 @@ class AudioLogger:
             audio_file = self.user_dir / f"{base_name}.wav"
             metadata_file = self.user_dir / f"{base_name}.json"
 
-            if is_first_frame or self.staged_metadata is None:
+            if is_first_frame or self.staged_metadata is None or "start_time" not in self.staged_metadata:
                 raw_start_time = self.get_time_from_start_of_session(timestamp=timestamp_now)
                 # Apply pre-roll: go back pre_roll_time_sec, but don't go before the last entry's end time
                 pre_roll_start = raw_start_time - self._pre_roll_time_sec
@@ -553,7 +549,7 @@ class AudioLogger:
         except Exception as e:
             logger.warning(f"[AudioLogger] Failed to stage user audio: {e}")
 
-    def save_user_audio(self, is_backchannel: bool = False):
+    def save_user_audio(self, is_backchannel: bool = False, float_divisor: float = 32768.0):
         """Save the user audio to the disk.
 
         Args:
@@ -561,7 +557,8 @@ class AudioLogger:
         """
         # Safety check: ensure staged metadata exists and has required fields
         if self.staged_metadata is None or "base_name" not in self.staged_metadata:
-            logger.warning("[AudioLogger] Attempted to save user audio but no staged metadata found (or incomplete)")
+            # This is expected - multiple TranscriptionFrames may be pushed but only one has audio staged
+            logger.debug("[AudioLogger] No staged metadata to save (this is normal for multiple frame pushes)")
             return
 
         try:
@@ -575,7 +572,7 @@ class AudioLogger:
             # Get the audio data from continuous user audio buffer
             stt, end = self.staged_metadata["start_time"], self.staged_metadata["end_time"]
             continuous_audio_bytes = b"".join(self.continuous_user_audio_buffer)
-            full_audio_array = np.frombuffer(continuous_audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            full_audio_array = np.frombuffer(continuous_audio_bytes, dtype=np.int16).astype(np.float32) / float_divisor
             start_idx = int(stt * self._stereo_sample_rate)
             end_idx = int(end * self._stereo_sample_rate)
             staged_audio_data = full_audio_array[start_idx:end_idx]

@@ -15,6 +15,7 @@
 
 import asyncio
 import copy
+from datetime import datetime
 import os
 import signal
 import sys
@@ -116,6 +117,13 @@ def signal_handler(signum, frame):
 
 
 async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
+    """
+    NO-TIMEOUT CONFIGURATION:
+    - session_timeout=None: Disables WebSocket session timeout
+    - idle_timeout=None: Disables pipeline idle timeout  
+    - asyncio.wait_for(timeout=None): No timeout on pipeline runner
+    - Server will run indefinitely until manually stopped (Ctrl+C)
+    """
     logger.info(f"Starting websocket server on {host}:{port}")
     logger.info(f"Server configured to run indefinitely with no timeouts, use Ctrl+C to quit.")
 
@@ -125,20 +133,9 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
 
     logger.info("Initializing WebSocket server transport...")
     logger.info("Server configured to run indefinitely with no timeouts")
-
-    """
-    NO-TIMEOUT CONFIGURATION:
-    - session_timeout=None: Disables WebSocket session timeout
-    - idle_timeout=None: Disables pipeline idle timeout  
-    - asyncio.wait_for(timeout=None): No timeout on pipeline runner
-    - Server will run indefinitely until manually stopped (Ctrl+C)
-    """
-
     # Initialize AudioLogger if recording is enabled
     audio_logger = None
     if RECORD_AUDIO_DATA:
-        from datetime import datetime
-
         session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         audio_logger = AudioLogger(
             log_dir=AUDIO_LOG_DIR,
@@ -146,11 +143,6 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
             enabled=True,
         )
         logger.info(f"AudioLogger initialized for session: {session_id} at {AUDIO_LOG_DIR}")
-    else:
-        logger.info("Audio logging is disabled")
-
-    if RECORD_AUDIO_DATA and audio_logger is None:
-        raise ValueError("Audio logger is not initialized, but record_audio_data is enabled")
 
     vad_analyzer = SileroVADAnalyzer(
         sample_rate=SAMPLE_RATE,
@@ -189,7 +181,6 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
         has_turn_taking=has_turn_taking,
         backend="legacy",
         decoder_type="rnnt",
-        record_audio_data=RECORD_AUDIO_DATA,
         audio_logger=audio_logger,
     )
     logger.info("STT service initialized")
@@ -231,7 +222,6 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
             device=TTS_DEVICE,
             text_aggregator=text_aggregator,
             think_tokens=TTS_THINK_TOKENS,
-            record_audio_data=RECORD_AUDIO_DATA,
             audio_logger=audio_logger,
         )
     elif TTS_TYPE == "kokoro":
@@ -241,7 +231,6 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
             speed=config_manager.server_config.tts.speed,
             text_aggregator=text_aggregator,
             think_tokens=TTS_THINK_TOKENS,
-            record_audio_data=RECORD_AUDIO_DATA,
             audio_logger=audio_logger,
         )
     else:
@@ -319,7 +308,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
 
     pipeline = Pipeline(pipeline)
 
-    rtvi_text_aggregator = SimpleSegmentedTextAggregator(punctuation_marks=".!?\n")
+    rtvi_params = RTVIObserverParams(bot_llm_enabled=False)
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
@@ -331,10 +320,9 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
             idle_timeout=None,  # Disable idle timeout
         ),
         observers=[
-            RTVIObserver(rtvi, text_aggregator=rtvi_text_aggregator),
+            RTVIObserver(rtvi, params=rtvi_params),
             RTVIAudioLoggerObserver(audio_logger=audio_logger),
         ],
-        # observers=[RTVIObserver(rtvi, text_aggregator=rtvi_text_aggregator)],
         idle_timeout_secs=None,
         cancel_on_idle_timeout=False,
     )

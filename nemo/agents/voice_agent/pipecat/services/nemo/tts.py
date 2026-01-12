@@ -61,7 +61,6 @@ class BaseNemoTTSService(TTSService):
         device: str = "cuda",
         sample_rate: int = 22050,
         think_tokens: Optional[List[str]] = None,
-        record_audio_data: Optional[bool] = False,
         audio_logger: Optional[AudioLogger] = None,
         **kwargs,
     ):
@@ -70,7 +69,6 @@ class BaseNemoTTSService(TTSService):
         self._device = device
         self._model = self._setup_model()
         self._think_tokens = think_tokens
-        self._record_audio_data = record_audio_data
         self._audio_logger = audio_logger
         if think_tokens is not None:
             assert (
@@ -256,7 +254,7 @@ class BaseNemoTTSService(TTSService):
             yield TTSStartedFrame()
 
             # Increment turn index at the start of agent speaking (only if speaker changed)
-            if self._audio_logger and self._record_audio_data:
+            if self._audio_logger is not None:
                 self._audio_logger.increment_turn_index(speaker="agent")
 
             # Generate unique request ID
@@ -307,7 +305,7 @@ class BaseNemoTTSService(TTSService):
                             await self.stop_ttfb_metrics()
                             first_chunk = False
                             # Capture start time on first chunk
-                            if self._audio_logger and self._record_audio_data:
+                            if self._audio_logger is not None:
                                 tts_start_time = self._audio_logger.get_time_from_start_of_session()
 
                         if audio_chunk is None:
@@ -329,7 +327,7 @@ class BaseNemoTTSService(TTSService):
                     # Handle single result case
                     await self.stop_ttfb_metrics()
                     # Capture start time for single result
-                    if self._audio_logger and self._record_audio_data:
+                    if self._audio_logger is not None:
                         tts_start_time = self._audio_logger.get_time_from_start_of_session()
                     audio_bytes = self._convert_to_bytes(audio_result)
                     all_audio_bytes = audio_bytes
@@ -344,7 +342,7 @@ class BaseNemoTTSService(TTSService):
                         yield frame
 
                 # Log the complete audio if logger is available
-                if self._record_audio_data and self._audio_logger and all_audio_bytes:
+                if self._audio_logger is not None and all_audio_bytes:
                     try:
                         self._audio_logger.log_agent_audio(
                             audio_data=all_audio_bytes,

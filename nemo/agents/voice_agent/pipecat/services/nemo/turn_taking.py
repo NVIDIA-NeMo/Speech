@@ -18,6 +18,7 @@ from typing import List, Optional, Union
 
 import yaml
 from loguru import logger
+from datetime import datetime
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -192,7 +193,7 @@ class NeMoTurnTakingService(FrameProcessor):
                     await self._handle_backchannel_text(completed_text)
                     if self._audio_logger:
                         if self._audio_logger.staged_metadata is None:
-                            self._audio_logger.staged_metadata = {"is_backchannel": True}
+                            self._audio_logger.staged_metadata = {"is_backchannel": True, "start_time": datetime.now()}
                         else:
                             self._audio_logger.staged_metadata["is_backchannel"] = True
 
@@ -206,7 +207,7 @@ class NeMoTurnTakingService(FrameProcessor):
                 await self._handle_backchannel_text(str(self._user_speaking_buffer))
                 if self._audio_logger:
                     if self._audio_logger.staged_metadata is None:
-                        self._audio_logger.staged_metadata = {"is_backchannel": True}
+                        self._audio_logger.staged_metadata = {"is_backchannel": True, "start_time": datetime.now()}
                     else:
                         self._audio_logger.staged_metadata["is_backchannel"] = True
                 self._user_speaking_buffer = ""
@@ -251,7 +252,7 @@ class NeMoTurnTakingService(FrameProcessor):
                 self._user_speaking_buffer = ""
                 if self._audio_logger:
                     if self._audio_logger.staged_metadata is None:
-                        self._audio_logger.staged_metadata = {"is_backchannel": True}
+                        self._audio_logger.staged_metadata = {"is_backchannel": True, "start_time": datetime.now()}
                     else:
                         self._audio_logger.staged_metadata["is_backchannel"] = True
                 await self.push_frame(

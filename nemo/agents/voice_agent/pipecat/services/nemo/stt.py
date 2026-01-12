@@ -78,7 +78,6 @@ class NemoSTTService(STTService):
         has_turn_taking: Optional[bool] = None,  # if None, it will be set by the model name
         backend: Optional[str] = "legacy",
         decoder_type: Optional[str] = "rnnt",
-        record_audio_data: Optional[bool] = False,
         audio_logger: Optional[AudioLogger] = None,
         **kwargs,
     ):
@@ -94,7 +93,6 @@ class NemoSTTService(STTService):
         self._has_turn_taking = has_turn_taking
         self._backend = backend
         self._decoder_type = decoder_type
-        self._record_audio_data = record_audio_data
         self._audio_logger = audio_logger
         self._is_vad_active = False
         if not params:
@@ -185,13 +183,13 @@ class NemoSTTService(STTService):
                 self.audio_buffer = []
 
                 # Append to continuous user audio buffer for stereo conversation recording
-                if self._audio_logger and self._record_audio_data:
+                if self._audio_logger is not None:
                     self._audio_logger.append_continuous_user_audio(audio)
 
                 asr_result = self._model.transcribe(audio)
                 transcription = asr_result.text
                 is_final = asr_result.is_final
-                if self._audio_logger and self._record_audio_data:
+                if self._audio_logger is not None:
                     if self._is_vad_active:
                         is_first_frame = False
                         self._audio_logger.turn_audio_buffer.append(audio)

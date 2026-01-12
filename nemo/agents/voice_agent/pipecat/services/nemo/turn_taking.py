@@ -13,12 +13,12 @@
 # limitations under the License.
 
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Union
 
 import yaml
 from loguru import logger
-from datetime import datetime
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,

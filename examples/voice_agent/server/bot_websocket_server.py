@@ -15,10 +15,10 @@
 
 import asyncio
 import copy
-from datetime import datetime
 import os
 import signal
 import sys
+from datetime import datetime
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -120,7 +120,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
     """
     NO-TIMEOUT CONFIGURATION:
     - session_timeout=None: Disables WebSocket session timeout
-    - idle_timeout=None: Disables pipeline idle timeout  
+    - idle_timeout=None: Disables pipeline idle timeout
     - asyncio.wait_for(timeout=None): No timeout on pipeline runner
     - Server will run indefinitely until manually stopped (Ctrl+C)
     """

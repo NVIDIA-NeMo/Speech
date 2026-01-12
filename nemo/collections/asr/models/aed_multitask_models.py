@@ -1071,7 +1071,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 cut_id = batch.cuts[0].id
                 audio = batch.audio
                 audio_lens = batch.audio_lens
-            else: # TensorDataset / external DataLoader tuple type batch
+            else:  # TensorDataset / external DataLoader tuple type batch
                 cut_id = 'audio_0'
                 audio = batch[0]
                 audio_lens = batch[1]
@@ -1089,8 +1089,6 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             hypotheses = process_aed_timestamp_outputs(
                 hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
             )
-
-
 
         if merge_to_be_done and self.timestamps_asr_model is not None:
             merged_hypotheses = merge_parallel_chunks(

@@ -962,12 +962,17 @@ def test_aed_forced_aligned_timestamps(canary_1b_v2):
         ts_hypotheses[0].timestamp['segment'][-1]['end_offset'] == ts_hypotheses[0].timestamp['word'][-1]['end_offset']
     )
 
+
 @pytest.mark.unit
 def test_aed_forced_aligned_timestamps_audio_tensor(canary_1b_v2):
     import librosa
+
     audio_file = "/home/TestData/asr/canary/dev-other-wav/8173-294714-0040.wav"
-    
-    audio_batch = [torch.from_numpy(librosa.load(audio_file, sr=16000)[0]), torch.from_numpy(librosa.load(audio_file, sr=16000)[0])]
+
+    audio_batch = [
+        torch.from_numpy(librosa.load(audio_file, sr=16000)[0]),
+        torch.from_numpy(librosa.load(audio_file, sr=16000)[0]),
+    ]
 
     # Testing with batch_size=2 to avoid dynamic_chunking and test pure timestamps extraction
     # Dynamic chunking with timestamps are tested in other tests

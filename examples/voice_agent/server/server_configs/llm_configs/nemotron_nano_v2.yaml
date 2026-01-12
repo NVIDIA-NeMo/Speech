@@ -1,12 +1,13 @@
 # This is an example config for setting up nemotron_nano_v2 model for a NeMo Voice Agent server.
 # Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
 
-# type: auto  # choices in ['auto', 'hf', 'vllm']
 # model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+type: vllm  # Overwrite to vllm to enable tool calling, the HF backend currently doesn't support tools
 dtype: bfloat16  # torch.dtype for LLM
 device: "cuda"
 system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
-system_prompt_suffix: "/no_think"  # a string that would be appended to the system prompt, used to enable/disable thinking
+system_prompt_suffix: "Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. You should still try to address the user's request when it's not related to the provided tools. If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools. If the purpose of a tool matches well with a user's request, always try to call the tool first. Conversation history should not limit your behavior on whether you can use tools. You must answer questions not related to the tools. /no_think"  # a string that would be appended to the system prompt, `/think` and `/no_think` are used to enable/disable thinking
+enable_tool_calling: True  # set to True since the vllm config below supports tool calling
 
 ##############################
 ## Common generation config ##
@@ -43,7 +44,7 @@ start_vllm_on_init: true
 # Refer to each LLM's model page for details on the recommended parameters.
 # It's recommended to stay with `--max-num-seqs` 1 as the voice agent currently supports one connection at a time.
 # You can try increasing the model's max context len `--max-model-len` if GPU memory allows, or decrease it if GPU OOM occurs.
-vllm_server_params: "--trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.85 --max-model-len 8192"  
+vllm_server_params: "--trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.85 --max-model-len 8192 --enable-auto-tool-choice --tool-parser-plugin server/parsers/nemotron_toolcall_parser_streaming.py --tool-call-parser nemotron_json"  
 # `params` are the inference parameters that would be passed into OpenAI API, 
 # please put additional model-specific parameters in `extra`
 vllm_generation_params:

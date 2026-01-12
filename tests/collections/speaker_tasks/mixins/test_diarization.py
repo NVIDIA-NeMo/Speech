@@ -200,8 +200,34 @@ class TestSpkDiarizationMixin:
     def test_diarize_numpy_single_requires_sample_rate(self, dummy_model, audio_files):
         dummy_model = dummy_model.eval()
         audio1, _, _, _, _ = audio_files
+
+        # Check if it raises an error without sample rate when using a single numpy variable input
         with pytest.raises(ValueError):
-            _ = dummy_model.diarize(audio1, batch_size=1)
+            _ = dummy_model.diarize(audio=audio1, batch_size=1)
+
+        # Set sample rate and check if it works
+        sample_rate = 16000
+        outputs = dummy_model.diarize(audio1, batch_size=1, sample_rate=sample_rate)
+        assert isinstance(outputs, list)
+        assert len(outputs) == 1
+        assert outputs[0] > 0
+
+    @pytest.mark.unit
+    def test_diarize_numpy_list_requires_sample_rate(self, dummy_model, audio_files):
+        dummy_model = dummy_model.eval()
+        audio1, audio2, _, _, _ = audio_files
+        numpy_audio_list = [audio1, audio2]
+        # Check if it raises an error without sample rate when using numpy list input
+        with pytest.raises(ValueError):
+            _ = dummy_model.diarize(audio=numpy_audio_list, batch_size=2)
+
+        # Set sample rate and check if it works
+        sample_rate = 16000
+        outputs = dummy_model.diarize(audio=numpy_audio_list, batch_size=2, sample_rate=sample_rate)
+        assert isinstance(outputs, list)
+        assert len(outputs) == 2
+        assert outputs[0] > 0
+        assert outputs[1] > 0
 
     @pytest.mark.unit
     def test_diarize_numpy_single(self, dummy_model, audio_files):

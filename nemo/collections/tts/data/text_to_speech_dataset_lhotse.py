@@ -91,14 +91,6 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         codec_model_samples_per_frame (int): The total downsampling factor of the
             audio codec model used to generate codes. Used for padding audio
             and calculating number of codec frames.
-        audio_bos_id (int): Token ID representing the beginning-of-sequence (BOS) for
-            target audio codes.
-        audio_eos_id (int): Token ID representing the end-of-sequence (EOS) for target
-            audio codes.
-        context_audio_bos_id (int): Token ID representing the beginning-of-sequence (BOS)
-            for context audio codes.
-        context_audio_eos_id (int): Token ID representing the end-of-sequence (EOS)for
-            context audio codes.
         num_audio_codebooks (int): Number of codebooks used by the audio codec model.
             Needed for creating dummy context codes if necessary.
         prior_scaling_factor (Optional[float]): Scaling factor for the beta-binomial
@@ -110,8 +102,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         dataset_type (str): Specifies the mode ('train' or 'test'), mainly affecting
             tokenizer settings like phoneme probability. Defaults to 'train'.
         load_16khz_audio (bool): If True, loads 16kHz audio suitable for speaker
-            verification models. It prioritizes context audio ('context_recording' field)
-            if available, otherwise uses the target audio ('recording' field).
+            verification models. It prioritizes context audio ('context_audio' field)
+            if available, otherwise uses the target audio ('target_audio' field).
             Defaults to True.
         pad_context_text_to_max_duration (bool): If True and `use_text_conditioning_tokenizer`
             is True, pads the tokenized context text to a length derived from
@@ -135,10 +127,6 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         sample_rate: int,
         volume_norm: bool = True,
         codec_model_samples_per_frame: int = None,
-        audio_bos_id: int = None,
-        audio_eos_id: int = None,
-        context_audio_bos_id: int = None,
-        context_audio_eos_id: int = None,
         num_audio_codebooks: int = None,
         prior_scaling_factor: float = None,
         load_cached_codes_if_available: bool = True,
@@ -156,10 +144,6 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         super().__init__()
         self.sample_rate = sample_rate
         self.volume_norm = volume_norm
-        self.audio_bos_id = audio_bos_id
-        self.audio_eos_id = audio_eos_id
-        self.context_audio_bos_id = context_audio_bos_id
-        self.context_audio_eos_id = context_audio_eos_id
 
         self.codec_model_samples_per_frame = codec_model_samples_per_frame
         self.num_audio_codebooks = num_audio_codebooks
@@ -235,22 +219,18 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
             # target audio or target codes
             if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
-                # TODO @xueyang: applying Tensor.long(), i.e. torch.int64, is not necessary.
-
                 # Note that we have segmented the audio according to offset and duration so that the audio codes should
                 # not specify start and duration again when calling TemporalArray.load(start, duration). Ensure start
                 # and duration are None to the load function.
-                audio_codes = torch.from_numpy(cut.target_codes.load()).long()  # (C, T)
-                spec_len = audio_codes.shape[1] + 1  # +1 for EOS
-                audio_bos_tensor = torch.full((audio_codes.shape[0], 1), self.audio_bos_id, dtype=audio_codes.dtype)
-                audio_eos_tensor = torch.full((audio_codes.shape[0], 1), self.audio_eos_id, dtype=audio_codes.dtype)
-                audio_codes = torch.cat([audio_bos_tensor, audio_codes, audio_eos_tensor], dim=1)
+                audio_codes_array = cut.target_codes.load().astype(np.int32)
+                audio_codes = torch.from_numpy(audio_codes_array)  # (C, T)
                 audio_codes_len = audio_codes.shape[1]
+                spec_len = audio_codes_len + 1  # +1 for EOS
                 audio_codes_list.append(audio_codes.T)  # transpose to (T, C) to use collate_matrices to process batch.
                 audio_codes_len_list.append(audio_codes_len)
             else:
                 # Only load audio if codes are not available
-                audio_array = cut.recording.resample(self.sample_rate).load_audio().squeeze(0)
+                audio_array = cut.target_audio.resample(self.sample_rate).load_audio().squeeze(0)
                 if self.volume_norm:
                     audio_array = normalize_volume(audio_array)
                 audio = torch.from_numpy(audio_array)
@@ -267,12 +247,11 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
             # context audio or context codes
             if self.load_cached_codes_if_available and cut.has_custom("context_codes"):
-                # TODO @xueyang: applying Tensor.long(), i.e. torch.int64, is not necessary.
-
                 # Note that we have segmented the audio according to offset and duration so that the audio codes should
                 # not specify start and duration again when calling TemporalArray.load(start, duration). Ensure start
                 # and duration are None to the load function.
-                context_audio_codes = torch.from_numpy(cut.context_codes.load()).long()  # (8, T)
+                context_audio_codes_array = cut.context_codes.load().astype(np.int32)
+                context_audio_codes = torch.from_numpy(context_audio_codes_array)  # (C, T)
                 # Sample random duration between self.context_duration_min and self.context_duration_max
                 _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
                 _num_frames_to_slice = int(
@@ -288,21 +267,14 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     context_audio_codes_repeated = context_audio_codes.repeat(1, _num_repeats)
                     context_audio_codes = context_audio_codes_repeated[:, :_num_frames_to_slice]
 
-                context_bos_tensor = torch.full(
-                    (context_audio_codes.shape[0], 1), self.context_audio_bos_id, dtype=context_audio_codes.dtype
-                )
-                context_eos_tensor = torch.full(
-                    (context_audio_codes.shape[0], 1), self.context_audio_eos_id, dtype=context_audio_codes.dtype
-                )
-                context_audio_codes = torch.cat([context_bos_tensor, context_audio_codes, context_eos_tensor], dim=1)
-                context_audio_codes_len = context_audio_codes.shape[1]
-                context_audio_codes_list.append(
-                    context_audio_codes.T
-                )  # transpose to (T, 8) in order to use collate_matrices to process batch.
+                # transpose to (T, C) in order to use collate_matrices to process batch.
+                context_audio_codes = context_audio_codes.T
+                context_audio_codes_len = context_audio_codes.shape[0]
+                context_audio_codes_list.append(context_audio_codes)
                 context_audio_codes_len_list.append(context_audio_codes_len)
-            elif cut.has_custom("context_recording"):
+            elif cut.has_custom("context_audio"):
                 # Only load audio if codes are not available
-                context_audio_array = cut.context_recording.resample(self.sample_rate).load_audio().squeeze(0)
+                context_audio_array = cut.context_audio.resample(self.sample_rate).load_audio().squeeze(0)
                 if self.volume_norm:
                     context_audio_array = normalize_volume(context_audio_array)
                 _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
@@ -333,17 +305,9 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 #  3. load_cached_codes_if_available is not True and ["context_audio_codes_path", "context_audio_filepath"] not in data.manifest_entry;
                 #        assign to example["context_audio"] and example["context_audio_len"]
                 if self.load_cached_codes_if_available:
-                    context_bos_tensor = torch.full(
-                        (self.num_audio_codebooks, 1), self.context_audio_bos_id, dtype=torch.int32
-                    )
-                    context_eos_tensor = torch.full(
-                        (self.num_audio_codebooks, 1), self.context_audio_eos_id, dtype=torch.int32
-                    )
-                    context_audio_codes = torch.cat([context_bos_tensor, context_eos_tensor], dim=1)
-                    context_audio_codes_len = context_audio_codes.shape[1]
-                    context_audio_codes_list.append(
-                        context_audio_codes.T
-                    )  # transpose to (T, C) to use collate_matrices to process batch.
+                    context_audio_codes = torch.zeros([0, self.num_audio_codebooks], dtype=torch.int32)  # (T, C)
+                    context_audio_codes_len = 0
+                    context_audio_codes_list.append(context_audio_codes)
                     context_audio_codes_len_list.append(context_audio_codes_len)
                 else:
                     # @shehzeenh: Added this condition so that a batch does not have a mix of context_audio and context_audio_codes
@@ -353,14 +317,14 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     context_audio_len_list.append(context_audio_len)
 
             if self.load_16khz_audio:
-                if cut.has_custom("context_recording"):
+                if cut.has_custom("context_audio"):
                     # use context audio for SV model
-                    audio_array_16khz = cut.context_recording.resample(16_000).load_audio().squeeze(0)
+                    audio_array_16khz = cut.context_audio.resample(16_000).load_audio().squeeze(0)
                     if self.volume_norm:
                         audio_array_16khz = normalize_volume(audio_array_16khz)
                 else:
                     # Otherwise, load the target audio for SV model.
-                    audio_array_16khz = cut.recording.resample(16_000).load_audio().squeeze(0)
+                    audio_array_16khz = cut.target_audio.resample(16_000).load_audio().squeeze(0)
                     if self.volume_norm:
                         audio_array_16khz = normalize_volume(audio_array_16khz)
                 _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)

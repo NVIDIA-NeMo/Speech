@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Boosting ground truth - sanity check for per-utterance boosting
+# RNN-T model
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
-    tests/functional_tests/asr_streaming_infer_boost_ground_truth.py \
-    --config-path="../../examples/asr/conf/asr_streaming_inference/" \
+    examples/asr/asr_streaming_inference/asr_streaming_infer.py \
+    --config-path="../conf/asr_streaming_inference/" \
     --config-name=buffered_rnnt.yaml \
-    audio_file="/home/TestData/asr/canary/dev-other-wav-10.json" \
+    audio_file="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
     output_filename="/tmp/stt_inference_boost_gt_res_rnnt.json" \
     asr.model_name="stt_en_fastconformer_transducer_large" \
     streaming.batch_size=5 \
@@ -26,11 +28,12 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     enable_nmt=False \
     asr_output_granularity=segment
 
+# TDT model
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
-    tests/functional_tests/asr_streaming_infer_boost_ground_truth.py \
-    --config-path="../../examples/asr/conf/asr_streaming_inference/" \
+    examples/asr/asr_streaming_inference/asr_streaming_infer.py \
+    --config-path="../conf/asr_streaming_inference/" \
     --config-name=buffered_rnnt.yaml \
-    audio_file="/home/TestData/asr/canary/dev-other-wav-10.json" \
+    audio_file="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
     output_filename="/tmp/stt_inference_boost_gt_res_tdt.json" \
     asr.model_name="nvidia/stt_en_fastconformer_tdt_large" \
     streaming.batch_size=5 \

@@ -88,6 +88,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
     cuda_graphs_allow_fallback: bool
     max_symbols: Optional[int]
     allow_cuda_graphs: bool
+    biasing_multi_model: GPUBiasingMultiModelBase | None
 
     def force_cuda_graphs_mode(self, mode: Optional[str | CudaGraphsMode]):
         """

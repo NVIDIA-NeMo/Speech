@@ -58,6 +58,10 @@ def get_audio_filepaths(audio_file: str, sort_by_duration: bool = True) -> tuple
     elif audio_file.endswith((".json", ".jsonl")):
         manifest = read_manifest(audio_file)
         filepaths = [get_full_path(entry["audio_filepath"], audio_file) for entry in manifest]
+        # we need to make audio_filepath in the manifest consistent, since this consistency is assumed further
+        # in `dump_output` function
+        for record, filepath in zip(manifest, filepaths):
+            record["audio_filepath"] = filepath
     else:
         raise ValueError(f"audio_file `{audio_file}` need to be folder, audio file or manifest file")
 

@@ -44,13 +44,19 @@ class BiasingRequestItemConfig:
     multi_model_id: int | None = None  # compiled model id
     auto_manage_multi_model: bool = True  # if model should be added to the decoder and removed automatically
 
+    def __post_init__(self):
+        # if BiasingRequestItemConfig initialized from dict, we need to fix boosting_model_cfg field
+        # see solution https://stackoverflow.com/a/60383031
+        if isinstance(self.boosting_model_cfg, dict):
+            self.boosting_model_cfg = BoostingTreeModelConfig(**self.boosting_model_cfg)
+
     def is_empty(self) -> bool:
         """Return True if biasing request (or model) is empty"""
         if self.cache_key and self.cache_key in _BIASING_MODEL_CACHE:
             return False
         if self.multi_model_id is not None:
             return False
-        if not self.boosting_model_cfg.is_empty(self.boosting_model_cfg):
+        if not BoostingTreeModelConfig.is_empty(self.boosting_model_cfg):
             return False
         return True
 

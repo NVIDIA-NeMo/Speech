@@ -42,15 +42,18 @@ Note:
 """
 
 
-from time import time
-
 import hydra
+from omegaconf import OmegaConf
 
 from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder
+from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.utils.manifest_io import calculate_duration, dump_output, get_audio_filepaths
 from nemo.collections.asr.inference.utils.pipeline_eval import calculate_pipeline_laal, evaluate_pipeline
 from nemo.collections.asr.inference.utils.progressbar import TQDMProgressBar
+from nemo.collections.asr.metrics.wer import word_error_rate
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.utils import logging
+from nemo.utils.timers import SimpleTimer
 
 # disable nemo_text_processing logging
 try:
@@ -80,15 +83,52 @@ def main(cfg):
     pipeline = PipelineBuilder.build_pipeline(cfg)
     progress_bar = TQDMProgressBar()
 
-    # Run the pipeline
-    start = time()
-    output = pipeline.run(audio_filepaths, progress_bar=progress_bar)
-    exec_dur = time() - start
+    # Add biasing requests
+    if manifest:
+        options = [
+            ASRRequestOptions(
+                biasing_cfg=(
+                    BiasingRequestItemConfig(
+                        **OmegaConf.to_container(
+                            OmegaConf.merge(OmegaConf.structured(BiasingRequestItemConfig), record["biasing_request"])
+                        )
+                    )
+                    if "biasing_request" in record
+                    else None
+                )
+            )
+            for record in manifest
+        ]
+    else:
+        options = None
 
-    # Calculate RTFX
+    # Run the pipeline
+    timer = SimpleTimer()
+    timer.start(pipeline.device)
+    output = pipeline.run(audio_filepaths, progress_bar=progress_bar, options=options)
+    timer.stop(pipeline.device)
+    exec_dur = timer.total_sec()
+
+    # Calculate RTFx
     data_dur, durations = calculate_duration(audio_filepaths)
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
-    logging.info(f"RTFX: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
+    logging.info(f"RTFx: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
+
+    # Calculate WER
+    if manifest:
+        hypotheses = [output[i]["text"] for i in range(len(manifest))]
+        references = [record["text"] for record in manifest]
+        cer = word_error_rate(
+            hypotheses=hypotheses,
+            references=references,
+            use_cer=True,
+        )
+        wer = word_error_rate(
+            hypotheses=hypotheses,
+            references=references,
+            use_cer=False,
+        )
+        logging.info(f"Dataset WER/CER {wer:.2%}/{cer:.2%}")
 
     # Calculate LAAL
     laal = calculate_pipeline_laal(output, durations, manifest, cfg)

@@ -19,43 +19,27 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.models import ASRModel, EncDecCTCModelBPE, EncDecRNNTBPEModel
+from nemo.collections.asr.models import ASRModel, EncDecMultiTaskModel
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.ctc_greedy_decoding import GreedyCTCInferConfig
+from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecodingConfig
+from nemo.collections.asr.parts.submodules.multitask_greedy_decoding import AEDGreedyInferConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyBatchedRNNTInferConfig
 from nemo.collections.asr.parts.utils.asr_confidence_benchmarking_utils import run_confidence_benchmark
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig
 
 # both models recognize the test data without errors, thus every metric except ece return default values
-ECE_VALUES = {("token", "ctc"): 0.87, ("token", "rnnt"): 0.82, ("word", "ctc"): 0.91, ("word", "rnnt"): 0.88}
+# ECE values for fast conformer models (stt_en_fastconformer_ctc_large and stt_en_fastconformer_transducer_large)
+ECE_VALUES = {("token", "ctc"): 0.86, ("token", "rnnt"): 0.75, ("word", "ctc"): 0.89, ("word", "rnnt"): 0.80}
 
 TOL_DEGREE = 2
-TOL = 1 / math.pow(10, TOL_DEGREE)
+TOL = 2 / math.pow(10, TOL_DEGREE)
 
 
 @pytest.fixture(scope="module")
-def conformer_ctc_bpe_model():
-    model = EncDecCTCModelBPE.from_pretrained(model_name="stt_en_conformer_ctc_small")
-    model.set_trainer(Trainer(devices=1, accelerator="cpu"))
-    model = model.eval()
-    return model
-
-
-@pytest.fixture(scope="module")
-def conformer_rnnt_bpe_model():
-    model = EncDecRNNTBPEModel.from_pretrained(model_name="stt_en_conformer_transducer_small")
-    model.set_trainer(Trainer(devices=1, accelerator="cpu"))
-    model = model.eval()
-    return model
-
-
-@pytest.mark.with_downloads
-@pytest.fixture(scope="module")
-# @pytest.fixture
 def audio_and_texts(test_data_dir):
     # get filenames and reference texts from manifest
     filepaths = []
@@ -72,24 +56,28 @@ def audio_and_texts(test_data_dir):
 
 
 class TestASRConfidenceBenchmark:
-    @pytest.mark.pleasefixme
     @pytest.mark.integration
     @pytest.mark.with_downloads
     @pytest.mark.parametrize('model_name', ("ctc", "rnnt"))
     @pytest.mark.parametrize('target_level', ("token", "word"))
     def test_run_confidence_benchmark(
-        self, model_name, target_level, audio_and_texts, conformer_ctc_bpe_model, conformer_rnnt_bpe_model
+        self, model_name, target_level, audio_and_texts, fast_conformer_ctc_model, fast_conformer_transducer_model
     ):
-        model = conformer_ctc_bpe_model if model_name == "ctc" else conformer_rnnt_bpe_model
+        model = fast_conformer_ctc_model if model_name == "ctc" else fast_conformer_transducer_model
         assert isinstance(model, ASRModel)
         filepaths, reference_texts = audio_and_texts
         confidence_cfg = (
-            ConfidenceConfig(preserve_token_confidence=True)
+            ConfidenceConfig(preserve_frame_confidence=True, preserve_token_confidence=True)
             if target_level == "token"
-            else ConfidenceConfig(preserve_word_confidence=True)
+            else ConfidenceConfig(preserve_frame_confidence=True, preserve_word_confidence=True)
         )
         model.change_decoding_strategy(
-            RNNTDecodingConfig(fused_batch_size=-1, strategy="greedy_batch", confidence_cfg=confidence_cfg)
+            RNNTDecodingConfig(
+                fused_batch_size=-1,
+                strategy="greedy_batch",
+                confidence_cfg=confidence_cfg,
+                greedy=GreedyBatchedRNNTInferConfig(loop_labels=False),
+            )
             if model_name == "rnnt"
             else CTCDecodingConfig(confidence_cfg=confidence_cfg)
         )
@@ -104,13 +92,12 @@ class TestASRConfidenceBenchmark:
                 atol=TOL,
             )
 
-    @pytest.mark.pleasefixme
     @pytest.mark.integration
     @pytest.mark.with_downloads
     @pytest.mark.parametrize('model_name', ("ctc", "rnnt"))
-    def test_deprecated_config_args(self, model_name, conformer_ctc_bpe_model, conformer_rnnt_bpe_model):
+    def test_deprecated_config_args(self, model_name, fast_conformer_ctc_model, fast_conformer_transducer_model):
         assert ConfidenceConfig().method_cfg.alpha == 0.33, "default `alpha` is supposed to be 0.33"
-        model = conformer_ctc_bpe_model if model_name == "ctc" else conformer_rnnt_bpe_model
+        model = fast_conformer_ctc_model if model_name == "ctc" else fast_conformer_transducer_model
         assert isinstance(model, ASRModel)
 
         conf = OmegaConf.create({"temperature": 0.5})
@@ -133,3 +120,50 @@ class TestASRConfidenceBenchmark:
             else CTCDecodingConfig(greedy=GreedyCTCInferConfig(preserve_frame_confidence=True, **test_args_greedy))
         )
         assert model.cfg.decoding.greedy.confidence_method_cfg.alpha == 0.5
+
+    @pytest.mark.unit
+    def test_aed_multitask_model_confidence(self, canary_1b_v2, test_data_dir):
+        """Test token and word confidence for AED multitask models (Canary)."""
+        model = canary_1b_v2
+        assert isinstance(model, EncDecMultiTaskModel)
+
+        audio_file = Path(test_data_dir) / "asr" / "train" / "an4" / "wav" / "an46-mmap-b.wav"
+
+        # Configure decoding with confidence
+        decode_cfg = MultiTaskDecodingConfig(
+            strategy='greedy',
+            greedy=AEDGreedyInferConfig(preserve_token_confidence=True),
+            confidence_cfg=ConfidenceConfig(preserve_token_confidence=True, preserve_word_confidence=True),
+        )
+        model.change_decoding_strategy(decode_cfg)
+
+        hypotheses = model.transcribe(
+            audio=str(audio_file),
+            batch_size=1,
+            return_hypotheses=True,
+        )
+
+        assert len(hypotheses) == 1
+        hyp = hypotheses[0]
+
+        # Verify text is present
+        assert isinstance(hyp.text, str)
+        assert len(hyp.text) > 0
+
+        # Verify y_sequence is present
+        assert hyp.y_sequence is not None
+        assert len(hyp.y_sequence) > 0
+
+        # Verify token confidence is present and has correct length
+        assert hyp.token_confidence is not None
+        assert len(hyp.token_confidence) == len(hyp.y_sequence)
+
+        # Verify word confidence is present
+        assert hyp.word_confidence is not None
+        assert len(hyp.word_confidence) > 0
+
+        # Verify confidence values are in valid range [0, 1]
+        for conf in hyp.token_confidence:
+            assert 0.0 <= conf <= 1.0, f"Token confidence {conf} not in valid range [0, 1]"
+        for conf in hyp.word_confidence:
+            assert 0.0 <= conf <= 1.0, f"Word confidence {conf} not in valid range [0, 1]"

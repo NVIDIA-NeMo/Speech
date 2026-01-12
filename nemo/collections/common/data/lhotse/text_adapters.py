@@ -911,22 +911,22 @@ class NeMoMultimodalConversationTarWriter:
     def write(self, example: NeMoMultimodalConversation):
         self._maybe_increment_shard()
         serialized = example.to_dict()
-        def change_audio_path(id, offset: float):
-            offset = f"{offset:.3f}".replace(".", "-") if offset>0 else None
-            new_path = f"{id}_{offset}" if offset else id
+        def change_audio_path(id, offset: float, duration: float):
+            offset = f"{offset:.3f}" if offset>0 else None
+            new_path = f"{id}_{offset}_{duration:.3f}" if offset else id
             return new_path
         for turn in serialized["conversations"]:
             if turn["type"] == "audio":
                 turn["value"] = Path(
-                    change_audio_path(Path(turn['value']).stem, turn["offset"])
-                ).with_suffix(".flac").name
+                    change_audio_path(Path(turn['value']).stem, turn["offset"], turn["duration"]) + ".flac"
+                ).name
                 turn.pop("offset")  # cut.load_audio() will load the segment based on the offset, so the new turn will start at offset=0
         self.manifest_writer.write(serialized)
         for cut in example.list_cuts():
             assert (
                 cut.has_recording
             ), f"Cannot serialize multimodal conversation with cuts that have no recordings. We got: {cut}"
-            self.tar_writer.write(change_audio_path(cut.recording.id, cut.start), cut.load_audio(), cut.sampling_rate, cut.recording)
+            self.tar_writer.write(change_audio_path(cut.recording.id, cut.start, cut.duration), cut.load_audio(), cut.sampling_rate, cut.recording)
         self.item_cntr += 1
 
     def close(self):

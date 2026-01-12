@@ -13,11 +13,12 @@
 # limitations under the License.
 
 import re
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from loguru import logger
 from pipecat.utils.string import match_endofsentence
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
+from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
 
 
 def has_partial_decimal(text: str) -> bool:
@@ -204,7 +205,7 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
                 return idx + 1 + offset
         return None
 
-    async def aggregate(self, text: str) -> Optional[str]:
+    async def aggregate(self, text: str) -> AsyncIterator[Aggregation]:
         """Aggregate the input text and return the first complete sentence in the text.
 
         Args:
@@ -237,4 +238,6 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
                 logger.debug(f"Text Aggregator Result: `{result}`, full text: `{self._text}`, input text: `{text}`")
                 self._text = self._text[eos_end_index:]
 
-        return result
+        if result:
+            yield Aggregation(text=result, type=AggregationType.SENTENCE)
+

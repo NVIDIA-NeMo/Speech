@@ -63,14 +63,14 @@ class RTVIObserver(_RTVIObserver):
 
         if not self._params.bot_llm_enabled:
             if isinstance(frame, LLMFullResponseStartFrame):
-                await self.push_transport_message_urgent(RTVIBotLLMStartedMessage())
+                await self.send_rtvi_message(RTVIBotLLMStartedMessage())
                 self._frames_seen.add(frame.id)
             elif isinstance(frame, LLMFullResponseEndFrame):
-                await self.push_transport_message_urgent(RTVIBotLLMStoppedMessage())
+                await self.send_rtvi_message(RTVIBotLLMStoppedMessage())
                 self._frames_seen.add(frame.id)
             elif isinstance(frame, TTSTextFrame) and isinstance(src, BaseOutputTransport):
                 message = RTVIBotTTSTextMessage(data=RTVITextMessageData(text=frame.text))
-                await self.push_transport_message_urgent(message)
+                await self.send_rtvi_message(message)
                 await self._push_bot_transcription(frame.text)
                 self._frames_seen.add(frame.id)
             elif isinstance(frame, BotStoppedSpeakingFrame):
@@ -84,7 +84,7 @@ class RTVIObserver(_RTVIObserver):
 
     async def _flush_text_buffer(self):
         """Flush the text buffer."""
-        text = self._text_aggregator.text
+        text = self._text_aggregator.text.text
         if text.strip():
             await self._push_bot_transcription(text)
             self._text_aggregator.reset()
@@ -92,7 +92,7 @@ class RTVIObserver(_RTVIObserver):
     async def _handle_llm_text_frame(self, frame: LLMTextFrame):
         """Handle LLM text output frames."""
         message = RTVIBotLLMTextMessage(data=RTVITextMessageData(text=frame.text))
-        await self.push_transport_message_urgent(message)
+        await self.send_rtvi_message(message)
 
         completed_text = await self._text_aggregator.aggregate(frame.text)
         if completed_text:
@@ -103,5 +103,5 @@ class RTVIObserver(_RTVIObserver):
         if len(text.strip()) > 0:
             message = RTVIBotTranscriptionMessage(data=RTVITextMessageData(text=text))
             logger.debug(f"Pushing bot transcription: `{text}`")
-            await self.push_transport_message_urgent(message)
+            await self.send_rtvi_message(message)
             self._bot_transcription = ""

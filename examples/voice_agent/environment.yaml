@@ -1,34 +1,34 @@
 name: nemo-voice
 channels:
+  - conda-forge
   - defaults
 dependencies:
-  - _libgcc_mutex=0.1=main
-  - _openmp_mutex=5.1=1_gnu
-  - bzip2=1.0.8=h5eee18b_6
-  - ca-certificates=2025.9.9=h06a4308_0
-  - ld_impl_linux-64=2.40=h12ee557_0
-  - libffi=3.4.4=h6a678d5_1
-  - libgcc-ng=11.2.0=h1234567_1
-  - libgomp=11.2.0=h1234567_1
-  - libstdcxx-ng=11.2.0=h1234567_1
-  - libuuid=1.41.5=h5eee18b_0
-  - libxcb=1.17.0=h9b100fa_0
-  - libzlib=1.3.1=hb25bd0a_0
-  - ncurses=6.5=h7934f7d_0
-  - openssl=3.0.18=hd6dcaed_0
-  - pip=25.2=pyhc872135_0
-  - pthread-stubs=0.3=h0ce48e5_1
-  - python=3.10.12=h955ad1f_0
-  - readline=8.3=hc2a1206_0
-  - sqlite=3.50.2=hb25bd0a_1
-  - tk=8.6.15=h54e0aa7_0
-  - wheel=0.45.1=py310h06a4308_0
-  - xorg-libx11=1.8.12=h9b100fa_1
-  - xorg-libxau=1.0.12=h9b100fa_0
-  - xorg-libxdmcp=1.1.5=h9b100fa_0
-  - xorg-xorgproto=2024.1=h5eee18b_1
-  - xz=5.6.4=h5eee18b_1
-  - zlib=1.3.1=hb25bd0a_0
+  - _libgcc_mutex=0.1
+  - _openmp_mutex=5.1
+  - bzip2=1.0.8
+  - ca-certificates
+  - libffi=3.4.4
+  - libgcc-ng  # Version auto-resolved for compatibility
+  - libgomp  # Version auto-resolved for compatibility
+  - libstdcxx-ng  # Version auto-resolved for compatibility
+  - libuuid=1.41.5
+  - libxcb=1.17.0
+  - libzlib=1.3.1
+  - ncurses=6.5
+  - openssl=3.0.18
+  - pip=25.2
+  - pthread-stubs=0.3
+  - python=3.10.12
+  - readline=8.3
+  - sqlite=3.50.2
+  - tk=8.6.15
+  - wheel
+  - xorg-libx11=1.8.12
+  - xorg-libxau=1.0.12
+  - xorg-libxdmcp=1.1.5
+  - xorg-xorgproto
+  - xz=5.6.4
+  - zlib=1.3.1
   - pip:
     - absl-py==2.3.1
     - accelerate==1.10.1
@@ -78,7 +78,7 @@ dependencies:
     - colorama==0.4.6
     - coloredlogs==15.0.1
     - colorlog==6.9.0
-    - compressed-tensors==0.10.2
+    - compressed-tensors==0.12.2
     - contextlib2==21.6.0
     - contourpy==1.3.2
     - coverage==7.10.7
@@ -89,10 +89,9 @@ dependencies:
     - dataproperty==1.1.0
     - datasets==4.1.1
     - decorator==5.2.1
-    - decord==0.6.0
     - defusedxml==0.7.1
     - deprecated==1.2.18
-    - depyf==0.19.0
+    - depyf==0.20.0
     - diffusers==0.35.1
     - dill==0.4.0
     - diskcache==5.6.3
@@ -111,7 +110,7 @@ dependencies:
     - executing==2.2.1
     - fabric==3.2.2
     - faiss-cpu==1.12.0
-    - fastapi==0.118.0
+    - fastapi>=0.120.0
     - fastapi-cli==0.0.13
     - fastapi-cloud-cli==0.3.0
     - fasteners==0.20
@@ -191,9 +190,9 @@ dependencies:
     - lightning==2.4.0
     - lightning-utilities==0.15.2
     - lilcom==1.8.1
-    - llguidance==0.7.30
+    - llguidance>=1.3.0,<1.4.0
     - llvmlite==0.44.0
-    - lm-format-enforcer==0.10.12
+    - lm-format-enforcer==0.11.3
     - loguru==0.7.3
     - lxml==6.0.2
     - mako==1.3.10
@@ -257,14 +256,14 @@ dependencies:
     - onnx==1.19.0
     - onnxruntime==1.23.0
     - open-clip-torch==2.24.0
-    - openai==1.99.1
-    - openai-harmony==0.0.4
+    - openai==2.15.0
+    - openai-harmony>=0.0.4
     - opencc==1.1.9
     - opencv-python-headless==4.11.0.86
     - opentelemetry-api==1.37.0
     - optuna==4.5.0
     - orjson==3.11.3
-    - outlines-core==0.2.10
+    - outlines-core==0.2.11
     - overrides==7.7.0
     - packaging==24.2
     - pandas==2.3.3
@@ -280,7 +279,7 @@ dependencies:
     - pexpect==4.9.0
     - pfzy==0.3.4
     - pillow==11.3.0
-    - pipecat-ai==0.0.84
+    - pipecat-ai==0.0.98
     - platformdirs==4.4.0
     - pluggy==1.6.0
     - pooch==1.8.2
@@ -307,15 +306,15 @@ dependencies:
     - pybtex-docutils==1.0.3
     - pycountry==24.6.1
     - pycparser==2.23
-    - pydantic==2.11.9
-    - pydantic-core==2.33.2
+    - pydantic>=2.12.0,<3.0.0
+    - pydantic-core  # Version will be resolved automatically by pydantic
     - pydantic-extra-types==2.10.5
     - pydantic-settings==2.11.0
     - pydub==0.25.1
     - pygments==2.19.2
     - pyloudnorm==0.1.1
     - pynacl==1.6.0
-    - pynini==2.1.6.post1
+    - pynini>=2.1.6.post1
     - pynvml==13.0.1
     - pyparsing==3.2.5
     - pypinyin==0.55.0
@@ -384,7 +383,7 @@ dependencies:
     - sphinxcontrib-serializinghtml==2.0.0
     - sqlalchemy==2.0.43
     - stack-data==0.6.3
-    - starlette==0.48.0
+    - starlette>=0.49.1
     - strenum==0.4.15
     - sympy==1.14.0
     - tabledata==1.3.4
@@ -404,13 +403,13 @@ dependencies:
     - toml==0.10.2
     - tomli==2.2.1
     - toolz==1.0.0
-    - torch==2.7.1
-    - torchaudio==2.7.1
+    - torch==2.9.0
+    - torchaudio==2.9.0
     - torchdiffeq==0.2.5
     - torchmetrics==1.8.2
     - torchprofile==0.0.4
     - torchsde==0.2.6
-    - torchvision==0.22.1
+    - torchvision==0.24.0
     - torchx==0.7.0
     - tqdm==4.67.1
     - tqdm-multiprocess==0.0.11
@@ -420,7 +419,7 @@ dependencies:
     - tree-sitter==0.25.2
     - tree-sitter-python==0.25.0
     - trimesh==4.8.3
-    - triton==3.3.1
+    - triton==3.5.1
     - typeguard==4.4.4
     - typepy==1.3.4
     - typer==0.19.2
@@ -432,7 +431,7 @@ dependencies:
     - urllib3==1.26.20
     - uvicorn==0.37.0
     - uvloop==0.21.0
-    - vllm==0.10.1
+    - vllm==0.14.0
     - wait-for2==0.4.1
     - wandb==0.22.1
     - watchfiles==1.1.0
@@ -447,11 +446,10 @@ dependencies:
     - wrapt==1.17.3
     - xattr==1.2.0
     - xformers==0.0.31
-    - xgrammar==0.1.21
+    - xgrammar==0.1.27
     - xxhash==3.6.0
     - yarl==1.20.1
     - zarr==2.18.3
     - zipp==3.23.0
     - zstandard==0.25.0
     - espeakng==1.0.3
-prefix: /home/heh/anaconda3/envs/nemo2

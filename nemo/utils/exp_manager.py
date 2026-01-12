@@ -1255,7 +1255,8 @@ def configure_loggers(
         logging.info("WandBLogger has been set up")
 
     if create_mlflow_logger:
-        mlflow_logger = MLFlowLogger(run_name=version, **mlflow_kwargs)
+        # mlflow_logger = MLFlowLogger(run_name=version, **mlflow_kwargs)
+        mlflow_logger = MLFlowLogger(**mlflow_kwargs)
 
         logger_list.append(mlflow_logger)
         logging.info("MLFlowLogger has been set up")

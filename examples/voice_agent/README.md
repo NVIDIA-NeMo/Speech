@@ -11,7 +11,6 @@ As of now, we only support English input and output, but more languages will be 
 - [🚀 Quick Start](#-quick-start)
 - [📑 Supported Models and Features](#-supported-models-and-features)
   - [🤖 LLM](#-llm)
-    - [Thinking/reasoning Mode for LLMs](#thinkingreasoning-mode-for-llms)
   - [🎤 ASR](#-asr)
   - [💬 Speaker Diarization](#-speaker-diarization)
   - [🔉 TTS](#-tts)
@@ -171,6 +170,9 @@ For vLLM server, if you specify `--reasoning_parser` in `vllm_server_params`, th
 
 We use [cache-aware streaming FastConformer](https://arxiv.org/abs/2312.17279) to transcribe the user's speech into text. While new models will be released soon, we use the existing English models for now:
 - [nvidia/parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) (default)
+  - This model supports EOU prediction and optimized for lowest latency, but does not support punctuation and capitalization.
+- [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
+  - This model has better ASR accuracy and supports punctuation and capitalization, but does not predict EOU.
 - [stt_en_fastconformer_hybrid_large_streaming_80ms](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_en_fastconformer_hybrid_large_streaming_80ms)
 - [nvidia/stt_en_fastconformer_hybrid_large_streaming_multi](https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_large_streaming_multi)
 
@@ -244,10 +246,11 @@ The tools are then registered to the LLM via the `register_direct_tools_to_llm` 
 
 More details on tool calling with Pipecat can be found in the [Pipecat documentation](https://docs.pipecat.ai/guides/learn/function-calling).
 
-#### Notes on system prompt with tools
+#### Notes on tool calling issues
 
-We notice that sometimes the LLM cannot do anything that's not related to the provided tools, or it might not actually use the tools even though it says it's using them. To alleviate this issue, we insert additional instructions to the system prompt (e.g., in `server/server_configs/llm_configs/nemotron_nano_v2.yaml`):
-- "Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. You should still try to address the user's request when it's not related to the provided tools."
+We notice that sometimes the LLM cannot do anything that's not related to the provided tools, or it might not actually use the tools even though it says it's using them. To alleviate this issue, we insert additional instructions to the system prompt to regulate its behavior (e.g., in `server/server_configs/llm_configs/nemotron_nano_v2.yaml`).
+
+Sometimes, after answering a question related to the tools, the LLM might refuce to answer questions that are not related to the tools, or vice versa. This phenomenon can be called "commitment bias" or "tunnel vision". To alleviate this issue, we can insert additional instructions to the system prompt and explicitly asking the LLM to use or not use the tools in the user's query.
 
 
 ## 📝 Notes & FAQ

@@ -11,5 +11,4 @@ extra_separator:  # a list of additional punctuations to chunk LLM response into
   - "?"
   - "!"
   - ";"
-  - ":"
 think_tokens: ["<think>", "</think>"]  # specify them to avoid TTS for thinking process, set to `null` to allow thinking out loud

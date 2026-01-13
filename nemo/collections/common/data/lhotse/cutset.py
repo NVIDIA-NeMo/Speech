@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import logging
+import random
 import re
 import warnings
 from functools import partial
@@ -20,11 +22,14 @@ from itertools import repeat
 from pathlib import Path
 from typing import KeysView, Mapping, Sequence, Tuple, Union
 
+import numpy as np
 import omegaconf
-from lhotse import CutSet, Features, Recording
+import soundfile as sf
+from lhotse import CutSet, Features, MonoCut, Recording, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
 from lhotse.serialization import load_yaml
+from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.nemo_adapters import (
@@ -533,6 +538,201 @@ def cut_to_conversation(
         token_equivalent_duration=token_equivalent_duration,
         custom=cut.custom,
     )
+
+
+@data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
+def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
+    """
+    Convert a CutSet with overlapping agent/user segments into a standard S2S duplex format.
+
+    Args:
+        config: Dictionary containing parser options:
+            - move_agent_text_back_by (float): Time offset to shift agent text back.
+            - filter_samples_starting_with_agent (bool): Whether to remove samples starting with agent.
+            - agent_roles (List[str]): Roles considered as agent.
+
+    Returns:
+        Tuple[CutSet, bool]: Converted cuts and a flag indicating if the data was tarred.
+    """
+    move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
+    filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
+    agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
+
+    cuts, is_tarred = read_cutset_from_config(config)
+
+    def filter_cuts_starting_with_agent_fn(cuts: CutSet, agent_roles: Tuple[str, ...]) -> CutSet:
+        """Remove cuts where the first supervision belongs to an agent role."""
+
+        def _filter_fn(cut: Cut) -> bool:
+            if not cut.supervisions:
+                return False
+            cut.supervisions = sorted(cut.supervisions, key=lambda s: s.start)
+            return cut.supervisions[0].speaker not in agent_roles
+
+        return cuts.filter(_filter_fn)
+
+    def convert_overlap_cut_fn(cut: Cut) -> Cut:
+        """Convert agent/user overlapping segments into sequential SupervisionSegments."""
+        agent_segments = [
+            SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.id,
+                start=seg["start"] - move_agent_text_back_by,
+                duration=seg["end"] - seg["start"] + move_agent_text_back_by,
+                text=seg["text"],
+                speaker="agent",
+            )
+            for seg in cut.agent_segments
+        ]
+
+        user_segments = [
+            SupervisionSegment(
+                id=cut.id,
+                recording_id=cut.id,
+                start=seg["start"],
+                duration=seg["end"] - seg["start"],
+                text=seg["text"],
+                speaker="user",
+            )
+            for seg in cut.user_segments
+        ]
+
+        cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
+        cut.formatter = "s2s_duplex_overlap_as_s2s_duplex"
+        return cut
+
+    cuts = cuts.map(convert_overlap_cut_fn)
+    if filter_samples_starting_with_agent:
+        cuts = filter_cuts_starting_with_agent_fn(cuts, tuple(agent_roles))
+
+    return cuts, is_tarred
+
+
+@data_type_parser(["lhotse_magpietts_data_as_continuation"])
+def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
+    """
+    Convert MagpieTTS dataset cuts into the Duplex S2S format, with optional
+    `context_audio` that can be used as a speaker reference.
+
+    Args:
+        config: Dictionary containing parser options:
+            - add_extra_end_silence (bool): Whether to add extra silence at the end.
+            - extra_end_silence_range (List[float]): Range of extra silence duration.
+            - max_cer (float): Maximum allowed character error rate.
+            - min_context_speaker_similarity (float): Minimum similarity score.
+            - target_speaker (str, optional): Target speaker filter.
+            - sample_rate (int): Audio sample rate for resampling.
+
+    Returns:
+        Tuple[CutSet, bool]: Converted cuts and a flag indicating if data was tarred.
+    """
+    cuts, is_tarred = read_cutset_from_config(config)
+
+    add_extra_end_sil = config.get("add_extra_end_silence", False)
+    extra_end_silence_range = config.get("extra_end_silence_range", [0.5, 6.0])
+    sample_rate = config.get("sample_rate", 22050)
+
+    max_cer = config.get("max_cer", 0.03)
+    min_context_speaker_similarity = config.get("min_context_speaker_similarity", 0.6)
+    target_speaker = config.get("target_speaker", None)
+    keep_flag = "pass"
+
+    def create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
+        """Convert a numpy array into a Lhotse Recording object."""
+        with io.BytesIO() as buffer:
+            sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
+            buffer.seek(0)
+            return Recording.from_bytes(buffer.read(), recording_id=recording_id)
+
+    def convert_cut_fn(cut: Cut) -> Cut:
+        """Convert a single cut into the continuation format."""
+        orig_agent_sup = fastcopy(cut.supervisions[0])
+        target_audio_orig_dur = cut.target_audio.duration
+
+        # Resample audios
+        cut.target_audio = cut.target_audio.resample(sample_rate)
+        cut.context_audio = cut.context_audio.resample(sample_rate)
+        total_duration = cut.target_audio.duration
+
+        # Prepare MonoCuts
+        cut_target = MonoCut(
+            id=f"{cut.id}_target",
+            start=0.0,
+            duration=total_duration,
+            channel=0,
+            recording=cut.target_audio,
+            supervisions=[],
+        )
+
+        zero_audio = np.zeros((1, int(total_duration * sample_rate)), dtype=np.float32)
+        source_recording = create_recording_from_array(zero_audio, sample_rate, recording_id=f"{cut.id}_source")
+
+        cut_source = MonoCut(
+            id=f"{cut.id}_source",
+            start=0.0,
+            duration=total_duration,
+            channel=0,
+            recording=source_recording,
+            supervisions=[],
+        )
+
+        # Save to memory
+        cut_source = cut_source.move_to_memory(audio_format='wav')
+        cut_target = cut_target.move_to_memory(audio_format='wav')
+
+        # Create user and agent supervisions
+        user_sup = fastcopy(orig_agent_sup, start=0.0, duration=0.08, speaker="user", text="dummy text")
+        agent_sup = fastcopy(orig_agent_sup, start=0.0, duration=target_audio_orig_dur - 0.08, speaker="agent")
+
+        # Optionally add extra silence
+        if add_extra_end_sil:
+            sil_duration = random.uniform(*extra_end_silence_range)
+            cut_target = cut_target.pad(duration=total_duration + sil_duration, direction="right")
+            cut_source = cut_source.pad(duration=total_duration + sil_duration, direction="right")
+            cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')
+            cut_target = cut_target.to_mono().move_to_memory(audio_format='wav')
+            agent_sup.duration += sil_duration + 1.0
+            user_sup.duration += sil_duration
+
+        # Assemble final cut
+        cut_source.supervisions = [user_sup, agent_sup]
+        cut_source.target_audio = cut_target.recording
+        cut_source.duration = cut_target.duration
+        cut_source.context_audio = cut.context_audio
+        cut_source.formatter = "lhotse_magpietts_data_as_continuation"
+
+        return cut_source
+
+    # Filters
+    def filter_cer_fn(cut: Cut) -> bool:
+        return (
+            len(cut.supervisions) == 0
+            or not cut.supervisions[0].has_custom("cer")
+            or cut.supervisions[0].cer <= max_cer
+        )
+
+    def filter_val_flag_fn(cut: Cut) -> bool:
+        return not cut.has_custom("validation_status") or cut.validation_status == keep_flag
+
+    def filter_secs_fn(cut: Cut) -> bool:
+        return (
+            len(cut.supervisions) == 0
+            or not cut.supervisions[0].has_custom("context_speaker_similarity")
+            or cut.supervisions[0].context_speaker_similarity >= min_context_speaker_similarity
+        )
+
+    def filter_target_speaker_fn(cut: Cut) -> bool:
+        return len(cut.supervisions) == 0 or target_speaker is None or target_speaker in cut.supervisions[0].speaker
+
+    # Apply filters
+    cuts = (
+        cuts.filter(filter_cer_fn).filter(filter_val_flag_fn).filter(filter_secs_fn).filter(filter_target_speaker_fn)
+    )
+
+    # Convert cuts
+    cuts = cuts.map(convert_cut_fn)
+
+    return cuts, is_tarred
 
 
 @data_type_parser(["lhotse_as_conversation"])

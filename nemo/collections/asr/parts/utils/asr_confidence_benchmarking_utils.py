@@ -79,7 +79,6 @@ def run_confidence_benchmark(
     draw_plot = plot_dir is not None
     if isinstance(plot_dir, str):
         plot_dir = Path(plot_dir)
-    is_rnnt = isinstance(model, EncDecRNNTModel)
 
     # transcribe audio
     with torch.amp.autocast(model.device.type, enabled=use_amp):
@@ -87,8 +86,6 @@ def run_confidence_benchmark(
             transcriptions = model.transcribe(
                 audio=filepaths, batch_size=batch_size, return_hypotheses=True, num_workers=num_workers
             )
-    if is_rnnt:
-        transcriptions = transcriptions[0]
 
     levels = []
     if target_level != "word":

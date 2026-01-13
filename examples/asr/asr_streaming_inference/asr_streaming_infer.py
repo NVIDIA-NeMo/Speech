@@ -50,7 +50,6 @@ from nemo.collections.asr.inference.streaming.framing.request_options import ASR
 from nemo.collections.asr.inference.utils.manifest_io import calculate_duration, dump_output, get_audio_filepaths
 from nemo.collections.asr.inference.utils.pipeline_eval import calculate_pipeline_laal, evaluate_pipeline
 from nemo.collections.asr.inference.utils.progressbar import TQDMProgressBar
-from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.utils import logging
 from nemo.utils.timers import SimpleTimer

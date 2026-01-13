@@ -250,7 +250,9 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
             if self.return_xattn_scores:
                 if xatt_scores_list is not None:
                     for layer in range(len(xatt_scores_list)):
-                        xatt_scores_list[layer] = torch.cat((xatt_scores_list[layer], new_xatt_scores_list[layer]), dim=2)
+                        xatt_scores_list[layer] = torch.cat(
+                            (xatt_scores_list[layer], new_xatt_scores_list[layer]), dim=2
+                        )
                 else:
                     xatt_scores_list = new_xatt_scores_list
 

@@ -566,7 +566,7 @@ class TestTranscriptionMixin:
             num_workers=0,
             verbose=False,
             prompt={'source_lang': 'en', 'target_lang': 'en'},
-            enable_chunking=False
+            enable_chunking=False,
         )
 
         output = canary_1b_v2.transcribe([audio1, audio2], override_config=config)

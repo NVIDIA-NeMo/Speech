@@ -145,7 +145,7 @@ def test_beam_decoding_beam_scores_false(inputs, nnet):
 
 @pytest.mark.parametrize('return_xattn_scores', [False, True])
 def test_beam_decoding_beam_scores_true(inputs, nnet, return_xattn_scores):
-    gen = BeamSearchSequenceGenerator(*nnet, return_xattn_scores=return_xattn_scores,  beam_size=2)
+    gen = BeamSearchSequenceGenerator(*nnet, return_xattn_scores=return_xattn_scores, beam_size=2)
     output = gen(*inputs, return_beam_scores=True)
 
     assert len(output) == 4
@@ -194,7 +194,7 @@ def test_beam_decoding_beam_scores_true_with_fusion_models(inputs, nnet):
         return_xattn_scores=True,
         fusion_models=fusion_models,
         fusion_models_alpha=fusion_models_alpha,
-        beam_size=2
+        beam_size=2,
     )
     output = gen(*inputs, return_beam_scores=True)
 

@@ -164,7 +164,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             n_samples=n_samples,
             preserve_step_confidence=preserve_token_confidence,
             confidence_method_cfg=confidence_method_cfg,
-            return_xattn_scores=return_xattn_scores
+            return_xattn_scores=return_xattn_scores,
         )
 
         self.preserve_alignments = preserve_alignments

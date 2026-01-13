@@ -546,6 +546,9 @@ class NeMoMultimodalConversationJsonlAdapter:
         seed = resolve_seed(self.shard_seed) + self.epoch
         return random.Random(seed)
 
+    def _make_cut_id(self, turn: dict) -> str:
+        return f"{Path(turn['value']).stem}_{turn.get('offset', 0.0):.3f}_{turn.get('duration'):.3f}" if turn.get("offset", 0.0)>0 else Path(turn['value']).stem
+
     def _iter_tar(self):
         paths = list(zip(self.manifest_filepath, self.tarred_audio_filepaths))
         rng = self._get_rng()
@@ -568,7 +571,7 @@ class NeMoMultimodalConversationJsonlAdapter:
                 for turn in audio_turns:
                     recording, audio_path = next(tar)
                     audio_path = str(audio_path)
-                    cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                    cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration")).with_id(self._make_cut_id(turn))
                     assert audio_path == turn['value'], (
                         f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got "
                         f"the following from tar {audio_path=}.\nBad inputs in: {jsonl_path=} {tar_path=}"
@@ -630,7 +633,12 @@ class NeMoMultimodalConversationJsonlAdapter:
                         )
                         if turn["type"] == "text"
                         else AudioTurn(
-                            cut=(cut := Recording.from_file(get_full_path(turn["value"], path)).to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))),
+                            cut=(cut := 
+                                 Recording.from_file(get_full_path(turn["value"], path))
+                                 .to_cut()
+                                 .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                                 .with_id(self._make_cut_id(turn))
+                                ),
                             text=cut.supervisions[0].text if cut.supervisions else None,
                             role=turn["from"].lower(),
                             audio_locator_tag=self.audio_locator_tag,

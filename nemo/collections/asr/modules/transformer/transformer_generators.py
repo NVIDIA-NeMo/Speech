@@ -58,6 +58,8 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
 
         preserve_step_confidence: Bool flag which preserves the history of per-step confidence scores generated
             during greedy decoding. When set to true, the results will contain additional List of tensor floats.
+        return_xattn_scores: Bool flag which indicates whether to keep and return the cross-attention scores
+            during greedy/beam search decoding. When set to true, the results will contain additional List of tensors.
         confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-step
             confidence scores.
             name: The method name (str).
@@ -102,6 +104,7 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
         n_samples=1,
         temperature=None,
         preserve_step_confidence=False,
+        return_xattn_scores=False,
         confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__()
@@ -115,6 +118,7 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
         self.n_samples = n_samples
         self.temperature = temperature
         self.preserve_step_confidence = preserve_step_confidence
+        self.return_xattn_scores = return_xattn_scores
 
         # set confidence calculation method
         self.num_tokens = getattr(self.classifier.mlp, f'layer{self.classifier.mlp.layers - 1}').out_features
@@ -243,11 +247,12 @@ class GreedySequenceGenerator(ConfidenceMethodMixin):
                 i,
                 return_scores=return_beam_scores,
             )
-            if xatt_scores_list is not None:
-                for layer in range(len(xatt_scores_list)):
-                    xatt_scores_list[layer] = torch.cat((xatt_scores_list[layer], new_xatt_scores_list[layer]), dim=2)
-            else:
-                xatt_scores_list = new_xatt_scores_list
+            if self.return_xattn_scores:
+                if xatt_scores_list is not None:
+                    for layer in range(len(xatt_scores_list)):
+                        xatt_scores_list[layer] = torch.cat((xatt_scores_list[layer], new_xatt_scores_list[layer]), dim=2)
+                else:
+                    xatt_scores_list = new_xatt_scores_list
 
             if self.temperature is None:  # Greedy decoding
                 next_tokens = torch.argmax(logits[:, -1], dim=-1)
@@ -422,6 +427,8 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
         log_probs, decoder_mems_list, xatt_scores_list = self._one_step_forward(
             tgt, encoder_hidden_states, encoder_input_mask, None, 0
         )
+        if not self.return_xattn_scores:
+            xatt_scores_list = None
         scores, prefixes = torch.topk(log_probs.permute(0, 2, 1), self.beam_size, dim=1)
         scores, prefixes = scores.view(-1, 1), prefixes.view(-1, 1)
 
@@ -489,7 +496,7 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
             prefixes = prefixes.gather(1, prefixes_ids).view(-1, p_len)
 
             # select xatt scores corresponding to chosen hypotheses
-            if next_xatt_scores_list is not None:
+            if self.return_xattn_scores and next_xatt_scores_list is not None:
                 num_heads = xatt_scores_list[0].shape[1]
                 xatt_indices_i = (
                     indices_i.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, num_heads, p_len - 1, src_length)
@@ -590,6 +597,8 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
         log_probs, decoder_mems_list, xatt_scores_list = self._one_step_forward(
             tgt, encoder_hidden_states, encoder_input_mask, None, 0
         )
+        if not self.return_xattn_scores:
+            xatt_scores_list = None
         # get fusion models scores
         for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
             fusion_scores, batch_fusion_states_candidates = fusion_model.advance(
@@ -690,7 +699,7 @@ class BeamSearchSequenceGeneratorWithFusionModels(BeamSearchSequenceGenerator):
             prefixes = prefixes.gather(1, prefixes_ids).view(-1, p_len)
 
             # select xatt scores corresponding to chosen hypotheses
-            if next_xatt_scores_list is not None:
+            if self.return_xattn_scores and next_xatt_scores_list is not None:
                 num_heads = xatt_scores_list[0].shape[1]
                 xatt_indices_i = (
                     indices_i.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, 1, num_heads, p_len - 1, src_length)

@@ -138,6 +138,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
         preserve_token_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         n_samples: int = 1,
+        return_xattn_scores: bool = False,
     ):
         super().__init__(
             transformer_decoder=transformer_decoder,
@@ -163,6 +164,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             n_samples=n_samples,
             preserve_step_confidence=preserve_token_confidence,
             confidence_method_cfg=confidence_method_cfg,
+            return_xattn_scores=return_xattn_scores
         )
 
         self.preserve_alignments = preserve_alignments
@@ -228,7 +230,8 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             else:
                 beam_scores = [None for _ in range(len(best_hypo))]
                 best_hypo = best_hypo.cpu()
-                xatt_scores_list = [xatt_scores_layer.detach().cpu() for xatt_scores_layer in xatt_scores_list]
+                if xatt_scores_list is not None:
+                    xatt_scores_list = [xatt_scores_layer.detach().cpu() for xatt_scores_layer in xatt_scores_list]
                 hypotheses = [
                     Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(encoder_hidden_states.shape[0])
                 ]

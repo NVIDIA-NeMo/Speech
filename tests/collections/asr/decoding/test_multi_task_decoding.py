@@ -81,8 +81,11 @@ def tokenizer():
 
 
 @pytest.mark.parametrize('with_confidence', [False, True])
-def test_greedy_decoding(inputs, nnet, deterministic_rng, with_confidence):
-    gen = GreedySequenceGenerator(*nnet, preserve_step_confidence=with_confidence)
+@pytest.mark.parametrize('return_xattn_scores', [False, True])
+def test_greedy_decoding(inputs, nnet, deterministic_rng, with_confidence, return_xattn_scores):
+    gen = GreedySequenceGenerator(
+        *nnet, return_xattn_scores=return_xattn_scores, preserve_step_confidence=with_confidence
+    )
     output = gen(*inputs)
 
     assert len(output) == 4
@@ -91,8 +94,11 @@ def test_greedy_decoding(inputs, nnet, deterministic_rng, with_confidence):
     assert best_path is not None
     assert torch.is_tensor(best_path)
     assert best_path.shape == (1, 25)
-    assert len(xattn_list) == len(nnet[1].layers)
-    assert xattn_list[0].shape == (1, 1, 24, 5)
+    if return_xattn_scores:
+        assert len(xattn_list) == len(nnet[1].layers)
+        assert xattn_list[0].shape == (1, 1, 24, 5)
+    else:
+        assert xattn_list is None
 
     assert hypotheses is None
 
@@ -105,7 +111,7 @@ def test_greedy_decoding(inputs, nnet, deterministic_rng, with_confidence):
 
 
 def test_temperature_sampling_decoding(inputs, nnet):
-    gen = GreedySequenceGenerator(*nnet, temperature=10.0, n_samples=2)
+    gen = GreedySequenceGenerator(*nnet, return_xattn_scores=True, temperature=10.0, n_samples=2)
     output = gen(*inputs)
 
     assert len(output) == 4
@@ -137,8 +143,9 @@ def test_beam_decoding_beam_scores_false(inputs, nnet):
     assert best_path.shape == (26,)
 
 
-def test_beam_decoding_beam_scores_true(inputs, nnet):
-    gen = BeamSearchSequenceGenerator(*nnet, beam_size=2)
+@pytest.mark.parametrize('return_xattn_scores', [False, True])
+def test_beam_decoding_beam_scores_true(inputs, nnet, return_xattn_scores):
+    gen = BeamSearchSequenceGenerator(*nnet, return_xattn_scores=return_xattn_scores,  beam_size=2)
     output = gen(*inputs, return_beam_scores=True)
 
     assert len(output) == 4
@@ -162,10 +169,13 @@ def test_beam_decoding_beam_scores_true(inputs, nnet):
     assert torch.is_tensor(best_path)
     assert best_path.shape == (1, 26)
 
-    assert xatt_scores_list is not None
-    assert isinstance(xatt_scores_list, list)
-    assert torch.is_tensor(xatt_scores_list[0])
-    assert xatt_scores_list[0].shape == (1, 1, 25, 5)
+    if return_xattn_scores:
+        assert xatt_scores_list is not None
+        assert isinstance(xatt_scores_list, list)
+        assert torch.is_tensor(xatt_scores_list[0])
+        assert xatt_scores_list[0].shape == (1, 1, 25, 5)
+    else:
+        assert xatt_scores_list is None
 
 
 def test_beam_decoding_beam_scores_true_with_fusion_models(inputs, nnet):
@@ -180,7 +190,11 @@ def test_beam_decoding_beam_scores_true_with_fusion_models(inputs, nnet):
     fusion_models_alpha = [0.2, 0.2]
 
     gen = BeamSearchSequenceGeneratorWithFusionModels(
-        *nnet, fusion_models=fusion_models, fusion_models_alpha=fusion_models_alpha, beam_size=2
+        *nnet,
+        return_xattn_scores=True,
+        fusion_models=fusion_models,
+        fusion_models_alpha=fusion_models_alpha,
+        beam_size=2
     )
     output = gen(*inputs, return_beam_scores=True)
 

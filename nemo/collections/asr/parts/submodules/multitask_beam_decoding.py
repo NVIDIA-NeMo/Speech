@@ -145,6 +145,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
         ngram_lm_alpha: float = 0.0,
         boosting_tree: BoostingTreeModelConfig | None = None,
         boosting_tree_alpha: float = 0.0,
+        return_xattn_scores: bool = False,
     ):
         super().__init__(
             transformer_decoder=transformer_decoder,
@@ -189,6 +190,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 eos=self.eos,
                 len_pen=length_penalty,
                 max_delta_length=max_generation_delta,
+                return_xattn_scores=return_xattn_scores,
             )
         else:
             self.beam_search = BeamSearchSequenceGeneratorWithFusionModels(
@@ -204,6 +206,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 max_delta_length=max_generation_delta,
                 fusion_models=fusion_models,
                 fusion_models_alpha=fusion_models_alpha,
+                return_xattn_scores=return_xattn_scores,
             )
 
         self.preserve_alignments = preserve_alignments

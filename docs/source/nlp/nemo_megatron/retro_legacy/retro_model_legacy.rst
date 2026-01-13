@@ -39,7 +39,8 @@ Both types of data are stored in a loose JSON format, with each line containing 
     {"src": "www.nvidia.com", "text": "The quick brown fox", "type": "Eng", "id": "0", "title": "First Part"}
     {"src": "The Internet", "text": "jumps over the lazy dog", "type": "Eng", "id": "42", "title": "Second Part"}
 
-The name of the text field of the json can be changed by using the ``--json-key`` flag in ``preprocess_data_for_megatron.py``.  The other metadata are optional and are not used in training.
+The name of the text field of the json can be changed by using the ``--json-key`` flag in Megatron-LM ``tools/preprocess_data.py``. The other metadata are optional and are not used in training.
+
 
 Step 2: Convert training data into memory map format
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -51,7 +52,7 @@ An example script to prepare data for RETRO training is:
 
 .. code-block:: bash
 
-    python scripts/nlp_language_modeling/preprocess_data_for_megatron.py \
+    python <MEGATRON_LM_ROOT>/tools/preprocess_data.py \
         --input=/dataset/pubmed_train.jsonl \
         --json-keys=text \
         --tokenizer-library=megatron \
@@ -201,7 +202,7 @@ Following is the KNN index data format:
 Step 4.1: Build KNN sharding index
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The KNN index is built using the memory-mapped training data created by the ``preprocess_data_for_megatron.py`` script and the Faiss index 
+The KNN index is built using the memory-mapped training data created by the ``Megatron-LM ``tools/preprocess_data.py`` script and the Faiss index 
 file for the retrieval data built by the ``build_retrieval_index.py`` script.
 
 An example script is:

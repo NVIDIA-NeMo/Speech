@@ -81,7 +81,6 @@ class DummyDataset(Dataset):
         return len(self.audio_tensors)
 
 
-@pytest.mark.with_downloads()
 @pytest.fixture()
 def audio_files(test_data_dir):
     """

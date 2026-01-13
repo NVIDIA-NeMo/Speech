@@ -17,7 +17,6 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List
-from unittest.mock import patch
 
 import pytest
 import torch

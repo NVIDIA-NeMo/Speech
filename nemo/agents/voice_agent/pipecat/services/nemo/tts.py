@@ -536,12 +536,12 @@ class KokoroTTSService(BaseNemoTTSService):
             }
             logger.debug(f"Speed remains unchanged since the change is not a positive number: {speed_lambda}")
         else:
-            self._speed = speed_lambda * self._original_speed
+            self._speed = speed_lambda * self._speed
             result = {
                 "success": True,
-                "message": f"Speed set to {speed_lambda} of the original speed",
+                "message": f"Speed set to {speed_lambda} of the previous speed",
             }
-            logger.debug(f"Speed set to {speed_lambda} of the original speed {self._original_speed}")
+            logger.debug(f"Speed set to {speed_lambda} of the previous speed {self._original_speed}")
         await params.result_callback(result)
 
     async def tool_tts_reset_speed(self, params: FunctionCallParams):
@@ -564,12 +564,12 @@ class KokoroTTSService(BaseNemoTTSService):
         interrupted by calling this tool, otherwise start a new response.
         """
         self._speed_lambda = self._speed_lambda + 0.15
-        self._speed = self._speed_lambda * self._original_speed
+        self._speed = self._speed_lambda * self._speed
         result = {
             "success": True,
-            "message": f"Speaking speed is increased to {self._speed_lambda} of the original speed",
+            "message": f"Speaking speed is increased to {self._speed_lambda} of the previous speed",
         }
-        logger.debug(f"Speed is set to {self._speed_lambda} of the original speed {self._original_speed}")
+        logger.debug(f"Speed is set to {self._speed_lambda} of the previous speed {self._speed}")
         await params.result_callback(result)
 
     async def tool_tts_speak_slower(self, params: FunctionCallParams):
@@ -581,19 +581,19 @@ class KokoroTTSService(BaseNemoTTSService):
         """
         self._speed_lambda = self._speed_lambda - 0.15
         if self._speed_lambda < 0.1:
-            self._speed = 0.1 * self._original_speed
+            self._speed = 0.1 * self._speed
             result = {
                 "success": True,
-                "message": "Speaking speed is decreased to the minimum of 0.1 of the original speed",
+                "message": "Speaking speed is decreased to the minimum of 0.1 of the previous speed",
             }
-            logger.debug(f"Speed is set to the minimum of 0.1 of the original speed {self._original_speed}")
+            logger.debug(f"Speed is set to the minimum of 0.1 of the previous speed {self._speed}")
         else:
-            self._speed = self._speed_lambda * self._original_speed
+            self._speed = self._speed_lambda * self._speed
             result = {
                 "success": True,
-                "message": f"Speaking speed is decreased to {self._speed_lambda} of the original speed",
+                "message": f"Speaking speed is decreased to {self._speed_lambda} of the previous speed",
             }
-            logger.debug(f"Speed is set to {self._speed_lambda} of the original speed {self._original_speed}")
+            logger.debug(f"Speed is set to {self._speed_lambda} of the previous speed {self._speed}")
         await params.result_callback(result)
 
     async def tool_tts_set_voice(self, params: FunctionCallParams, accent: str, gender: str):

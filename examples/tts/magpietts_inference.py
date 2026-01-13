@@ -504,10 +504,14 @@ def create_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main():
-    """Main entry point."""
+def main(argv=None):
+    """Entry point for MagpieTTS inference and evaluation.
+
+    Args:
+        argv: Command-line arguments. If None, uses sys.argv.
+    """
     parser = create_argument_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     dataset_meta_info = load_evalset_config(args.datasets_json_path)
     datasets = filter_datasets(dataset_meta_info, args.datasets)

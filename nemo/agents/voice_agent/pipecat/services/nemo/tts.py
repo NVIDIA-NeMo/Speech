@@ -639,7 +639,7 @@ class KokoroTTSService(BaseNemoTTSService):
         self._gender = new_gender
         self._voice = new_voice
         logger.debug(f"Language and voice are set to {new_lang_code} and {new_voice}")
-        await params.result_callback({"success": True, "message": "Done. Language and voice are set to the new ones."})
+        await params.result_callback({"success": True, "message": "Voice has been updated."})
 
     async def tool_tts_reset_voice(self, params: FunctionCallParams):
         """
@@ -659,7 +659,7 @@ class KokoroTTSService(BaseNemoTTSService):
             f"Language and voice are reset to the original ones {self._original_lang_code} and {self._original_voice}"
         )
         await params.result_callback(
-            {"success": True, "message": "Done. Language and voice are reset to the original ones."}
+            {"success": True, "message": "Voice has been reset to the original one."}
         )
 
     def setup_tool_calling(self):

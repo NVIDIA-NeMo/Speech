@@ -98,7 +98,7 @@ def _is_target_allowed(target: str) -> bool:
     # resolve to object
     try:
         obj = hydra.utils.get_class(target)
-    except Exception as e:
+    except Exception:
         # Hydra fails on functions; try get_object instead
         try:
             obj = hydra.utils.get_object(target)
@@ -584,9 +584,9 @@ class Typing(ABC):
                 )
 
 
-class Serialization(ABC):
+class Serialization(ABC):  # pylint: disable=C0115
     @classmethod
-    def from_config_dict(cls, config: 'DictConfig', trainer: Optional['Trainer'] = None):
+    def from_config_dict(cls, config: 'DictConfig', trainer: Optional['Trainer'] = None):  # noqa: F821
         """Instantiates object using DictConfig-based configuration"""
         # Resolve the config dict
         if isinstance(config, DictConfig):
@@ -675,7 +675,7 @@ class Serialization(ABC):
             return False
 
 
-class FileIO(ABC):
+class FileIO(ABC):  # pylint: disable=C0115
     def save_to(self, save_path: str):
         """
         Standardized method to save a tarfile containing the checkpoint, config, and any additional artifacts.
@@ -694,7 +694,7 @@ class FileIO(ABC):
         map_location: Optional['torch.device'] = None,
         strict: bool = True,
         return_config: bool = False,
-        trainer: Optional['Trainer'] = None,
+        trainer: Optional['Trainer'] = None,  # noqa: F821
         save_restore_connector: SaveRestoreConnector = None,
     ):
         """
@@ -750,7 +750,7 @@ class FileIO(ABC):
 
 @total_ordering
 @dataclass
-class PretrainedModelInfo:
+class PretrainedModelInfo:  # pylint: disable=C0115
     pretrained_model_name: str
     description: str
     location: str
@@ -826,7 +826,7 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
         map_location: Optional['torch.device'] = None,
         strict: bool = True,
         return_config: bool = False,
-        trainer: Optional['Trainer'] = None,
+        trainer: Optional['Trainer'] = None,  # noqa: F821
         save_restore_connector: SaveRestoreConnector = None,
         return_model_file: Optional[bool] = False,
     ):
@@ -1135,6 +1135,7 @@ class typecheck:
         return self.wrapped_call(wrapped)
 
     def unwrapped_call(self, wrapped):
+        """ Call without typechecking """
         return wrapped
 
     @wrapt.decorator(enabled=is_typecheck_enabled)
@@ -1250,6 +1251,7 @@ class typecheck:
 
     @staticmethod
     def enable_wrapping(enabled: bool = True):
+        """ Enables typechecking """
         typecheck.set_typecheck_enabled(enabled)
         if enabled:
             typecheck.__call__ = nemo.core.classes.common.typecheck.wrapped_call

@@ -86,12 +86,19 @@ def multimodal_conversations_path(tmp_path_factory):
                     "from": "Assistant",
                     "type": "text",
                 },
+                {
+                    "value": "123_answer.wav",
+                    "from": "Assistant",
+                    "type": "audio",
+                    "duration": 5,
+                    "offset": 7.11
+                },
             ],
         }
     ]
     lhotse.serialization.save_to_jsonl(data, en_path)
     dummy_recording(0, 5.73, with_data=True).to_cut().save_audio(tmp_path / "123.wav")
-    dummy_recording(0, 7.11, with_data=True).to_cut().save_audio(tmp_path / "123_answer.wav")
+    dummy_recording(0, 12.11, with_data=True).to_cut().save_audio(tmp_path / "123_answer.wav")
     return en_path
 
 
@@ -137,7 +144,7 @@ def test_multimodal_conversation_input(multimodal_conversations_path):
     ex = b[0]
     assert isinstance(ex, NeMoMultimodalConversation)
     assert ex.id == "convo_1"
-    assert len(ex.turns) == 6
+    assert len(ex.turns) == 7
     t = ex.turns[0]
     assert isinstance(t, TextTurn)
     assert t.role == "user"
@@ -157,6 +164,7 @@ def test_multimodal_conversation_input(multimodal_conversations_path):
     assert t.role == "assistant"
     assert t.audio_locator_tag == "[audio]"
     assert t.cut.duration == 7.11
+    assert t.cut.start == 0.0
     assert t.cut.load_audio().shape == (1, 113760)
     t = ex.turns[4]
     assert isinstance(t, TextTurn)
@@ -166,7 +174,13 @@ def test_multimodal_conversation_input(multimodal_conversations_path):
     assert isinstance(t, TextTurn)
     assert t.role == "assistant"
     assert t.value == "Of course!"
-
+    t = ex.turns[6]
+    assert isinstance(t, AudioTurn)
+    assert t.role == "assistant"
+    assert t.audio_locator_tag == "[audio]"
+    assert t.cut.duration == 5.0
+    assert t.cut.start == 7.11
+    assert t.cut.load_audio().shape == (1, 80000)
 
 @pytest.fixture(scope="session")
 def sharegpt_conversations_path(tmp_path_factory):
@@ -339,12 +353,11 @@ def test_multimodal_conversation_input_with_prompt(multimodal_conversations_path
     assert len(b) == 1
     ex = b[0]
     assert isinstance(ex, NeMoMultimodalConversation)
-
     assert torch.is_tensor(ex.input_ids)
-    assert ex.input_ids.shape == (105,)
+    assert ex.input_ids.shape == (107,)
     assert (
         tokenizer.ids_to_text(ex.input_ids)
-        == "[INST] Can you help summarize the following? [audio] [/INST] I'm glad to assist you with your request. Here's a summary: [audio] [INST] Can you further shorten it? [/INST] Of course!"
+        == "[INST] Can you help summarize the following? [audio] [/INST] I'm glad to assist you with your request. Here's a summary: [audio] [INST] Can you further shorten it? [/INST] Of course! [audio]"
     )
 
     assert torch.is_tensor(ex.context_ids)
@@ -355,11 +368,11 @@ def test_multimodal_conversation_input_with_prompt(multimodal_conversations_path
     )
 
     assert torch.is_tensor(ex.answer_ids)
-    assert ex.answer_ids.shape == (10,)
-    assert tokenizer.ids_to_text(ex.answer_ids) == "Of course!"
+    assert ex.answer_ids.shape == (12,)
+    assert tokenizer.ids_to_text(ex.answer_ids) == "Of course! [audio]"
 
     assert torch.is_tensor(ex.mask)
-    assert ex.mask.shape == (105,)
+    assert ex.mask.shape == (107,)
     assert (ex.mask[:30] == False).all()  # user turn
     assert (ex.mask[30:72] == True).all()  # assistant turn
     assert (ex.mask[72:95] == False).all()  # user turn
@@ -554,6 +567,8 @@ def test_multimodal_conversation_tarred_format(multimodal_conversations_path, tm
         else:
             assert lhs.audio_locator_tag == rhs.audio_locator_tag
             assert lhs.cut.id == rhs.cut.id
+            assert lhs.cut.duration == rhs.cut.duration
+            assert lhs.cut.recording.id == rhs.cut.recording.id
             np.testing.assert_allclose(lhs.cut.load_audio(), rhs.cut.load_audio())
 
 

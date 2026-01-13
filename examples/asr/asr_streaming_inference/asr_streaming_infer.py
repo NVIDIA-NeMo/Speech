@@ -114,22 +114,6 @@ def main(cfg):
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
     logging.info(f"RTFx: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
 
-    # Calculate WER
-    if manifest:
-        hypotheses = [output[i]["text"] for i in range(len(manifest))]
-        references = [record["text"] for record in manifest]
-        cer = word_error_rate(
-            hypotheses=hypotheses,
-            references=references,
-            use_cer=True,
-        )
-        wer = word_error_rate(
-            hypotheses=hypotheses,
-            references=references,
-            use_cer=False,
-        )
-        logging.info(f"Dataset WER/CER {wer:.2%}/{cer:.2%}")
-
     # Calculate LAAL
     laal = calculate_pipeline_laal(output, durations, manifest, cfg)
     if laal is not None:

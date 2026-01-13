@@ -93,6 +93,11 @@ class BiasingRequestItemConfig:
 
 
 class GPUBiasingMultiModelBase(abc.ABC, nn.Module):
+    """
+    Base class for implementing biasing multi-model:
+    model that contains multiple biasing models and handles batched requests for them
+    """
+
     START_STATE = 0
 
     @abstractmethod
@@ -671,7 +676,6 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
 
         num_iterations = 0
         while start_state_not_processed.any():
-            # assert num_iterations <= self.max_order, "Infinite loop in LM advance"
             num_iterations += 1
             # get arc boundaries
             start, end = self.all_start_end_arcs[current_states + states_offsets].unbind(dim=1)

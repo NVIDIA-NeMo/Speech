@@ -1135,7 +1135,7 @@ class typecheck:
         return self.wrapped_call(wrapped)
 
     def unwrapped_call(self, wrapped):
-        """ Call without typechecking """
+        """Call without typechecking"""
         return wrapped
 
     @wrapt.decorator(enabled=is_typecheck_enabled)
@@ -1251,7 +1251,7 @@ class typecheck:
 
     @staticmethod
     def enable_wrapping(enabled: bool = True):
-        """ Enables typechecking """
+        """Enables typechecking"""
         typecheck.set_typecheck_enabled(enabled)
         if enabled:
             typecheck.__call__ = nemo.core.classes.common.typecheck.wrapped_call

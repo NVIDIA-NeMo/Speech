@@ -547,7 +547,11 @@ class NeMoMultimodalConversationJsonlAdapter:
         return random.Random(seed)
 
     def _make_cut_id(self, turn: dict) -> str:
-        return f"{Path(turn['value']).stem}_{turn.get('offset', 0.0):.3f}_{turn.get('duration'):.3f}" if turn.get("offset", 0.0)>0 else Path(turn['value']).stem
+        return (
+            f"{Path(turn['value']).stem}_{turn.get('offset', 0.0):.3f}_{turn.get('duration'):.3f}"
+            if turn.get("offset", 0.0) > 0
+            else Path(turn['value']).stem
+        )
 
     def _iter_tar(self):
         paths = list(zip(self.manifest_filepath, self.tarred_audio_filepaths))
@@ -571,7 +575,11 @@ class NeMoMultimodalConversationJsonlAdapter:
                 for turn in audio_turns:
                     recording, audio_path = next(tar)
                     audio_path = str(audio_path)
-                    cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration")).with_id(self._make_cut_id(turn))
+                    cut = (
+                        recording.to_cut()
+                        .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                        .with_id(self._make_cut_id(turn))
+                    )
                     assert audio_path == turn['value'], (
                         f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got "
                         f"the following from tar {audio_path=}.\nBad inputs in: {jsonl_path=} {tar_path=}"
@@ -633,12 +641,12 @@ class NeMoMultimodalConversationJsonlAdapter:
                         )
                         if turn["type"] == "text"
                         else AudioTurn(
-                            cut=(cut := 
-                                 Recording.from_file(get_full_path(turn["value"], path))
-                                 .to_cut()
-                                 .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
-                                 .with_id(self._make_cut_id(turn))
-                                ),
+                            cut=(
+                                cut := Recording.from_file(get_full_path(turn["value"], path))
+                                .to_cut()
+                                .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                                .with_id(self._make_cut_id(turn))
+                            ),
                             text=cut.supervisions[0].text if cut.supervisions else None,
                             role=turn["from"].lower(),
                             audio_locator_tag=self.audio_locator_tag,
@@ -919,22 +927,31 @@ class NeMoMultimodalConversationTarWriter:
     def write(self, example: NeMoMultimodalConversation):
         self._maybe_increment_shard()
         serialized = example.to_dict()
+
         def change_audio_path(id, offset: float, duration: float):
-            offset = f"{offset:.3f}" if offset>0 else None
+            offset = f"{offset:.3f}" if offset > 0 else None
             new_path = f"{id}_{offset}_{duration:.3f}" if offset else id
             return new_path
+
         for turn in serialized["conversations"]:
             if turn["type"] == "audio":
                 turn["value"] = Path(
                     change_audio_path(Path(turn['value']).stem, turn["offset"], turn["duration"]) + ".flac"
                 ).name
-                turn.pop("offset")  # cut.load_audio() will load the segment based on the offset, so the new turn will start at offset=0
+                turn.pop(
+                    "offset"
+                )  # cut.load_audio() will load the segment based on the offset, so the new turn will start at offset=0
         self.manifest_writer.write(serialized)
         for cut in example.list_cuts():
             assert (
                 cut.has_recording
             ), f"Cannot serialize multimodal conversation with cuts that have no recordings. We got: {cut}"
-            self.tar_writer.write(change_audio_path(cut.recording.id, cut.start, cut.duration), cut.load_audio(), cut.sampling_rate, cut.recording)
+            self.tar_writer.write(
+                change_audio_path(cut.recording.id, cut.start, cut.duration),
+                cut.load_audio(),
+                cut.sampling_rate,
+                cut.recording,
+            )
         self.item_cntr += 1
 
     def close(self):

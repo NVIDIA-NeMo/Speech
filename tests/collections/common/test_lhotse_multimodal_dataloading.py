@@ -86,13 +86,7 @@ def multimodal_conversations_path(tmp_path_factory):
                     "from": "Assistant",
                     "type": "text",
                 },
-                {
-                    "value": "123_answer.wav",
-                    "from": "Assistant",
-                    "type": "audio",
-                    "duration": 5,
-                    "offset": 7.11
-                },
+                {"value": "123_answer.wav", "from": "Assistant", "type": "audio", "duration": 5, "offset": 7.11},
             ],
         }
     ]
@@ -182,6 +176,7 @@ def test_multimodal_conversation_input(multimodal_conversations_path):
     assert t.cut.start == 7.11
     assert t.cut.load_audio().shape == (1, 80000)
 
+
 @pytest.fixture(scope="session")
 def sharegpt_conversations_path(tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("sharegpt_data")
@@ -209,11 +204,13 @@ def sharegpt_conversations_path(tmp_path_factory):
                 {
                     "from": "human",
                     "value": "Transcribe this speech: <speech>",
+                    "duration": 1,
                 },
                 {
                     "from": "gpt",
                     "value": "The transcription is: Hello, how are you today?",
                 },
+                {"from": "human", "value": "And this one: <speech>", "offset": 1},
             ],
         },
     ]
@@ -255,6 +252,7 @@ def test_multimodal_conversation_input_sharegpt(sharegpt_conversations_path):
     assert t.role == "user"
     assert t.audio_locator_tag == "[audio]"
     assert t.cut.duration == 5.73
+    assert t.cut.start == 0
     assert t.cut.load_audio().shape == (1, 91680)
 
     # Third turn: text after <sound>
@@ -273,7 +271,7 @@ def test_multimodal_conversation_input_sharegpt(sharegpt_conversations_path):
     ex2 = conversations[1]
     assert isinstance(ex2, NeMoMultimodalConversation)
     assert ex2.id == "sharegpt_convo_2"
-    assert len(ex2.turns) == 3  # text + audio + text
+    assert len(ex2.turns) == 5  # text + audio + text + text + audio
 
     # First turn: text before <speech>
     t = ex2.turns[0]
@@ -286,14 +284,30 @@ def test_multimodal_conversation_input_sharegpt(sharegpt_conversations_path):
     assert isinstance(t, AudioTurn)
     assert t.role == "user"
     assert t.audio_locator_tag == "[audio]"
-    assert t.cut.duration == 3.45
-    assert t.cut.load_audio().shape == (1, 55200)
+    assert t.cut.duration == 1
+    assert t.cut.start == 0
+    assert t.cut.load_audio().shape == (1, 16000)
 
     # Third turn: GPT response
     t = ex2.turns[2]
     assert isinstance(t, TextTurn)
     assert t.role == "assistant"
     assert t.value == "The transcription is: Hello, how are you today?"
+
+    # Fourth turn: text before <speech>
+    t = ex2.turns[3]
+    assert isinstance(t, TextTurn)
+    assert t.role == "user"
+    assert t.value == "And this one:"
+
+    # Fifth turn: audio from <speech> placeholder
+    t = ex2.turns[4]
+    assert isinstance(t, AudioTurn)
+    assert t.role == "user"
+    assert t.audio_locator_tag == "[audio]"
+    assert t.cut.duration == 2.45
+    assert t.cut.start == 1
+    assert t.cut.load_audio().shape == (1, 39200)
 
 
 @pytest.fixture

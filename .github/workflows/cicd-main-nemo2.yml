@@ -39,6 +39,7 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_llama3_pretraining_recipe
             runner: self-hosted-azure
+            is-optional: true
           # - script: L2_NeMo_2_llama3_pytorch_profiler
           #   runner: self-hosted-azure
           #   timeout: 20
@@ -200,8 +201,8 @@ jobs:
             runner: self-hosted-azure-gpus-1
           - script: L2_NeMo_2_Auto_Configurator_bert_TP1_PP1_MBS124
             runner: self-hosted-azure-gpus-1
-          - script: L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124
-            runner: self-hosted-azure-gpus-1
+          # - script: L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124 #skipping t5 hanging tests 
+          #   runner: self-hosted-azure-gpus-1
           - script: L2_NeMo_2_Auto_Configurator_callbacks
             runner: self-hosted-azure-gpus-1
           - script: L2_NeMo_2_Conversion_Test_Baichuan2

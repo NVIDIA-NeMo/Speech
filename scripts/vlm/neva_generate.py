@@ -255,7 +255,7 @@ def main(args) -> None:
                 )
                 print(img_url, "->", response)
 
-        # Please see https://nvidia.github.io/TensorRT-Model-Optimizer/guides/_choosing_quant_methods.html
+        # Please see https://nvidia.github.io/Model-Optimizer/guides/_choosing_quant_methods.html
         # for the selection of quantization algorithms
         if args.quant_alg == "int8_sq":
             mtq_config = mtq.INT8_SMOOTHQUANT_CFG

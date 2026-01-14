@@ -20,7 +20,8 @@ import tarfile
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from pathlib import PurePosixPath
 from typing import Callable, Generator, Optional, Set, Union
 
 import torch
@@ -136,19 +137,19 @@ class SaveRestoreConnector:
                 map_location = torch.device('cpu')
 
         app_state = AppState()
-        with tempfile.TemporaryDirectory() as tmpdir:
+
+        # Determine if we should use a pre-extracted directory
+        use_extracted_dir = self.model_extracted_dir is not None and os.path.isdir(self.model_extracted_dir)
+
+        if use_extracted_dir:
+            logging.info(f"Restoration will occur within pre-extracted directory : " f"`{self.model_extracted_dir}`.")
+
+        # Use nullcontext if we have an extracted dir, otherwise create a temp directory
+        dir_context = nullcontext(self.model_extracted_dir) if use_extracted_dir else tempfile.TemporaryDirectory()
+
+        with dir_context as tmpdir:
             try:
-                # Check if self.model_extracted_dir is set, and is a valid path
-                if self.model_extracted_dir is not None and os.path.isdir(self.model_extracted_dir):
-                    # Log that NeMo will use the provided `model_extracted_dir`
-                    logging.info(
-                        f"Restoration will occur within pre-extracted directory : " f"`{self.model_extracted_dir}`."
-                    )
-
-                    # Override `tmpdir` above with the pre-extracted `model_extracted_dir`
-                    tmpdir = self.model_extracted_dir
-
-                else:
+                if not use_extracted_dir:
                     # Extract the nemo file into the temporary directory
                     filter_fn = None
                     if return_config:
@@ -610,7 +611,8 @@ class SaveRestoreConnector:
     @staticmethod
     def _make_nemo_file_from_folder_with_multistorageclient(filename, source_dir):
         msc = import_multistorageclient()
-        filename_with_extension = filename.split("/")[-1]  # get the filename and extension
+        # Use PurePosixPath for cloud storage paths which always use forward slashes
+        filename_with_extension = PurePosixPath(filename).name
         with tempfile.TemporaryDirectory() as tmpdir:
             tar_file = os.path.join(tmpdir, filename_with_extension)
             with tarfile.open(tar_file, "w:") as tar:
@@ -726,7 +728,8 @@ class SaveRestoreConnector:
             raise FileNotFoundError(f"{path2file} does not exist")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            filename_with_extension = path2file.split("/")[-1]  # get the filename with extension
+            # Use PurePosixPath for cloud storage paths which always use forward slashes
+            filename_with_extension = PurePosixPath(path2file).name
             downloaded_file_path = os.path.join(tmpdir, filename_with_extension)
             start_time = time.time()
             msc.download_file(path2file, downloaded_file_path)

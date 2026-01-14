@@ -14,6 +14,7 @@
 
 
 import datetime
+import sys
 
 import torch
 import torchvision
@@ -32,8 +33,12 @@ from transformers import AutoModel, AutoTokenizer
 from nemo.collections.common.parts.nlp_overrides import CustomProgressBar, NLPDDPStrategy
 
 # pylint: disable=line-too-long
-from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
 from nemo.core.config import hydra_runner
+
+if sys.version_info >= (3, 8):
+    from typing import TypedDict
+else:
+    from typing_extensions import TypedDict
 
 """
 This is the script to run multimodal autoregresssive text generation.
@@ -93,6 +98,23 @@ Usage:
 
 EMU_HUB = "BAAI/Emu3-Gen"
 VQ_HUB = "BAAI/Emu3-VisionTokenizer"
+
+
+class LengthParam(TypedDict):
+    max_length: int  # The maximum length of the sequence to be generated.
+    min_length: int  # The minimum length of the sequence to be generated.
+
+
+class SamplingParam(TypedDict):
+    use_greedy: bool  # Whether or not to use sampling ; use greedy decoding otherwise
+    temperature: float  # sampling temperature
+    top_k: int  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+    top_p: float  # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+    repetition_penalty: float  # The parameter for repetition penalty. 1.0 means no penalty.
+    add_BOS: bool  # add the bos token at the begining of the prompt
+    all_probs: bool  # whether return the log prob for all the tokens in vocab
+    compute_logprob: bool  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+    end_strings: List[str]  # generation will stop when one of these tokens is generated
 
 
 def to_imgstr(image_tokens, tokenizer):

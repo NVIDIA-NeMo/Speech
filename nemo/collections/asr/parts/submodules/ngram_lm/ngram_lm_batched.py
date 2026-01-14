@@ -542,12 +542,12 @@ class NGramGPULanguageModel(ModelPT):
                 "Triton is disabled. Version without Triton is not compatible with Cuda graphs; decoding can be slow"
             )
 
-        self.bos_state = 1 if cfg.separate_bos_state else self.START_STATE
-        self.vocab_size = cfg.vocab_size
-        self.num_states = cfg.num_states
-        self.num_arcs = cfg.num_arcs
-        self.max_order = cfg.max_order
-        self.num_arcs_extended = cfg.num_arcs + self.vocab_size  # + extra padding
+        self.bos_state: int = 1 if cfg.separate_bos_state else self.START_STATE
+        self.vocab_size: int = cfg.vocab_size
+        self.num_states: int = cfg.num_states
+        self.num_arcs: int = cfg.num_arcs
+        self.max_order: int = cfg.max_order
+        self.num_arcs_extended: int = cfg.num_arcs + self.vocab_size  # + extra padding
 
         # parameters: weights (forward/backoff/final)
         self.arcs_weights = nn.Parameter(torch.zeros([self.num_arcs_extended]))
@@ -700,7 +700,7 @@ class NGramGPULanguageModel(ModelPT):
 
                 if ngram_cur_order_i == order2cnt[cur_order]:
                     suffix_tree_np._end_adding_ngrams_for_order(order=cur_order, bos_id=_BOS_ID, unk_id=_UNK_ID)
-                    logging.info(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
+                    logging.debug(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
                     cur_order += 1
                     ngram_cur_order_i = 0
 

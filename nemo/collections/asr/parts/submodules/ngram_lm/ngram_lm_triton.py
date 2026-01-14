@@ -126,17 +126,20 @@ def ngram_multi_advance_triton_kernel(
     batch_i = tl.program_id(0)  # index of the element in the batch
     cur_state = tl.load(states_ptr + batch_i)  # current state
 
+    # load model id
     model_id = tl.load(model_ids_ptr + batch_i)
+    # model_id < 0 - apply dummy values (0 scores, -1 states, filled in by caller)
     if model_id < 0:
         return
 
+    # load offsets for model states and arcs (based on model id)
     model_states_offset = tl.load(states_offsets_ptr + model_id)
     model_arcs_offset = tl.load(arcs_offsets_ptr + model_id)
 
     to_states_ptr += model_arcs_offset
     ilabels_ptr += model_arcs_offset
     arcs_weights_ptr += model_arcs_offset
-    start_end_arcs_ptr += model_states_offset * 2
+    start_end_arcs_ptr += model_states_offset * 2  # start_end_arcs tensor has 2 elements in each row
     backoff_to_states_ptr += model_states_offset
     backoff_weights_ptr += model_states_offset
 

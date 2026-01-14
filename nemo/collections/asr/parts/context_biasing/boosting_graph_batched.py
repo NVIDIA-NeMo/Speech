@@ -15,6 +15,7 @@
 import os
 from collections import defaultdict, deque
 from dataclasses import InitVar, dataclass, field
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -24,10 +25,18 @@ from lightning.pytorch import Trainer
 from omegaconf import MISSING, DictConfig, OmegaConf
 
 from nemo.collections.asr.parts.context_biasing.context_graph_universal import ContextGraph, ContextState
-from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
+from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET, NGramGPULanguageModel
 from nemo.collections.common.tokenizers import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
+from nemo.utils.exceptions import NeMoBaseException
+
+
+@dataclass
+class PhraseItem:
+    phrase: str  # phrase itself
+    lang: str  # per-phrase language (for aggregate tokenizer)
+    # custom weight can be further added
 
 
 @dataclass
@@ -497,13 +506,13 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
             if tbranch_cur_order_i == order2cnt[cur_order]:
                 boosting_tree_np._end_adding_tbranches_for_order(order=cur_order)
-                logging.info(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
+                logging.debug(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
                 cur_order += 1
                 tbranch_cur_order_i = 0
 
         assert tbranch_cur_order_i == 0
         boosting_tree_np.sanity_check()
-
+        logging.debug(f"Loaded boosting model with {len(tbranches_list)} arcs")
         return GPUBoostingTreeModel.from_boosting_tree_np(boosting_tree_np=boosting_tree_np, use_triton=use_triton)
 
     @classmethod
@@ -628,13 +637,24 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         return transcripts_list
 
     @classmethod
+    def from_arpa(
+        cls,
+        lm_path: Path | str,
+        vocab_size: int,
+        normalize_unk: bool = True,
+        use_triton: bool | None = None,
+        token_offset: int = DEFAULT_TOKEN_OFFSET,
+    ) -> "NGramGPULanguageModel":
+        raise NeMoBaseException("Boosting tree cannot be loaded from ARPA file")
+
+    @classmethod
     def from_config(cls, cfg: BoostingTreeModelConfig, tokenizer: TokenizerSpec) -> "GPUBoostingTreeModel":
         """
         Constructor boosting tree model from config file
         """
         # load boosting tree from already built model path
         if cfg.model_path is not None and os.path.exists(cfg.model_path):
-            return cls.from_file(lm_path=cfg.model_path, vocab_size=tokenizer.vocab_size)
+            return cls.from_nemo(lm_path=cfg.model_path, vocab_size=tokenizer.vocab_size)
 
         # 1. read key phrases from file or list
         phrase_items_list: list[PhraseItem]
@@ -727,6 +747,6 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
         # 5. save model
         if cfg.model_path is not None:
-            boosting_tree_model.save(cfg.model_path)
+            boosting_tree_model.save_to(cfg.model_path)
 
         return boosting_tree_model

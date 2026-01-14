@@ -44,14 +44,14 @@ from nemo.collections.nlp.models.language_modeling.megatron_t5_adapter_model imp
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.collections.nlp.models.nlp_model import NLPModel
-from nemo.collections.nlp.modules.common.megatron.utils import (
+from nemo.core.classes.mixins import adapter_mixins
+from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
+from nemo.utils import AppState, logging, model_utils
+from nemo.utils.megatron_utils import (
     average_losses_across_data_parallel_group,
     build_position_ids,
     get_iterator_k_split,
 )
-from nemo.core.classes.mixins import adapter_mixins
-from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
-from nemo.utils import AppState, logging, model_utils
 
 try:
     from megatron.core import parallel_state, tensor_parallel

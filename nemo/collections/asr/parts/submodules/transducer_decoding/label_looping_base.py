@@ -18,6 +18,8 @@ from typing import Any, Optional
 
 import torch
 
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
+from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
@@ -43,7 +45,7 @@ class BatchedLabelLoopingState:
     predictor_outputs: torch.Tensor
     labels: torch.Tensor
     decoded_lengths: torch.Tensor
-    fusion_states_list: list[torch.Tensor] | None = None
+    fusion_states_list: list[torch.Tensor] = field(default_factory=list)
     time_jumps: torch.Tensor | None = None
 
 
@@ -55,8 +57,15 @@ class LabelLoopingStateItem:
     predictor_output: torch.Tensor
     label: torch.Tensor
     decoded_length: torch.Tensor
-    fusion_state_list: list[torch.Tensor] | None = None
+    fusion_state_list: list[torch.Tensor] = field(default_factory=list)
     time_jump: torch.Tensor | None = None
+
+
+@dataclass
+class FusionModelWithParams:
+    model: NGramGPULanguageModel | GPUBiasingMultiModelBase
+    alpha: float | None = None
+    is_multi_model: bool = False
 
 
 class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
@@ -75,16 +84,21 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         NO_WHILE_LOOPS = "no_while_loops"  # Decoding with PyTorch while loops + partial Cuda graphs
         NO_GRAPHS = "no_graphs"  # decoding without graphs, stateful implementation, only for testing purposes
 
-    cuda_graphs_mode: Optional[CudaGraphsMode] = None
+    cuda_graphs_mode: Optional[CudaGraphsMode]
+    cuda_graphs_allow_fallback: bool
     max_symbols: Optional[int]
     allow_cuda_graphs: bool
+    biasing_multi_model: GPUBiasingMultiModelBase | None
 
     def force_cuda_graphs_mode(self, mode: Optional[str | CudaGraphsMode]):
         """
         Method to set graphs mode. Use only for testing purposes.
-        For debugging the algorithm use "no_graphs" mode, since it is impossible to debug CUDA graphs directly.
+        For debugging and testing the algorithm:
+            - use "no_graphs" mode for debugging, since it is impossible to debug CUDA graphs directly.
+            - forced mode disallows fallback to native PyTorch CUDA graphs
         """
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
+        self.cuda_graphs_allow_fallback = False
         self.state = None
 
     def maybe_enable_cuda_graphs(self) -> bool:

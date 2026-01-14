@@ -137,7 +137,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         # Convert to Hydra 1.0 compatible DictConfig
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
-        cfg = model_utils.maybe_update_config_version(cfg)
+        cfg = model_utils.maybe_update_config_version(cfg, make_copy=False)
         _config_check(cfg)
 
         self.prompt_format = cfg.prompt_format
@@ -253,7 +253,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         # Setup encoder adapters (from ASRAdapterModelMixin)
         self.setup_adapters()
 
-        timestamps_asr_model = self.__restore_timestamps_asr_model()
+        if self.cfg.get("restore_timestamps_model", True):
+            timestamps_asr_model = self.__restore_timestamps_asr_model()
+        else:
+            timestamps_asr_model = None
         # Using object.__setattr__ to bypass PyTorch's module registration
         object.__setattr__(self, 'timestamps_asr_model', timestamps_asr_model)
 
@@ -570,15 +573,30 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         if trcfg.enable_chunking:
             # Check if only one audio is provided with string
-            is_one_audio = isinstance(audio, str) and not (audio.endswith("json") or audio.endswith("jsonl"))
-            # Check if it is provided as a list of strings
-            is_one_audio = is_one_audio or (isinstance(audio, list) and len(audio) == 1)
+            is_manifest = isinstance(audio, str) and audio.endswith(("json", "jsonl"))
+            if is_manifest:
+                try:
+                    with open(audio, "r", encoding="utf-8") as manifest_f:
+                        non_empty = 0
+                        for line in manifest_f:
+                            if line.strip():
+                                non_empty += 1
+                                if non_empty > 1:
+                                    break
+                        is_one_audio = non_empty == 1
+                except OSError as e:
+                    logging.warning(f"Failed to inspect manifest '{audio}' for chunking: {e}")
+                    is_one_audio = False
+            else:
+                is_one_audio = isinstance(audio, str) or (isinstance(audio, list) and len(audio) == 1)
             # Check if chunking will be enabled
-            trcfg.enable_chunking = is_one_audio or (override_config is not None and override_config.batch_size == 1)
+            trcfg.enable_chunking = (is_one_audio or trcfg.batch_size == 1) and self.timestamps_asr_model is not None
+
             if not trcfg.enable_chunking:
                 logging.warning("Chunking is disabled. Please pass a single audio file or set batch_size to 1")
 
         results = super().transcribe(audio=audio, override_config=trcfg)
+
         if trcfg.enable_chunking:
             results = merge_all_hypotheses(results, trcfg.timestamps, self.encoder.subsampling_factor)
 
@@ -593,6 +611,9 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         global_rank = config.get("global_rank", self.global_rank)
         world_size = config.get("world_size", self.world_size)
         enable_chunking = config.get("enable_chunking", False)
+        # Adding a check for availability of timestamps_asr_model for differentating between Canary versions.
+        enable_chunking = enable_chunking and self.timestamps_asr_model is not None
+
         if enable_chunking:
             # Adding this to support processing audio files of arbitrary length by chunking them into hour-long segments.
             config.cut_into_windows_duration = 3600
@@ -920,7 +941,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         audio_files = self._may_be_make_dict_and_fix_paths(audio_files, manifest_filepath, trcfg)
 
         ds_config = super()._transcribe_input_manifest_processing(audio_files, temp_dir, trcfg)
-        if trcfg.enable_chunking:
+        if trcfg.enable_chunking and self.timestamps_asr_model is not None:
             ds_config['enable_chunking'] = True
         return ds_config
 
@@ -1044,10 +1065,21 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
         del enc_states, enc_mask, decoder_input_ids
 
+        # Determine the cut id to inject into hypotheses for chunking
+        if trcfg.enable_chunking or trcfg.timestamps:
+            if isinstance(batch, PromptedAudioToTextMiniBatch):
+                cut_id = batch.cuts[0].id
+                audio = batch.audio
+                audio_lens = batch.audio_lens
+            else:  # TensorDataset / external DataLoader tuple type batch
+                cut_id = 'audio_0'
+                audio = batch[0]
+                audio_lens = batch[1]
+
         if trcfg.timestamps and self.timestamps_asr_model is not None:
             hypotheses = get_forced_aligned_timestamps_with_external_model(
-                audio=[audio.squeeze()[:audio_len] for audio, audio_len in zip(batch.audio, batch.audio_lens)],
-                batch_size=len(batch.audio),
+                audio=[audio.squeeze()[:audio_len] for audio, audio_len in zip(audio, audio_lens)],
+                batch_size=len(audio),
                 external_ctc_model=self.timestamps_asr_model,
                 main_model_predictions=hypotheses,
                 timestamp_type='char' if merge_to_be_done else ['word', 'segment'],
@@ -1057,7 +1089,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             hypotheses = process_aed_timestamp_outputs(
                 hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
             )
-        if merge_to_be_done:
+
+        if merge_to_be_done and self.timestamps_asr_model is not None:
             merged_hypotheses = merge_parallel_chunks(
                 hypotheses=hypotheses,
                 encoded_len=encoded_len,
@@ -1068,11 +1101,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 decoding=self.decoding,
             )
             # Inject the id of the cut to hypothese to later be used for separate batches
-            setattr(merged_hypotheses, 'id', batch.cuts[0].id.split("-", 1)[0])
+            setattr(merged_hypotheses, 'id', cut_id)
             return [merged_hypotheses]
 
-        if trcfg.enable_chunking and len(hypotheses) == 1:
-            setattr(hypotheses[0], 'id', batch.cuts[0].id.split("-", 1)[0])
+        if trcfg.enable_chunking:
+            for hyp in hypotheses:
+                setattr(hyp, 'id', cut_id)
         return hypotheses
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
@@ -1097,6 +1131,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             # when using a list of audio files instead of a manifest (added from TranscrptionMixin)
             manifest_filepath = os.path.join(config['temp_dir'], 'manifest.json')
             batch_size = min(config['batch_size'], len(config['paths2audio_files']))
+        enable_chunking = config.get('enable_chunking', False) and self.timestamps_asr_model is not None
         dl_config = {
             'manifest_filepath': manifest_filepath,
             'sample_rate': self.preprocessor._sample_rate,
@@ -1113,7 +1148,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             'channel_selector': config.get('channel_selector', None),
             'pad_min_duration': config.get('pad_min_duration', 1.0),
             'pad_direction': config.get('pad_direction', 'both'),
-            'enable_chunking': config.get('enable_chunking', False),
+            'enable_chunking': enable_chunking,
         }
 
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
@@ -1292,18 +1327,34 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         The config and weights are expected to be in the main .nemo file and be named `timestamps_asr_model_config.yaml` and `timestamps_asr_model_weights.ckpt` respectively.
         """
         app_state = AppState()
+        nemo_file_folder = app_state.nemo_file_folder  # Already-extracted temp directory
         model_restore_path = app_state.model_restore_path
 
         if not model_restore_path:
             return None
 
         save_restore_connector = SaveRestoreConnector()
+        save_restore_connector.model_config_yaml = os.path.join(nemo_file_folder, "timestamps_asr_model_config.yaml")
+        save_restore_connector.model_weights_ckpt = os.path.join(nemo_file_folder, "timestamps_asr_model_weights.ckpt")
 
-        filter_fn = lambda name: "timestamps_asr_model" in name
-        members = save_restore_connector._filtered_tar_info(model_restore_path, filter_fn=filter_fn)
+        # Check if the model_restore_path is already an extracted directory (which happens during restore_from)
+        # If so, use it directly to avoid double extraction
+        if app_state.nemo_file_folder and os.path.isdir(app_state.nemo_file_folder):
+            # Verify that the timestamp model components exist in the extracted folder
+            config_exists = os.path.exists(save_restore_connector.model_config_yaml)
+            weights_exists = os.path.exists(save_restore_connector.model_weights_ckpt)
 
-        if not members:
-            return None
+            if not (config_exists and weights_exists):
+                return None
+
+            save_restore_connector.model_extracted_dir = app_state.nemo_file_folder
+
+        else:
+            filter_fn = lambda name: "timestamps_asr_model" in name
+            members = save_restore_connector._filtered_tar_info(model_restore_path, filter_fn=filter_fn)
+
+            if not members:
+                return None
 
         try:
             save_restore_connector.model_config_yaml = "timestamps_asr_model_config.yaml"
@@ -1312,6 +1363,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 model_restore_path, save_restore_connector=save_restore_connector
             )
             external_timestamps_model.eval()
+
         except Exception as e:
             raise RuntimeError(
                 f"Error restoring external timestamps ASR model with timestamps_asr_model_config.yaml and timestamps_asr_model_weights.ckpt: {e}"

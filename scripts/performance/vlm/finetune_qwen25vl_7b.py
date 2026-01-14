@@ -16,8 +16,8 @@ from os.path import basename, splitext
 
 import nemo_run as run
 
+from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.vlm.recipes.qwen25vl_7b import finetune_recipe
 from nemo.lightning.run.plugins import NsysPlugin
 

@@ -21,10 +21,6 @@ from nemo.collections.vlm.gemma3vl.model.base import Gemma3VLConfig, Gemma3VLMod
 from nemo.collections.vlm.gemma3vl.model.gemma3vl import Gemma3VLConfig4B, Gemma3VLConfig12B, Gemma3VLConfig27B
 from nemo.collections.vlm.gemma3vl.model.vision import Gemma3VLMultimodalProjectorConfig, Gemma3VLVisionConfig
 
-# HF
-from nemo.collections.vlm.hf.data.hf_dataset import HFDatasetDataModule
-from nemo.collections.vlm.hf.model.hf_auto_model_for_image_text_to_text import HFAutoModelForImageTextToText
-
 # LLAMA4
 from nemo.collections.vlm.llama4.data import Llama4MockDataModule
 from nemo.collections.vlm.llama4.model.base import Llama4OmniConfig, Llama4OmniModel
@@ -104,8 +100,6 @@ from nemo.collections.vlm.vision import (
 __all__ = [
     "CLIPViTModel",
     "BaseCLIPViTModel",
-    "HFDatasetDataModule",
-    "HFAutoModelForImageTextToText",
     "NevaMockDataModule",
     "NevaPreloadedDataModule",
     "MLlamaMockDataModule",
@@ -190,3 +184,12 @@ except ImportError as error:
     from nemo.utils import logging
 
     logging.warning(f"Failed to import nemo.collections.vlm.api: {error}")
+
+import warnings
+
+warnings.warn(
+    "nemo.collections.vlm is deprecated and will be removed in a future major NeMo FW container release. "
+    "Please refer to the new Megatron-Bridge repository: https://github.com/NVIDIA-NeMo/Megatron-Bridge",
+    DeprecationWarning,
+    stacklevel=2,
+)

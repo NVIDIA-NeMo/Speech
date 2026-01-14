@@ -76,7 +76,7 @@ The memory map format makes training more efficient, especially with many nodes 
 
 .. code-block:: bash
 
-    python <NeMo_ROOT_FOLDER>/scripts/nlp_language_modeling/preprocess_data_for_megatron.py \
+    python <MEGATRON_LM_ROOT>/tools/preprocess_data.py \
     --input=train_data.jsonl \
     --json-keys=text \
     --tokenizer-library=megatron \
@@ -92,7 +92,7 @@ The memory map format makes training more efficient, especially with many nodes 
 
 .. code-block:: bash
 
-    python <NeMo_ROOT_FOLDER>/scripts/nlp_language_modeling/preprocess_data_for_megatron.py \
+    python <MEGATRON_LM_ROOT>/tools/preprocess_data.py \
     --input=train_data.jsonl \
     --json-keys=text \
     --tokenizer-library=sentencepiece \

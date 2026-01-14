@@ -80,6 +80,10 @@ Here are best practices for configuring distributed checkpoints in NeMo:
 
         	dist_ckpt_load_strictness: null
 
+        	ckpt_optim_fully_reshardable: False
+
+        	distrib_optim_fully_reshardable_mem_efficient: False
+
 
 Here's a summary of the checkpoint format options and related parameters:
 
@@ -118,6 +122,14 @@ Enables parallel save/load of a distributed optimizer. Set to True to save the o
 dist_ckpt_load_strictness
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Defines behavior for checkpoint key mismatches during loading. Options are ``assume_ok_unexpected`` (default, tries loading without any check), ``log_all`` (logs mismatches), and ``raise_all`` (raises mismatches). Setting to ``log_all`` results in a non-strict state dict load into the model. Non-default options might cause slight overhead due to extra storage interaction. It is recommended to set this flag to ``raise_all`` first to check for expected mismatches. If mismatches are expected, set it to ``log_all`` to ignore (but log) them.
+
+ckpt_optim_fully_reshardable
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Enables a fully-reshardable optimizer checkpoint format. If False (default), the Distributed Optimizer will be saved in a format that allows resuming only with data parallel dimension size changed. If True, all parallel dimensions can be changed upon checkpoint resume. Note that a fully-reshardable format is an order of magnitude slower than the dp-reshardable one. This flag affects only the optimizer checkpoint part - model weights are always fully-reshardable.
+
+distrib_optim_fully_reshardable_mem_efficient
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Saving a Distributed Optimizer checkpoint in a fully-reshardable format (`ckpt_optim_fully_reshardable=True`) requires gathering the optimizer state on data parallel rank 0. By default a NCCL transfer (overlapped with D2H) is used to transfer the data which requires some extra CUDA memory buffers and can results in out-of-memory errors in some circumstances. Setting this flag to True switches to Gloo and avoid extra CUDA memory usage at some performance cost.
 
 
 Basic Sharding

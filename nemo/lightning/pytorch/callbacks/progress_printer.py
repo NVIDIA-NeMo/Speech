@@ -12,12 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=C0116
 from collections import defaultdict
 from typing import Any
 
 from lightning.pytorch.callbacks.progress import ProgressBar
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+try:
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 from typing_extensions import override
 
 
@@ -113,13 +123,13 @@ class ProgressPrinter(ProgressBar):
     @override
     def on_train_start(self, trainer, *_):
         if trainer.max_steps > 0:
-            # while resuming from a ckpt use trainer.max_steps as the total for progress bar as trainer.num_training_batches
-            # is truncated to max_steps - step being resumed at
+            # while resuming from a ckpt use trainer.max_steps as the total for progress bar as
+            # trainer.num_training_batches is truncated to max_steps - step being resumed at
             self.total = trainer.max_steps
         else:
             self.total = trainer.num_training_batches
 
-    ## TODO(ashors): handle nan losses
+    # TODO(ashors): handle nan losses
     @override
     def on_train_batch_end(self, trainer, pl_module, *_, **__):
         n = trainer.strategy.current_epoch_step
@@ -152,8 +162,8 @@ class ProgressPrinter(ProgressBar):
     @override
     def on_validation_batch_start(
         self,
-        trainer: "pl.Trainer",
-        pl_module: "pl.LightningModule",
+        trainer: "pl.Trainer",  # noqa: F821
+        pl_module: "pl.LightningModule",  # noqa: F821
         batch: Any,
         batch_idx: int,
         dataloader_idx: int = 0,
@@ -169,8 +179,8 @@ class ProgressPrinter(ProgressBar):
     @override
     def on_validation_batch_end(
         self,
-        trainer: "pl.Trainer",
-        pl_module: "pl.LightningModule",
+        trainer: "pl.Trainer",  # noqa: F821
+        pl_module: "pl.LightningModule",  # noqa: F821
         outputs: STEP_OUTPUT,
         batch: Any,
         batch_idx: int,
@@ -185,8 +195,8 @@ class ProgressPrinter(ProgressBar):
     @override
     def on_test_batch_start(
         self,
-        trainer: "pl.Trainer",
-        pl_module: "pl.LightningModule",
+        trainer: "pl.Trainer",  # noqa: F821
+        pl_module: "pl.LightningModule",  # noqa: F821
         batch: Any,
         batch_idx: int,
         dataloader_idx: int = 0,
@@ -198,8 +208,8 @@ class ProgressPrinter(ProgressBar):
     @override
     def on_test_batch_end(
         self,
-        trainer: "pl.Trainer",
-        pl_module: "pl.LightningModule",
+        trainer: "pl.Trainer",  # noqa: F821
+        pl_module: "pl.LightningModule",  # noqa: F821
         outputs: STEP_OUTPUT,
         batch: Any,
         batch_idx: int,
@@ -209,7 +219,7 @@ class ProgressPrinter(ProgressBar):
             return
         n = int((batch_idx + 1) / get_num_microbatches())
         if self.should_log(n):
-            print(self.test_description + f": iteration {n}/{self.total_validation_steps}")
+            print(self.test_description + f": iteration {n}/{self.total_test_steps}")
 
     def should_log(self, n):
         return n % self.log_interval == 0

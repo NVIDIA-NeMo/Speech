@@ -23,6 +23,10 @@ def move_data_to_device(inputs: Any, device: Union[str, torch.device], non_block
     if inputs is None:
         return None
     if isinstance(inputs, torch.Tensor):
+        if inputs.dtype == torch.float64 and device.type == "mps":
+            # weird dataloader behavior: in some cases, it returns empty float64 tensors
+            # float64 is not supported by mps, need to force-cast to float32
+            inputs = inputs.to(dtype=torch.float32)
         return inputs.to(device, non_blocking=non_blocking)
     elif isinstance(inputs, (list, tuple, set)):
         return inputs.__class__([move_data_to_device(i, device, non_blocking) for i in inputs])

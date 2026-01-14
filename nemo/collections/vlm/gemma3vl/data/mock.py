@@ -186,13 +186,19 @@ class _Qwen2VLMockDataset(Dataset):
         generation_prompt_size = 5  # "ASSISTANT:" like
         prompt_end_idx = img_start_idx + IMAGE_TOKENS + generation_prompt_size
         labels[:prompt_end_idx] = -100
+        # Add the labels clipping to the mock data loader.
         labels = labels[1:]
+
+        # 5) prepare loss masks
+        # Calculate loss mask from labels, to be consistent with real data and reduce confusions.
+        loss_mask = torch.ones_like(labels, dtype=torch.float)
+        loss_mask[labels < 0] = 0.0
 
         return {
             "input_ids": input_ids,
             "position_ids": position_ids,
             "pixel_values": pixel_values,
-            "loss_mask": self.loss_mask,
+            "loss_mask": loss_mask,
             "labels": labels,
         }
 

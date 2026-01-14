@@ -649,6 +649,11 @@ class MagpieInferenceRunner:
                     end_of_text=is_end_of_text,
                     beginning_of_text=beginning_of_text,
                     use_cfg=self.config.use_cfg,
+                    use_local_transformer_for_inference=self.config.use_local_transformer,
+                    maskgit_n_steps=self.config.maskgit_n_steps,
+                    maskgit_noise_scale=self.config.maskgit_noise_scale,
+                    maskgit_fixed_schedule=self.config.maskgit_fixed_schedule,
+                    maskgit_sampling_type=self.config.maskgit_sampling_type,
                 )
 
                 # Unpack output - generate_long_form_speech returns InferBatchOutput

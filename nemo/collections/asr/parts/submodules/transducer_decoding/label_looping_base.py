@@ -47,6 +47,7 @@ class BatchedLabelLoopingState:
     decoded_lengths: torch.Tensor
     fusion_states_list: list[torch.Tensor] = field(default_factory=list)
     time_jumps: torch.Tensor | None = None
+    batched_hyps: Any = None  # For beam search: BatchedBeamHyps object to continue across chunks
 
 
 @dataclass
@@ -290,6 +291,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
             prev_batched_state: previous batched decoding state
             multi_biasing_ids: optional tensor [Batch] with ids of fused biasing models
         """
+        self.cuda_graphs_mode = None
         if self.cuda_graphs_mode is not None and x.device.type == "cuda":
             # disable CUDA graphs if Mixed Precision is used due to incorrect behavior
             with torch.amp.autocast(device_type="cuda", enabled=False):

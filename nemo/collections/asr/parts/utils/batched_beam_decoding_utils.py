@@ -199,6 +199,24 @@ class BatchedBeamHyps:
             self.next_timestamp.fill_(0)
             self.last_timestamp_lasts.fill_(0)
 
+    def get_last_labels(self, pad_id: int = -1) -> torch.Tensor:
+        """
+        Get last labels for each hypothesis in the beam.
+        
+        Args:
+            pad_id: Value to use for padding (for hypotheses without labels). Defaults to -1.
+            
+        Returns:
+            Tensor of shape [batch_size, beam_size] with the last label for each hypothesis.
+        """
+        # last_label already contains the last label for each beam
+        # Replace NON_EXISTENT_LABEL_VALUE with pad_id
+        return torch.where(
+            self.last_label != NON_EXISTENT_LABEL_VALUE,
+            self.last_label,
+            pad_id
+        )
+
     def _allocate_more(self):
         """
         Dynamically allocates more memory for the internal buffers.
@@ -275,6 +293,19 @@ class BatchedBeamHyps:
         is_extended = next_labels >= 0
         extended_with_blank = next_labels == self.blank_index
         extended_with_label = (is_extended) & (~extended_with_blank)
+        
+        # TODO: uncomment                
+        # last_labels = torch.gather(self.last_label, dim=-1, index=next_indices)
+        # self.transcript_wb.scatter_(
+        #     dim=-1,
+        #     index=self.current_lengths_wb.unsqueeze(-1),
+        #     src=torch.where(is_extended, next_labels, NON_EXISTENT_LABEL_VALUE).unsqueeze(-1)
+        # )
+        # self.transcript_wb_prev_ptr.scatter_(
+        #     dim=-1,
+        #     index=self.current_lengths_wb.unsqueeze(-1),
+        #     src=torch.where(is_extended, next_indices, INIT_POINTER_VALUE).unsqueeze(-1)
+        # )
         if self.model_type == ASRModelTypeEnum.CTC:
             # for CTC last non-blank and non-repeated label
             extended_with_label = (extended_with_label) & (next_labels != last_labels)  # non-repeated non-blank label
@@ -314,6 +345,12 @@ class BatchedBeamHyps:
         )
         torch.add(self.current_lengths_wb, 1, out=self.current_lengths_wb)
         self.scores.copy_(next_hyps_prob)
+        
+        # TODO: uncomment
+        # self.current_lengths_wb.copy_(
+        #     torch.gather(self.current_lengths_wb, dim=-1, index=next_indices) + is_extended
+        # )
+        # self.scores.copy_(torch.where(is_extended, next_hyps_prob, torch.gather(self.scores, dim=-1, index=next_indices)))
 
         prev_transcript_hash = torch.gather(self.transcript_hash, dim=-1, index=next_indices)
         # update hashes and prefix hashes
@@ -529,6 +566,86 @@ class BatchedBeamHyps:
         ]
         return hypotheses
 
+    # def flatten_sort_(self, score_norm: bool = True):
+    #     """
+    #     Sorts and flattens the tree structure of hypotheses in a batched beam search decoding process.
+    #     This is a SERIALIZED version that processes each batch element sequentially to avoid
+    #     issues with pointer chasing in the batched version.
+        
+    #     Args:
+    #         score_norm (bool, optional): If True, normalizes the scores by dividing
+    #             them by the current lengths of the hypotheses plus one. Defaults to True.
+    #     This method performs the following steps:
+    #     1. Normalizes the scores if `score_norm` is True.
+    #     2. Sorts the normalized scores in descending order and retrieves the corresponding indices.
+    #     3. Iteratively reconstructs the tokens and timestamps for each hypothesis in reverse order.
+    #     4. Updates the internal state of the object, including transcripts, timestamps, scores,
+    #        lengths, labels, and other metadata, based on the sorted order.
+    #     """
+
+    #     # add one for consistency with non-batched decodings, that use SOS.
+    #     normalized_scores = (
+    #         self.scores / (self.current_lengths_nb.to(self.scores.dtype) + 1) if score_norm else self.scores
+    #     )
+    #     normalized_scores, indices = torch.sort(normalized_scores, dim=-1, descending=True)
+
+    #     # Create temporary buffers to hold the sorted results
+    #     new_transcript_wb = self.transcript_wb.clone()
+    #     new_timestamps = self.timestamps.clone() if (self.model_type == ASRModelTypeEnum.TDT or self.model_type == ASRModelTypeEnum.RNNT) else None
+        
+    #     # Process each batch element sequentially
+    #     for batch_idx in range(self.batch_size):
+    #         max_idx = self.current_lengths_wb[batch_idx].max() - 1
+    #         if max_idx < 0:
+    #             continue
+                
+    #         batch_indices_local = indices[batch_idx]  # [beam_size]
+            
+    #         # For each beam in the sorted order, reconstruct the path by following pointers
+    #         for beam_idx in range(self.beam_size):
+    #             src_beam = batch_indices_local[beam_idx].item()
+    #             ptr = src_beam
+                
+    #             # Reconstruct the path from max_idx down to 0
+    #             for idx in range(max_idx, -1, -1):
+    #                 # Copy the token at this position
+    #                 new_transcript_wb[batch_idx, beam_idx, idx] = self.transcript_wb[batch_idx, ptr, idx]
+                    
+    #                 # Copy timestamp if applicable
+    #                 if new_timestamps is not None:
+    #                     new_timestamps[batch_idx, beam_idx, idx] = self.timestamps[batch_idx, ptr, idx]
+                    
+    #                 # Follow the pointer to the previous beam
+    #                 next_ptr = self.transcript_wb_prev_ptr[batch_idx, ptr, idx].item()
+    #                 if next_ptr != INIT_POINTER_VALUE:
+    #                     # Only update pointer if it's valid; otherwise keep current ptr
+    #                     ptr = next_ptr
+        
+    #     # Copy reconstructed paths back to main buffers
+    #     self.transcript_wb.copy_(new_transcript_wb)
+    #     if new_timestamps is not None:
+    #         self.timestamps.copy_(new_timestamps)
+        
+    #     # Reset pointers to simple sequential structure
+    #     max_idx = self.current_lengths_wb.max() - 1
+    #     if max_idx >= 0:
+    #         self.transcript_wb_prev_ptr[..., : max_idx + 1].copy_(self.beam_indices.unsqueeze(0).unsqueeze(-1))
+
+    #     # Sort all other state tensors according to indices
+    #     self.scores.copy_(torch.gather(self.scores, dim=-1, index=indices))
+    #     self.current_lengths_nb.copy_(torch.gather(self.current_lengths_nb, dim=-1, index=indices))
+    #     self.current_lengths_wb.copy_(torch.gather(self.current_lengths_wb, dim=-1, index=indices))
+
+    #     self.last_label.copy_(torch.gather(self.last_label, dim=-1, index=indices))
+
+    #     if self.model_type == ASRModelTypeEnum.TDT or self.model_type == ASRModelTypeEnum.RNNT:
+    #         self.next_timestamp.copy_(torch.gather(self.next_timestamp, dim=-1, index=indices))
+    #         self.last_timestamp_lasts.copy_(torch.gather(self.last_timestamp_lasts, dim=-1, index=indices))
+
+    #     self.transcript_hash.copy_(torch.gather(self.transcript_hash, dim=-1, index=indices))
+    #     if self.store_prefix_hashes:
+    #         self.transcript_prefix_hash.copy_(torch.gather(self.transcript_prefix_hash, dim=-1, index=indices))
+
     def flatten_sort_(self, score_norm: bool = True):
         """
         Sorts and flattens the tree structure of hypotheses in a batched beam search decoding process.
@@ -621,3 +738,93 @@ class BatchedBeamHyps:
             return self._create_fold_consecutive_mask(transcripts)
         else:
             return (transcripts >= 0) & (transcripts != self.blank_index)
+
+    def merge_(self, other: "BatchedBeamHyps") -> "BatchedBeamHyps":
+        """
+        Merge two batched beam hypotheses structures by concatenating transcripts.
+        Used for streaming/chunked inference where results from multiple chunks need to be combined.
+        
+        Prerequisites:
+            - Both self and other should have been processed with flatten_sort_() before merging,
+              so that each beam contains an independent flattened hypothesis.
+            - Beam indices should correspond across chunks (beam i in self matches beam i in other).
+        
+        Notes:
+            - Timestamps in 'other' should already be cumulative (adjusted for time offset).
+            - The transcript_hash values are copied from 'other' and won't reflect the full
+              merged transcript. This means recombine_hyps_() should NOT be called on merged
+              results without recomputing hashes. This is acceptable for output-only use.
+        
+        Args:
+            other: BatchedBeamHyps from the next chunk to merge
+            
+        Returns:
+            Self (modified in-place)
+        """
+        max_other_len = other.current_lengths_wb.max().item()
+        
+        # Early return if other has nothing to merge
+        if max_other_len == 0:
+            return self
+        
+        # Check if we need more storage (using allocated buffer size, not current shape)
+        # Compute max needed length: current max + other max
+        max_needed = self.current_lengths_wb.max().item() + max_other_len
+        
+        # Expand storage if needed - use existing _allocate_more() method
+        while max_needed > self._max_length:
+            self._allocate_more()
+        
+        # Create a range tensor: [0, 1, 2, ..., max_other_len-1]
+        other_indices = torch.arange(max_other_len, device=self.device, dtype=torch.long)
+        
+        # Create shifted indices: current_lengths + [0, 1, 2, ...]
+        # Shape: [batch_size, beam_size, max_other_len]
+        shifted_indices = self.current_lengths_wb.unsqueeze(-1) + other_indices.unsqueeze(0).unsqueeze(0)
+        
+        # Scatter other's transcripts into self at shifted positions
+        self.transcript_wb.scatter_(
+            dim=-1,
+            index=shifted_indices,
+            src=other.transcript_wb[..., :max_other_len],
+        )
+        
+        # Update pointers: for the merged portion, we set pointers to point to the same beam
+        # (since after flatten_sort_, each beam is independent)
+        self.transcript_wb_prev_ptr.scatter_(
+            dim=-1,
+            index=shifted_indices,
+            src=self.beam_indices.view(1, self.beam_size, 1).expand(self.batch_size, -1, max_other_len),
+        )
+        
+        # Scatter timestamps
+        self.timestamps.scatter_(
+            dim=-1,
+            index=shifted_indices,
+            src=other.timestamps[..., :max_other_len],
+        )
+        
+        # Update lengths
+        self.current_lengths_wb += other.current_lengths_wb
+        self.current_lengths_nb += other.current_lengths_nb
+        
+        # Update scores (log probabilities, so we add them)
+        self.scores += other.scores
+        
+        # Update transcript hash by combining hashes
+        # The hash of the merged transcript should account for all non-blank labels
+        self.transcript_hash.copy_(other.transcript_hash)
+        
+        # Update prefix hashes if used
+        if self.store_prefix_hashes:
+            self.transcript_prefix_hash.copy_(other.transcript_prefix_hash)
+        
+        # Update tracking fields from other (they reflect the end state after other chunk)
+        self.last_label.copy_(other.last_label)
+        
+        # Only update timestamp tracking fields for transducer models
+        if self.model_type != ASRModelTypeEnum.CTC:
+            self.next_timestamp.copy_(other.next_timestamp)
+            self.last_timestamp_lasts.copy_(other.last_timestamp_lasts)
+        
+        return self

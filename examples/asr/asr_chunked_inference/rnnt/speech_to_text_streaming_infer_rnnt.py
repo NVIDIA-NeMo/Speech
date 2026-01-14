@@ -75,9 +75,12 @@ from tqdm.auto import tqdm
 from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
+from nemo.collections.asr.parts.submodules.rnnt_maes_batched_computer import ModifiedAESBatchedRNNTComputer
+from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
     GreedyBatchedLabelLoopingComputerBase,
 )
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
 from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.manifest_utils import filepath_to_absolute, read_manifest
 from nemo.collections.asr.parts.utils.rnnt_utils import BatchedHyps, batched_hyps_to_hypotheses
@@ -232,9 +235,21 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
 
     # Change Decoding Config
     with open_dict(cfg.decoding):
-        if cfg.decoding.strategy != "greedy_batch" or cfg.decoding.greedy.loop_labels is not True:
+        if cfg.decoding.strategy == "greedy_batch":
+            if cfg.decoding.greedy.loop_labels is not True:
+                raise NotImplementedError(
+                    "This script supports `greedy_batch` strategy only with Label-Looping algorithm"
+                )
+            cfg.decoding.greedy.preserve_alignments = False
+        elif cfg.decoding.strategy == "malsd_batch":
+            # MALSD beam search is supported for streaming
+            pass
+        elif cfg.decoding.strategy == "maes_batch":
+            # MAES beam search is supported for streaming
+            pass
+        else:
             raise NotImplementedError(
-                "This script currently supports only `greedy_batch` strategy with Label-Looping algorithm"
+                "This script currently supports only `greedy_batch` with Label-Looping or `malsd_batch` strategy with MALSD"
             )
         cfg.decoding.tdt_include_token_duration = cfg.timestamps
         cfg.decoding.greedy.preserve_alignments = False
@@ -278,7 +293,17 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     asr_model.preprocessor.featurizer.pad_to = 0
     asr_model.eval()
 
-    decoding_computer: GreedyBatchedLabelLoopingComputerBase = asr_model.decoding.decoding.decoding_computer
+    # Get decoding computer based on strategy
+    if cfg.decoding.strategy == "greedy_batch":
+        decoding_computer: GreedyBatchedLabelLoopingComputerBase = asr_model.decoding.decoding.decoding_computer
+    elif cfg.decoding.strategy == "malsd_batch":
+        # Beam search strategies use _decoding_computer (private attribute)
+        decoding_computer: ModifiedALSDBatchedRNNTComputer = asr_model.decoding.decoding._decoding_computer
+    elif cfg.decoding.strategy == "maes_batch":
+        # MAES beam search returns BatchedBeamHyps
+        decoding_computer: ModifiedAESBatchedRNNTComputer = asr_model.decoding.decoding._decoding_computer
+    else:
+        raise ValueError(f"Unsupported decoding strategy: {cfg.decoding.strategy}")
 
     audio_sample_rate = model_cfg.preprocessor['sample_rate']
 
@@ -394,7 +419,49 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             )
             rest_audio_lengths = audio_batch_lengths.clone()
 
-            # iterate over audio samples
+            # For MALSD: batched_hyps is stored in state and reused (no merge needed)
+            # For greedy: fresh BatchedHyps created each chunk, needs merging
+            is_beam_search = isinstance(decoding_computer, ModifiedALSDBatchedRNNTComputer) or isinstance(decoding_computer, ModifiedAESBatchedRNNTComputer)
+
+            # ============================================================================
+            # ENCODER PROCESSING MODES:
+            # 
+            # MODE 1: FULL ENCODER PASS (Non-streaming simulation)
+            #   - Runs encoder once on entire audio upfront
+            #   - Extracts chunks from pre-computed output
+            #   - Use this to verify consistency with non-streaming scripts
+            #   - TO ENABLE: Uncomment all "MODE 1" sections below
+            #
+            # MODE 2: STREAMING CHUNKED ENCODER (Default/Original)
+            #   - Runs encoder separately for each chunk with context
+            #   - True streaming behavior with left-chunk-right context windows
+            #   - Currently ACTIVE
+            #   - TO KEEP: Leave "MODE 2" sections uncommented
+            # ============================================================================
+
+            # import pdb; pdb.set_trace()
+            # ============================================================================
+            # MODE 1: FULL ENCODER PASS (for testing consistency with non-streaming)
+            # TO ENABLE: Uncomment this section and comment out MODE 2 sections below
+            # ============================================================================
+            # # TESTING: Run encoder once on full audio (not chunked)
+            # full_encoder_output, full_encoder_output_len = asr_model(
+            #     input_signal=audio_batch,
+            #     input_signal_length=audio_batch_lengths,
+            # )
+            # full_encoder_output = full_encoder_output.transpose(1, 2)  # [B, T, C]
+            
+            # # do not recalculate joint projection, project only once
+            # full_encoder_output_projected = asr_model.joint.project_encoder(full_encoder_output)
+            # full_encoder_output_projected_len = full_encoder_output_len
+            
+            # # Track per-sample frame positions in the full encoder output
+            # # Different samples may have different lengths, so we need per-sample tracking
+            # encoder_frame_positions = torch.zeros([batch_size], dtype=torch.long, device=device)
+            # ============================================================================
+            
+            # import pdb; pdb.set_trace()
+            # iterate over audio samples (but only for decoding chunks)
             while left_sample < audio_batch.shape[1]:
                 # add samples to buffer
                 chunk_length = min(right_sample, audio_batch.shape[1]) - left_sample
@@ -412,6 +479,50 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     is_last_chunk_batch=is_last_chunk_batch,
                 )
 
+                # ========================================================================
+                # MODE 1: FULL ENCODER PASS - Extract pre-computed chunks
+                # TO ENABLE: Uncomment this section and comment out MODE 2 section below
+                # ========================================================================
+                # Use buffer's context to know the actual chunk sizes (handles variable lengths and last chunks)
+                # encoder_context_batch = buffer.context_size_batch.subsample(factor=encoder_frame2audio_samples)
+                
+                # # Extract chunks for each sample from their current position
+                # # Since samples can be at different positions, we need to handle each separately
+                # max_chunk_size_this_iter = encoder_context_batch.chunk.max().item()
+                # encoder_output_chunk = torch.zeros(
+                #     [batch_size, max_chunk_size_this_iter, full_encoder_output_projected.shape[2]],
+                #     dtype=full_encoder_output_projected.dtype,
+                #     device=device
+                # )
+                
+                # # Extract the appropriate chunk for each sample
+                # for b_idx in range(batch_size):
+                #     start_pos = encoder_frame_positions[b_idx].item()
+                #     chunk_len = encoder_context_batch.chunk[b_idx].item()
+                #     end_pos = min(start_pos + chunk_len, full_encoder_output_projected.shape[1])
+                #     actual_len = end_pos - start_pos
+                #     if actual_len > 0:
+                #         encoder_output_chunk[b_idx, :actual_len] = full_encoder_output_projected[b_idx, start_pos:end_pos]
+                
+                # # Use the buffer's chunk size calculations (which properly handle per-sample lengths)
+                # encoder_out_len_chunk = encoder_context_batch.chunk
+                
+                # # decode only chunk frames (using pre-computed encoder output)
+                # chunk_batched_hyps, _, state = decoding_computer(
+                #     x=encoder_output_chunk,
+                #     out_len=encoder_out_len_chunk,
+                #     prev_batched_state=state,
+                # )
+                
+                # # Update per-sample positions
+                # encoder_frame_positions += encoder_context_batch.chunk
+                # ========================================================================
+
+                # import pdb; pdb.set_trace()
+                # ========================================================================
+                # MODE 2: STREAMING CHUNKED ENCODER (ORIGINAL/DEFAULT)
+                # TO DISABLE: Comment out this section when using MODE 1
+                # ========================================================================
                 # get encoder output using full buffer [left-chunk-right]
                 encoder_output, encoder_output_len = asr_model(
                     input_signal=buffer.samples,
@@ -435,24 +546,37 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     prev_batched_state=state,
                     multi_biasing_ids=multi_biasing_ids,
                 )
-                # merge hyps with previous hyps
-                if current_batched_hyps is None:
+                # ========================================================================
+
+                # Handle hypothesis accumulation differently for beam search vs greedy
+                if is_beam_search:
+                    # For beam search: same object reused across chunks (stored in state)
                     current_batched_hyps = chunk_batched_hyps
                 else:
-                    current_batched_hyps.merge_(chunk_batched_hyps)
+                    # For greedy: merge chunks using merge_
+                    if current_batched_hyps is None:
+                        current_batched_hyps = chunk_batched_hyps
+                    else:
+                        current_batched_hyps.merge_(chunk_batched_hyps)
 
                 # move to next sample
                 rest_audio_lengths -= chunk_lengths_batch
                 left_sample = right_sample
                 right_sample = min(right_sample + context_samples.chunk, audio_batch.shape[1])  # add next chunk
 
-            # remove biasing requests from the decoder
-            if use_per_stream_biasing and audio_data.biasing_requests is not None:
-                for request in audio_data.biasing_requests:
-                    if request is not None and request.multi_model_id is not None:
-                        decoding_computer.biasing_multi_model.remove_model(request.multi_model_id)
-                        request.multi_model_id = None
-            all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, None, batch_size=batch_size))
+            # Convert batched hypotheses to list
+            if isinstance(current_batched_hyps, BatchedBeamHyps):
+                # MALSD beam search returns BatchedBeamHyps
+                all_hyps.extend(current_batched_hyps.to_hyps_list(score_norm=True))
+            else:
+                # Greedy batch returns BatchedHyps
+                # remove biasing requests from the decoder
+                if use_per_stream_biasing and audio_data.biasing_requests is not None:
+                    for request in audio_data.biasing_requests:
+                        if request is not None and request.multi_model_id is not None:
+                            decoding_computer.biasing_multi_model.remove_model(request.multi_model_id)
+                            request.multi_model_id = None
+                all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, None, batch_size=batch_size))
         timer.stop(device=map_location)
 
     # convert text

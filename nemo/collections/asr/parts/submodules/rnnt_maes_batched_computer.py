@@ -16,6 +16,8 @@ from typing import Optional
 
 import torch
 
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedLabelLoopingState
+from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INACTIVE_SCORE,
@@ -121,6 +123,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         self,
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
+        prev_batched_state: Optional[BatchedBeamHyps] = None,
     ) -> BatchedBeamHyps:
         """
         Pure PyTorch implementation
@@ -134,22 +137,11 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
 
         encoder_output_projected = self.joint.project_encoder(encoder_output)
         float_dtype = encoder_output_projected.dtype
-
-        # init empty batched hypotheses
-        batched_hyps = BatchedBeamHyps(
-            batch_size=batch_size,
-            beam_size=self.beam_size,
-            blank_index=self._blank_index,
-            init_length=max_time * (self.maes_num_steps + 1) if self.maes_num_steps is not None else max_time,
-            device=device,
-            float_dtype=float_dtype,
-            store_prefix_hashes=True,
-        )
-
-        last_labels_wb = torch.full(
-            [batch_size, self.beam_size], fill_value=self._SOS, device=device, dtype=torch.long
-        )
-
+        
+        # import pdb; pdb.set_trace()
+        # encoder_output_projected = encoder_output
+        # float_dtype = encoder_output.dtype
+        
         batch_indices = (
             torch.arange(batch_size, device=device)[:, None].expand(batch_size, self.beam_size).clone()
         )  # size: batch_size x beam_size
@@ -161,6 +153,28 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             .expand(batch_size, self.beam_size, self.maes_num_expansions)
             .clone()
         )  # size: batch_size x beam_size x beam_size + maes_expansion_beta
+
+        if prev_batched_state is not None and prev_batched_state.batched_hyps is not None:
+            batched_hyps = prev_batched_state.batched_hyps
+            time_indices = torch.zeros_like(beam_indices)
+            last_timesteps = (encoder_output_length - 1)[:, None].expand_as(beam_indices)
+            safe_time_indices = torch.minimum(time_indices, last_timesteps)
+            active_mask = time_indices <= last_timesteps
+        else:
+            # init empty batched hypotheses
+            batched_hyps = BatchedBeamHyps(
+                batch_size=batch_size,
+                beam_size=self.beam_size,
+                blank_index=self._blank_index,
+                init_length=max_time * (self.maes_num_steps + 1) if self.maes_num_steps is not None else max_time,
+                device=device,
+                float_dtype=float_dtype,
+                store_prefix_hashes=True,
+            )
+            time_indices = torch.zeros_like(beam_indices)
+            safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
+            last_timesteps = (encoder_output_length - 1)[:, None].expand_as(beam_indices)
+            active_mask = time_indices <= last_timesteps
 
         time_indices = torch.zeros_like(batch_indices)
         safe_time_indices = torch.zeros_like(time_indices)
@@ -176,14 +190,34 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             )  # vocab_size_no_blank
             lm_scores = lm_scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1) * self.ngram_lm_alpha
 
-        decoder_output, decoder_state, *_ = self.decoder.predict(
-            last_labels_wb.view(-1, 1), None, add_sos=False, batch_size=batch_size * self.beam_size
-        )
-        # do not recalculate joint projection
-        decoder_output = self.joint.project_prednet(decoder_output)
+        if prev_batched_state is None:    
+            last_labels_wb = torch.full(
+                [batch_size, self.beam_size], fill_value=self._SOS, device=device, dtype=torch.long
+            )
+            decoder_state = self.decoder.initialize_state(
+                torch.empty(
+                    [
+                        batch_size * self.beam_size,
+                    ],
+                    dtype=float_dtype,
+                    device=device,
+                )
+            )
+
+            decoder_output, state, *_ = self.decoder.predict(
+                last_labels_wb.view(-1, 1), None, add_sos=False, batch_size=batch_size * self.beam_size
+            )
+            # do not recalculate joint projection
+            decoder_output = self.joint.project_prednet(decoder_output)  # size: [(batch_size x beam_size), 1, Dim]
+            self.decoder.batch_replace_states_all(state, dst_states=decoder_state)
+        else: 
+            # Continuing from previous chunk - batched_hyps already contains all state
+            decoder_output = prev_batched_state.predictor_outputs
+            decoder_state = prev_batched_state.predictor_states
 
         while active_mask.any():  # frames loop
             to_update = active_mask.clone()  # mask for expansions loop
+            # import pdb; pdb.set_trace()
 
             # step 1: get joint output
             logits = (
@@ -235,6 +269,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
                 next_labels = next_labels.view(batch_size, -1)[batch_indices, idx]
                 hyp_indices = expansion_beam_indices.view(batch_size, -1)[batch_indices, idx]
 
+                # import pdb; pdb.set_trace()
                 # step 3.3: update batched beam hypotheses structure
                 batched_hyps.add_results_(hyp_indices, next_labels, next_hyps_probs)
 
@@ -311,6 +346,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
 
                 expansion_steps += 1
             if to_update.any():
+                # import pdb; pdb.set_trace()
                 # step 4: force blank to active hypotheses
                 next_hyps_probs = torch.where(to_update, batched_hyps.scores + logps[..., -1], batched_hyps.scores)
                 next_labels = torch.where(to_update, self._blank_index, -1)
@@ -320,8 +356,29 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             time_indices += 1
             active_mask = time_indices <= last_timesteps
             safe_time_indices = torch.where(active_mask, time_indices, last_timesteps)
-
-        return batched_hyps
+            
+        # import pdb; pdb.set_trace()
+        last_labels = batched_hyps.get_last_labels(pad_id=self._SOS)
+        batched_hyps.next_timestamp.fill_(0)
+        decoding_state = BatchedLabelLoopingState(
+            predictor_states=decoder_state,
+            predictor_outputs=decoder_output,
+            labels=(
+                torch.where(last_labels == self._SOS, prev_batched_state.labels, last_labels)
+                if prev_batched_state is not None
+                else last_labels
+            ),
+            decoded_lengths=(
+                encoder_output_length.clone()
+                if prev_batched_state is None
+                else encoder_output_length + prev_batched_state.decoded_lengths
+            ),
+            # fusion_states_list=fusion_states_list if self.fusion_models is not None else None,
+            time_jumps=None,
+            batched_hyps=batched_hyps,  # Save batched_hyps object for next chunk
+        )
+        
+        return batched_hyps, None, decoding_state
 
     def combine_scores(self, log_probs, lm_scores):
         """
@@ -438,5 +495,6 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         self,
         x: torch.Tensor,
         out_len: torch.Tensor,
-    ) -> BatchedBeamHyps:
-        return self.batched_modified_adaptive_expansion_search_torch(encoder_output=x, encoder_output_length=out_len)
+        prev_batched_state: Optional[BatchedBeamHyps] = None,
+    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+        return self.batched_modified_adaptive_expansion_search_torch(encoder_output=x, encoder_output_length=out_len, prev_batched_state=prev_batched_state)

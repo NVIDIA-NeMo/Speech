@@ -1001,6 +1001,45 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
 
+    def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
+        super()._transcribe_on_begin(audio=audio, trcfg=trcfg)
+        # add biasing requests to the decoding computer
+        try:
+            biasing_multi_model = self.decoding.decoding.decoding_computer.biasing_multi_model
+        except AttributeError:
+            biasing_multi_model = None
+        if trcfg.partial_hypothesis:
+            for partial_hyp in trcfg.partial_hypothesis:
+                if (
+                    isinstance(partial_hyp, Hypothesis)
+                    and partial_hyp.has_biasing_request()
+                    and partial_hyp.biasing_cfg.auto_manage_multi_model
+                    and partial_hyp.biasing_cfg.multi_model_id is None
+                ):
+                    if biasing_multi_model is not None:
+                        partial_hyp.biasing_cfg.add_to_multi_model(
+                            tokenizer=self.tokenizer, biasing_multi_model=biasing_multi_model
+                        )
+                    else:
+                        logging.warning("Requested biasing for hypothesis, but multi-model is not found, skipping.")
+
+    def _transcribe_on_end(self, trcfg: TranscribeConfig):
+        super()._transcribe_on_end(trcfg=trcfg)
+        try:
+            biasing_multi_model = self.decoding.decoding.decoding_computer.biasing_multi_model
+        except AttributeError:
+            biasing_multi_model = None
+
+        # remove biasing requests from the decoding computer
+        if biasing_multi_model is not None and trcfg.partial_hypothesis:
+            for partial_hyp in trcfg.partial_hypothesis:
+                if (
+                    isinstance(partial_hyp, Hypothesis)
+                    and partial_hyp.has_biasing_request()
+                    and partial_hyp.biasing_cfg.auto_manage_multi_model
+                ):
+                    partial_hyp.biasing_cfg.remove_from_multi_model(biasing_multi_model=biasing_multi_model)
+
     def on_after_backward(self):
         super().on_after_backward()
         if self._optim_variational_noise_std > 0 and self.global_step >= self._optim_variational_noise_start:

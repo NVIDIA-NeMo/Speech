@@ -251,8 +251,8 @@ def evaluate(
     if with_utmosv2:
         if not UTMOSV2_AVAILABLE:
             logging.warning(
-                "UTMOSv2 was requested (with_utmosv2=True) but UTMOSv2Calculator is not available. "
-                "UTMOSv2 scores will be set to 0.0 for all files."
+                "UTMOSv2 was requested (with_utmosv2=True) but the UTMOSv2 library is not available. "
+                "UTMOSv2 scores will be set to NaN for all files."
             )
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
     filewise_metrics = []
@@ -277,7 +277,7 @@ def evaluate(
         if with_utmosv2 and UTMOSV2_AVAILABLE:
             utmosv2_score = utmosv2_scores[os.path.normpath(pred_audio_filepath)]
         else:
-            utmosv2_score = 0.0
+            utmosv2_score = float('nan')
 
         try:
             if language == "en":

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from typing import TYPE_CHECKING
+import numpy as np
 
 import torch
 from omegaconf import DictConfig
@@ -39,6 +40,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     update_punctuation_and_language_tokens_timestamps,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis as NemoHypothesis
+from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
@@ -520,29 +522,57 @@ class BufferedRNNTPipeline(BasePipeline):
         states = [self.get_state(request.stream_id) for request in requests]
         partial_hypotheses, rnnt_states = [], []
         all_rnnt_states_are_none = True
-        for state in states:
+        all_multi_biasing_models_empty = True
+        multi_biasing_ids = np.full([len(states)], fill_value=-1)
+        for i, state in enumerate(states):
             hyp_state = state.hyp_decoding_state
+            rnnt_states.append(hyp_state)
             if hyp_state is not None:
-                partial_hypotheses.append(
-                    NemoHypothesis(score=0.0, y_sequence=torch.zeros([0], dtype=torch.long), dec_state=hyp_state)
-                )
-                rnnt_states.append(hyp_state)
                 all_rnnt_states_are_none = False
+            if state.has_biasing_request():
+                if state.options.biasing_cfg.multi_model_id is not None:
+                    all_multi_biasing_models_empty = False
+                    multi_biasing_ids[i] = state.options.biasing_cfg.multi_model_id
+                elif state.options.biasing_cfg.auto_manage_multi_model:
+                    state.options.biasing_cfg.add_to_multi_model(
+                        tokenizer=self.asr_model.tokenizer,
+                        biasing_multi_model=self.decoding_computer.biasing_multi_model,
+                    )
+                    multi_biasing_ids[i] = state.options.biasing_cfg.multi_model_id
+                    all_multi_biasing_models_empty = False
+                else:
+                    logging.warning("Biasing request is not empty, not auto managed and not compiled. Skipping")
+            if hyp_state is not None or state.has_biasing_request():
+                partial_hypotheses.append(
+                    NemoHypothesis(
+                        score=0.0,
+                        y_sequence=torch.zeros([0], dtype=torch.long),
+                        dec_state=hyp_state,
+                        biasing_cfg=state.options.biasing_cfg,
+                    )
+                )
             else:
                 partial_hypotheses.append(None)
-                rnnt_states.append(None)
 
         batched_rnnt_states = None
         if not all_rnnt_states_are_none:
             batched_rnnt_states = self.decoding_computer.merge_to_batched_state(rnnt_states)
 
+        if all_multi_biasing_models_empty:
+            multi_biasing_ids = None
+        else:
+            multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=enc_lens_chunk.device)
+
         batched_state = None
         if self.tokens_per_right_padding > 0:
             with torch.inference_mode(), torch.no_grad():
                 best_hyp_chunk, alignments, batched_state = self.decoding_computer(
-                    encs.transpose(1, 2), enc_lens_chunk, batched_rnnt_states
+                    encs.transpose(1, 2),
+                    enc_lens_chunk,
+                    batched_rnnt_states,
+                    multi_biasing_ids=multi_biasing_ids,
                 )
-
+        # TODO(@artbataev): remove double-decoding
         best_hyp = self.asr_model.decode(encs, enc_lens, partial_hypotheses=partial_hypotheses)
         if self.tokens_per_right_padding > 0 and batched_state is not None:
             for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):
@@ -555,6 +585,14 @@ class BufferedRNNTPipeline(BasePipeline):
         for curr_state in states:
             curr_state.timestamp_offset += self.tokens_per_frame_float
         ready_state_ids.update(ready_states)
+
+        for request, state in zip(requests, states):
+            # only the first request contains biasing options; biasing options for the stream are stored in state
+            if request.is_last and state.has_biasing_request():
+                if state.options.biasing_cfg.auto_manage_multi_model:
+                    state.options.biasing_cfg.remove_from_multi_model(
+                        biasing_multi_model=self.decoding_computer.biasing_multi_model
+                    )
 
     def decode_step(self, best_hyp: list, requests: list[Request], states: list[RNNTStreamingState]) -> set:
         """

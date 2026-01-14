@@ -116,6 +116,7 @@ class TranscriptionConfig:
     pretrained_name: Optional[str] = None  # Name of a pretrained model
     audio_dir: Optional[str] = None  # Path to a directory which contains audio files
     dataset_manifest: Optional[str] = None  # Path to dataset's JSON manifest
+    sort_by_duration: bool = True  # sort manifest/audio files by duration (descending)
 
     # General configs
     output_filename: Optional[str] = None
@@ -260,6 +261,14 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     else:
         assert filepaths is not None
         records = [{"audio_filepath": audio_file} for audio_file in filepaths]
+
+    if cfg.sort_by_duration:
+        filepath2order = dict()
+        for i, record in enumerate(records):
+            if "duration" not in record:
+                record["duration"] = librosa.get_duration(path=record["audio_filepath"])
+            filepath2order[record["audio_filepath"]] = i
+        records.sort(key=lambda record: record["duration"], reverse=True)
 
     asr_model.preprocessor.featurizer.dither = 0.0
     asr_model.preprocessor.featurizer.pad_to = 0
@@ -447,6 +456,13 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             )
             all_hyps[i] = hyp
 
+    if cfg.sort_by_duration:
+        # restore order for all_hyps and records (all_hyps are consistent with records)
+        order_restored = sorted(
+            zip(records, all_hyps), key=lambda records_hyps: filepath2order[records_hyps[0]["audio_filepath"]]
+        )
+        records, all_hyps = map(list, zip(*order_restored))
+
     output_filename, pred_text_attr_name = write_transcription(
         all_hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=cfg.timestamps
     )
@@ -457,8 +473,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             record["duration"] if "duration" in record else librosa.get_duration(path=record["audio_filepath"])
             for record in records
         ]
-        rtfx_measurements = sum(durations) / timer.total_sec()
-        logging.info(f"Model RTFx on the dataset: {rtfx_measurements:.3f}")
+        rtfx = sum(durations) / timer.total_sec()
+        logging.info(f"RTFx: {rtfx:.2f}")
 
     if cfg.calculate_wer:
         output_manifest_w_wer, total_res, _ = cal_write_wer(

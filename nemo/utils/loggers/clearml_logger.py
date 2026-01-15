@@ -128,6 +128,7 @@ class ClearMLLogger(Logger):  # pylint: disable=C0115
             }
             self.last_metrics = metrics
 
+    # pylint: disable=C0116
     def log_table(
         self,
         key: str,
@@ -135,7 +136,7 @@ class ClearMLLogger(Logger):  # pylint: disable=C0115
         data: List[List[Any]] = None,
         dataframe: Any = None,
         step: Optional[int] = None,
-    ) -> None:  # pylint: disable=C0116
+    ) -> None:
         table: Optional[Union[pd.DataFrame, List[List[Any]]]] = None
 
         if dataframe is not None:

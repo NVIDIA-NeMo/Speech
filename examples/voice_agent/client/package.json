@@ -14,6 +14,8 @@
   "devDependencies": {
     "@types/node": "^22.15.30",
     "@types/protobufjs": "^6.0.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react-swc": "^3.10.1",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"
@@ -21,6 +23,8 @@
   "dependencies": {
     "@pipecat-ai/client-js": "^0.4.0",
     "@pipecat-ai/websocket-transport": "^0.4.1",
-    "protobufjs": "^7.4.0"
+    "protobufjs": "^7.4.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   }
 }

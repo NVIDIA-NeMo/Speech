@@ -1674,6 +1674,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                     - If `return_best_hypothesis` is True, returns the best hypothesis for each batch.
                     - Otherwise, returns the N-best hypotheses for each batch.
         """
+        if partial_hypotheses is not None:
+            raise NotImplementedError("Partial hypotheses feature is not yet supported in batched beam search.")
         # Preserve decoder and joint training state
         decoder_training_state = self.decoder.training
         joint_training_state = self.joint.training

@@ -155,9 +155,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
 
         # load boosting tree model
         boosting_tree_model = None
-        if boosting_tree is not None and (
-            boosting_tree.model_path or boosting_tree.key_phrases_file or boosting_tree.key_phrases_list
-        ):
+        if boosting_tree and not BoostingTreeModelConfig.is_empty(boosting_tree):
             boosting_tree_model = GPUBoostingTreeModel.from_config(boosting_tree, tokenizer=tokenizer)
 
         # initialize fusion models (ngram LM, boosting tree)
@@ -312,5 +310,5 @@ class AEDBeamInferConfig:
     # fusion models params
     ngram_lm_model: Optional[str] = None
     ngram_lm_alpha: float = 0.0
-    boosting_tree: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
+    boosting_tree: BoostingTreeModelConfig = field(default_factory=lambda: BoostingTreeModelConfig(depth_scaling=1.0))
     boosting_tree_alpha: float = 0.0

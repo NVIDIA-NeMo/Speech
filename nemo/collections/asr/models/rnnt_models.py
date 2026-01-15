@@ -241,6 +241,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     def transcribe(
         self,
         audio: Union[str, List[str], np.ndarray, DataLoader],
+        use_lhotse: bool = True,
         batch_size: int = 4,
         return_hypotheses: bool = False,
         partial_hypothesis: Optional[List['Hypothesis']] = None,
@@ -255,11 +256,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
 
         Args:
-            audio: (a single or list) of paths to audio files or a np.ndarray/tensor audio array or path 
+            audio: (a single or list) of paths to audio files or a np.ndarray/tensor audio array or path
                 to a manifest file.
                 Can also be a dataloader object that provides values that can be consumed by the model.
                 Recommended length per file is between 5 and 25 seconds. \
                 But it is possible to pass a few hours long file if enough GPU memory is available.
+            use_lhotse: (bool) If audio is not a dataloder, defines whether to create a lhotse dataloader or a
+                non-lhotse dataloader.
             batch_size: (int) batch size to use during inference. \
                 Bigger will result in better throughput performance but would use more memory.
             return_hypotheses: (bool) Either return hypotheses or text
@@ -268,13 +271,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 decoding. This is useful for streaming rnnt decoding. If this is not None, then the length of this
                 list should be equal to the length of the audio list.
             num_workers: (int) number of workers for DataLoader
-            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels 
-                from multi-channel audio. If set to `'average'`, it performs averaging across channels. 
+            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels
+                from multi-channel audio. If set to `'average'`, it performs averaging across channels.
                 Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
             verbose: (bool) whether to display tqdm progress bar
-            timestamps: Optional(Bool): timestamps will be returned if set to True as part of hypothesis object 
-                (output.timestep['segment']/output.timestep['word']). Refer to `Hypothesis` class for more details. 
+            timestamps: Optional(Bool): timestamps will be returned if set to True as part of hypothesis object
+                (output.timestep['segment']/output.timestep['word']). Refer to `Hypothesis` class for more details.
                 Default is None and would retain the previous state set by using self.change_decoding_strategy().
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
@@ -305,6 +308,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         return super().transcribe(
             audio=audio,
+            use_lhotse=use_lhotse,
             batch_size=batch_size,
             return_hypotheses=return_hypotheses,
             num_workers=num_workers,
@@ -319,10 +323,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
         """
-        Changes vocabulary used during RNNT decoding process. Use this method when fine-tuning a 
-        pre-trained model. This method changes only decoder and leaves encoder and pre-processing 
-        modules unchanged. For example, you would use it if you want to use pretrained encoder when 
-        fine-tuning on data in another language, or when you'd need model to learn capitalization, 
+        Changes vocabulary used during RNNT decoding process. Use this method when fine-tuning a
+        pre-trained model. This method changes only decoder and leaves encoder and pre-processing
+        modules unchanged. For example, you would use it if you want to use pretrained encoder when
+        fine-tuning on data in another language, or when you'd need model to learn capitalization,
         punctuation and/or special characters.
 
         Args:
@@ -996,6 +1000,45 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
+
+    def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
+        super()._transcribe_on_begin(audio=audio, trcfg=trcfg)
+        # add biasing requests to the decoding computer
+        try:
+            biasing_multi_model = self.decoding.decoding.decoding_computer.biasing_multi_model
+        except AttributeError:
+            biasing_multi_model = None
+        if trcfg.partial_hypothesis:
+            for partial_hyp in trcfg.partial_hypothesis:
+                if (
+                    isinstance(partial_hyp, Hypothesis)
+                    and partial_hyp.has_biasing_request()
+                    and partial_hyp.biasing_cfg.auto_manage_multi_model
+                    and partial_hyp.biasing_cfg.multi_model_id is None
+                ):
+                    if biasing_multi_model is not None:
+                        partial_hyp.biasing_cfg.add_to_multi_model(
+                            tokenizer=self.tokenizer, biasing_multi_model=biasing_multi_model
+                        )
+                    else:
+                        logging.warning("Requested biasing for hypothesis, but multi-model is not found, skipping.")
+
+    def _transcribe_on_end(self, trcfg: TranscribeConfig):
+        super()._transcribe_on_end(trcfg=trcfg)
+        try:
+            biasing_multi_model = self.decoding.decoding.decoding_computer.biasing_multi_model
+        except AttributeError:
+            biasing_multi_model = None
+
+        # remove biasing requests from the decoding computer
+        if biasing_multi_model is not None and trcfg.partial_hypothesis:
+            for partial_hyp in trcfg.partial_hypothesis:
+                if (
+                    isinstance(partial_hyp, Hypothesis)
+                    and partial_hyp.has_biasing_request()
+                    and partial_hyp.biasing_cfg.auto_manage_multi_model
+                ):
+                    partial_hyp.biasing_cfg.remove_from_multi_model(biasing_multi_model=biasing_multi_model)
 
     def on_after_backward(self):
         super().on_after_backward()

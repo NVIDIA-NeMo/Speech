@@ -13,10 +13,13 @@
 # limitations under the License.
 
 import copy
+import logging
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, Optional
+
 import librosa
 import numpy as np
 import torch
@@ -26,6 +29,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextMiniBatch
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.collections.asr.parts.preprocessing.segment import get_samples
@@ -1030,6 +1034,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
         batch_size=32,
         max_steps_per_timestep: int = 5,
         stateful_decoding: bool = False,
+        target_lang_id=None,
     ):
         '''
         Args:
@@ -1039,12 +1044,14 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             batch_size: Number of independent audio samples to process at each step.
             max_steps_per_timestep: Maximum number of tokens (u) to process per acoustic timestep (t).
             stateful_decoding: Boolean whether to enable stateful decoding for preservation of state across buffers.
+            target_lang_id: Optional target language ID for multilingual AST models.
         '''
         super().__init__(asr_model, frame_len=frame_len, total_buffer=total_buffer, batch_size=batch_size)
 
         # OVERRIDES OF THE BASE CLASS
         self.max_steps_per_timestep = max_steps_per_timestep
         self.stateful_decoding = stateful_decoding
+        self.target_lang_id = target_lang_id
 
         self.all_alignments = [[] for _ in range(self.batch_size)]
         self.all_preds = [[] for _ in range(self.batch_size)]
@@ -1061,12 +1068,18 @@ class BatchedFrameASRRNNT(FrameBatchASR):
 
         print("Performing Stateful decoding :", self.stateful_decoding)
 
+        if self.target_lang_id is not None:
+            logging.info("Using target language ID")
         # OVERRIDES
         self.frame_bufferer = BatchedFeatureFrameBufferer(
             asr_model=asr_model, frame_len=frame_len, batch_size=batch_size, total_buffer=total_buffer
         )
 
         self.reset()
+
+    def set_target_lang_id(self, target_lang_id):
+        """Set the target language ID for multilingual models."""
+        self.target_lang_id = target_lang_id
 
     def reset(self):
         """
@@ -1156,7 +1169,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             feat_signals.append(feat_signal)
             feat_signal_lens.append(feat_signal_len)
 
-            # preserve batch indeices
+            # preserve batch indices
             new_batch_keys.append(idx)
 
         if len(feat_signals) == 0:
@@ -1167,7 +1180,51 @@ class BatchedFrameASRRNNT(FrameBatchASR):
 
         del feat_signals, feat_signal_lens
 
-        encoded, encoded_len = self.asr_model(processed_signal=feat_signal, processed_signal_length=feat_signal_len)
+        # Handle prompt if needed - check if model supports prompts
+        prompt_tensor = None
+        if hasattr(self.asr_model, 'num_prompts') or hasattr(self.asr_model, 'prompt_kernel'):
+            # Get prompt dictionary from model config
+            prompt_dict = getattr(self.asr_model._cfg, 'model_defaults', {}).get('prompt_dictionary', {})
+            if not prompt_dict:
+                logging.ValueError("Prompt dictionary is empty in model config")
+
+            # Get prompt index from dictionary or default to 0
+            prompt_idx = 0  # Default value
+            if self.target_lang_id is not None and isinstance(self.target_lang_id, str):
+                prompt_idx = prompt_dict.get(self.target_lang_id, 0)
+                if prompt_idx == 0 and self.target_lang_id not in prompt_dict:
+                    logging.ValueError(f"Prompt ID '{self.target_lang_id}' not found in prompt dictionary")
+
+            # Create target prompt tensor with calculated time dimension
+            time_length = feat_signal.shape[2]
+            hidden_length = math.ceil(time_length / 8)
+
+            # Get number of prompts from model
+            if hasattr(self.asr_model, 'num_prompts'):
+                num_prompts = self.asr_model.num_prompts
+            else:
+                # Fallback: get from config or use default
+                num_prompts = getattr(self.asr_model._cfg, 'model_defaults', {}).get('num_prompts', 128)
+
+            prompt_tensor = torch.zeros(
+                [feat_signal.size(0), hidden_length, num_prompts], dtype=feat_signal.dtype, device=device
+            )
+
+            # Set the target language
+            for i in range(prompt_tensor.size(0)):
+                prompt_tensor[i, :, prompt_idx] = 1
+
+        # Call model forward with or without prompt
+        if prompt_tensor is not None:
+            encoded, encoded_len = self.asr_model.forward(
+                processed_signal=feat_signal,
+                processed_signal_length=feat_signal_len,
+                prompt=prompt_tensor,
+            )
+        else:
+            encoded, encoded_len = self.asr_model.forward(
+                processed_signal=feat_signal, processed_signal_length=feat_signal_len
+            )
 
         # filter out partial hypotheses from older batch subset
         if self.stateful_decoding and self.previous_hypotheses is not None:
@@ -2269,7 +2326,7 @@ class StreamingBatchedAudioBuffer:
         )
         # leave only full_ctx_audio_samples in buffer
         if extra_samples_in_buffer > 0:
-            self.samples = self.samples[:, extra_samples_in_buffer:].clone()
+            self.samples = self.samples[:, extra_samples_in_buffer:]
 
 
 def load_audio(file_path: str | Path, sample_rate: int = 16000) -> tuple[torch.Tensor, int]:
@@ -2278,39 +2335,60 @@ def load_audio(file_path: str | Path, sample_rate: int = 16000) -> tuple[torch.T
     return torch.tensor(audio, dtype=torch.float32), sr
 
 
+class AudioItem(NamedTuple):
+    audio_signal: torch.Tensor
+    biasing_request: BiasingRequestItemConfig | None
+
+
 class AudioBatch(NamedTuple):
     audio_signals: torch.Tensor
     audio_signal_lengths: torch.Tensor
+    biasing_requests: list[BiasingRequestItemConfig | None] | None
 
     @staticmethod
     def collate_fn(
-        audio_batch: list[torch.Tensor],
+        audio_batch: list[AudioItem],
     ) -> "AudioBatch":
         """
         Collate audio signals to batch
         """
         audio_signals = pad_sequence(
-            [audio_tensor for audio_tensor in audio_batch], batch_first=True, padding_value=0.0
+            [audio_item.audio_signal for audio_item in audio_batch], batch_first=True, padding_value=0.0
         )
-        audio_signal_lengths = torch.tensor([audio_tensor.shape[0] for audio_tensor in audio_batch]).long()
+        audio_signal_lengths = torch.tensor([audio_item.audio_signal.shape[0] for audio_item in audio_batch]).long()
+        biasing_requests = [audio_item.biasing_request for audio_item in audio_batch]
 
         return AudioBatch(
             audio_signals=audio_signals,
             audio_signal_lengths=audio_signal_lengths,
+            biasing_requests=None if all([request is None for request in biasing_requests]) else biasing_requests,
         )
 
 
 class SimpleAudioDataset(Dataset):
     """Dataset constructed from audio filenames. Each item - audio"""
 
-    def __init__(self, audio_filenames: list[str | Path], sample_rate: int = 16000):
+    def __init__(
+        self,
+        audio_filenames: list[str | Path],
+        sample_rate: int = 16000,
+        biasing_requests: list[BiasingRequestItemConfig | None] | None = None,
+    ):
         super().__init__()
         self.audio_filenames = audio_filenames
         self.sample_rate = sample_rate
+        self.biasing_requests = (
+            biasing_requests if biasing_requests is not None else [None for _ in range(len(self.audio_filenames))]
+        )
+        if len(self.biasing_requests) != len(self.audio_filenames):
+            raise ValueError(
+                f"Length of biasing requests {len(self.biasing_requests)} "
+                "expected to be equal to the length of audio filenames {len(self.audio_filenames)}"
+            )
 
-    def __getitem__(self, item: int) -> torch.Tensor:
-        audio, _ = load_audio(self.audio_filenames[item])
-        return audio
+    def __getitem__(self, item: int) -> AudioItem:
+        audio, _ = load_audio(self.audio_filenames[item], sample_rate=self.sample_rate)
+        return AudioItem(audio_signal=audio, biasing_request=self.biasing_requests[item])
 
     def __len__(self):
         return len(self.audio_filenames)

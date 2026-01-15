@@ -18,133 +18,96 @@ import copy
 import os
 import signal
 import sys
+from datetime import datetime
 
 from loguru import logger
-from omegaconf import OmegaConf
-
-# Configure loguru to output to both console and file
-logger.remove()  # Remove default handler
-logger.add(
-    sys.stderr,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-    level="DEBUG",
-)
-
-logger.add("bot_server.log", rotation="1 day", level="DEBUG")
-
-# Global flag for graceful shutdown
-shutdown_event = asyncio.Event()
-
-from pipecat.audio.vad.silero import SileroVADAnalyzer, VADParams
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import EndTaskFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIObserver, RTVIProcessor
+from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIObserverParams, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
-from nemo.agents.voice_agent.pipecat.services.nemo.diar import NeMoDiarInputParams, NemoDiarService
-from nemo.agents.voice_agent.pipecat.services.nemo.llm import HuggingFaceLLMService
-from nemo.agents.voice_agent.pipecat.services.nemo.stt import NeMoSTTInputParams, NemoSTTService
-from nemo.agents.voice_agent.pipecat.services.nemo.tts import NeMoFastPitchHiFiGANTTSService
+from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
+from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger, RTVIAudioLoggerObserver
+from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
+from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config
+from nemo.agents.voice_agent.pipecat.services.nemo.stt import ASR_EOU_MODELS, NemoSTTService
+from nemo.agents.voice_agent.pipecat.services.nemo.tts import KokoroTTSService, NeMoFastPitchHiFiGANTTSService
 from nemo.agents.voice_agent.pipecat.services.nemo.turn_taking import NeMoTurnTakingService
 from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import (
     WebsocketServerParams,
     WebsocketServerTransport,
 )
 from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.basic_tools import tool_get_city_weather
+from nemo.agents.voice_agent.pipecat.utils.tool_calling.mixins import register_direct_tools_to_llm
+from nemo.agents.voice_agent.utils.config_manager import ConfigManager
 
-SERVER_CONFIG_PATH = os.environ.get(
-    "SERVER_CONFIG_PATH", f"{os.path.dirname(os.path.abspath(__file__))}/server_config.yaml"
+
+def setup_logging():
+    # Configure loguru to output to both console and file
+    logger.remove()  # Remove default handler
+    logger.add(
+        sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level="DEBUG",
+    )
+
+    logger.add("bot_server.log", rotation="1 day", level="DEBUG")
+
+
+setup_logging()
+
+# Global flag for graceful shutdown
+shutdown_event = asyncio.Event()
+
+# Initialize configuration manager
+config_manager = ConfigManager(
+    server_base_path=os.path.dirname(__file__), server_config_path=os.environ.get("SERVER_CONFIG_PATH", None)
 )
-
-server_config = OmegaConf.load(SERVER_CONFIG_PATH)
+server_config = config_manager.get_server_config()
 
 logger.info(f"Server config: {server_config}")
 
-# Default Configuration
-SAMPLE_RATE = 16000  # Standard sample rate for speech recognition
-RAW_AUDIO_FRAME_LEN_IN_SECS = 0.016  # 16ms for websocket transport
-SYSTEM_PROMPT = """
-You are a helpful AI agent named Lisa. 
-Start by greeting the user warmly and introducing yourself within one sentence. 
-Your answer should be concise and to the point.
-"""
+# Access configuration parameters from ConfigManager
+SAMPLE_RATE = config_manager.SAMPLE_RATE
+RAW_AUDIO_FRAME_LEN_IN_SECS = config_manager.RAW_AUDIO_FRAME_LEN_IN_SECS
+SYSTEM_PROMPT = config_manager.SYSTEM_PROMPT
+SYSTEM_ROLE = config_manager.SYSTEM_ROLE
 
-################ Start of Configuration #################
+# Transport configuration
+TRANSPORT_AUDIO_OUT_10MS_CHUNKS = config_manager.TRANSPORT_AUDIO_OUT_10MS_CHUNKS
+RECORD_AUDIO_DATA = server_config.transport.get("record_audio_data", False)
+AUDIO_LOG_DIR = server_config.transport.get("audio_log_dir", "./audio_logs")
 
-### Transport
-TRANSPORT_AUDIO_OUT_10MS_CHUNKS = server_config.transport.audio_out_10ms_chunks
+# VAD configuration
+vad_params = config_manager.get_vad_params()
 
+# STT configuration
+STT_MODEL = config_manager.STT_MODEL
+STT_DEVICE = config_manager.STT_DEVICE
+stt_params = config_manager.get_stt_params()
 
-### VAD
-vad_params = VADParams(
-    confidence=server_config.vad.confidence,
-    start_secs=server_config.vad.start_secs,
-    stop_secs=server_config.vad.stop_secs,
-    min_volume=server_config.vad.min_volume,
-)
+# Diarization configuration
+DIAR_MODEL = config_manager.DIAR_MODEL
+USE_DIAR = config_manager.USE_DIAR
+diar_params = config_manager.get_diar_params()
 
+# Turn taking configuration
+TURN_TAKING_BACKCHANNEL_PHRASES_PATH = config_manager.TURN_TAKING_BACKCHANNEL_PHRASES_PATH
+TURN_TAKING_MAX_BUFFER_SIZE = config_manager.TURN_TAKING_MAX_BUFFER_SIZE
+TURN_TAKING_BOT_STOP_DELAY = config_manager.TURN_TAKING_BOT_STOP_DELAY
 
-### STT
-STT_MODEL_PATH = server_config.stt.model
-STT_DEVICE = server_config.stt.device
-stt_params = NeMoSTTInputParams(
-    att_context_size=server_config.stt.att_context_size,
-    frame_len_in_secs=server_config.stt.frame_len_in_secs,
-    raw_audio_frame_len_in_secs=RAW_AUDIO_FRAME_LEN_IN_SECS,
-)
-
-
-### Diarization
-DIAR_MODEL = server_config.diar.model
-USE_DIAR = server_config.diar.enabled
-diar_params = NeMoDiarInputParams(
-    frame_len_in_secs=server_config.diar.frame_len_in_secs,
-    threshold=server_config.diar.threshold,
-)
-
-
-### Turn taking
-TURN_TAKING_BACKCHANNEL_PHRASES = server_config.turn_taking.backchannel_phrases
-TURN_TAKING_MAX_BUFFER_SIZE = server_config.turn_taking.max_buffer_size
-TURN_TAKING_BOT_STOP_DELAY = server_config.turn_taking.bot_stop_delay
-
-
-### LLM
-SYSTEM_ROLE = server_config.llm.get("system_role", "system")
-if server_config.llm.get("system_prompt", None) is not None:
-    system_prompt = server_config.llm.system_prompt
-    if os.path.isfile(system_prompt):
-        with open(system_prompt, "r") as f:
-            system_prompt = f.read()
-    SYSTEM_PROMPT = system_prompt
-logger.info(f"System prompt: {SYSTEM_PROMPT}")
-
-LLM_MODEL = server_config.llm.model
-LLM_DEVICE = server_config.llm.device
-LLM_DTYPE = server_config.llm.dtype
-LLM_GENERATION_KWARGS = server_config.llm.get("generation_kwargs", {})
-if LLM_GENERATION_KWARGS is not None:
-    LLM_GENERATION_KWARGS = OmegaConf.to_container(LLM_GENERATION_KWARGS)
-LLM_APPLY_CHAT_TEMPLATE_KWARGS = server_config.llm.get("apply_chat_template_kwargs", None)
-if LLM_APPLY_CHAT_TEMPLATE_KWARGS is not None:
-    LLM_APPLY_CHAT_TEMPLATE_KWARGS = OmegaConf.to_container(LLM_APPLY_CHAT_TEMPLATE_KWARGS)
-
-
-### TTS
-TTS_FASTPITCH_MODEL = server_config.tts.fastpitch_model
-TTS_HIFIGAN_MODEL = server_config.tts.hifigan_model
-TTS_DEVICE = server_config.tts.device
-TTS_THINK_TOKENS = server_config.tts.get("think_tokens", None)
-if TTS_THINK_TOKENS is not None:
-    TTS_THINK_TOKENS = OmegaConf.to_container(TTS_THINK_TOKENS)
-TTS_EXTRA_SEPARATOR = server_config.tts.get("extra_separator", None)
-if TTS_EXTRA_SEPARATOR is not None:
-    TTS_EXTRA_SEPARATOR = OmegaConf.to_container(TTS_EXTRA_SEPARATOR)
-
-################ End of Configuration #################
+# TTS configuration
+TTS_TYPE = config_manager.server_config.tts.type
+TTS_MAIN_MODEL_ID = config_manager.TTS_MAIN_MODEL_ID
+TTS_SUB_MODEL_ID = config_manager.TTS_SUB_MODEL_ID
+TTS_DEVICE = config_manager.TTS_DEVICE
+TTS_THINK_TOKENS = config_manager.TTS_THINK_TOKENS
+TTS_EXTRA_SEPARATOR = config_manager.TTS_EXTRA_SEPARATOR
 
 
 def signal_handler(signum, frame):
@@ -153,27 +116,42 @@ def signal_handler(signum, frame):
     shutdown_event.set()
 
 
-async def run_bot_websocket_server():
+async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
+    """
+    NO-TIMEOUT CONFIGURATION:
+    - session_timeout=None: Disables WebSocket session timeout
+    - idle_timeout=None: Disables pipeline idle timeout
+    - asyncio.wait_for(timeout=None): No timeout on pipeline runner
+    - Server will run indefinitely until manually stopped (Ctrl+C)
+    """
+    logger.info(f"Starting websocket server on {host}:{port}")
+    logger.info(f"Server configured to run indefinitely with no timeouts, use Ctrl+C to quit.")
+
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     logger.info("Initializing WebSocket server transport...")
     logger.info("Server configured to run indefinitely with no timeouts")
-
-    """
-    NO-TIMEOUT CONFIGURATION:
-    - session_timeout=None: Disables WebSocket session timeout
-    - idle_timeout=None: Disables pipeline idle timeout  
-    - asyncio.wait_for(timeout=None): No timeout on pipeline runner
-    - Server will run indefinitely until manually stopped (Ctrl+C)
-    """
+    # Initialize AudioLogger if recording is enabled
+    audio_logger = None
+    if RECORD_AUDIO_DATA:
+        session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        audio_logger = AudioLogger(
+            log_dir=AUDIO_LOG_DIR,
+            session_id=session_id,
+            enabled=True,
+        )
+        logger.info(f"AudioLogger initialized for session: {session_id} at {AUDIO_LOG_DIR}")
 
     vad_analyzer = SileroVADAnalyzer(
         sample_rate=SAMPLE_RATE,
         params=vad_params,
     )
     logger.info("VAD analyzer initialized")
+
+    has_turn_taking = True if STT_MODEL in ASR_EOU_MODELS else False
+    logger.info(f"Setting STT service has_turn_taking to `{has_turn_taking}` based on model name: `{STT_MODEL}`")
 
     ws_transport = WebsocketServerTransport(
         params=WebsocketServerParams(
@@ -184,25 +162,26 @@ async def run_bot_websocket_server():
             vad_analyzer=vad_analyzer,
             session_timeout=None,  # Disable session timeout
             audio_in_sample_rate=SAMPLE_RATE,
-            can_create_user_frames=TURN_TAKING_BACKCHANNEL_PHRASES
-            is None,  # if backchannel phrases are disabled, we can use VAD to interrupt the bot immediately
+            can_create_user_frames=TURN_TAKING_BACKCHANNEL_PHRASES_PATH is None
+            or not has_turn_taking,  # if backchannel phrases are disabled, we can use VAD to interrupt the bot immediately
             audio_out_10ms_chunks=TRANSPORT_AUDIO_OUT_10MS_CHUNKS,
         ),
-        host="0.0.0.0",  # Bind to all interfaces
-        port=8765,
+        host=host,
+        port=port,
     )
 
     logger.info("Initializing STT service...")
 
     stt = NemoSTTService(
-        model=STT_MODEL_PATH,
+        model=STT_MODEL,
         device=STT_DEVICE,
         params=stt_params,
         sample_rate=SAMPLE_RATE,
         audio_passthrough=True,
-        has_turn_taking=True,
+        has_turn_taking=has_turn_taking,
         backend="legacy",
         decoder_type="rnnt",
+        audio_logger=audio_logger,
     )
     logger.info("STT service initialized")
 
@@ -224,41 +203,55 @@ async def run_bot_websocket_server():
         use_diar=USE_DIAR,
         max_buffer_size=TURN_TAKING_MAX_BUFFER_SIZE,
         bot_stop_delay=TURN_TAKING_BOT_STOP_DELAY,
-        backchannel_phrases=TURN_TAKING_BACKCHANNEL_PHRASES,
+        backchannel_phrases=TURN_TAKING_BACKCHANNEL_PHRASES_PATH,
+        audio_logger=audio_logger,
     )
     logger.info("Turn taking service initialized")
 
     logger.info("Initializing LLM service...")
 
-    llm = HuggingFaceLLMService(
-        model=LLM_MODEL,
-        device=LLM_DEVICE,
-        dtype=LLM_DTYPE,
-        generation_kwargs=LLM_GENERATION_KWARGS,
-        apply_chat_template_kwargs=LLM_APPLY_CHAT_TEMPLATE_KWARGS,
-    )
+    llm = get_llm_service_from_config(server_config.llm)
     logger.info("LLM service initialized")
 
     text_aggregator = SimpleSegmentedTextAggregator(punctuation_marks=TTS_EXTRA_SEPARATOR)
 
-    tts = NeMoFastPitchHiFiGANTTSService(
-        fastpitch_model=TTS_FASTPITCH_MODEL,
-        hifigan_model=TTS_HIFIGAN_MODEL,
-        device=TTS_DEVICE,
-        text_aggregator=text_aggregator,
-        think_tokens=TTS_THINK_TOKENS,
-    )
+    if TTS_TYPE == "nemo":
+        tts = NeMoFastPitchHiFiGANTTSService(
+            fastpitch_model=TTS_MAIN_MODEL_ID,
+            hifigan_model=TTS_SUB_MODEL_ID,
+            device=TTS_DEVICE,
+            text_aggregator=text_aggregator,
+            think_tokens=TTS_THINK_TOKENS,
+            audio_logger=audio_logger,
+        )
+    elif TTS_TYPE == "kokoro":
+        tts = KokoroTTSService(
+            voice=TTS_SUB_MODEL_ID,
+            device=TTS_DEVICE,
+            speed=config_manager.server_config.tts.speed,
+            text_aggregator=text_aggregator,
+            think_tokens=TTS_THINK_TOKENS,
+            audio_logger=audio_logger,
+        )
+    else:
+        raise ValueError(f"Invalid TTS type: {TTS_TYPE}")
 
     logger.info("TTS service initialized")
 
     context = OpenAILLMContext(
-        [
+        messages=[
             {
                 "role": SYSTEM_ROLE,
                 "content": SYSTEM_PROMPT,
             }
         ],
     )
+
+    if server_config.llm.get("enable_tool_calling", False):
+        logger.info("Tools calling for LLM is enabled by config, registering tools...")
+        register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts], tools=[tool_get_city_weather])
+    else:
+        logger.info("Tools calling for LLM is disabled by config, skipping tool registration.")
 
     original_messages = copy.deepcopy(context.get_messages())
     original_context = copy.deepcopy(context)
@@ -280,7 +273,9 @@ async def run_bot_websocket_server():
             assistant_context_aggregator.reset()
             user_context_aggregator.set_messages(copy.deepcopy(original_messages))
             assistant_context_aggregator.set_messages(copy.deepcopy(original_messages))
-
+            text_aggregator.reset()
+            if diar is not None:
+                diar.reset()
             logger.info("Conversation context reset successfully")
             return True
         except Exception as e:
@@ -313,6 +308,7 @@ async def run_bot_websocket_server():
 
     pipeline = Pipeline(pipeline)
 
+    rtvi_params = RTVIObserverParams(bot_llm_enabled=False)
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
@@ -323,13 +319,19 @@ async def run_bot_websocket_server():
             report_only_initial_ttfb=True,
             idle_timeout=None,  # Disable idle timeout
         ),
-        observers=[RTVIObserver(rtvi)],
+        observers=[
+            RTVIObserver(rtvi, params=rtvi_params),
+            RTVIAudioLoggerObserver(audio_logger=audio_logger),
+        ],
         idle_timeout_secs=None,
         cancel_on_idle_timeout=False,
     )
 
     # Track task state
     task_running = True
+
+    # Setup logging again to avoid logger from being overwritten during setting up the pipeline components
+    setup_logging()
 
     @rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi: RTVIProcessor):
@@ -351,6 +353,10 @@ async def run_bot_websocket_server():
     @ws_transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info(f"Pipecat Client disconnected from {client.remote_address}")
+        # Finalize audio logger session if enabled
+        if audio_logger:
+            audio_logger.finalize_session()
+            logger.info("Audio logger session finalized")
         # Don't cancel the task immediately - let it handle the disconnection gracefully
         # The task will continue running and can accept new connections
         # Only send an EndTaskFrame to clean up the current session
@@ -383,6 +389,10 @@ async def run_bot_websocket_server():
         logger.error(f"Pipeline runner error: {e}")
         task_running = False
     finally:
+        # Finalize audio logger on shutdown
+        if audio_logger:
+            audio_logger.finalize_session()
+            logger.info("Audio logger session finalized on shutdown")
         logger.info("Pipeline runner stopped")
 
 

@@ -23,11 +23,11 @@ from omegaconf import DictConfig, OmegaConf
 from torch.optim import adadelta, adagrad, adamax, rmsprop, rprop
 from torch.optim.optimizer import Optimizer
 
-from nemo.core.config import OptimizerParams, get_optimizer_config, register_optimizer_params
+from nemo.core.config.optimizers import OptimizerParams, get_optimizer_config, register_optimizer_params
 from nemo.core.optim.adafactor import Adafactor
 from nemo.core.optim.adan import Adan
 from nemo.core.optim.novograd import Novograd
-from nemo.utils import logging
+
 from nemo.utils.model_utils import maybe_update_config_version
 
 AVAILABLE_OPTIMIZERS = {
@@ -195,7 +195,7 @@ def get_optimizer(name: str, **kwargs: Optional[Dict[str, Any]]) -> Optimizer:
         )
     if name == 'fused_adam':
         if not torch.cuda.is_available():
-            raise ValueError(f'CUDA must be available to use fused_adam.')
+            raise ValueError('CUDA must be available to use fused_adam.')
 
     optimizer = AVAILABLE_OPTIMIZERS[name]
     optimizer = partial(optimizer, **kwargs)
@@ -203,6 +203,15 @@ def get_optimizer(name: str, **kwargs: Optional[Dict[str, Any]]) -> Optimizer:
 
 
 def init_optimizer_states(optimizer: Optimizer):
+    """
+    Initialize optimizer states for Adam-based optimizers.
+
+    This function initializes the exponential moving averages (exp_avg and exp_avg_sq)
+    for Adam, AdamW, and FusedAdam optimizers if they haven't been initialized yet.
+
+    Args:
+        optimizer: The optimizer instance to initialize states for
+    """
     adam_nondist_optims = (optim.Adam, optim.AdamW)
     if HAVE_APEX:
         adam_nondist_optims += (FusedAdam,)

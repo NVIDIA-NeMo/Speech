@@ -43,6 +43,12 @@ def main():
     )
     parser.add_argument("--group_size", type=int, default=4)
     parser.add_argument("--cer_threshold", type=float, default=0.02)
+    parser.add_argument(
+        "--min_length_threshold",
+        type=float,
+        default=1.5,
+        help="Minimum length permitted. Set this shorter to allow very short sentences (which can be useful for DPO tuning.",
+    )
     parser.add_argument("--val_size", type=int, default=64)
     args = parser.parse_args()
 
@@ -83,7 +89,7 @@ def main():
         print("Len all_best_records: ", len(all_best_records))
         print("Len all_worst_records: ", len(all_worst_records))
         best_records, worst_records = filter_best_and_worst_records(
-            all_best_records, all_worst_records, args.cer_threshold
+            all_best_records, all_worst_records, args.cer_threshold, args.min_length_threshold
         )
         print("Len filtered best_records: ", len(best_records))
         print("Len filtered worst_records: ", len(worst_records))
@@ -167,6 +173,8 @@ def pareto_rank(items):
     # A helper function to check if item A is dominated by item B
     # A: (cerA, ssimA), B: (cerB, ssimB)
     def is_dominated(A, B):
+        assert len(A) == 2
+        assert len(B) == 2
         return (B[0] <= A[0]) and (B[1] >= A[1]) and (B != A)
         # Equivalently, check at least one strict inequality:
         # (B[0] < A[0]) or (B[1] > A[1])
@@ -186,7 +194,7 @@ def pareto_rank(items):
             dominated = False
             for j in range(len(remaining)):
                 if i != j:
-                    if is_dominated(remaining[i], remaining[j]):
+                    if is_dominated(remaining[i][:2], remaining[j][:2]):
                         dominated = True
                         break
             if not dominated:
@@ -303,7 +311,7 @@ def create_chosen_rejected_records(records_orig, group_size=6, num_chosen_per_gr
     return best_records, worst_records
 
 
-def filter_best_and_worst_records(best_records, worst_records, cer_threshold=0.02):
+def filter_best_and_worst_records(best_records, worst_records, cer_threshold=0.02, min_length_threshold=1.5):
     ridx = 0
     filtered_best_records = []
     filtered_worst_records = []
@@ -316,7 +324,7 @@ def filter_best_and_worst_records(best_records, worst_records, cer_threshold=0.0
         if best_record['cer_gts'] < cer_threshold:
             worst_record = worst_records[ridx]
             if (worst_record['duration'] > 19.0 or best_record['duration'] > 19.0) or (
-                worst_record['duration'] < 1.5 or best_record['duration'] < 1.5
+                worst_record['duration'] < min_length_threshold or best_record['duration'] < min_length_threshold
             ):
                 skipped_records += 1
                 ridx += 1

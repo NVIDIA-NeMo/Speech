@@ -32,7 +32,6 @@ from torch.utils import data
 from torch.utils.data import DataLoader, Dataset
 from transformers import CLIPImageProcessor, Qwen2VLImageProcessor
 
-from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
 from nemo.collections.vlm.qwen2vl.data.config import Qwen2VLDataConfig
 from nemo.collections.vlm.qwen2vl.data.conversation import conv_templates as supported_conv_templates
 from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import (
@@ -43,6 +42,7 @@ from nemo.collections.vlm.qwen2vl.data.multimodal_tokens import (
     VISION_END_TOKEN_INDEX,
 )
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
+from nemo.utils.megatron_utils import get_ltor_masks_and_position_ids
 
 
 def process_vision(processor, images, videos, fps=None, model_version="qwen2-vl"):

@@ -17,10 +17,10 @@ from typing import Any, List, Union
 import torch
 from torch.utils.data import Dataset, default_collate
 
+from nemo.collections.common.data.data_samplers import MegatronPretrainingSampler
 from nemo.collections.multimodal.data.clip.augmentations.augmentations import image_transform
 from nemo.collections.multimodal.data.clip.imagenet_zeroshot_data import imagenet_classnames, openai_imagenet_template
 from nemo.collections.multimodal.data.common.webdataset import WebDatasetCommon
-from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import MegatronPretrainingSampler
 from nemo.collections.vision.data.megatron.image_folder import ImageFolder
 
 try:

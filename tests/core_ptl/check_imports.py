@@ -24,7 +24,7 @@ from nemo.core import Model
 from nemo.utils import model_utils
 from nemo.utils.import_utils import UnavailableError
 
-DOMAINS = ['asr', 'tts', 'nlp', 'lightning', 'core']
+DOMAINS = ['asr', 'tts', 'lightning', 'core']
 
 
 def process_args():
@@ -153,71 +153,6 @@ def test_domain_asr(args):
         exit(1)
 
 
-def test_domain_nlp(args):
-    # If even this fails, just fail entirely.
-    import nemo.collections.nlp as nemo_nlp
-
-    # Basic NLP test
-    all_passed = _test_domain_module_imports(nemo_nlp, domain=args.domain, subdomains=['models'])
-
-    # Megatron Test
-    all_passed = (
-        _test_domain_module_imports(
-            nemo_nlp, domain=args.domain, subdomains=['models', 'language_modeling', 'megatron_base_model']
-        )
-        and all_passed
-    )
-    all_passed = (
-        _test_domain_module_imports(
-            nemo_nlp, domain=args.domain, subdomains=['models', 'language_modeling', 'megatron_bert_model']
-        )
-        and all_passed
-    )
-    all_passed = (
-        _test_domain_module_imports(
-            nemo_nlp, domain=args.domain, subdomains=['models', 'language_modeling', 'megatron_glue_model']
-        )
-        and all_passed
-    )
-    all_passed = (
-        _test_domain_module_imports(
-            nemo_nlp, domain=args.domain, subdomains=['models', 'language_modeling', 'megatron_gpt_model']
-        )
-        and all_passed
-    )
-    all_passed = (
-        _test_domain_module_imports(
-            nemo_nlp,
-            domain=args.domain,
-            subdomains=['models', 'language_modeling', 'megatron_lm_encoder_decoder_model'],
-        )
-        and all_passed
-    )
-    all_passed = (
-        _test_domain_module_imports(
-            nemo_nlp,
-            domain=args.domain,
-            subdomains=['models', 'language_modeling', 'megatron_gpt_prompt_learning_model'],
-        )
-        and all_passed
-    )
-    all_passed = (
-        _test_domain_module_imports(
-            nemo_nlp, domain=args.domain, subdomains=['models', 'language_modeling', 'megatron_t5_model']
-        )
-        and all_passed
-    )
-    all_passed = (
-        _test_domain_module_imports(
-            nemo_nlp, domain=args.domain, subdomains=['models', 'language_modeling', 'megatron_t5_model']
-        )
-        and all_passed
-    )
-
-    if not all_passed:
-        exit(1)
-
-
 def test_domain_tts(args):
     import nemo.collections.tts as nemo_tts
 
@@ -269,8 +204,6 @@ def test_domain(args):
 
     if domain == 'asr':
         test_domain_asr(args)
-    elif domain == 'nlp':
-        test_domain_nlp(args)
     elif domain == 'tts':
         test_domain_tts(args)
     elif domain == 'lightning':

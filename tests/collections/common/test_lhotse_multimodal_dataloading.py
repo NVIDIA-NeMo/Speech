@@ -86,7 +86,7 @@ def multimodal_conversations_path(tmp_path_factory):
                     "from": "Assistant",
                     "type": "text",
                 },
-                {"value": "123_answer.wav", "from": "Assistant", "type": "audio", "duration": 5, "offset": 7.11},
+                {"value": "123_answer.wav", "from": "Assistant", "type": "audio", "offset": 7.11},
             ],
         }
     ]

@@ -148,13 +148,13 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
                         with output[idx].timestep['word'/'segment'/'char']"
                 )
                 return_hypotheses = True
-                if self.cfg.decoding.get("compute_timestamps", False) is not True:
+                if decoding_cfg.get("compute_timestamps", None) is not True:
                     # compute_timestamps None, False or non-existent -> change to True
                     need_change_decoding = True
                     with open_dict(decoding_cfg):
                         decoding_cfg.compute_timestamps = True
             else:
-                if self.cfg.decoding.get("compute_timestamps", True) is not False:
+                if decoding_cfg.get("compute_timestamps", None) is not False:
                     # compute_timestamps None, True or non-existent -> change to False
                     need_change_decoding = True
                     with open_dict(decoding_cfg):

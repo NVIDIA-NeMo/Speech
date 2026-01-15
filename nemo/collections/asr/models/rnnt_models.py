@@ -298,14 +298,14 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                         with output[0][idx].timestep['word'/'segment'/'char']"
                 )
                 return_hypotheses = True
-                if self.cfg.decoding.get("compute_timestamps", False) is not True:
+                if self.cfg.decoding.get("compute_timestamps", None) is not True:
                     # compute_timestamps None, False or non-existent -> change to True
                     need_change_decoding = True
                     with open_dict(self.cfg.decoding):
                         self.cfg.decoding.compute_timestamps = True
             else:
                 return_hypotheses = False
-                if self.cfg.decoding.get("compute_timestamps", True) is not False:
+                if self.cfg.decoding.get("compute_timestamps", None) is not False:
                     # compute_timestamps None, True or non-existent -> change to False
                     need_change_decoding = True
                     with open_dict(self.cfg.decoding):

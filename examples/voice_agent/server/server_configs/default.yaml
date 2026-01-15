@@ -5,6 +5,8 @@
 
 transport:
   audio_out_10ms_chunks: 10  # use 4 as websocket default, but increasing to a larger number might have less glitches in TTS output
+  record_audio_data: false
+  audio_log_dir: "./audio_logs"
 
 vad:
   type: silero

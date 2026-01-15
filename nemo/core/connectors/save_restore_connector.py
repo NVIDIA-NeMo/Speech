@@ -21,6 +21,7 @@ import tempfile
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
+from pathlib import PurePosixPath
 from typing import Callable, Generator, Optional, Set, Union
 
 import torch
@@ -610,7 +611,8 @@ class SaveRestoreConnector:
     @staticmethod
     def _make_nemo_file_from_folder_with_multistorageclient(filename, source_dir):
         msc = import_multistorageclient()
-        filename_with_extension = filename.split("/")[-1]  # get the filename and extension
+        # Use PurePosixPath for cloud storage paths which always use forward slashes
+        filename_with_extension = PurePosixPath(filename).name
         with tempfile.TemporaryDirectory() as tmpdir:
             tar_file = os.path.join(tmpdir, filename_with_extension)
             with tarfile.open(tar_file, "w:") as tar:
@@ -726,7 +728,8 @@ class SaveRestoreConnector:
             raise FileNotFoundError(f"{path2file} does not exist")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            filename_with_extension = path2file.split("/")[-1]  # get the filename with extension
+            # Use PurePosixPath for cloud storage paths which always use forward slashes
+            filename_with_extension = PurePosixPath(path2file).name
             downloaded_file_path = os.path.join(tmpdir, filename_with_extension)
             start_time = time.time()
             msc.download_file(path2file, downloaded_file_path)

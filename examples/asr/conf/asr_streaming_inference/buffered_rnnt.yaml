@@ -13,6 +13,7 @@ asr:
     fused_batch_size: -1
     greedy:
       use_cuda_graph_decoder: true
+      enable_per_stream_biasing: true  # Per-stream biasing in decoder
       max_symbols: 10
       # n-gram LM
       ngram_lm_model: null  # The path to built '.nemo' NGPU-LM model
@@ -22,7 +23,11 @@ asr:
         model_path: null  # The path to built '.nemo' boosting tree model
         key_phrases_file: null  # The path to the context-biasing list file (one phrase per line)
         key_phrases_list: null  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
-        source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer)
+        key_phrase_items_list: null  # The list of context-biasing phrases with custom fields
+        # in CLI: [{phrase:"word1",lang:en},{phrase:"frase dos",lang:es}]
+        # in code: [PhraseItem(phrase="word1, lang="en"), PhraseItem(phrase2="frase dos", lang="es")]
+        source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer),
+        # used with `key_phrases_file` and `key_phrases_list`
       boosting_tree_alpha: 0.0
 
 

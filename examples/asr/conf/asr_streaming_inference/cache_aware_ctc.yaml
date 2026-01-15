@@ -75,7 +75,7 @@ streaming:
   use_cache: true                             # Whether to use cache for streaming
   use_feat_cache: true                        # Whether to cache mel-spec features, set false to re-calculate all mel-spec features in audio buffer
   chunk_size_in_secs: null                    # Amount of audio to load for each streaming step, e.g., 0.08s for FastConformer. Set to `null` for using default size equal to 1+lookahead frames.
-  request_type: frame                         # Type of request: frame, only frame is supported for cache-aware streaming
+  request_type: frame                         # Type of request: frame or feature_buffer
   num_slots: 1024                             # Number of slots in the context manager: must be >= batch_size
 
 

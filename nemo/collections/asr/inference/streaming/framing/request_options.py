@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 from nemo.collections.asr.inference.utils.enums import ASROutputGranularity
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 
 
 @dataclass(slots=True)
@@ -34,6 +35,7 @@ class ASRRequestOptions:
     enable_nmt: bool = None
     source_language: str = None
     target_language: str = None
+    biasing_cfg: BiasingRequestItemConfig | None = None
 
     def __post_init__(self) -> None:
         """
@@ -82,6 +84,7 @@ class ASRRequestOptions:
         default_stop_history_eou: int,
         default_asr_output_granularity: ASROutputGranularity | str,
         default_language_code: str | None = None,
+        biasing_cfg: BiasingRequestItemConfig | None = None,
     ) -> "ASRRequestOptions":
         """
         Fill unset fields with the passed default values.
@@ -94,6 +97,7 @@ class ASRRequestOptions:
             default_stop_history_eou (int): Default stop history EOU.
             default_asr_output_granularity (ASROutputGranularity | str): Default output granularity.
             default_language_code (str | None): Default language code for prompt-enabled models.
+            biasing_cfg: Default biasing config or None
         Returns:
             ASRRequestOptions: Augmented options.
         """
@@ -123,7 +127,12 @@ class ASRRequestOptions:
             stop_history_eou=stop_history_eou,
             asr_output_granularity=granularity,
             language_code=language_code,
+            biasing_cfg=self.biasing_cfg or biasing_cfg,
         )
+
+    def has_biasing_request(self):
+        """Return True if contains non-empty biasing request"""
+        return self.biasing_cfg is not None and (not self.biasing_cfg.is_empty())
 
 
 RequestOptions: TypeAlias = ASRRequestOptions

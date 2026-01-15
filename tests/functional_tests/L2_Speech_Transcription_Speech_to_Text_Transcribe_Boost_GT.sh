@@ -12,25 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Test RNN-T
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
-    examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \
+    tests/functional_tests/asr_transcribe_boost_ground_truth.py \
+    dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10.json" \
+    output_filename="/tmp/stt_transcribe_boost_gt_res_rnnt.json" \
     model_path="/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo" \
-    audio_dir="/home/TestData/an4_transcribe/test_subset/" \
-    chunk_secs=2.0 \
-    left_context_secs=10.0 \
-    right_context_secs=2.0 \
-    timestamps=true \
-    output_filename="/tmp/stt_streaming_test_res.json"
-
-# Boosting ground truth - sanity check for per-utterance boosting
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
-    examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \
-    model_path="/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo" \
-    dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
-    use_per_stream_biasing=true \
-    chunk_secs=2.0 \
-    left_context_secs=10.0 \
-    right_context_secs=2.0 \
     batch_size=5 \
-    timestamps=true \
-    output_filename="/tmp/stt_streaming_test_res.json"
+    device='cuda:0'
+
+# Test TDT
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+    tests/functional_tests/asr_transcribe_boost_ground_truth.py \
+    dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10.json" \
+    output_filename="/tmp/stt_transcribe_boost_gt_res_tdt.json" \
+    model_path="/home/TestData/asr/stt_en_fastconformer_tdt_large.nemo" \
+    batch_size=5 \
+    device='cuda:0'

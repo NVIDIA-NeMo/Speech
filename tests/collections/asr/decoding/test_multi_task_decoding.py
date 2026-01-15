@@ -110,8 +110,9 @@ def test_greedy_decoding(inputs, nnet, deterministic_rng, with_confidence, retur
         assert confidence is None
 
 
-def test_temperature_sampling_decoding(inputs, nnet):
-    gen = GreedySequenceGenerator(*nnet, return_xattn_scores=True, temperature=10.0, n_samples=2)
+@pytest.mark.parametrize('return_xattn_scores', [False, True])
+def test_temperature_sampling_decoding(inputs, nnet, return_xattn_scores):
+    gen = GreedySequenceGenerator(*nnet, return_xattn_scores=return_xattn_scores, temperature=10.0, n_samples=2)
     output = gen(*inputs)
 
     assert len(output) == 4
@@ -127,8 +128,11 @@ def test_temperature_sampling_decoding(inputs, nnet):
     assert seq0.shape[0] == 2
     assert (seq0[0] != seq0[1]).any()
 
-    assert len(xatt_list) == len(nnet[1].layers)
-    assert xatt_list[0].shape == (2, 1, 24, 5)
+    if return_xattn_scores:
+        assert len(xatt_list) == len(nnet[1].layers)
+        assert xatt_list[0].shape == (2, 1, 24, 5)
+    else:
+        assert xatt_list is None
 
 
 def test_beam_decoding_beam_scores_false(inputs, nnet):

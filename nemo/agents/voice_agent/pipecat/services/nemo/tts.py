@@ -14,7 +14,9 @@
 
 import asyncio
 import inspect
+import uuid
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import Iterator, List, Optional
 
 import numpy as np
@@ -34,6 +36,7 @@ from pipecat.frames.frames import (
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.tts_service import TTSService
 
+from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
 from nemo.agents.voice_agent.pipecat.utils.tool_calling.mixins import ToolCallingMixin
 from nemo.collections.tts.models import FastPitchModel, HifiGanModel
 
@@ -58,6 +61,7 @@ class BaseNemoTTSService(TTSService):
         device: str = "cuda",
         sample_rate: int = 22050,
         think_tokens: Optional[List[str]] = None,
+        audio_logger: Optional[AudioLogger] = None,
         **kwargs,
     ):
         super().__init__(sample_rate=sample_rate, **kwargs)
@@ -65,6 +69,7 @@ class BaseNemoTTSService(TTSService):
         self._device = device
         self._model = self._setup_model()
         self._think_tokens = think_tokens
+        self._audio_logger = audio_logger
         if think_tokens is not None:
             assert (
                 isinstance(think_tokens, list) and len(think_tokens) == 2
@@ -248,8 +253,11 @@ class BaseNemoTTSService(TTSService):
             await self.start_ttfb_metrics()
             yield TTSStartedFrame()
 
+            # Increment turn index at the start of agent speaking (only if speaker changed)
+            if self._audio_logger is not None:
+                self._audio_logger.increment_turn_index(speaker="agent")
+
             # Generate unique request ID
-            import uuid
 
             request_id = str(uuid.uuid4())
 
@@ -278,6 +286,12 @@ class BaseNemoTTSService(TTSService):
 
                 await self.start_tts_usage_metrics(text)
 
+                # Collect all audio for logging
+                all_audio_bytes = b""
+                # Capture the start time when TTS begins (not when it ends)
+                if self._audio_logger is not None and self._audio_logger.first_audio_timestamp is None:
+                    self._audio_logger.first_audio_timestamp = datetime.now()
+
                 # Process the audio result (same as before)
                 if (
                     inspect.isgenerator(audio_result)
@@ -290,11 +304,15 @@ class BaseNemoTTSService(TTSService):
                         if first_chunk:
                             await self.stop_ttfb_metrics()
                             first_chunk = False
+                            # Capture start time on first chunk
+                            if self._audio_logger is not None:
+                                tts_start_time = self._audio_logger.get_time_from_start_of_session()
 
                         if audio_chunk is None:
                             break
 
                         audio_bytes = self._convert_to_bytes(audio_chunk)
+                        all_audio_bytes += audio_bytes
                         chunk_size = self.chunk_size
                         for i in range(0, len(audio_bytes), chunk_size):
                             audio_chunk_bytes = audio_bytes[i : i + chunk_size]
@@ -308,7 +326,11 @@ class BaseNemoTTSService(TTSService):
                 else:
                     # Handle single result case
                     await self.stop_ttfb_metrics()
+                    # Capture start time for single result
+                    if self._audio_logger is not None:
+                        tts_start_time = self._audio_logger.get_time_from_start_of_session()
                     audio_bytes = self._convert_to_bytes(audio_result)
+                    all_audio_bytes = audio_bytes
 
                     chunk_size = self.chunk_size
                     for i in range(0, len(audio_bytes), chunk_size):
@@ -318,6 +340,22 @@ class BaseNemoTTSService(TTSService):
 
                         frame = TTSAudioRawFrame(audio=chunk, sample_rate=self.sample_rate, num_channels=1)
                         yield frame
+
+                # Log the complete audio if logger is available
+                if self._audio_logger is not None and all_audio_bytes:
+                    try:
+                        self._audio_logger.log_agent_audio(
+                            audio_data=all_audio_bytes,
+                            text=text,
+                            sample_rate=self.sample_rate,
+                            num_channels=1,
+                            additional_metadata={
+                                "model": self._model_name,
+                            },
+                            tts_generation_time=tts_start_time,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to log agent audio: {e}")
 
                 yield TTSStoppedFrame()
 
@@ -500,11 +538,14 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
             logger.error(f"Error generating audio with Kokoro: {e}")
             raise
 
-    async def tool_tts_set_speed_explicitly(self, params: FunctionCallParams, speed_lambda: float):
+    async def tool_tts_set_speed(self, params: FunctionCallParams, speed_lambda: float):
         """
-        Set the speaking speed of the assistant's voice.
+        Set a specific speaking speed of the assistant's voice.
         This tool should be called only when the user specifies the speed explicitly,
         such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
 
         Args:
             speed_lambda: positive float, the relative change of the speaking speed to the original speed.
@@ -528,14 +569,24 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         await params.result_callback(result)
 
     async def tool_tts_reset_speed(self, params: FunctionCallParams):
-        """Reset the speaking speed to the original speed."""
+        """
+        Reset the speaking speed to the original speed.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+        """
         self._speed = self._original_speed
         result = {"success": True, "message": "Speaking speed is reset to the original one"}
         logger.debug(f"Speaking speed is reset to the original speed {self._original_speed}")
         await params.result_callback(result)
 
     async def tool_tts_speak_faster(self, params: FunctionCallParams):
-        """Speak faster by increasing the speaking speed 15% faster each time this function is called."""
+        """
+        Speak faster by increasing the speaking speed 15% faster each time this function is called.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+        """
         self._speed_lambda = self._speed_lambda + 0.15
         self._speed = self._speed_lambda * self._original_speed
         result = {
@@ -546,7 +597,12 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         await params.result_callback(result)
 
     async def tool_tts_speak_slower(self, params: FunctionCallParams):
-        """Speak slower by decreasing the speaking speed 15% slower each time this function is called."""
+        """
+        Speak slower by decreasing the speaking speed 15% slower each time this function is called.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+        """
         self._speed_lambda = self._speed_lambda - 0.15
         if self._speed_lambda < 0.1:
             self._speed = 0.1 * self._original_speed
@@ -564,20 +620,23 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
             logger.debug(f"Speed is set to {self._speed_lambda} of the original speed {self._original_speed}")
         await params.result_callback(result)
 
-    async def tool_tts_set_lang_voice(self, params: FunctionCallParams, language: str, gender: str):
+    async def tool_tts_set_voice(self, params: FunctionCallParams, accent: str, gender: str):
         """
-        Set the language and voice of the assistant's voice.
-        This tool should be called only when the user specifies the language/accent and gender explicitly.
+        Set the accent and gender of the assistant's voice.
+        This tool should be called only when the user specifies the accent and/or gender explicitly.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
 
         Args:
-            language: Language for the TTS model. Must be one of 'American English' or 'British English'
-                    or 'current' for keeping the current language.
+            accent: Accent for the TTS model. Must be one of 'American English', 'British English'
+                    or 'current' for keeping the current accent.
             gender: gender of the assistant's voice. Must be one of 'male', 'female',
                     or 'current' for keeping the current gender.
         """
         await params.llm.push_frame(LLMTextFrame("Just a moment."))
 
-        lang_code = "a" if language == "American English" else "b" if language == "British English" else "current"
+        lang_code = "a" if accent == "American English" else "b" if accent == "British English" else "current"
         new_lang_code = self._lang_code
         new_gender = self._gender
         if lang_code != 'current':
@@ -606,8 +665,13 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         logger.debug(f"Language and voice are set to {new_lang_code} and {new_voice}")
         await params.result_callback({"success": True, "message": "Done. Language and voice are set to the new ones."})
 
-    async def tool_tts_reset_lang_voice(self, params: FunctionCallParams):
-        """Reset the language and voice to the original ones."""
+    async def tool_tts_reset_voice(self, params: FunctionCallParams):
+        """
+        Reset the accent and voice to the original ones.
+
+        After calling this tool, continue the previous response if it was unfinished and was
+        interrupted by calling this tool, otherwise start a new response.
+        """
         await params.llm.push_frame(LLMTextFrame("Of course."))
 
         new_model = await asyncio.to_thread(self._setup_model, self._original_lang_code, self._original_voice)
@@ -629,6 +693,6 @@ class KokoroTTSService(BaseNemoTTSService, ToolCallingMixin):
         self.register_direct_function("tool_tts_reset_speed", self.tool_tts_reset_speed)
         self.register_direct_function("tool_tts_speak_faster", self.tool_tts_speak_faster)
         self.register_direct_function("tool_tts_speak_slower", self.tool_tts_speak_slower)
-        self.register_direct_function("tool_tts_set_speed_explicitly", self.tool_tts_set_speed_explicitly)
-        self.register_direct_function("tool_tts_set_lang_voice", self.tool_tts_set_lang_voice)
-        self.register_direct_function("tool_tts_reset_lang_voice", self.tool_tts_reset_lang_voice)
+        self.register_direct_function("tool_tts_set_speed", self.tool_tts_set_speed)
+        self.register_direct_function("tool_tts_set_voice", self.tool_tts_set_voice)
+        self.register_direct_function("tool_tts_reset_voice", self.tool_tts_reset_voice)

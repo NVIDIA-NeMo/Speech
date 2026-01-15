@@ -20,8 +20,8 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 
-async def get_city_weather(params: FunctionCallParams, city_name: str, timeout: float = 15.0):
-    """Get the current weather of a city. The result should include city name, weather description,
+async def tool_get_city_weather(params: FunctionCallParams, city_name: str, timeout: float = 15.0):
+    """Get the current weather of a city. The result includes city name, weather description,
     temperature, wind speed, wind direction, precipitation, humidity, visibility, and UV index.
 
     Args:

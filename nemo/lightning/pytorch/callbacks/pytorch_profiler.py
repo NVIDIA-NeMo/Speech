@@ -85,8 +85,8 @@ class PytorchProfilerCallback(Callback, IOMixin):
         wait_steps = max(self.start_step - self.warmup_steps, 0)
 
         self.trace_dir = Path(trace_dir)
-        self.chakra_host_trace_path = self.trace_dir / "host"
-        self.chakra_device_trace_path = self.trace_dir / "torch_profiler"
+        self.chakra_host_trace_path = self.trace_dir / "chakra_trace"
+        self.chakra_device_trace_path = self.trace_dir / "torch_profile"
 
         self.chakra_device_trace_path.mkdir(parents=True, exist_ok=True)
 
@@ -124,15 +124,17 @@ class PytorchProfilerCallback(Callback, IOMixin):
             f" - Extra profiler kwargs: {profiler_kwargs or {}}"
         )
 
-    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx: int) -> None:
-        """Chakra trace collection starts."""
-        if trainer.global_step == self.start_step:
-            if self.trace_observer is not None:
-                # Setup the trace filename during the training run once distributed has been correctly setup.
-                trace_file = self.chakra_host_trace_path / f"rank-{get_rank()}.json.gz"
-                self.trace_observer.register_callback(str(trace_file))
-
-            logging.info("PyTorch/Chakra Profiler Started.\n")
+    def on_train_start(self, trainer, pl_module):
+        """
+        Args:
+            trainer (Trainer): the trainer
+            pl_module (LightningModule): model
+        """
+        if self.trace_observer is not None:
+            # Setup the trace filename during the training run once distributed has been correctly setup.
+            trace_file = self.chakra_host_trace_path / f"rank-{get_rank()}.json.gz"
+            self.trace_observer.register_callback(str(trace_file))
+            logging.info(f"Chakra Trace will be saved to {str(trace_file)}.\n")
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx: int) -> None:
         """Chakra trace collection ends."""

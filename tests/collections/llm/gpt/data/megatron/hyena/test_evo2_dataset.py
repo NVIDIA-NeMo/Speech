@@ -1105,6 +1105,7 @@ def test_evo2_dataset_getitem(monkeypatch):
             self.mmap_bin_files = True
             self.mock = True
             self.tokenizer = tokenizer
+            self.defer_npy_index_mmap
 
     mock_indexed_dataset = MockIndexedDataset()
 

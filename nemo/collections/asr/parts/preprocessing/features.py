@@ -303,7 +303,6 @@ class FilterbankFeatures(nn.Module):
                 f"{self} got an invalid value for either n_window_size or "
                 f"n_window_stride. Both must be positive ints."
             )
-        logging.info(f"PADDING: {pad_to}")
 
         self.sample_rate = sample_rate
         self.win_length = n_window_size

@@ -36,13 +36,18 @@ def main():
     The resulting dataset is saved as a JSON manifest file.
 
     Example usage:
-    python scripts/t5tts/dpo/create_text_contextpairs.py \
-    --challenging_texts /Data/DPOPairsInputData/challenging_texts_nemollm.txt \
-    --regular_texts_for_audiocontext /Data/DPOPairsInputData/regular_texts_for_audiocontext.txt \
-    --regular_texts_for_textcontext /Data/DPOPairsInputData/regular_texts_for_textcontext.txt \
-    --audio_contexts /Data/DPOPairsInputData/audio_context_list.json \
-    --text_contexts /Data/DPOPairsInputData/text_context_list.txt \
-    --output_manifest /Data/DPOPairsInputData/text_context_pairs_v2.json
+    python scripts/magpietts/dpo/create_text_contextpairs.py \
+    --challenging_texts /Data/DPOPairsInputDatav2/challenging_with_short.txt \
+    --regular_texts_for_audiocontext /Data/DPOPairsInputDatav2/regular_texts_for_audiocontext.txt \
+    --regular_texts_for_textcontext /Data/DPOPairsInputDatav2/regular_texts_for_textcontext.txt \
+    --audio_contexts /Data/DPOPairsInputDatav2/audio_context_list.json \
+    --text_contexts /Data/DPOPairsInputDatav2/text_context_list_with_audio.txt \
+    --output_manifest /Data/DPOPairsInputDatav2/grpo_train_with_short.json \
+    --n_audio_contexts_per_challenging_text 2 \
+    --n_text_contexts_per_challenging_text 2 \
+    --n_audio_contexts_per_regular_text 1 \
+    --n_text_contexts_per_regular_text 1 \
+    --nsamples_perpair 1 ;
     """
     parser = argparse.ArgumentParser(description='Create text-context pairs for DPO')
     parser.add_argument("--challenging_texts", type=str, help="Text file containing challenging texts")
@@ -83,8 +88,6 @@ def main():
         text_contexts = [text for text in text_contexts if text.strip() != '']
 
     all_records = []
-    dummy_audio_filepath = audio_contexts[0]['context_audio_filepath']
-    dummy_target_audio_codes_path = audio_contexts[0].get('context_audio_codes_path', None)
     for challenging_text in challenging_texts:
         for _ in range(args.n_audio_contexts_per_challenging_text):
             audio_context = random.choice(audio_contexts)
@@ -93,9 +96,7 @@ def main():
 
         for _ in range(args.n_text_contexts_per_challenging_text):
             text_context = random.choice(text_contexts)
-            record = create_text_context_record(
-                challenging_text, text_context, dummy_audio_filepath, 'challenging', dummy_target_audio_codes_path
-            )
+            record = create_text_context_record(challenging_text, text_context, 'challenging')
             all_records.append(record)
 
     for regular_text in regular_texts_for_audiocontext:
@@ -107,9 +108,7 @@ def main():
     for regular_text in regular_texts_for_textcontext:
         for _ in range(args.n_text_contexts_per_regular_text):
             text_context = random.choice(text_contexts)
-            record = create_text_context_record(
-                regular_text, text_context, dummy_audio_filepath, 'regular', dummy_target_audio_codes_path
-            )
+            record = create_text_context_record(regular_text, text_context, 'regular')
             all_records.append(record)
 
     random.shuffle(all_records)
@@ -151,29 +150,29 @@ def create_audio_context_record(text, audio_context, record_type):
     return record
 
 
-def create_text_context_record(text, text_context, dummy_audio_filepath, record_type, target_audio_codes_path=None):
+def create_text_context_record(text, text_context, record_type):
     """
     Creates a record for a text-context pair with text context.
 
     Args:
         text (str): The main text content.
         text_context (str): The associated text context.
-        dummy_audio_filepath (str): A placeholder audio file path.
         record_type (str): Type of record ('challenging' or 'regular').
-        target_audio_codes_path (str, optional): Optional target audio codes path.
 
     Returns:
         dict: A dictionary representing the text context record.
     """
+    if text_context.endswith("\n"):
+        text_context = text_context[:-1]
     record = {
         'text': text,
         'duration': 6.0,  # Does not matter, avoids filtering out in DPO,
-        'audio_filepath': dummy_audio_filepath,
-        'context_text': text_context,
+        'audio_filepath': text_context.split(",")[1],
+        'context_text': text_context.split(",")[0],
         'record_type': record_type,  # challenging or regular
     }
-    if target_audio_codes_path is not None:
-        record['target_audio_codes_path'] = target_audio_codes_path
+    if text_context.split(",")[-1].endswith(".pt"):
+        record['target_audio_codes_path'] = text_context.split(",")[-1]
     return record
 
 

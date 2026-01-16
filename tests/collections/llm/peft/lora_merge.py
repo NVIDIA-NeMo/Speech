@@ -20,6 +20,7 @@ def get_args():
     parser.add_argument('--lora_checkpoint_path', type=str, help="Path to finetuned LORA checkpoint")
     parser.add_argument('--output_path', type=str, help="Path to save merged checkpoint")
     parser.add_argument('--legacy_ckpt', action="store_true", help="Load ckpt saved with TE < 1.14")
+    parser.add_argument('--trust_remote_code', action="store_true", help="If trust_remore_code")
     return parser.parse_args()
 
 
@@ -30,4 +31,5 @@ if __name__ == '__main__':
         lora_checkpoint_path=args.lora_checkpoint_path,
         output_path=args.output_path,
         legacy_ckpt=args.legacy_ckpt,
+        trust_remote_code=args.trust_remote_code,
     )

@@ -227,7 +227,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
     if inject_dummy_user_message:
         messages.append({
             "role": "user",
-            "content": "Who are you?",
+            "content": "Hello, who are you?",
         })
     context = OpenAILLMContext(messages=messages)
 

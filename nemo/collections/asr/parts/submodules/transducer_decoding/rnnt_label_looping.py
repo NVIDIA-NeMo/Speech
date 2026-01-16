@@ -44,6 +44,8 @@ try:
 except ImportError:
     HAVE_CUDA_PYTHON = False
 
+DEFAULT_WINDOW_SIZE = 8
+
 
 class LabelLoopingState:
     """
@@ -216,8 +218,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         preserve_frame_confidence=False,
         confidence_method_cfg: Optional[DictConfig] = None,
         allow_cuda_graphs: bool = True,
-        fusion_models: Optional[List[NGramGPULanguageModel]] = None,
-        fusion_models_alpha: Optional[List[float]] = None,
+        fusion_models: Optional[list[NGramGPULanguageModel]] = None,
+        fusion_models_alpha: Optional[list[float]] = None,
         enable_per_stream_biasing: bool = False,
     ):
         """
@@ -228,7 +230,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             blank_index: index of blank symbol
             max_symbols_per_step: max symbols to emit on each step (to avoid infinite looping)
             window_size: optional lookahead window size for non-blank label finding (WIND algorithm);
-                None means "auto": 16 (optimal value for offline decoding) if possible
+                None means "auto": 8 (optimal value for offline decoding) if possible
             preserve_alignments: if alignments are needed
             preserve_frame_confidence: if frame confidence is needed
             confidence_method_cfg: config for the confidence
@@ -242,7 +244,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self._blank_index = blank_index
         self.max_symbols = max_symbols_per_step
         if window_size is None:
-            self.window_size = 1 if preserve_alignments else 16
+            self.window_size = 1 if preserve_alignments else DEFAULT_WINDOW_SIZE
         else:
             if window_size > 1 and preserve_alignments:
                 raise NotImplementedError("preserve_alignments not supported yet with window_size > 1")

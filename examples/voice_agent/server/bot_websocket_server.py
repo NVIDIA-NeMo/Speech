@@ -257,7 +257,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
             assistant_context_aggregator.reset()
             user_context_aggregator.set_messages(copy.deepcopy(original_messages))
             assistant_context_aggregator.set_messages(copy.deepcopy(original_messages))
-            text_aggregator.reset()
+            tts._text_aggregator.reset()
             if diar is not None:
                 diar.reset()
             logger.info("Conversation context reset successfully")

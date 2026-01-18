@@ -89,6 +89,9 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
 
         self.setup_tool_calling()
 
+    def reset(self):
+        self._text_aggregator.reset()
+
     def setup_tool_calling(self):
         """
         Setup the tool calling mixin by registering all available tools.
@@ -494,7 +497,6 @@ class KokoroTTSService(BaseNemoTTSService):
         self._speed = speed
         assert speed > 0, "Speed must be greater than 0"
         model_name = model
-        self._speed_lambda = 1.0
         self._original_speed = speed
         self._original_voice = voice
         self._gender = 'female' if voice[1] == 'f' else 'male'
@@ -556,9 +558,9 @@ class KokoroTTSService(BaseNemoTTSService):
         This tool should be called only when the user specifies the speed explicitly,
         such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
 
-        After calling this tool, continue the previous response if it was unfinished and was
-        interrupted by calling this tool, otherwise start a new response and ask if the user needs
-        help on anything else. Do not repeat the same message as the previous response.
+        Inform user of the result of this tool call. After calling this tool, continue the previous 
+        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        and ask if the user needs help on anything else. Avoid repeating previous responses.
 
         Args:
             speed_lambda: positive float, the relative change of the speaking speed to the original speed.
@@ -585,9 +587,9 @@ class KokoroTTSService(BaseNemoTTSService):
         """
         Reset the speaking speed to the original speed.
 
-        After calling this tool, continue the previous response if it was unfinished and was
-        interrupted by calling this tool, otherwise start a new response and ask if the user needs
-        help on anything else. Avoid repeating the same message as the previous response.
+        Inform user of the result of this tool call. After calling this tool, continue the previous 
+        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        and ask if the user needs help on anything else. Avoid repeating previous responses.
         """
         self._speed = self._original_speed
         result = {"success": True, "message": "Speaking speed is reset to the original one"}
@@ -597,43 +599,35 @@ class KokoroTTSService(BaseNemoTTSService):
     async def tool_tts_speak_faster(self, params: FunctionCallParams):
         """
         Speak faster by increasing the speaking speed 15% faster each time this function is called.
-
-        After calling this tool, continue the previous response if it was unfinished and was
-        interrupted by calling this tool, otherwise start a new response and ask if the user needs
-        help on anything else. Avoid repeating the same message as the previous response.
+        
+        Inform user of the result of this tool call. After calling this tool, continue the previous 
+        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        and ask if the user needs help on anything else. Avoid repeating previous responses.
         """
-        self._speed_lambda = self._speed_lambda + 0.15
-        self._speed = self._speed_lambda * self._speed
+        speed_lambda = 1.15
+        self._speed = speed_lambda * self._speed
         result = {
             "success": True,
-            "message": f"Speaking speed is increased to {self._speed_lambda} of the previous speed",
+            "message": f"Speaking speed is increased to {speed_lambda} of the previous speed",
         }
-        logger.debug(f"Speed is set to {self._speed_lambda} of the previous speed {self._speed}")
+        logger.debug(f"Speed is set to {speed_lambda} of the previous speed, new speed is {self._speed}")
         await params.result_callback(result)
 
     async def tool_tts_speak_slower(self, params: FunctionCallParams):
         """
         Speak slower by decreasing the speaking speed 15% slower each time this function is called.
-
-        After calling this tool, continue the previous response if it was unfinished and was
-        interrupted by calling this tool, otherwise start a new response and ask if the user needs
-        help on anything else. Avoid repeating the same message as the previous response.
+        
+        Inform user of the result of this tool call. After calling this tool, continue the previous 
+        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        and ask if the user needs help on anything else. Avoid repeating previous responses.
         """
-        self._speed_lambda = self._speed_lambda - 0.15
-        if self._speed_lambda < 0.1:
-            self._speed = 0.1 * self._speed
-            result = {
-                "success": True,
-                "message": "Speaking speed is decreased to the minimum of 0.1 of the previous speed",
-            }
-            logger.debug(f"Speed is set to the minimum of 0.1 of the previous speed {self._speed}")
-        else:
-            self._speed = self._speed_lambda * self._speed
-            result = {
-                "success": True,
-                "message": f"Speaking speed is decreased to {self._speed_lambda} of the previous speed",
-            }
-            logger.debug(f"Speed is set to {self._speed_lambda} of the previous speed {self._speed}")
+        speed_lambda = 0.85
+        self._speed = speed_lambda * self._speed
+        result = {
+            "success": True,
+            "message": f"Speaking speed is decreased to {speed_lambda} of the previous speed",
+        }
+        logger.debug(f"Speed is set to {speed_lambda} of the previous speed, new speed is {self._speed}")
         await params.result_callback(result)
 
     async def tool_tts_set_voice(self, params: FunctionCallParams, accent: str, gender: str):
@@ -641,9 +635,9 @@ class KokoroTTSService(BaseNemoTTSService):
         Set the accent and gender of the assistant's voice.
         This tool should be called only when the user specifies the accent and/or gender explicitly.
 
-        After calling this tool, continue the previous response if it was unfinished and was
-        interrupted by calling this tool, otherwise start a new response and ask if the user needs
-        help on anything else. Avoid repeating the same message as the previous response.
+        Inform user of the result of this tool call. After calling this tool, continue the previous 
+        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        and ask if the user needs help on anything else. Avoid repeating previous responses.
 
         Args:
             accent: Accent for the TTS model. Must be one of 'American English', 'British English'
@@ -686,9 +680,10 @@ class KokoroTTSService(BaseNemoTTSService):
         """
         Reset the accent and voice to the original ones.
 
-        After calling this tool, continue the previous response if it was unfinished and was
-        interrupted by calling this tool, otherwise start a new response and ask if the user needs
-        help on anything else. Avoid repeating the same message as the previous response.
+        Inform user of the result of this tool call. After calling this tool, continue the previous 
+        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        and ask if the user needs help on anything else. Avoid repeating previous responses.
+
         """
         await params.llm.push_frame(LLMTextFrame("Of course."))
 
@@ -714,6 +709,14 @@ class KokoroTTSService(BaseNemoTTSService):
         self.register_direct_function("tool_tts_set_speed", self.tool_tts_set_speed)
         self.register_direct_function("tool_tts_set_voice", self.tool_tts_set_voice)
         self.register_direct_function("tool_tts_reset_voice", self.tool_tts_reset_voice)
+
+    def reset(self):
+        """
+        Reset the voice and speed to the original ones.
+        """
+        self._text_aggregator.reset()
+        self.tool_tts_reset_speed()
+        self.tool_tts_reset_voice()
 
 
 class MagpieTTSService(BaseNemoTTSService):

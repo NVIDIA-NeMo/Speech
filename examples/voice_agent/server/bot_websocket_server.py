@@ -19,6 +19,7 @@ import os
 import signal
 import sys
 from datetime import datetime
+from omegaconf import OmegaConf
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -69,7 +70,7 @@ config_manager = ConfigManager(
 )
 server_config = config_manager.get_server_config()
 
-logger.info(f"Server config: {server_config}")
+logger.info(f"Server config: {OmegaConf.to_container(server_config, resolve=True)}")
 
 # Access configuration parameters from ConfigManager
 SAMPLE_RATE = config_manager.SAMPLE_RATE
@@ -257,7 +258,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = 8765):
             assistant_context_aggregator.reset()
             user_context_aggregator.set_messages(copy.deepcopy(original_messages))
             assistant_context_aggregator.set_messages(copy.deepcopy(original_messages))
-            tts._text_aggregator.reset()
+            tts.reset()
             if diar is not None:
                 diar.reset()
             logger.info("Conversation context reset successfully")

@@ -57,15 +57,5 @@ tts:
   model: "kokoro"
   model_config: "./server_configs/tts_configs/kokoro_82M.yaml"
   device: "cuda"
-
-# tts:
-#   type: nemo 
-#   model: "fastpitch-hifigan"
-#   model_config: "./server_configs/tts_configs/nemo_fastpitch-hifigan.yaml"
-#   device: "cuda"
-
-# tts:
-#   type: nemo 
-#   model: "magpie"
-#   model_config: "./server_configs/tts_configs/nemo_magpie_tts.yaml"
-#   device: "cuda"
+  ignore_strings:
+    - "*"

@@ -18,11 +18,11 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Iterator, List, Optional
-from omegaconf import DictConfig, OmegaConf
-import queue
+
 import numpy as np
 import torch
 from loguru import logger
+from omegaconf import DictConfig, OmegaConf
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -37,8 +37,8 @@ from pipecat.frames.frames import (
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.tts_service import TTSService
 
-from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
+from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
 from nemo.agents.voice_agent.pipecat.utils.tool_calling.mixins import ToolCallingMixin
 from nemo.collections.tts.models import FastPitchModel, HifiGanModel
 
@@ -79,7 +79,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
             ), f"think_tokens must be a list of two strings, but got type {type(think_tokens)}: {think_tokens}"
 
         # Background processing infrastructure - no response handler needed
-        self._tts_queue = queue.Queue()
+        self._tts_queue = asyncio.Queue()
         self._processing_task = None
         self._processing_running = False
 
@@ -96,7 +96,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         """
         Setup the tool calling mixin by registering all available tools.
         """
-        pass # No tools by default
+        pass  # No tools by default
 
     def _setup_model(self):
         raise NotImplementedError("Subclass must implement _setup_model")
@@ -133,7 +133,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
     async def _stop_tasks(self):
         """Stop background processing tasks."""
         self._processing_running = False
-        await asyncio.to_thread(self._tts_queue.put, None)  # Signal to stop processing
+        await self._tts_queue.put(None)  # Signal to stop processing
 
         if self._processing_task:
             await self.cancel_task(self._processing_task)
@@ -144,7 +144,8 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         try:
             while self._processing_running:
                 try:
-                    request = self._tts_queue.get()
+                    future = asyncio.run_coroutine_threadsafe(self._tts_queue.get(), self.get_event_loop())
+                    request = future.result()
 
                     if request is None:  # Stop signal
                         logger.debug("Received stop signal in TTS background processor")
@@ -280,7 +281,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
 
             try:
                 # Queue the TTS request for background processing
-                await asyncio.to_thread(self._tts_queue.put, (text, request_id))
+                await self._tts_queue.put((text, request_id))
 
                 # Wait for the result directly from our request queue
                 result = await request_queue.get()
@@ -496,13 +497,12 @@ class KokoroTTSService(BaseNemoTTSService):
         self._voice = voice
         self._speed = speed
         assert speed > 0, "Speed must be greater than 0"
-        model_name = model
         self._original_speed = speed
         self._original_voice = voice
         self._gender = 'female' if voice[1] == 'f' else 'male'
         self._original_gender = self._gender
         self._original_lang_code = self._lang_code
-        super().__init__(model=model_name, device=device, sample_rate=sample_rate, **kwargs)
+        super().__init__(model=model, device=device, sample_rate=sample_rate, **kwargs)
         self.setup_tool_calling()
 
     def _setup_model(self, lang_code: Optional[str] = None, voice: Optional[str] = None):
@@ -558,8 +558,8 @@ class KokoroTTSService(BaseNemoTTSService):
         This tool should be called only when the user specifies the speed explicitly,
         such as "speak twice as fast" or "speak half as slow" or "speak 1.5 times as fast".
 
-        Inform user of the result of this tool call. After calling this tool, continue the previous 
-        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        Inform user of the result of this tool call. After calling this tool, continue the previous
+        response if it was unfinished and was interrupted by the user, otherwise start a new response
         and ask if the user needs help on anything else. Avoid repeating previous responses.
 
         Args:
@@ -587,8 +587,8 @@ class KokoroTTSService(BaseNemoTTSService):
         """
         Reset the speaking speed to the original speed.
 
-        Inform user of the result of this tool call. After calling this tool, continue the previous 
-        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        Inform user of the result of this tool call. After calling this tool, continue the previous
+        response if it was unfinished and was interrupted by the user, otherwise start a new response
         and ask if the user needs help on anything else. Avoid repeating previous responses.
         """
         self._speed = self._original_speed
@@ -599,9 +599,9 @@ class KokoroTTSService(BaseNemoTTSService):
     async def tool_tts_speak_faster(self, params: FunctionCallParams):
         """
         Speak faster by increasing the speaking speed 15% faster each time this function is called.
-        
-        Inform user of the result of this tool call. After calling this tool, continue the previous 
-        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+
+        Inform user of the result of this tool call. After calling this tool, continue the previous
+        response if it was unfinished and was interrupted by the user, otherwise start a new response
         and ask if the user needs help on anything else. Avoid repeating previous responses.
         """
         speed_lambda = 1.15
@@ -616,9 +616,9 @@ class KokoroTTSService(BaseNemoTTSService):
     async def tool_tts_speak_slower(self, params: FunctionCallParams):
         """
         Speak slower by decreasing the speaking speed 15% slower each time this function is called.
-        
-        Inform user of the result of this tool call. After calling this tool, continue the previous 
-        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+
+        Inform user of the result of this tool call. After calling this tool, continue the previous
+        response if it was unfinished and was interrupted by the user, otherwise start a new response
         and ask if the user needs help on anything else. Avoid repeating previous responses.
         """
         speed_lambda = 0.85
@@ -635,8 +635,8 @@ class KokoroTTSService(BaseNemoTTSService):
         Set the accent and gender of the assistant's voice.
         This tool should be called only when the user specifies the accent and/or gender explicitly.
 
-        Inform user of the result of this tool call. After calling this tool, continue the previous 
-        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        Inform user of the result of this tool call. After calling this tool, continue the previous
+        response if it was unfinished and was interrupted by the user, otherwise start a new response
         and ask if the user needs help on anything else. Avoid repeating previous responses.
 
         Args:
@@ -680,8 +680,8 @@ class KokoroTTSService(BaseNemoTTSService):
         """
         Reset the accent and voice to the original ones.
 
-        Inform user of the result of this tool call. After calling this tool, continue the previous 
-        response if it was unfinished and was interrupted by the user, otherwise start a new response 
+        Inform user of the result of this tool call. After calling this tool, continue the previous
+        response if it was unfinished and was interrupted by the user, otherwise start a new response
         and ask if the user needs help on anything else. Avoid repeating previous responses.
 
         """
@@ -695,9 +695,7 @@ class KokoroTTSService(BaseNemoTTSService):
         logger.debug(
             f"Language and voice are reset to the original ones {self._original_lang_code} and {self._original_voice}"
         )
-        await params.result_callback(
-            {"success": True, "message": "Voice has been reset to the original one."}
-        )
+        await params.result_callback({"success": True, "message": "Voice has been reset to the original one."})
 
     def setup_tool_calling(self):
         """
@@ -720,15 +718,17 @@ class KokoroTTSService(BaseNemoTTSService):
 
 
 class MagpieTTSService(BaseNemoTTSService):
-    SPEAKER_MAP = {
-        "John": 0,
-        "Sofia": 1,
-        "Aria": 2,
-        "Jason": 3,
-        "Leo": 4
-    }
+    SPEAKER_MAP = {"John": 0, "Sofia": 1, "Aria": 2, "Jason": 3, "Leo": 4}
 
-    def __init__(self, model: str = "nvidia/magpie_tts_multilingual_357m", language: str = "en", speaker: str = "Sofia", apply_TN: bool = False, device: str = "cuda", **kwargs):
+    def __init__(
+        self,
+        model: str = "nvidia/magpie_tts_multilingual_357m",
+        language: str = "en",
+        speaker: str = "Sofia",
+        apply_TN: bool = False,
+        device: str = "cuda",
+        **kwargs,
+    ):
         self._language = language
         self._current_speaker = speaker
         self._apply_TN = apply_TN
@@ -737,6 +737,7 @@ class MagpieTTSService(BaseNemoTTSService):
 
     def _setup_model(self):
         from nemo.collections.tts.models import MagpieTTSModel
+
         if self._model_name.endswith(".nemo"):
             model = MagpieTTSModel.restore_from(self._model_name, map_location=torch.device(self._device))
         else:
@@ -745,12 +746,22 @@ class MagpieTTSService(BaseNemoTTSService):
 
         text = "Warming up the Magpie TTS model, this will help the model to respond faster for later requests."
         with torch.no_grad():
-            _, _ = model.do_tts(text, language=self._language, apply_TN=self._apply_TN, speaker_index=self.SPEAKER_MAP[self._current_speaker])
+            _, _ = model.do_tts(
+                text,
+                language=self._language,
+                apply_TN=self._apply_TN,
+                speaker_index=self.SPEAKER_MAP[self._current_speaker],
+            )
         torch.cuda.empty_cache()
         return model
 
     def _generate_audio(self, text: str) -> Iterator[np.ndarray]:
-        audio, audio_len = self._model.do_tts(text, language=self._language, apply_TN=self._apply_TN, speaker_index=self.SPEAKER_MAP[self._current_speaker])
+        audio, audio_len = self._model.do_tts(
+            text,
+            language=self._language,
+            apply_TN=self._apply_TN,
+            speaker_index=self.SPEAKER_MAP[self._current_speaker],
+        )
         audio_len = audio_len.view(-1).item()
         audio = audio.detach().view(-1).cpu().numpy()
         yield audio[:audio_len]
@@ -780,7 +791,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
 
     text_aggregator = SimpleSegmentedTextAggregator(
         punctuation_marks=config.get("extra_separator", None),
-        ignore_marks=config.get("ignore_marks", None),
+        ignore_marks=config.get("ignore_strings", None),
         min_sentence_length=config.get("min_sentence_length", 5),
         use_legacy_eos_detection=config.get("use_legacy_eos_detection", False),
     )

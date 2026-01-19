@@ -331,7 +331,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         # import pdb; pdb.set_trace()
         # loop while there are active utterances
         while active_mask.any():
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             # stage 1: get joint output, iteratively seeking for non-blank labels
             # blank label in `labels` tensor means "end of hypothesis" (for this index)
 

@@ -1247,7 +1247,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         out_len: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
     ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
-        self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+        # self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
         if self.cuda_graphs_mode is not None and x.device.type == "cuda":
             # CUDA graphs don't support streaming yet, fall back to torch implementation
             if prev_batched_state is not None:

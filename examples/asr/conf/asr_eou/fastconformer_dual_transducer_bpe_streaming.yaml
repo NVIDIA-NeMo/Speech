@@ -8,7 +8,7 @@
 name: "FastConformer-Dual-Transducer-BPE-Streaming-EOU"
 
 model:
-  token_init_method: "min"  # choices=['min', 'max', 'mean', 'constant']
+  token_init_method: "constant"  # choices=['min', 'max', 'mean', 'constant']
   token_init_weight_value: null  # only applicable when token_init_method='constant'
   token_init_bias_value: -1000.0  # only applicable when token_init_method='constant'
   asr_weight: 0.5

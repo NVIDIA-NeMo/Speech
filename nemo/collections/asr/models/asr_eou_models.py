@@ -491,6 +491,8 @@ class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
         if self._optim_normalize_joint_txu:
             self._optim_normalize_txu = [encoded_len.max(), transcript_len.max()]
 
+        if batch_nb % log_every_n_steps == 0:
+            logging.info(f"loss value: {loss_value}")
         return {'loss': loss_value}
 
     def predict_step(self, batch: AudioToTextEOUBatch, batch_idx, dataloader_idx=0):

@@ -137,6 +137,11 @@ If you want to use a different port for client connection, you can modify `clien
 Most LLMs from HuggingFace are supported. A few examples are:
 - [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) (default)
     - Please use `server/server_configs/llm_configs/nemotron_nano_v2.yaml` as the server config.
+    - Tool calling is enabled for this model.
+- [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)
+    - Please use `server/server_configs/llm_configs/nemotron_nano_v3.yaml` as the server config. It needs more than 60GB VRAM to host the model, thus the config by default is set to use tensor parallelism of 2. Expect additional 5GB for kv-cache and other compnents in the voice agent.
+    - If you have a GPU with FP8 support, the VRAM requirement is reduced to about 30GB. You can swtich to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) by modifying the llm config accordingly.
+    - Tool calling is enabled for this model.
 - [Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
     - Please use `server/server_configs/llm_configs/qwen2.5-7B.yaml` as the server config.
 - [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)

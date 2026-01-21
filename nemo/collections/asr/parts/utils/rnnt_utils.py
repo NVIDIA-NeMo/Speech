@@ -289,7 +289,9 @@ class BatchedHyps:
         init_length: int,
         device: Optional[torch.device] = None,
         float_dtype: Optional[torch.dtype] = None,
-        is_with_durations: bool = False,
+        with_durations: bool = False,
+        with_step_confidence: bool = False,
+        with_duration_confidence: bool = False,
     ):
         """
 
@@ -308,7 +310,8 @@ class BatchedHyps:
         self.batch_size = batch_size
         self.device = device
         self.float_dtype = float_dtype
-        self.is_with_durations = is_with_durations
+        self.with_durations = with_durations
+        self.with_step_confidence = with_step_confidence
 
         # batch of current lengths of hypotheses and correspoinding timestamps
         self.current_lengths = torch.zeros(batch_size, device=device, dtype=torch.long)
@@ -317,8 +320,14 @@ class BatchedHyps:
         # tensor for storing timestamps corresponding to transcripts
         self.timestamps = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
         # tensor for storing durations corresponding to transcripts tokens
-        if is_with_durations:
+        if with_durations:
             self.token_durations = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
+        if self.with_step_confidence:
+            self.step_confidence = torch.zeros(
+                [batch_size, self._max_length, 2] if with_duration_confidence else [batch_size, self._max_length],
+                device=device,
+                dtype=float_dtype,
+            )
         # accumulated scores for hypotheses
         self.scores = torch.zeros(batch_size, device=device, dtype=float_dtype)
 
@@ -341,8 +350,11 @@ class BatchedHyps:
         self.last_timestamp.fill_(-1)
         self.last_timestamp_lasts.fill_(0)
 
-        if self.is_with_durations:
+        if self.with_durations:
             self.token_durations.fill_(0)
+
+        if self.with_step_confidence:
+            self.step_confidence.fill_(0.0)
 
     def _allocate_more(self):
         """
@@ -351,8 +363,11 @@ class BatchedHyps:
         """
         self.transcript = torch.cat((self.transcript, torch.zeros_like(self.transcript)), dim=-1)
         self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
-        if self.is_with_durations:
+        if self.with_durations:
             self.token_durations = torch.cat((self.token_durations, torch.zeros_like(self.token_durations)), dim=-1)
+
+        if self.with_step_confidence:
+            self.step_confidence = torch.cat((self.step_confidence, torch.zeros_like(self.step_confidence)), dim=1)
         self._max_length *= 2
 
     def add_results_(
@@ -362,6 +377,7 @@ class BatchedHyps:
         time_indices: torch.Tensor,
         scores: torch.Tensor,
         token_durations: Optional[torch.Tensor] = None,
+        confidence: Optional[torch.Tensor] = None,
     ):
         """
         Add results (inplace) from a decoding step to the batched hypotheses.
@@ -383,7 +399,8 @@ class BatchedHyps:
             labels=labels,
             time_indices=time_indices,
             scores=scores,
-            token_durations=token_durations if self.is_with_durations else None,
+            token_durations=token_durations,
+            confidence=confidence,
         )
 
     def add_results_no_checks_(
@@ -393,6 +410,7 @@ class BatchedHyps:
         time_indices: torch.Tensor,
         scores: torch.Tensor,
         token_durations: Optional[torch.Tensor] = None,
+        confidence: Optional[torch.Tensor] = None,
     ):
         """
         Add results (inplace) from a decoding step to the batched hypotheses without checks.
@@ -415,6 +433,8 @@ class BatchedHyps:
         self.timestamps[active_indices, active_lengths] = time_indices
         if token_durations is not None:
             self.token_durations[active_indices, active_lengths] = token_durations
+        if confidence is not None:
+            self.step_confidence[active_indices, active_lengths] = confidence
         # store last observed timestamp + number of observation for the current timestamp
         self.last_timestamp_lasts[active_indices] = torch.where(
             self.last_timestamp[active_indices] == time_indices, self.last_timestamp_lasts[active_indices] + 1, 1
@@ -430,6 +450,7 @@ class BatchedHyps:
         time_indices: torch.Tensor,
         scores: torch.Tensor,
         token_durations: Optional[torch.Tensor] = None,
+        confidence: Optional[torch.Tensor] = None,
     ):
         """
         Add results (inplace) from a decoding step to the batched hypotheses.
@@ -448,7 +469,8 @@ class BatchedHyps:
             labels=labels,
             time_indices=time_indices,
             scores=scores,
-            token_durations=token_durations if self.is_with_durations else None,
+            token_durations=token_durations,
+            confidence=confidence,
         )
 
     def add_results_masked_no_checks_(
@@ -458,6 +480,7 @@ class BatchedHyps:
         time_indices: torch.Tensor,
         scores: torch.Tensor,
         token_durations: Optional[torch.Tensor] = None,
+        confidence: Optional[torch.Tensor] = None,
     ):
         """
         Add results (inplace) from a decoding step to the batched hypotheses without checks.
@@ -478,8 +501,10 @@ class BatchedHyps:
         # store transcript and timestamps
         self.transcript[self._batch_indices, self.current_lengths] = labels
         self.timestamps[self._batch_indices, self.current_lengths] = time_indices
-        if self.is_with_durations:
+        if self.with_durations:
             self.token_durations[self._batch_indices, self.current_lengths] = token_durations
+        if confidence is not None:
+            self.step_confidence[self._batch_indices, self.current_lengths] = confidence
         # store last observed timestamp + number of observation for the current timestamp
         # if last_timestamp == time_indices, increase; else set to 1
         torch.where(
@@ -512,13 +537,16 @@ class BatchedHyps:
             init_length=self._max_length,
             device=self.device,
             float_dtype=self.float_dtype,
-            is_with_durations=self.is_with_durations,
+            with_durations=self.with_durations,
+            with_step_confidence=self.with_step_confidence,
         )
         batched_hyps.current_lengths.copy_(self.current_lengths)
         batched_hyps.transcript.copy_(self.transcript)
         batched_hyps.timestamps.copy_(self.timestamps)
-        if self.is_with_durations:
+        if self.with_durations:
             batched_hyps.token_durations.copy_(self.token_durations)
+        if self.with_step_confidence:
+            batched_hyps.step_confidence.copy_(self.step_confidence)
         batched_hyps.scores.copy_(self.scores)
         batched_hyps.last_timestamp.copy_(self.last_timestamp)
         batched_hyps.last_timestamp_lasts.copy_(self.last_timestamp_lasts)
@@ -544,9 +572,19 @@ class BatchedHyps:
             self.timestamps = torch.cat(
                 (self.timestamps, torch.zeros(add_shape, dtype=torch.long, device=device)), dim=-1
             )
-            if self.is_with_durations:
+            if self.with_durations:
                 self.token_durations = torch.cat(
                     (self.token_durations, torch.zeros(add_shape, dtype=torch.long, device=device)), dim=-1
+                )
+            if self.with_step_confidence:
+                self.step_confidence = torch.cat(
+                    (
+                        self.step_confidence,
+                        torch.zeros(
+                            add_shape + list(self.step_confidence.shape)[2:], dtype=self.float_dtype, device=device
+                        ),
+                    ),
+                    dim=1,
                 )
             self._max_length += add_len
 
@@ -554,7 +592,7 @@ class BatchedHyps:
         shifted_indices = self.current_lengths[:, None] + indices[None, :]
         self.transcript.scatter_(dim=1, index=shifted_indices, src=other.transcript)
         self.timestamps.scatter_(dim=1, index=shifted_indices, src=other.timestamps)
-        if self.is_with_durations:
+        if self.with_durations:
             self.token_durations.scatter_(dim=1, index=shifted_indices, src=other.token_durations)
 
         self.current_lengths += other.current_lengths
@@ -799,7 +837,7 @@ def batched_hyps_to_hypotheses(
             timestamp=timestamps[i, : batched_hyps.current_lengths[i]],
             token_duration=(
                 batched_hyps.token_durations[i, : batched_hyps.current_lengths[i]]
-                if batched_hyps.is_with_durations
+                if batched_hyps.with_durations
                 else torch.empty(0)
             ),
             alignments=None,

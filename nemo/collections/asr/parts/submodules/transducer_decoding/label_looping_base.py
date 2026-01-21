@@ -182,12 +182,9 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
 
     def advance_fusion_models(
         self, fusion_states_list: list[torch.Tensor], multi_biasing_ids: torch.Tensor | None, float_dtype: torch.dtype
-    ) -> tuple[torch.Tensor | None, list[torch.Tensor]]:
-        if not self.has_fusion_models():
-            return None, []
-
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         fusion_states_candidates_list = []
-        fusion_scores_combined = None
+        fusion_scores_list = []
         for fusion_idx, fusion_model_with_params in enumerate(self._all_fusion_models_with_params()):
             fusion_scores, fusion_states_candidates = fusion_model_with_params.model.advance(
                 states=fusion_states_list[fusion_idx],
@@ -197,12 +194,9 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
             if not fusion_model_with_params.is_multi_model:
                 fusion_scores *= fusion_model_with_params.alpha
             # save fusion scores and states candidates
-            if fusion_scores_combined is None:
-                fusion_scores_combined = fusion_scores
-            else:
-                fusion_scores_combined += fusion_scores
+            fusion_scores_list.append(fusion_scores)
             fusion_states_candidates_list.append(fusion_states_candidates)
-        return fusion_scores_combined, fusion_states_candidates_list
+        return fusion_scores_list, fusion_states_candidates_list
 
     @abstractmethod
     def torch_impl(

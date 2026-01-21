@@ -20,14 +20,10 @@ import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig
 
-from nemo.collections.asr.parts.context_biasing.biasing_multi_model import (
-    GPUBiasingMultiModel,
-    GPUBiasingMultiModelBase,
-)
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
     BatchedLabelLoopingState,
-    FusionModelWithParams,
     GreedyBatchedLabelLoopingComputerBase,
     LabelLoopingStateItem,
     SeparateGraphsLabelLooping,
@@ -358,8 +354,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             state = prev_batched_state.predictor_states
             fusion_states_list = prev_batched_state.fusion_states_list
 
-        fusion_states_candidates_list = []
-        fusion_scores_combined = None
+        fusion_scores_list, fusion_states_candidates_list = [], []
 
         # loop while there are active utterances
         while active_mask.any():
@@ -378,13 +373,14 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             scores, labels = logits.max(-1)
 
             if self.has_fusion_models():
-                fusion_scores_combined, fusion_states_candidates_list = self.advance_fusion_models(
+                fusion_scores_list, fusion_states_candidates_list = self.advance_fusion_models(
                     fusion_states_list=fusion_states_list,
                     multi_biasing_ids=multi_biasing_ids,
                     float_dtype=float_dtype,
                 )
                 logits_with_fusion = logits.clone()
-                logits_with_fusion[:, :-1] += fusion_scores_combined
+                for fusion_scores in fusion_scores_list:
+                    logits_with_fusion[:, :-1] += fusion_scores
 
                 # get max scores and labels without blank
                 fusion_scores_max, fusion_labels_max = logits_with_fusion[:, :-1].max(dim=-1)
@@ -431,7 +427,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
                 if self.has_fusion_models():
                     logits_with_fusion = logits.clone()
-                    logits_with_fusion[:, :-1] += fusion_scores_combined
+                    for fusion_scores in fusion_scores_list:
+                        logits_with_fusion[:, :-1] += fusion_scores
                     # get max scores and labels without blank
                     more_scores_w_fusion, more_labels_w_fusion = logits_with_fusion[:, :-1].max(dim=-1)
                     # preserve "blank" / "non-blank" category

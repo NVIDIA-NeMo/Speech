@@ -1161,18 +1161,19 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         )
 
         if self.has_fusion_models():
-            for fusion_model_idx, fusion_model_with_params in enumerate(self._all_fusion_models_with_params()):
+            fusion_scores_list, fusion_states_candidates_list = self.advance_fusion_models(
+                fusion_states_list=self.state.fusion_states_list,
+                multi_biasing_ids=self.state.multi_biasing_ids,
+                float_dtype=self.state.float_dtype,
+            )
+            for fusion_model_idx in range(len(fusion_scores_list)):
                 # get fusion scores/states
-                fusion_scores, fusion_states_candidates = fusion_model_with_params.model.advance(
-                    states=self.state.fusion_states_list[fusion_model_idx],
-                    **({"model_ids": self.state.multi_biasing_ids} if fusion_model_with_params.is_multi_model else {}),
+                self.state.fusion_states_candidates_list[fusion_model_idx].copy_(
+                    fusion_states_candidates_list[fusion_model_idx]
                 )
-                if not fusion_model_with_params.is_multi_model:
-                    fusion_scores *= fusion_model_with_params.alpha
-                self.state.fusion_states_candidates_list[fusion_model_idx].copy_(fusion_states_candidates)
-                self.state.fusion_scores_list[fusion_model_idx].copy_(fusion_scores.to(dtype=self.state.float_dtype))
+                self.state.fusion_scores_list[fusion_model_idx].copy_(fusion_scores_list[fusion_model_idx])
                 # update logits with fusion scores
-                logits[:, : -self.state.model_durations.shape[0] - 1] += fusion_scores
+                logits[:, : -self.state.model_durations.shape[0] - 1] += fusion_scores_list[fusion_model_idx]
             # get labels (greedy) and scores from current logits, replace labels/scores with new
             scores_w_fusion, labels_w_fusion = logits[:, : -self.state.model_durations.shape[0] - 1].max(dim=-1)
             # preserve "blank" / "non-blank" category

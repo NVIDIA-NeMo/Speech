@@ -712,8 +712,11 @@ class KokoroTTSService(BaseNemoTTSService):
         Reset the voice and speed to the original ones.
         """
         self._text_aggregator.reset()
-        self.tool_tts_reset_speed()
-        self.tool_tts_reset_voice()
+        self._speed = self._original_speed
+        self._model = self._setup_model(self._original_lang_code, self._original_voice)
+        self._lang_code = self._original_lang_code
+        self._gender = self._original_gender
+        self._voice = self._original_voice
 
 
 class MagpieTTSService(BaseNemoTTSService):

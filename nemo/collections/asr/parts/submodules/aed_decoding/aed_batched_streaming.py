@@ -248,6 +248,12 @@ class GreedyBatchedStreamingAEDComputer:
                 exclude_sink_frames = (
                     self.decoding_cfg.exclude_sink_frames if self.state.prev_encoder_shift == 0 else 0
                 )
+            
+            # Handle case where xatt_scores slice is empty
+            if xatt_scores.shape[-1] <= exclude_sink_frames:
+                logging.warning(f"xatt_scores size ({xatt_scores.shape[-1]}) <= exclude_sink_frames ({exclude_sink_frames}), skipping this step")
+                break
+            
             most_attended_idxs = torch.argmax(xatt_scores[:, :, exclude_sink_frames:], dim=-1) + exclude_sink_frames
 
             # we can try to smooth peaky xatt scores with avgpooling

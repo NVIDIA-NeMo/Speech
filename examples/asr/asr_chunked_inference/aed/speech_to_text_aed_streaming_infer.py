@@ -403,7 +403,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     i, model_state.decoder_input_ids.size(-1) : model_state.current_context_lengths[i]
                 ]
                 transcription = asr_model.tokenizer.ids_to_text(transcription_idx.tolist()).strip()
-                logging.info(f"i: {transcription}")
                 all_hyps.append(transcription)
                 tokens_frame_alignment.append(model_state.tokens_frame_alignment[i])
                 predicted_token_ids.append(

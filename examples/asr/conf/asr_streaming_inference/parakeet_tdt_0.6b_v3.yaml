@@ -1,0 +1,139 @@
+# ================================
+# ASR Configuration - Parakeet TDT 0.6B v3 with 10s chunks
+# ================================
+asr:
+  model_name: nvidia/parakeet-tdt-0.6b-v3
+  device: cuda
+  device_id: 0
+  compute_dtype: bfloat16
+  use_amp: false
+  decoding:
+    strategy: "greedy_batch"
+    preserve_alignments: false
+    fused_batch_size: -1
+    greedy:
+      use_cuda_graph_decoder: true
+      max_symbols: 10
+      ngram_lm_model: null
+      ngram_lm_alpha: 0.0
+      boosting_tree:
+        model_path: null
+        key_phrases_file: null
+        key_phrases_list: null
+        source_lang: "en"
+      boosting_tree_alpha: 0.0
+
+
+# ==========================================
+# Inverse Text Normalization Configuration
+# ==========================================
+itn:
+  input_case: lower_cased
+  whitelist: null
+  overwrite_cache: false
+  max_number_of_permutations_per_split: 729
+  left_padding_size: 4
+  batch_size: 32
+  n_jobs: 16
+
+
+# ================================
+# Neural Machine Translation Configuration
+# ================================
+nmt:
+  model_name: "utter-project/EuroLLM-1.7B-Instruct"
+  source_language: "English"
+  target_language: "Russian"
+  waitk: -1
+  device: cuda
+  device_id: 1
+  batch_size: 16
+  llm_params:
+    dtype: "auto"
+    seed: 42
+  sampling_params:
+    max_tokens: 100
+    temperature: 0.0
+    top_p: 0.9
+    seed: 42
+
+
+# ========================
+# Confidence estimation
+# ========================
+confidence:
+  exclude_blank: true
+  aggregation: mean
+  method_cfg:
+    name: entropy
+    entropy_type: tsallis
+    alpha: 0.5
+    entropy_norm: exp
+
+
+# ========================
+# Endpointing settings
+# ========================
+endpointing:
+  stop_history_eou: 800
+  residue_tokens_at_end: 2
+
+
+# ========================
+# Streaming configuration - 10 second chunks
+# ========================
+streaming:
+  sample_rate: 16000
+  batch_size: 1
+  left_padding_size: 9.6
+  right_padding_size: 1.6
+  chunk_size: 0.8
+  word_boundary_tolerance: 4
+  request_type: feature_buffer
+  stateful: true
+  padding_mode: right
+
+
+# ========================
+# Pipeline settings
+# ========================
+matmul_precision: high
+log_level: 20
+pipeline_type: buffered
+asr_decoding_type: rnnt
+
+
+# ========================
+# Runtime arguments
+# ========================
+audio_file: null
+output_filename: null
+output_dir: null
+enable_pnc: false
+enable_itn: false
+enable_nmt: false
+asr_output_granularity: segment
+cache_dir: null
+lang: en
+return_tail_result: false
+calculate_wer: true
+calculate_bleu: false
+
+
+# ========================
+# Metrics
+# ========================
+metrics:
+  asr:
+    gt_text_attr_name: text
+    clean_groundtruth_text: false
+    langid: en
+    use_cer: false
+    ignore_capitalization: true
+    ignore_punctuation: true
+    strip_punc_space: false
+  nmt:
+    gt_text_attr_name: answer
+    ignore_capitalization: false
+    ignore_punctuation: false
+    strip_punc_space: false

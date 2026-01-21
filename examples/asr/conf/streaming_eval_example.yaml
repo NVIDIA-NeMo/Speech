@@ -1,0 +1,20 @@
+# Example streaming evaluation configuration
+# Usage: python run_nemo_streaming_eval.py --config conf/streaming_eval_example.yaml --model_path <path> --dataset <name>
+
+# ASR Configuration
+asr:
+  device: cuda
+  device_id: 0
+  compute_dtype: bfloat16
+  use_amp: true
+
+# Streaming configuration (aligned with cache_aware_rnnt.yaml)
+streaming:
+  sample_rate: 16000
+  batch_size: 256
+  att_context_size: [70, 13]  # [70,13] for default, [70,6] for lower latency, [70,1] minimal context
+  use_cache: true
+  use_feat_cache: true
+  chunk_size_in_secs: null  # e.g., 0.08 for FastConformer; null uses default (1+lookahead frames)
+  request_type: frame
+  num_slots: 1024

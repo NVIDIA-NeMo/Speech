@@ -1,0 +1,73 @@
+# ================================
+# ASR Configuration - Canary 1B v2 (AED Multitask Model)
+# ================================
+# Note: Canary models use AED (Attention Encoder-Decoder) architecture,
+# not RNNT/CTC. Use with speech_to_text_aed_chunked_infer.py script.
+#
+# Example usage:
+# python ../asr_chunked_inference/aed/speech_to_text_aed_chunked_infer.py \
+#     --config-path=../conf/asr_streaming_inference \
+#     --config-name=canary_1b_v2 \
+#     dataset_manifest=<path to manifest> \
+#     output_filename=<path to output file>
+# ================================
+
+# Required configs
+model_path: null  # Path to a .nemo file (optional, use pretrained_name instead)
+pretrained_name: nvidia/canary-1b-v2  # Name of a pretrained model
+audio_dir: null  # Path to a directory which contains audio files
+dataset_manifest: null  # Path to dataset's JSON manifest
+
+# General configs
+output_filename: null  # if None, output will be stored in the same directory as the input
+batch_size: 16  # number of chunks to process in parallel
+append_pred: false  # Sets mode of work, if True it will add new field transcriptions
+pred_name_postfix: null  # If you need to use another model name
+random_seed: null  # seed number for reproducibility
+
+# Set to True to output greedy timestamp information
+timestamps: false
+
+# Set to True to output language ID information
+compute_langs: false
+
+# Chunked configs
+chunk_len_in_secs: 40.0  # Chunk length in seconds (use 10.0 when timestamps=true)
+model_stride: 8  # Model downsampling factor, 8 for FastConformer models
+
+# Decoding strategy for MultitaskAED models
+decoding:
+  strategy: beam  # "beam" or "greedy"
+  compute_hypothesis_token_set: false
+  preserve_alignments: null
+  compute_langs: false
+  temperature: 1.0
+  greedy:
+    max_generation_delta: 50
+    preserve_alignments: false
+    confidence_method_cfg:
+      name: entropy
+      entropy_type: tsallis
+      alpha: 0.5
+      entropy_norm: exp
+  beam:
+    beam_size: 1  # Use 1 for greedy-like beam search, increase for better quality
+    len_pen: 0.0
+    max_generation_delta: 50
+    return_best_hypothesis: true
+
+# GPU settings
+cuda: null  # Set to int to define CUDA device, null for auto-detection
+amp: false  # Enable automatic mixed precision
+amp_dtype: float16  # "float16" or "bfloat16"
+matmul_precision: high  # "highest", "high", or "medium"
+audio_type: wav
+
+# Transcription settings
+overwrite_transcripts: true  # Recompute even if output exists
+
+# Config for word / character error rate calculation
+calculate_wer: true
+clean_groundtruth_text: false
+langid: en  # specify this for convert_num_to_words step in groundtruth cleaning
+use_cer: false

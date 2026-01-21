@@ -265,33 +265,6 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.cuda_graphs_allow_fallback = True
         self.maybe_enable_cuda_graphs()
 
-    @property
-    def per_stream_biasing_enabled(self):
-        return self.biasing_multi_model is not None
-
-    def _all_fusion_models(
-        self, with_multi_model: bool = True
-    ) -> list[NGramGPULanguageModel | GPUBiasingMultiModelBase]:
-        if with_multi_model and self.per_stream_biasing_enabled:
-            return self.fusion_models + [self.biasing_multi_model]
-        return self.fusion_models
-
-    def _all_fusion_models_with_params(self, with_multi_model: bool = True) -> list[FusionModelWithParams]:
-        models_with_params = [
-            FusionModelWithParams(model=model, alpha=alpha, is_multi_model=False)
-            for model, alpha in zip(self.fusion_models, self.fusion_models_alpha)
-        ]
-        if with_multi_model and self.per_stream_biasing_enabled:
-            models_with_params.append(
-                FusionModelWithParams(model=self.biasing_multi_model, alpha=None, is_multi_model=True)
-            )
-        return models_with_params
-
-    def has_fusion_models(self, with_multi_model: bool = True) -> bool:
-        if len(self.fusion_models) > 0:
-            return True
-        return with_multi_model and self.per_stream_biasing_enabled
-
     def reset_cuda_graphs_state(self):
         """Reset state to release memory (for CUDA graphs implementations)"""
         self.state = None
@@ -305,18 +278,6 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             if self.preserve_frame_confidence
             else None
         )
-
-    def _move_fusion_models_to_device(self, device: torch.device):
-        """
-        Move all fusion models to device.
-        We need to do this since `self` is not nn.Module instance, but owns fusion models (nn.Module instances).
-        """
-        with torch.inference_mode(mode=False):
-            # NB: we avoid inference mode since otherwise all model params/buffers will be inference tensors,
-            # which will make further inplace manipulations impossible
-            # (e.g., `remove_model` for multi-model will throw errors)
-            for fusion_model in self._all_fusion_models():
-                fusion_model.to(device)  # fusion_models is nn.Module, but self is not; need to move manually
 
     def torch_impl(
         self,
@@ -397,7 +358,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             state = prev_batched_state.predictor_states
             fusion_states_list = prev_batched_state.fusion_states_list
 
-        fusion_scores_list, fusion_states_candidates_list = [], []
+        fusion_states_candidates_list = []
+        fusion_scores_combined = None
 
         # loop while there are active utterances
         while active_mask.any():
@@ -416,21 +378,13 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             scores, labels = logits.max(-1)
 
             if self.has_fusion_models():
-                fusion_scores_list, fusion_states_candidates_list = [], []
+                fusion_scores_combined, fusion_states_candidates_list = self.advance_fusion_models(
+                    fusion_states_list=fusion_states_list,
+                    multi_biasing_ids=multi_biasing_ids,
+                    float_dtype=float_dtype,
+                )
                 logits_with_fusion = logits.clone()
-                for fusion_idx, fusion_model_with_params in enumerate(self._all_fusion_models_with_params()):
-                    fusion_scores, fusion_states_candidates = fusion_model_with_params.model.advance(
-                        states=fusion_states_list[fusion_idx],
-                        **({"model_ids": multi_biasing_ids} if fusion_model_with_params.is_multi_model else {}),
-                    )
-                    fusion_scores = fusion_scores.to(dtype=float_dtype)
-                    if not fusion_model_with_params.is_multi_model:
-                        fusion_scores *= fusion_model_with_params.alpha
-                    # combine logits with fusion model without blank
-                    logits_with_fusion[:, :-1] += fusion_scores
-                    # save fusion scores and states candidates
-                    fusion_scores_list.append(fusion_scores)
-                    fusion_states_candidates_list.append(fusion_states_candidates)
+                logits_with_fusion[:, :-1] += fusion_scores_combined
 
                 # get max scores and labels without blank
                 fusion_scores_max, fusion_labels_max = logits_with_fusion[:, :-1].max(dim=-1)
@@ -477,9 +431,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
                 if self.has_fusion_models():
                     logits_with_fusion = logits.clone()
-                    for fusion_scores in fusion_scores_list:
-                        # combined scores with fusion model - without blank
-                        logits_with_fusion[:, :-1] += fusion_scores
+                    logits_with_fusion[:, :-1] += fusion_scores_combined
                     # get max scores and labels without blank
                     more_scores_w_fusion, more_labels_w_fusion = logits_with_fusion[:, :-1].max(dim=-1)
                     # preserve "blank" / "non-blank" category

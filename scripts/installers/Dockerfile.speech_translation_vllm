@@ -34,7 +34,9 @@ RUN apt-get update && \
   swig \
   ffmpeg \
   libavdevice-dev \
-  git && \
+  git \
+  build-essential \
+  cmake && \
   rm -rf /var/lib/apt/lists/*
 
 # Install NeMo

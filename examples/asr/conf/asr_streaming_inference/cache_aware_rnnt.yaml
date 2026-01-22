@@ -124,6 +124,8 @@ lang: null                                    # Language code for ASR model
 return_tail_result: false                     # Whether to return the tail labels left in the right padded side of the buffer
 calculate_wer: true                           # Whether to calculate WER
 calculate_bleu: true                          # Whether to calculate BLEU score
+warmup_steps: 0                               # Number of warmup steps for RTFx and LAAL calculation
+run_steps: 1                                  # Number of run steps for RTFx and LAAL calculation
 
 
 # ========================

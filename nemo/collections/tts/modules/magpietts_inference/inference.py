@@ -25,7 +25,7 @@ import glob
 import os
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import soundfile as sf
@@ -36,6 +36,7 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import LongFormTTSInferenceDataset, MagpieTTSDataset
 from nemo.collections.tts.models import MagpieTTSModel
+from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.utils import logging
 
@@ -45,20 +46,12 @@ class InferenceConfig:
     """Configuration for MagpieTTS inference.
 
     Attributes:
-        temperature: Sampling temperature for token generation.
-        topk: Top-k sampling parameter.
-        max_decoder_steps: Maximum number of decoder steps.
-        use_cfg: Whether to use classifier-free guidance.
-        cfg_scale: Scale factor for classifier-free guidance.
         batch_size: Batch size for inference.
-
-        # Attention prior parameters
+        use_cfg: Whether to use classifier-free guidance.
         apply_attention_prior: Whether to apply attention prior during decoding.
-        attention_prior_epsilon: Epsilon value for attention prior.
-        attention_prior_lookahead_window: Lookahead window size for prior.
-        estimate_alignment_from_layers: Layer indices for alignment estimation.
-        apply_prior_to_layers: Layer indices to apply prior to.
-        start_prior_after_n_audio_steps: When to start applying the prior.
+
+        # Model specific inference parameters
+        model_inference_parameters: See ModelInferenceParameters dataclass
 
         # Local transformer / MaskGit parameters
         use_local_transformer: Whether to use local transformer for inference.
@@ -67,30 +60,16 @@ class InferenceConfig:
         maskgit_fixed_schedule: Fixed schedule for MaskGit (optional).
         maskgit_sampling_type: Type of MaskGit sampling.
 
-        # EOS detection
-        eos_detection_method: Method for detecting end-of-sequence.
-        ignore_finished_sentence_tracking: Whether to ignore sentence tracking.
-
         # Longform inference mode
         longform_mode: Longform inference mode ("auto", "always", "never").
         longform_word_threshold: Word threshold for auto-detection.
     """
 
     # Core sampling parameters
-    temperature: float = 0.6
-    topk: int = 80
-    max_decoder_steps: int = 440
-    use_cfg: bool = False
-    cfg_scale: float = 2.5
     batch_size: int = 32
-
-    # Attention prior parameters
+    use_cfg: bool = False
     apply_attention_prior: bool = False
-    attention_prior_epsilon: float = 0.1
-    attention_prior_lookahead_window: int = 5
-    estimate_alignment_from_layers: Optional[List[int]] = None
-    apply_prior_to_layers: Optional[List[int]] = None
-    start_prior_after_n_audio_steps: int = 0
+    model_inference_parameters: ModelInferenceParameters = field(default_factory=ModelInferenceParameters)
 
     # Local transformer / MaskGit parameters
     use_local_transformer: bool = False
@@ -98,10 +77,6 @@ class InferenceConfig:
     maskgit_noise_scale: float = 0.0
     maskgit_fixed_schedule: Optional[List[int]] = None
     maskgit_sampling_type: Optional[str] = None
-
-    # EOS detection
-    eos_detection_method: str = "argmax_or_multinomial_any"
-    ignore_finished_sentence_tracking: bool = False
 
     # Longform inference mode
     longform_mode: str = "auto"  # "auto" | "always" | "never"
@@ -116,20 +91,20 @@ class InferenceConfig:
             String identifier incorporating key config values.
         """
         parts = [
-            f"Temp{self.temperature}",
-            f"Topk{self.topk}",
-            f"Cfg_{self.use_cfg}_{self.cfg_scale}",
+            f"Temp{self.model_inference_parameters.temperature}",
+            f"Topk{self.model_inference_parameters.topk}",
+            f"Cfg_{self.use_cfg}_{self.model_inference_parameters.cfg_scale}",
             f"Prior_{self.apply_attention_prior}",
         ]
 
         if self.apply_attention_prior:
             parts.extend(
                 [
-                    f"{self.attention_prior_epsilon}",
-                    f"{self.attention_prior_lookahead_window}",
-                    f"{self.start_prior_after_n_audio_steps}",
-                    self._format_layer_list(self.estimate_alignment_from_layers),
-                    self._format_layer_list(self.apply_prior_to_layers),
+                    f"{self.model_inference_parameters.attention_prior_epsilon}",
+                    f"{self.model_inference_parameters.attention_prior_lookahead_window}",
+                    f"{self.model_inference_parameters.start_prior_after_n_audio_steps}",
+                    self._format_layer_list(self.model_inference_parameters.estimate_alignment_from_layers),
+                    self._format_layer_list(self.model_inference_parameters.apply_prior_to_layers),
                 ]
             )
 
@@ -138,8 +113,8 @@ class InferenceConfig:
                 f"LT_{self.use_local_transformer}",
                 f"MaskGit_{self.maskgit_n_steps}_{self.maskgit_sampling_type}",
                 self._format_layer_list(self.maskgit_fixed_schedule),
-                f"EOS_{self.eos_detection_method}",
-                f"IgnoreFST_{self.ignore_finished_sentence_tracking}",
+                f"EOS_{self.model_inference_parameters.eos_detection_method}",
+                f"IgnoreFST_{self.model_inference_parameters.ignore_finished_sentence_tracking}",
             ]
         )
 
@@ -272,16 +247,12 @@ class MagpieInferenceRunner:
             logging.info("Creating MagpieTTSDataset for standard inference")
             dataset = MagpieTTSDataset(
                 dataset_meta=dataset_meta,
-                sample_rate=self.model.sample_rate,
+                sample_rate=self.model.output_sample_rate,
                 min_duration=0.5,
                 max_duration=20,
                 codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
                 bos_id=self.model.bos_id,
                 eos_id=self.model.eos_id,
-                context_audio_bos_id=self.model.context_audio_bos_id,
-                context_audio_eos_id=self.model.context_audio_eos_id,
-                audio_bos_id=self.model.audio_bos_id,
-                audio_eos_id=self.model.audio_eos_id,
                 num_audio_codebooks=self.model.num_audio_codebooks,
                 prior_scaling_factor=None,
                 load_cached_codes_if_available=False,
@@ -307,6 +278,7 @@ class MagpieInferenceRunner:
         audio_base_dir: Optional[str] = None,
         save_cross_attention_maps: bool = True,
         save_context_audio: bool = True,
+        save_predicted_codes: bool = True,
     ) -> Tuple[List[dict], List[str]]:
         """Run inference on a dataset.
 
@@ -321,11 +293,13 @@ class MagpieInferenceRunner:
             audio_base_dir: Base directory for audio paths (uses cached if None).
             save_cross_attention_maps: Whether to save attention map images.
             save_context_audio: Whether to copy context audio files.
+            save_predicted_codes: Whether to save predicted code files.
 
         Returns:
             Tuple of:
                 - rtf_metrics: List of real-time factor metrics per batch.
                 - generated_audio_paths: List of paths to generated audio files.
+                - codec_file_paths: List of paths to predicted codes files.
         """
         # Use cached values if not provided
         if manifest_records is None:
@@ -342,12 +316,18 @@ class MagpieInferenceRunner:
         if self._use_longform:
             logging.info("Using longform inference path")
             return self._run_longform_inference(
-                dataset, output_dir, manifest_records, audio_base_dir, save_context_audio
+                dataset, output_dir, manifest_records, audio_base_dir, save_context_audio, save_predicted_codes
             )
         else:
             logging.info("Using standard inference path")
             return self._run_standard_inference(
-                dataset, output_dir, manifest_records, audio_base_dir, save_cross_attention_maps, save_context_audio
+                dataset,
+                output_dir,
+                manifest_records,
+                audio_base_dir,
+                save_cross_attention_maps,
+                save_context_audio,
+                save_predicted_codes,
             )
 
     def _run_standard_inference(
@@ -358,6 +338,7 @@ class MagpieInferenceRunner:
         audio_base_dir: str,
         save_cross_attention_maps: bool = True,
         save_context_audio: bool = True,
+        save_predicted_codes: bool = True,
     ) -> Tuple[List[dict], List[str]]:
         """Run standard single-pass inference on a dataset.
 
@@ -368,11 +349,13 @@ class MagpieInferenceRunner:
             audio_base_dir: Base directory for resolving audio paths.
             save_cross_attention_maps: Whether to save attention map images.
             save_context_audio: Whether to copy context audio files.
+            save_predicted_codes: Whether to save predicted code files.
 
         Returns:
             Tuple of:
                 - rtf_metrics: List of real-time factor metrics per batch.
                 - generated_audio_paths: List of paths to generated audio files.
+                - codec_file_paths: List of paths to predicted codes files.
         """
         os.makedirs(output_dir, exist_ok=True)
         self._delete_old_generated_files(output_dir)
@@ -388,40 +371,37 @@ class MagpieInferenceRunner:
         item_idx = 0
         all_rtf_metrics = []
         generated_audio_paths = []
+        codec_file_paths = []
 
         for batch_idx, batch in enumerate(dataloader):
             logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)}")
 
             # Move batch to GPU
-            batch_cuda = self._batch_to_cuda(batch)
+            batch = self._batch_to_cuda(batch)
+
+            batch['sample_rate'] = self.model.output_sample_rate
+            batch['context_sample_rate'] = self.model.output_sample_rate
+
+            # Overwrite the model's parameters since we want to use the arguments from the commandline
+            self.model.inference_parameters = self.config.model_inference_parameters
 
             # Run inference
             start_time = time.time()
             output = self.model.infer_batch(
-                batch_cuda,
-                max_decoder_steps=self.config.max_decoder_steps,
-                temperature=self.config.temperature,
-                topk=self.config.topk,
+                batch,
                 use_cfg=self.config.use_cfg,
-                cfg_scale=self.config.cfg_scale,
                 return_cross_attn_probs=save_cross_attention_maps,
-                apply_attention_prior=self.config.apply_attention_prior,
-                prior_epsilon=self.config.attention_prior_epsilon,
-                lookahead_window_size=self.config.attention_prior_lookahead_window,
-                estimate_alignment_from_layers=self.config.estimate_alignment_from_layers,
-                apply_prior_to_layers=self.config.apply_prior_to_layers,
-                start_prior_after_n_audio_steps=self.config.start_prior_after_n_audio_steps,
                 use_local_transformer_for_inference=self.config.use_local_transformer,
                 maskgit_n_steps=self.config.maskgit_n_steps,
                 maskgit_noise_scale=self.config.maskgit_noise_scale,
                 maskgit_fixed_schedule=self.config.maskgit_fixed_schedule,
                 maskgit_sampling_type=self.config.maskgit_sampling_type,
-                ignore_finished_sentence_tracking=self.config.ignore_finished_sentence_tracking,
-                eos_detection_method=self.config.eos_detection_method,
             )
 
             predicted_audio = output.predicted_audio
             predicted_audio_lens = output.predicted_audio_lens
+            predicted_codes = output.predicted_codes
+            predicted_codes_lens = output.predicted_codes_lens
             rtf_metrics = output.rtf_metrics
             cross_attention_maps = output.cross_attention_maps
 
@@ -441,7 +421,7 @@ class MagpieInferenceRunner:
                 audio_np = predicted_audio[idx].float().detach().cpu().numpy()
                 audio_np = audio_np[: predicted_audio_lens[idx]]
                 audio_path = os.path.join(output_dir, f"predicted_audio_{item_idx}.wav")
-                sf.write(audio_path, audio_np, self.model.sample_rate)
+                sf.write(audio_path, audio_np, self.model.output_sample_rate)
                 generated_audio_paths.append(audio_path)
 
                 # Copy context and target audio if available
@@ -453,9 +433,14 @@ class MagpieInferenceRunner:
                         item_idx,
                     )
 
+                if save_predicted_codes:
+                    codes_path = os.path.join(output_dir, f"predicted_codes_{item_idx}.pt")
+                    predicted_codes_current = predicted_codes[idx, :, : predicted_codes_lens[idx]]  # C, T
+                    torch.save(predicted_codes_current, codes_path)
+                    codec_file_paths.append(codes_path)
                 item_idx += 1
 
-        return all_rtf_metrics, generated_audio_paths
+        return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
     @staticmethod
     def _batch_to_cuda(batch: dict) -> dict:
@@ -552,14 +537,10 @@ class MagpieInferenceRunner:
         # Create dataset - inherits from MagpieTTSDataset, so uses same dataset_meta format
         dataset = LongFormTTSInferenceDataset(
             dataset_meta=dataset_meta,
-            sample_rate=self.model.sample_rate,
+            sample_rate=self.model.output_sample_rate,
             tokenizer_name=tokenizer_name,
             codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
             eos_id=self.model.eos_id,
-            audio_bos_id=self.model.audio_bos_id,
-            audio_eos_id=self.model.audio_eos_id,
-            context_audio_bos_id=self.model.context_audio_bos_id,
-            context_audio_eos_id=self.model.context_audio_eos_id,
             num_audio_codebooks=self.model.num_audio_codebooks,
             context_duration_min=context_duration_min,
             context_duration_max=context_duration_max,
@@ -581,7 +562,8 @@ class MagpieInferenceRunner:
         manifest_records: List[dict],
         audio_base_dir: str,
         save_context_audio: bool = True,
-    ) -> Tuple[List[dict], List[str]]:
+        save_predicted_codes: bool = True,
+    ) -> Tuple[List[dict], List[str], List[str]]:
         """Run longform inference with automatic sentence chunking.
 
         Processes text sentence-by-sentence using generate_long_form_speech().
@@ -592,11 +574,13 @@ class MagpieInferenceRunner:
             manifest_records: List of manifest record dictionaries.
             audio_base_dir: Base directory for resolving audio paths.
             save_context_audio: Whether to copy context audio files.
+            save_predicted_codes: Whether to save predicted code files.
 
         Returns:
             Tuple of:
                 - rtf_metrics: List of real-time factor metrics per batch.
                 - generated_audio_paths: List of paths to generated audio files.
+                - codec_file_paths: List of paths to predicted codes files.
         """
         os.makedirs(output_dir, exist_ok=True)
         self._delete_old_generated_files(output_dir)
@@ -611,6 +595,7 @@ class MagpieInferenceRunner:
 
         all_rtf_metrics = []
         generated_audio_paths = []
+        codec_file_paths = []
         global_item_idx = 0
 
         for batch_idx, batch in enumerate(dataloader):
@@ -618,6 +603,9 @@ class MagpieInferenceRunner:
 
             # Move batch tensors to CUDA
             batch = self._batch_to_cuda(batch)
+
+            batch['sample_rate'] = self.model.output_sample_rate
+            batch['context_sample_rate'] = self.model.output_sample_rate
 
             batch_size = len(batch['chunked_tokens'])
             max_num_chunks = max(len(tokens) for tokens in batch['chunked_tokens'])
@@ -629,8 +617,10 @@ class MagpieInferenceRunner:
             predicted_codes_per_sample = [[] for _ in range(batch_size)]
             predicted_codes_lens = [0 for _ in range(batch_size)]
 
-            start_time = time.time()
+            # Overwrite the model's parameters since we want to use the arguments from the commandline
+            self.model.inference_parameters = self.config.model_inference_parameters
 
+            start_time = time.time()
             # Iterate over text chunks (sentences)
             for chunk_idx in range(max_num_chunks):
                 # Extract current chunk tokens for each sample
@@ -658,18 +648,12 @@ class MagpieInferenceRunner:
                     chunk_state=chunk_state,
                     end_of_text=is_end_of_text,
                     beginning_of_text=beginning_of_text,
-                    max_decoder_steps=self.config.max_decoder_steps,
-                    temperature=self.config.temperature,
-                    topk=self.config.topk,
                     use_cfg=self.config.use_cfg,
-                    cfg_scale=self.config.cfg_scale,
-                    apply_attention_prior=self.config.apply_attention_prior,
-                    prior_epsilon=self.config.attention_prior_epsilon,
-                    lookahead_window_size=self.config.attention_prior_lookahead_window,
-                    estimate_alignment_from_layers=self.config.estimate_alignment_from_layers,
-                    apply_prior_to_layers=self.config.apply_prior_to_layers,
-                    eos_detection_method=self.config.eos_detection_method,
-                    ignore_finished_sentence_tracking=self.config.ignore_finished_sentence_tracking,
+                    use_local_transformer_for_inference=self.config.use_local_transformer,
+                    maskgit_n_steps=self.config.maskgit_n_steps,
+                    maskgit_noise_scale=self.config.maskgit_noise_scale,
+                    maskgit_fixed_schedule=self.config.maskgit_fixed_schedule,
+                    maskgit_sampling_type=self.config.maskgit_sampling_type,
                 )
 
                 # Unpack output - generate_long_form_speech returns InferBatchOutput
@@ -706,13 +690,13 @@ class MagpieInferenceRunner:
             predicted_codes = stack_tensors(predicted_codes_list, max_lens=[max_code_len]).cuda()
             predicted_codes_lens_tensor = torch.tensor(predicted_codes_lens, dtype=torch.long, device='cuda')
 
-            predicted_audio, predicted_audio_lens = self.model.codes_to_audio(
+            predicted_audio, predicted_audio_lens, _ = self.model.codes_to_audio(
                 predicted_codes, predicted_codes_lens_tensor
             )
 
             # Compute RTF metrics
             total_audio_samples = sum(predicted_audio_lens.cpu().tolist())
-            total_audio_seconds = total_audio_samples / self.model.sample_rate
+            total_audio_seconds = total_audio_samples / self.model.output_sample_rate
             rtf = elapsed / total_audio_seconds if total_audio_seconds > 0 else 0.0
             rtf_metrics = {
                 'inference_time': elapsed,
@@ -730,7 +714,7 @@ class MagpieInferenceRunner:
                 audio_np = predicted_audio_np[b_idx, :audio_len]
 
                 audio_path = os.path.join(output_dir, f"predicted_audio_{sample_idx}.wav")
-                sf.write(audio_path, audio_np, self.model.sample_rate)
+                sf.write(audio_path, audio_np, self.model.output_sample_rate)
                 generated_audio_paths.append(audio_path)
 
                 # Copy reference audio if requested
@@ -742,9 +726,15 @@ class MagpieInferenceRunner:
                         sample_idx,
                     )
 
+                if save_predicted_codes:
+                    codes_path = os.path.join(output_dir, f"predicted_codes_{sample_idx}.pt")
+                    predicted_codes_current = predicted_codes[b_idx, :, : predicted_codes_lens[b_idx]]  # C, T
+                    torch.save(predicted_codes_current, codes_path)
+                    codec_file_paths.append(codes_path)
+
                 global_item_idx += 1
 
-        return all_rtf_metrics, generated_audio_paths
+        return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
     def _compute_end_of_text_flags(
         self,

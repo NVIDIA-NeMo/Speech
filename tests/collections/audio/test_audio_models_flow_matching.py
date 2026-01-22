@@ -24,7 +24,7 @@ import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.audio.models import FlowMatchingAudioToAudioModel
+from nemo.collections.audio.models.enhancement import FlowMatchingAudioToAudioModel
 
 
 def convert_to_dictconfig(d):
@@ -79,7 +79,7 @@ def flow_matching_base_config(request):
         'time_max': flow['time_max'],
     }
 
-    loss = {'_target_': 'nemo.collections.audio.losses.MSELoss', 'ndim': 4}
+    loss = {'_target_': 'nemo.collections.audio.losses.audio.MSELoss', 'ndim': 4}
 
     estimator = {
         '_target_': 'nemo.collections.audio.parts.submodules.transformerunet.SpectrogramTransformerUNet',

@@ -15,18 +15,28 @@
 import os
 from collections import deque
 from dataclasses import InitVar, dataclass, field
-from typing import List, NamedTuple, Optional
+from pathlib import Path
+from typing import NamedTuple, Optional
 
 import numpy as np
+import sentencepiece as spm
 import torch
 from lightning.pytorch import Trainer
 from omegaconf import MISSING, DictConfig, OmegaConf
 
 from nemo.collections.asr.parts.context_biasing.context_graph_universal import ContextGraph, ContextState
-from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
+from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET, NGramGPULanguageModel
 from nemo.collections.common.tokenizers import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
+from nemo.utils.exceptions import NeMoBaseException
+
+
+@dataclass
+class PhraseItem:
+    phrase: str  # phrase itself
+    lang: str  # per-phrase language (for aggregate tokenizer)
+    # custom weight can be further added
 
 
 @dataclass
@@ -37,9 +47,13 @@ class BoostingTreeModelConfig:
 
     model_path: Optional[str] = None  # The path to builded '.nemo' boosting tree model
     key_phrases_file: Optional[str] = None  # The path to the context-biasing list file (one phrase per line)
-    key_phrases_list: Optional[List[str]] = (
+    key_phrases_list: Optional[list[str]] = (
         None  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
     )
+    # The list of context-biasing phrases with custom options:
+    # [PhraseItem("word1", lang="en"), PhraseItem("frase dos", lang="es"), ...]
+    # in CLI: key_phrase_items_list='[{phrase:"word1",lang:en},{phrase:"frase dos",lang:es}]'
+    key_phrase_items_list: list[PhraseItem] | None = None
     context_score: float = 1.0  # The score for each arc transition in the context graph
     depth_scaling: float = (
         2.0  # The scaling factor for the depth of the context graph (2.0 for CTC, RNN-T and TDT, 1.0 for Canary)
@@ -62,7 +76,12 @@ class BoostingTreeModelConfig:
 
     @staticmethod
     def is_empty(cfg: "BoostingTreeModelConfig") -> bool:
-        return cfg.model_path is None and cfg.key_phrases_file is None and cfg.key_phrases_list is None
+        return (
+            cfg.model_path is None
+            and cfg.key_phrases_file is None
+            and (not cfg.key_phrases_list)
+            and (not cfg.key_phrase_items_list)
+        )
 
 
 class TBranch(NamedTuple):
@@ -374,13 +393,13 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
             if tbranch_cur_order_i == order2cnt[cur_order]:
                 boosting_tree_np._end_adding_tbranches_for_order(order=cur_order)
-                logging.info(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
+                logging.debug(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
                 cur_order += 1
                 tbranch_cur_order_i = 0
 
         assert tbranch_cur_order_i == 0
         boosting_tree_np.sanity_check()
-
+        logging.debug(f"Loaded boosting model with {len(tbranches_list)} arcs")
         return GPUBoostingTreeModel.from_boosting_tree_np(boosting_tree_np=boosting_tree_np, use_triton=use_triton)
 
     @classmethod
@@ -482,14 +501,11 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
     @classmethod
     def get_alternative_transcripts(
-        cls, cfg: BoostingTreeModelConfig, tokenizer: TokenizerSpec, phrase: str, is_aggregate_tokenizer: bool
+        cls, cfg: BoostingTreeModelConfig, tokenizer: TokenizerSpec, phrase: str
     ) -> list[list[int]]:
         """
         Get alternative transcriptions for a key phrase using BPE dropout
         """
-        if is_aggregate_tokenizer:
-            return [tokenizer.text_to_ids(phrase, cfg.source_lang)]
-
         i = 1
         cur_step = 1
         transcripts_set = set()
@@ -508,22 +524,38 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         return transcripts_list
 
     @classmethod
+    def from_arpa(
+        cls,
+        lm_path: Path | str,
+        vocab_size: int,
+        normalize_unk: bool = True,
+        use_triton: bool | None = None,
+        token_offset: int = DEFAULT_TOKEN_OFFSET,
+    ) -> "NGramGPULanguageModel":
+        raise NeMoBaseException("Boosting tree cannot be loaded from ARPA file")
+
+    @classmethod
     def from_config(cls, cfg: BoostingTreeModelConfig, tokenizer: TokenizerSpec) -> "GPUBoostingTreeModel":
         """
         Constructor boosting tree model from config file
         """
         # load boosting tree from already built model path
         if cfg.model_path is not None and os.path.exists(cfg.model_path):
-            return cls.from_file(lm_path=cfg.model_path, vocab_size=tokenizer.vocab_size)
+            return cls.from_nemo(lm_path=cfg.model_path, vocab_size=tokenizer.vocab_size)
 
         # 1. read key phrases from file or list
-        if cfg.key_phrases_file is not None and cfg.key_phrases_list is not None:
+        phrase_items_list: list[PhraseItem]
+        if cfg.key_phrases_file is not None and bool(cfg.key_phrases_list or cfg.key_phrase_items_list):
             raise ValueError("Both file and phrases specified, use only one")
         elif cfg.key_phrases_file:
             with open(cfg.key_phrases_file, "r", encoding="utf-8") as f:
-                phrases_list = [line.strip() for line in f]
-        elif cfg.key_phrases_list:
-            phrases_list = cfg.key_phrases_list
+                phrase_items_list = [PhraseItem(line.strip(), cfg.source_lang) for line in f]
+        elif cfg.key_phrases_list or cfg.key_phrase_items_list:
+            phrase_items_list = []
+            if cfg.key_phrases_list:
+                phrase_items_list = [PhraseItem(phrase, cfg.source_lang) for phrase in cfg.key_phrases_list]
+            if cfg.key_phrase_items_list:
+                phrase_items_list += cfg.key_phrase_items_list
         else:
             raise ValueError("No key phrases file or list specified")
 
@@ -531,28 +563,29 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         phrases_dict = {}
         is_aggregate_tokenizer = isinstance(tokenizer, AggregateTokenizer)
 
-        if cfg.use_bpe_dropout:
+        use_bpe_dropout = cfg.use_bpe_dropout
+        if use_bpe_dropout:
             if is_aggregate_tokenizer:
                 logging.warning(
                     "Aggregated tokenizer does not support BPE dropout, only one default transcription will be used..."
                 )
-            import sentencepiece as spm
-
+                use_bpe_dropout = False
             spm.set_random_generator_seed(1234)  # fix random seed for reproducibility of BPE dropout
 
-        for phrase in phrases_list:
-            if cfg.use_bpe_dropout:
-                phrases_dict[phrase] = cls.get_alternative_transcripts(cfg, tokenizer, phrase, is_aggregate_tokenizer)
+        for phrase_item in phrase_items_list:
+            phrase = phrase_item.phrase
+            if use_bpe_dropout:
+                phrases_dict[phrase] = cls.get_alternative_transcripts(cfg, tokenizer, phrase)
             else:
                 if is_aggregate_tokenizer:
-                    phrases_dict[phrase] = tokenizer.text_to_ids(phrase, cfg.source_lang)
+                    phrases_dict[phrase] = tokenizer.text_to_ids(phrase, phrase_item.lang)
                 else:
                     phrases_dict[phrase] = tokenizer.text_to_ids(phrase)
 
         # 3. build pythoncontext graph
         contexts, scores, phrases = [], [], []
         for phrase in phrases_dict:
-            if cfg.use_bpe_dropout:
+            if use_bpe_dropout:
                 for transcript in phrases_dict[phrase]:
                     contexts.append(transcript)
                     scores.append(round(cfg.score_per_phrase / len(phrase), 2))
@@ -577,6 +610,6 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
         # 5. save model
         if cfg.model_path is not None:
-            boosting_tree_model.save(cfg.model_path)
+            boosting_tree_model.save_to(cfg.model_path)
 
         return boosting_tree_model

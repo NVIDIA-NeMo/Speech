@@ -163,6 +163,7 @@ def check_tdt_greedy_decoding(
     use_cuda_graph_decoder: bool,
     lm_path: Optional[str | Path] = None,
     boosting_tree: Optional[BoostingTreeModelConfig] = None,
+    enable_per_stream_biasing: bool = False,
 ):
     model, encoded, encoded_len = get_model_encoder_output(test_data_dir, 'nvidia/parakeet-tdt_ctc-110m')
 
@@ -191,6 +192,7 @@ def check_tdt_greedy_decoding(
         use_cuda_graph_decoder=use_cuda_graph_decoder,
         fusion_models=fusion_models,
         fusion_models_alpha=fusion_models_alpha,
+        enable_per_stream_biasing=enable_per_stream_biasing,
     )
 
     enc_out = encoded
@@ -499,8 +501,14 @@ class TestRNNTDecoding:
     @pytest.mark.parametrize("use_cuda_graph_decoder", [True, False])
     @pytest.mark.parametrize("use_lm", [True, False])
     @pytest.mark.parametrize("use_boosting_tree", [True, False])
+    @pytest.mark.parametrize("enable_per_stream_biasing", [True, False])
     def test_tdt_greedy_decoding(
-        self, test_data_dir, use_cuda_graph_decoder: bool, use_lm: bool, use_boosting_tree: bool
+        self,
+        test_data_dir,
+        use_cuda_graph_decoder: bool,
+        use_lm: bool,
+        use_boosting_tree: bool,
+        enable_per_stream_biasing: bool,
     ):
         kenlm_model_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
         boosting_tree = BoostingTreeModelConfig(key_phrases_list=["hello", "nvidia"]) if use_boosting_tree else None
@@ -509,6 +517,7 @@ class TestRNNTDecoding:
             use_cuda_graph_decoder=use_cuda_graph_decoder,
             lm_path=kenlm_model_path if use_lm else None,
             boosting_tree=boosting_tree,
+            enable_per_stream_biasing=enable_per_stream_biasing,
         )
 
     @pytest.mark.skipif(
@@ -621,3 +630,32 @@ class TestRNNTTimestamps(BaseTimestampsTest):
     def test_word_offsets_subword_wpe_other_delimiter(self, tmp_tokenizer):
         self.tmp_tokenizer = tmp_tokenizer
         super().test_word_offsets_subword_wpe_other_delimiter()
+
+
+@pytest.mark.unit
+@pytest.mark.with_downloads
+def test_transcribe_timestamps_no_decoder_reinstantiation(stt_en_fastconformer_transducer_large, test_data_dir):
+    """
+    Test that calling transcribe with timestamps=True multiple times
+    does not reinstantiate the decoder.
+
+    Regression test for the fix that avoids calling change_decoding_strategy()
+    when compute_timestamps is already set to the desired value.
+    """
+    model = stt_en_fastconformer_transducer_large
+    audio_file = os.path.join(test_data_dir, "asr/test/an4/wav/cen3-mjwl-b.wav")
+
+    # First call - may change decoding strategy
+    _ = model.transcribe(audio_file, timestamps=True)
+
+    # Get reference to decoding algorithm after first call
+    decoding_after_first_call = model.decoding.decoding
+
+    # Second call - should NOT reinstantiate decoder
+    _ = model.transcribe(audio_file, timestamps=True)
+
+    # Verify decoder is the same object (not reinstantiated)
+    assert model.decoding.decoding is decoding_after_first_call, (
+        "Decoder was reinstantiated on second transcribe call with timestamps=True. "
+        "This indicates change_decoding_strategy() was called unnecessarily."
+    )

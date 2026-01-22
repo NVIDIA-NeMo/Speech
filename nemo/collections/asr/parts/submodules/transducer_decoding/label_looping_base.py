@@ -18,6 +18,8 @@ from typing import Any, Optional
 
 import torch
 
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
+from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
@@ -43,7 +45,7 @@ class BatchedLabelLoopingState:
     predictor_outputs: torch.Tensor
     labels: torch.Tensor
     decoded_lengths: torch.Tensor
-    fusion_states_list: list[torch.Tensor] | None = None
+    fusion_states_list: list[torch.Tensor] = field(default_factory=list)
     time_jumps: torch.Tensor | None = None
 
 
@@ -55,8 +57,15 @@ class LabelLoopingStateItem:
     predictor_output: torch.Tensor
     label: torch.Tensor
     decoded_length: torch.Tensor
-    fusion_state_list: list[torch.Tensor] | None = None
+    fusion_state_list: list[torch.Tensor] = field(default_factory=list)
     time_jump: torch.Tensor | None = None
+
+
+@dataclass
+class FusionModelWithParams:
+    model: NGramGPULanguageModel | GPUBiasingMultiModelBase
+    alpha: float | None = None
+    is_multi_model: bool = False
 
 
 class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
@@ -79,6 +88,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
     cuda_graphs_allow_fallback: bool
     max_symbols: Optional[int]
     allow_cuda_graphs: bool
+    biasing_multi_model: GPUBiasingMultiModelBase | None
 
     def force_cuda_graphs_mode(self, mode: Optional[str | CudaGraphsMode]):
         """
@@ -134,6 +144,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
     ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
         """
         Pure PyTorch implementation
@@ -142,6 +153,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
             encoder_output: output from the encoder
             encoder_output_length: lengths of the utterances in `encoder_output`
             prev_batched_state: previous batched decoding state
+            multi_biasing_ids: optional tensor [Batch] with ids of fused biasing models
         """
         raise NotImplementedError
 
@@ -151,6 +163,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
     ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
         """
         Implementation with CUDA graphs.
@@ -159,6 +172,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
             encoder_output: output from the encoder
             encoder_output_length: lengths of the utterances in `encoder_output`
             prev_batched_state: previous batched decoding state
+            multi_biasing_ids: optional tensor [Batch] with ids of multi-biasing models
         """
         raise NotImplementedError
 
@@ -205,6 +219,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         x: torch.Tensor,
         out_len: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
     ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
         """
         Entry point for the decoding algorithm
@@ -213,13 +228,22 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
             x: encoder output
             out_len: encoder output length
             prev_batched_state: previous batched decoding state
+            multi_biasing_ids: optional tensor [Batch] with ids of fused biasing models
         """
         if self.cuda_graphs_mode is not None and x.device.type == "cuda":
             # disable CUDA graphs if Mixed Precision is used due to incorrect behavior
             with torch.amp.autocast(device_type="cuda", enabled=False):
                 # TODO(vbataev): fix issue with mixed precision, remove this restriction
                 return self.cuda_graphs_impl(
-                    encoder_output=x, encoder_output_length=out_len, prev_batched_state=prev_batched_state
+                    encoder_output=x,
+                    encoder_output_length=out_len,
+                    prev_batched_state=prev_batched_state,
+                    multi_biasing_ids=multi_biasing_ids,
                 )
 
-        return self.torch_impl(encoder_output=x, encoder_output_length=out_len, prev_batched_state=prev_batched_state)
+        return self.torch_impl(
+            encoder_output=x,
+            encoder_output_length=out_len,
+            prev_batched_state=prev_batched_state,
+            multi_biasing_ids=multi_biasing_ids,
+        )

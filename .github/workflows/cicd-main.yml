@@ -46,6 +46,8 @@ jobs:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
       HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
+      HAS_FORCE_SPEECH_CI_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'force-run-speech-ci') }}
+      HAS_FORCE_NEMO2_CI_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'force-run-nemo2-ci') }}
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
@@ -57,8 +59,12 @@ jobs:
         run: |
           pip install -U pip
           pip install git-python
-
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          
+          if [[ "$HAS_FORCE_SPEECH_CI_LABEL" == "true" ]]; then
+            echo '["speech"]' | tee -a test_modules.json
+          elif [[ "$HAS_FORCE_NEMO2_CI_LABEL" == "true" ]]; then
+            echo '["speech"]' | tee -a test_modules.json
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
           else
             echo '["nemo2", "export-deploy", "speech"]' | tee -a test_modules.json

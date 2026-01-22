@@ -25,6 +25,7 @@ from einops import rearrange
 from transformers import AutoModel
 
 from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
+from nemo.collections.audio.parts.utils.transforms import MelSpectrogram, Resample
 from nemo.collections.common.parts.utils import ClampActivation, HalfSnake, Snake, mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
@@ -38,13 +39,6 @@ from nemo.core.neural_types.elements import (
 )
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
-
-try:
-    import torchaudio
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
 
 try:
     import fsspec
@@ -121,11 +115,7 @@ class SLMDiscriminator(NeuralModule):
     ):
         super().__init__()
 
-        if HAVE_TORCHAUDIO:
-            self.resample = torchaudio.transforms.Resample(input_sr, slm_sr)
-        else:
-            self.resample = None
-
+        self.resample = Resample(orig_freq=input_sr, new_freq=slm_sr)
         self.slm_model = SSLModel(slm_model_name)
 
         # Freeze slm model
@@ -353,11 +343,7 @@ class ResNetSpeakerEncoder(NeuralModule):
         self.layer4 = self.create_layer(SEBasicBlock, num_filters[3], layers[3], stride=(2, 2))
 
         self.instancenorm = nn.InstanceNorm1d(input_dim)
-
-        if self.use_torch_spec and HAVE_TORCHAUDIO:
-            self.torch_spec = self.get_torch_mel_spectrogram_class(audio_config)
-        else:
-            self.torch_spec = None
+        self.torch_spec = self.get_torch_mel_spectrogram_class(audio_config) if self.use_torch_spec else None
 
         outmap_size = int(self.input_dim / 8)
 
@@ -460,7 +446,7 @@ class ResNetSpeakerEncoder(NeuralModule):
     def get_torch_mel_spectrogram_class(self, audio_config):
         return torch.nn.Sequential(
             PreEmphasis(audio_config["preemphasis"]),
-            torchaudio.transforms.MelSpectrogram(
+            MelSpectrogram(
                 sample_rate=audio_config["sample_rate"],
                 n_fft=audio_config["fft_size"],
                 win_length=audio_config["win_length"],
@@ -1662,9 +1648,15 @@ class ResidualBlockV2(NeuralModule):
             )
         else:
             self.input_conv = CausalConv1dNorm(
-                in_channels=channels, out_channels=filters, kernel_size=kernel_size, activation=activation
+                in_channels=channels,
+                out_channels=filters,
+                kernel_size=kernel_size,
+                activation=activation,
+                pad_mode=pad_mode,
             )
-            self.skip_conv = CausalConv1dNorm(in_channels=filters, out_channels=channels, kernel_size=kernel_size)
+            self.skip_conv = CausalConv1dNorm(
+                in_channels=filters, out_channels=channels, kernel_size=kernel_size, pad_mode=pad_mode
+            )
 
         self.output_activation = CodecActivation(activation=activation, channels=channels)
 
@@ -2377,7 +2369,7 @@ class STFTProcessor(NeuralModule):
         log_guard: Value to add to magnitude STFT before taking log.
     """
 
-    def __init__(self, n_fft, win_length, hop_length, log_guard=1.0):
+    def __init__(self, n_fft, win_length, hop_length, log_guard=1.0, pad_mode="reflect"):
         super(STFTProcessor, self).__init__()
 
         self.n_fft = n_fft
@@ -2386,6 +2378,7 @@ class STFTProcessor(NeuralModule):
         self.register_buffer("window", torch.hann_window(self.win_length, periodic=False))
         self.log_guard = log_guard
         self.stft_pad_amount = (self.n_fft - self.hop_length) // 2
+        self.pad_mode = pad_mode
 
     @property
     def input_types(self):
@@ -2404,7 +2397,7 @@ class STFTProcessor(NeuralModule):
     @typecheck()
     def forward(self, audio, audio_len):
         spec_len = audio_len // self.hop_length
-        audio_padded = torch.nn.functional.pad(audio, (self.stft_pad_amount, self.stft_pad_amount), "reflect")
+        audio_padded = torch.nn.functional.pad(audio, (self.stft_pad_amount, self.stft_pad_amount), self.pad_mode)
         # [B, n_fft, T_spec]
         fft = torch.stft(
             audio_padded,
@@ -2643,8 +2636,12 @@ class STFTResidualBlock(NeuralModule):
 
         n_fft, hop_length, win_length = resolution
         stft_dim = n_fft // 2 + 1
-        self.spec_processor = STFTProcessor(n_fft=n_fft, win_length=win_length, hop_length=hop_length)
-        self.spec_conv = Conv1dNorm(in_channels=stft_dim, out_channels=filters, kernel_size=kernel_size)
+        self.spec_processor = STFTProcessor(
+            n_fft=n_fft, win_length=win_length, hop_length=hop_length, pad_mode=pad_mode
+        )
+        self.spec_conv = Conv1dNorm(
+            in_channels=stft_dim, out_channels=filters, kernel_size=kernel_size, pad_mode=pad_mode
+        )
         self.spec_act = CodecActivation(activation=activation, channels=filters)
 
         self.res_block = ResidualBlockV2(
@@ -2719,7 +2716,7 @@ class DownSampleResidualBlock(NeuralModule):
             pad_mode=pad_mode,
         )
         self.res_block = ResidualBlockV2(
-            channels=filters, filters=filters, kernel_size=kernel_size, activation=activation
+            channels=filters, filters=filters, kernel_size=kernel_size, activation=activation, pad_mode=pad_mode
         )
 
     def remove_weight_norm(self):
@@ -2760,8 +2757,6 @@ class MultiResolutionSTFTEncoder(NeuralModule):
             The total down sample rate of the encoder will be 2**(len(resolutions)) * product(down_sample_rate_list)
         kernel_size: Kernel size to use in all convolutions.
         activation: Name of activation function.
-        resample_rates: Optional tuple of two integers. If provided, input audio will be resampled from sampling rate
-            resample_rates[0] to sampling rate resample_rates[1].
         pad_mode: Type of padding to use for conv1d layers.
             See https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv1d.html
     """
@@ -2775,28 +2770,18 @@ class MultiResolutionSTFTEncoder(NeuralModule):
         down_sample_rate_list: Tuple[int] = (),
         kernel_size: int = 3,
         activation: str = "lrelu",
-        resample_rates: Tuple[int] = (),
         pad_mode: str = "replicate",
     ):
         super(MultiResolutionSTFTEncoder, self).__init__()
         assert len(resolutions) >= 1
         assert len(resolutions) == len(resolution_filter_list)
 
-        if resample_rates:
-            if not HAVE_TORCHAUDIO:
-                raise ValueError("Must install torchaudio for resampling.")
-
-            input_sr, encoder_sr = resample_rates
-            self.resample = torchaudio.transforms.Resample(input_sr, encoder_sr)
-            self.resample_length_modifier = encoder_sr / input_sr
-        else:
-            self.resample = torch.nn.Identity()
-            self.resample_length_modifier = 1.0
-
         n_fft, hop_length, win_length = resolutions[0]
         input_filters = resolution_filter_list[0]
         input_dim = n_fft // 2 + 1
-        self.pre_spec_processor = STFTProcessor(n_fft=n_fft, win_length=win_length, hop_length=hop_length)
+        self.pre_spec_processor = STFTProcessor(
+            n_fft=n_fft, win_length=win_length, hop_length=hop_length, pad_mode=pad_mode
+        )
         self.pre_conv = Conv1dNorm(
             in_channels=input_dim,
             out_channels=input_filters,
@@ -2868,9 +2853,6 @@ class MultiResolutionSTFTEncoder(NeuralModule):
 
     @typecheck()
     def forward(self, audio, audio_len):
-        audio = self.resample(audio)
-        audio_len = torch.round(self.resample_length_modifier * audio_len).int()
-
         encoded, encoded_len = self.pre_spec_processor(audio=audio, audio_len=audio_len)
         encoded = self.pre_conv(inputs=encoded, input_len=encoded_len)
         encoded = self.pre_res_block(inputs=encoded, input_len=encoded_len)

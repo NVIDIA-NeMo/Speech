@@ -875,6 +875,7 @@ Data format examples::
 
     # file: chat_0.jsonl
     {"id": "conv-0", "conversations": [{"from": "user", "value": "speak to me", "type": "text"}, {"from": "assistant": "value": "/path/to/audio.wav", "duration": 17.1, "type": "audio"}]}
+    {"id": "conv-1", "conversations": [{"from": "user", "value": "speak to me", "type": "text"}, {"from": "assistant": "value": "/path/to/audio.wav", "duration": 5, "offset": 17.1, "type": "audio"}]}
 
 Dataloading configuration example::
 

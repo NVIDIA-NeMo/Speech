@@ -195,8 +195,6 @@ class LhotseSpeechToTextBpeEOUDataset(torch.utils.data.Dataset):
         self.ignore_eob_label = self.cfg.get('ignore_eob_label', False)
         self.augmentor = None
         self.len_augmentor = None
-        self.skip_augment = self.cfg.get("skip_augment", False)
-        logging.info(f"EOU dataset with skip augmentations = {self.skip_augment}")
         if self.cfg.get('augmentor', None) is not None:
             augmentor = {}
             len_augmentor = {}
@@ -232,50 +230,7 @@ class LhotseSpeechToTextBpeEOUDataset(torch.utils.data.Dataset):
                 "Please refer to scripts/asr_end_of_utterance/tokenizers/add_special_tokens_to_sentencepiece.py for details."
             )
 
-    def _simple_getitem(self, cuts: CutSet) -> AudioToTextEOUBatch:
-        """
-        Simple getitem function when skipping all augmentations.
-        """
-        audio, audio_lens, cuts = self.load_audio(cuts)
-        if self.return_cuts:
-            return audio, audio_lens, cuts
-
-        eou_targets = []
-        text_tokens = []
-        sample_ids = []
-        audio_filepaths = []
-        for i in range(len(cuts)):
-            c = cuts[i]
-            if isinstance(c, MixedCut):
-                c = first_supervised_cut(c)
-
-            sample_ids.append(c.id)
-            audio_filepaths.append(c.recording.sources[0].source)
-            # Get EOU labels and text tokens
-            eou_targets_i = self._get_frame_labels(c, audio_lens[i])
-            text_tokens_i = self._get_text_tokens(c)
-            eou_targets.append(eou_targets_i)
-            text_tokens.append(text_tokens_i)
-
-        eou_target_lens = torch.tensor([t.size(0) for t in eou_targets], dtype=torch.long)
-        eou_targets = collate_vectors(eou_targets, padding_value=0)
-        text_token_lens = torch.tensor([t.size(0) for t in text_tokens], dtype=torch.long)
-        text_tokens = collate_vectors(text_tokens, padding_value=0)
-        return AudioToTextEOUBatch(
-            sample_ids=sample_ids,
-            audio_filepaths=audio_filepaths,
-            audio_signal=audio,
-            audio_lengths=audio_lens,
-            text_tokens=text_tokens,
-            text_token_lengths=text_token_lens,
-            eou_targets=eou_targets,
-            eou_target_lengths=eou_target_lens,
-        )
-
     def __getitem__(self, cuts: CutSet) -> AudioToTextEOUBatch:
-        if self.skip_augment:
-            return self._simple_getitem(cuts)
-
         audio, audio_lens, cuts = self.load_audio(cuts)
         audio_signals = []
         audio_lengths = []
@@ -567,7 +522,6 @@ class LhotseSpeechToTextBpeEOUDataset(torch.utils.data.Dataset):
         pre_padding_eou = torch.zeros(pre_padding_eou_len, dtype=eou_targets.dtype)
         post_padding_eou = torch.zeros(post_padding_eou_len, dtype=eou_targets.dtype)
         padded_eou_targets = torch.cat((pre_padding_eou, eou_targets, post_padding_eou), dim=0)
-
         padded_eou_targets = self._repeat_eou_labels(padded_eou_targets)
         return padded_audio, padded_audio_len, padded_eou_targets
 

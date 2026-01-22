@@ -1,11 +1,26 @@
 # It contains the default values for training a cache-aware streaming FastConformer-Transducer ASR+EOU model, large size (~115M) with sub-word encoding.
+# Here are the recommended configs for different variants of FastConformer-Transducer-BPE, other parameters are the same as in this config file.
+#
+#  +--------------+---------+---------+----------+----------------+--------------+--------------------------+-----------------+------------+
+#  | Model        | d_model | n_heads | n_layers |conv_kernel_size| weight_decay | pred_hidden/joint_hidden | pred_rnn_layers |  xscaling  |
+#  +==============+=========+========+===========+================+==============+==========================+=================+============+
+#  | Small  (14M) |   176   |    4   |    16     |        9       |     0.0      |           320            |        1        |    True    |
+#  +--------------+---------+--------+-----------+----------------+--------------+--------------------------+-----------------+------------+
+#  | Medium (32M) |   256   |    4   |    16     |        9       |     1e-3     |           640            |        1        |    True    |
+#  +--------------+---------+--------+-----------+----------------+--------------+--------------------------+-----------------+------------+
+#  | Large (120M) |   512   |    8   |    17     |        9       |     1e-3     |           640            |        1        |    True    |
+#  +--------------+---------+--------+-----------+----------------+--------------+--------------------------+-----------------+------------+
+#  | XLarge (616M)|   1024  |    8   |    24     |        9       |     1e-3     |           640            |        2        |    True    |
+#  +--------------+---------+--------+-----------+----------------+--------------+--------------------------+-----------------+------------+
+#  | XXLarge(1.2B)|   1024  |    8   |    42     |        5       |     1e-3     |           640            |        2        |    False   |
+#  +--------------------------------------------------------------+--------------+--------------------------+-----------------+------------+ 
 
 # You may find more detail:
 # FastConformer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#fast-conformer
 # Cache-aware Conformer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#cache-aware-streaming-conformer
 # FastConformer-Transducer's architecture config, along with the optimal batch size and precision: NeMo/examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml
 
-name: "FastConformer-Transducer-BPE-Streaming-EOU"
+name: "FastConformer-Transducer-Large-BPE-Streaming-EOU"
 
 model:
   token_init_method: "constant"  # choices=['min', 'max', 'mean', 'constant']
@@ -23,7 +38,8 @@ model:
     joint_hidden: 640
 
   train_ds:
-    manifest_filepath: ???
+    input_cfg: null
+    manifest_filepath: null
     tarred_audio_filepaths: null
     sample_rate: ${model.sample_rate}
     max_duration: 30 # you may need to update it for your dataset
@@ -40,8 +56,8 @@ model:
     num_cuts_for_bins_estimate: 10000
     bucket_buffer_size: 10000
     shuffle_buffer_size: 10000
-
     ignore_eob_label: true  # ignore backchannel and treat them the same as EOU
+
     random_padding:
       prob: 0.99
       min_post_pad_duration: 3.0 
@@ -63,13 +79,14 @@ model:
         max_gain_dbfs: 10.0
       noise:
         prob: 0.9
-        manifest_path: ???
+        manifest_path: null
         min_snr_db: 0
         max_snr_db: 20
         max_gain_db: 300.0
 
   validation_ds:
-    manifest_filepath: ???
+    input_cfg: null
+    manifest_filepath: null
     tarred_audio_filepaths: null
     sample_rate: ${model.sample_rate}
     max_duration: 30 # you may need to update it for your dataset
@@ -88,6 +105,7 @@ model:
     ignore_eob_label: true  # ignore backchannel and treat them the same as EOU
 
   test_ds:
+    input_cfg: null
     manifest_filepath: null
     tarred_audio_filepaths: null
     sample_rate: ${model.sample_rate}
@@ -258,14 +276,14 @@ model:
 
   optim:
     name: adamw
-    lr: 5.0 #  1e-4
+    lr: 5.0 #
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
 
     # scheduler setup
     sched:
-      name: NoamAnnealing  # NoamAnnealing CosineAnnealing
+      name: NoamAnnealing
       # scheduler config override
       d_model: ${model.encoder.d_model}
       warmup_steps: 10000
@@ -305,12 +323,12 @@ exp_manager:
     # in case of multiple validation sets, first one is used
     monitor: "val_wer"
     mode: "min"
-    save_top_k: 5
+    save_top_k: 3
     filename: '${exp_manager.name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}'
     always_save_nemo: True # saves the checkpoints as nemo files instead of PTL checkpoints
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
-  resume_if_exists: false
-  resume_ignore_no_checkpoint: false
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
 
   create_wandb_logger: false
   wandb_logger_kwargs:

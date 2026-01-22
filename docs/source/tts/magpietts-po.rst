@@ -56,10 +56,8 @@ This step can be parallelized across multiple GPUs or nodes to speed up generati
         +test_ds_meta.textcontextpairs.manifest_path=/path/to/text_context_pairs.json \
         +test_ds_meta.textcontextpairs.audio_dir="/" \
         +test_ds_meta.textcontextpairs.feature_dir="/" \
-        model.model_type="decoder_context_tts" \
         model.context_duration_min=5.0 \
         model.context_duration_max=5.0 \
-        model.use_text_conditioning_encoder=true \
         model.codecmodel_path=/path/to/codec_model.nemo \
         model.alignment_loss_scale=0.002 \
         model.prior_scaling_factor=null \
@@ -111,10 +109,8 @@ The final step is fine-tuning the base model on the preference pairs using the D
         +val_ds_meta.dpoprefval.feature_dir="/" \
         +model.dpo_beta=0.01 \
         +model.dpo_sft_loss_weight=0.0 \
-        model.model_type="decoder_context_tts" \
         model.context_duration_min=5.0 \
         model.context_duration_max=5.0 \
-        model.use_text_conditioning_encoder=true \
         model.codecmodel_path=/path/to/codec_model.nemo \
         model.alignment_loss_scale=0.001 \
         model.prior_scaling_factor=null \
@@ -242,12 +238,10 @@ The following command demonstrates a complete GRPO training setup for multilingu
         +model.loss_type="grpo" \
         +model.scale_rewards=true \
         +model.max_decoder_steps=430 \
-        model.model_type="decoder_context_tts" \
         model.context_duration_min=5.0 \
         model.context_duration_max=5.0 \
         model.decoder.p_dropout=0.0 \
         model.encoder.p_dropout=0.0 \
-        model.use_text_conditioning_encoder=true \
         model.codecmodel_path=/path/to/codec_model.nemo \
         model.alignment_loss_scale=0.0 \
         model.prior_scaling_factor=null \

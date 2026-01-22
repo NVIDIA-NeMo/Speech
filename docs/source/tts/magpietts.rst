@@ -34,7 +34,7 @@ The Local Transformer handles the prediction of tokens across multiple codebooks
 Model Configurations
 --------------------
 
-Magpie-TTS supports three model configurations to suit different use cases:
+Magpie-TTS supports two model configurations to suit different use cases:
 
 - **decoder_context_tts**: The standard configuration where text goes to the encoder and both context audio and target audio are processed by the decoder
 - **decoder_ce**: Adds a learned context embedding network between the context encoder and decoder for more flexible voice conditioning

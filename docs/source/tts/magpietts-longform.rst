@@ -212,16 +212,9 @@ Configuration Dataclasses
 
 Immutable tuning parameters (set in model):
 
-.. code-block:: python
-
-    @dataclass
-    class LongformConfig:
-        history_len_heuristic: int = 20      # Max history tokens retained
-        prior_weights_init: Tuple = (0.5, 1.0, 0.8, 0.2, 0.2)  # Initial attention weights
-        prior_weights: Tuple = (0.2, 1.0, 0.6, 0.4, 0.2, 0.2)  # Generation weights
-        finished_limit_with_eot: int = 5     # Steps after text end before EOS
-        short_sentence_threshold: int = 35   # Skip prior for short sentences
-        attention_sink_threshold: int = 10   # Attention sink detection
+.. literalinclude:: ../../../nemo/collections/tts/models/magpietts.py
+   :language: python
+   :pyobject: LongformConfig
 
 
 ``LongformChunkState``
@@ -229,18 +222,9 @@ Immutable tuning parameters (set in model):
 
 Mutable state passed between chunk iterations:
 
-.. code-block:: python
-
-    @dataclass
-    class LongformChunkState:
-        batch_size: int
-        history_text: Optional[torch.Tensor] = None       # (B, T)
-        history_text_lens: Optional[torch.Tensor] = None  # (B,)
-        history_context_tensor: Optional[torch.Tensor] = None  # (B, T, E)
-        end_indices: Dict[int, int] = field(default_factory=dict)
-        overall_idx: int = 0
-        left_offset: List[int] = field(default_factory=list)
-        last_attended_timesteps: List[List[int]] = field(default_factory=list)
+.. literalinclude:: ../../../nemo/collections/tts/models/magpietts.py
+   :language: python
+   :pyobject: LongformChunkState
 
 
 Best Practices

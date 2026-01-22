@@ -13,17 +13,19 @@
 # limitations under the License.
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Dict
 
 import torch
 from omegaconf import open_dict
 from peft import PeftModel
+from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.speechlm2.modules import AudioPerceptionModule
-
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
+from nemo.utils import logging
 
 
 def load_pretrained_nemo(cls, model_path_or_name: str):
@@ -99,3 +101,73 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
         model.perception.load_state_dict(asr.state_dict(), strict=False)
     else:
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
+
+
+def set_model_dict_for_partial_init(
+    pretrained_dict: Dict[str, torch.Tensor], model_dict: Dict[str, torch.Tensor]
+) -> Dict[str, torch.Tensor]:
+    """
+    Partially initialize a model's state dictionary with a pretrained state dictionary.
+    This function safely copies compatible layers from a pretrained model into a new model,
+    ignoring layers with mismatched shapes or missing keys.
+
+    Steps:
+        1. Remove layers from the pretrained dictionary if their shape does not match the target model.
+        2. Keep only keys that exist in the target model.
+        3. Update the model dictionary with the filtered pretrained weights.
+
+    Args:
+        pretrained_dict (Dict[str, torch.Tensor]):
+            The state dictionary of the pretrained model.
+        model_dict (Dict[str, torch.Tensor]):
+            The state dictionary of the target model to be partially initialized.
+
+    Returns:
+        Dict[str, torch.Tensor]:
+            The updated model state dictionary with compatible layers loaded from the pretrained dictionary.
+
+    Example:
+        >>> model_dict = model.state_dict()
+        >>> pretrained_dict = load_checkpoint("pretrained_model.ckpt")
+        >>> model_dict = set_model_dict_for_partial_init(pretrained_dict, model_dict)
+        >>> model.load_state_dict(model_dict)
+    """
+    # 1. Remove layers where pretrained shape differs from model shape
+    for k, v in list(pretrained_dict.items()):
+        if k in model_dict and hasattr(model_dict[k], "numel") and v.numel() != model_dict[k].numel():
+            del pretrained_dict[k]
+            logging.info(f" | > Layer with shape mismatch in the model definition: {k}")
+
+    # 2. Keep only keys that exist in the target model
+    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+
+    # 3. Update model dictionary with filtered pretrained layers
+    model_dict.update(pretrained_dict)
+    logging.info(f" | > {len(pretrained_dict)} / {len(model_dict)} layers are restored.")
+
+    return model_dict
+
+
+def load_checkpoint(checkpoint_path):
+    """
+    Load a model checkpoint from disk.
+
+    Supports loading checkpoints stored in either PyTorch (`.ckpt`, `.pt`) or
+    SafeTensors (`.safetensors`) formats. All parameters are loaded onto CPU
+    regardless of the original device.
+
+    Args:
+        checkpoint_path (str):
+            Path to the checkpoint file. If the filename contains `.safetensors`,
+            it is loaded using the SafeTensors backend; otherwise, it is assumed
+            to be a PyTorch checkpoint containing a `state_dict` field.
+
+    Returns:
+        dict:
+            A state dictionary mapping parameter names to tensors.
+    """
+    if ".safetensors" in checkpoint_path:
+        checkpoint_state = load_file(checkpoint_path, device="cpu")
+    else:
+        checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location="cpu")["state_dict"]
+    return checkpoint_state

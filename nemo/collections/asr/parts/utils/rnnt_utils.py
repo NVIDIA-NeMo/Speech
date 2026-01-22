@@ -31,6 +31,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
+
 
 @dataclass
 class Hypothesis:
@@ -108,6 +110,7 @@ class Hypothesis:
     last_token: Optional[torch.Tensor] = None
     token_duration: Optional[torch.Tensor] = None
     last_frame: Optional[int] = None
+    biasing_cfg: BiasingRequestItemConfig | None = None
 
     @property
     def non_blank_frame_confidence(self) -> List[float]:
@@ -171,11 +174,21 @@ class Hypothesis:
             self.frame_confidence.extend(other.frame_confidence)
         # Invalidated. Need to rerun decode_hypothesis here.
         self.text = None
+        self.biasing_cfg = other.biasing_cfg or self.biasing_cfg
         return self
 
     def clean_decoding_state_(self):
         """Clean the decoding state to save memory."""
         self.dec_state = None
+
+    def has_biasing_request(self) -> bool:
+        """Return True if contains non-empty biasing request"""
+        return self.biasing_cfg is not None and (not self.biasing_cfg.is_empty())
+
+    @classmethod
+    def empty_with_biasing_cfg(cls, biasing_cfg: BiasingRequestItemConfig):
+        """Constructor of empty hypothesis with biasing request"""
+        return cls(y_sequence=[], score=0.0, biasing_cfg=biasing_cfg)
 
 
 @dataclass

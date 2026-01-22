@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, Optional
+
 import librosa
 import numpy as np
 import torch
@@ -28,6 +29,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextMiniBatch
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.collections.asr.parts.preprocessing.segment import get_samples
@@ -2333,39 +2335,60 @@ def load_audio(file_path: str | Path, sample_rate: int = 16000) -> tuple[torch.T
     return torch.tensor(audio, dtype=torch.float32), sr
 
 
+class AudioItem(NamedTuple):
+    audio_signal: torch.Tensor
+    biasing_request: BiasingRequestItemConfig | None
+
+
 class AudioBatch(NamedTuple):
     audio_signals: torch.Tensor
     audio_signal_lengths: torch.Tensor
+    biasing_requests: list[BiasingRequestItemConfig | None] | None
 
     @staticmethod
     def collate_fn(
-        audio_batch: list[torch.Tensor],
+        audio_batch: list[AudioItem],
     ) -> "AudioBatch":
         """
         Collate audio signals to batch
         """
         audio_signals = pad_sequence(
-            [audio_tensor for audio_tensor in audio_batch], batch_first=True, padding_value=0.0
+            [audio_item.audio_signal for audio_item in audio_batch], batch_first=True, padding_value=0.0
         )
-        audio_signal_lengths = torch.tensor([audio_tensor.shape[0] for audio_tensor in audio_batch]).long()
+        audio_signal_lengths = torch.tensor([audio_item.audio_signal.shape[0] for audio_item in audio_batch]).long()
+        biasing_requests = [audio_item.biasing_request for audio_item in audio_batch]
 
         return AudioBatch(
             audio_signals=audio_signals,
             audio_signal_lengths=audio_signal_lengths,
+            biasing_requests=None if all([request is None for request in biasing_requests]) else biasing_requests,
         )
 
 
 class SimpleAudioDataset(Dataset):
     """Dataset constructed from audio filenames. Each item - audio"""
 
-    def __init__(self, audio_filenames: list[str | Path], sample_rate: int = 16000):
+    def __init__(
+        self,
+        audio_filenames: list[str | Path],
+        sample_rate: int = 16000,
+        biasing_requests: list[BiasingRequestItemConfig | None] | None = None,
+    ):
         super().__init__()
         self.audio_filenames = audio_filenames
         self.sample_rate = sample_rate
+        self.biasing_requests = (
+            biasing_requests if biasing_requests is not None else [None for _ in range(len(self.audio_filenames))]
+        )
+        if len(self.biasing_requests) != len(self.audio_filenames):
+            raise ValueError(
+                f"Length of biasing requests {len(self.biasing_requests)} "
+                "expected to be equal to the length of audio filenames {len(self.audio_filenames)}"
+            )
 
-    def __getitem__(self, item: int) -> torch.Tensor:
-        audio, _ = load_audio(self.audio_filenames[item])
-        return audio
+    def __getitem__(self, item: int) -> AudioItem:
+        audio, _ = load_audio(self.audio_filenames[item], sample_rate=self.sample_rate)
+        return AudioItem(audio_signal=audio, biasing_request=self.biasing_requests[item])
 
     def __len__(self):
         return len(self.audio_filenames)

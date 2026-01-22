@@ -2,7 +2,7 @@
 # ASR Configuration
 # ================================
 asr:
-  model_name: stt_en_fastconformer_hybrid_large_streaming_multi         # Pre-trained CTC/hybrid model from NGC/HuggingFace or local .nemo file path
+  model_name: nvidia/nemotron-speech-streaming-en-0.6b         # Pre-trained CTC/hybrid model from NGC/HuggingFace or local .nemo file path
   device: cuda                                                          # Device for inference: 'cuda' or 'cpu'
   device_id: 0                                                          # GPU device ID
   compute_dtype: bfloat16                                               # Compute precision: 'bfloat16' for Ampere+, 'float16' for older GPUs, or 'float32'               
@@ -13,6 +13,7 @@ asr:
     fused_batch_size: -1
     greedy:
       use_cuda_graph_decoder: false  # Disabled due to issues with decoding
+      enable_per_stream_biasing: false  # Per-stream biasing in decoder
       max_symbols: 10
       # n-gram LM
       ngram_lm_model: null  # The path to built '.nemo' NGPU-LM model
@@ -22,7 +23,11 @@ asr:
         model_path: null  # The path to built '.nemo' boosting tree model
         key_phrases_file: null  # The path to the context-biasing list file (one phrase per line)
         key_phrases_list: null  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
-        source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer)
+        key_phrase_items_list: null  # The list of context-biasing phrases with custom fields
+        # in CLI: [{phrase:"word1",lang:en},{phrase:"frase dos",lang:es}]
+        # in code: [PhraseItem(phrase="word1, lang="en"), PhraseItem(phrase2="frase dos", lang="es")]
+        source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer),
+        # used with `key_phrases_file` and `key_phrases_list`
       boosting_tree_alpha: 0.0  # Weight of the boosting tree
 
 # ==========================================
@@ -85,14 +90,14 @@ endpointing:
 # ========================
 streaming:
   sample_rate: 16000                          # Audio sample rate in Hz
-  batch_size: 256                             # Number of audio frames per batch
+  batch_size: 64                             # Number of audio frames per batch
   word_boundary_tolerance: 4                  # Tolerance for word boundaries
   att_context_size: [70,13]                   # Attention context size: [70,13],[70,6],[70,1],[70,0]
   use_cache: true                             # Whether to use cache for streaming
   use_feat_cache: true                        # Whether to cache mel-spec features, set false to re-calculate all mel-spec features in audio buffer
   chunk_size_in_secs: null                    # Amount of audio to load for each streaming step, e.g., 0.08s for FastConformer. Set to `null` for using default size equal to 1+lookahead frames.
-  request_type: frame                         # Type of request: frame, only frame is supported for cache-aware streaming
-  num_slots: 1024                             # Number of slots in the context manager: must be >= batch_size
+  request_type: frame                         # Type of request: frame or feature_buffer
+  num_slots: 256                             # Number of slots in the context manager: must be >= batch_size
 
 
 # ========================

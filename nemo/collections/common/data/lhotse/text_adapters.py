@@ -334,6 +334,7 @@ class AudioTurn:
             "type": "audio",
             "from": self.role.title(),
             "duration": self.cut.duration,
+            "offset": self.cut.start,
             "value": self.cut.recording.sources[0].source,
             "text": self.text,
         }
@@ -545,6 +546,13 @@ class NeMoMultimodalConversationJsonlAdapter:
         seed = resolve_seed(self.shard_seed) + self.epoch
         return random.Random(seed)
 
+    def _make_cut_id(self, cut, turn) -> str:
+        offset = turn.get('offset') if turn.get('offset') else cut.start
+        duration = turn.get('duration') if turn.get('duration') else cut.duration
+        if offset > 0.0:
+            return f"{Path(turn['value']).stem}_{offset:.3f}_{duration:.3f}"
+        return Path(turn['value']).stem
+
     def _iter_tar(self):
         paths = list(zip(self.manifest_filepath, self.tarred_audio_filepaths))
         rng = self._get_rng()
@@ -567,7 +575,8 @@ class NeMoMultimodalConversationJsonlAdapter:
                 for turn in audio_turns:
                     recording, audio_path = next(tar)
                     audio_path = str(audio_path)
-                    cut = recording.to_cut()
+                    cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                    cut = cut.with_id(self._make_cut_id(cut, turn))
                     assert audio_path == turn['value'], (
                         f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got "
                         f"the following from tar {audio_path=}.\nBad inputs in: {jsonl_path=} {tar_path=}"
@@ -629,7 +638,11 @@ class NeMoMultimodalConversationJsonlAdapter:
                         )
                         if turn["type"] == "text"
                         else AudioTurn(
-                            cut=(cut := Recording.from_file(get_full_path(turn["value"], path)).to_cut()),
+                            cut=(
+                                cut := Recording.from_file(get_full_path(turn["value"], path))
+                                .to_cut()
+                                .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                            ).with_id(self._make_cut_id(cut, turn)),
                             text=cut.supervisions[0].text if cut.supervisions else None,
                             role=turn["from"].lower(),
                             audio_locator_tag=self.audio_locator_tag,
@@ -708,6 +721,13 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter:
         seed = resolve_seed(self.shard_seed) + self.epoch
         return random.Random(seed)
 
+    def _make_cut_id(self, cut, turn) -> str:
+        offset = turn.get('offset') if turn.get('offset') else cut.start
+        duration = turn.get('duration') if turn.get('duration') else cut.duration
+        if offset > 0.0:
+            return f"{Path(turn['value']).stem}_{offset:.3f}_{duration:.3f}"
+        return Path(turn['value']).stem
+
     def _iter_tar(self):
         paths = list(zip(self.manifest_filepath, self.tarred_audio_filepaths))
         rng = self._get_rng()
@@ -734,12 +754,14 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter:
                 for turn in audio_turns:
                     recording, audio_path = next(tar)
                     audio_path = str(audio_path)
-                    cut = recording.to_cut()
+                    cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                    cut = cut.with_id(self._make_cut_id(cut, turn))
                     assert (
                         audio_path == turn['value']
                     ), f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got the following from tar {audio_path=}"
                     # Update the duration in the turn data with actual audio duration
                     turn["duration"] = cut.duration
+                    turn["offset"] = cut.start
                     cuts.append(cut)
                 cuts = deque(cuts)
 
@@ -813,7 +835,8 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter:
                             "type": "audio",
                             "from": role.title(),
                             "value": audio_path,
-                            "duration": 0.0,  # Will be set when loading actual audio
+                            "duration": turn.get("duration", None),
+                            "offset": turn.get("offset", 0.0),
                         }
                     )
 
@@ -841,8 +864,12 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter:
                     cut = cuts.popleft()
                 else:
                     # Load audio from file path
-                    cut = Recording.from_file(get_full_path(turn["value"], manifest_path)).to_cut()
-
+                    cut = (
+                        Recording.from_file(get_full_path(turn["value"], manifest_path))
+                        .to_cut()
+                        .truncate(offset=turn["offset"], duration=turn["duration"])
+                    )
+                    cut = cut.with_id(self._make_cut_id(cut, turn))
                 turns.append(
                     AudioTurn(
                         cut=cut,
@@ -910,15 +937,31 @@ class NeMoMultimodalConversationTarWriter:
     def write(self, example: NeMoMultimodalConversation):
         self._maybe_increment_shard()
         serialized = example.to_dict()
+
+        def change_audio_path(id, offset: float, duration: float):
+            offset = f"{offset:.3f}" if offset > 0 else None
+            new_path = f"{id}_{offset}_{duration:.3f}" if offset else id
+            return new_path
+
         for turn in serialized["conversations"]:
             if turn["type"] == "audio":
-                turn["value"] = Path(turn["value"]).with_suffix(".flac").name
+                turn["value"] = Path(
+                    change_audio_path(Path(turn['value']).stem, turn["offset"], turn["duration"]) + ".flac"
+                ).name
+                turn.pop(
+                    "offset"
+                )  # cut.load_audio() will load the segment based on the offset, so the new turn will start at offset=0
         self.manifest_writer.write(serialized)
         for cut in example.list_cuts():
             assert (
                 cut.has_recording
             ), f"Cannot serialize multimodal conversation with cuts that have no recordings. We got: {cut}"
-            self.tar_writer.write(cut.recording.id, cut.load_audio(), cut.sampling_rate, cut.recording)
+            self.tar_writer.write(
+                change_audio_path(cut.recording.id, cut.start, cut.duration),
+                cut.load_audio(),
+                cut.sampling_rate,
+                cut.recording,
+            )
         self.item_cntr += 1
 
     def close(self):

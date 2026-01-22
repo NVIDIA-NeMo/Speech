@@ -25,6 +25,7 @@ from einops import rearrange
 from transformers import AutoModel
 
 from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
+from nemo.collections.audio.parts.utils.transforms import MelSpectrogram, Resample
 from nemo.collections.common.parts.utils import ClampActivation, HalfSnake, Snake, mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
@@ -38,13 +39,6 @@ from nemo.core.neural_types.elements import (
 )
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
-
-try:
-    import torchaudio
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
 
 try:
     import fsspec
@@ -121,11 +115,7 @@ class SLMDiscriminator(NeuralModule):
     ):
         super().__init__()
 
-        if HAVE_TORCHAUDIO:
-            self.resample = torchaudio.transforms.Resample(input_sr, slm_sr)
-        else:
-            self.resample = None
-
+        self.resample = Resample(orig_freq=input_sr, new_freq=slm_sr)
         self.slm_model = SSLModel(slm_model_name)
 
         # Freeze slm model
@@ -353,11 +343,7 @@ class ResNetSpeakerEncoder(NeuralModule):
         self.layer4 = self.create_layer(SEBasicBlock, num_filters[3], layers[3], stride=(2, 2))
 
         self.instancenorm = nn.InstanceNorm1d(input_dim)
-
-        if self.use_torch_spec and HAVE_TORCHAUDIO:
-            self.torch_spec = self.get_torch_mel_spectrogram_class(audio_config)
-        else:
-            self.torch_spec = None
+        self.torch_spec = self.get_torch_mel_spectrogram_class(audio_config) if self.use_torch_spec else None
 
         outmap_size = int(self.input_dim / 8)
 
@@ -460,7 +446,7 @@ class ResNetSpeakerEncoder(NeuralModule):
     def get_torch_mel_spectrogram_class(self, audio_config):
         return torch.nn.Sequential(
             PreEmphasis(audio_config["preemphasis"]),
-            torchaudio.transforms.MelSpectrogram(
+            MelSpectrogram(
                 sample_rate=audio_config["sample_rate"],
                 n_fft=audio_config["fft_size"],
                 win_length=audio_config["win_length"],

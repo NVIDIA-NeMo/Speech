@@ -291,20 +291,28 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
         if timestamps is not None:
+            need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
                     "Timestamps requested, setting decoding timestamps to True. Capture them in Hypothesis object, \
                         with output[0][idx].timestep['word'/'segment'/'char']"
                 )
                 return_hypotheses = True
-                with open_dict(self.cfg.decoding):
-                    self.cfg.decoding.compute_timestamps = True
+                if self.cfg.decoding.get("compute_timestamps", None) is not True:
+                    # compute_timestamps None, False or non-existent -> change to True
+                    need_change_decoding = True
+                    with open_dict(self.cfg.decoding):
+                        self.cfg.decoding.compute_timestamps = True
             else:
                 return_hypotheses = False
-                with open_dict(self.cfg.decoding):
-                    self.cfg.decoding.compute_timestamps = False
+                if self.cfg.decoding.get("compute_timestamps", None) is not False:
+                    # compute_timestamps None, True or non-existent -> change to False
+                    need_change_decoding = True
+                    with open_dict(self.cfg.decoding):
+                        self.cfg.decoding.compute_timestamps = False
 
-            self.change_decoding_strategy(self.cfg.decoding, verbose=False)
+            if need_change_decoding:
+                self.change_decoding_strategy(self.cfg.decoding, verbose=False)
 
         return super().transcribe(
             audio=audio,

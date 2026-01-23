@@ -89,6 +89,9 @@ class Hypothesis:
     last_token (Optional): A token or batch of tokens which was predicted in the last step.
 
     last_frame (Optional): Index of the last decoding step hypothesis was updated including blank token prediction.
+
+    xatt_scores (Optional): List of cross-attention scores for each decoder layer. Each element of the list is a
+        Tensor of shape num heads x decoder input len x encoder output len (HxUxT). This is useful only for AED models.
     """
 
     score: float
@@ -111,6 +114,7 @@ class Hypothesis:
     token_duration: Optional[torch.Tensor] = None
     last_frame: Optional[int] = None
     biasing_cfg: BiasingRequestItemConfig | None = None
+    xatt_scores: Optional[List[torch.Tensor]] = None
 
     @property
     def non_blank_frame_confidence(self) -> List[float]:

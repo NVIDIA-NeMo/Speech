@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import torch
 from omegaconf import MISSING, open_dict
 
-from nemo.collections.asr.inference.utils.manifest_io import get_audio_filepaths
+from nemo.collections.asr.inference.utils.manifest_io import prepare_audio_data
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import EncDecRNNTBPEModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
@@ -49,7 +49,7 @@ def main(cfg: TranscriptionBoostGroundTruthConfig):
     not always 0 even with high boosting weight if the transcription is inconsistent with the audio)
     """
     # Reading audio filepaths
-    audio_filepaths, manifest = get_audio_filepaths(cfg.dataset_manifest, sort_by_duration=True)
+    audio_filepaths, manifest, _, _ = prepare_audio_data(cfg.dataset_manifest, sort_by_duration=True)
     logging.info(f"Found {len(audio_filepaths)} audio files")
     assert manifest is not None, "This script works only with manifest"
     device = torch.device(cfg.device) if cfg.device is not None else get_auto_inference_device()

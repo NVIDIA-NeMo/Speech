@@ -49,7 +49,6 @@ def prepare_audio_data(
     Args:
         audio_file: (str) Path to the audio file, folder or manifest file
         sort_by_duration: (bool) If True, sort the audio files by duration from shortest to longest
-        order: (dict[str, int]) Dictionary mapping audio filepaths to their original order
     Returns:
         (list[str], list[dict] | None, list[ASRRequestOptions] | None, dict[str, int])
         List of audio filepaths, manifest, options and filepath order
@@ -140,7 +139,7 @@ def dump_output(
 
     # Define an order of the audio filepaths
     if filepath_order is not None:
-        # Sort based on the orginal filepath order
+        # Sort based on the original filepath order
         ordered_output = sorted(output.values(), key=lambda d: filepath_order[d["audio_filepath"]])
     else:
         # Sort based on the stream id

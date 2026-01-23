@@ -69,6 +69,8 @@ def main(cfg):
 
     # Set the logging level
     logging.setLevel(cfg.log_level)
+    if cfg.run_steps < 1:
+        raise ValueError("run_steps must be at least 1")
 
     # Reading audio filepaths
     audio_filepaths, manifest, options, filepath_order = prepare_audio_data(cfg.audio_file, sort_by_duration=True)
@@ -86,6 +88,8 @@ def main(cfg):
     for run_step in range(cfg.warmup_steps + cfg.run_steps):
         if run_step < cfg.warmup_steps:
             logging.info(f"Running warmup step {run_step}")
+        else:
+            logging.info(f"Running inference step {run_step}")
         progress_bar = TQDMProgressBar()
         timer.reset()
         timer.start(device=pipeline.device)
@@ -97,7 +101,7 @@ def main(cfg):
     # Calculate RTFx
     if cfg.warmup_steps == 0:
         logging.warning(
-            "RTFx measurement enabled, but warmup_steps=0. " "At least one warmup step is recommended to measure RTFx."
+            "RTFx measurement enabled, but warmup_steps=0. At least one warmup step is recommended to measure RTFx."
         )
     data_dur, durations = calculate_duration(audio_filepaths)
     exec_dur = sum(measurements) / len(measurements)

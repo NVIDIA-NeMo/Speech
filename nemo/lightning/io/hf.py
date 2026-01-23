@@ -255,7 +255,6 @@ class HFCheckpointIO(CheckpointIO, IOMixin):
                 path / 'trainer.pt',
                 map_location='cpu',
                 mmap=True,
-                weights_only=False,
             )
 
         if self.adapter_only:

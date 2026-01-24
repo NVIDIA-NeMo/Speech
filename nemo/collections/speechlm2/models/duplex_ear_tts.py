@@ -159,7 +159,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             embed_tokens: nn.Embedding = self.language_model.get_input_embeddings()
         else:
             embed_tokens_state_dict = torch.load(
-                cfg.pretrained_lm_embedding_path, map_location="cpu", weights_only=True
+                cfg.pretrained_lm_embedding_path, map_location="cpu"
             )
 
             # Create token embedding layer

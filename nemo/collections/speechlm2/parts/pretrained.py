@@ -169,5 +169,5 @@ def load_checkpoint(checkpoint_path):
     if ".safetensors" in checkpoint_path:
         checkpoint_state = load_file(checkpoint_path, device="cpu")
     else:
-        checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location="cpu")["state_dict"]
+        checkpoint_state = torch.load(checkpoint_path, map_location="cpu")["state_dict"]
     return checkpoint_state

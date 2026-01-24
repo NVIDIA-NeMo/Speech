@@ -621,7 +621,7 @@ class TestExpManager:
 
         checkpoint_dir = Path(str(tmp_path / "checkpoints"))
         model_path = checkpoint_dir / "val_loss=0.0300-epoch=1-step=64-last.ckpt"
-        last_saved_checkpoint = torch.load(model_path, weights_only=False)
+        last_saved_checkpoint = torch.load(model_path)
         assert max_steps == last_saved_checkpoint['global_step']
 
         # restart training, ensure global step starts correctly

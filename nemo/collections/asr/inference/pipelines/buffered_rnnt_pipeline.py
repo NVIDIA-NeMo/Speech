@@ -583,7 +583,11 @@ class BufferedRNNTPipeline(BasePipeline):
             # decode right context
             _, max_time, feat_dim = encs_dim_last.shape
             device = encs.device
+            # we are indexing `encs_dim_last` with `shift_indices` to get a tensor where right context is at the start
+            # everything after right context is padded with `0` index (first encoder vector)
+            # padding will be ignored by decoder_computer since we pass the lengths
             shift_indices = torch.arange(max_time, device=device, dtype=torch.long)[None, :] + enc_lens_chunk[:, None]
+            # pad with zeros everything beyond needed context
             shift_indices = torch.where(shift_indices < max_time, shift_indices, torch.zeros_like(shift_indices))
             with torch.inference_mode(), torch.no_grad():
                 best_batched_hyps_rc, _, _ = self.decoding_computer(

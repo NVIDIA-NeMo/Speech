@@ -18,15 +18,8 @@ from typing import Optional
 
 import torch
 
-try:
-    from torchaudio.functional import resample
-    from torchaudio.transforms import MelSpectrogram
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
-
-from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.models.asr_model import ASRModel
+from nemo.collections.audio.parts.utils.transforms import MelSpectrogram, resample
 from nemo.core import Loss, Typing, typecheck
 from nemo.core.neural_types import LengthsType, LossType, NeuralType, VoidType
 from nemo.utils import logging
@@ -94,12 +87,6 @@ class CombinedLoss(Loss, Typing):
         conformer_model=STT_EN_CONFORMER_CTC_SMALL_v1_6_0,
         epsilon=float(5.9604644775390625e-8),
     ):
-        if not HAVE_TORCHAUDIO:
-            logging.error('Could not import torchaudio. Some features might not work.')
-
-            raise ModuleNotFoundError(
-                f"torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
-            )
 
         super().__init__()
         self.sample_rate = sample_rate

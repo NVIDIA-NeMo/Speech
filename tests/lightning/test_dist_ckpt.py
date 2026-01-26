@@ -147,18 +147,19 @@ class TestDistCkptIO:
             )
             async_test_trainer.fit(model, data)
 
+        sync_last_ckpt = f"{sync_ckpt_dir}/checkpoints/{_get_last_checkpoint_dir(model)}"
+        async_last_ckpt = f"{async_ckpt_dir}/checkpoints/{_get_last_checkpoint_dir(model)}"
+        sharded_state_dict_metadata = sync_checkpoint_io.load_content_metadata(sync_last_ckpt)
+        assert sharded_state_dict_metadata == async_checkpoint_io.checkpoint_io.load_content_metadata(async_last_ckpt)
+
         ## NOTE: model does not have `sharded_state_dict` attribute because
         ## this is after MegatronStrategy teardown
         ## so model class' __getattr__ gets replaced with original __getattr__
-        checkpoint = {'sharded_state_dict': model.module.sharded_state_dict()}
+        checkpoint = {'sharded_state_dict': model.module.sharded_state_dict(metadata=sharded_state_dict_metadata)}
 
-        sync_state_dict = sync_checkpoint_io.load_checkpoint(
-            Path(f"{sync_ckpt_dir}/checkpoints/{_get_last_checkpoint_dir(model)}"), sharded_state_dict=checkpoint
-        )
+        sync_state_dict = sync_checkpoint_io.load_checkpoint(Path(sync_last_ckpt), sharded_state_dict=checkpoint)
 
-        async_state_dict = async_checkpoint_io.load_checkpoint(
-            Path(f"{async_ckpt_dir}/checkpoints/{_get_last_checkpoint_dir(model)}"), sharded_state_dict=checkpoint
-        )
+        async_state_dict = async_checkpoint_io.load_checkpoint(Path(async_last_ckpt), sharded_state_dict=checkpoint)
 
         ## one of the keys is a _io.BytesIO object
         for k in sync_state_dict['sharded_state_dict'].keys():

@@ -219,3 +219,30 @@ def test_merge_all_hypotheses():
     assert len(merged_list) == 2
     texts = {m.text for m in merged_list}
     assert texts == {"a b", "c d"}
+
+
+@pytest.mark.unit
+def test_merge_all_hypotheses_with_cut_segmented_suffix():
+    def H(text, id_):
+        h = Hypothesis(score=0.0, y_sequence=torch.tensor([1]), timestamp={"word": [], "segment": []})
+        h.text = text
+        h.id = id_
+        return h
+
+    hyps = [
+        H("root", "11-0"),
+        H("cont1", "11-1_cut_segmented"),
+        H("cont2", "11-2_cut_segmented"),
+        H("other", "12-0"),
+    ]
+
+    merged_list = merge_all_hypotheses(
+        hypotheses_list=hyps,
+        timestamps=False,
+        subsampling_factor=8,
+        chunk_duration_seconds=3600,
+    )
+
+    assert len(merged_list) == 2
+    texts = sorted(m.text for m in merged_list)
+    assert texts == ["other", "root cont1 cont2"]

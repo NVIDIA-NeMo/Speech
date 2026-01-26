@@ -68,6 +68,10 @@ class MockDataModule(pl.LightningDataModule):
         vocab_file: Optional[str] = None,
         merges_file: Optional[str] = None,
     ):
+        from nemo.lightning.callback_group import CallbackGroup
+
+        CallbackGroup.get_instance().on_dataloader_init_start()
+
         super().__init__()
         self.seq_length = seq_length
         self.micro_batch_size = micro_batch_size
@@ -81,7 +85,7 @@ class MockDataModule(pl.LightningDataModule):
         self.create_attention_mask = create_attention_mask or not HAVE_TE
 
         if tokenizer is None:
-            from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+            from nemo.collections.common.tokenizers.tokenizer_utils import get_nmt_tokenizer
 
             self.tokenizer = get_nmt_tokenizer(
                 "megatron", "GPT2BPETokenizer", vocab_file=vocab_file, merges_file=merges_file
@@ -95,6 +99,8 @@ class MockDataModule(pl.LightningDataModule):
             global_batch_size=self.global_batch_size,
             rampup_batch_size=rampup_batch_size,
         )
+
+        CallbackGroup.get_instance().on_dataloader_init_end()
 
     def setup(self, stage: str = "") -> None:
         """

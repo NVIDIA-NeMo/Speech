@@ -27,23 +27,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple, Type, Union
 
 import wrapt
+from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import errors as omegaconf_errors
+from packaging import version
 
 from nemo.utils import AppState, logging
 from nemo.utils.data_utils import (  # imported for compatibility: model_utils.resolve_cache_dir()  # noqa: F401  # pylint: disable=unused-import,line-too-long
     is_datastore_path,
     resolve_cache_dir,
 )
-
-# TODO @blisc: Perhaps refactor instead of import guarding
-
-_HAS_HYDRA = True
-
-try:
-    from omegaconf import DictConfig, ListConfig, OmegaConf
-    from omegaconf import errors as omegaconf_errors
-    from packaging import version
-except ModuleNotFoundError:
-    _HAS_HYDRA = False
 
 if TYPE_CHECKING:
     import lightning.pytorch as pl
@@ -303,9 +295,6 @@ def resolve_validation_dataloaders(model: 'ModelPT'):
     Args:
         model: ModelPT subclass, which requires >=1 Validation Dataloaders to be setup.
     """
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
     cfg = copy.deepcopy(model._cfg)
     dataloaders = []
 
@@ -398,9 +387,6 @@ def resolve_test_dataloaders(model: 'ModelPT'):
     Args:
         model: ModelPT subclass, which requires >=1 Test Dataloaders to be setup.
     """
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
     cfg = copy.deepcopy(model._cfg)
     dataloaders = []
 
@@ -496,9 +482,6 @@ def convert_model_config_to_dict_config(cfg: Union['DictConfig', 'NemoConfig']) 
     Returns:
         The equivalent DictConfig
     """
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
     if not isinstance(cfg, (OmegaConf, DictConfig)) and is_dataclass(cfg):
         cfg = OmegaConf.structured(cfg)
 
@@ -507,15 +490,12 @@ def convert_model_config_to_dict_config(cfg: Union['DictConfig', 'NemoConfig']) 
 
     config = OmegaConf.to_container(cfg, resolve=True)
     config = OmegaConf.create(config)
+
     return config
 
 
 def _convert_config(cfg: 'OmegaConf'):
     """Recursive function convertint the configuration from old hydra format to the new one."""
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
-
     # Get rid of cls -> _target_.
     if 'cls' in cfg and '_target_' not in cfg:
         cfg._target_ = cfg.pop('cls')
@@ -529,13 +509,13 @@ def _convert_config(cfg: 'OmegaConf'):
     # Recursion.
     try:
         for _, sub_cfg in cfg.items():
-            if isinstance(sub_cfg, DictConfig):
+            if isinstance(sub_cfg, (dict, DictConfig)):
                 _convert_config(sub_cfg)
     except omegaconf_errors.OmegaConfBaseException as e:
         logging.warning(f"Skipped conversion for config/subconfig:\n{cfg}\n Reason: {e}.")
 
 
-def maybe_update_config_version(cfg: 'DictConfig'):
+def maybe_update_config_version(cfg: 'DictConfig', make_copy: bool = True):
     """
     Recursively convert Hydra 0.x configs to Hydra 1.x configs.
 
@@ -546,13 +526,11 @@ def maybe_update_config_version(cfg: 'DictConfig'):
 
     Args:
         cfg: Any Hydra compatible DictConfig
+        make_copy: bool to indicating if the config should be copied before updating
 
     Returns:
         An updated DictConfig that conforms to Hydra 1.x format.
     """
-    if not _HAS_HYDRA:
-        logging.error("This function requires Hydra/Omegaconf and it was not installed.")
-        exit(1)
     if cfg is not None and not isinstance(cfg, DictConfig):
         try:
             temp_cfg = OmegaConf.create(cfg)
@@ -561,14 +539,15 @@ def maybe_update_config_version(cfg: 'DictConfig'):
             # Cannot be cast to DictConfig, skip updating.
             return cfg
 
-    # Make a copy of model config.
-    cfg = copy.deepcopy(cfg)
+    # Make a copy if requested
+    if make_copy:
+        cfg = copy.deepcopy(cfg)
+
     OmegaConf.set_struct(cfg, False)
 
-    # Convert config.
+    # Convert config
     _convert_config(cfg)
 
-    # Update model config.
     OmegaConf.set_struct(cfg, True)
 
     return cfg

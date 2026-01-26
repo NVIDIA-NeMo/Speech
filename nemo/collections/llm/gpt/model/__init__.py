@@ -60,8 +60,6 @@ from nemo.collections.llm.gpt.model.gemma3 import (
     Gemma3Model,
 )
 from nemo.collections.llm.gpt.model.gpt_oss import GPTOSSConfig, GPTOSSConfig20B, GPTOSSConfig120B, GPTOSSModel
-from nemo.collections.llm.gpt.model.hf_auto_model_for_causal_lm import HFAutoModelForCausalLM
-from nemo.collections.llm.gpt.model.hf_llama_embedding import get_llama_bidirectional_hf_model
 from nemo.collections.llm.gpt.model.hyena import (
     Hyena1bConfig,
     Hyena7bARCLongContextConfig,
@@ -110,7 +108,12 @@ from nemo.collections.llm.gpt.model.llama_nemotron import (
     Llama33NemotronSuper49BConfig,
     LlamaNemotronModel,
 )
-from nemo.collections.llm.gpt.model.mistral import MistralConfig7B, MistralModel, MistralNeMoConfig12B
+from nemo.collections.llm.gpt.model.mistral import (
+    MistralConfig7B,
+    MistralModel,
+    MistralNeMoConfig12B,
+    MistralSmall3Config24B,
+)
 from nemo.collections.llm.gpt.model.mixtral import (
     MixtralConfig,
     MixtralConfig8x3B,
@@ -194,6 +197,7 @@ __all__ = [
     "MistralConfig7B",
     "MistralModel",
     "MistralNeMoConfig12B",
+    "MistralSmall3Config24B",
     "MixtralConfig8x3B",
     "MixtralConfig8x7B",
     "MixtralConfig8x22B",
@@ -324,8 +328,6 @@ __all__ = [
     "transformer_engine_layer_spec",
     "transformer_engine_full_layer_spec",
     "local_layer_spec",
-    "HFAutoModelForCausalLM",
-    "get_llama_bidirectional_hf_model",
     "HyenaTestConfig",
     "Hyena1bConfig",
     "HyenaNV1bConfig",

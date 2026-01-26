@@ -21,7 +21,7 @@ from nemo.utils import logging
 from nemo.utils.model_utils import unwrap_model
 
 ALGORITHMS = {
-    "eagle3": mtsp.EAGLE3_DEFAULT_CFG,
+    "eagle3": mtsp.EAGLE3_DEFAULT_CFG if hasattr(mtsp, "EAGLE3_DEFAULT_CFG") else None,
     # more TBD
 }
 
@@ -32,7 +32,7 @@ def apply_speculative_decoding(model: nn.Module, algorithm: str = "eagle3") -> n
     Args:
         model: The model to transform.
         algorithm: The algorithm to use for Speculative Decoding.
-            (See https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/main/modelopt/torch/speculative/config.py)
+            (See https://github.com/NVIDIA/Model-Optimizer/blob/main/modelopt/torch/speculative/config.py)
 
     Returns:
         The transformed model.

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
+
+from lhotse.dataset.sampling.base import Sampler
+
 from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
 from nemo.collections.common.data.lhotse.dataloader import (
     LhotseDataLoadingConfig,
@@ -25,3 +29,14 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     SourceTargetTextExample,
     TextExample,
 )
+
+
+# Newer versions of torch.utils.data.Sampler do not have the data_source parameter.
+# lhotse's CutSampler expects to pass data_source to Sampler, so we need to patch
+# Sampler.__init__ to accept it.
+if "data_source" not in inspect.signature(Sampler.__init__).parameters:
+
+    def patched_sampler_init(self, data_source=None):
+        pass
+
+    Sampler.__init__ = patched_sampler_init

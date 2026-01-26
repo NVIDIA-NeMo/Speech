@@ -29,7 +29,7 @@ from torch.distributed.tensor.parallel import (
 )
 from transformers import DynamicCache
 
-from nemo.collections.audio.parts.utils.resampling import resample
+from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import replace_control_speech_codes, tokens_to_str
@@ -56,7 +56,7 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         self.cfg = DictConfig(cfg)
 
         setup_audio_codec(self)
-        self._codebook_size = self.audio_codec.vector_quantizer.codebook_size_per_group
+        self._codebook_size = self.audio_codec.vector_quantizer.codebook_size
         self._num_codebooks = self.audio_codec.vector_quantizer.num_groups
 
         # We load the pretrained HF LLM using "ForCausalLM" variant so that we can obtain the

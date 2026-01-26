@@ -82,9 +82,10 @@ def pack_hypotheses(hypotheses: List[Hypothesis]) -> List[Hypothesis]:
         if hyp.dec_state is not None:
             hyp.dec_state = _states_to_device(hyp.dec_state)
 
-        # Remove -1 from timestep
         if hyp.timestamp is not None and len(hyp.timestamp) > 0 and hyp.timestamp[0] == -1:
+            # Remove -1 from timestep
             hyp.timestamp = hyp.timestamp[1:]
+            hyp.y_sequence = hyp.y_sequence[1:]  # remove <sos> to have equal lengths with timestamps
 
     return hypotheses
 
@@ -1673,6 +1674,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                     - If `return_best_hypothesis` is True, returns the best hypothesis for each batch.
                     - Otherwise, returns the N-best hypotheses for each batch.
         """
+        if partial_hypotheses is not None:
+            raise NotImplementedError("Partial hypotheses feature is not yet supported in batched beam search.")
         # Preserve decoder and joint training state
         decoder_training_state = self.decoder.training
         joint_training_state = self.joint.training

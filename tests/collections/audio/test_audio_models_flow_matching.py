@@ -24,7 +24,7 @@ import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.audio.models import FlowMatchingAudioToAudioModel
+from nemo.collections.audio.models.enhancement import FlowMatchingAudioToAudioModel
 
 
 def convert_to_dictconfig(d):
@@ -34,7 +34,16 @@ def convert_to_dictconfig(d):
     return d
 
 
-@pytest.fixture(params=[True, False], ids=["ssl_pretrain_masking", "no_ssl_pretrain_masking"])
+flow_matching_base_config_params = list(itertools.product([True, False], ["conditional_vector_field", "data"]))
+flow_matching_base_config_ids = [
+    f"{ssl}__{target}"
+    for ssl, target in itertools.product(
+        ["ssl_pretrain_masking", "no_ssl_pretrain_masking"], ["conditional_vector_field", "data"]
+    )
+]
+
+
+@pytest.fixture(params=flow_matching_base_config_params, ids=flow_matching_base_config_ids)
 def flow_matching_base_config(request):
     model = {
         'sample_rate': 16000,
@@ -70,7 +79,7 @@ def flow_matching_base_config(request):
         'time_max': flow['time_max'],
     }
 
-    loss = {'_target_': 'nemo.collections.audio.losses.MSELoss', 'ndim': 4}
+    loss = {'_target_': 'nemo.collections.audio.losses.audio.MSELoss', 'ndim': 4}
 
     estimator = {
         '_target_': 'nemo.collections.audio.parts.submodules.transformerunet.SpectrogramTransformerUNet',
@@ -98,7 +107,7 @@ def flow_matching_base_config(request):
         'enable_checkpointing': False,
     }
 
-    enable_ssl_pretrain_masking = request.param
+    enable_ssl_pretrain_masking, estimator_target = request.param
     if enable_ssl_pretrain_masking:
         ssl_pretrain_masking = {
             '_target_': 'nemo.collections.audio.modules.ssl_pretrain_masking.SSLPretrainWithMaskedPatch',
@@ -107,6 +116,8 @@ def flow_matching_base_config(request):
         }
     else:
         ssl_pretrain_masking = None
+    model['estimator_target'] = estimator_target
+    sampler['estimator_target'] = estimator_target
 
     metrics = {
         'val': {

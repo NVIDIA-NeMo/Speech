@@ -70,6 +70,7 @@ def merge_parallel_chunks(hypotheses, encoded_len, model, timestamps, subsamplin
         timestamp=([] if not timestamps else {'word': [], 'segment': []}),
     )
     merged_hypotheses = join_y_sequence(merged_hypotheses, hypotheses)
+    merged_hypotheses = join_confidence_values(merged_hypotheses, hypotheses)
     merged_hypotheses.text = final_text
     # Merge timestamps and add word and segment level timestamps
     if timestamps:
@@ -96,6 +97,44 @@ def join_y_sequence(merged_hypothesis, hypotheses):
         Hypothesis: Updated merged_hypothesis with concatenated y_sequence
     """
     merged_hypothesis.y_sequence = torch.cat([h.y_sequence for h in hypotheses])
+    return merged_hypothesis
+
+
+def join_confidence_values(merged_hypothesis, hypotheses):
+    """
+    Concatenate confidence values from multiple hypotheses into a single sequence.
+
+    Args:
+        merged_hypothesis: Target hypothesis to update with concatenated confidence
+        hypotheses: List of hypotheses containing confidence values
+
+    Returns:
+        Hypothesis: Updated merged_hypothesis with concatenated confidence values
+    """
+    # Merge frame_confidence
+    frame_confidences = [h.frame_confidence for h in hypotheses if h.frame_confidence is not None]
+    if frame_confidences:
+        if isinstance(frame_confidences[0], torch.Tensor):
+            merged_hypothesis.frame_confidence = torch.cat(frame_confidences)
+        elif isinstance(frame_confidences[0], list):
+            merged_hypothesis.frame_confidence = [c for conf_list in frame_confidences for c in conf_list]
+
+    # Merge token_confidence
+    token_confidences = [h.token_confidence for h in hypotheses if h.token_confidence is not None]
+    if token_confidences:
+        if isinstance(token_confidences[0], torch.Tensor):
+            merged_hypothesis.token_confidence = torch.cat(token_confidences)
+        elif isinstance(token_confidences[0], list):
+            merged_hypothesis.token_confidence = [c for conf_list in token_confidences for c in conf_list]
+
+    # Merge word_confidence
+    word_confidences = [h.word_confidence for h in hypotheses if h.word_confidence is not None]
+    if word_confidences:
+        if isinstance(word_confidences[0], torch.Tensor):
+            merged_hypothesis.word_confidence = torch.cat(word_confidences)
+        elif isinstance(word_confidences[0], list):
+            merged_hypothesis.word_confidence = [c for conf_list in word_confidences for c in conf_list]
+
     return merged_hypothesis
 
 
@@ -213,6 +252,30 @@ def join_char_level_timestamps(
     return char_timestamps
 
 
+def _normalize_hypothesis_group_id(hypothesis_id: str) -> str:
+    """
+    Normalize hypothesis IDs so that segmented continuations share the same group ID.
+
+    IDs ending with `_cut_segmented` represent continuations of the chunk whose ID
+    shares the same prefix but ends with `-0`. Only the substring after the final
+    `-` is replaced so prefixes containing additional dashes remain unchanged.
+    """
+    if not isinstance(hypothesis_id, str):
+        return hypothesis_id
+    if 'cut_segmented' not in hypothesis_id:
+        return hypothesis_id
+
+    base_id = hypothesis_id.split('_cut_segmented', 1)[0]
+    if '-' not in base_id:
+        return base_id
+
+    prefix, _ = base_id.rsplit('-', 1)
+    if not prefix:
+        return base_id
+
+    return f'{prefix}-0'
+
+
 def merge_all_hypotheses(hypotheses_list, timestamps, subsampling_factor, chunk_duration_seconds=3600):
     """
     Group hypotheses by ID and merge each group into a single hypothesis.
@@ -230,7 +293,8 @@ def merge_all_hypotheses(hypotheses_list, timestamps, subsampling_factor, chunk_
     all_merged_hypotheses = []
     prev_id = None
     for h in hypotheses_list:
-        current_id = h.id
+        # This will form the current ids of the same audio file
+        current_id = _normalize_hypothesis_group_id(h.id)
 
         # If this is a new ID (different from previous), process the accumulated hypotheses
         if prev_id is not None and current_id != prev_id:
@@ -281,6 +345,9 @@ def merge_hypotheses_of_same_audio(hypotheses_list, timestamps, subsampling_fact
     )
 
     merged_hypothesis.y_sequence = torch.cat([h.y_sequence for h in hypotheses_list])
+
+    # Merge confidence values from all hypotheses
+    merged_hypothesis = join_confidence_values(merged_hypothesis, hypotheses_list)
 
     # Create final text by joining text from all hypotheses
     text_parts = []

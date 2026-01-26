@@ -13,4 +13,4 @@ pandas
 pypinyin
 pypinyin-dict
 seaborn
-
+pyopenjtalk

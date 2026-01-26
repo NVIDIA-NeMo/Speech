@@ -24,7 +24,7 @@ import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.audio.models import SchroedingerBridgeAudioToAudioModel
+from nemo.collections.audio.models.enhancement import SchroedingerBridgeAudioToAudioModel
 
 
 @pytest.fixture(params=["nemo_manifest", "lhotse_cuts"])
@@ -112,9 +112,12 @@ def schroedinger_bridge_model_ncsn_params():
         'pad_dimension_to': 0,  # no padding in the frequency dimension
     }
 
-    loss_encoded = {'_target_': 'nemo.collections.audio.losses.MSELoss', 'ndim': 4}  # computed in the time domain
+    loss_encoded = {
+        '_target_': 'nemo.collections.audio.losses.audio.MSELoss',
+        'ndim': 4,
+    }  # computed in the time domain
 
-    loss_time = {'_target_': 'nemo.collections.audio.losses.MAELoss'}
+    loss_time = {'_target_': 'nemo.collections.audio.losses.audio.MAELoss'}
 
     noise_schedule = {
         '_target_': 'nemo.collections.audio.parts.submodules.schroedinger_bridge.SBNoiseScheduleVE',

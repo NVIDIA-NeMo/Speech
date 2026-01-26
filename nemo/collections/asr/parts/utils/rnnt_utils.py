@@ -31,6 +31,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
+
 
 @dataclass
 class Hypothesis:
@@ -87,6 +89,9 @@ class Hypothesis:
     last_token (Optional): A token or batch of tokens which was predicted in the last step.
 
     last_frame (Optional): Index of the last decoding step hypothesis was updated including blank token prediction.
+
+    xatt_scores (Optional): List of cross-attention scores for each decoder layer. Each element of the list is a
+        Tensor of shape num heads x decoder input len x encoder output len (HxUxT). This is useful only for AED models.
     """
 
     score: float
@@ -108,6 +113,8 @@ class Hypothesis:
     last_token: Optional[torch.Tensor] = None
     token_duration: Optional[torch.Tensor] = None
     last_frame: Optional[int] = None
+    biasing_cfg: BiasingRequestItemConfig | None = None
+    xatt_scores: Optional[List[torch.Tensor]] = None
 
     @property
     def non_blank_frame_confidence(self) -> List[float]:
@@ -171,11 +178,21 @@ class Hypothesis:
             self.frame_confidence.extend(other.frame_confidence)
         # Invalidated. Need to rerun decode_hypothesis here.
         self.text = None
+        self.biasing_cfg = other.biasing_cfg or self.biasing_cfg
         return self
 
     def clean_decoding_state_(self):
         """Clean the decoding state to save memory."""
         self.dec_state = None
+
+    def has_biasing_request(self) -> bool:
+        """Return True if contains non-empty biasing request"""
+        return self.biasing_cfg is not None and (not self.biasing_cfg.is_empty())
+
+    @classmethod
+    def empty_with_biasing_cfg(cls, biasing_cfg: BiasingRequestItemConfig):
+        """Constructor of empty hypothesis with biasing request"""
+        return cls(y_sequence=[], score=0.0, biasing_cfg=biasing_cfg)
 
 
 @dataclass
@@ -276,6 +293,7 @@ class BatchedHyps:
         init_length: int,
         device: Optional[torch.device] = None,
         float_dtype: Optional[torch.dtype] = None,
+        is_with_durations: bool = False,
     ):
         """
 
@@ -294,6 +312,7 @@ class BatchedHyps:
         self.batch_size = batch_size
         self.device = device
         self.float_dtype = float_dtype
+        self.is_with_durations = is_with_durations
 
         # batch of current lengths of hypotheses and correspoinding timestamps
         self.current_lengths = torch.zeros(batch_size, device=device, dtype=torch.long)
@@ -302,7 +321,8 @@ class BatchedHyps:
         # tensor for storing timestamps corresponding to transcripts
         self.timestamps = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
         # tensor for storing durations corresponding to transcripts tokens
-        self.token_durations = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
+        if is_with_durations:
+            self.token_durations = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
         # accumulated scores for hypotheses
         self.scores = torch.zeros(batch_size, device=device, dtype=float_dtype)
 
@@ -321,10 +341,12 @@ class BatchedHyps:
         self.current_lengths.fill_(0)
         self.transcript.fill_(0)
         self.timestamps.fill_(0)
-        self.token_durations.fill_(0)
         self.scores.fill_(0.0)
         self.last_timestamp.fill_(-1)
         self.last_timestamp_lasts.fill_(0)
+
+        if self.is_with_durations:
+            self.token_durations.fill_(0)
 
     def _allocate_more(self):
         """
@@ -333,7 +355,8 @@ class BatchedHyps:
         """
         self.transcript = torch.cat((self.transcript, torch.zeros_like(self.transcript)), dim=-1)
         self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
-        self.token_durations = torch.cat((self.token_durations, torch.zeros_like(self.token_durations)), dim=-1)
+        if self.is_with_durations:
+            self.token_durations = torch.cat((self.token_durations, torch.zeros_like(self.token_durations)), dim=-1)
         self._max_length *= 2
 
     def add_results_(
@@ -364,7 +387,7 @@ class BatchedHyps:
             labels=labels,
             time_indices=time_indices,
             scores=scores,
-            token_durations=token_durations,
+            token_durations=token_durations if self.is_with_durations else None,
         )
 
     def add_results_no_checks_(
@@ -429,7 +452,7 @@ class BatchedHyps:
             labels=labels,
             time_indices=time_indices,
             scores=scores,
-            token_durations=token_durations,
+            token_durations=token_durations if self.is_with_durations else None,
         )
 
     def add_results_masked_no_checks_(
@@ -459,7 +482,7 @@ class BatchedHyps:
         # store transcript and timestamps
         self.transcript[self._batch_indices, self.current_lengths] = labels
         self.timestamps[self._batch_indices, self.current_lengths] = time_indices
-        if token_durations is not None:
+        if self.is_with_durations:
             self.token_durations[self._batch_indices, self.current_lengths] = token_durations
         # store last observed timestamp + number of observation for the current timestamp
         # if last_timestamp == time_indices, increase; else set to 1
@@ -493,11 +516,13 @@ class BatchedHyps:
             init_length=self._max_length,
             device=self.device,
             float_dtype=self.float_dtype,
+            is_with_durations=self.is_with_durations,
         )
         batched_hyps.current_lengths.copy_(self.current_lengths)
         batched_hyps.transcript.copy_(self.transcript)
         batched_hyps.timestamps.copy_(self.timestamps)
-        batched_hyps.token_durations.copy_(self.token_durations)
+        if self.is_with_durations:
+            batched_hyps.token_durations.copy_(self.token_durations)
         batched_hyps.scores.copy_(self.scores)
         batched_hyps.last_timestamp.copy_(self.last_timestamp)
         batched_hyps.last_timestamp_lasts.copy_(self.last_timestamp_lasts)
@@ -511,16 +536,30 @@ class BatchedHyps:
         Args:
             other: BatchedHyps
         """
-        self.transcript = torch.cat((self.transcript, torch.zeros_like(other.transcript)), dim=-1)
-        self.timestamps = torch.cat((self.timestamps, torch.zeros_like(other.timestamps)), dim=-1)
-        self.token_durations = torch.cat((self.token_durations, torch.zeros_like(other.token_durations)), dim=-1)
-        self._max_length += other._max_length
+        cur_len = self.current_lengths.max().item()
+        other_len = other.current_lengths.max().item()
+        if cur_len + other_len >= self._max_length:
+            add_len = cur_len + other_len - self._max_length + 1
+            device = self.transcript.device
+            add_shape = [self.batch_size, add_len]
+            self.transcript = torch.cat(
+                (self.transcript, torch.zeros(add_shape, dtype=torch.long, device=device)), dim=-1
+            )
+            self.timestamps = torch.cat(
+                (self.timestamps, torch.zeros(add_shape, dtype=torch.long, device=device)), dim=-1
+            )
+            if self.is_with_durations:
+                self.token_durations = torch.cat(
+                    (self.token_durations, torch.zeros(add_shape, dtype=torch.long, device=device)), dim=-1
+                )
+            self._max_length += add_len
 
-        indices = torch.arange(other.transcript.shape[1], device=self.current_lengths.device)
+        indices = torch.arange(other_len, device=self.current_lengths.device)
         shifted_indices = self.current_lengths[:, None] + indices[None, :]
         self.transcript.scatter_(dim=1, index=shifted_indices, src=other.transcript)
         self.timestamps.scatter_(dim=1, index=shifted_indices, src=other.timestamps)
-        self.token_durations.scatter_(dim=1, index=shifted_indices, src=other.token_durations)
+        if self.is_with_durations:
+            self.token_durations.scatter_(dim=1, index=shifted_indices, src=other.token_durations)
 
         self.current_lengths += other.current_lengths
         self.scores += other.scores
@@ -763,10 +802,8 @@ def batched_hyps_to_hypotheses(
             y_sequence=transcript[i, : current_lengths[i]],
             timestamp=timestamps[i, : batched_hyps.current_lengths[i]],
             token_duration=(
-                durations
-                if not torch.all(
-                    (durations := batched_hyps.token_durations[i, : batched_hyps.current_lengths[i]]) == 0
-                )
+                batched_hyps.token_durations[i, : batched_hyps.current_lengths[i]]
+                if batched_hyps.is_with_durations
                 else torch.empty(0)
             ),
             alignments=None,

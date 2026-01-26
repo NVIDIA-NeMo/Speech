@@ -597,8 +597,9 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             which makes it especially useful for scaling the prediction network.
         use_cuda_graph_decoder: if CUDA graphs should be enabled for decoding
                                 (currently recommended only for inference)
-        fusion_models: list of fusion models to use for decoding
-        fusion_models_alpha: list of alpha values for fusion models
+        fusion_models: list of fusion models (ngram_lm_model and boosting_tree_model)
+        fusion_models_alpha: list of fusion model weights (ngram_lm_alpha and boosting_tree_alpha)
+        enable_per_stream_biasing: enable multi-biasing model for per-stream customization
     """
 
     def __init__(
@@ -614,6 +615,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         use_cuda_graph_decoder: bool = True,
         fusion_models: Optional[List[NGramGPULanguageModel | GPUBoostingTreeModel]] = None,
         fusion_models_alpha: Optional[List[float]] = None,
+        enable_per_stream_biasing: bool = False,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -646,9 +648,12 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                     allow_cuda_graphs=self.use_cuda_graph_decoder,
                     fusion_models=fusion_models,
                     fusion_models_alpha=fusion_models_alpha,
+                    enable_per_stream_biasing=enable_per_stream_biasing,
                 )
             else:
                 # Frame-Looping algorithm
+                if enable_per_stream_biasing:
+                    raise NotImplementedError("Per-stream biasing is not implemented with frame-looping algorithm")
                 if fusion_models:
                     raise NotImplementedError(
                         "N-Gram Language Model and Boosting Tree fusion is not implemented with frame-looping algorithm"
@@ -685,6 +690,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 raise NotImplementedError(
                     "N-Gram Language Model and Boosting Tree fusion is not implemented with `blank_as_pad=False`"
                 )
+            if enable_per_stream_biasing:
+                raise NotImplementedError("Per-stream biasing is not implemented with `blank_as_pad=False`")
             self._greedy_decode = self._greedy_decode_masked
 
     def disable_cuda_graphs(self) -> bool:
@@ -782,16 +789,34 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         The main idea: search for next labels for the whole batch (evaluating Joint)
         and thus always evaluate prediction network with maximum possible batch size
         """
-        if partial_hypotheses is None or all(hyp is None for hyp in partial_hypotheses):
+        # setup batched state
+        if partial_hypotheses is None or all((hyp is None or hyp.dec_state is None) for hyp in partial_hypotheses):
             batched_state = None
         else:
             batched_state = self.decoding_computer.merge_to_batched_state(
                 [hyp.dec_state if hyp is not None else None for hyp in partial_hypotheses]
             )
+        # setup fused biasing ids
+        if self.decoding_computer.per_stream_biasing_enabled:
+            batch_size = out_len.shape[0]
+            multi_biasing_ids = np.full([batch_size], fill_value=-1)
+            if partial_hypotheses is not None:
+                for batch_i, hyp in enumerate(partial_hypotheses):
+                    if hyp is None or (not hyp.has_biasing_request()):
+                        continue
+                    # biasing_cfg is not empty
+                    if hyp.biasing_cfg.multi_model_id is None:
+                        logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
+                        continue
+                    multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
+            multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
+        else:
+            multi_biasing_ids = None
         batched_hyps, alignments, batched_state = self.decoding_computer(
             x=x,
             out_len=out_len,
             prev_batched_state=batched_state,
+            multi_biasing_ids=multi_biasing_ids,
         )
         hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
         for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
@@ -2448,6 +2473,7 @@ class GreedyBatchedRNNTInferConfig:
     ngram_lm_alpha: float = 0.0
     boosting_tree: BoostingTreeModelConfig = field(default_factory=BoostingTreeModelConfig)
     boosting_tree_alpha: float = 0.0
+    enable_per_stream_biasing: bool = False
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed
@@ -2795,8 +2821,9 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
 
         use_cuda_graph_decoder: if CUDA graphs should be enabled for decoding
                                 (currently recommended only for inference)
-        ngram_lm_model: optional n-gram language model (LM) file to use for decoding
-        ngram_lm_alpha: LM weight
+        fusion_models: list of fusion models (ngram_lm_model and boosting_tree_model)
+        fusion_models_alpha: list of fusion model weights (ngram_lm_alpha and boosting_tree_alpha)
+        enable_per_stream_biasing: enable multi-biasing model for per-stream customization
     """
 
     def __init__(
@@ -2814,6 +2841,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         use_cuda_graph_decoder: bool = True,
         fusion_models: Optional[List[NGramGPULanguageModel]] = None,
         fusion_models_alpha: Optional[List[float]] = None,
+        enable_per_stream_biasing: bool = False,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -2848,11 +2876,14 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 allow_cuda_graphs=use_cuda_graph_decoder,
                 fusion_models=fusion_models,
                 fusion_models_alpha=fusion_models_alpha,
+                enable_per_stream_biasing=enable_per_stream_biasing,
             )
             self._greedy_decode = self._greedy_decode_blank_as_pad_loop_labels
         else:
             if fusion_models is not None:
                 raise NotImplementedError("Fusion models are not implemented with `blank_as_pad=False`")
+            if enable_per_stream_biasing:
+                raise NotImplementedError("Per-stream biasing is not implemented with `blank_as_pad=False`")
             self._greedy_decode = self._greedy_decode_masked
 
     @typecheck()
@@ -2918,16 +2949,34 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         The main idea: search for next labels for the whole batch (evaluating Joint)
         and thus always evaluate prediction network with maximum possible batch size
         """
-        if partial_hypotheses is None or all(hyp is None for hyp in partial_hypotheses):
+        # setup batched state
+        if partial_hypotheses is None or all((hyp is None or hyp.dec_state is None) for hyp in partial_hypotheses):
             batched_state = None
         else:
             batched_state = self.decoding_computer.merge_to_batched_state(
                 [hyp.dec_state if hyp is not None else None for hyp in partial_hypotheses]
             )
+        # setup fused biasing ids
+        if self.decoding_computer.per_stream_biasing_enabled:
+            batch_size = out_len.shape[0]
+            multi_biasing_ids = np.full([batch_size], fill_value=-1)
+            if partial_hypotheses is not None:
+                for batch_i, hyp in enumerate(partial_hypotheses):
+                    if hyp is None or (not hyp.has_biasing_request()):
+                        continue
+                    # biasing_cfg is not empty
+                    if hyp.biasing_cfg.multi_model_id is None:
+                        logging.warning(f"Boosting tree requested in index {batch_i}, not compiled, skipping")
+                        continue
+                    multi_biasing_ids[batch_i] = hyp.biasing_cfg.multi_model_id
+            multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
+        else:
+            multi_biasing_ids = None
         batched_hyps, alignments, batched_state = self.decoding_computer(
             x=x,
             out_len=out_len,
             prev_batched_state=batched_state,
+            multi_biasing_ids=multi_biasing_ids,
         )
         hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
         for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):

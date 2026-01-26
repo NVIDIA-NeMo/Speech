@@ -20,8 +20,10 @@ import tarfile
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from pathlib import PurePosixPath
 from typing import Callable, Generator, Optional, Set, Union
+
 import torch
 from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import DictConfig, OmegaConf
@@ -30,6 +32,7 @@ from omegaconf.omegaconf import open_dict
 from nemo.core import classes as nemo_classes  # to avoid circular import do not import ModelPT directly
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
+from nemo.utils.file_utils import robust_copy
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.model_utils import inject_model_parallel_rank
 from nemo.utils.msc_utils import import_multistorageclient, is_multistorageclient_url
@@ -134,19 +137,19 @@ class SaveRestoreConnector:
                 map_location = torch.device('cpu')
 
         app_state = AppState()
-        with tempfile.TemporaryDirectory() as tmpdir:
+
+        # Determine if we should use a pre-extracted directory
+        use_extracted_dir = self.model_extracted_dir is not None and os.path.isdir(self.model_extracted_dir)
+
+        if use_extracted_dir:
+            logging.info(f"Restoration will occur within pre-extracted directory : " f"`{self.model_extracted_dir}`.")
+
+        # Use nullcontext if we have an extracted dir, otherwise create a temp directory
+        dir_context = nullcontext(self.model_extracted_dir) if use_extracted_dir else tempfile.TemporaryDirectory()
+
+        with dir_context as tmpdir:
             try:
-                # Check if self.model_extracted_dir is set, and is a valid path
-                if self.model_extracted_dir is not None and os.path.isdir(self.model_extracted_dir):
-                    # Log that NeMo will use the provided `model_extracted_dir`
-                    logging.info(
-                        f"Restoration will occur within pre-extracted directory : " f"`{self.model_extracted_dir}`."
-                    )
-
-                    # Override `tmpdir` above with the pre-extracted `model_extracted_dir`
-                    tmpdir = self.model_extracted_dir
-
-                else:
+                if not use_extracted_dir:
                     # Extract the nemo file into the temporary directory
                     filter_fn = None
                     if return_config:
@@ -467,7 +470,7 @@ class SaveRestoreConnector:
                     # Note uuid.uuid4().hex is guaranteed to be 32 character long
                     artifact_base_name = os.path.basename(artiitem.path)
                     artifact_uniq_name = f"{uuid.uuid4().hex}_{artifact_base_name}"
-                    shutil.copy2(artiitem.path, os.path.join(nemo_file_folder, artifact_uniq_name))
+                    robust_copy(artiitem.path, os.path.join(nemo_file_folder, artifact_uniq_name))
 
                     # Update artifacts registry
                     artiitem.hashed_path = "nemo:" + artifact_uniq_name
@@ -535,7 +538,7 @@ class SaveRestoreConnector:
                     for path in restoration_paths:
                         if self.model_extracted_dir:
                             for rel_path in artifact_rel_paths[path]:
-                                shutil.copy2(src=rel_path, dst=archive_dir)
+                                robust_copy(rel_path, archive_dir)
                         else:
                             self._unpack_nemo_file(
                                 path2file=path, out_folder=archive_dir, members=artifact_rel_paths[path]
@@ -549,7 +552,7 @@ class SaveRestoreConnector:
                             artifact_base_name = os.path.basename(artiitem.path)
                         # no need to hash here as we are in tarfile_artifacts which are already hashed
                         artifact_uniq_name = artifact_base_name
-                        shutil.copy2(artifact_base_name, os.path.join(nemo_file_folder, artifact_uniq_name))
+                        robust_copy(artifact_base_name, os.path.join(nemo_file_folder, artifact_base_name))
 
                         # Update artifacts registry
                         new_artiitem = model_utils.ArtifactItem()
@@ -608,7 +611,8 @@ class SaveRestoreConnector:
     @staticmethod
     def _make_nemo_file_from_folder_with_multistorageclient(filename, source_dir):
         msc = import_multistorageclient()
-        filename_with_extension = filename.split("/")[-1]  # get the filename and extension
+        # Use PurePosixPath for cloud storage paths which always use forward slashes
+        filename_with_extension = PurePosixPath(filename).name
         with tempfile.TemporaryDirectory() as tmpdir:
             tar_file = os.path.join(tmpdir, filename_with_extension)
             with tarfile.open(tar_file, "w:") as tar:
@@ -724,7 +728,8 @@ class SaveRestoreConnector:
             raise FileNotFoundError(f"{path2file} does not exist")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            filename_with_extension = path2file.split("/")[-1]  # get the filename with extension
+            # Use PurePosixPath for cloud storage paths which always use forward slashes
+            filename_with_extension = PurePosixPath(path2file).name
             downloaded_file_path = os.path.join(tmpdir, filename_with_extension)
             start_time = time.time()
             msc.download_file(path2file, downloaded_file_path)
@@ -754,8 +759,23 @@ class SaveRestoreConnector:
         torch.save(state_dict, filepath)
 
     @staticmethod
-    def _load_state_dict_from_disk(model_weights, map_location=None):
-        return torch.load(model_weights, map_location='cpu', weights_only=False)
+    def _load_state_dict_from_disk(model_weights, map_location='cpu'):
+        """
+        Load model state dict from disk.
+
+        Args:
+            model_weights: Path to the checkpoint file
+            map_location: Device to map tensors to
+
+        Returns:
+            State dict loaded from checkpoint
+
+        """
+        try:
+            return torch.load(model_weights, map_location=map_location, weights_only=True)
+        except Exception as e:
+            logging.error(f"Failed to load checkpoint with weights_only=True: {e}")
+            raise e
 
     @property
     def model_config_yaml(self) -> str:

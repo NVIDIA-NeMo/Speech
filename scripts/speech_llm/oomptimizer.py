@@ -26,7 +26,7 @@ from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.models.asr_model import ASRModel
-from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
+from nemo.collections.common.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 
@@ -404,7 +404,7 @@ def oomptimizer(
     model._compute_consumed_samples_after_training_step = lambda *args, **kwargs: 1
 
     from megatron.core.parallel_state import initialize_model_parallel
-    from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
+    from nemo.collections.common.modules.megatron_init import initialize_model_parallel_for_nemo
 
     initialize_model_parallel_for_nemo(
         world_size=1, global_rank=0, local_rank=0, micro_batch_size=16, global_batch_size=16

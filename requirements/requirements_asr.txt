@@ -17,6 +17,7 @@ pydub
 pyloudnorm
 resampy
 ruamel.yaml
+sacrebleu
 scipy>=0.14
 soundfile
 sox<=1.5.0

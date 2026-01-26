@@ -16,15 +16,6 @@ import pytest
 import torch
 from omegaconf import DictConfig
 
-try:
-    import importlib
-
-    importlib.import_module('torchaudio')
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
-
 from nemo.collections.audio.models.maxine import BNR2
 
 
@@ -81,7 +72,6 @@ class TestBNR2Model:
     """Test BNR 2 model."""
 
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
     def test_constructor(self, maxine_model_fixture):
         """Test that the model can be constructed from a config dict."""
         model = maxine_model_fixture.train()
@@ -90,7 +80,6 @@ class TestBNR2Model:
         assert isinstance(instance2, BNR2)
 
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
     @pytest.mark.parametrize(
         "batch_size, sample_len",
         [

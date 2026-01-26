@@ -15,7 +15,7 @@ from collections import Counter
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import lhotse
 import numpy as np
@@ -2104,6 +2104,196 @@ def test_dataloader_bucket_batch_size(nemo_tarred_manifest_path_multi: tuple[str
 
     for b in islice(dl, 10):
         assert len(b) == 2
+
+
+@pytest.mark.parametrize("clipping_prob_hard", [0.0, 1.0])
+@pytest.mark.parametrize("clipping_oversampling", [None, 1, 2])
+def test_dataloader_with_clipping_lhotse_jsonl(
+    cutset_path: Path, clipping_prob_hard: float, clipping_oversampling: Optional[int]
+):
+    from lhotse.augmentation import Clipping, Resample
+
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "clipping_enabled": True,
+            "clipping_gain_db": (0.0, 24.0),
+            "clipping_prob": 1.0,
+            "clipping_prob_hard": clipping_prob_hard,
+            "clipping_oversampling": clipping_oversampling,
+            "batch_size": 2,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+    )
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 2
+    cut = batch[0]
+    assert isinstance(cut, MonoCut)
+    if clipping_oversampling is not None:
+        assert isinstance(cut.recording.transforms[-3], Resample)
+        assert isinstance(cut.recording.transforms[-2], Clipping)
+        assert isinstance(cut.recording.transforms[-1], Resample)
+    else:
+        assert isinstance(cut.recording.transforms[-1], Clipping)
+    cut = batch[1]
+    assert isinstance(cut, MonoCut)
+    if clipping_oversampling is not None:
+        assert isinstance(cut.recording.transforms[-3], Resample)
+        assert isinstance(cut.recording.transforms[-2], Clipping)
+        assert isinstance(cut.recording.transforms[-1], Resample)
+    else:
+        assert isinstance(cut.recording.transforms[-1], Clipping)
+    for cut in batch:
+        cut.load_audio()
+
+
+def test_dataloader_with_compression_lossy_lhotse_jsonl(cutset_path: Path):
+    from lhotse.augmentation import Compress
+
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "compression_enabled": True,
+            "compression_codecs": ["opus", "mp3", "vorbis"],
+            "compression_prob": 1.0,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+    )
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 4
+    cut = batch[0]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms[-1], Compress)
+    cut = batch[1]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms[-1], Compress)
+    for cut in batch:
+        cut.load_audio()
+
+
+def test_dataloader_with_compression_gsm_lhotse_jsonl(cutset_path: Path):
+    from lhotse.augmentation import Compress, Resample
+
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "compression_enabled": True,
+            "compression_codecs": ["gsm"],
+            "compression_prob": 1.0,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+    )
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 4
+    cut = batch[0]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms[-3], Resample)
+    assert isinstance(cut.recording.transforms[-2], Compress)
+    assert isinstance(cut.recording.transforms[-1], Resample)
+    for cut in batch:
+        cut.load_audio()
+
+
+def test_dataloader_with_lowpass_using_resampling_lhotse_jsonl(cutset_path: Path):
+    from lhotse.augmentation import Resample
+
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "lowpass_enabled": True,
+            "lowpass_frequencies_interval": [3500.0, 4000.0],
+            "lowpass_prob": 1.0,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+    )
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 4
+    cut = batch[0]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms[-2], Resample)
+    assert isinstance(cut.recording.transforms[-1], Resample)
+    cut = batch[1]
+    assert isinstance(cut, MonoCut)
+    assert isinstance(cut.recording.transforms[-2], Resample)
+    assert isinstance(cut.recording.transforms[-1], Resample)
+    for cut in batch:
+        cut.load_audio()
+
+
+def test_dataloader_with_multiple_augmentations_lhotse_jsonl(cutset_path: Path):
+    from lhotse.augmentation import Compress, Resample, ReverbWithImpulseResponse
+
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "noise_path": str(cutset_path),
+            "noise_mix_prob": 1.0,
+            "noise_snr": [-5.0, 5.0],
+            "rir_enabled": True,
+            "rir_prob": 1.0,
+            "lowpass_enabled": True,
+            "lowpass_frequencies_interval": [3500.0, 4000.0],
+            "lowpass_prob": 1.0,
+            "compression_enabled": True,
+            "compression_codecs": ["gsm"],
+            "compression_prob": 1.0,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+    dl = get_lhotse_dataloader_from_config(
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+    )
+    batch = next(iter(dl))
+    assert isinstance(batch, CutSet)
+    assert len(batch) == 4
+    cut = batch[0]
+    assert isinstance(cut, MixedCut)
+    for track in cut.tracks:
+        assert isinstance(track.cut.recording.transforms[-3], Resample)
+        assert isinstance(track.cut.recording.transforms[-2], Compress)
+        assert isinstance(track.cut.recording.transforms[-1], Resample)
+    for cut in batch:
+        audio = cut.load_audio()
 
 
 def test_dataloader_2d_bucketing(nemo_tarred_manifest_path_multi: tuple[str, str], en_es_tokenizer):

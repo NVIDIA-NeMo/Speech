@@ -31,6 +31,7 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
 from nemo.utils import logging
 
 # Optional import for UTMOSv2 (audio quality metric)
@@ -193,10 +194,17 @@ def evaluate(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
+    with_fcd=True,
+    codec_model_path=None,
 ):
     audio_file_lists = find_generated_audio_files(generated_audio_dir)
     records = read_manifest(manifest_path)
     assert len(audio_file_lists) == len(records)
+    if with_fcd:
+        if codec_model_path is None:
+            raise ValueError("codec_model_path is required when with_fcd is True")
+        codes_file_lists = find_generated_codec_files(generated_audio_dir)
+        assert len(codes_file_lists) == len(records)
 
     device = "cuda"
 
@@ -225,19 +233,26 @@ def evaluate(
         )
         speaker_verification_model = speaker_verification_model.to(device)
         speaker_verification_model.eval()
-    # The model `titanet_small` prints thousands of lines during initialization, so suppress logs temporarily
+
     logging.info("Loading `titanet_small` model...")
-    speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
-        model_name='titanet_small'
-    )
+    # The model `titanet_small` prints thousands of lines during initialization, so suppress logs temporarily
+    with logging.temp_verbosity(logging.ERROR):
+        speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
+            model_name='titanet_small'
+        )
     speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
     speaker_verification_model_alternate.eval()
+
+    if with_fcd:
+        fcd_metric = FrechetCodecDistance(codec_name=codec_model_path).to(device)
+    else:
+        fcd_metric = None
 
     if with_utmosv2:
         if not UTMOSV2_AVAILABLE:
             logging.warning(
-                "UTMOSv2 was requested (with_utmosv2=True) but UTMOSv2Calculator is not available. "
-                "UTMOSv2 scores will be set to 0.0 for all files."
+                "UTMOSv2 was requested (with_utmosv2=True) but the UTMOSv2 library is not available. "
+                "UTMOSv2 scores will be set to NaN for all files."
             )
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
     filewise_metrics = []
@@ -246,36 +261,48 @@ def evaluate(
     gt_audio_texts = []
     total_generated_audio_seconds = 0.0
     for ridx, record in enumerate(records):
-        gt_audio_filepath = record['audio_filepath']
+        gt_audio_filepath = record.get('audio_filepath', None)
         context_audio_filepath = record.get('context_audio_filepath', None)
-        if audio_dir is not None:
+        if audio_dir is not None and gt_audio_filepath is not None:
             gt_audio_filepath = os.path.join(audio_dir, gt_audio_filepath)
             if context_audio_filepath is not None:
                 context_audio_filepath = os.path.join(audio_dir, context_audio_filepath)
+
+            # Update the FCD metric with real (ground truth) codes
+            if fcd_metric is not None:
+                fcd_metric.update_from_audio_file(gt_audio_filepath, True)
 
         pred_audio_filepath = audio_file_lists[ridx]
 
         if with_utmosv2 and UTMOSV2_AVAILABLE:
             utmosv2_score = utmosv2_scores[os.path.normpath(pred_audio_filepath)]
         else:
-            utmosv2_score = 0.0
+            utmosv2_score = float('nan')
 
         try:
             if language == "en":
                 with torch.inference_mode():
                     pred_text = asr_model.transcribe([pred_audio_filepath], batch_size=1, use_lhotse=False)[0].text
                     pred_text = process_text(pred_text)
-                    gt_audio_text = asr_model.transcribe([gt_audio_filepath], batch_size=1, use_lhotse=False)[0].text
-                    gt_audio_text = process_text(gt_audio_text)
+                    if gt_audio_filepath is not None:
+                        gt_audio_text = asr_model.transcribe([gt_audio_filepath], batch_size=1, use_lhotse=False)[
+                            0
+                        ].text
+                        gt_audio_text = process_text(gt_audio_text)
+                    else:
+                        gt_audio_text = None
             else:
                 pred_text = transcribe_with_whisper(
                     whisper_model, whisper_processor, pred_audio_filepath, language, device
                 )
                 pred_text = process_text(pred_text)
-                gt_audio_text = transcribe_with_whisper(
-                    whisper_model, whisper_processor, gt_audio_filepath, language, device
-                )
-                gt_audio_text = process_text(gt_audio_text)
+                if gt_audio_filepath is not None:
+                    gt_audio_text = transcribe_with_whisper(
+                        whisper_model, whisper_processor, gt_audio_filepath, language, device
+                    )
+                    gt_audio_text = process_text(gt_audio_text)
+                else:
+                    gt_audio_text = None
         except Exception as e:
             logging.info("Error during ASR: {}".format(e))
             pred_text = ""
@@ -294,11 +321,17 @@ def evaluate(
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")
         # Format cer and wer to 2 decimal places
-        logging.info("CER:", "{:.4f} | WER: {:.4f}".format(detailed_cer[0], detailed_wer[0]))
+        logging.info(f"CER: {detailed_cer[0]:.4f} | WER: {detailed_wer[0]:.4f}")
 
         pred_texts.append(pred_text)
         gt_texts.append(gt_text)
         gt_audio_texts.append(gt_audio_text)
+
+        # Update FCD metric with generated codes
+        if fcd_metric is not None:
+            predicted_codes = torch.load(codes_file_lists[ridx]).unsqueeze(0)  # B, C, T
+            predicted_codes_lens = torch.tensor([predicted_codes.size(-1)], dtype=torch.int, device=device)
+            fcd_metric.update(predicted_codes, predicted_codes_lens, False)
 
         pred_context_ssim = 0.0
         gt_context_ssim = 0.0
@@ -318,19 +351,29 @@ def evaluate(
                 sv_model_type=sv_model_type,
             )
 
-            # Ground truth vs. predicted
-            gt_speaker_embedding = extract_embedding_fn(audio_path=gt_audio_filepath)
-            pred_speaker_embedding = extract_embedding_fn(audio_path=pred_audio_filepath)
-            pred_gt_ssim = torch.nn.functional.cosine_similarity(
-                gt_speaker_embedding, pred_speaker_embedding, dim=0
-            ).item()
+            # Initialize SSIMs with a default since the context or ground truth audio
+            # may be unavailable.
+            pred_context_ssim = float('NaN')
+            gt_context_ssim = float('NaN')
+            pred_context_ssim_alternate = float('NaN')
+            gt_context_ssim_alternate = float('NaN')
+            pred_gt_ssim = float('NaN')
+            pred_gt_ssim_alternate = float('NaN')
 
-            # Ground truth vs. predicted (alternate model)
-            gt_speaker_embedding_alternate = extract_embedding_fn_alternate(audio_path=gt_audio_filepath)
-            pred_speaker_embedding_alternate = extract_embedding_fn_alternate(audio_path=pred_audio_filepath)
-            pred_gt_ssim_alternate = torch.nn.functional.cosine_similarity(
-                gt_speaker_embedding_alternate, pred_speaker_embedding_alternate, dim=0
-            ).item()
+            if gt_audio_filepath is not None:
+                # Ground truth vs. predicted
+                gt_speaker_embedding = extract_embedding_fn(audio_path=gt_audio_filepath)
+                pred_speaker_embedding = extract_embedding_fn(audio_path=pred_audio_filepath)
+                pred_gt_ssim = torch.nn.functional.cosine_similarity(
+                    gt_speaker_embedding, pred_speaker_embedding, dim=0
+                ).item()
+
+                # Ground truth vs. predicted (alternate model)
+                gt_speaker_embedding_alternate = extract_embedding_fn_alternate(audio_path=gt_audio_filepath)
+                pred_speaker_embedding_alternate = extract_embedding_fn_alternate(audio_path=pred_audio_filepath)
+                pred_gt_ssim_alternate = torch.nn.functional.cosine_similarity(
+                    gt_speaker_embedding_alternate, pred_speaker_embedding_alternate, dim=0
+                ).item()
 
             if context_audio_filepath is not None:
                 context_speaker_embedding = extract_embedding_fn(audio_path=context_audio_filepath)
@@ -341,18 +384,20 @@ def evaluate(
                     pred_speaker_embedding, context_speaker_embedding, dim=0
                 ).item()
                 # Ground truth vs. context
-                gt_context_ssim = torch.nn.functional.cosine_similarity(
-                    gt_speaker_embedding, context_speaker_embedding, dim=0
-                ).item()
+                if gt_audio_filepath is not None:
+                    gt_context_ssim = torch.nn.functional.cosine_similarity(
+                        gt_speaker_embedding, context_speaker_embedding, dim=0
+                    ).item()
 
                 # Predicted vs. context (alternate model)
                 pred_context_ssim_alternate = torch.nn.functional.cosine_similarity(
                     pred_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
                 ).item()
                 # Ground truth vs. context (alternate model)
-                gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
-                    gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
-                ).item()
+                if gt_audio_filepath is not None:
+                    gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
+                        gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
+                    ).item()
             total_generated_audio_seconds += get_wav_file_duration(pred_audio_filepath)
 
         filewise_metrics.append(
@@ -377,6 +422,13 @@ def evaluate(
             }
         )
 
+    # compute frechet distance for the whole dataset
+    if fcd_metric is not None:
+        fcd = fcd_metric.compute().cpu().item()
+        fcd_metric.reset()
+    else:
+        fcd = float('nan')
+
     filewise_metrics_keys_to_save = [
         'cer',
         'wer',
@@ -387,12 +439,11 @@ def evaluate(
         'pred_audio_filepath',
         'context_audio_filepath',
     ]
-    filtered_filewise_metrics = []
-    for m in filewise_metrics:
-        filtered_filewise_metrics.append({k: m[k] for k in filewise_metrics_keys_to_save})
+    # Filter filewise metrics to only keep only the metrics we want to save
+    filtered_filewise_metrics = [{k: m[k] for k in filewise_metrics_keys_to_save} for m in filewise_metrics]
 
     # Sort filewise metrics by cer in reverse
-    filewise_metrics.sort(key=lambda x: x['cer'], reverse=True)
+    filtered_filewise_metrics.sort(key=lambda x: x['cer'], reverse=True)
 
     avg_metrics = {}
     avg_metrics['cer_filewise_avg'] = sum([m['detailed_cer'][0] for m in filewise_metrics]) / len(filewise_metrics)
@@ -415,17 +466,26 @@ def evaluate(
     avg_metrics['ssim_gt_context_avg_alternate'] = sum(
         [m['gt_context_ssim_alternate'] for m in filewise_metrics]
     ) / len(filewise_metrics)
-    avg_metrics["cer_gt_audio_cumulative"] = word_error_rate_detail(
-        hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
-    )[0]
-    avg_metrics["wer_gt_audio_cumulative"] = word_error_rate_detail(
-        hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
-    )[0]
+    if not None in gt_audio_texts:
+        avg_metrics["cer_gt_audio_cumulative"] = word_error_rate_detail(
+            hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
+        )[0]
+        avg_metrics["wer_gt_audio_cumulative"] = word_error_rate_detail(
+            hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
+        )[0]
+    else:
+        avg_metrics["cer_gt_audio_cumulative"] = float('NaN')
+        avg_metrics["wer_gt_audio_cumulative"] = float('NaN')
+        logging.warning(
+            "Ground truth audio files are missing. Setting cumulative CER and WER for ground truth audio to NaN."
+        )
+
     avg_metrics["utmosv2_avg"] = sum([m['utmosv2'] for m in filewise_metrics]) / len(filewise_metrics)
     avg_metrics["total_gen_audio_seconds"] = total_generated_audio_seconds
+    avg_metrics["frechet_codec_distance"] = fcd
     pprint.pprint(avg_metrics)
 
-    return avg_metrics, filewise_metrics
+    return avg_metrics, filtered_filewise_metrics
 
 
 def main():

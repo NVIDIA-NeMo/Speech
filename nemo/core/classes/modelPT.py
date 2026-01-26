@@ -118,7 +118,7 @@ class ModelPT(LightningModule, Model):
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
 
         # Convert config to support Hydra 1.0+ instantiation
-        cfg = model_utils.maybe_update_config_version(cfg)
+        cfg = model_utils.maybe_update_config_version(cfg, make_copy=False)
 
         if 'model' in cfg:
             raise ValueError(

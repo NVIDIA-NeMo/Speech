@@ -132,6 +132,10 @@ jobs:
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Streaming_Inference
           - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Speech_to_Text_Inference_Boost_GT
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Speech_to_Text_Transcribe_Boost_GT
+          - runner: self-hosted-azure
             script: L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
           - runner: self-hosted-azure
             script: L2_Speech_Transcription_Canary_Transcribe_With_Prompt

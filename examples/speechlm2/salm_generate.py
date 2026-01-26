@@ -47,13 +47,18 @@ class SalmEvalConfig:
     extra_eos_tokens: Optional[list[str]] = None
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None
+    use_asr_decoder: bool = False  # set this to True if using SALMWithAsrDecoder
 
 
 @hydra_runner(config_name="SalmEvalConfig", schema=SalmEvalConfig)
 def main(cfg: SalmEvalConfig):
     logging.info(f"Hydra config:\n{OmegaConf.to_yaml(cfg)}")
 
-    model = SALMWithAsrDecoder.from_pretrained(cfg.pretrained_name).eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
+    if cfg.user_asr_decoder:
+        model = SALMWithAsrDecoder.from_pretrained(cfg.pretrained_name)
+    else:
+        model = SALM.from_pretrained(cfg.pretrained_name)
+    model = model.eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
 
     conversations = (
         guess_parse_cutset(cfg.inputs)

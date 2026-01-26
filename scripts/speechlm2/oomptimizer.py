@@ -28,7 +28,7 @@ from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
-from nemo.collections.speechlm2 import SALM
+from nemo.collections.speechlm2 import SALM, SALMWithAsrDecoder
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 from nemo.utils.trainer_utils import resolve_trainer_cfg
@@ -387,7 +387,7 @@ def oomptimizer(
         model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
     model = model.to(device)
 
-    if isinstance(model, SALM):
+    if isinstance(model, (SALM, SALMWithAsrDecoder)):
         model.prepare_inputs = partial(_override_prepare_inputs, model)
 
     if not hasattr(model, "oomptimizer_schema"):
@@ -423,8 +423,9 @@ def oomptimizer(
     def get_max_seq_lens(buckets):
 
         def _determine_lens_for_bucket(bin):
-            return bin, bin  # TODO: SALM only
-            if is_2d_bucketing:
+            if isinstance(model, (SALM, SALMWithAsrDecoder)):
+                return bin, bin  # Note: only 1D bucketing, only counted in tokens
+            elif is_2d_bucketing:
                 input_len, output_len = bin
             else:
                 input_len = bin

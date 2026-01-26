@@ -21,39 +21,10 @@ from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
 from nemo.collections.asr.parts.mixins import TranscribeConfig
 from nemo.core import Exportable, NeuralModule, typecheck
-from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
 
 
 class AudioPerceptionModule(NeuralModule, Exportable):
     """Audio perception module that consists of audio encoder(s) and modality adapter."""
-
-    def input_example(self, max_batch: int = 8, max_dim: int = 32000, min_length: int = 200):
-        batch_size = torch.randint(low=1, high=max_batch, size=[1]).item()
-        max_length = torch.randint(low=min_length, high=max_dim, size=[1]).item()
-        signals = torch.rand(size=[batch_size, max_length]) * 2 - 1
-        lengths = torch.randint(low=min_length, high=max_dim, size=[batch_size])
-        lengths[0] = max_length
-        return signals, lengths, None, None
-
-    @property
-    def input_types(self):
-        """Returns definitions of module input ports."""
-        return {
-            "input_signal": NeuralType(("B", "T"), AudioSignal(freq=self.preprocessor._sample_rate)),
-            "input_signal_length": NeuralType(
-                tuple("B"), LengthsType()
-            ),  # Please note that length should be in samples not seconds.
-            "processed_signal": NeuralType(("B", "D", "T"), SpectrogramType()),
-            "processed_signal_length": NeuralType(tuple("B"), LengthsType()),
-        }
-
-    @property
-    def output_types(self):
-        """Returns definitions of module output ports."""
-        return {
-            "encoded": NeuralType(("B", "T", "D"), AcousticEncodedRepresentation()),
-            "encoded_len": NeuralType(tuple("B"), LengthsType()),
-        }
 
     @property
     def token_equivalent_duration(self) -> float:
@@ -131,7 +102,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         return encoded, encoded_len
 
 
-class IdentityConnector(NeuralModule, Exportable):
+class IdentityConnector(nn.Module):
     """User to pass encoder's representations as-is to the LLM."""
 
     def __init__(
@@ -147,34 +118,6 @@ class IdentityConnector(NeuralModule, Exportable):
 
 class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
     """Audio perception module that consists of audio encoder(s) and modality adapter."""
-
-    def input_example(self, max_batch: int = 8, max_dim: int = 32000, min_length: int = 200):
-        batch_size = torch.randint(low=1, high=max_batch, size=[1]).item()
-        max_length = torch.randint(low=min_length, high=max_dim, size=[1]).item()
-        signals = torch.rand(size=[batch_size, max_length]) * 2 - 1
-        lengths = torch.randint(low=min_length, high=max_dim, size=[batch_size])
-        lengths[0] = max_length
-        return signals, lengths, None, None
-
-    @property
-    def input_types(self):
-        """Returns definitions of module input ports."""
-        return {
-            "input_signal": NeuralType(("B", "T"), AudioSignal(freq=self.preprocessor._sample_rate)),
-            "input_signal_length": NeuralType(
-                tuple("B"), LengthsType()
-            ),  # Please note that length should be in samples not seconds.
-            "processed_signal": NeuralType(("B", "D", "T"), SpectrogramType()),
-            "processed_signal_length": NeuralType(tuple("B"), LengthsType()),
-        }
-
-    @property
-    def output_types(self):
-        """Returns definitions of module output ports."""
-        return {
-            "encoded": NeuralType(("B", "T", "D"), AcousticEncodedRepresentation()),
-            "encoded_len": NeuralType(tuple("B"), LengthsType()),
-        }
 
     @property
     def token_equivalent_duration(self) -> float:

@@ -1,6 +1,6 @@
 model:
   # Every name/path here starting with 'pretrained' is used to initialize the model weights.
-  pretrained_llm: TinyLlama/TinyLlama_v1.1
+  pretrained_llm: Qwen/Qwen3-1.7B
   pretrained_asr: nvidia/canary-1b-flash
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
@@ -15,7 +15,7 @@ model:
     - "^perception\\.encoder\\..+$"
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
-  prompt_format: llama2
+  prompt_format: qwen
   audio_locator_tag: "<|audioplaceholder|>"  # placeholder token for audio turn is expected
 
   # Note: Uncomment the block below to enable LoRA on LLM via HuggingFace PEFT library.
@@ -23,52 +23,35 @@ model:
   #   and prevent freezing any parameter that has the string '.lora_' in its name.
   # lora:
   #   task_type: CAUSAL_LM
-  #   r: 8
-  #   lora_alpha: 32
-  #   lora_dropout: 0.1
+  #   r: 128
+  #   lora_alpha: 256
+  #   lora_dropout: 0.01
+  #   # target_modules are only necessary if the `pretrained_llm` is not yet registered in PEFT library
+  #   target_modules: ["q_proj", "v_proj"]
 
   perception:
      target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
+     output_dim: 2048
      modality_adapter:
-       _target_: nemo.collections.asr.modules.ConformerEncoder
-       feat_in: 1024
-       feat_out: -1 # you may set it if you need different output size other than the default d_model
-       n_layers: 2
+       _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
        d_model: 1024
-       subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
-       subsampling_factor: 1 # must be power of 2 for striding and vggnet
-       subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
-       causal_downsampling: false
-       ff_expansion_factor: 4
-       self_attention_model: rel_pos # rel_pos or abs_pos
-       n_heads: 8 # may need to be lower for smaller d_models
-       # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
-       att_context_size: [-1, -1]
-       att_context_style: regular # regular or chunked_limited
-       xscaling: true # scales up the input embeddings by sqrt(d_model)
-       untie_biases: true # unties the biases of the TransformerXL layers
-       pos_emb_max_len: 5000
-       conv_kernel_size: 9
-       conv_norm_type: batch_norm # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
-       # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
-       # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
-       conv_context_size: null
-       ### regularization
-       dropout: 0 # The dropout used in most of the Conformer Modules
-       dropout_pre_encoder: 0 # The dropout used before the encoder
-       dropout_emb: 0.0 # The dropout used for embeddings
-       dropout_att: 0 # The dropout for multi-headed attention modules
+     # spec_augment:
+     #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+     #   freq_masks: 2 # set to zero to disable it
+     #   time_masks: 10 # set to zero to disable it
+     #   freq_width: 27
+     #   time_width: 5  # 5 frames = 50ms
 
   optimizer:
     _target_: torch.optim.AdamW
-    lr: 3e-4
+    lr: 5e-4
     betas: [0.9, 0.98]
     weight_decay: 1e-3
     foreach: true # set to false if having issues with tensor-parallelism
 
   lr_scheduler:
     _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
-    warmup_steps: 0
+    warmup_steps: 1000
     min_lr: 1e-6
     max_steps: ${trainer.max_steps}
 
@@ -81,7 +64,7 @@ trainer:
   enable_checkpointing: False
   use_distributed_sampler: False
   max_steps: 100000
-  limit_train_batches: 100  # "epoch" size
+  limit_train_batches: 5000  # "epoch" size
   val_check_interval: ${trainer.limit_train_batches}
   limit_val_batches: 10
   log_every_n_steps: 10
@@ -95,7 +78,7 @@ trainer:
     find_unused_parameters: true
     # _target_: lightning.pytorch.strategies.ModelParallelStrategy
     # tensor_parallel_size: 1
-    # data_parallel_size: 2
+    # data_parallel_size: 8  # This is FSDP2
 
 data:
   train_ds:
@@ -107,7 +90,7 @@ data:
         cuts_path: ???  # needs to be set
         audio_locator_tag: ${model.audio_locator_tag}
         tags:
-          # Uncomment below line to include a system prompt.
+          # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
           # system_prompt: "some system prompt"
           context: "Repeat after me, typing in lowercase."
     seed: 42
@@ -142,7 +125,7 @@ data:
             cuts_path: ???  # needs to be set
             audio_locator_tag: ${model.audio_locator_tag}
             tags:
-              # Uncomment below line to include a system prompt.
+              # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
               # system_prompt: "some system prompt"
               context: "Repeat after me, typing in lowercase."
     sample_rate: 16000

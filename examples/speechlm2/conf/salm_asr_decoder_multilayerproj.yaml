@@ -23,29 +23,29 @@ model:
   #   and prevent freezing any parameter that has the string '.lora_' in its name.
   # lora:
   #   task_type: CAUSAL_LM
-  #   r: 8
-  #   lora_alpha: 32
-  #   lora_dropout: 0.1
+  #   r: 128
+  #   lora_alpha: 256
+  #   lora_dropout: 0.01
 
   perception:
      target: nemo.collections.speechlm2.modules.perception.AudioTranscriptionPerceptionModule
      output_dim: 4096
      modality_adapter:
        _target_: nemo.collections.asr.modules.QformerConnector
-       target_layer_ids: [5, 11, 17, 23]
+       target_layer_ids: [0, 5, 11, 17, 23]
        input_dim: 1024
        output_dim: 4096
 
   optimizer:
     _target_: torch.optim.AdamW
-    lr: 3e-4
+    lr: 5e-4
     betas: [0.9, 0.98]
     weight_decay: 1e-3
     foreach: true # set to false if having issues with tensor-parallelism
 
   lr_scheduler:
     _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
-    warmup_steps: 0
+    warmup_steps: 1000
     min_lr: 1e-6
     max_steps: ${trainer.max_steps}
 
@@ -58,7 +58,7 @@ trainer:
   enable_checkpointing: False
   use_distributed_sampler: False
   max_steps: 100000
-  limit_train_batches: 100  # "epoch" size
+  limit_train_batches: 5000  # "epoch" size
   val_check_interval: ${trainer.limit_train_batches}
   limit_val_batches: 10
   log_every_n_steps: 10
@@ -72,7 +72,7 @@ trainer:
     find_unused_parameters: true
     # _target_: lightning.pytorch.strategies.ModelParallelStrategy
     # tensor_parallel_size: 1
-    # data_parallel_size: 2
+    # data_parallel_size: 8  # This is FSDP2
 
 data:
   train_ds:
@@ -84,7 +84,7 @@ data:
         cuts_path: ???  # needs to be set
         audio_locator_tag: ${model.audio_locator_tag}
         tags:
-          # Uncomment below line to include a system prompt.
+          # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
           # system_prompt: "some system prompt"
           context: "Repeat after me, typing in lowercase."
     seed: 42
@@ -119,7 +119,7 @@ data:
             cuts_path: ???  # needs to be set
             audio_locator_tag: ${model.audio_locator_tag}
             tags:
-              # Uncomment below line to include a system prompt.
+              # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
               # system_prompt: "some system prompt"
               context: "Repeat after me, typing in lowercase."
     sample_rate: 16000

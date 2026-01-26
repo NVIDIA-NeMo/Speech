@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .data import DataModule, DuplexS2SDataset, SALMDataset
-from .models import SALM, DuplexS2SModel, DuplexS2SSpeechDecoderModel
+from .models import SALM, DuplexS2SModel, DuplexS2SSpeechDecoderModel, SALMWithAsrDecoder
 
 __all__ = [
     'DataModule',
@@ -21,4 +21,5 @@ __all__ = [
     'DuplexS2SModel',
     'DuplexS2SSpeechDecoderModel',
     'SALM',
+    'SALMWithAsrDecoder',
 ]

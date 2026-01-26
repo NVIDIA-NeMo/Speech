@@ -47,10 +47,10 @@ def load_pretrained_hf(model_path_or_name: str, pretrained_weights: bool = True,
     but is randomly initialized.
     """
     if pretrained_weights:
-        return AutoModelForCausalLM.from_pretrained(model_path_or_name, torch_dtype=dtype, trust_remote_code=True)
+        return AutoModelForCausalLM.from_pretrained(model_path_or_name, torch_dtype=dtype)
     else:
-        config = AutoConfig.from_pretrained(model_path_or_name, trust_remote_code=True)
-        return AutoModelForCausalLM.from_config(config, torch_dtype=dtype, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(model_path_or_name)
+        return AutoModelForCausalLM.from_config(config, torch_dtype=dtype)
 
 
 @contextmanager

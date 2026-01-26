@@ -270,6 +270,8 @@ class QformerConnector(nn.Module):
         qformer_config.hidden_size = self.encoder_config.d_model
         qformer_config.add_cross_attention = True
         qformer_config.is_decoder = True
+        if hasattr(qformer_config, "_attn_implementation"):  # fix for newer transformers versions
+            qformer_config._attn_implementation = "eager"
 
         self.qformer = BertEncoder(qformer_config)
         self.proj = nn.Sequential(

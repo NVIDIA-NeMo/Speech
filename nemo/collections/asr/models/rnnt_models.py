@@ -993,6 +993,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             batch_size = min(config['batch_size'], len(config['paths2audio_files']))
 
         dl_config = {
+            'use_lhotse': True,
             'manifest_filepath': manifest_filepath,
             'sample_rate': self.preprocessor._sample_rate,
             'labels': self.joint.vocabulary,
@@ -1001,6 +1002,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             'shuffle': False,
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
+            'pad_min_duration': 1.0,
+            'pad_direction': 'both',
         }
 
         if config.get("augmentor"):

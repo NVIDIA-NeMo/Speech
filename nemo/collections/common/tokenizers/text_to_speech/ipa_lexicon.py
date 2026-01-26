@@ -191,11 +191,13 @@ GRAPHEME_CHARACTER_CASES = ["upper", "lower", "mixed"]
 
 
 def validate_locale(locale):
+    """Check if locale is supported"""
     if locale not in SUPPORTED_LOCALES:
         raise ValueError(f"Unsupported locale '{locale}'. " f"Supported locales {SUPPORTED_LOCALES}")
 
 
 def get_grapheme_character_set(locale: str, case: str = "upper") -> str:
+    """Gets set of graphemes for given 'locale' and 'case'"""
     if locale not in GRAPHEME_CHARACTER_SETS:
         raise ValueError(
             f"Grapheme character set not found for locale '{locale}'. "
@@ -219,6 +221,7 @@ def get_grapheme_character_set(locale: str, case: str = "upper") -> str:
 
 
 def get_ipa_character_set(locale):
+    """Gets set of phones for given 'locale'"""
     if locale not in IPA_CHARACTER_SETS:
         raise ValueError(
             f"IPA character set not found for locale '{locale}'. " f"Supported locales {IPA_CHARACTER_SETS.keys()}"
@@ -228,6 +231,7 @@ def get_ipa_character_set(locale):
 
 
 def get_ipa_punctuation_list(locale):
+    """Gets set of punctuation for given 'locale'"""
     if locale is None:
         return sorted(list(DEFAULT_PUNCTUATION))
 

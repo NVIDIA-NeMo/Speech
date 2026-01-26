@@ -384,10 +384,6 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 .squeeze(1)
             )
             scores, labels = logits.max(-1)
-            if self.preserve_step_confidence_no_blank:
-                non_blank_step_logits = logits.clone()  # [B, V]
-            else:
-                non_blank_step_logits = None
 
             if self.has_fusion_models():
                 fusion_scores_list, fusion_states_candidates_list = self.advance_fusion_models(
@@ -403,6 +399,11 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 # preserve "blank" / "non-blank" category
                 torch.where(labels == self._blank_index, labels, fusion_labels_max, out=labels)
                 torch.where(labels == self._blank_index, scores, fusion_scores_max, out=scores)
+
+            if self.preserve_step_confidence_no_blank:
+                non_blank_step_logits = logits.clone()  # [B, V]
+            else:
+                non_blank_step_logits = None
 
             # search for non-blank labels using joint, advancing time indices for blank labels
             # checking max_symbols is not needed, since we already forced advancing time indices for such cases
@@ -443,10 +444,6 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 # labels[advance_mask] are blank, and we are looking for non-blank labels
                 more_scores, more_labels = logits.max(dim=-1)
 
-                if self.preserve_step_confidence_no_blank:
-                    # replace logits with current step logits
-                    non_blank_step_logits = torch.where(advance_mask[:, None], logits, non_blank_step_logits)
-
                 if self.has_fusion_models():
                     for fusion_scores in fusion_scores_list:
                         logits[:, :-1] += fusion_scores
@@ -454,6 +451,10 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                     more_scores_w_fusion, more_labels_w_fusion = logits[:, :-1].max(dim=-1)
                     # preserve "blank" / "non-blank" category
                     torch.where(more_labels == self._blank_index, more_labels, more_labels_w_fusion, out=more_labels)
+
+                if self.preserve_step_confidence_no_blank:
+                    # replace logits with current step logits
+                    non_blank_step_logits = torch.where(advance_mask[:, None], logits, non_blank_step_logits)
 
                 # same as: labels[advance_mask] = more_labels[advance_mask], but non-blocking
                 torch.where(advance_mask, more_labels, labels, out=labels)
@@ -1109,8 +1110,6 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         )
         # same as: scores, labels = logits.max(-1)
         torch.max(logits, dim=-1, out=(self.state.scores, self.state.labels))
-        if self.preserve_step_confidence_no_blank:
-            self.state.non_blank_step_logits.copy_(logits)
 
         if self.has_fusion_models():
             fusion_scores_list, fusion_states_candidates_list = self.advance_fusion_models(
@@ -1135,6 +1134,9 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             torch.where(
                 self.state.labels == self._blank_index, self.state.scores, scores_w_fusion, out=self.state.scores
             )
+
+        if self.preserve_step_confidence_no_blank:
+            self.state.non_blank_step_logits.copy_(logits)
 
         # search for non-blank labels using joint, advancing time indices for blank labels
         # checking max_symbols is not needed, since we already forced advancing time indices for such cases
@@ -1187,14 +1189,6 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         # labels[advance_mask] are blank, and we are looking for non-blank labels
         more_scores, more_labels = logits.max(-1)
 
-        if self.preserve_step_confidence_no_blank:
-            torch.where(
-                self.state.advance_mask[:, None],
-                logits,
-                self.state.non_blank_step_logits,
-                out=self.state.non_blank_step_logits,
-            )
-
         if self.has_fusion_models():
             for fusion_model_idx, fusion_scores in enumerate(self.state.fusion_scores_list):
                 # update logits with fusion scores
@@ -1204,6 +1198,14 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             # preserve "blank" / "non-blank" category
             torch.where(more_labels == self._blank_index, more_labels, more_labels_w_fusion, out=more_labels)
             torch.where(more_labels == self._blank_index, more_scores, more_scores_w_fusion, out=more_scores)
+
+        if self.preserve_step_confidence_no_blank:
+            torch.where(
+                self.state.advance_mask[:, None],
+                logits,
+                self.state.non_blank_step_logits,
+                out=self.state.non_blank_step_logits,
+            )
 
         # same as: labels[advance_mask] = more_labels[advance_mask], but non-blocking
         torch.where(self.state.advance_mask, more_labels, self.state.labels, out=self.state.labels)

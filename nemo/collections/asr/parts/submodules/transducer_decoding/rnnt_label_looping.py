@@ -100,7 +100,7 @@ class LabelLoopingState:
         logits_dim: int,
         preserve_logits=False,
         preserve_step_confidence_no_blank=False,
-        preserve_step_confidence_with_blank=False,
+        preserve_each_step_confidence=False,
     ):
         """
 
@@ -161,7 +161,7 @@ class LabelLoopingState:
             if preserve_step_confidence_no_blank
             else None
         )
-        use_alignments = preserve_logits or preserve_step_confidence_with_blank
+        use_alignments = preserve_logits or preserve_each_step_confidence
         if use_alignments:
             self.alignments = rnnt_utils.BatchedAlignments(
                 batch_size=batch_size,
@@ -170,7 +170,7 @@ class LabelLoopingState:
                 device=self.device,
                 float_dtype=self.float_dtype,
                 store_alignments=preserve_logits,
-                store_frame_confidence=preserve_step_confidence_with_blank,
+                store_frame_confidence=preserve_each_step_confidence,
             )
         else:
             self.alignments = None
@@ -236,9 +236,9 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self._blank_index = blank_index
         self.max_symbols = max_symbols_per_step
         self.preserve_logits = preserve_alignments
-        self.preserve_step_confidence_with_blank = preserve_step_confidence and not exclude_blank_from_confidence
+        self.preserve_each_step_confidence = preserve_step_confidence and not exclude_blank_from_confidence
         self.preserve_step_confidence_no_blank = preserve_step_confidence and exclude_blank_from_confidence
-        self.use_alignments = self.preserve_logits or self.preserve_step_confidence_with_blank
+        self.use_alignments = self.preserve_logits or self.preserve_each_step_confidence
         self._SOS = self._blank_index
         self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
         assert self._SOS == self._blank_index  # "blank as pad" algorithm only
@@ -279,9 +279,13 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
     def _get_step_confidence(self, logits: torch.Tensor) -> Optional[torch.Tensor]:
         float_dtype = logits.dtype
-        if (not self.preserve_step_confidence_with_blank) and (not self.preserve_step_confidence_no_blank):
+        if not self.preserve_step_confidence:
             return None
         return self._get_confidence_tensor(F.log_softmax(logits, dim=-1)).to(dtype=float_dtype)
+
+    @property
+    def preserve_step_confidence(self) -> bool:
+        return self.preserve_each_step_confidence or self.preserve_step_confidence_no_blank
 
     def torch_impl(
         self,
@@ -327,7 +331,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 device=device,
                 float_dtype=float_dtype,
                 store_alignments=self.preserve_logits,
-                store_frame_confidence=self.preserve_step_confidence_with_blank,
+                store_frame_confidence=self.preserve_each_step_confidence,
             )
         else:
             alignments = None
@@ -413,7 +417,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                     logits=logits if self.preserve_logits else None,
                     labels=labels,
                     confidence=(
-                        self._get_step_confidence(logits=logits) if self.preserve_step_confidence_with_blank else None
+                        self._get_step_confidence(logits=logits) if self.preserve_each_step_confidence else None
                     ),
                 )
 
@@ -465,9 +469,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                         logits=logits if self.preserve_logits else None,
                         labels=more_labels,
                         confidence=(
-                            self._get_step_confidence(logits=logits)
-                            if self.preserve_step_confidence_with_blank
-                            else None
+                            self._get_step_confidence(logits=logits) if self.preserve_each_step_confidence else None
                         ),
                     )
 
@@ -857,7 +859,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             logits_dim=self.joint.num_classes_with_blank,
             preserve_logits=self.preserve_logits,
             preserve_step_confidence_no_blank=self.preserve_step_confidence_no_blank,
-            preserve_step_confidence_with_blank=self.preserve_step_confidence_with_blank,
+            preserve_each_step_confidence=self.preserve_each_step_confidence,
         )
 
         # init decoder state
@@ -1146,9 +1148,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 time_indices=self.state.time_indices_current_labels,
                 logits=logits if self.preserve_logits else None,
                 labels=self.state.labels,
-                confidence=(
-                    self._get_step_confidence(logits=logits) if self.preserve_step_confidence_with_blank else None
-                ),
+                confidence=(self._get_step_confidence(logits=logits) if self.preserve_each_step_confidence else None),
             )
 
         # advance_mask is a mask for current batch for searching non-blank labels;
@@ -1215,9 +1215,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 time_indices=self.state.time_indices_current_labels,
                 logits=logits if self.preserve_logits else None,
                 labels=more_labels,
-                confidence=(
-                    self._get_step_confidence(logits=logits) if self.preserve_step_confidence_with_blank else None
-                ),
+                confidence=(self._get_step_confidence(logits=logits) if self.preserve_each_step_confidence else None),
             )
 
         # blank_mask = self.labels == self._blank_index

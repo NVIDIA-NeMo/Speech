@@ -103,8 +103,9 @@ class LabelLoopingState:
         device: torch.device,
         float_dtype: torch.dtype,
         logits_dim: int,
-        preserve_alignments=False,
-        preserve_frame_confidence=False,
+        preserve_logits=False,
+        preserve_step_confidence_no_blank=False,
+        preserve_each_step_confidence=False,
         include_duration_confidence: bool = False,
         include_duration: bool = False,
     ):
@@ -118,8 +119,9 @@ class LabelLoopingState:
             device: device to store tensors
             float_dtype: default float dtype for tensors (should match projected encoder output)
             logits_dim: output dimension for Joint
-            preserve_alignments: if alignments are needed
-            preserve_frame_confidence: if frame confidence is needed
+            preserve_logits: if logits are needed
+            preserve_step_confidence_no_blank: if non-blank step confidence is needed
+            preserve_each_step_confidence: if all step confidences are needed, including blank
             include_duration_confidence: if duration confidence is needed to be added to the frame confidence
             include_duration: if predicted token durations are needed to be added to the Hypothesis object
         """
@@ -167,16 +169,24 @@ class LabelLoopingState:
             device=self.device,
             float_dtype=float_dtype,
             with_durations=include_duration,
+            with_step_confidence=preserve_step_confidence_no_blank,
+            with_duration_confidence=include_duration_confidence,
         )
-        if preserve_alignments or preserve_frame_confidence:
+        self.non_blank_step_logits = (
+            torch.zeros([batch_size, logits_dim], dtype=float_dtype, device=device)
+            if preserve_step_confidence_no_blank
+            else None
+        )
+        use_alignments = preserve_logits or preserve_each_step_confidence
+        if use_alignments:
             self.alignments = rnnt_utils.BatchedAlignments(
                 batch_size=batch_size,
                 logits_dim=logits_dim,
                 init_length=max_time * (max_symbols + 1),
                 device=self.device,
                 float_dtype=self.float_dtype,
-                store_alignments=preserve_alignments,
-                store_frame_confidence=preserve_frame_confidence,
+                store_alignments=preserve_logits,
+                store_frame_confidence=preserve_each_step_confidence,
                 with_duration_confidence=include_duration_confidence,
             )
         else:
@@ -251,9 +261,9 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self._blank_index = blank_index
         self.max_symbols = max_symbols_per_step
         self.preserve_logits = preserve_alignments
-        self.preserve_step_confidence_with_blank = preserve_step_confidence and not exclude_blank_from_confidence
+        self.preserve_each_step_confidence = preserve_step_confidence and not exclude_blank_from_confidence
         self.preserve_step_confidence_no_blank = preserve_step_confidence and exclude_blank_from_confidence
-        self.use_alignments = self.preserve_logits or self.preserve_step_confidence_with_blank
+        self.use_alignments = self.preserve_logits or self.preserve_each_step_confidence
         self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
         self._SOS = self._blank_index
@@ -297,7 +307,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
 
     def _get_step_confidence(self, logits: torch.Tensor, num_durations: int) -> Optional[torch.Tensor]:
         float_dtype = logits.dtype
-        if (not self.preserve_step_confidence_with_blank) and (not self.preserve_step_confidence_no_blank):
+        if not self.preserve_step_confidence:
             return None
         if self.include_duration_confidence:
             return torch.stack(
@@ -312,6 +322,10 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 dim=-1,
             )
         return self._get_confidence_tensor(F.log_softmax(logits[:, :-num_durations], dim=-1)).to(dtype=float_dtype)
+
+    @property
+    def preserve_step_confidence(self) -> bool:
+        return self.preserve_each_step_confidence or self.preserve_step_confidence_no_blank
 
     def torch_impl(
         self,
@@ -359,7 +373,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 device=device,
                 float_dtype=float_dtype,
                 store_alignments=self.preserve_logits,
-                store_frame_confidence=self.preserve_step_confidence_with_blank,
+                store_frame_confidence=self.preserve_each_step_confidence,
                 with_duration_confidence=self.include_duration_confidence,
             )
         else:
@@ -460,7 +474,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                     labels=labels,
                     confidence=(
                         self._get_step_confidence(logits=logits, num_durations=num_durations)
-                        if self.preserve_step_confidence_with_blank
+                        if self.preserve_each_step_confidence
                         else None
                     ),
                 )
@@ -516,7 +530,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                         labels=more_labels,
                         confidence=(
                             self._get_step_confidence(logits=logits, num_durations=num_durations)
-                            if self.preserve_step_confidence_with_blank
+                            if self.preserve_each_step_confidence
                             else None
                         ),
                     )
@@ -916,8 +930,9 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             device=encoder_output_projected.device,
             float_dtype=encoder_output_projected.dtype,
             logits_dim=self.joint.num_classes_with_blank,
-            preserve_alignments=self.preserve_alignments,
-            preserve_frame_confidence=self.preserve_frame_confidence,
+            preserve_logits=self.preserve_logits,
+            preserve_step_confidence_no_blank=self.preserve_step_confidence_no_blank,
+            preserve_each_step_confidence=self.preserve_each_step_confidence,
             include_duration_confidence=self.include_duration_confidence,
             include_duration=self.include_duration,
         )
@@ -1202,6 +1217,9 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 self.state.labels == self._blank_index, self.state.scores, scores_w_fusion, out=self.state.scores
             )
 
+        if self.preserve_step_confidence_no_blank:
+            self.state.non_blank_step_logits.copy_(logits)
+
         jump_durations_indices = logits[:, -self.state.model_durations.shape[0] :].argmax(dim=-1)
         self.state.durations.copy_(self.state.model_durations[jump_durations_indices])
 
@@ -1217,9 +1235,13 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             self.state.alignments.add_results_masked_no_checks_(
                 active_mask=self.state.active_mask,
                 time_indices=self.state.time_indices_current_labels,
-                logits=logits if self.preserve_alignments else None,
-                labels=self.state.labels if self.preserve_alignments else None,
-                confidence=self._get_step_confidence(logits=logits, num_durations=self.state.model_durations.shape[0]),
+                logits=logits if self.preserve_logits else None,
+                labels=self.state.labels,
+                confidence=(
+                    self._get_step_confidence(logits=logits, num_durations=self.state.model_durations.shape[0])
+                    if self.preserve_each_step_confidence
+                    else None
+                ),
             )
 
         # advance_mask is a mask for current batch for searching non-blank labels;
@@ -1269,6 +1291,14 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             torch.where(more_labels == self._blank_index, more_labels, more_labels_w_fusion, out=more_labels)
             torch.where(more_labels == self._blank_index, more_scores, more_scores_w_fusion, out=more_scores)
 
+        if self.preserve_step_confidence_no_blank:
+            torch.where(
+                self.state.advance_mask[:, None],
+                logits,
+                self.state.non_blank_step_logits,
+                out=self.state.non_blank_step_logits,
+            )
+
         jump_durations_indices = logits[:, -self.state.model_durations.shape[0] :].argmax(dim=-1)
         more_durations = self.state.model_durations[jump_durations_indices]
         # same as: labels[advance_mask] = more_labels[advance_mask], but non-blocking
@@ -1280,9 +1310,13 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             self.state.alignments.add_results_masked_no_checks_(
                 active_mask=self.state.advance_mask,
                 time_indices=self.state.time_indices_current_labels,
-                logits=logits if self.preserve_alignments else None,
-                labels=more_labels if self.preserve_alignments else None,
-                confidence=self._get_step_confidence(logits=logits, num_durations=self.state.model_durations.shape[0]),
+                logits=logits if self.preserve_logits else None,
+                labels=more_labels,
+                confidence=(
+                    self._get_step_confidence(logits=logits, num_durations=self.state.model_durations.shape[0])
+                    if self.preserve_each_step_confidence
+                    else None
+                ),
             )
 
         # blank_mask = self.labels == self._blank_index
@@ -1321,6 +1355,13 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             labels=self.state.labels,
             time_indices=self.state.time_indices_current_labels,
             scores=self.state.scores,
+            confidence=(
+                self._get_step_confidence(
+                    self.state.non_blank_step_logits, num_durations=self.state.model_durations.shape[0]
+                )
+                if self.preserve_step_confidence_no_blank
+                else None
+            ),
             token_durations=self.state.durations if self.include_duration else None,
         )
 

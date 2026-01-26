@@ -608,8 +608,6 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             'pin_memory': True,
             'channel_selector': config.get('channel_selector', None),
             'use_start_end_token': self.cfg.validation_ds.get('use_start_end_token', False),
-            'pad_min_duration': 1.0,
-            'pad_direction': 'both',
         }
 
         if config.get("augmentor"):

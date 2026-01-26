@@ -183,7 +183,6 @@ class ConfigManager:
         llm_model_id = self.server_config.llm.model
         is_registry_model = False
 
-        is_registry_model = False
         # Try to get LLM config file name from server config first
         if self.server_config.llm.get("model_config", None) is not None:
             yaml_file_name = os.path.basename(self.server_config.llm.model_config)

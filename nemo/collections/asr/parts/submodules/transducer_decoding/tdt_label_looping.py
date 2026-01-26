@@ -428,12 +428,11 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                     multi_biasing_ids=multi_biasing_ids,
                     float_dtype=float_dtype,
                 )
-                logits_with_fusion = logits.clone()
                 for fusion_scores in fusion_scores_list:
-                    logits_with_fusion[:, : -num_durations - 1] += fusion_scores
+                    logits[:, : -num_durations - 1] += fusion_scores
 
                 # get max scores and labels without blank
-                fusion_scores_max, fusion_labels_max = logits_with_fusion[:, : -num_durations - 1].max(dim=-1)
+                fusion_scores_max, fusion_labels_max = logits[:, : -num_durations - 1].max(dim=-1)
                 # preserve "blank" / "non-blank" category
                 torch.where(labels == self._blank_index, labels, fusion_labels_max, out=labels)
                 torch.where(labels == self._blank_index, scores, fusion_scores_max, out=scores)
@@ -481,13 +480,10 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 more_scores, more_labels = logits[:, :-num_durations].max(dim=-1)
 
                 if self.has_fusion_models():
-                    logits_with_fusion = logits.clone()
                     for fusion_scores in fusion_scores_list:
-                        logits_with_fusion[:, : -num_durations - 1] += fusion_scores
+                        logits[:, : -num_durations - 1] += fusion_scores
                     # get max scores and labels without blank
-                    more_scores_w_fusion, more_labels_w_fusion = logits_with_fusion[:, : -num_durations - 1].max(
-                        dim=-1
-                    )
+                    more_scores_w_fusion, more_labels_w_fusion = logits[:, : -num_durations - 1].max(dim=-1)
                     # preserve "blank" / "non-blank" category
                     torch.where(more_labels == self._blank_index, more_labels, more_labels_w_fusion, out=more_labels)
 

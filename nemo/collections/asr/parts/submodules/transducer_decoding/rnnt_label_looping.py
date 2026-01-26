@@ -1189,7 +1189,10 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
         if self.preserve_step_confidence_no_blank:
             torch.where(
-                self.state.advance_mask, logits, self.state.non_blank_step_logits, out=self.state.non_blank_step_logits
+                self.state.advance_mask[:, None],
+                logits,
+                self.state.non_blank_step_logits,
+                out=self.state.non_blank_step_logits,
             )
 
         if self.has_fusion_models():
@@ -1243,7 +1246,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             time_indices=self.state.time_indices_current_labels,
             scores=self.state.scores,
             confidence=(
-                self._get_confidence(self.state.non_blank_step_logits)
+                self._get_step_confidence(self.state.non_blank_step_logits)
                 if self.preserve_step_confidence_no_blank
                 else None
             ),

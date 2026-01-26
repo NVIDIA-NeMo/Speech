@@ -413,7 +413,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                     active_mask=active_mask,
                     time_indices=time_indices_current_labels,
                     logits=logits if self.preserve_logits else None,
-                    labels=labels if self.preserve_logits else None,
+                    labels=labels,
                     confidence=(
                         self._get_step_confidence(logits=logits) if self.preserve_step_confidence_with_blank else None
                     ),
@@ -465,7 +465,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                         active_mask=advance_mask,
                         time_indices=time_indices_current_labels,
                         logits=logits if self.preserve_logits else None,
-                        labels=more_labels if self.preserve_logits else None,
+                        labels=labels,
                         confidence=(
                             self._get_step_confidence(logits=logits)
                             if self.preserve_step_confidence_with_blank
@@ -1146,7 +1146,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 active_mask=self.state.active_mask,
                 time_indices=self.state.time_indices_current_labels,
                 logits=logits if self.preserve_logits else None,
-                labels=self.state.labels if self.preserve_logits else None,
+                labels=self.state.labels,
                 confidence=(
                     self._get_step_confidence(logits=logits) if self.preserve_step_confidence_with_blank else None
                 ),
@@ -1212,7 +1212,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 active_mask=self.state.advance_mask,
                 time_indices=self.state.time_indices_current_labels,
                 logits=logits if self.preserve_logits else None,
-                labels=more_labels if self.preserve_logits else None,
+                labels=more_labels,
                 confidence=(
                     self._get_step_confidence(logits=logits) if self.preserve_step_confidence_with_blank else None
                 ),

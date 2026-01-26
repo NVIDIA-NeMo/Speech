@@ -257,7 +257,7 @@ Additional tools can be added in two ways:
 - Adding a new [direct function](https://docs.pipecat.ai/guides/learn/function-calling#using-direct-functions-shorthand) such as the `get_city_weather` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/basic_tools.py`.
 - Adding new tools to adjust the behavior of each of the STT/TTS/Diar/LLM/TurnTaking components, by adding the `ToolCallingMixin` to the component and implementing the `setup_tool_calling` method as the `KokoroTTSService` class in `nemo/agents/voice_agent/pipecat/services/nemo/tts.py`.
 
-The tools are then registered to the LLM via the `register_direct_tools_to_llm` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/mixins.py`, as shown in the example in `examples/voice_agent/server/bot_websocket_server.py`.
+The tools are then registered to the LLM via the `register_direct_tools_to_llm` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/mixins.py`, as shown in the example in `examples/voice_agent/server/server.py`.
 
 More details on tool calling with Pipecat can be found in the [Pipecat documentation](https://docs.pipecat.ai/guides/learn/function-calling).
 
@@ -283,7 +283,7 @@ Sometimes, after answering a question related to the tools, the LLM might refuce
 
 NVIDIA also provides a variety of [NIM](https://developer.nvidia.com/nim?sortBy=developer_learning_library%2Fsort%2Ffeatured_in.nim%3Adesc%2Ctitle%3Aasc&hitsPerPage=12) services for better ASR, TTS and LLM performance with more efficient deployment on either cloud or local servers.
 
-You can also modify the `server/bot_websocket_server.py` to use NVIDIA NIM services for better LLM, ASR and TTS performance, by referring to these Pipecat services:
+You can also modify the `server/server.py` to use NVIDIA NIM services for better LLM, ASR and TTS performance, by referring to these Pipecat services:
 - [NVIDIA NIM LLM Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/nim/llm.py)
 - [NVIDIA Riva ASR Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/riva/stt.py)
 - [NVIDIA Riva TTS Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/riva/tts.py)

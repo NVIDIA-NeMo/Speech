@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -207,7 +207,6 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
     separate_graphs: Optional[SeparateGraphsLabelLooping]
     full_graph: Optional[torch.cuda.CUDAGraph]
     state: Optional[LabelLoopingState]
-    fusion_models: Optional[List[NGramGPULanguageModel]]
 
     def __init__(
         self,
@@ -222,8 +221,8 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         include_duration_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         allow_cuda_graphs: bool = True,
-        fusion_models: Optional[List[NGramGPULanguageModel]] = None,
-        fusion_models_alpha: Optional[List[float]] = None,
+        fusion_models: Optional[list[NGramGPULanguageModel]] = None,
+        fusion_models_alpha: Optional[list[float]] = None,
         enable_per_stream_biasing: bool = False,
     ):
         """

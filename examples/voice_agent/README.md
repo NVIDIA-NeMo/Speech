@@ -145,9 +145,9 @@ Most LLMs from HuggingFace are supported. A few examples are:
     - Please use `server/server_configs/llm_configs/nemotron_nano_v3.yaml` as the server config. It needs more than 60GB VRAM to host the model, thus the config by default is set to use tensor parallelism of 2. Expect additional 5GB for kv-cache and other compnents in the voice agent. To better monitor the vllm status, `start_vllm_on_init` is set to `false`, so that you can manually start the vllm server in another terminal via: 
     ```bash
         vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
-        --trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.85 --max-model-len 8192 \
-        --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser qwen3_coder --enable-prefix-caching \
-        --reasoning-parser-plugin server/parsers/nano_v3_reasoning_parser.py --reasoning-parser nano_v3
+            --trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.85 --max-model-len 8192 \
+            --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser qwen3_coder --enable-prefix-caching \
+            --reasoning-parser-plugin server/parsers/nano_v3_reasoning_parser.py --reasoning-parser nano_v3
     ```
     - If you have a GPU with FP8 support, the VRAM requirement is reduced to about 30GB. You can swtich to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) by modifying the llm config accordingly.
     - Tool calling is enabled for this model.

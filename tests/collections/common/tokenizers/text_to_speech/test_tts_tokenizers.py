@@ -18,6 +18,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     EnglishCharsTokenizer,
     FrenchCharsTokenizer,
     GermanCharsTokenizer,
+    HindiCharsTokenizer,
     IPATokenizer,
     ItalianCharsTokenizer,
     JapanesePhonemeTokenizer,
@@ -302,3 +303,14 @@ class TestTTSTokenizers:
         assert '1' in chars_chopsticks[:2]
         # 橋 (0ハ1シ) starts low
         assert '0' in chars_bridge[:2]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_hindi_chars_tokenizer(self):
+        input_text = "नमस्ते दुनिया!"
+        expected_output = "नमस्ते दुनिया!"
+
+        tokenizer = HindiCharsTokenizer()
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output

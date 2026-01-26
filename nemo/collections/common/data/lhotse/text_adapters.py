@@ -29,7 +29,7 @@ from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_matrices, collate_vectors
 from lhotse.dataset.dataloading import resolve_seed
-from lhotse.serialization import decode_json_line, deserialize_item, load_jsonl, open_best
+from lhotse.serialization import load_jsonl, open_best
 from lhotse.shar import AudioTarWriter, JsonlShardWriter
 from lhotse.utils import Pathlike, is_valid_url
 

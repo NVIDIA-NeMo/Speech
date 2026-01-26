@@ -27,12 +27,12 @@ The diversity of this dataset is crucial for robust preference optimization. Inc
 .. code-block:: bash
 
     python scripts/magpietts/dpo/create_text_contextpairs.py \
-        --challenging_texts /Data/DPOPairsInputData/challenging_texts_nemollm.txt \
-        --regular_texts_for_audiocontext /Data/DPOPairsInputData/regular_texts_for_audiocontext.txt \
-        --regular_texts_for_textcontext /Data/DPOPairsInputData/regular_texts_for_textcontext.txt \
-        --audio_contexts /Data/DPOPairsInputData/audio_context_list.json \
-        --text_contexts /Data/DPOPairsInputData/text_context_list.txt \
-        --output_manifest /Data/DPOPairsInputData/text_context_pairs.json \
+        --challenging_texts /path/to/challenging_texts.txt \
+        --regular_texts_for_audiocontext /path/to/regular_texts_for_audiocontext.txt \
+        --regular_texts_for_textcontext /path/to/regular_texts_for_textcontext.txt \
+        --audio_contexts /path/to/audio_context_list.json \
+        --text_contexts /path/to/text_context_list.txt \
+        --output_manifest /path/to/text_context_pairs.json \
         --nsamples_perpair 6
 
 The ``nsamples_perpair`` parameter specifies how many audio samples will be generated for each text-context pair in the next step. Setting this to 6 provides enough variety to create meaningful preference pairs while keeping computation manageable. The output manifest serves as input for the generation step.
@@ -43,7 +43,7 @@ Step 2: Generate Audio Samples
 
 With the text-context pairs prepared, the next step is to generate multiple audio samples for each pair using a base Magpie-TTS checkpoint. The generation process also computes quality metrics—Character Error Rate (CER) and Speaker Similarity (SSIM)—for each output, which will be used to create preference pairs.
 
-This step can be parallelized across multiple GPUs or nodes to speed up generation. Each generated audio file is accompanied by a JSON file containing the computed metrics.
+This step can be parallelized across multiple GPUs and nodes to speed up generation. Each generated audio file is accompanied by a JSON file containing the computed metrics.
 
 .. code-block:: bash
 
@@ -56,10 +56,7 @@ This step can be parallelized across multiple GPUs or nodes to speed up generati
         +test_ds_meta.textcontextpairs.manifest_path=/path/to/text_context_pairs.json \
         +test_ds_meta.textcontextpairs.audio_dir="/" \
         +test_ds_meta.textcontextpairs.feature_dir="/" \
-        model.context_duration_min=5.0 \
-        model.context_duration_max=5.0 \
         model.codecmodel_path=/path/to/codec_model.nemo \
-        model.alignment_loss_scale=0.002 \
         model.prior_scaling_factor=null \
         model.load_cached_codes_if_available=false
 
@@ -109,8 +106,6 @@ The final step is fine-tuning the base model on the preference pairs using the D
         +val_ds_meta.dpoprefval.feature_dir="/" \
         +model.dpo_beta=0.01 \
         +model.dpo_sft_loss_weight=0.0 \
-        model.context_duration_min=5.0 \
-        model.context_duration_max=5.0 \
         model.codecmodel_path=/path/to/codec_model.nemo \
         model.alignment_loss_scale=0.001 \
         model.prior_scaling_factor=null \
@@ -138,12 +133,12 @@ The GRPO training process starts with preparing text-context pairs, similar to D
 .. code-block:: bash
 
     python scripts/magpietts/dpo/create_text_contextpairs.py \
-        --challenging_texts /Data/DPOPairsInputData/challenging_texts_nemollm.txt \
-        --regular_texts_for_audiocontext /Data/DPOPairsInputData/regular_texts_for_audiocontext.txt \
-        --regular_texts_for_textcontext /Data/DPOPairsInputData/regular_texts_for_textcontext.txt \
-        --audio_contexts /Data/DPOPairsInputData/audio_context_list.json \
-        --text_contexts /Data/DPOPairsInputData/text_context_list.txt \
-        --output_manifest /Data/DPOPairsInputData/text_context_pairs.json \
+        --challenging_texts /path/to/challenging_texts.txt \
+        --regular_texts_for_audiocontext /path/to/regular_texts_for_audiocontext.txt \
+        --regular_texts_for_textcontext /path/to/regular_texts_for_textcontext.txt \
+        --audio_contexts /path/to/audio_context_list.json \
+        --text_contexts /path/to/text_context_list.txt \
+        --output_manifest /path/to/text_context_pairs_grpo.json \
         --nsamples_perpair 1
 
 Note that ``nsamples_perpair`` is set to 1 since GRPO generates candidates during training.
@@ -210,6 +205,7 @@ The following command demonstrates a complete GRPO training setup for multilingu
         --config-name=magpietts \
         batch_size=2 \
         +init_from_ptl_ckpt=/path/to/magpie_checkpoint \
+        model.codecmodel_path=/path/to/codec_model.nemo \
         +mode="onlinepo_train" \
         max_epochs=20 \
         exp_manager.exp_dir=/path/to/grpo_experiment \
@@ -224,25 +220,21 @@ The following command demonstrates a complete GRPO training setup for multilingu
         +model.grpo_beta=0.0 \
         +model.num_generations_per_item=12 \
         +model.reference_free=true \
-        +model.inference_cfg_prob=0.0 \
+        +model.inference_cfg_prob=0.5 \
         +model.inference_cfg_scale=2.5 \
-        +model.cer_reward_weight=0.33 \
-        +model.ssim_reward_weight=0.33 \
-        +model.pesq_reward_weight=0.33 \
+        +model.cer_reward_weight=0.45 \
+        +model.ssim_reward_weight=0.45 \
+        +model.pesq_reward_weight=0.1 \
         +model.use_pesq=true \
         +model.reward_asr_model="whisper" \
         model.cfg_unconditional_prob=0.0 \
         +model.inference_topk=2016 \
-        +model.inference_temperature=0.8 \
+        +model.inference_temperature=0.7 \
         +model.use_kv_cache_during_online_po=true \
         +model.loss_type="grpo" \
-        +model.scale_rewards=true \
         +model.max_decoder_steps=430 \
-        model.context_duration_min=5.0 \
-        model.context_duration_max=5.0 \
         model.decoder.p_dropout=0.0 \
         model.encoder.p_dropout=0.0 \
-        model.codecmodel_path=/path/to/codec_model.nemo \
         model.alignment_loss_scale=0.0 \
         model.prior_scaling_factor=null \
         ~trainer.check_val_every_n_epoch \

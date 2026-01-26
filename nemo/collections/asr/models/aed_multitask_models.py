@@ -592,7 +592,14 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             # Check if chunking will be enabled
             trcfg.enable_chunking = (is_one_audio or trcfg.batch_size == 1) and self.timestamps_asr_model is not None
 
-            if not trcfg.enable_chunking:
+            if trcfg.enable_chunking:
+                if self.decoding.cfg.get('return_xattn_scores', False):
+                    logging.warning(
+                        "When chunking is enabled, cross-attention scores will not be returned even though "
+                        "`return_xattn_scores` is set to True. If you want to return the cross-attention scores "
+                        "set `enable_chunking` to False in the MultiTaskTranscriptionConfig in override_config."
+                    )
+            else:
                 logging.warning("Chunking is disabled. Please pass a single audio file or set batch_size to 1")
 
         results = super().transcribe(audio=audio, override_config=trcfg)

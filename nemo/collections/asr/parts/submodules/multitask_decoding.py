@@ -188,6 +188,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 confidence_method_cfg=self.confidence_method_cfg,
                 temperature=self.cfg.greedy.temperature,
                 n_samples=self.cfg.greedy.n_samples,
+                return_xattn_scores=self.cfg.get('return_xattn_scores', False),
             )
 
         elif strategy == 'beam':
@@ -206,6 +207,7 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 ngram_lm_alpha=self.cfg.beam.get('ngram_lm_alpha', 0.0),
                 boosting_tree=self.cfg.beam.get('boosting_tree', None),
                 boosting_tree_alpha=self.cfg.beam.get('boosting_tree_alpha', 0.0),
+                return_xattn_scores=self.cfg.get('return_xattn_scores', False),
             )
 
         else:
@@ -658,3 +660,6 @@ class MultiTaskDecodingConfig:
 
     # can be used to change temperature for decoding
     temperature: float = 1.0
+
+    # if set to true, return attention scores; ignore them to save memory otherwise
+    return_xattn_scores: bool = False

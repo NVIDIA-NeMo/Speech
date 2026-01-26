@@ -18,7 +18,7 @@ import shutil
 import soundfile as sf
 import torch
 
-from nemo.collections.audio.parts.utils.resampling import resample
+from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.utils import logging
 
 """

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import itertools
+from contextlib import nullcontext
 from math import ceil
 from pathlib import Path
 from typing import List, Tuple
@@ -24,6 +25,7 @@ from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from nemo.collections.audio.parts.utils.transforms import Resample, resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.collections.tts.losses.audio_codec_loss import (
     FeatureMatchingLoss,
@@ -50,13 +52,6 @@ from nemo.core.neural_types.elements import (
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
-
-try:
-    import torchaudio
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
 
 
 class AudioCodecModel(ModelPT):
@@ -192,7 +187,10 @@ class AudioCodecModel(ModelPT):
             )
             # freeze the pretrained speaker encoder
             self.speaker_encoder.freeze()
-            print("Speaker encoder loaded and frozen !!")
+            logging.info("Speaker encoder loaded and frozen !!")
+            self.speaker_encoder_resampler = Resample(
+                orig_freq=self.sample_rate, new_freq=self.speaker_encoder.audio_config["sample_rate"]
+            )
 
         # Disabled for now as it is not used in final model
         self.use_asr_consitency_loss = False
@@ -254,24 +252,9 @@ class AudioCodecModel(ModelPT):
         super().load_state_dict(state_dict, strict=False)
 
     def get_speaker_embedding(self, audio, requires_grad=False):
-        if not requires_grad:
-            with torch.no_grad():
-                if HAVE_TORCHAUDIO:
-                    audio_resampled = torchaudio.functional.resample(
-                        audio, self.sample_rate, self.speaker_encoder.audio_config["sample_rate"]
-                    )
-                else:
-                    logging.error('Could not import torchaudio!')
-                    raise ModuleNotFoundError("torchaudio is not installed but is necessary to audio resample !!")
-                g = self.speaker_encoder(audio_resampled, l2_norm=True).unsqueeze(-1)
-        else:
-            if HAVE_TORCHAUDIO:
-                audio_resampled = torchaudio.functional.resample(
-                    audio, self.sample_rate, self.speaker_encoder.audio_config["sample_rate"]
-                )
-            else:
-                logging.error('Could not import torchaudio!')
-                raise ModuleNotFoundError("torchaudio is not installed but is necessary to audio resample !!")
+        grad_context = nullcontext() if requires_grad else torch.no_grad()
+        with grad_context:
+            audio_resampled = self.speaker_encoder_resampler(audio)
             g = self.speaker_encoder(audio_resampled, l2_norm=True).unsqueeze(-1)
 
         return g
@@ -506,10 +489,7 @@ class AudioCodecModel(ModelPT):
 
     def preprocess_audio(self, audio, audio_len, sample_rate):
         if sample_rate and sample_rate != self.sample_rate:
-            if not HAVE_TORCHAUDIO:
-                raise ModuleNotFoundError("Must install torchaudio for resampling.")
-
-            audio = torchaudio.functional.resample(waveform=audio, orig_freq=sample_rate, new_freq=self.sample_rate)
+            audio = resample(waveform=audio, orig_freq=sample_rate, new_freq=self.sample_rate)
             audio_len_scaled = audio_len.long() * self.sample_rate
             new_audio_len = audio_len_scaled / sample_rate
             # To avoid rounding issues at lower precisions, do not call torch.ceil when the length is divisible by the sample rate

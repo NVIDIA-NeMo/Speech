@@ -24,7 +24,7 @@ import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf
 
-from nemo.collections.audio.models import AudioToAudioModel
+from nemo.collections.audio.models.audio_to_audio import AudioToAudioModel
 from nemo.core.config import hydra_runner
 from nemo.utils import logging, model_utils
 

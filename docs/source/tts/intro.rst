@@ -16,5 +16,8 @@ We will illustrate details in the following sections.
     checkpoints
     configs
     g2p
+    magpietts
+    magpietts-po
+    magpietts-longform
 
 .. include:: resources.rst

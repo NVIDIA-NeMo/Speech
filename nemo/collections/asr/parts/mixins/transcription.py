@@ -135,12 +135,12 @@ class TranscriptionTensorDataset(Dataset):
         elif self.pad_direction == 'left':
             pad_left = pad_total
             pad_right = 0
-        else: # right (default)
+        else:  # right (default)
             pad_left = 0
             pad_right = pad_total
         samples = torch.nn.functional.pad(samples, (pad_left, pad_right), mode='constant', value=0.0)
         return samples
-    
+
     def get_item(self, index):
         samples = self.audio_tensors[index]
 

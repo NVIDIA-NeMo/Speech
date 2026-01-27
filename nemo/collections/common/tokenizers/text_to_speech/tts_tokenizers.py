@@ -403,7 +403,7 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
     _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
     _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="mixed")
     _CHARSET_STR += string.ascii_lowercase
-
+    
     def __init__(
         self,
         chars=_CHARSET_STR,
@@ -440,6 +440,7 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
             # Add a punctuation that has a single char.
             elif (c in self.PUNCT_LIST) and self.punct:
                 cs.append(c)
+            
             elif c != space:
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 

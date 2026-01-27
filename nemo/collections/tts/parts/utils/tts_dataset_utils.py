@@ -362,7 +362,20 @@ def sample_audio(
 
 # Titles that should NEVER cause sentence splits (always followed by names)
 _TITLE_ABBREVIATIONS = {
-    'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'rev', 'gov', 'gen', 'col', 'lt', 'sgt', 'capt',
+    'mr',
+    'mrs',
+    'ms',
+    'dr',
+    'prof',
+    'sr',
+    'jr',
+    'rev',
+    'gov',
+    'gen',
+    'col',
+    'lt',
+    'sgt',
+    'capt',
 }
 
 
@@ -414,8 +427,10 @@ def split_by_sentence(
             if char == '.':
                 # Get the word before the period
                 word_start = last_sep_idx + 1
-                word_before = paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
-                
+                word_before = (
+                    paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
+                )
+
                 # Never split on title abbreviations (they're always followed by names)
                 if word_before in _TITLE_ABBREVIATIONS:
                     continue

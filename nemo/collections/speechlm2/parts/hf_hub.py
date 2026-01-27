@@ -69,6 +69,11 @@ class HFHubMixin(
         # this setting skips loading the original pretrained ASR and LLM weights, and loads the
         # final trained model weights directly.
         model_kwargs['cfg']['pretrained_weights'] = False
+        # When loading from HF checkpoint, set init_from_path to the HF checkpoint directory
+        # so it can load the model weights from the correct location.
+        if 'init_from_path' in model_kwargs['cfg']:
+            model_kwargs['cfg']['init_from_path'] = model_id
+
         return super()._from_pretrained(
             model_id=model_id,
             revision=revision,

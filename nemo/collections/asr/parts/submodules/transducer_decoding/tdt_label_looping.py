@@ -305,6 +305,10 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.full_graph = None
         self.separate_graphs = None
 
+    @property
+    def preserve_step_confidence(self) -> bool:
+        return self.preserve_each_step_confidence or self.preserve_step_confidence_no_blank
+
     def _get_step_confidence(self, logits: torch.Tensor, num_durations: int) -> Optional[torch.Tensor]:
         float_dtype = logits.dtype
         if not self.preserve_step_confidence:

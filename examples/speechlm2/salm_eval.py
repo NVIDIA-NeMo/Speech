@@ -58,7 +58,7 @@ class SalmEvalConfig:
 def main(cfg: SalmEvalConfig):
     logging.info(f'Hydra config:\n{OmegaConf.to_yaml(cfg)}')
 
-    if cfg.user_asr_decoder:
+    if cfg.use_asr_decoder:
         model = SALMWithAsrDecoder.from_pretrained(cfg.pretrained_name)
     else:
         model = SALM.from_pretrained(cfg.pretrained_name)

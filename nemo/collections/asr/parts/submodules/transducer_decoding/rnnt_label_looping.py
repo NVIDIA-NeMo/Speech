@@ -388,9 +388,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                     multi_biasing_ids=multi_biasing_ids,
                     float_dtype=float_dtype,
                 )
-                logits_with_fusion = logits.clone()
                 for fusion_scores in fusion_scores_list:
-                    logits_with_fusion[:, :-1] += fusion_scores
+                    logits[:, :-1] += fusion_scores
 
                 # get max scores and labels without blank
                 fusion_scores_max, fusion_labels_max = logits[:, :-1].max(dim=-1)
@@ -444,7 +443,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
                 if self.has_fusion_models():
                     for fusion_scores in fusion_scores_list:
-                        logits_with_fusion[:, :-1] += fusion_scores
+                        logits[:, :-1] += fusion_scores
                     # get max scores and labels without blank
                     more_scores_w_fusion, more_labels_w_fusion = logits[:, :-1].max(dim=-1)
                     # preserve "blank" / "non-blank" category

@@ -87,8 +87,6 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         self._pending_requests = {}
         self._have_seen_think_tokens = False
 
-        self.setup_tool_calling()
-
     def reset(self):
         """Reset the TTS service."""
         self._text_aggregator.reset()
@@ -438,6 +436,7 @@ class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
         self._fastpitch_model_name = fastpitch_model
         self._hifigan_model_name = hifigan_model
         super().__init__(model=model_name, device=device, **kwargs)
+        self.setup_tool_calling()
 
     def _setup_model(self):
         print("Loading model...")
@@ -512,6 +511,7 @@ class KokoroTTSService(BaseNemoTTSService):
                 lang_code=["a", "b"], device=device, repo_id=model, cache_models=cache_models
             )
         super().__init__(model=model, device=device, sample_rate=sample_rate, **kwargs)
+        self.setup_tool_calling()
 
     def _setup_model(self, lang_code: Optional[str] = None, voice: Optional[str] = None):
         """Initialize the Kokoro pipeline."""
@@ -779,6 +779,7 @@ class MagpieTTSService(BaseNemoTTSService):
         self._current_speaker = speaker
         self._apply_TN = apply_TN
         super().__init__(model=model, device=device, **kwargs)
+        self.setup_tool_calling()
 
     def _setup_model(self):
         from nemo.collections.tts.models import MagpieTTSModel

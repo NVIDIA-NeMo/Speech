@@ -360,6 +360,12 @@ def sample_audio(
     return audio, audio_filepath_abs, audio_filepath_rel
 
 
+# Titles that should NEVER cause sentence splits (always followed by names)
+_TITLE_ABBREVIATIONS = {
+    'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'rev', 'gov', 'gen', 'col', 'lt', 'sgt', 'capt',
+}
+
+
 def split_by_sentence(
     paragraph: str,
     sentence_separators: Optional[List[str]] = None,
@@ -367,9 +373,10 @@ def split_by_sentence(
     """
     Split a paragraph into sentences based on sentence-ending punctuation.
 
-    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by checking
-    if the separator is followed by a space before splitting. Sentence-ending
-    punctuation is preserved with each sentence.
+    Handles title abbreviations (Dr., Mr., Mrs., Prof., etc.) by never splitting
+    on them since they are always followed by names.
+
+    Sentence-ending punctuation is preserved with each sentence.
 
     Args:
         paragraph: The input text paragraph to split into sentences.
@@ -401,9 +408,18 @@ def split_by_sentence(
 
     for i, char in enumerate(paragraph):
         # Check if current char is a separator and next char is a space
-        # This avoids splitting abbreviations like "Dr." or "a.m."
         next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
         if char in sentence_separators and next_char == " ":
+            # Check if this is a title abbreviation - never split on titles (Dr., Mr., etc.)
+            if char == '.':
+                # Get the word before the period
+                word_start = last_sep_idx + 1
+                word_before = paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
+                
+                # Never split on title abbreviations (they're always followed by names)
+                if word_before in _TITLE_ABBREVIATIONS:
+                    continue
+
             sentences.append(paragraph[last_sep_idx + 1 : i + 1].strip())
             last_sep_idx = i + 1
 
@@ -420,11 +436,74 @@ def split_by_sentence(
     return sentences
 
 
+def _get_sentence_separators_for_language(language: str) -> List[str]:
+    """
+    Get language-specific sentence separators.
+
+    Args:
+        language: Language code (e.g., "en", "ja", "hi").
+
+    Returns:
+        List of sentence separator characters for the given language.
+    """
+    # Language-specific sentence separators
+    language_separators = {
+        # Japanese: Japanese punctuation + Western punctuation for mixed text
+        "ja": ['。', '？', '！', '…', '.', '?', '!', '...'],
+        # Hindi: Devanagari Danda (।) is the primary sentence-ending mark
+        "hi": ['।', '॥', '?', '!', '.', '...'],
+        # Chinese: Chinese punctuation + Western punctuation
+        "zh": ['。', '？', '！', '…', '.', '?', '!', '...'],
+    }
+    # Default Western punctuation for unlisted languages
+    return language_separators.get(language, ['.', '?', '!', '...'])
+
+
+def get_word_count(text: str, language: str = "en") -> int:
+    """
+    Get word count for text in a language-aware manner.
+
+    For Japanese, uses pyopenjtalk morphological analysis for accurate word segmentation.
+    For Chinese, counts characters (as words are not space-separated).
+    For other languages, uses whitespace splitting.
+
+    Args:
+        text: Input text to count words for.
+        language: Language code (e.g., "en", "ja", "zh", "hi").
+
+    Returns:
+        Number of words (or characters for Chinese) in the text.
+    """
+    if not text or not text.strip():
+        return 0
+
+    if language == "zh":
+        # Chinese: count characters (no word boundaries)
+        return len(list(text.replace(" ", "")))
+
+    if language == "ja":
+        try:
+            import pyopenjtalk
+
+            # run_frontend returns list of word dictionaries (NJD format)
+            njd = pyopenjtalk.run_frontend(text)
+            # Filter out None/invalid entries and count words
+            word_count = sum(1 for word in njd if isinstance(word, dict) and word.get('string', '').strip())
+            return word_count if word_count > 0 else len(text.split())
+        except ImportError:
+            # Fallback: use character count for Japanese if pyopenjtalk not available
+            return len(list(text.replace(" ", "")))
+
+    # Default: whitespace splitting for English, Hindi, and other languages
+    return len(text.split())
+
+
 def chunk_and_tokenize_text_by_sentence(
     text: str,
     tokenizer_name: str,
     text_tokenizer: Any,
     eos_token_id: int,
+    language: str = "en",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """
     Tokenize text split by sentences, adding EOS token after each sentence.
@@ -434,6 +513,9 @@ def chunk_and_tokenize_text_by_sentence(
         tokenizer_name: Name of the tokenizer to use (e.g., "english_phoneme").
         text_tokenizer: The tokenizer instance.
         eos_token_id: End-of-sequence token ID to append.
+        language: Language code for selecting appropriate sentence separators.
+            Supported: "en", "ja", "hi", "zh", "es", "fr", "it", "de", "vi".
+            Defaults to "en".
 
     Returns:
         Tuple of:
@@ -441,7 +523,8 @@ def chunk_and_tokenize_text_by_sentence(
             - chunked_tokens_len: List of token lengths.
             - chunked_text: List of sentence strings.
     """
-    split_sentences = split_by_sentence(text)
+    sentence_separators = _get_sentence_separators_for_language(language)
+    split_sentences = split_by_sentence(text, sentence_separators=sentence_separators)
 
     chunked_tokens = []
     chunked_tokens_len = []

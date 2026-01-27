@@ -440,7 +440,6 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
             # Add a punctuation that has a single char.
             elif (c in self.PUNCT_LIST) and self.punct:
                 cs.append(c)
-
             elif c != space:
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 

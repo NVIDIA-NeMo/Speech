@@ -90,6 +90,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         self.setup_tool_calling()
 
     def reset(self):
+        """Reset the TTS service."""
         self._text_aggregator.reset()
 
     def setup_tool_calling(self):
@@ -511,7 +512,6 @@ class KokoroTTSService(BaseNemoTTSService):
                 lang_code=["a", "b"], device=device, repo_id=model, cache_models=cache_models
             )
         super().__init__(model=model, device=device, sample_rate=sample_rate, **kwargs)
-        self.setup_tool_calling()
 
     def _setup_model(self, lang_code: Optional[str] = None, voice: Optional[str] = None):
         """Initialize the Kokoro pipeline."""
@@ -748,6 +748,20 @@ class KokoroTTSService(BaseNemoTTSService):
 
 
 class MagpieTTSService(BaseNemoTTSService):
+    """Text-to-Speech service using Magpie TTS model.
+
+    Magpie is a multilingual TTS model with 357 million parameters.
+    More info: https://huggingface.co/nvidia/magpie_tts_multilingual_357m
+
+    Args:
+        model: Model name or path to the Magpie TTS model.
+        language: Language code for the model (default: 'en' for English)
+        speaker: Speaker to use for the model (default: 'Sofia')
+        apply_TN: Whether to apply text normalization (default: False)
+        device: Device to run on (default: 'cuda')
+        **kwargs: Additional arguments passed to BaseNemoTTSService
+    """
+
     SPEAKER_MAP = {"John": 0, "Sofia": 1, "Aria": 2, "Jason": 3, "Leo": 4}
 
     def __init__(
@@ -765,7 +779,6 @@ class MagpieTTSService(BaseNemoTTSService):
         self._current_speaker = speaker
         self._apply_TN = apply_TN
         super().__init__(model=model, device=device, **kwargs)
-        self.setup_tool_calling()
 
     def _setup_model(self):
         from nemo.collections.tts.models import MagpieTTSModel
@@ -799,6 +812,7 @@ class MagpieTTSService(BaseNemoTTSService):
         yield audio[:audio_len]
 
     def setup_tool_calling(self):
+        """No tools for now for Magpie TTS service."""
         pass
 
 

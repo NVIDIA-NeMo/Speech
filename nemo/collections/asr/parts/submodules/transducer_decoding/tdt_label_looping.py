@@ -424,7 +424,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             scores, labels = logits[:, :-num_durations].max(dim=-1)
 
             if self.has_fusion_models():
-                fusion_scores_combined, fusion_states_candidates_list = self.advance_fusion_models(
+                fusion_scores_list, fusion_states_candidates_list = self.advance_fusion_models(
                     fusion_states_list=fusion_states_list,
                     multi_biasing_ids=multi_biasing_ids,
                     float_dtype=float_dtype,

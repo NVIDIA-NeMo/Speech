@@ -296,7 +296,7 @@ class TestSentenceSplitting:
         """Test multiple title abbreviations in one sentence."""
         text = "Mr. and Mrs. Johnson met Prof. Lee yesterday."
         sentences = split_by_sentence(text)
-        
+
         # All titles should be preserved
         assert len(sentences) == 1
         assert "Mr. and Mrs. Johnson met Prof. Lee" in sentences[0]

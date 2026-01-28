@@ -362,7 +362,20 @@ def sample_audio(
 
 # Titles that should NEVER cause sentence splits (always followed by names)
 _TITLE_ABBREVIATIONS = {
-    'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'rev', 'gov', 'gen', 'col', 'lt', 'sgt', 'capt',
+    'mr',
+    'mrs',
+    'ms',
+    'dr',
+    'prof',
+    'sr',
+    'jr',
+    'rev',
+    'gov',
+    'gen',
+    'col',
+    'lt',
+    'sgt',
+    'capt',
 }
 
 # CJK and Indic sentence-ending punctuation that should split regardless of following whitespace

@@ -459,7 +459,9 @@ def split_by_sentence(
         if char == '.':
             # Get the word before the period
             word_start = last_sep_idx + 1 if last_sep_idx >= 0 else 0
-            word_before = paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
+            word_before = (
+                paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
+            )
 
             # Never split on title abbreviations (they're always followed by names)
             if word_before in _TITLE_ABBREVIATIONS:
@@ -468,7 +470,7 @@ def split_by_sentence(
         # Extract the sentence (from after last separator to current separator inclusive)
         start_idx = last_sep_idx + 1 if last_sep_idx >= 0 else 0
         sentences.append(paragraph[start_idx : i + 1].strip())
-        
+
         # Update last_sep_idx: if next char is whitespace, point to it (so +1 skips it)
         # If no whitespace (CJK), point to separator (so +1 gives us the next char)
         if next_char.isspace():

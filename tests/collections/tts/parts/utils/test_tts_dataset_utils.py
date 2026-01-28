@@ -369,7 +369,7 @@ class TestSentenceSplitting:
     @pytest.mark.unit
     def test_split_by_sentence_hindi_no_spaces(self):
         """Test Hindi sentence splitting WITHOUT spaces after Danda.
-        
+
         Note: Danda (।) splits regardless of following whitespace.
         Western punctuation (? !) still requires whitespace in Hindi text.
         """

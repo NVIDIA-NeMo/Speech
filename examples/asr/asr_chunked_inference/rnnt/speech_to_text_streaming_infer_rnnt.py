@@ -359,12 +359,13 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 multi_biasing_ids = torch.full([batch_size], fill_value=-1, dtype=torch.long, device=map_location)
                 if audio_data.biasing_requests is not None:
                     for batch_i, request in enumerate(audio_data.biasing_requests):
-                        if request is not None:
-                            biasing_model = request.get_model(tokenizer=asr_model.tokenizer)
-                            if biasing_model is not None:
-                                multi_model_id = decoding_computer.biasing_multi_model.add_model(biasing_model)
-                                request.multi_model_id = multi_model_id
-                                multi_biasing_ids[batch_i] = multi_model_id
+                        if request is not None and not request.is_empty():
+                            request.add_to_multi_model(
+                                tokenizer=asr_model.tokenizer,
+                                biasing_multi_model=decoding_computer.biasing_multi_model,
+                            )
+                            if request.multi_model_id is not None:
+                                multi_biasing_ids[batch_i] = request.multi_model_id
             else:
                 multi_biasing_ids = None
 

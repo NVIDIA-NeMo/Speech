@@ -991,16 +991,16 @@ def _set_with_io(obj, attr, value):
 
 def _validate_and_apply_deterministic_mode(model: pl.LightningModule) -> None:
     """Apply and validate deterministic mode requirements.
-    
+
     This enforces restrictions and settings that must hold when
     the model is configured to run in deterministic mode.
-    
+
     Args:
         model: The model to validate and configure for deterministic mode.
     """
     if not hasattr(model, "config"):
         return
-    
+
     if not getattr(model.config, "deterministic_mode", False):
         return
 
@@ -1009,16 +1009,16 @@ def _validate_and_apply_deterministic_mode(model: pl.LightningModule) -> None:
         raise AssertionError("Flash attention cannot be used in deterministic mode.")
 
     # Disallow cross-entropy loss fusion as it is not deterministic
-    assert not getattr(model.config, "cross_entropy_loss_fusion", False), (
-        "Cross Entropy Fusion is currently not deterministic."
-    )
+    assert not getattr(
+        model.config, "cross_entropy_loss_fusion", False
+    ), "Cross Entropy Fusion is currently not deterministic."
 
     # Validate NCCL_ALGO environment variable
     all_reduce_choices = ("Tree", "Ring", "CollnetDirect", "CollnetChain", "^NVLS")
     nccl_algo = os.getenv("NCCL_ALGO", None)
-    assert nccl_algo is not None and nccl_algo in all_reduce_choices, (
-        f"NCCL_ALGO must be set to one of {all_reduce_choices} for deterministic mode."
-    )
+    assert (
+        nccl_algo is not None and nccl_algo in all_reduce_choices
+    ), f"NCCL_ALGO must be set to one of {all_reduce_choices} for deterministic mode."
 
     # Enable deterministic algorithms in torch
     torch.use_deterministic_algorithms(True)

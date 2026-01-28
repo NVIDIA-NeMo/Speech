@@ -1,10 +1,10 @@
 import nemo_run as run
-from nemo.collections import llm
+import torch
 from lightning.pytorch.loggers import WandbLogger
 from megatron.core.transformer.enums import AttnBackend
-from nemo.collections.llm.gpt.data.pre_training import PreTrainingDataModule
-import torch
 
+from nemo.collections import llm
+from nemo.collections.llm.gpt.data.pre_training import PreTrainingDataModule
 from nemo.lightning.pytorch.strategies.utils import RestoreConfig
 
 pretrain = llm.deepseek_v3.pretrain_recipe(
@@ -16,7 +16,7 @@ pretrain = llm.deepseek_v3.pretrain_recipe(
 )
 
 pretrain.resume.restore_config = run.Config(
-    RestoreConfig, 
+    RestoreConfig,
     path="/aot/checkpoints/dsv3/nemo2-2l",
     load_model_state=True,
     load_optim_state=False,
@@ -49,12 +49,14 @@ pretrain.model.config.cross_entropy_loss_fusion = False
 pretrain.model.config.attention_backend = AttnBackend.auto
 
 pretrain.data = run.Config(
-    PreTrainingDataModule, 
-    seq_length=4096, 
-    global_batch_size=16, 
-    micro_batch_size=1, 
+    PreTrainingDataModule,
+    seq_length=4096,
+    global_batch_size=16,
+    micro_batch_size=1,
     split='9999,8,2',
-    paths=['/lustre/fsw/coreai_dlalgo_llm/datasets/RedPajama2/kenlm_perp_head_gopher_linefilter_decompressed/bin_idx/nemo/head_01_text_document']
+    paths=[
+        '/lustre/fsw/coreai_dlalgo_llm/datasets/RedPajama2/kenlm_perp_head_gopher_linefilter_decompressed/bin_idx/nemo/head_01_text_document'
+    ],
 )
 
 pretrain.optim.lr_scheduler = None
@@ -63,6 +65,7 @@ pretrain.model.config.vocab_size = 129280
 
 
 import os
+
 os.environ["WANDB_API_KEY"] = "f37880d4fc7a812145caab826f6fd1bf2dbd169c"
 os.environ["NCCL_ALGO"] = "Ring"
 os.environ["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] = "0"
@@ -70,8 +73,6 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
 pretrain.log.wandb = run.Config(
-    WandbLogger, 
-    project="nemo2_mbridge_comparison", 
-    name="dsv3_2layers_nemo2_tp2pp2ep2cp2"
+    WandbLogger, project="nemo2_mbridge_comparison", name="dsv3_2layers_nemo2_tp2pp2ep2cp2"
 )
 run.run(pretrain)

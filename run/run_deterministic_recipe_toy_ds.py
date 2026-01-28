@@ -1,12 +1,15 @@
+import argparse
+import os
+
 import nemo_run as run
-from nemo.collections import llm
+import torch
 from lightning.pytorch.loggers import WandbLogger
 from megatron.core.transformer.enums import AttnBackend
+
+from nemo.collections import llm
 from nemo.collections.llm.gpt.data.pre_training import PreTrainingDataModule
-import torch
-import os
-import argparse
 from nemo.lightning.pytorch.strategies.utils import RestoreConfig
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run deterministic recipe for toy dataset")
@@ -24,12 +27,15 @@ def parse_args():
 
     parser.add_argument("--wandb-api-key", type=str, required=True, help="Wandb API key")
     parser.add_argument("--wandb-project", type=str, default="nemo2_mbridge_comparison_new")
-    parser.add_argument("--wandb-exp-name", type=str, default="dsv3_2layers_mbridge_final_bs16_tp2pp2ep2cp2sp_100steps")
+    parser.add_argument(
+        "--wandb-exp-name", type=str, default="dsv3_2layers_mbridge_final_bs16_tp2pp2ep2cp2sp_100steps"
+    )
     parser.add_argument("--wandb-entity", type=str, default="dsv3_comparision")
     return parser.parse_args()
+
+
 if __name__ == "__main__":
     args = parse_args()
-
 
     # start from default deepseek v3 recipe
     pretrain = llm.deepseek_v3.pretrain_recipe(
@@ -42,7 +48,7 @@ if __name__ == "__main__":
 
     # Load pretrained checkpoint
     pretrain.resume.restore_config = run.Config(
-        RestoreConfig, 
+        RestoreConfig,
         path=args.pretrained_checkpoint,
         load_model_state=True,
         load_optim_state=False,
@@ -59,15 +65,13 @@ if __name__ == "__main__":
     pretrain.trainer.strategy.num_layers_in_first_pipeline_stage = None
     pretrain.trainer.strategy.num_layers_in_last_pipeline_stage = None
 
-
     # Model Parallelism configuration
     pretrain.trainer.strategy.tensor_model_parallel_size = args.tensor_model_parallel_size
     pretrain.trainer.strategy.pipeline_model_parallel_size = args.pipeline_model_parallel_size
     pretrain.trainer.strategy.expert_model_parallel_size = args.expert_model_parallel_size
-    pretrain.trainer.strategy.context_parallel_size = 1 # CP fixed to 1 since unfused attention does not apply CP
+    pretrain.trainer.strategy.context_parallel_size = 1  # CP fixed to 1 since unfused attention does not apply CP
     pretrain.trainer.strategy.sequence_parallel = True
     pretrain.trainer.strategy.pipeline_dtype = torch.bfloat16
-
 
     pretrain.model.config.recompute_granularity = None
     pretrain.model.config.recompute_modules = None
@@ -83,21 +87,20 @@ if __name__ == "__main__":
     pretrain.model.config.gradient_accumulation_fusion = False  # Match MBridge - use param.grad path
 
     pretrain.data = run.Config(
-        PreTrainingDataModule, 
-        seq_length=args.seq_length, 
-        global_batch_size=args.global_batch_size, 
-        micro_batch_size=args.micro_batch_size, 
-        split='9999,8,2', # Align with Mbridge split ratio
+        PreTrainingDataModule,
+        seq_length=args.seq_length,
+        global_batch_size=args.global_batch_size,
+        micro_batch_size=args.micro_batch_size,
+        split='9999,8,2',  # Align with Mbridge split ratio
         paths=args.data_paths,
     )
 
     pretrain.optim.lr_scheduler = None
 
-    # Match MBRIDGE's settings  
+    # Match MBRIDGE's settings
     pretrain.optim.config.weight_decay = 0.1  # Original matching value
     pretrain.model.config.make_vocab_size_divisible_by = 1280
-    pretrain.model.config.vocab_size = 129280 # Default vocab size does not match the deepseek v3 model
-
+    pretrain.model.config.vocab_size = 129280  # Default vocab size does not match the deepseek v3 model
 
     # Deterministic mode environment variables
     os.environ["WANDB_API_KEY"] = args.wandb_api_key
@@ -105,10 +108,9 @@ if __name__ == "__main__":
     os.environ["NVTE_ALLOW_NONDETERMINISTIC_ALGO"] = "0"
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
-
     pretrain.log.wandb = run.Config(
-        WandbLogger, 
-        project=args.wandb_project, 
+        WandbLogger,
+        project=args.wandb_project,
         name=args.wandb_exp_name,
         entity=args.wandb_entity,
     )

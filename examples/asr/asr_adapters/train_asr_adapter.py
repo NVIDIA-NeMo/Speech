@@ -83,6 +83,7 @@ https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/results.ht
 """
 import os
 from dataclasses import is_dataclass
+from typing import Union
 
 import lightning.pytorch as pl
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -126,7 +127,7 @@ def update_model_cfg(original_cfg, new_cfg):
     return new_cfg
 
 
-def add_global_adapter_cfg(model, global_adapter_cfg):
+def add_global_adapter_cfg(model: ASRModel, global_adapter_cfg: Union[DictConfig, dict]):
     # Convert to DictConfig from dict or Dataclass
     if is_dataclass(global_adapter_cfg):
         global_adapter_cfg = OmegaConf.structured(global_adapter_cfg)

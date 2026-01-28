@@ -24,9 +24,17 @@ import math
 import operator
 import os
 import pickle
+import tarfile
+import tempfile
 from collections import defaultdict
+from functools import lru_cache
 from os.path import expanduser
 from pathlib import Path
+from urllib.parse import urlparse
+
+import boto3
+from botocore.exceptions import ClientError
+from botocore.config import Config
 
 import dash
 import dash_bootstrap_components as dbc
@@ -47,6 +55,218 @@ from plotly.subplots import make_subplots
 
 # number of items in a table per page
 DATA_PAGE_SIZE = 10
+
+# Global S3 client (initialized lazily)
+_s3_client = None
+
+import configparser
+import os
+from pathlib import Path
+
+def parse_s3cfg(config_path='~/.s3cfg', section='pdx'):
+    """
+    Parse the .s3cfg file and extract configuration values.
+    
+    Args:
+        config_path: Path to the s3cfg file (default: ~/.s3cfg)
+        section: Section of the config file to parse (default: pdx)
+    
+    Returns:
+        dict: Dictionary containing the parsed configuration
+    """
+    # Expand user path
+    config_path = Path(config_path).expanduser()
+    
+    # Check if file exists
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    # Create ConfigParser instance
+    config = configparser.ConfigParser()
+    
+    # Read the config file
+    config.read(config_path)
+    
+    # Extract values from [default] section
+    if section in config:
+        s3_config = {
+            'use_https': config.getboolean(section, 'use_https', fallback=True),
+            'access_key': config.get(section, 'access_key', fallback=None),
+            'secret_key': config.get(section, 'secret_key', fallback=None),
+            'bucket_location': config.get(section, 'bucket_location', fallback=None),
+            'host_base': config.get(section, 'host_base', fallback=None),
+        }
+        return s3_config
+    else:
+        raise ValueError(f"No [{section}] section found in config file")
+
+
+def get_s3_client():
+    """Get or create a boto3 S3 client."""
+    global _s3_client
+    s3_config = parse_s3cfg('~/.s3cfg', 'pdx')
+    print("s3_config", s3_config)
+    if _s3_client is None:
+        _s3_client = boto3.client('s3',
+            endpoint_url="https://" + s3_config['host_base'],
+            aws_access_key_id=s3_config['access_key'],
+            aws_secret_access_key=s3_config['secret_key'],
+            region_name=s3_config['bucket_location'],
+            config=Config(connect_timeout=5))
+    return _s3_client
+
+
+def is_s3_path(path):
+    """Check if a path is an S3 URL."""
+    if path is None:
+        return False
+    return str(path).startswith('s3://')
+
+
+def parse_s3_path(s3_path):
+    """Parse an S3 URL into bucket and key components.
+    
+    Args:
+        s3_path: S3 URL in format s3://bucket/key
+        
+    Returns:
+        tuple: (bucket, key)
+    """
+    parsed = urlparse(str(s3_path))
+    bucket = parsed.netloc
+    key = parsed.path.lstrip('/')
+    return bucket, key
+
+
+def read_s3_file(s3_path):
+    """Read a file from S3 and return its contents as a string.
+    
+    Args:
+        s3_path: S3 URL to the file
+        
+    Returns:
+        str: File contents
+    """
+    s3 = get_s3_client()
+    bucket, key = parse_s3_path(s3_path)
+    try:
+        response = s3.get_object(Bucket=bucket, Key=key)
+        return response['Body'].read().decode('utf-8')
+    except ClientError as e:
+        logging.error(f"Error reading S3 file {s3_path}: {e}")
+        raise
+
+
+def read_s3_file_bytes(s3_path):
+    """Read a file from S3 and return its contents as bytes.
+    
+    Args:
+        s3_path: S3 URL to the file
+        
+    Returns:
+        bytes: File contents
+    """
+    s3 = get_s3_client()
+    bucket, key = parse_s3_path(s3_path)
+    try:
+        response = s3.get_object(Bucket=bucket, Key=key)
+        return response['Body'].read()
+    except ClientError as e:
+        logging.error(f"Error reading S3 file {s3_path}: {e}")
+        raise
+
+
+# Cache for tar file contents to avoid repeated S3 downloads
+_tar_cache = {}
+
+
+def get_audio_from_s3_tar(tar_s3_path, audio_filename):
+    """Extract an audio file from a tar archive stored on S3.
+    
+    Args:
+        tar_s3_path: S3 URL to the tar file (e.g., s3://bucket/audio_0.tar)
+        audio_filename: Name of the audio file within the tar (e.g., audio1.wav)
+        
+    Returns:
+        bytes: Audio file contents
+    """
+    global _tar_cache
+    
+    # Check if we have this tar file cached
+    if tar_s3_path not in _tar_cache:
+        logging.info(f"Downloading tar file from S3: {tar_s3_path}")
+        tar_bytes = read_s3_file_bytes(tar_s3_path)
+        _tar_cache[tar_s3_path] = tar_bytes
+    
+    tar_bytes = _tar_cache[tar_s3_path]
+    
+    # Extract the requested audio file from the tar
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode='r') as tar:
+        # Try to find the file - it might be stored with or without directory prefix
+        member_names = tar.getnames()
+        target_member = None
+        
+        # Try exact match first
+        if audio_filename in member_names:
+            target_member = audio_filename
+        else:
+            # Try to find by basename
+            for name in member_names:
+                if os.path.basename(name) == audio_filename or name.endswith('/' + audio_filename):
+                    target_member = name
+                    break
+        
+        if target_member is None:
+            raise FileNotFoundError(f"Audio file '{audio_filename}' not found in tar archive {tar_s3_path}. "
+                                    f"Available files: {member_names[:10]}...")
+        
+        member = tar.getmember(target_member)
+        f = tar.extractfile(member)
+        if f is None:
+            raise ValueError(f"Could not extract {target_member} from {tar_s3_path}")
+        return f.read()
+
+
+def load_audio_from_s3(audio_filepath, tar_base_path=None):
+    """Load audio data from S3, supporting both direct files and tarred audio.
+    
+    Args:
+        audio_filepath: The audio file path (e.g., "audio1.wav" for tarred, or full S3 URL)
+        tar_base_path: Base S3 path for tar files (e.g., "s3://ASR/tarred/audio_0.tar")
+                       If provided, audio_filepath is treated as a file within this tar.
+        
+    Returns:
+        tuple: (audio_bytes, io.BytesIO) - BytesIO object for librosa to read
+    """
+    if tar_base_path and is_s3_path(tar_base_path):
+        # Audio is inside a tar file on S3
+        audio_bytes = get_audio_from_s3_tar(tar_base_path, audio_filepath)
+        return io.BytesIO(audio_bytes)
+    elif is_s3_path(audio_filepath):
+        # Direct S3 audio file
+        audio_bytes = read_s3_file_bytes(audio_filepath)
+        return io.BytesIO(audio_bytes)
+    else:
+        raise ValueError(f"Cannot load audio: {audio_filepath} (tar_base_path={tar_base_path})")
+
+
+def open_manifest_file(manifest_path):
+    """Open a manifest file, supporting both local and S3 paths.
+    
+    Args:
+        manifest_path: Path to the manifest file (local or S3 URL)
+        
+    Yields:
+        str: Lines from the manifest file
+    """
+    if is_s3_path(manifest_path):
+        content = read_s3_file(manifest_path)
+        for line in content.splitlines():
+            yield line
+    else:
+        with open(manifest_path, 'r', encoding='utf8') as f:
+            for line in f:
+                yield line.rstrip('\n')
 
 # operators for filtering items
 filter_operators = {
@@ -104,6 +324,14 @@ def parse_args():
         type=str,
         help='A base path for the relative paths in manifest. It defaults to manifest path.',
     )
+    parser.add_argument(
+        '--tar-base-path',
+        default=None,
+        type=str,
+        help='S3 path to tarred audio files (e.g., s3://ASR/tarred/audio_0.tar). '
+             'When specified, audio_filepath values in the manifest are treated as '
+             'filenames within this tar archive.',
+    )
     parser.add_argument('--debug', '-d', action='store_true', help='enable debug mode')
 
     parser.add_argument(
@@ -122,8 +350,14 @@ def parse_args():
     args = parser.parse_args()
 
     # assume audio_filepath is relative to the directory where the manifest is stored
+    # For S3 paths, we cannot use os.path.dirname, so leave it as None
     if args.audio_base_path is None:
-        args.audio_base_path = os.path.dirname(args.manifest)
+        if is_s3_path(args.manifest):
+            # For S3 manifests, audio_base_path should be explicitly provided
+            # or tar_base_path should be used
+            args.audio_base_path = None
+        else:
+            args.audio_base_path = os.path.dirname(args.manifest)
 
     # automaticly going in comparison mode, if there is names_compared argument
     if args.names_compared is not None:
@@ -162,6 +396,7 @@ def load_data(
     audio_base_path=None,
     comparison_mode=False,
     names=None,
+    tar_base_path=None,
 ):
     if comparison_mode:
         if names is None:
@@ -182,7 +417,8 @@ def load_data(
                         word = line.strip()
                     vocabulary_ext[word] = 1
 
-        if not disable_caching:
+        # Disable caching for S3 manifests (cannot get mtime)
+        if not disable_caching and not is_s3_path(data_filename):
             pickle_filename = data_filename.split('.json')[0]
             json_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(data_filename))
             timestamp = json_mtime.strftime('%Y%m%d_%H%M')
@@ -195,8 +431,8 @@ def load_data(
                         item['OOV'] = item['word'] not in vocabulary_ext
                 if estimate_audio:
                     for item in data:
-                        filepath = absolute_audio_filepath(item['audio_filepath'], audio_base_path)
-                        signal, sr = librosa.load(path=filepath, sr=None)
+                        filepath = absolute_audio_filepath(item['audio_filepath'], audio_base_path, tar_base_path)
+                        signal, sr = load_audio_data(filepath, audio_base_path, tar_base_path)
                         bw = eval_bandwidth(signal, sr)
                         item['freq_bandwidth'] = int(bw)
                         item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
@@ -242,80 +478,80 @@ def load_data(
 
         sm = difflib.SequenceMatcher()
         metrics_available = False
-        with open(data_filename, 'r', encoding='utf8') as f:
-            for line in tqdm.tqdm(f):
-                item = json.loads(line)
-                if not isinstance(item['text'], str):
-                    item['text'] = ''
-                num_chars = len(item['text'])
-                orig = item['text'].split()
-                num_words = len(orig)
-                for word in orig:
-                    vocabulary[word] += 1
-                for char in item['text']:
-                    alphabet.add(char)
-                num_hours += item['duration']
+        # Support both local files and S3 paths
+        manifest_lines = list(open_manifest_file(data_filename))
+        for line in tqdm.tqdm(manifest_lines):
+            item = json.loads(line)
+            if not isinstance(item['text'], str):
+                item['text'] = ''
+            num_chars = len(item['text'])
+            orig = item['text'].split()
+            num_words = len(orig)
+            for word in orig:
+                vocabulary[word] += 1
+            for char in item['text']:
+                alphabet.add(char)
+            num_hours += item['duration']
 
-                if field_name in item:
-                    metrics_available = True
-                    pred = item[field_name].split()
-                    measures = jiwer.compute_measures(item['text'], item[field_name])
-                    word_dist = measures['substitutions'] + measures['insertions'] + measures['deletions']
-                    char_dist = editdistance.eval(item['text'], item[field_name])
-                    wer_dist += word_dist
-                    cer_dist += char_dist
-                    wer_count += num_words
-                    cer_count += num_chars
+            if field_name in item:
+                metrics_available = True
+                pred = item[field_name].split()
+                measures = jiwer.compute_measures(item['text'], item[field_name])
+                word_dist = measures['substitutions'] + measures['insertions'] + measures['deletions']
+                char_dist = editdistance.eval(item['text'], item[field_name])
+                wer_dist += word_dist
+                cer_dist += char_dist
+                wer_count += num_words
+                cer_count += num_chars
 
-                    sm.set_seqs(orig, pred)
-                    for m in sm.get_matching_blocks():
-                        for word_idx in range(m[0], m[0] + m[2]):
-                            match_vocab[orig[word_idx]] += 1
-                    wmr_count += measures['hits']
-                else:
-                    if comparison_mode:
-                        if field_name != 'pred_text':
-                            if field_name == name_1:
-                                logging.error(f"The .json file has no field with name: {name_1}")
-                                exit()
-                            if field_name == name_2:
-                                logging.error(f"The .json file has no field with name: {name_2}")
-                                exit()
-                data.append(
-                    {
-                        'audio_filepath': item['audio_filepath'],
-                        'duration': round(item['duration'], 2),
-                        'num_words': num_words,
-                        'num_chars': num_chars,
-                        'word_rate': round(num_words / item['duration'], 2),
-                        'char_rate': round(num_chars / item['duration'], 2),
-                        'text': item['text'],
-                    }
-                )
-                if metrics_available:
-                    data[-1][field_name] = item[field_name]
-                    if num_words == 0:
-                        num_words = 1e-9
-                    if num_chars == 0:
-                        num_chars = 1e-9
-                    data[-1]['WER'] = round(word_dist / num_words * 100.0, 2)
-                    data[-1]['CER'] = round(char_dist / num_chars * 100.0, 2)
-                    data[-1]['WMR'] = round(measures['hits'] / num_words * 100.0, 2)
-                    data[-1]['I'] = measures['insertions']
-                    data[-1]['D'] = measures['deletions']
-                    data[-1]['D-I'] = measures['deletions'] - measures['insertions']
-                if estimate_audio:
-                    filepath = absolute_audio_filepath(item['audio_filepath'], data_filename)
-                    signal, sr = librosa.load(path=filepath, sr=None)
-                    bw = eval_bandwidth(signal, sr)
-                    item['freq_bandwidth'] = int(bw)
-                    item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
-                for k in item:
-                    if k not in data[-1]:
-                        data[-1][k] = item[k]
+                sm.set_seqs(orig, pred)
+                for m in sm.get_matching_blocks():
+                    for word_idx in range(m[0], m[0] + m[2]):
+                        match_vocab[orig[word_idx]] += 1
+                wmr_count += measures['hits']
+            else:
+                if comparison_mode:
+                    if field_name != 'pred_text':
+                        if field_name == name_1:
+                            logging.error(f"The .json file has no field with name: {name_1}")
+                            exit()
+                        if field_name == name_2:
+                            logging.error(f"The .json file has no field with name: {name_2}")
+                            exit()
+            data.append(
+                {
+                    'audio_filepath': item['audio_filepath'],
+                    'duration': round(item['duration'], 2),
+                    'num_words': num_words,
+                    'num_chars': num_chars,
+                    'word_rate': round(num_words / item['duration'], 2),
+                    'char_rate': round(num_chars / item['duration'], 2),
+                    'text': item['text'],
+                }
+            )
+            if metrics_available:
+                data[-1][field_name] = item[field_name]
+                if num_words == 0:
+                    num_words = 1e-9
+                if num_chars == 0:
+                    num_chars = 1e-9
+                data[-1]['WER'] = round(word_dist / num_words * 100.0, 2)
+                data[-1]['CER'] = round(char_dist / num_chars * 100.0, 2)
+                data[-1]['WMR'] = round(measures['hits'] / num_words * 100.0, 2)
+                data[-1]['I'] = measures['insertions']
+                data[-1]['D'] = measures['deletions']
+                data[-1]['D-I'] = measures['deletions'] - measures['insertions']
+            if estimate_audio:
+                signal, sr = load_audio_data(item['audio_filepath'], audio_base_path, tar_base_path)
+                bw = eval_bandwidth(signal, sr)
+                item['freq_bandwidth'] = int(bw)
+                item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
+            for k in item:
+                if k not in data[-1]:
+                    data[-1][k] = item[k]
 
-            vocabulary_data = [{'word': word, 'count': vocabulary[word]} for word in vocabulary]
-            return (
+        vocabulary_data = [{'word': word, 'count': vocabulary[word]} for word in vocabulary]
+        return (
                 vocabulary_data,
                 metrics_available,
                 data,
@@ -437,7 +673,7 @@ def load_data(
 
     num_hours /= 3600.0
 
-    if not comparison_mode:
+    if not comparison_mode and not is_s3_path(data_filename):
         if not disable_caching:
             with open(pickle_filename, 'wb') as f:
                 pickle.dump(
@@ -524,16 +760,35 @@ def plot_word_accuracy(vocabulary_data):
     return fig
 
 
-def absolute_audio_filepath(audio_filepath, audio_base_path):
+def absolute_audio_filepath(audio_filepath, audio_base_path, tar_base_path=None):
     """Return absolute path to an audio file.
 
-    Check if a file existst at audio_filepath.
+    Check if a file exists at audio_filepath.
     If not, assume that the path is relative to audio_base_path.
+    For S3 paths or tarred audio, returns the original path.
+    
+    Args:
+        audio_filepath: Path to audio file (local, S3, or filename within tar)
+        audio_base_path: Base path for relative audio files
+        tar_base_path: S3 path to tar file containing audio (optional)
+        
+    Returns:
+        str: The resolved audio filepath
     """
+    # If using tarred audio from S3, just return the filename as-is
+    # The actual loading will be handled by load_audio_data
+    if tar_base_path and is_s3_path(tar_base_path):
+        return str(audio_filepath)
+    
+    # If audio_filepath is already an S3 path, return as-is
+    if is_s3_path(audio_filepath):
+        return str(audio_filepath)
+    
     audio_filepath = Path(audio_filepath)
 
     if not audio_filepath.is_file() and not audio_filepath.is_absolute():
-        audio_filepath = audio_base_path / audio_filepath
+        if audio_base_path:
+            audio_filepath = Path(audio_base_path) / audio_filepath
         if audio_filepath.is_file():
             filename = str(audio_filepath)
         else:
@@ -542,6 +797,32 @@ def absolute_audio_filepath(audio_filepath, audio_base_path):
         filename = expanduser(audio_filepath)
 
     return filename
+
+
+def load_audio_data(audio_filepath, audio_base_path=None, tar_base_path=None):
+    """Load audio data from local file, S3, or tarred S3 archive.
+    
+    Args:
+        audio_filepath: Path to audio file (local, S3, or filename within tar)
+        audio_base_path: Base path for relative audio files
+        tar_base_path: S3 path to tar file containing audio (optional)
+        
+    Returns:
+        tuple: (audio_signal, sample_rate)
+    """
+    # Case 1: Tarred audio on S3
+    if tar_base_path and is_s3_path(tar_base_path):
+        audio_buffer = load_audio_from_s3(audio_filepath, tar_base_path)
+        return librosa.load(audio_buffer, sr=None)
+    
+    # Case 2: Direct S3 audio file
+    if is_s3_path(audio_filepath):
+        audio_buffer = load_audio_from_s3(audio_filepath)
+        return librosa.load(audio_buffer, sr=None)
+    
+    # Case 3: Local file
+    filepath = absolute_audio_filepath(audio_filepath, audio_base_path, tar_base_path)
+    return librosa.load(path=filepath, sr=None)
 
 
 # parse the CLI arguments
@@ -566,6 +847,7 @@ if not comparison_mode:
         args.audio_base_path,
         comparison_mode,
         args.names_compared,
+        tar_base_path=args.tar_base_path,
     )
 else:
     (
@@ -604,6 +886,7 @@ else:
         args.audio_base_path,
         comparison_mode,
         args.names_compared,
+        tar_base_path=args.tar_base_path,
     )
 
 print('Starting server...')
@@ -1732,8 +2015,7 @@ def plot_signal(idx, data):
         raise PreventUpdate
     figs = make_subplots(rows=2, cols=1, subplot_titles=('Waveform', 'Spectrogram'))
     try:
-        filename = absolute_audio_filepath(data[idx[0]]['audio_filepath'], args.audio_base_path)
-        audio, fs = librosa.load(path=filename, sr=None)
+        audio, fs = load_audio_data(data[idx[0]]['audio_filepath'], args.audio_base_path, args.tar_base_path)
         if 'offset' in data[idx[0]]:
             audio = audio[
                 int(data[idx[0]]['offset'] * fs) : int((data[idx[0]]['offset'] + data[idx[0]]['duration']) * fs)
@@ -1792,8 +2074,7 @@ def plot_signal(idx, data):
         raise PreventUpdate
     figs = make_subplots(rows=2, cols=1, subplot_titles=('Waveform', 'Spectrogram'))
     try:
-        filename = absolute_audio_filepath(data[idx[0]]['audio_filepath'], args.audio_base_path)
-        audio, fs = librosa.load(path=filename, sr=None)
+        audio, fs = load_audio_data(data[idx[0]]['audio_filepath'], args.audio_base_path, args.tar_base_path)
         if 'offset' in data[idx[0]]:
             audio = audio[
                 int(data[idx[0]]['offset'] * fs) : int((data[idx[0]]['offset'] + data[idx[0]]['duration']) * fs)
@@ -1848,8 +2129,7 @@ def update_player(idx, data):
     if len(idx) == 0:
         raise PreventUpdate
     try:
-        filename = absolute_audio_filepath(data[idx[0]]['audio_filepath'], args.audio_base_path)
-        signal, sr = librosa.load(path=filename, sr=None)
+        signal, sr = load_audio_data(data[idx[0]]['audio_filepath'], args.audio_base_path, args.tar_base_path)
         if 'offset' in data[idx[0]]:
             signal = signal[
                 int(data[idx[0]]['offset'] * sr) : int((data[idx[0]]['offset'] + data[idx[0]]['duration']) * sr)
@@ -1873,8 +2153,7 @@ def update_player(idx, data):
     if len(idx) == 0:
         raise PreventUpdate
     try:
-        filename = absolute_audio_filepath(data[idx[0]]['audio_filepath'], args.audio_base_path)
-        signal, sr = librosa.load(path=filename, sr=None)
+        signal, sr = load_audio_data(data[idx[0]]['audio_filepath'], args.audio_base_path, args.tar_base_path)
         if 'offset' in data[idx[0]]:
             signal = signal[
                 int(data[idx[0]]['offset'] * sr) : int((data[idx[0]]['offset'] + data[idx[0]]['duration']) * sr)

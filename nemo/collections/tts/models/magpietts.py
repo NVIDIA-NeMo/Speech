@@ -3527,7 +3527,14 @@ class MagpieTTSModel(ModelPT):
         }
         # Use language-aware word counting (handles Japanese, Chinese, etc.)
         word_count = get_word_count(text, language)
-        is_longform = word_count >= longform_word_thresholds[language]
+        # Safely get threshold; fall back to English if language is unknown
+        threshold = longform_word_thresholds.get(language, longform_word_thresholds["en"])
+        if language not in longform_word_thresholds:
+            logging.warning(
+                f"Longform word threshold for language '{language}' is not defined. "
+                "Falling back to English longform threshold."
+            )
+        is_longform = word_count >= threshold
 
         if is_longform:
             if language == "zh":

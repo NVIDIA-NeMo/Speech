@@ -365,6 +365,17 @@ _TITLE_ABBREVIATIONS = {
     'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'rev', 'gov', 'gen', 'col', 'lt', 'sgt', 'capt',
 }
 
+# CJK and Indic sentence-ending punctuation that should split regardless of following whitespace
+# These languages typically don't use spaces between sentences
+_CJK_INDIC_SENTENCE_ENDINGS = {
+    '。',  # Japanese/Chinese full stop
+    '？',  # Japanese/Chinese question mark
+    '！',  # Japanese/Chinese exclamation mark
+    '…',  # Ellipsis (CJK)
+    '।',  # Hindi Danda (primary sentence ending)
+    '॥',  # Hindi Double Danda (verse/paragraph ending)
+}
+
 
 def split_by_sentence(
     paragraph: str,
@@ -373,8 +384,13 @@ def split_by_sentence(
     """
     Split a paragraph into sentences based on sentence-ending punctuation.
 
-    Handles title abbreviations (Dr., Mr., Mrs., Prof., etc.) by never splitting
-    on them since they are always followed by names.
+    Handles multiple languages with appropriate splitting behavior:
+    - CJK/Indic punctuation (。？！।॥): splits regardless of following whitespace,
+      since these languages typically don't use spaces between sentences.
+    - Western punctuation (. ? !): splits only when followed by whitespace or
+      end-of-string, to avoid false splits on abbreviations.
+    - Title abbreviations (Dr., Mr., Mrs., Prof., etc.): never splits on these
+      since they are always followed by names.
 
     Sentence-ending punctuation is preserved with each sentence.
 
@@ -392,6 +408,9 @@ def split_by_sentence(
 
         >>> split_by_sentence("Dr. Smith is here. Good morning!")
         ["Dr. Smith is here.", "Good morning!"]
+
+        >>> split_by_sentence("こんにちは。元気ですか？", ['。', '？'])
+        ["こんにちは。", "元気ですか？"]
     """
     if sentence_separators is None:
         sentence_separators = ['.', '?', '!', '...']
@@ -407,25 +426,47 @@ def split_by_sentence(
     last_sep_idx = -1
 
     for i, char in enumerate(paragraph):
-        # Check if current char is a separator and next char is a space
-        next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
-        if char in sentence_separators and next_char == " ":
-            # Check if this is a title abbreviation - never split on titles (Dr., Mr., etc.)
-            if char == '.':
-                # Get the word before the period
-                word_start = last_sep_idx + 1
-                word_before = paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
-                
-                # Never split on title abbreviations (they're always followed by names)
-                if word_before in _TITLE_ABBREVIATIONS:
-                    continue
+        if char not in sentence_separators:
+            continue
 
-            sentences.append(paragraph[last_sep_idx + 1 : i + 1].strip())
-            last_sep_idx = i + 1
+        next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
+
+        # Determine if we should split at this position
+        # CJK/Indic punctuation: split regardless of following character (no spaces in these languages)
+        # Western punctuation: require whitespace or end-of-string
+        if char in _CJK_INDIC_SENTENCE_ENDINGS:
+            should_split = True
+        else:
+            should_split = next_char == "" or next_char.isspace()
+
+        if not should_split:
+            continue
+
+        # Check if this is a title abbreviation - never split on titles (Dr., Mr., etc.)
+        if char == '.':
+            # Get the word before the period
+            word_start = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+            word_before = paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
+
+            # Never split on title abbreviations (they're always followed by names)
+            if word_before in _TITLE_ABBREVIATIONS:
+                continue
+
+        # Extract the sentence (from after last separator to current separator inclusive)
+        start_idx = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+        sentences.append(paragraph[start_idx : i + 1].strip())
+        
+        # Update last_sep_idx: if next char is whitespace, point to it (so +1 skips it)
+        # If no whitespace (CJK), point to separator (so +1 gives us the next char)
+        if next_char.isspace():
+            last_sep_idx = i + 1  # Point to the whitespace, will be skipped
+        else:
+            last_sep_idx = i  # Point to separator, next sentence starts at i+1
 
     # Add remaining text as the last sentence
-    if last_sep_idx < len(paragraph):
-        remaining = paragraph[last_sep_idx + 1 :].strip()
+    if last_sep_idx < len(paragraph) - 1:
+        start_idx = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+        remaining = paragraph[start_idx:].strip()
         if remaining:
             sentences.append(remaining)
 
@@ -464,6 +505,7 @@ def get_word_count(text: str, language: str = "en") -> int:
     Get word count for text in a language-aware manner.
 
     For Japanese, uses pyopenjtalk morphological analysis for accurate word segmentation.
+    Falls back to character count if pyopenjtalk is unavailable or returns no words.
     For Chinese, counts characters (as words are not space-separated).
     For other languages, uses whitespace splitting.
 
@@ -472,14 +514,14 @@ def get_word_count(text: str, language: str = "en") -> int:
         language: Language code (e.g., "en", "ja", "zh", "hi").
 
     Returns:
-        Number of words (or characters for Chinese) in the text.
+        Number of words (or characters for Chinese/Japanese fallback) in the text.
     """
     if not text or not text.strip():
         return 0
 
     if language == "zh":
         # Chinese: count characters (no word boundaries)
-        return len(list(text.replace(" ", "")))
+        return len([c for c in text if not c.isspace()])
 
     if language == "ja":
         try:
@@ -489,10 +531,10 @@ def get_word_count(text: str, language: str = "en") -> int:
             njd = pyopenjtalk.run_frontend(text)
             # Filter out None/invalid entries and count words
             word_count = sum(1 for word in njd if isinstance(word, dict) and word.get('string', '').strip())
-            return word_count if word_count > 0 else len(text.split())
+            return word_count if word_count > 0 else len([c for c in text if not c.isspace()])
         except ImportError:
             # Fallback: use character count for Japanese if pyopenjtalk not available
-            return len(list(text.replace(" ", "")))
+            return len([c for c in text if not c.isspace()])
 
     # Default: whitespace splitting for English, Hindi, and other languages
     return len(text.split())

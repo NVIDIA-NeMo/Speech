@@ -340,6 +340,72 @@ class TestSentenceSplitting:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_split_by_sentence_japanese_no_spaces(self):
+        """Test Japanese sentence splitting WITHOUT spaces between sentences."""
+        # This is the common case in Japanese - no spaces after punctuation
+        text = "こんにちは。元気ですか？私は元気です！"
+        separators = _get_sentence_separators_for_language("ja")
+        sentences = split_by_sentence(text, sentence_separators=separators)
+
+        assert len(sentences) == 3
+        assert sentences[0] == "こんにちは。"
+        assert sentences[1] == "元気ですか？"
+        assert sentences[2] == "私は元気です！"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_chinese_no_spaces(self):
+        """Test Chinese sentence splitting WITHOUT spaces between sentences."""
+        text = "你好。你好吗？我很好！"
+        separators = _get_sentence_separators_for_language("zh")
+        sentences = split_by_sentence(text, sentence_separators=separators)
+
+        assert len(sentences) == 3
+        assert sentences[0] == "你好。"
+        assert sentences[1] == "你好吗？"
+        assert sentences[2] == "我很好！"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_hindi_no_spaces(self):
+        """Test Hindi sentence splitting WITHOUT spaces after Danda.
+        
+        Note: Danda (।) splits regardless of following whitespace.
+        Western punctuation (? !) still requires whitespace in Hindi text.
+        """
+        # Danda followed by no space - should still split
+        text = "नमस्ते।आप कैसे हैं।मैं ठीक हूँ।"
+        separators = _get_sentence_separators_for_language("hi")
+        sentences = split_by_sentence(text, sentence_separators=separators)
+
+        assert len(sentences) == 3
+        assert "नमस्ते" in sentences[0]
+        assert "आप कैसे हैं" in sentences[1]
+        assert "मैं ठीक हूँ" in sentences[2]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_english_with_newline(self):
+        """Test English sentence splitting with newline after punctuation."""
+        text = "Hello world.\nHow are you?"
+        sentences = split_by_sentence(text)
+
+        assert len(sentences) == 2
+        assert sentences[0] == "Hello world."
+        assert sentences[1] == "How are you?"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_english_end_of_string(self):
+        """Test that sentence at end of string (no following char) is handled."""
+        text = "Hello world."
+        sentences = split_by_sentence(text)
+
+        assert len(sentences) == 1
+        assert sentences[0] == "Hello world."
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_split_by_sentence_empty(self):
         """Test that empty text returns empty list."""
         sentences = split_by_sentence("")

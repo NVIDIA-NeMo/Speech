@@ -442,7 +442,6 @@ class GPTConfig(TransformerConfig, io.IOMixin):
                                 cp_stream,
                             )
 
-
         return model
 
 

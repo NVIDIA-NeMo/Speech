@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts.py \
+TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts.py \
     --config-name magpietts \
     model.model_type=multi_encoder_context_tts \
     +model.transcript_decoder_layers=[3,4,5,6,7] \

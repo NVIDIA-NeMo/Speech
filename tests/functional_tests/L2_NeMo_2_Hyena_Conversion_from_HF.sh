@@ -12,5 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-TRANSFORMERS_OFFLINE=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_hyena_import_from_hf.py \
+TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 TRANSFORMERS_OFFLINE=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/conversion/test_hyena_import_from_hf.py \
     --output-path=tests/collections/llm/hyena_conversion_results/$RUN_ID

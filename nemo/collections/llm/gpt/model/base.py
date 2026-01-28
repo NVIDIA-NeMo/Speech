@@ -442,12 +442,6 @@ class GPTConfig(TransformerConfig, io.IOMixin):
                                 cp_stream,
                             )
 
-        # import torch
-        # if torch.distributed.is_initialized():
-        #     if torch.distributed.get_rank() == 0:
-        #         breakpoint()
-        #         print(f"model.config.vocab_size: {model.config.vocab_size}")
-        # torch.distributed.barrier()
 
         return model
 

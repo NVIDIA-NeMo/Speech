@@ -33,9 +33,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import boto3
-from botocore.exceptions import ClientError
-from botocore.config import Config
-
 import dash
 import dash_bootstrap_components as dbc
 import diff_match_patch
@@ -46,6 +43,8 @@ import numpy as np
 import pandas as pd
 import soundfile as sf
 import tqdm
+from botocore.config import Config
+from botocore.exceptions import ClientError
 from dash import dash_table, dcc, html
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
@@ -63,30 +62,31 @@ import configparser
 import os
 from pathlib import Path
 
+
 def parse_s3cfg(config_path='~/.s3cfg', section='pdx'):
     """
     Parse the .s3cfg file and extract configuration values.
-    
+
     Args:
         config_path: Path to the s3cfg file (default: ~/.s3cfg)
         section: Section of the config file to parse (default: pdx)
-    
+
     Returns:
         dict: Dictionary containing the parsed configuration
     """
     # Expand user path
     config_path = Path(config_path).expanduser()
-    
+
     # Check if file exists
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
-    
+
     # Create ConfigParser instance
     config = configparser.ConfigParser()
-    
+
     # Read the config file
     config.read(config_path)
-    
+
     # Extract values from [default] section
     if section in config:
         s3_config = {
@@ -107,12 +107,14 @@ def get_s3_client():
     s3_config = parse_s3cfg('~/.s3cfg', 'pdx')
     print("s3_config", s3_config)
     if _s3_client is None:
-        _s3_client = boto3.client('s3',
+        _s3_client = boto3.client(
+            's3',
             endpoint_url="https://" + s3_config['host_base'],
             aws_access_key_id=s3_config['access_key'],
             aws_secret_access_key=s3_config['secret_key'],
             region_name=s3_config['bucket_location'],
-            config=Config(connect_timeout=5))
+            config=Config(connect_timeout=5),
+        )
     return _s3_client
 
 
@@ -125,10 +127,10 @@ def is_s3_path(path):
 
 def parse_s3_path(s3_path):
     """Parse an S3 URL into bucket and key components.
-    
+
     Args:
         s3_path: S3 URL in format s3://bucket/key
-        
+
     Returns:
         tuple: (bucket, key)
     """
@@ -140,10 +142,10 @@ def parse_s3_path(s3_path):
 
 def read_s3_file(s3_path):
     """Read a file from S3 and return its contents as a string.
-    
+
     Args:
         s3_path: S3 URL to the file
-        
+
     Returns:
         str: File contents
     """
@@ -159,10 +161,10 @@ def read_s3_file(s3_path):
 
 def read_s3_file_bytes(s3_path):
     """Read a file from S3 and return its contents as bytes.
-    
+
     Args:
         s3_path: S3 URL to the file
-        
+
     Returns:
         bytes: File contents
     """
@@ -182,30 +184,30 @@ _tar_cache = {}
 
 def get_audio_from_s3_tar(tar_s3_path, audio_filename):
     """Extract an audio file from a tar archive stored on S3.
-    
+
     Args:
         tar_s3_path: S3 URL to the tar file (e.g., s3://bucket/audio_0.tar)
         audio_filename: Name of the audio file within the tar (e.g., audio1.wav)
-        
+
     Returns:
         bytes: Audio file contents
     """
     global _tar_cache
-    
+
     # Check if we have this tar file cached
     if tar_s3_path not in _tar_cache:
         logging.info(f"Downloading tar file from S3: {tar_s3_path}")
         tar_bytes = read_s3_file_bytes(tar_s3_path)
         _tar_cache[tar_s3_path] = tar_bytes
-    
+
     tar_bytes = _tar_cache[tar_s3_path]
-    
+
     # Extract the requested audio file from the tar
     with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode='r') as tar:
         # Try to find the file - it might be stored with or without directory prefix
         member_names = tar.getnames()
         target_member = None
-        
+
         # Try exact match first
         if audio_filename in member_names:
             target_member = audio_filename
@@ -215,11 +217,13 @@ def get_audio_from_s3_tar(tar_s3_path, audio_filename):
                 if os.path.basename(name) == audio_filename or name.endswith('/' + audio_filename):
                     target_member = name
                     break
-        
+
         if target_member is None:
-            raise FileNotFoundError(f"Audio file '{audio_filename}' not found in tar archive {tar_s3_path}. "
-                                    f"Available files: {member_names[:10]}...")
-        
+            raise FileNotFoundError(
+                f"Audio file '{audio_filename}' not found in tar archive {tar_s3_path}. "
+                f"Available files: {member_names[:10]}..."
+            )
+
         member = tar.getmember(target_member)
         f = tar.extractfile(member)
         if f is None:
@@ -229,12 +233,12 @@ def get_audio_from_s3_tar(tar_s3_path, audio_filename):
 
 def load_audio_from_s3(audio_filepath, tar_base_path=None):
     """Load audio data from S3, supporting both direct files and tarred audio.
-    
+
     Args:
         audio_filepath: The audio file path (e.g., "audio1.wav" for tarred, or full S3 URL)
         tar_base_path: Base S3 path for tar files (e.g., "s3://ASR/tarred/audio_0.tar")
                        If provided, audio_filepath is treated as a file within this tar.
-        
+
     Returns:
         tuple: (audio_bytes, io.BytesIO) - BytesIO object for librosa to read
     """
@@ -252,10 +256,10 @@ def load_audio_from_s3(audio_filepath, tar_base_path=None):
 
 def open_manifest_file(manifest_path):
     """Open a manifest file, supporting both local and S3 paths.
-    
+
     Args:
         manifest_path: Path to the manifest file (local or S3 URL)
-        
+
     Yields:
         str: Lines from the manifest file
     """
@@ -267,6 +271,7 @@ def open_manifest_file(manifest_path):
         with open(manifest_path, 'r', encoding='utf8') as f:
             for line in f:
                 yield line.rstrip('\n')
+
 
 # operators for filtering items
 filter_operators = {
@@ -329,8 +334,8 @@ def parse_args():
         default=None,
         type=str,
         help='S3 path to tarred audio files (e.g., s3://ASR/tarred/audio_0.tar). '
-             'When specified, audio_filepath values in the manifest are treated as '
-             'filenames within this tar archive.',
+        'When specified, audio_filepath values in the manifest are treated as '
+        'filenames within this tar archive.',
     )
     parser.add_argument('--debug', '-d', action='store_true', help='enable debug mode')
 
@@ -552,23 +557,23 @@ def load_data(
 
         vocabulary_data = [{'word': word, 'count': vocabulary[word]} for word in vocabulary]
         return (
-                vocabulary_data,
-                metrics_available,
-                data,
-                wer_dist,
-                wer_count,
-                cer_dist,
-                cer_count,
-                wmr_count,
-                wer,
-                cer,
-                wmr,
-                mwa,
-                num_hours,
-                vocabulary,
-                alphabet,
-                match_vocab,
-            )
+            vocabulary_data,
+            metrics_available,
+            data,
+            wer_dist,
+            wer_count,
+            cer_dist,
+            cer_count,
+            wmr_count,
+            wer,
+            cer,
+            wmr,
+            mwa,
+            num_hours,
+            vocabulary,
+            alphabet,
+            match_vocab,
+        )
 
     (
         vocabulary_data,
@@ -766,12 +771,12 @@ def absolute_audio_filepath(audio_filepath, audio_base_path, tar_base_path=None)
     Check if a file exists at audio_filepath.
     If not, assume that the path is relative to audio_base_path.
     For S3 paths or tarred audio, returns the original path.
-    
+
     Args:
         audio_filepath: Path to audio file (local, S3, or filename within tar)
         audio_base_path: Base path for relative audio files
         tar_base_path: S3 path to tar file containing audio (optional)
-        
+
     Returns:
         str: The resolved audio filepath
     """
@@ -779,11 +784,11 @@ def absolute_audio_filepath(audio_filepath, audio_base_path, tar_base_path=None)
     # The actual loading will be handled by load_audio_data
     if tar_base_path and is_s3_path(tar_base_path):
         return str(audio_filepath)
-    
+
     # If audio_filepath is already an S3 path, return as-is
     if is_s3_path(audio_filepath):
         return str(audio_filepath)
-    
+
     audio_filepath = Path(audio_filepath)
 
     if not audio_filepath.is_file() and not audio_filepath.is_absolute():
@@ -801,12 +806,12 @@ def absolute_audio_filepath(audio_filepath, audio_base_path, tar_base_path=None)
 
 def load_audio_data(audio_filepath, audio_base_path=None, tar_base_path=None):
     """Load audio data from local file, S3, or tarred S3 archive.
-    
+
     Args:
         audio_filepath: Path to audio file (local, S3, or filename within tar)
         audio_base_path: Base path for relative audio files
         tar_base_path: S3 path to tar file containing audio (optional)
-        
+
     Returns:
         tuple: (audio_signal, sample_rate)
     """
@@ -814,12 +819,12 @@ def load_audio_data(audio_filepath, audio_base_path=None, tar_base_path=None):
     if tar_base_path and is_s3_path(tar_base_path):
         audio_buffer = load_audio_from_s3(audio_filepath, tar_base_path)
         return librosa.load(audio_buffer, sr=None)
-    
+
     # Case 2: Direct S3 audio file
     if is_s3_path(audio_filepath):
         audio_buffer = load_audio_from_s3(audio_filepath)
         return librosa.load(audio_buffer, sr=None)
-    
+
     # Case 3: Local file
     filepath = absolute_audio_filepath(audio_filepath, audio_base_path, tar_base_path)
     return librosa.load(path=filepath, sr=None)

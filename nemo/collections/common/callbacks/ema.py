@@ -135,7 +135,7 @@ class EMA(Callback):
                 return
             ema_path = ckpt_path.replace(ext, f'-EMA{ext}')
             if os.path.exists(ema_path):
-                ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'), weights_only=False)
+                ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'))
 
                 checkpoint['optimizer_states'] = ema_state_dict['optimizer_states']
                 del ema_state_dict

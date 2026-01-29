@@ -959,7 +959,7 @@ class AdapterModelPTMixin(AdapterModuleMixin):
                 map_location = 'cpu'
 
         # Load the state dict and extract the internal config
-        state_dict = torch.load(filepath, map_location=map_location, weights_only=False)
+        state_dict = torch.load(filepath, map_location=map_location)
         config = state_dict.pop('__cfg__')
 
         # Normalize the name to a list of names (exact match with the state dict)

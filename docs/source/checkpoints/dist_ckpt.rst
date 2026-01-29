@@ -429,7 +429,7 @@ PyTorch Distributed is a recommended checkpoint format.
 
 Safe Checkpoint Loading
 ^^^^^^^^^^^^^^^^^^^^^^^
-Since **PyTorch 2.6**, the default behavior of `torch.load`` is `weights_only=True`. This ensures that only tensors and allow-listed classes are loaded, reducing the risk of arbitrary code execution.
+Since **PyTorch 2.6**, the default behavior of ``torch.load`` is ``weights_only=True``. This ensures that only tensors and allow-listed classes are loaded, reducing the risk of arbitrary code execution.
 
 If you encounter an error such as:
 

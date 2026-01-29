@@ -1,4 +1,4 @@
-name: nemo-voice-dev
+name: nemo-voice
 channels:
   - defaults
 dependencies:

@@ -105,6 +105,7 @@ class EvaluationConfig(transcribe_speech.TranscriptionConfig):
             separate_punctuation=False,
             do_lowercase=False,
             rm_punctuation=False,
+            substitutions="",
         )
     )
 
@@ -154,7 +155,7 @@ def main(cfg: EvaluationConfig):
 
             predicted_text.append(data["pred_text"])
 
-    pc = PunctuationCapitalization(cfg.text_processing.punctuation_marks)
+    pc = PunctuationCapitalization(cfg.text_processing.punctuation_marks, cfg.text_processing.substitutions)
     if cfg.text_processing.separate_punctuation:
         ground_truth_text = pc.separate_punctuation(ground_truth_text)
         predicted_text = pc.separate_punctuation(predicted_text)
@@ -164,6 +165,9 @@ def main(cfg: EvaluationConfig):
     if cfg.text_processing.rm_punctuation:
         ground_truth_text = pc.rm_punctuation(ground_truth_text)
         predicted_text = pc.rm_punctuation(predicted_text)
+    if cfg.text_processing.substitutions:
+        ground_truth_text = pc.substitute_equivalents(ground_truth_text)
+        predicted_text = pc.substitute_equivalents(predicted_text)
 
     # Test for invalid manifest supplied
     if invalid_manifest:

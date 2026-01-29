@@ -643,7 +643,9 @@ class PunctuationCapitalization:
 
         Args:
             punctuation_marks (str): String with punctuation marks to process.
+            substitutions (str): String of equivalencies to substitute, separated with `;`.
         Example: punctuation_marks = '.,?'
+        substitutions = "ﬁ~fi"
         """
         if punctuation_marks:
             self.regex_punctuation = re.compile(fr"([{''.join(punctuation_marks)}])")
@@ -681,11 +683,26 @@ class PunctuationCapitalization:
 
     @staticmethod
     def _parse_substitutions(s: str) -> dict[str, str]:
-        decode_escapes = lambda t: t.encode("utf-8").decode("unicode_escape") if ("\\u" in t or "\\U" in t) else t
-        return {
-            decode_escapes(src.strip()): decode_escapes(dst.strip())
-            for src, dst in (pair.split("~", 1) for pair in (s or "").split(";") if pair.strip())
-        }
+        """
+        Parse substitutions from a string: "src~dst;src2~dst2;..."
+
+        Supports either literal Unicode (preferred) or escape sequences like "\\u0587".
+        """
+        # Decode \uXXXX / \UXXXXXXXX only when present (avoid surprising behavior).
+        decode = lambda t: t.encode("utf-8").decode("unicode_escape") if ("\\u" in t or "\\U" in t) else t
+
+        subs = {}
+        for raw in (p.strip() for p in s.split(";")):
+            if not raw:
+                continue
+            if "~" not in raw:
+                raise ValueError(f"Invalid substitution '{raw}'. Expected 'SRC~DST'.")
+            src, dst = (x.strip() for x in raw.split("~", 1))
+            if not src:
+                raise ValueError(f"Invalid substitution '{raw}'. SRC must be non-empty.")
+            subs[decode(src)] = decode(dst)
+
+        return subs
 
 
 @dataclass
@@ -702,5 +719,5 @@ class TextProcessingConfig:
     # Whether to separate punctuation with the previouse word by space.
     separate_punctuation: bool = True
 
-    # Character/s to treat as equivalent
+    # Characters (or combinations of) to treat as equivalent
     substitutions: str = ""

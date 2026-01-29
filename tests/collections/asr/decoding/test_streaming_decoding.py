@@ -22,6 +22,8 @@ from omegaconf import open_dict
 from tqdm.auto import tqdm
 
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
+from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
     BatchedLabelLoopingState,
     GreedyBatchedLabelLoopingComputerBase,
@@ -30,12 +32,22 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.asr.parts.utils.rnnt_utils import BatchedHyps, Hypothesis, batched_hyps_to_hypotheses
 from tests.collections.asr.decoding.utils import load_audio, make_preprocessor_deterministic
 
-DEVICES = [torch.device("cpu")]
-if torch.cuda.is_available():
-    DEVICES.append(torch.device("cuda:0"))
 
-if torch.mps.is_available():
-    DEVICES.append(torch.device("mps"))
+def get_devices_for_testing(use_cpu_always: bool = False) -> list[torch.device]:
+    devices = [torch.device("cpu")] if use_cpu_always else []
+    if torch.cuda.is_available():
+        devices.append(torch.device("cuda:0"))
+
+    if torch.mps.is_available():
+        devices.append(torch.device("mps"))
+
+    if len(devices) == 0:
+        # no fast device for testing, add CPU
+        devices.append(torch.device("cpu"))
+    return devices
+
+
+DEVICES = get_devices_for_testing(use_cpu_always=False)
 
 
 def get_model_encoder_output(
@@ -456,3 +468,141 @@ def test_label_looping_continuous_streaming_partial_hypotheses(
     for hyp in all_hyps:
         streaming_transcripts.append(model.tokenizer.ids_to_text(hyp.y_sequence.tolist()))
     assert ref_transcripts == streaming_transcripts
+
+
+@pytest.mark.with_downloads
+@pytest.mark.parametrize(
+    "device,use_cuda_graph_decoder",
+    [(device, False) for device in DEVICES] + [(device, True) for device in DEVICES if device.type == "cuda"],
+)
+@pytest.mark.parametrize("is_tdt", [False, True])
+@pytest.mark.parametrize("chunk_size", [1])  # Small chunk size to trigger more state updates
+@pytest.mark.parametrize("batch_size", [4])
+@pytest.mark.parametrize("max_symbols", [10])
+def test_label_looping_streaming_boosting_with_ref_transcripts(
+    tmp_path_factory,
+    an4_val_manifest_corrected,
+    stt_en_fastconformer_transducer_large,
+    stt_en_fastconformer_tdt_large,
+    device: torch.device,
+    use_cuda_graph_decoder: bool,
+    is_tdt: bool,
+    chunk_size: int,
+    batch_size: int,
+    max_symbols: int,
+):
+    """
+    Metamorphic test: boosting with reference transcripts should yield identical results.
+
+    This test validates that when we boost with the exact transcripts that the model
+    would produce without boosting, the results remain the same. This is a metamorphic
+    property that should hold for correct implementations.
+
+    This test specifically validates the fix for TDT streaming boosting where
+    fusion states were incorrectly updated using `active_mask` instead of `found_labels_mask`.
+    """
+    model = stt_en_fastconformer_tdt_large if is_tdt else stt_en_fastconformer_transducer_large
+    model.eval()
+    model.to(device=device)
+
+    # First, get reference transcripts without boosting
+    decoding_cfg = copy.deepcopy(model.cfg.decoding)
+    decoding_cfg.strategy = "greedy_batch"
+    with open_dict(decoding_cfg):
+        decoding_cfg.greedy.use_cuda_graph_decoder = use_cuda_graph_decoder
+        decoding_cfg.greedy.max_symbols = max_symbols
+    model.change_decoding_strategy(decoding_cfg)
+
+    manifest = read_manifest(an4_val_manifest_corrected)
+    transcriptions = model.transcribe(audio=str(an4_val_manifest_corrected.absolute()), batch_size=batch_size)
+    ref_transcripts = [hyp.text for hyp in transcriptions]
+
+    # Now set up per-stream boosting with reference transcripts
+    decoding_cfg_boosted = copy.deepcopy(model.cfg.decoding)
+    decoding_cfg_boosted.strategy = "greedy_batch"
+    with open_dict(decoding_cfg_boosted):
+        decoding_cfg_boosted.greedy.use_cuda_graph_decoder = use_cuda_graph_decoder
+        decoding_cfg_boosted.greedy.max_symbols = max_symbols
+        decoding_cfg_boosted.greedy.enable_per_stream_biasing = True
+    model.change_decoding_strategy(decoding_cfg_boosted)
+
+    all_hyps = []
+    decoding_computer: GreedyBatchedLabelLoopingComputerBase = model.decoding.decoding.decoding_computer
+
+    with torch.no_grad(), torch.inference_mode():
+        for i in range(0, len(manifest), batch_size):
+            batch_records = manifest[i : i + batch_size]
+            batch_ref_transcripts = ref_transcripts[i : i + batch_size]
+
+            encoder_output, encoder_output_len = get_batch_encoder_outputs_from_records(
+                batch_records, model=model, device=device
+            )
+            local_batch_size = encoder_output_len.shape[0]
+
+            # Create biasing requests for each sample in the batch
+            biasing_requests = []
+            multi_biasing_ids = torch.full([local_batch_size], fill_value=-1, dtype=torch.long, device=device)
+
+            for batch_idx, ref_text in enumerate(batch_ref_transcripts):
+                if ref_text:  # Only boost non-empty transcripts
+                    request = BiasingRequestItemConfig(
+                        boosting_model_cfg=BoostingTreeModelConfig(key_phrases_list=[ref_text], unk_score=-100),
+                        boosting_model_alpha=10.0,
+                    )
+                    request.add_to_multi_model(
+                        tokenizer=model.tokenizer,
+                        biasing_multi_model=decoding_computer.biasing_multi_model,
+                    )
+                    if request.multi_model_id is not None:
+                        multi_biasing_ids[batch_idx] = request.multi_model_id
+                    biasing_requests.append(request)
+                else:
+                    biasing_requests.append(None)
+
+            # Decode encoder output by chunks, passing state between decoder invocations
+            state: Optional[BatchedLabelLoopingState] = None
+            batched_hyps: BatchedHyps | None = None
+            encoder_output = encoder_output.transpose(1, 2)
+
+            for t in range(0, encoder_output.shape[1], chunk_size):
+                rest_len = encoder_output_len - t
+                current_len = torch.full_like(encoder_output_len, fill_value=chunk_size)
+                current_len = torch.minimum(current_len, rest_len)
+                current_len = torch.maximum(current_len, torch.zeros_like(current_len))
+
+                batched_hyps_chunk, _, state = decoding_computer(
+                    x=encoder_output[:, t : t + chunk_size],
+                    out_len=current_len,
+                    prev_batched_state=state,
+                    multi_biasing_ids=multi_biasing_ids,
+                )
+
+                if batched_hyps is None:
+                    batched_hyps = batched_hyps_chunk
+                else:
+                    batched_hyps.merge_(batched_hyps_chunk)
+
+            # Clean up biasing models
+            for request in biasing_requests:
+                if request is not None and request.multi_model_id is not None:
+                    decoding_computer.biasing_multi_model.remove_model(request.multi_model_id)
+                    request.multi_model_id = None
+
+            assert batched_hyps is not None
+            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, None, batch_size=local_batch_size))
+
+    streaming_transcripts = []
+    for hyp in all_hyps:
+        streaming_transcripts.append(model.tokenizer.ids_to_text(hyp.y_sequence.tolist()))
+
+    # The key assertion: boosting with ref transcripts should yield same results
+    assert ref_transcripts == streaming_transcripts, (
+        f"Boosting with reference transcripts should yield identical results.\n"
+        f"This failure indicates a bug in fusion state handling during streaming decoding.\n"
+        f"Differences found:\n"
+        + "\n".join(
+            f"  [{i}] ref: {ref!r} != boosted: {boosted!r}"
+            for i, (ref, boosted) in enumerate(zip(ref_transcripts, streaming_transcripts))
+            if ref != boosted
+        )
+    )

@@ -310,7 +310,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         try:
             decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
-            biasing_enabled = decoding_computer.per_stream_biasing_enabled()
+            biasing_enabled = decoding_computer.per_stream_biasing_enabled
         except AttributeError:
             decoding_computer = None
             biasing_enabled = False
@@ -382,7 +382,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 if request.is_last and state.has_biasing_request():
                     if state.options.biasing_cfg.auto_manage_multi_model:
                         state.options.biasing_cfg.remove_from_multi_model(
-                            biasing_multi_model=self.decoding_computer.biasing_multi_model
+                            biasing_multi_model=decoding_computer.biasing_multi_model
                         )
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:

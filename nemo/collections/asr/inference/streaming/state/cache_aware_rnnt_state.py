@@ -51,7 +51,7 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
         """
         self.previous_hypothesis = previous_hypothesis
 
-    def get_previous_hypothesis(self) -> Hypothesis:
+    def get_previous_hypothesis(self) -> Hypothesis | None:
         """
         Get the previous hypothesis
         Returns:

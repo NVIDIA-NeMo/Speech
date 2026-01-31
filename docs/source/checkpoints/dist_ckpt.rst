@@ -427,10 +427,23 @@ Note that the checkpoint still follows the ``dist_checkpointing`` package format
 
 PyTorch Distributed is a recommended checkpoint format.
 
-Zarr
-^^^^
-The Zarr based checkpoint format uses the `Zarr <https://zarr.readthedocs.io/en/stable/>`__ library in order to serialize the checkpoints to storage.
-This format is deprecated and it's recommended to transition to the ``torch_dist`` format (using this `converter script <https://github.com/NVIDIA/NeMo/blob/main/scripts/checkpoint_converters/convert_zarr_to_torch_dist.py>`_).
+Safe Checkpoint Loading
+^^^^^^^^^^^^^^^^^^^^^^^
+Since **PyTorch 2.6**, the default behavior of ``torch.load`` is ``weights_only=True``. This ensures that only tensors and allow-listed classes are loaded, reducing the risk of arbitrary code execution.
+
+If you encounter an error such as:
+
+.. code-block:: bash
+
+  WeightsUnpickler error: Unsupported global: GLOBAL argparse.Namespace was not an allowed global by default.
+
+you can fix it by explicitly allow-listing the missing class in your script:
+
+.. code-block:: python
+
+  import torch, argparse
+
+  torch.serialization.add_safe_globals([argparse.Namespace])
 
 Optimizers
 ----------

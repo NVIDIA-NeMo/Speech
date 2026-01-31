@@ -232,7 +232,7 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         self._reference_model = MagpieTTSModel(cfg=ref_model_cfg)
         print("Loading reference model from checkpoint")
         self._reference_model.load_state_dict(
-            torch.load(cfg.reference_model_ckpt_path, map_location="cpu", weights_only=False)['state_dict']
+            torch.load(cfg.reference_model_ckpt_path, map_location="cpu")['state_dict']
         )
         self._reference_model.freeze()
         self._reference_model._no_state_dict = True
@@ -491,7 +491,7 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             self._reference_model = MagpieTTSModel(cfg=ref_model_cfg)
             print("Loading reference model from checkpoint")
             self._reference_model.load_state_dict(
-                torch.load(cfg.reference_model_ckpt_path, map_location="cpu", weights_only=False)['state_dict']
+                torch.load(cfg.reference_model_ckpt_path, map_location="cpu")['state_dict']
             )
             self._reference_model.freeze()
             self._reference_model._no_state_dict = True

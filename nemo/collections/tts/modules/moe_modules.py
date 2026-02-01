@@ -154,8 +154,15 @@ class MoERouter(torch.nn.Module):
             # All tokens are padding, return zeros
             return torch.zeros_like(logits)
 
+        # Numerical stability: subtract max per row to prevent exp overflow.
+        # This is similar to the log-sum-exp trick used in softmax.
+        # For Sinkhorn, subtracting a constant per row doesn't change the final
+        # doubly-stochastic result since both row and column normalizations will
+        # absorb the scaling factor.
+        valid_logits_stable = valid_logits - valid_logits.max(dim=-1, keepdim=True).values
+
         # Apply exp to get cost matrix (must be positive for Sinkhorn)
-        K = torch.exp(valid_logits)  # (N, E)
+        K = torch.exp(valid_logits_stable)  # (N, E)
 
         # Initialize diagonal scaling factors
         d1 = torch.ones(K.size(0), device=K.device, dtype=K.dtype)  # Row scaling (N,)
@@ -170,6 +177,10 @@ class MoERouter(torch.nn.Module):
 
             # Update column scaling: d2[j] = 1 / sum_i(K[i,j] * d1[i])
             d2 = 1.0 / (torch.matmul(K.t(), d1) + 1e-9)
+
+            # Clamp scaling factors to prevent numerical instability from accumulating
+            d1 = torch.clamp(d1, min=1e-9, max=1e9)
+            d2 = torch.clamp(d2, min=1e-9, max=1e9)
 
             # Check convergence based on change in scaling factors
             err = torch.mean(torch.abs(d1_old - d1))

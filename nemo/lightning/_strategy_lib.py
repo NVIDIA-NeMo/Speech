@@ -108,6 +108,7 @@ def init_parallel_ranks(
 
 def init_model_parallel(model: Optional[nn.Module] = None) -> None:
     """Initializes Megatron-LM model parallel if using model parallelism."""
+    import inspect
     import torch.distributed
     from megatron.core import parallel_state
 
@@ -122,6 +123,13 @@ def init_model_parallel(model: Optional[nn.Module] = None) -> None:
         # this happens with multiple calls to trainer.test for example
         parallel_state.destroy_model_parallel()
         if torch.distributed.is_initialized():
+            sig = inspect.signature(parallel_state.initialize_model_parallel)
+
+            # Check if Megatron-LM supports create_all_gather_group parameter (backward compatibility)
+            extra_kwargs = {}
+            if 'create_all_gather_group' in sig.parameters:
+                extra_kwargs['create_all_gather_group'] = app_state.create_all_gather_group
+
             parallel_state.initialize_model_parallel(
                 tensor_model_parallel_size=app_state.tensor_model_parallel_size,
                 pipeline_model_parallel_size=app_state.pipeline_model_parallel_size,
@@ -131,11 +139,11 @@ def init_model_parallel(model: Optional[nn.Module] = None) -> None:
                 expert_model_parallel_size=app_state.expert_model_parallel_size,
                 expert_tensor_parallel_size=app_state.expert_tensor_parallel_size,
                 use_sharp=app_state.use_sharp,
-                create_all_gather_group=app_state.create_all_gather_group,
                 order="tp-cp-ep-pp-dp" if app_state.use_tp_pp_dp_mapping else "tp-cp-ep-dp-pp",
                 num_distributed_optimizer_instances=app_state.num_distributed_optimizer_instances,
                 nccl_communicator_config_path=app_state.nccl_communicator_config_path,
                 create_gloo_process_groups=app_state.use_gloo_process_groups,
+                **extra_kwargs,
             )
 
             # assert that fake tp and pp rank match after model parallel init

@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Lhotse adapters for NeMo datasets including Parquet support."""
 import os
 import random
 import re
@@ -53,7 +54,8 @@ class LazyNeMoIterator:
     - "text" (overridable with ``text_field`` argument)
 
     Specially supported keys are:
-    - [recommended] "sampling_rate" allows us to provide a valid Lhotse ``Recording`` object without checking the audio file
+    - [recommended] "sampling_rate" allows us to provide a valid Lhotse
+     ``Recording`` object without checking the audio file
     - "offset" for partial recording reads
     - "lang" is mapped to Lhotse superivsion's language (overridable with ``lang_field`` argument)
 
@@ -298,10 +300,10 @@ class LazyNeMoTarredIterator:
         self.paths = expand_sharded_filepaths(manifest_path)
         if len(self.paths) == 1:
             logging.warning(
-                f"""You are using Lhotse dataloading for tarred audio with a non-sharded manifest.
-                            This will incur significant memory overhead and slow-down training. To prevent this error message
-                            please shard file '{self.paths[0]}' using 'scripts/speech_recognition/convert_to_tarred_audio_dataset.py'
-                            WITHOUT '--no_shard_manifest'"""
+                f"You are using Lhotse dataloading for tarred audio with a non-sharded manifest. "
+                f"This will incur significant memory overhead. To prevent this, please shard file "
+                f"'{self.paths[0]}' using 'scripts/speech_recognition/convert_to_tarred_audio_dataset.py' "
+                f"WITHOUT '--no_shard_manifest'"
             )
             self.source = LazyJsonlIterator(self.paths[0])
             self.shard_id_to_manifest = groupby("shard_id", self.source)
@@ -761,7 +763,7 @@ class LazyParquetIterator:
         # SAFETY CHECK: Ensure pyarrow is actually installed
         if not HAVE_PYARROW:
             raise ImportError(
-                "PyArrow is required to read Parquet manifests. " "Please install it using: `pip install pyarrow`"
+                "PyArrow is required to read Parquet manifests. Please install it using: pip install pyarrow"
             )
 
         self.path = str(path)
@@ -798,7 +800,6 @@ class LazyParquetIterator:
                 # 2. Extract Metadata
                 text = row.get(self.text_field, "")
                 language = row.get(self.lang_field, None)
-                duration = row.get(self.duration_field)
 
                 # 3. Create Unique ID
                 # Use 'id' column if exists, else combine filename + index
@@ -810,7 +811,7 @@ class LazyParquetIterator:
                         data=audio_bytes,
                         recording_id=row_id,
                     )
-                except Exception as e:
+                except (RuntimeError, ValueError, TypeError) as e:
                     logging.warning(f"Skipping row {row_id}: Failed to decode audio bytes. {e}")
                     continue
 

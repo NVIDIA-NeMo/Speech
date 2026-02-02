@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
 import io
 import logging
@@ -355,7 +356,8 @@ def parse_and_combine_datasets(
     tarred_status = []
 
     if isinstance(config_list, (str, Path)):
-        # Resolve local filepath /path/to/input_cfg.yaml or remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
+        # Resolve local filepath /path/to/input_cfg.yaml or
+        # remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
         config_list = OmegaConf.create(load_yaml(config_list))
     assert len(config_list) > 0, "Empty group in dataset config list."
 
@@ -864,9 +866,9 @@ def s2s_cut_to_conversation(
         assert (
             len(per_turn_cut.supervisions) >= 1
         ), f"Expected at least one supervision per turn, got none in cut {cut.id}"
-        # If len(per_turn_cut.supervisions) > 1, only the first turn is considered for cut creation
-        # We assume that len(per_turn_cut.supervisions) >= 1 happens because one of the turns is completely contained within
-        # another turn
+        # If len(per_turn_cut.supervisions) > 1, only the first turn is considered for cut creation.
+        # We assume that len(per_turn_cut.supervisions) >= 1 happens because one of the turns
+        # is completely contained within another turn.
         turn_speaker = per_turn_cut.supervisions[0].speaker
         turn_text = per_turn_cut.supervisions[0].text
         if strip_timestamp_tokens:
@@ -906,13 +908,6 @@ def read_s2s_as_conversation(config) -> tuple[CutSet, bool]:
         )
     ).filter(lambda ex: not isinstance(ex, FailedConversion))
     return cuts, is_tarred
-
-
-def _resolve_shar_inputs(path: Union[str, Path], only_metadata: bool) -> dict:
-    if only_metadata:
-        return dict(fields={"cuts": sorted(Path(path).glob("cuts.*"))})
-    else:
-        return dict(in_dir=path)
 
 
 def resolve_relative_paths(cut: Cut, manifest_path: str) -> Cut:

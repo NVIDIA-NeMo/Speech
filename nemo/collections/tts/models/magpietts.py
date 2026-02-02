@@ -50,7 +50,12 @@ from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     plot_alignment_to_numpy,
 )
-from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_and_tokenize_text_by_sentence, stack_tensors
+from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    chunk_and_tokenize_text_by_sentence,
+    chunk_text_for_inference,
+    get_tokenizer_for_language,
+    stack_tensors,
+)
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
@@ -3507,35 +3512,6 @@ class MagpieTTSModel(ModelPT):
 
         return transcript
 
-    def _needs_longform_inference(self, text: str, language: str) -> bool:
-        """Determine if longform inference is needed for the given text."""
-        # Average Number of words in 20 seconds of audio for each supported language.
-        longform_word_thresholds = {
-            "en": 45,
-            "es": 73,
-            "fr": 69,
-            "vi": 50,
-            "it": 53,
-            "de": 50,
-            "zh": 100,
-        }
-        # For Zh word count cannot be calculated by split(), hence calculating character count.
-        if language == "zh":
-            word_count = len(list(text))
-        else:
-            word_count = len(text.split())
-        is_longform = word_count >= longform_word_thresholds[language]
-
-        if is_longform:
-            if language == "zh":
-                logging.info("Longform inference is not supported for Mandarin, attempting to use standard inference.")
-                is_longform = False
-            elif language != "en":
-                logging.info(
-                    "Longform is best supported for English. For other languages, longform performance may not be optimal."
-                )
-        return is_longform
-
     def do_tts(
         self,
         transcript: str,
@@ -3598,100 +3574,57 @@ class MagpieTTSModel(ModelPT):
             self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript
         )
 
-        # Determine tokenizer name based on language
-        # Try to find a matching tokenizer, fallback to first available
-        tokenizer_name = None
+        # Determine tokenizer name based on language using centralized mapping
         available_tokenizers = list(self.tokenizer.tokenizers.keys())
-        logging.info(f"Available tokenizers: {available_tokenizers}")
+        tokenizer_name = get_tokenizer_for_language(language, available_tokenizers)
+        logging.info(f"Using tokenizer '{tokenizer_name}' for language '{language}'")
 
-        # Common mappings for tokenizer names
-        language_tokenizer_map = {
-            "en": ["english_phoneme", "english"],
-            "de": ["german_phoneme", "german"],
-            "es": ["spanish_phoneme", "spanish"],
-            "fr": ["french_chartokenizer", "french"],
-            "it": ["italian_phoneme", "italian"],
-            "vi": ["vietnamese_phoneme", "vietnamese"],
-            "zh": ["mandarin_phoneme", "mandarin", "chinese"],
-        }
+        # Unified inference path: chunk_text_for_inference automatically decides
+        # whether to split based on language-specific thresholds
+        # - Short text (below threshold): returns single chunk
+        # - Long text (above threshold): returns multiple sentence chunks
+        chunked_tokens, chunked_tokens_len, _ = chunk_text_for_inference(
+            text=normalized_text,
+            language=language,
+            tokenizer_name=tokenizer_name,
+            text_tokenizer=self.tokenizer,
+            eos_token_id=self.eos_id,
+        )
 
-        # Find matching tokenizer
-        if language in language_tokenizer_map:
-            for candidate in language_tokenizer_map[language]:
-                if candidate in available_tokenizers:
-                    tokenizer_name = candidate
-                    break
-
-        # Fallback to first available tokenizer
-        if tokenizer_name is None:
-            tokenizer_name = available_tokenizers[0]
-            logging.info(
-                f"No tokenizer found for language '{language}'. "
-                f"Using '{tokenizer_name}'. Available: {available_tokenizers}"
-            )
-
-        # Detect if longform inference is needed based on word count
-        is_longform = self._needs_longform_inference(normalized_text, language)
+        num_chunks = len(chunked_tokens)
 
         with torch.no_grad():
-            if is_longform:
-                # Longform path - process text - sentence by sentence
-                chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
-                    normalized_text, tokenizer_name, self.tokenizer, self.eos_id
-                )
+            chunk_state = self.create_longform_chunk_state(batch_size=1)
+            all_codes = []
 
-                chunk_state = self.create_longform_chunk_state(batch_size=1)
-                all_codes = []
-
-                for chunk_idx, (tokens, tokens_len) in enumerate(zip(chunked_tokens, chunked_tokens_len)):
-                    batch = {
-                        'text': tokens.unsqueeze(0).to(self.device),
-                        'text_lens': torch.tensor([tokens_len], device=self.device, dtype=torch.long),
-                        'speaker_indices': speaker_index,
-                    }
-                    end_of_text = [chunk_idx == len(chunked_tokens) - 1]
-                    beginning_of_text = chunk_idx == 0
-
-                    output = self.generate_long_form_speech(
-                        batch,
-                        chunk_state=chunk_state,
-                        end_of_text=end_of_text,
-                        beginning_of_text=beginning_of_text,
-                        use_cfg=use_cfg,
-                        use_local_transformer_for_inference=True,
-                    )
-                    if output.predicted_codes_lens[0] > 0:
-                        all_codes.append(output.predicted_codes[0, :, : output.predicted_codes_lens[0]])
-
-                # Concatenate and convert to audio
-                if len(all_codes) > 0:
-                    concatenated_codes = torch.cat(all_codes, dim=1).unsqueeze(0)
-                    codes_lens = torch.tensor([concatenated_codes.shape[2]], device=self.device, dtype=torch.long)
-                    predicted_audio, predicted_audio_lens, _ = self.codes_to_audio(concatenated_codes, codes_lens)
-                    return predicted_audio, predicted_audio_lens
-                else:
-                    return torch.zeros(1, 0, device=self.device), torch.zeros(1, device=self.device, dtype=torch.long)
-
-            else:
-                # Standard path - single utterance inference
-                tokens = self.tokenizer.encode(text=normalized_text, tokenizer_name=tokenizer_name)
-                tokens = tokens + [self.eos_id]  # Add EOS token (BOS not used per dataset convention)
-                text_tensor = torch.tensor([tokens], device=self.device, dtype=torch.long)
-                text_lens = torch.tensor([len(tokens)], device=self.device, dtype=torch.long)
-
+            for chunk_idx, (tokens, tokens_len) in enumerate(zip(chunked_tokens, chunked_tokens_len)):
                 batch = {
-                    'text': text_tensor,
-                    'text_lens': text_lens,
+                    'text': tokens.unsqueeze(0).to(self.device),
+                    'text_lens': torch.tensor([tokens_len], device=self.device, dtype=torch.long),
                     'speaker_indices': speaker_index,
                 }
+                end_of_text = [chunk_idx == num_chunks - 1]
+                beginning_of_text = chunk_idx == 0
 
-                output = self.infer_batch(
+                output = self.generate_long_form_speech(
                     batch,
+                    chunk_state=chunk_state,
+                    end_of_text=end_of_text,
+                    beginning_of_text=beginning_of_text,
                     use_cfg=use_cfg,
                     use_local_transformer_for_inference=True,
                 )
+                if output.predicted_codes_lens[0] > 0:
+                    all_codes.append(output.predicted_codes[0, :, : output.predicted_codes_lens[0]])
 
-                return output.predicted_audio, output.predicted_audio_lens
+            # Concatenate and convert to audio
+            if len(all_codes) > 0:
+                concatenated_codes = torch.cat(all_codes, dim=1).unsqueeze(0)
+                codes_lens = torch.tensor([concatenated_codes.shape[2]], device=self.device, dtype=torch.long)
+                predicted_audio, predicted_audio_lens, _ = self.codes_to_audio(concatenated_codes, codes_lens)
+                return predicted_audio, predicted_audio_lens
+            else:
+                return torch.zeros(1, 0, device=self.device), torch.zeros(1, device=self.device, dtype=torch.long)
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
@@ -4252,12 +4185,14 @@ class MagpieTTSModel(ModelPT):
         maskgit_sampling_type=None,
     ):
         """
-        Generates speech for long-form text by progressively shifting through text tokens.
+        Unified speech generation supporting both single-chunk and multi-chunk (longform) modes.
 
-        This method processes long text inputs by generating a fixed number of audio tokens per text token,
-        then shifting to the next text token. It maintains a sliding window over text and audio histories,
-        tracking how many audio tokens were generated for each text position. The behaviour of this function is
-        strongly dependent on self.inference_parameters.
+        This method is the unified inference entry point. For short text (single chunk where
+        beginning_of_text=True and end_of_text=[True]), it behaves similarly to standard inference.
+        For long text (multiple chunks), it maintains a sliding window over text and audio histories,
+        tracking how many audio tokens were generated for each text position.
+
+        The behaviour is strongly dependent on self.inference_parameters.
 
         Args:
             batch (dict): Input batch containing 'text' and 'text_lens'.
@@ -4350,7 +4285,7 @@ class MagpieTTSModel(ModelPT):
 
             for idx in range(self.inference_parameters.max_decoder_steps):
                 if idx % 30 == 0:
-                    logging.info(f"Longform decoding timestep {idx}")
+                    logging.info(f"Decoding timestep {idx}")
 
                 # Embed audio codes and concatenate with additional decoder input
                 audio_codes_embedded, audio_codes_lens = self.embed_audio_tokens(
@@ -4414,21 +4349,42 @@ class MagpieTTSModel(ModelPT):
                         else text_time_step_attended
                     )
 
-                    (state.attn_prior, state.unfinished_texts, state.finished_texts_counter) = (
-                        self.construct_longform_inference_prior(
-                            prior_epsilon=self.inference_parameters.attention_prior_epsilon,
-                            cross_attention_scores=alignment_attention_scores,
-                            text_lens=context_tensors.text_lens,
-                            text_time_step_attended=text_time_step_attended,
-                            attended_timestep_counter=state.attended_timestep_counter,
-                            unfinished_texts=state.unfinished_texts,
-                            finished_texts_counter=state.finished_texts_counter,
-                            end_indices=chunk_state.end_indices,
-                            chunk_end_dict=state.chunk_end_dict,
-                            batch_size=batch_size,
-                            left_offset=chunk_state.left_offset,
+                    # Use different attention priors for first chunk vs subsequent chunks:
+                    # - First chunk: use standard inference prior (more permissive, no history suppression)
+                    # - Subsequent chunks: use longform prior (more restrictive, suppresses history/future)
+                    if beginning_of_text:
+                        # First chunk: use standard inference prior
+                        (state.attn_prior, state.unfinished_texts, state.finished_texts_counter) = (
+                            self.construct_inference_prior(
+                                prior_epsilon=self.inference_parameters.attention_prior_epsilon,
+                                cross_attention_scores=alignment_attention_scores,
+                                text_lens=context_tensors.text_lens,
+                                text_time_step_attended=text_time_step_attended,
+                                attended_timestep_counter=state.attended_timestep_counter,
+                                unfinished_texts=state.unfinished_texts,
+                                finished_texts_counter=state.finished_texts_counter,
+                                end_indices=chunk_state.end_indices,
+                                lookahead_window_size=self.inference_parameters.attention_prior_lookahead_window,
+                                batch_size=batch_size,
+                            )
                         )
-                    )
+                    else:
+                        # Subsequent chunks: use longform inference prior
+                        (state.attn_prior, state.unfinished_texts, state.finished_texts_counter) = (
+                            self.construct_longform_inference_prior(
+                                prior_epsilon=self.inference_parameters.attention_prior_epsilon,
+                                cross_attention_scores=alignment_attention_scores,
+                                text_lens=context_tensors.text_lens,
+                                text_time_step_attended=text_time_step_attended,
+                                attended_timestep_counter=state.attended_timestep_counter,
+                                unfinished_texts=state.unfinished_texts,
+                                finished_texts_counter=state.finished_texts_counter,
+                                end_indices=chunk_state.end_indices,
+                                chunk_end_dict=state.chunk_end_dict,
+                                batch_size=batch_size,
+                                left_offset=chunk_state.left_offset,
+                            )
+                        )
 
                 for key in state.finished_texts_counter:
                     state.finished_texts_counter[key] += 1

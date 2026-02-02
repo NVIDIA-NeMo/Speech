@@ -238,7 +238,9 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
 
 @data_type_parser("txt")
 def read_txt_paths(config: DictConfig) -> tuple[CutSet, bool]:
-    """Read paths to text files and create a CutSet."""
+    """
+    Read paths to text files and create a CutSet.
+    """
     cuts = CutSet(
         LhotseTextAdapter(
             paths=config.paths,
@@ -306,26 +308,6 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
     )
     if not config.get("force_finite", False):
         cuts = cuts.repeat()
-    return cuts, True
-
-
-@data_type_parser(["share_gpt"])
-def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
-    """Read paths to ShareGPT JSONL files and create a CutSet of NeMoMultimodalConversation."""
-    cuts = CutSet(
-        NeMoMultimodalConversationShareGPTJsonlAdapter(
-            manifest_filepath=config.manifest_filepath,
-            tarred_audio_filepaths=config.get("tarred_audio_filepaths"),
-            audio_locator_tag=config.audio_locator_tag,
-            audio_placeholders=config.audio_placeholders,
-            token_equivalent_duration=config.get("token_equivalent_duration"),
-            shuffle_shards=config.shuffle,
-            shard_seed=config.shard_seed,
-            slice_length=config.get("slice_length"),
-        )
-    )
-    if not config.get("force_finite", False):
-        cuts = cuts.repeat(preserve_id=True)
     return cuts, True
 
 
@@ -752,6 +734,53 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
 @data_type_parser(["lhotse_as_conversation"])
 def read_lhotse_as_conversation(config) -> tuple[CutSet, bool]:
+    """
+    Conversion parser for regular ASR data.
+    Intended for converting ASR data in NeMo or Lhotse manifests from Lhotse Cut into NeMoMultimodalConversation.
+    The examples for multimodal LLM are constructed to present an optional "context" field and the acoustic representation as input,
+    and predict "text".
+
+    Example of original data JSON in NeMo manifest format::
+
+        {
+          "audio_filepath": "/path/to/audio.wav",
+          "duration": 3.48,
+          "text": "Of exclusive national competence, let me assure you".
+          "lang": "en",
+          "context": "Transcribe the following:",
+        }
+
+    Same example in Lhotse manifest format::
+
+        {
+          "id": "some-id-0",
+          "recording": {
+            "id": "some-id-0",
+            "sources": [
+              "type": "path",
+              "source": "/path/to/audio.wav",
+              "channel_ids": [0],
+            ],
+            "sampling_rate": 16000,
+            "duration": 3.48,
+            "num_samples": 55680,
+          },
+          "supervisions": [
+            "id": "some-id-0",
+            "start": 0.0,
+            "duration": 3.48,
+            "channel": 0,
+            "text": "Of exclusive national competence, let me assure you".
+            "language": "en",
+          ],
+          "start": 0.0,
+          "duration": 3.48,
+          "channel": 0,
+          "custom": {
+            "context": "Transcribe the following:",
+          }
+        }
+    """
     cuts, is_tarred = read_cutset_from_config(config)
     # Attach extra tags to every utterance dynamically, if provided.
     # We need to attach them before cuts are converted to conversations.
@@ -796,6 +825,55 @@ def sqa_cut_to_conversation(
 
 @data_type_parser(["sqa_as_conversation"])
 def read_sqa_as_conversation(config) -> tuple[CutSet, bool]:
+    """
+    Conversion parser for old spoken-question-answering data saved in NeMo format.
+    Intended for converting SQA data in NeMo or Lhotse manifests from Lhotse Cut into NeMoMultimodalConversation.
+    The examples for multimodal LLM are constructed to present "question" + acoustic representation as input,
+    and predict "answer".
+
+    Example of original data JSON in NeMo manifest format::
+
+        {
+          "audio_filepath": "/path/to/audio.wav",
+          "duration": 3.48,
+          "text": "Of exclusive national competence, let me assure you".
+          "lang": "en",
+          "question": "What is the nature of the competence described in the context?",
+          "answer": "The context mentions \"exclusive national competence\", indicating that the competence in question is solely within the authority of a nation.",
+        }
+
+    Same example in Lhotse manifest format::
+
+        {
+          "id": "some-id-0",
+          "recording": {
+            "id": "some-id-0",
+            "sources": [
+              "type": "path",
+              "source": "/path/to/audio.wav",
+              "channel_ids": [0],
+            ],
+            "sampling_rate": 16000,
+            "duration": 3.48,
+            "num_samples": 55680,
+          },
+          "supervisions": [
+            "id": "some-id-0",
+            "start": 0.0,
+            "duration": 3.48,
+            "channel": 0,
+            "text": "Of exclusive national competence, let me assure you".
+            "language": "en",
+          ],
+          "start": 0.0,
+          "duration": 3.48,
+          "channel": 0,
+          "custom": {
+            "question": "What is the nature of the competence described in the context?",
+            "answer": "The context mentions \"exclusive national competence\", indicating that the competence in question is solely within the authority of a nation.",
+          }
+        }
+    """
     cuts, is_tarred = read_cutset_from_config(config)
     # Attach extra tags to every utterance dynamically, if provided.
     # We need to attach them before cuts are converted to conversations.

@@ -102,6 +102,10 @@ class TranscriptionTensorDataset(Dataset):
         self.augmentor_cfg = config.get('augmentor', None)
         self.sample_rate = config['sample_rate']
 
+        self.pad_min_duration = config.get('pad_min_duration', 1.0)
+        self.pad_direction = config.get('pad_direction', 'both')
+        self.pad_min_samples = int(self.pad_min_duration * self.sample_rate)
+
         if self.augmentor_cfg is not None:
             self.augmentor = process_augmentations(self.augmentor_cfg, global_rank=0, world_size=1)
         else:
@@ -117,6 +121,25 @@ class TranscriptionTensorDataset(Dataset):
 
     def __len__(self):
         return self.length
+
+    def _pad_audio(self, samples: torch.Tensor) -> torch.Tensor:
+        """Pad audio to minimum duration, matching Lhotse dataloader behavior."""
+        current_len = samples.shape[0]
+        if current_len >= self.pad_min_samples:
+            return samples
+
+        pad_total = self.pad_min_samples - current_len
+        if self.pad_direction == 'both':
+            pad_left = pad_total // 2
+            pad_right = pad_total - pad_left
+        elif self.pad_direction == 'left':
+            pad_left = pad_total
+            pad_right = 0
+        else:  # right (default)
+            pad_left = 0
+            pad_right = pad_total
+        samples = torch.nn.functional.pad(samples, (pad_left, pad_right), mode='constant', value=0.0)
+        return samples
 
     def get_item(self, index):
         samples = self.audio_tensors[index]
@@ -136,7 +159,7 @@ class TranscriptionTensorDataset(Dataset):
             samples = self.augmentor.perturb(segment)
             samples = torch.tensor(samples.samples, dtype=original_dtype)
 
-        # Calculate seq length
+        samples = self._pad_audio(samples)
         seq_len = torch.tensor(samples.shape[0], dtype=torch.long)
 
         # Typically NeMo ASR models expect the mini-batch to be a 4-tuple of (audio, audio_len, text, text_len).
@@ -538,6 +561,8 @@ class TranscriptionMixin(ABC):
             'num_workers': get_value_from_transcription_config(trcfg, 'num_workers', 0),
             'channel_selector': get_value_from_transcription_config(trcfg, 'channel_selector', None),
             'sample_rate': sample_rate,
+            'pad_min_duration': get_value_from_transcription_config(trcfg, 'pad_min_duration', 1.0),
+            'pad_direction': get_value_from_transcription_config(trcfg, 'pad_direction', 'both'),
         }
 
         augmentor = get_value_from_transcription_config(trcfg, 'augmentor', None)

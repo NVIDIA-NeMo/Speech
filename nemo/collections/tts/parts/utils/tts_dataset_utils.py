@@ -378,28 +378,33 @@ _TITLE_ABBREVIATIONS = {
     'capt',
 }
 
-# CJK and Indic sentence-ending punctuation that should split regardless of following whitespace
-# These languages typically don't use spaces between sentences
-_CJK_INDIC_SENTENCE_ENDINGS = {
-    '。',  # Japanese/Chinese full stop
-    '？',  # Japanese/Chinese question mark
-    '！',  # Japanese/Chinese exclamation mark
-    '…',  # Ellipsis (CJK)
-    '।',  # Hindi Danda (primary sentence ending)
-    '॥',  # Hindi Double Danda (verse/paragraph ending)
+# =============================================================================
+# Sentence separator definitions
+# =============================================================================
+
+# Default sentence endings (used for all languages)
+_DEFAULT_SENTENCE_ENDINGS = ['.', '?', '!']
+
+# Language-specific sentence endings (includes default endings)
+# Languages in this dict (ja, zh, hi) have special punctuation that splits
+# regardless of following whitespace (since these languages don't use spaces between sentences)
+_SENTENCE_ENDINGS = {
+    "ja": ['。', '？', '！', '…', '.', '?', '!'],  # Japanese + Western
+    "zh": ['。', '？', '！', '…', '.', '?', '!'],  # Chinese + Western
+    "hi": ['।', '॥', '.', '?', '!'],              # Hindi Danda + Western
 }
 
 
 def split_by_sentence(
     paragraph: str,
-    sentence_separators: Optional[List[str]] = None,
+    language: str = "en",
 ) -> List[str]:
     """
     Split a paragraph into sentences based on sentence-ending punctuation.
 
     Handles multiple languages with appropriate splitting behavior:
-    - CJK/Indic punctuation (。？！।॥): splits regardless of following whitespace,
-      since these languages typically don't use spaces between sentences.
+    - Special language punctuation (ja/zh: 。？！…, hi: ।॥): splits regardless of
+      following whitespace, since these languages typically don't use spaces.
     - Western punctuation (. ? !): splits only when followed by whitespace or
       end-of-string, to avoid false splits on abbreviations.
     - Title abbreviations (Dr., Mr., Mrs., Prof., etc.): never splits on these
@@ -409,8 +414,9 @@ def split_by_sentence(
 
     Args:
         paragraph: The input text paragraph to split into sentences.
-        sentence_separators: A list of strings representing sentence-ending
-            punctuation marks. Defaults to ['.', '?', '!', '...'].
+        language: Language code (e.g., "en", "ja", "hi", "zh"). Defaults to "en".
+            Special languages (ja, zh, hi) use their native punctuation that
+            splits regardless of following whitespace.
 
     Returns:
         List of sentence strings with punctuation preserved.
@@ -422,11 +428,18 @@ def split_by_sentence(
         >>> split_by_sentence("Dr. Smith is here. Good morning!")
         ["Dr. Smith is here.", "Good morning!"]
 
-        >>> split_by_sentence("こんにちは。元気ですか？", ['。', '？'])
+        >>> split_by_sentence("こんにちは。元気ですか？", language="ja")
         ["こんにちは。", "元気ですか？"]
     """
-    if sentence_separators is None:
-        sentence_separators = ['.', '?', '!', '...']
+    # Get sentence separators for this language
+    sentence_separators = _get_sentence_separators_for_language(language)
+
+    # For special languages (ja, zh, hi), their native punctuation splits without whitespace
+    # Special endings are those unique to the language (not in default)
+    if language in _SENTENCE_ENDINGS:
+        special_endings = set(sentence_separators) - set(_DEFAULT_SENTENCE_ENDINGS)
+    else:
+        special_endings = set()
 
     if not paragraph or not paragraph.strip():
         return []
@@ -445,9 +458,9 @@ def split_by_sentence(
         next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
 
         # Determine if we should split at this position
-        # CJK/Indic punctuation: split regardless of following character (no spaces in these languages)
+        # Special language punctuation: split regardless of following character (no spaces in these languages)
         # Western punctuation: require whitespace or end-of-string
-        if char in _CJK_INDIC_SENTENCE_ENDINGS:
+        if char in special_endings:
             should_split = True
         else:
             should_split = next_char == "" or next_char.isspace()
@@ -496,23 +509,17 @@ def _get_sentence_separators_for_language(language: str) -> List[str]:
     """
     Get language-specific sentence separators.
 
+    For special languages (ja, zh, hi), returns their full punctuation set.
+    For all other languages, returns the default sentence endings.
+
     Args:
         language: Language code (e.g., "en", "ja", "hi").
 
     Returns:
         List of sentence separator characters for the given language.
+        Defaults to ['.', '?', '!'] for unlisted languages.
     """
-    # Language-specific sentence separators
-    language_separators = {
-        # Japanese: Japanese punctuation + Western punctuation for mixed text
-        "ja": ['。', '？', '！', '…', '.', '?', '!', '...'],
-        # Hindi: Devanagari Danda (।) is the primary sentence-ending mark
-        "hi": ['।', '॥', '?', '!', '.', '...'],
-        # Chinese: Chinese punctuation + Western punctuation
-        "zh": ['。', '？', '！', '…', '.', '?', '!', '...'],
-    }
-    # Default Western punctuation for unlisted languages
-    return language_separators.get(language, ['.', '?', '!', '...'])
+    return _SENTENCE_ENDINGS.get(language, _DEFAULT_SENTENCE_ENDINGS)
 
 
 def get_word_count(text: str, language: str = "en") -> int:
@@ -580,8 +587,7 @@ def chunk_and_tokenize_text_by_sentence(
             - chunked_tokens_len: List of token lengths.
             - chunked_text: List of sentence strings.
     """
-    sentence_separators = _get_sentence_separators_for_language(language)
-    split_sentences = split_by_sentence(text, sentence_separators=sentence_separators)
+    split_sentences = split_by_sentence(text, language=language)
 
     chunked_tokens = []
     chunked_tokens_len = []

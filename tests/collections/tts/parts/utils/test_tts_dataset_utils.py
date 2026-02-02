@@ -225,7 +225,6 @@ class TestSentenceSplitting:
         assert '.' in separators
         assert '?' in separators
         assert '!' in separators
-        assert '...' in separators
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -262,9 +261,9 @@ class TestSentenceSplitting:
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_get_sentence_separators_unknown_language(self):
-        """Test that unknown languages fall back to English defaults."""
+        """Test that unknown languages fall back to Western punctuation defaults."""
         separators = _get_sentence_separators_for_language("xyz")
-        assert separators == ['.', '?', '!', '...']
+        assert separators == ['.', '?', '!']
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -317,8 +316,7 @@ class TestSentenceSplitting:
     def test_split_by_sentence_japanese(self):
         """Test Japanese sentence splitting with Japanese punctuation."""
         text = "こんにちは。 お元気ですか？ 私は元気です！"
-        separators = _get_sentence_separators_for_language("ja")
-        sentences = split_by_sentence(text, sentence_separators=separators)
+        sentences = split_by_sentence(text, language="ja")
 
         assert len(sentences) == 3
         assert sentences[0] == "こんにちは。"
@@ -330,8 +328,7 @@ class TestSentenceSplitting:
     def test_split_by_sentence_hindi(self):
         """Test Hindi sentence splitting with Devanagari Danda."""
         text = "नमस्ते। आप कैसे हैं? मैं ठीक हूँ।"
-        separators = _get_sentence_separators_for_language("hi")
-        sentences = split_by_sentence(text, sentence_separators=separators)
+        sentences = split_by_sentence(text, language="hi")
 
         assert len(sentences) == 3
         assert "नमस्ते" in sentences[0]
@@ -344,8 +341,7 @@ class TestSentenceSplitting:
         """Test Japanese sentence splitting WITHOUT spaces between sentences."""
         # This is the common case in Japanese - no spaces after punctuation
         text = "こんにちは。元気ですか？私は元気です！"
-        separators = _get_sentence_separators_for_language("ja")
-        sentences = split_by_sentence(text, sentence_separators=separators)
+        sentences = split_by_sentence(text, language="ja")
 
         assert len(sentences) == 3
         assert sentences[0] == "こんにちは。"
@@ -357,8 +353,7 @@ class TestSentenceSplitting:
     def test_split_by_sentence_chinese_no_spaces(self):
         """Test Chinese sentence splitting WITHOUT spaces between sentences."""
         text = "你好。你好吗？我很好！"
-        separators = _get_sentence_separators_for_language("zh")
-        sentences = split_by_sentence(text, sentence_separators=separators)
+        sentences = split_by_sentence(text, language="zh")
 
         assert len(sentences) == 3
         assert sentences[0] == "你好。"
@@ -375,8 +370,7 @@ class TestSentenceSplitting:
         """
         # Danda followed by no space - should still split
         text = "नमस्ते।आप कैसे हैं।मैं ठीक हूँ।"
-        separators = _get_sentence_separators_for_language("hi")
-        sentences = split_by_sentence(text, sentence_separators=separators)
+        sentences = split_by_sentence(text, language="hi")
 
         assert len(sentences) == 3
         assert "नमस्ते" in sentences[0]

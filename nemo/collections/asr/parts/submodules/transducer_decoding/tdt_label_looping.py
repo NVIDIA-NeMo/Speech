@@ -438,7 +438,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             scores, labels = logits[:, :-num_durations].max(dim=-1)
 
             if self.has_fusion_models():
-                fusion_scores_combined, fusion_states_candidates_list = self.advance_fusion_models(
+                fusion_scores_list, fusion_states_candidates_list = self.advance_fusion_models(
                     fusion_states_list=fusion_states_list,
                     multi_biasing_ids=multi_biasing_ids,
                     float_dtype=float_dtype,
@@ -598,8 +598,8 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
 
             for fusion_states, fusion_states_candidates in zip(fusion_states_list, fusion_states_candidates_list):
                 torch.where(
-                    active_mask,
-                    fusion_states_candidates[batch_indices, labels * active_mask],
+                    found_labels_mask,
+                    fusion_states_candidates[batch_indices, labels * found_labels_mask],
                     fusion_states,
                     out=fusion_states,
                 )
@@ -1370,8 +1370,8 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         for fusion_model_idx, fusion_states_candidates in enumerate(self.state.fusion_states_candidates_list):
             # select necessary fusion states based on chosen labels
             torch.where(
-                self.state.active_mask,
-                fusion_states_candidates[self.state.batch_indices, self.state.labels * self.state.active_mask],
+                self.state.found_labels_mask,
+                fusion_states_candidates[self.state.batch_indices, self.state.labels * self.state.found_labels_mask],
                 self.state.fusion_states_list[fusion_model_idx],
                 out=self.state.fusion_states_list[fusion_model_idx],
             )

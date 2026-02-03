@@ -55,7 +55,11 @@ class MegatronTokenDropCallback(Callback):
         Sets token drop related configurations on the model.
         """
         assert isinstance(trainer.strategy, MegatronStrategy), "MegatronTokenDrop requires MegatronStrategy"
-        if hasattr(trainer.model, "config") and isinstance(trainer.model.config, ModelParallelConfig):
+        if (
+            hasattr(trainer.model, "config")
+            and isinstance(trainer.model.config, ModelParallelConfig)
+            and trainer.model.config.num_moe_experts
+        ):
             assert trainer.model.config.moe_token_dispatcher_type in [
                 "alltoall",
                 "alltoall_seq",

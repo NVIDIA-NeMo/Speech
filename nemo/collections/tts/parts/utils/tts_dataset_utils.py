@@ -391,7 +391,7 @@ _DEFAULT_SENTENCE_ENDINGS = ['.', '?', '!']
 _SENTENCE_ENDINGS = {
     "ja": ['。', '？', '！', '…', '.', '?', '!'],  # Japanese + Western
     "zh": ['。', '？', '！', '…', '.', '?', '!'],  # Chinese + Western
-    "hi": ['।', '॥', '.', '?', '!'],              # Hindi Danda + Western
+    "hi": ['।', '॥', '.', '?', '!'],  # Hindi Danda + Western
 }
 
 

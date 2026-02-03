@@ -599,7 +599,8 @@ def build_perf_env_plugin(args, pp_size: int | None = None, user_buffer_registra
 
     gpu_str = getattr(args, "gpu", "").lower()
     enable_vboost = args.enable_vboost
-    gpu_sm100_or_newer = gpu_str in ["b200", "gb200"]
+    # SM100 = Blackwell (B200, GB200), SM120 = next-gen (B300, GB300)
+    gpu_sm100_or_newer = gpu_str in ["b200", "gb200", "b300", "gb300"]
     nccl_pp_comm_chunksize = 2097152 if (pp_size is not None and pp_size > 1) else None
     user_buf = bool(user_buffer_registration) if user_buffer_registration is not None else False
 

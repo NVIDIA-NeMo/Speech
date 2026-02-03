@@ -22,7 +22,8 @@ class DeepEPCallback(Callback):
     """
     A PyTorch Lightning callback to enable DeepEP if the hardware is supported.
     Per official documentation https://github.com/deepseek-ai/DeepEP,
-    DeepEP is supported for Ampere (SM80) and Hopper (SM90) GPUs.
+    DeepEP is supported for Ampere (SM80), Hopper (SM90), Blackwell (SM100),
+    and newer architecture GPUs.
 
     Adding this callback is equivalent to setting the following flags in the recipe function:
 
@@ -35,8 +36,9 @@ class DeepEPCallback(Callback):
     """
 
     def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
-        """Enable DeepEP if GPU is Ampere or Hopper"""
-        if torch.cuda.get_device_properties(0).major not in [8, 9]:
+        """Enable DeepEP if GPU is Ampere (SM80) or newer"""
+        # SM80 = Ampere (major 8), SM90 = Hopper (major 9), SM100 = Blackwell (major 10), SM120 (major 12)
+        if torch.cuda.get_device_properties(0).major < 8:
             return
 
         if hasattr(trainer.model, "config") and isinstance(trainer.model.config, TransformerConfig):

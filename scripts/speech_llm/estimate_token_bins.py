@@ -304,8 +304,6 @@ def main():
     )
     cuts, _ = read_cutset_from_config(config)
     cuts = cuts.map(partial(apply_tokenizer, tokenizer=tokenizer, prompt=prompt), apply_fn=None)
-    if hasattr(cuts, "prefetch"):
-        cuts = cuts.prefetch()  # to be released in lhotse 1.27
     token_filter = RejectionsCounter(
         TokenCountFilter(args.min_tokens, args.max_tokens, args.measure_total_length), "Token count filtering"
     )

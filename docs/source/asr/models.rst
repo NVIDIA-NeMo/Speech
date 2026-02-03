@@ -310,6 +310,15 @@ Try real-time multitalker ASR with the tutorial notebook: `Streaming Multitalker
 You can simulate the streaming audio stream and streaming multitalker ASR with the script:
 ``<NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_multitalker_streaming_infer.py``
 
+
+.. note::
+   Many ASR pipelines expect **16 kHz, mono-channel WAV** input.
+   If your audio is mp3/m4a or has a different sample rate/channel count, convert it first:
+
+   .. code-block:: bash
+
+      ffmpeg -i input.mp3 -ac 1 -ar 16000 -y output.wav
+
 For an individual audio file:  
 
 .. code-block:: bash

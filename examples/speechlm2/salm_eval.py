@@ -26,7 +26,7 @@ from whisper_normalizer.english import EnglishTextNormalizer
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.common.data.lhotse.cutset import guess_parse_cutset
-from nemo.collections.speechlm2 import SALM
+from nemo.collections.speechlm2.models import SALM, SALMWithAsrDecoder
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -51,13 +51,18 @@ class SalmEvalConfig:
     extra_eos_tokens: Optional[list[str]] = None
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None
+    use_asr_decoder: bool = False  # set this to True if using SALMWithAsrDecoder
 
 
 @hydra_runner(config_name="SalmEvalConfig", schema=SalmEvalConfig)
 def main(cfg: SalmEvalConfig):
     logging.info(f'Hydra config:\n{OmegaConf.to_yaml(cfg)}')
 
-    model = SALM.from_pretrained(cfg.pretrained_name).eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
+    if cfg.use_asr_decoder:
+        model = SALMWithAsrDecoder.from_pretrained(cfg.pretrained_name)
+    else:
+        model = SALM.from_pretrained(cfg.pretrained_name)
+    model = model.eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
 
     cuts = guess_parse_cutset(cfg.inputs).sort_by_duration()
     dloader = torch.utils.data.DataLoader(

@@ -220,7 +220,7 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
 
         # Load weights
         logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
-        ckpt = torch.load(config.checkpoint_file, weights_only=False)
+        ckpt = torch.load(config.checkpoint_file)
         state_dict = update_checkpoint_state_dict(ckpt['state_dict'])
         model.load_state_dict(state_dict)
 

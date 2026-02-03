@@ -27,8 +27,9 @@ from transformers import GenerationConfig
 from nemo.collections.common.data.lhotse import NeMoMultimodalConversation
 from nemo.collections.common.data.lhotse.cutset import cut_to_conversation, guess_parse_cutset
 from nemo.collections.common.data.lhotse.dataloader import tokenize_with_prompt
-from nemo.collections.common.data.lhotse.text_adapters import TextTurn
+from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, TextTurn
 from nemo.collections.speechlm2 import SALM, SALMDataset
+from nemo.collections.speechlm2.models.salm_asr_decoder import SALMWithAsrDecoder
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -46,16 +47,29 @@ class SalmEvalConfig:
     extra_eos_tokens: Optional[list[str]] = None
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None
+    use_asr_decoder: bool = False  # set this to True if using SALMWithAsrDecoder
 
 
 @hydra_runner(config_name="SalmEvalConfig", schema=SalmEvalConfig)
 def main(cfg: SalmEvalConfig):
     logging.info(f"Hydra config:\n{OmegaConf.to_yaml(cfg)}")
 
-    model = SALM.from_pretrained(cfg.pretrained_name).eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
+    if cfg.use_asr_decoder:
+        model = SALMWithAsrDecoder.from_pretrained(cfg.pretrained_name)
+    else:
+        model = SALM.from_pretrained(cfg.pretrained_name)
+    model = model.eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
 
     conversations = (
         guess_parse_cutset(cfg.inputs)
+        .map(
+            partial(replace_audio_locator_tag, audio_locator_tag=model.audio_locator_tag),
+            apply_fn=None,
+        )
+        .map(
+            partial(set_token_equivalent_duration, token_equivalent_duration=model.token_equivalent_duration),
+            apply_fn=None,
+        )
         .map(
             partial(
                 cut_to_conversation,
@@ -135,6 +149,22 @@ def main(cfg: SalmEvalConfig):
     logging.info(f"TPS: {rtfx:.2f}")
 
 
+def replace_audio_locator_tag(
+    conversation: NeMoMultimodalConversation, audio_locator_tag: str
+) -> NeMoMultimodalConversation:
+    for turn in conversation.turns:
+        if isinstance(turn, AudioTurn):
+            turn.audio_locator_tag = audio_locator_tag
+    return conversation
+
+
+def set_token_equivalent_duration(
+    conversation: NeMoMultimodalConversation, token_equivalent_duration: float
+) -> NeMoMultimodalConversation:
+    conversation.token_equivalent_duration = token_equivalent_duration
+    return conversation
+
+
 def attach_system_and_user_turns(
     conversation: NeMoMultimodalConversation, system_prompt: str | None = None, user_prompt: str | None = None
 ) -> NeMoMultimodalConversation:
@@ -156,7 +186,7 @@ def strip_response_if_any(
     turns = conversation.turns
     while turns[-1].role == "assistant":
         turns = turns[:-1]
-    return fastcopy(conversation, turns=conversation.turns[:-1])
+    return fastcopy(conversation, turns=turns)
 
 
 def sort_by_length(conversations: CutSet) -> CutSet:

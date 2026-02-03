@@ -25,7 +25,7 @@ Before using NeMo, make sure you meet the following prerequisites:
 
 #. Python version 3.10 or above.
 
-#. Pytorch version 1.13.1 or 2.0+.
+#. Pytorch version 2.6+.
 
 #. Access to an NVIDIA GPU for model training.
 

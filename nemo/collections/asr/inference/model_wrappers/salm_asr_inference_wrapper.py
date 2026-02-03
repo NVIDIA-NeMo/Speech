@@ -95,10 +95,17 @@ class SALMASRInferenceWrapper:
             )
         return answer_ids
 
-    def ids_to_text(self, ids: torch.Tensor) -> str:
+    def ids_to_text(self, ids: torch.Tensor) -> list[str]:
+        """
+        Convert token ids to text.
+        Args:
+            ids: (torch.Tensor) Token ids to convert to text of size (batch_size, sequence_length).
+        Returns:
+            (list[str]) List of text strings.
+        """
         texts = []
-        for b in range(len(ids)):
-            ids = ids[b].cpu().tolist()
-            text = self.tokenizer.ids_to_text(ids)
-            texts.append(text)
+        for b in range(ids.size(0)):
+            texts.append(
+                self.tokenizer.ids_to_text(ids[b].cpu().tolist())
+            )
         return texts

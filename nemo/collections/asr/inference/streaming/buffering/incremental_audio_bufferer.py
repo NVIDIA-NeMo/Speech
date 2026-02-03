@@ -157,7 +157,7 @@ class BatchedIncrementalAudioBufferer:
                 self.bufferers[frame.stream_id] = bufferer
 
             bufferer.update(frame)
-            buffers.append(bufferer.sample_buffer.clone())
+            buffers.append(bufferer.sample_buffer)
             paddings.append(bufferer.remaining_capacity)
 
             if frame.is_last:

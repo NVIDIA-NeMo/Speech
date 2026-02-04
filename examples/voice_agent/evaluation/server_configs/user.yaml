@@ -12,7 +12,7 @@ server:
   talk_first: false  
 
 transport:
-  audio_out_10ms_chunks: 4
+  audio_out_10ms_chunks: 15
   record_audio_data: true
   audio_log_dir: "./audio_logs_user"
 

@@ -150,6 +150,7 @@ class AudioStream:
         self._buffer_empty_count = 0  # Track consecutive empty returns
         self.drain_threshold = drain_threshold  # Only reset ready after 5 consecutive underflows (~80ms of silence)
         self.min_sustain_chunks = min_sustain_chunks
+        self._next_send_time = 0
 
     async def put(self, audio_chunk: bytes):
         """
@@ -215,6 +216,17 @@ class AudioStream:
         Check if the buffer is full.
         """
         return self.current_buffer_size >= self.min_buffer_chunks
+
+    async def _send_audio_sleep(self):
+        """Simulate audio device timing by sleeping between audio chunks."""
+        # Simulate a clock.
+        current_time = time.monotonic()
+        sleep_duration = max(0, self._next_send_time - current_time)
+        await asyncio.sleep(sleep_duration)
+        if sleep_duration == 0:
+            self._next_send_time = time.monotonic() + self.chunk_size_in_seconds
+        else:
+            self._next_send_time += self.chunk_size_in_seconds
 
     async def get_nowait(self) -> bytes:
         """

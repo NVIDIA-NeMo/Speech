@@ -25,6 +25,7 @@ Connects two voice agents via WebSocket and provides:
 import asyncio
 import json
 import queue
+import random
 import threading
 import time
 import wave
@@ -166,6 +167,18 @@ class RTVIEvaluationBridge:
         self.output_sample_rate = output_sample_rate
         self.audio_chunk_in_seconds = audio_chunk_in_seconds
 
+        # Random burst mode configuration (simulates browser's irregular sending pattern)
+        self.use_burst_mode = False
+        self.burst_size_range = (2, 4)  # Random 2-4 frames per burst
+        self.burst_delay_ms = 1  # 1ms between frames in burst
+        # Pause calculated per burst: (burst_size × 16ms) - burst_duration
+        # This maintains 16ms average per frame while varying the pattern
+
+        # Grace period and timeout configuration for send loops
+        self.grace_period = 5.0  # Extra time to drain audio after main duration
+        self.no_audio_timeout = 2.0  # Stop if no audio for N seconds during grace period
+        self.max_consecutive_silence = 5  # Stop after N consecutive silence chunks in grace period
+
         self.user_ws = None
         self.agent_ws = None
 
@@ -197,6 +210,25 @@ class RTVIEvaluationBridge:
         logger.info("Bridge configured to resample audio at source (simulating browser behavior)")
         logger.info(f"  User: {self.user_output_sample_rate}Hz (TTS) → {self.agent_input_sample_rate}Hz (STT)")
         logger.info(f"  Agent: {self.agent_output_sample_rate}Hz (TTS) → {self.user_input_sample_rate}Hz (STT)")
+
+        # Log burst mode configuration
+        if self.use_burst_mode:
+            logger.info(
+                f"Random burst mode enabled: {self.burst_size_range[0]}-{self.burst_size_range[1]} frames per burst, {self.burst_delay_ms}ms between frames"
+            )
+            min_pause = (self.burst_size_range[0] * self.audio_chunk_in_seconds * 1000) - (
+                (self.burst_size_range[0] - 1) * self.burst_delay_ms
+            )
+            max_pause = (self.burst_size_range[1] * self.audio_chunk_in_seconds * 1000) - (
+                (self.burst_size_range[1] - 1) * self.burst_delay_ms
+            )
+            logger.info(f"  Pause range: {min_pause:.0f}-{max_pause:.0f}ms (calculated to maintain 16ms avg)")
+            logger.info(f"  Example patterns:")
+            logger.info(f"    2 frames: 1ms burst + 31ms pause = 32ms (16ms avg)")
+            logger.info(f"    3 frames: 2ms burst + 46ms pause = 48ms (16ms avg)")
+            logger.info(f"    4 frames: 3ms burst + 61ms pause = 64ms (16ms avg)")
+        else:
+            logger.info(f"Steady mode: sending at constant {self.audio_chunk_in_seconds * 1000:.0f}ms intervals")
 
         # Initialize log file
         self.init_log_file(log_file)
@@ -850,7 +882,6 @@ class RTVIEvaluationBridge:
 
                     # Run bidirectional tasks (send loop manages timeout + grace period)
                     # Add overall timeout with grace period to stop receive loop when send loop finishes
-                    grace_period = 5.0
                     try:
                         await asyncio.wait_for(
                             asyncio.gather(
@@ -859,7 +890,7 @@ class RTVIEvaluationBridge:
                                 # Get raw audio from queue, send to user (handles its own timeout)
                                 self._send_agent_to_user(user_ws, agent_to_user_stream, duration),
                             ),
-                            timeout=duration + grace_period + 1.0,  # Extra 1s buffer for cleanup
+                            timeout=duration + self.grace_period + 1.0,  # Extra 1s buffer for cleanup
                         )
                     except asyncio.TimeoutError:
                         logger.info("[USER THREAD] Overall timeout reached, stopping receive loop")
@@ -914,13 +945,12 @@ class RTVIEvaluationBridge:
 
                     # Send kickoff message after a delay
                     async def send_kickoff():
-                        await asyncio.sleep(1.5)
+                        await asyncio.sleep(1)
                         logger.info("[AGENT THREAD] Sending kickoff message to agent...")
                         await self.send_text_to_agent("Hello")
 
                     # Run bidirectional tasks (send loop manages timeout + grace period)
                     # Add overall timeout with grace period to stop receive loop when send loop finishes
-                    grace_period = 5.0
                     try:
                         await asyncio.wait_for(
                             asyncio.gather(
@@ -930,7 +960,7 @@ class RTVIEvaluationBridge:
                                 self._receive_agent_to_queue(agent_ws),
                                 send_kickoff(),
                             ),
-                            timeout=duration + grace_period + 1.0,  # Extra 1s buffer for cleanup
+                            timeout=duration + self.grace_period + 1.0,  # Extra 1s buffer for cleanup
                         )
                     except asyncio.TimeoutError:
                         logger.info("[AGENT THREAD] Overall timeout reached, stopping receive loop")
@@ -981,10 +1011,7 @@ class RTVIEvaluationBridge:
         loop = asyncio.get_event_loop()
         start_time = loop.time()
         chunk_count = 0
-        grace_period = 5.0  # Extra time to drain audio after timeout
-        no_audio_timeout = 2.0  # Stop if no audio for 2 seconds during grace period
-        consecutive_silence = 0  # Track consecutive silence chunks
-        max_consecutive_silence = 5  # Stop after 5 consecutive silence chunks in grace period
+        consecutive_silence = 0  # Track consecutive silence chunks (local counter)
 
         try:
             last_audio_time = loop.time()
@@ -1001,70 +1028,90 @@ class RTVIEvaluationBridge:
                 # 1. Exceeded duration + grace period
                 # 2. In grace period and no audio for no_audio_timeout seconds
                 # 3. In grace period and consecutive silence chunks (buffer drained)
-                if elapsed > (duration + grace_period):
+                if elapsed > (duration + self.grace_period):
                     logger.info(f"[AGENT→USER] Grace period expired after {elapsed:.1f}s, stopping")
                     break
 
-                if in_grace_period and queue_empty_for_drain and consecutive_silence >= max_consecutive_silence:
+                if in_grace_period and queue_empty_for_drain and consecutive_silence >= self.max_consecutive_silence:
                     logger.info(
                         f"[AGENT→USER] AudioStream buffer drained ({consecutive_silence} silence chunks), stopping"
                     )
                     break
 
-                if in_grace_period and (current_time - last_audio_time) > no_audio_timeout:
-                    logger.info(f"[AGENT→USER] No audio for {no_audio_timeout}s in grace period, stopping")
+                if in_grace_period and (current_time - last_audio_time) > self.no_audio_timeout:
+                    logger.info(f"[AGENT→USER] No audio for {self.no_audio_timeout}s in grace period, stopping")
                     break
 
-                # Try to get agent audio from thread-safe queue (non-blocking)
-                try:
-                    agent_audio = self.agent_to_user_queue.get_nowait()
-                    # Put into AudioStream for buffering/resampling
-                    await audio_stream.put(agent_audio)
-                    last_audio_time = current_time
-                except queue.Empty:
-                    # Queue is empty, but we might still have audio in AudioStream buffer
-                    if in_grace_period:
-                        queue_empty_for_drain = True
-                    pass  # Continue to send whatever is in AudioStream buffer
+                # Empty all available agent audio from thread-safe queue (non-blocking)
+                # This prevents stale audio buildup during burst pauses or LLM/TTS blocking
+                chunks_retrieved = 0
+                while True:
+                    try:
+                        agent_audio = self.agent_to_user_queue.get_nowait()
+                        # Put into AudioStream for buffering/resampling
+                        await audio_stream.put(agent_audio)
+                        last_audio_time = current_time
+                        chunks_retrieved += 1
+                    except queue.Empty:
+                        # Queue is empty, but we might still have audio in AudioStream buffer
+                        if in_grace_period and chunks_retrieved == 0:
+                            queue_empty_for_drain = True
+                        break
 
-                # Calculate timing for next send
-                chunk_count += 1
-                next_send_time = start_time + (chunk_count * self.audio_chunk_in_seconds)
-                current_time = loop.time()
+                logger.debug(f"[AGENT→USER] Retrieved {chunks_retrieved} chunks from queue")
 
-                # Sleep until next send time FIRST to maintain correct rate
-                # This prevents the loop from spinning too fast
-                current_time = loop.time()
-                sleep_time = next_send_time - current_time
-                if sleep_time > 0:
-                    await asyncio.sleep(sleep_time)
-                else:
-                    # Even if behind schedule, yield to other tasks
-                    await asyncio.sleep(0.001)
-
-                # Get audio from AudioStream with no wait to avoid blocking receive task
-                audio_to_send = await audio_stream.get_nowait()
-
-                # Check if it's all silence (indicates buffer is empty)
-                is_silence = audio_to_send == b'\x00' * len(audio_to_send)
-                if is_silence and queue_empty_for_drain:
-                    consecutive_silence += 1
-                else:
-                    consecutive_silence = 0
-
-                # Track sent audio
-                self.sent_to_user_chunks.append(audio_to_send)
-
-                # Create frame and send
-                output_frame = OutputAudioRawFrame(
-                    audio=audio_to_send, sample_rate=audio_stream.output_sample_rate, num_channels=1
+                # Burst sending: send N frames rapidly, then pause
+                # Steady mode is just burst_size=1 (send 1 frame, pause 16ms, repeat)
+                burst_size = (
+                    random.randint(self.burst_size_range[0], self.burst_size_range[1]) if self.use_burst_mode else 1
                 )
-                serialized = await self.serializer.serialize(output_frame)
-                await user_ws.send(serialized)
 
-                logger.debug(
-                    f"[AGENT→USER][{chunk_count}] Sent {len(audio_to_send)} bytes to user (silence: {is_silence})"
-                )
+                # Send burst frames
+                for frame_in_burst in range(burst_size):
+                    if frame_in_burst > 0:
+                        # Small delay between frames in burst
+                        await asyncio.sleep(self.burst_delay_ms / 1000.0)
+
+                    # Get audio from AudioStream
+                    audio_to_send = await audio_stream.get_nowait()
+
+                    # Check if it's silence
+                    is_silence = audio_to_send == b'\x00' * len(audio_to_send)
+                    if is_silence and queue_empty_for_drain:
+                        consecutive_silence += 1
+                    else:
+                        consecutive_silence = 0
+
+                    # Track sent audio
+                    self.sent_to_user_chunks.append(audio_to_send)
+
+                    # Create frame and send
+                    output_frame = OutputAudioRawFrame(
+                        audio=audio_to_send, sample_rate=audio_stream.output_sample_rate, num_channels=1
+                    )
+                    serialized = await self.serializer.serialize(output_frame)
+                    await user_ws.send(serialized)
+
+                    chunk_count += 1
+                    if self.use_burst_mode:
+                        logger.debug(
+                            f"[AGENT→USER][{chunk_count}] Sent {len(audio_to_send)} bytes to user (burst {frame_in_burst+1}/{burst_size}, silence: {is_silence})"
+                        )
+                    else:
+                        logger.debug(
+                            f"[AGENT→USER][{chunk_count}] Sent {len(audio_to_send)} bytes to user (silence: {is_silence})"
+                        )
+
+                # Calculate pause to maintain average throughput
+                total_cycle_time = burst_size * self.audio_chunk_in_seconds
+                burst_duration = (burst_size - 1) * (self.burst_delay_ms / 1000.0)
+                pause_duration = total_cycle_time - burst_duration
+
+                if self.use_burst_mode:
+                    logger.debug(
+                        f"[AGENT→USER] Burst complete ({burst_size} frames), pausing {pause_duration*1000:.0f}ms"
+                    )
+                await asyncio.sleep(pause_duration)
 
             logger.info(f"[AGENT→USER] Send loop finished after {chunk_count} chunks")
 
@@ -1080,10 +1127,7 @@ class RTVIEvaluationBridge:
         loop = asyncio.get_event_loop()
         start_time = loop.time()
         chunk_count = 0
-        grace_period = 5.0  # Extra time to drain audio after timeout
-        no_audio_timeout = 2.0  # Stop if no audio for 2 seconds during grace period
-        consecutive_silence = 0  # Track consecutive silence chunks
-        max_consecutive_silence = 5  # Stop after 5 consecutive silence chunks in grace period
+        consecutive_silence = 0  # Track consecutive silence chunks (local counter)
 
         try:
             last_audio_time = loop.time()
@@ -1100,69 +1144,90 @@ class RTVIEvaluationBridge:
                 # 1. Exceeded duration + grace period
                 # 2. In grace period and no audio for no_audio_timeout seconds
                 # 3. In grace period and consecutive silence chunks (buffer drained)
-                if elapsed > (duration + grace_period):
+                if elapsed > (duration + self.grace_period):
                     logger.info(f"[USER→AGENT] Grace period expired after {elapsed:.1f}s, stopping")
                     break
 
-                if in_grace_period and queue_empty_for_drain and consecutive_silence >= max_consecutive_silence:
+                if in_grace_period and queue_empty_for_drain and consecutive_silence >= self.max_consecutive_silence:
                     logger.info(
                         f"[USER→AGENT] AudioStream buffer drained ({consecutive_silence} silence chunks), stopping"
                     )
                     break
 
-                if in_grace_period and (current_time - last_audio_time) > no_audio_timeout:
-                    logger.info(f"[USER→AGENT] No audio for {no_audio_timeout}s in grace period, stopping")
+                if in_grace_period and (current_time - last_audio_time) > self.no_audio_timeout:
+                    logger.info(f"[USER→AGENT] No audio for {self.no_audio_timeout}s in grace period, stopping")
                     break
 
-                # Try to get user audio from thread-safe queue (non-blocking)
-                try:
-                    user_audio = self.user_to_agent_queue.get_nowait()
-                    # Put into AudioStream for buffering/resampling
-                    await audio_stream.put(user_audio)
-                    last_audio_time = current_time
-                except queue.Empty:
-                    # Queue is empty, but we might still have audio in AudioStream buffer
-                    if in_grace_period:
-                        queue_empty_for_drain = True
-                    pass  # Continue to send whatever is in AudioStream buffer
+                # Empty all available user audio from thread-safe queue (non-blocking)
+                # This prevents stale audio buildup during burst pauses or LLM/TTS blocking
+                chunks_retrieved = 0
+                while True:
+                    try:
+                        user_audio = self.user_to_agent_queue.get_nowait()
+                        # Put into AudioStream for buffering/resampling
+                        await audio_stream.put(user_audio)
+                        last_audio_time = current_time
+                        chunks_retrieved += 1
+                    except queue.Empty:
+                        # Queue is empty, but we might still have audio in AudioStream buffer
+                        if in_grace_period and chunks_retrieved == 0:
+                            queue_empty_for_drain = True
+                        break
 
-                # Calculate timing for next send
-                chunk_count += 1
-                next_send_time = start_time + (chunk_count * self.audio_chunk_in_seconds)
-                current_time = loop.time()
+                logger.debug(f"[USER→AGENT] Retrieved {chunks_retrieved} chunks from queue")
 
-                # Sleep until next send time FIRST to maintain correct rate
-                # This prevents the loop from spinning too fast
-                sleep_time = next_send_time - current_time
-                if sleep_time > 0:
-                    await asyncio.sleep(sleep_time)
-                else:
-                    # Even if behind schedule, yield to other tasks
-                    await asyncio.sleep(0.001)
-
-                # Get audio from AudioStream with no wait to avoid blocking receive task
-                audio_to_send = await audio_stream.get_nowait()
-
-                # Check if it's all silence (indicates buffer is empty)
-                is_silence = audio_to_send == b'\x00' * len(audio_to_send)
-                if is_silence and queue_empty_for_drain:
-                    consecutive_silence += 1
-                else:
-                    consecutive_silence = 0
-
-                # Track sent audio
-                self.sent_to_agent_chunks.append(audio_to_send)
-
-                # Create frame and send
-                output_frame = OutputAudioRawFrame(
-                    audio=audio_to_send, sample_rate=audio_stream.output_sample_rate, num_channels=1
+                # Burst sending: send N frames rapidly, then pause
+                # Steady mode is just burst_size=1 (send 1 frame, pause 16ms, repeat)
+                burst_size = (
+                    random.randint(self.burst_size_range[0], self.burst_size_range[1]) if self.use_burst_mode else 1
                 )
-                serialized = await self.serializer.serialize(output_frame)
-                await agent_ws.send(serialized)
 
-                logger.debug(
-                    f"[USER→AGENT][{chunk_count}] Sent {len(audio_to_send)} bytes to agent (silence: {is_silence})"
-                )
+                # Send burst frames
+                for frame_in_burst in range(burst_size):
+                    if frame_in_burst > 0:
+                        # Small delay between frames in burst
+                        await asyncio.sleep(self.burst_delay_ms / 1000.0)
+
+                    # Get audio from AudioStream
+                    audio_to_send = await audio_stream.get_nowait()
+
+                    # Check if it's silence
+                    is_silence = audio_to_send == b'\x00' * len(audio_to_send)
+                    if is_silence and queue_empty_for_drain:
+                        consecutive_silence += 1
+                    else:
+                        consecutive_silence = 0
+
+                    # Track sent audio
+                    self.sent_to_agent_chunks.append(audio_to_send)
+
+                    # Create frame and send
+                    output_frame = OutputAudioRawFrame(
+                        audio=audio_to_send, sample_rate=audio_stream.output_sample_rate, num_channels=1
+                    )
+                    serialized = await self.serializer.serialize(output_frame)
+                    await agent_ws.send(serialized)
+
+                    chunk_count += 1
+                    if self.use_burst_mode:
+                        logger.debug(
+                            f"[USER→AGENT][{chunk_count}] Sent {len(audio_to_send)} bytes to agent (burst {frame_in_burst+1}/{burst_size}, silence: {is_silence})"
+                        )
+                    else:
+                        logger.debug(
+                            f"[USER→AGENT][{chunk_count}] Sent {len(audio_to_send)} bytes to agent (silence: {is_silence})"
+                        )
+
+                # Calculate pause to maintain average throughput
+                total_cycle_time = burst_size * self.audio_chunk_in_seconds
+                burst_duration = (burst_size - 1) * (self.burst_delay_ms / 1000.0)
+                pause_duration = total_cycle_time - burst_duration
+
+                if self.use_burst_mode:
+                    logger.debug(
+                        f"[USER→AGENT] Burst complete ({burst_size} frames), pausing {pause_duration*1000:.0f}ms"
+                    )
+                await asyncio.sleep(pause_duration)
 
             logger.info(f"[USER→AGENT] Send loop finished after {chunk_count} chunks")
 

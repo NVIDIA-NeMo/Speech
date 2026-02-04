@@ -27,7 +27,10 @@ import wandb
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
-from omegaconf import DictConfig, OmegaConf, open_dict
+from pathlib import Path
+
+from lhotse.serialization import load_yaml
+from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from torch import nn
 from torch.utils.data import get_worker_info
 
@@ -51,7 +54,6 @@ from nemo.collections.tts.parts.utils.helpers import (
     plot_alignment_to_numpy,
 )
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
-    chunk_and_tokenize_text_by_sentence,
     chunk_text_for_inference,
     get_tokenizer_for_language,
     stack_tensors,

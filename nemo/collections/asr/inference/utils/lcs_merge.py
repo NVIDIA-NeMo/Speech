@@ -13,54 +13,36 @@
 # limitations under the License.
 
 
-def rightmost_lcs(buffer: list[int], data: list[int]) -> tuple[int, int, int]:
-    """
-    Find the Rightmost Longest Common Subsequence (LCS) between buffer and data arrays.
-    Args:
-        buffer: (list[int]) The buffer of tokens.
-        data: (list[int]) The new tokens to merge with the buffer.
-    Returns:
-        tuple[int, int, int]: A tuple containing:
-        (int) The start index of the LCS in the buffer.
-        (int) The start index of the LCS in the data.
-        (int) The length of the LCS.
-    """
+def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, int, int]:
     n, m = len(buffer), len(data)
 
-    # DP table
+    # dp[i][j] = length of longest common substring
+    # ending at buffer[i-1] and data[j-1]
     dp = [[0] * (m + 1) for _ in range(n + 1)]
 
-    best_len = 0
-    best_end_i = -1
-    best_end_j = -1
+    max_len = 0
+    end_i = end_j = -1
 
     for i in range(1, n + 1):
-        bi = buffer[i - 1]
         for j in range(1, m + 1):
-            if bi == data[j - 1]:
+            if buffer[i - 1] == data[j - 1]:
                 dp[i][j] = dp[i - 1][j - 1] + 1
 
-                cur_len = dp[i][j]
-                end_i = i - 1
-                end_j = j - 1
-
-                # Rightmost LCS selection
-                if cur_len > best_len or (
-                    cur_len == best_len and (end_i > best_end_i or (end_i == best_end_i and end_j > best_end_j))
-                ):
-                    best_len = cur_len
-                    best_end_i = end_i
-                    best_end_j = end_j
+                # Rightmost preference:
+                if dp[i][j] > max_len or (dp[i][j] == max_len and (i > end_i or (i == end_i and j > end_j))):
+                    max_len = dp[i][j]
+                    end_i = i
+                    end_j = j
             else:
-                dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
+                dp[i][j] = 0
 
-    if best_len == 0:
+    if max_len == 0:
         return -1, -1, 0
 
-    start_i = best_end_i - best_len + 1
-    start_j = best_end_j - best_len + 1
+    buf_start = end_i - max_len
+    data_start = end_j - max_len
 
-    return start_i, start_j, best_len
+    return buf_start, data_start, max_len
 
 
 def lcs_merge(
@@ -82,16 +64,18 @@ def lcs_merge(
         buffer += data
         return buffer
 
+    if sep_id is None:
+        sep_id = []
+
     if search_size < 1:
-        buffer += data if sep_id is None else sep_id + data
+        buffer += sep_id + data
         return buffer
 
     buffer_slice = buffer[-search_size:]
 
-    i_rel, j_rel, length = rightmost_lcs(buffer_slice, data)
-
+    i_rel, j_rel, length = longest_common_substring(buffer_slice, data)
     if length < min_lcs_length:
-        buffer += data if sep_id is None else sep_id + data
+        buffer += sep_id + data
         return buffer
 
     base = len(buffer) - len(buffer_slice)

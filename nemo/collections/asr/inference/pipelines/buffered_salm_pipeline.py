@@ -37,6 +37,14 @@ if TYPE_CHECKING:
     from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
 
 
+def parse_hyp(answer: torch.Tensor, eos_tokens: list[int]):
+    end = torch.isin(answer, torch.tensor(eos_tokens)).nonzero(as_tuple=True)[0]
+    if end.numel() == 0:
+        return answer
+    end = end[0]
+    return answer[:end]
+
+
 class BufferedSALMAEDPipeline(BasePipeline):
     """Buffered SALM AED pipeline."""
 
@@ -80,6 +88,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
         self.buffer_size_in_secs = cfg.streaming.buffer_size
         self.overlap_size_in_secs = cfg.streaming.overlap_size
         self.overlap_ratio = self.overlap_size_in_secs / self.buffer_size_in_secs
+        self.extra_overlap_tokens = 3  # extra tokens for better overlap detection
 
         self.audio_bufferer = BatchedIncrementalAudioBufferer(
             self.sample_rate,
@@ -132,8 +141,19 @@ class BufferedSALMAEDPipeline(BasePipeline):
         if len(state.tokens) == 0:
             state.tokens.extend(data)
             return
-        # +1 extra token for better overlap detection
-        delay = int(self.overlap_ratio * len(data)) + 1
+
+        # extra overlap tokens for better overlap detection
+        delay = int(self.overlap_ratio * len(data)) + self.extra_overlap_tokens
+
+        state_text = self.asr_model.tokenizer.ids_to_text(state.tokens)
+        data_text = self.asr_model.tokenizer.ids_to_text(data)
+        buffer_slice_text = self.asr_model.tokenizer.ids_to_text(state.tokens[-delay:])
+        data_slice_text = self.asr_model.tokenizer.ids_to_text(data[:delay])
+        print(f"state_text: {state_text}")
+        print(f"data_text: {data_text}")
+        print(f"buffer slice: {buffer_slice_text}|")
+        print(f"data slice: {data_slice_text}|")
+
         state.tokens = lcs_merge(
             buffer=state.tokens,
             data=data[:delay],
@@ -142,23 +162,28 @@ class BufferedSALMAEDPipeline(BasePipeline):
             min_lcs_length=1,
         )
         state.tokens.extend(data[delay:])
+        state_text_after_merge = self.asr_model.tokenizer.ids_to_text(state.tokens)
+        print(f"state_text_after_merge: {state_text_after_merge}")
+        print("--------------------------------")
 
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
+        Perform the transcribe step for frames.
         Args:
             frames: (list[Frame]) List of frames to transcribe.
         """
         buffers, paddings = self.audio_bufferer.update(frames)
-        paddings = torch.tensor(paddings, device=self.device)
+        paddings = torch.tensor(paddings, dtype=torch.int64, device=self.device)
 
         # Right paddings for the final frames
-        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
-            min=0
-        )
+        # Only for last frames frame.size is greater than frame.valid_size
+        right_paddings = torch.tensor(
+            [int(frame.size - frame.valid_size) for frame in frames], dtype=torch.int64, device=self.device
+        ).clamp(min=0)
 
         # stack buffers
         audios = torch.cat([buffer.unsqueeze_(0) for buffer in buffers]).to(self.device)
-        audio_lens = torch.tensor([buffer.shape[1] for buffer in buffers], device=self.device)
+        audio_lens = torch.tensor([audios.size(1)] * audios.size(0), dtype=torch.int64, device=self.device)
         audio_lens = audio_lens - paddings - right_paddings
 
         answer_ids = self.asr_model.generate(
@@ -166,39 +191,42 @@ class BufferedSALMAEDPipeline(BasePipeline):
             audios=audios,
             audio_lens=audio_lens,
             max_new_tokens=self.max_new_tokens,
-        )
+        ).cpu()
+
+        eos_tokens = [self.asr_model.salm_model.text_eos_id]
 
         for i, frame in enumerate(frames):
             state = self.get_state(frame.stream_id)
-            new_tokens = answer_ids[i].cpu().tolist()
+            new_tokens = parse_hyp(answer_ids[i], eos_tokens).tolist()
             state.incomplete_segment_tokens.clear()
             if self.audio_bufferer.is_full(frame.stream_id) or frame.is_last:
                 self.lcs_merge(state, new_tokens)
             else:
                 state.incomplete_segment_tokens.extend(new_tokens)
 
-            # +1 extra token for better overlap detection
-            delay = int(self.overlap_ratio * len(state.incomplete_segment_tokens)) + 1
-            all_tokens = state.tokens.copy()
-            if len(state.incomplete_segment_tokens) > 0:
-                all_tokens = lcs_merge(
-                    buffer=all_tokens,
-                    data=state.incomplete_segment_tokens[:delay],
-                    search_size=delay,
-                    sep_id=self.space_id,
-                    min_lcs_length=1,
-                )
-                all_tokens.extend(state.incomplete_segment_tokens[delay:])
-
-            if len(all_tokens) > 0:
-                pt_string = self.asr_model.tokenizer.ids_to_text(all_tokens)
-                state.partial_transcript = pt_string
-            else:
-                state.partial_transcript = ""
-
             if frame.is_last:
-                state.final_transcript = state.partial_transcript
+                state.final_transcript = self.asr_model.tokenizer.ids_to_text(state.tokens)
                 state.partial_transcript = ""
+            else:
+                all_tokens = state.tokens.copy()
+                if len(state.incomplete_segment_tokens) > 0:
+                    # extra overlap tokens for better overlap detection
+                    delay = int(self.overlap_ratio * len(state.incomplete_segment_tokens)) + self.extra_overlap_tokens
+                    all_tokens = lcs_merge(
+                        buffer=all_tokens,
+                        data=state.incomplete_segment_tokens[:delay],
+                        search_size=delay,
+                        sep_id=self.space_id,
+                        min_lcs_length=1,
+                    )
+                    all_tokens.extend(state.incomplete_segment_tokens[delay:])
+
+                if len(all_tokens) > 0:
+                    state.partial_transcript = self.asr_model.tokenizer.ids_to_text(all_tokens)
+                else:
+                    state.partial_transcript = ""
+
+                # print(state.partial_transcript)
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

@@ -17,6 +17,7 @@ from .duplex_s2s_speech_decoder_model import DuplexS2SSpeechDecoderModel
 from .duplex_stt_model import DuplexSTTModel
 from .salm import SALM
 from .salm_asr_decoder import SALMWithAsrDecoder
+from .nemotron_voicechat import NemotronVoiceChat
 
 __all__ = [
     'DuplexS2SModel',
@@ -25,4 +26,5 @@ __all__ = [
     'DuplexEARTTS',
     'SALM',
     'SALMWithAsrDecoder',
+    'NemotronVoiceChat',
 ]

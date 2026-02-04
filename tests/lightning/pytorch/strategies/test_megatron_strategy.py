@@ -15,6 +15,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from megatron.core.distributed import DistributedDataParallelConfig
 
 from nemo.lightning.pytorch.strategies import MegatronStrategy

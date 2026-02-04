@@ -576,6 +576,8 @@ class LanguageThresholds:
             "it": 53,  # Italian
             "vi": 50,  # Vietnamese
             "zh": 100,  # Chinese (character count)
+            "hi": 50,  # Hindi (character count)
+            "ja": 80,  # Japanese (character count)
         }
     )
 
@@ -641,6 +643,8 @@ LANGUAGE_TOKENIZER_MAP: Dict[str, List[str]] = {
     "it": ["italian_phoneme", "italian"],
     "vi": ["vietnamese_phoneme", "vietnamese"],
     "zh": ["mandarin_phoneme", "mandarin", "chinese"],
+    "hi": ["hindi_chartokenizer", "hindi"],
+    "ja": ["japanese_phoneme", "japanese"],
 }
 
 

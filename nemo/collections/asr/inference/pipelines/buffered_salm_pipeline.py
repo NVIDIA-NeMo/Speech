@@ -144,16 +144,6 @@ class BufferedSALMAEDPipeline(BasePipeline):
 
         # extra overlap tokens for better overlap detection
         delay = int(self.overlap_ratio * len(data)) + self.extra_overlap_tokens
-
-        state_text = self.asr_model.tokenizer.ids_to_text(state.tokens)
-        data_text = self.asr_model.tokenizer.ids_to_text(data)
-        buffer_slice_text = self.asr_model.tokenizer.ids_to_text(state.tokens[-delay:])
-        data_slice_text = self.asr_model.tokenizer.ids_to_text(data[:delay])
-        print(f"state_text: {state_text}")
-        print(f"data_text: {data_text}")
-        print(f"buffer slice: {buffer_slice_text}|")
-        print(f"data slice: {data_slice_text}|")
-
         state.tokens = lcs_merge(
             buffer=state.tokens,
             data=data[:delay],
@@ -162,9 +152,6 @@ class BufferedSALMAEDPipeline(BasePipeline):
             min_lcs_length=1,
         )
         state.tokens.extend(data[delay:])
-        state_text_after_merge = self.asr_model.tokenizer.ids_to_text(state.tokens)
-        print(f"state_text_after_merge: {state_text_after_merge}")
-        print("--------------------------------")
 
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
@@ -207,6 +194,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
             if frame.is_last:
                 state.final_transcript = self.asr_model.tokenizer.ids_to_text(state.tokens)
                 state.partial_transcript = ""
+                print(state.final_transcript)
             else:
                 all_tokens = state.tokens.copy()
                 if len(state.incomplete_segment_tokens) > 0:
@@ -226,7 +214,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
                 else:
                     state.partial_transcript = ""
 
-                # print(state.partial_transcript)
+                print(state.partial_transcript)
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

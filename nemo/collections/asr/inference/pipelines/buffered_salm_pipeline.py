@@ -88,7 +88,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
         self.buffer_size_in_secs = cfg.streaming.buffer_size
         self.overlap_size_in_secs = cfg.streaming.overlap_size
         self.overlap_ratio = self.overlap_size_in_secs / self.buffer_size_in_secs
-        self.extra_overlap_tokens = 3  # extra tokens for better overlap detection
+        self.extra_overlap_tokens = 2  # extra tokens for better overlap detection
 
         self.audio_bufferer = BatchedIncrementalAudioBufferer(
             self.sample_rate,

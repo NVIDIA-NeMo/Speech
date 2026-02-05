@@ -17,7 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from nemo.collections.asr.inference.factory.base_builder import BaseBuilder
 from nemo.collections.asr.inference.pipelines.buffered_ctc_pipeline import BufferedCTCPipeline
 from nemo.collections.asr.inference.pipelines.buffered_rnnt_pipeline import BufferedRNNTPipeline
-from nemo.collections.asr.inference.pipelines.buffered_salm_pipeline import BufferedSALMAEDPipeline
+from nemo.collections.asr.inference.pipelines.buffered_salm_pipeline import BufferedSALMPipeline
 from nemo.collections.asr.inference.utils.enums import ASRDecodingType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
@@ -27,17 +27,19 @@ from nemo.utils import logging
 class BufferedPipelineBuilder(BaseBuilder):
     """
     Buffered Pipeline Builder class.
-    Builds the buffered CTC/RNNT/TDT pipelines.
+    Builds:
+        - buffered CTC/RNNT/TDT pipelines.
+        - buffered SALM pipeline.
     """
 
     @classmethod
-    def build(cls, cfg: DictConfig) -> BufferedRNNTPipeline | BufferedCTCPipeline | BufferedSALMAEDPipeline:
+    def build(cls, cfg: DictConfig) -> BufferedRNNTPipeline | BufferedCTCPipeline | BufferedSALMPipeline:
         """
         Build the buffered streaming pipeline based on the config.
         Args:
             cfg: (DictConfig) Config
         Returns:
-            Returns BufferedRNNTPipeline, BufferedCTCPipeline, or BufferedSALMAEDPipeline object
+            Returns BufferedRNNTPipeline, BufferedCTCPipeline, or BufferedSALMPipeline object
         """
         asr_decoding_type = ASRDecodingType.from_str(cfg.asr_decoding_type)
 
@@ -46,7 +48,7 @@ class BufferedPipelineBuilder(BaseBuilder):
         elif asr_decoding_type is ASRDecodingType.CTC:
             return cls.build_buffered_ctc_pipeline(cfg)
         elif asr_decoding_type is ASRDecodingType.SALM:
-            return cls.build_buffered_salm_aed_pipeline(cfg)
+            return cls.build_buffered_salm_pipeline(cfg)
 
         raise ValueError(
             "Invalid asr decoding type for buffered streaming. Need to be one of ['CTC', 'RNNT', 'SALM']"
@@ -124,13 +126,13 @@ class BufferedPipelineBuilder(BaseBuilder):
         return ctc_pipeline
 
     @classmethod
-    def build_buffered_salm_aed_pipeline(cls, cfg: DictConfig) -> BufferedSALMAEDPipeline:
+    def build_buffered_salm_pipeline(cls, cfg: DictConfig) -> BufferedSALMPipeline:
         """
-        Build the SALM AED buffered streaming pipeline based on the config.
+        Build the buffered SALM pipeline based on the config.
         Args:
             cfg: (DictConfig) Config
         Returns:
-            Returns BufferedSALMAEDPipeline object
+            Returns BufferedSALMPipeline object
         """
         # building ASR model
         asr_model = cls._build_asr(cfg, decoding_cfg=None)
@@ -141,7 +143,7 @@ class BufferedPipelineBuilder(BaseBuilder):
         # building NMT model
         nmt_model = cls._build_nmt(cfg)
 
-        # building SALM AED pipeline
-        salm_aed_pipeline = BufferedSALMAEDPipeline(cfg, asr_model, itn_model, nmt_model)
-        logging.info(f"`{type(salm_aed_pipeline).__name__}` pipeline loaded")
-        return salm_aed_pipeline
+        # building SALM pipeline
+        salm_pipeline = BufferedSALMPipeline(cfg, asr_model, itn_model, nmt_model)
+        logging.info(f"`{type(salm_pipeline).__name__}` pipeline loaded")
+        return salm_pipeline

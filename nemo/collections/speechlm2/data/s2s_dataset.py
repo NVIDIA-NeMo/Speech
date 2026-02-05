@@ -149,6 +149,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         # Default to CPU for force alignment to avoid OOM during training/validation when main model is on GPU
         self.force_align_device = model_cfg.get("force_align_device", "cpu") if model_cfg is not None else "cpu"
 
+        # Early interruption augmentation settings
+        self.early_interruption_prob = cfg.get("early_interruption_prob", 0.0) if cfg is not None else 0.0
+
         self.cfg = cfg
         self.model_cfg = model_cfg
 
@@ -159,6 +162,116 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
 
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required for S2S models."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
+
+    def _apply_early_interruption_augmentation(
+        self,
+        target_tokens: torch.Tensor,
+        target_audio: torch.Tensor,
+        target_token_lens: torch.Tensor,
+        target_audio_lens: torch.Tensor,
+        source_tokens: torch.Tensor,
+        source_audio: torch.Tensor,
+        source_token_lens: torch.Tensor,
+        source_audio_lens: torch.Tensor,
+        batch_idx: int,
+    ) -> None:
+        """Simulate early interruption by randomly truncating an agent turn with overlap.
+
+        Creates a realistic interruption scenario where:
+        1. User starts interrupting at cutoff_pos (user BOS inserted in source_tokens)
+        2. Agent continues speaking for overlap_tokens (~1 second)
+        3. Agent stops at cutoff_pos + overlap_tokens (agent EOS placed here)
+
+        This creates an overlap period where both speakers are talking simultaneously.
+        """
+        target_seq = target_tokens[batch_idx]
+        bos_id = self.tokenizer.bos
+        eos_id = self.tokenizer.eos
+        pad_id = get_pad_id(self.tokenizer)
+
+        # Overlap period: ~1 second = 13 tokens (80ms per token)
+        overlap_tokens = self.cfg.get("early_interruption_overlap_tokens", 13) if self.cfg is not None else 13
+
+        bos_positions = (target_seq == bos_id).nonzero(as_tuple=True)[0]
+        eos_positions = (target_seq == eos_id).nonzero(as_tuple=True)[0]
+
+        if len(bos_positions) == 0 or len(eos_positions) == 0:
+            return
+
+        # Find all complete turns
+        turns = []
+        for bos_pos in bos_positions:
+            matching_eos = eos_positions[eos_positions > bos_pos]
+            if len(matching_eos) > 0:
+                eos_pos = matching_eos[0]
+                turn_tokens = target_seq[bos_pos + 1 : eos_pos]
+                non_pad_mask = turn_tokens != pad_id
+                all_non_pad_positions = (bos_pos + 1 + non_pad_mask.nonzero(as_tuple=True)[0]).tolist()
+
+                # Filter out positions in the last overlap_tokens before eos to ensure overlap
+                # Only keep positions where there's at least overlap_tokens of content remaining
+                non_pad_positions = [pos for pos in all_non_pad_positions if (eos_pos - pos) > overlap_tokens]
+
+                if len(non_pad_positions) > 0:
+                    turns.append(
+                        {'bos_pos': bos_pos.item(), 'eos_pos': eos_pos.item(), 'non_pad_positions': non_pad_positions}
+                    )
+
+        if len(turns) == 0:
+            return
+
+        # Randomly select one turn and cutoff position
+        selected_turn = random.choice(turns)
+        cutoff_pos = random.choice(selected_turn['non_pad_positions'])
+        original_eos_pos = selected_turn['eos_pos']
+
+        # Agent stops at cutoff_pos + overlap_tokens to create overlap period
+        new_eos_pos = min(cutoff_pos + overlap_tokens, original_eos_pos)
+        frames_to_remove = original_eos_pos - cutoff_pos
+        if frames_to_remove <= 0:
+            return
+
+        # Update target_tokens: place eos at new_eos_pos, shift tail, pad at end
+        target_tokens[batch_idx, new_eos_pos] = eos_id
+        seq_len = target_tokens.shape[1]
+        cont_start_pos = original_eos_pos + overlap_tokens
+        tail_length = seq_len - (cont_start_pos + 1)
+        if tail_length > 0:
+            target_tokens[batch_idx, new_eos_pos + 1 : new_eos_pos + 1 + tail_length] = target_tokens[
+                batch_idx, cont_start_pos + 1 : cont_start_pos + 1 + tail_length
+            ].clone()
+        target_tokens[batch_idx, -frames_to_remove:] = pad_id
+
+        # Update source_tokens: shift tail (from cutoff_pos)
+        src_frames_to_remove = original_eos_pos - cutoff_pos
+        source_seq_len = source_tokens.shape[1]
+        source_tail_length = source_seq_len - (original_eos_pos + 1)
+        if source_tail_length > 0:
+            source_tokens[batch_idx, cutoff_pos + 1 : cutoff_pos + 1 + source_tail_length] = source_tokens[
+                batch_idx, original_eos_pos + 1 : original_eos_pos + 1 + source_tail_length
+            ].clone()
+        source_tokens[batch_idx, -src_frames_to_remove:] = pad_id
+
+        # Update source_audio: shift and pad with silence
+        old_source_len = source_audio_lens[batch_idx].item()
+        new_bos_source_sample = min(int(cutoff_pos * self.frame_length * self.source_sample_rate), old_source_len)
+        original_eos_source_sample = min(
+            int(original_eos_pos * self.frame_length * self.source_sample_rate), old_source_len
+        )
+
+        source_tail_audio_length = old_source_len - original_eos_source_sample
+        if source_tail_audio_length > 0:
+            source_audio[batch_idx, new_bos_source_sample : new_bos_source_sample + source_tail_audio_length] = (
+                source_audio[batch_idx, original_eos_source_sample:old_source_len].clone()
+            )
+
+        source_samples_to_remove = original_eos_source_sample - new_bos_source_sample
+        if new_bos_source_sample + source_tail_audio_length < source_audio.shape[1]:
+            source_audio[
+                batch_idx,
+                new_bos_source_sample + source_tail_audio_length :
+                new_bos_source_sample + source_tail_audio_length + source_samples_to_remove,
+            ] = 0
 
     def _create_minimal_batch(self) -> dict:
         """Create a minimal valid batch when all cuts are filtered out."""
@@ -272,6 +385,22 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 word_align_position=self.word_align_position,
                 remove_timestamps=not self.predict_user_text,
             )
+
+            # Early interruption augmentation
+            if self.early_interruption_prob > 0 and torch.is_grad_enabled():
+                for batch_idx in range(target_tokens.shape[0]):
+                    if random.random() < self.early_interruption_prob:
+                        self._apply_early_interruption_augmentation(
+                            target_tokens,
+                            target_audio,
+                            target_token_lens,
+                            target_audio_lens,
+                            source_tokens,
+                            source_audio,
+                            source_token_lens,
+                            source_audio_lens,
+                            batch_idx,
+                        )
 
             try:
                 target_first_turn_audio, target_first_turn_audio_lens = collate_first_turn_audio(

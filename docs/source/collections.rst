@@ -6,15 +6,6 @@ Documentation for the individual collections
 
 .. toctree::
    :maxdepth: 1
-   :caption: Large Language Models (LLMs)
-   :name: Large Language Models
-   :titlesonly:
-
-   nlp/nemo_megatron/intro
-   nlp/machine_translation/machine_translation
-
-.. toctree::
-   :maxdepth: 1
    :caption: Speech AI
    :name: Speech AI
    :titlesonly:

@@ -125,14 +125,9 @@ extensions = [
 
 bibtex_bibfiles = [
     'asr/asr_all.bib',
-    'nlp/nlp_all.bib',
-    'nlp/text_normalization/tn_itn_all.bib',
     'tools/tools_all.bib',
     'tts/tts_all.bib',
-    'text_processing/text_processing_all.bib',
     'core/adapters/adapter_bib.bib',
-    'multimodal/mm_all.bib',
-    'vision/vision_all.bib',
     'audio/audio_all.bib',
 ]
 

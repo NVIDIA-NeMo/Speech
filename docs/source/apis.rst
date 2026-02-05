@@ -20,7 +20,6 @@ You can learn more about aspects of the NeMo "core" by following the links below
    core/neural_modules
    core/exp_manager
    core/neural_types
-   core/export
    core/adapters/intro
 
 You can learn more about aspects of the NeMo APIs by following the links below:

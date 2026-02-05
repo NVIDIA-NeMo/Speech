@@ -18,11 +18,13 @@ NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build
 
 `NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for:
 
-* :doc:`Large Language Models (LLMs) <nlp/nemo_megatron/intro>`
-
 * :doc:`Automatic Speech Recognition (ASR) <asr/intro>`
 
 * :doc:`Text-to-Speech (TTS) <tts/intro>`
+
+* :doc:`Audio Processing <audio/intro>`
+
+* :doc:`SpeechLM2 <speechlm2/intro>`
 
 Each collection consists of prebuilt modules that include everything needed to train on your data.
 Every module can easily be customized, extended, and composed to create new generative AI
@@ -60,15 +62,6 @@ For more information, browse the developer docs for your area of interest in the
    :name: Checkpoints
 
    checkpoints/intro
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Evaluation
-   :name: evaluation
-   :titlesonly:
-
-   evaluation/evaluation-doc
-   evaluation/evaluation-adapters
 
 .. toctree::
    :maxdepth: 1

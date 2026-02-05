@@ -269,8 +269,10 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         if new_bos_source_sample + source_tail_audio_length < source_audio.shape[1]:
             source_audio[
                 batch_idx,
-                new_bos_source_sample + source_tail_audio_length :
-                new_bos_source_sample + source_tail_audio_length + source_samples_to_remove,
+                new_bos_source_sample
+                + source_tail_audio_length : new_bos_source_sample
+                + source_tail_audio_length
+                + source_samples_to_remove,
             ] = 0
 
     def _create_minimal_batch(self) -> dict:

@@ -109,8 +109,8 @@ class BufferedSALMAEDPipeline(BasePipeline):
         if self.request_type is RequestType.FEATURE_BUFFER:
             raise ValueError("Feature buffer request type is not supported for SALM AED pipeline")
 
-        self.prompts = [{"role": "user", "content": f"Transcribe the following: {self.asr_model.audio_locator_tag}"}]
-        self.space_id = self.asr_model.tokenizer.text_to_ids(" ")
+        self.prompts = [[{"role": "user", "content": f"Transcribe the following: {self.asr_model.audio_locator_tag}"}]]
+        self.tokens = self.asr_model.preprocess_prompts(self.prompts)
 
     def create_state(self, options: ASRRequestOptions) -> SALMStreamingState:
         """
@@ -156,7 +156,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
             buffer=state.tokens,
             data=data[:delay],
             search_size=delay,
-            sep_id=self.space_id,
+            sep_id=self.asr_model.word_separator_ids,
             min_lcs_length=1,
         )
         state.tokens.extend(data[delay:])
@@ -182,17 +182,15 @@ class BufferedSALMAEDPipeline(BasePipeline):
         audio_lens = audio_lens - paddings - right_paddings
 
         answer_ids = self.asr_model.generate(
-            prompts=[self.prompts] * len(audios),
+            prompts=self.tokens.expand(len(audios), -1),
             audios=audios,
             audio_lens=audio_lens,
             max_new_tokens=self.max_new_tokens,
         ).cpu()
 
-        eos_tokens = [self.asr_model.salm_model.text_eos_id]
-
         for i, frame in enumerate(frames):
             state = self.get_state(frame.stream_id)
-            new_tokens = parse_hyp(answer_ids[i], eos_tokens).tolist()
+            new_tokens = parse_hyp(answer_ids[i], self.asr_model.eos_token_ids).tolist()
             state.incomplete_segment_tokens.clear()
             if self.audio_bufferer.is_full(frame.stream_id) or frame.is_last:
                 self.lcs_merge(state, new_tokens)
@@ -211,7 +209,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
                         buffer=all_tokens,
                         data=state.incomplete_segment_tokens[:delay],
                         search_size=delay,
-                        sep_id=self.space_id,
+                        sep_id=self.asr_model.word_separator_ids,
                         min_lcs_length=1,
                     )
                     all_tokens.extend(state.incomplete_segment_tokens[delay:])

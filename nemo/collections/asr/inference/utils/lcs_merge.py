@@ -14,6 +14,14 @@
 
 
 def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, int, int]:
+    """
+    Find the longest common substring between two lists of integers.
+    Args:
+        buffer: (list[int]) The buffer of tokens.
+        data: (list[int]) The new tokens to merge with the buffer.
+    Returns:
+        (tuple[int, int, int]) The start and end indices of the longest common substring and its length.
+    """
     n, m = len(buffer), len(data)
 
     # dp[i][j] = length of longest common substring

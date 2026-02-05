@@ -13,7 +13,10 @@
 # limitations under the License.
 
 import torch
+
 from nemo.collections.asr.inference.utils.device_utils import setup_device
+from nemo.collections.common.prompts import PromptFormatter
+from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.models import SALM
 
 
@@ -46,6 +49,13 @@ class SALMASRInferenceWrapper:
         self.set_dither_to_zero()
 
     @property
+    def eos_token_ids(self) -> list[int]:
+        """
+        Returns the end of sentence token ids if there are multiple.
+        """
+        return [self.salm_model.text_eos_id]
+
+    @property
     def word_separator(self) -> str:
         """
         Returns word separator.
@@ -53,6 +63,13 @@ class SALMASRInferenceWrapper:
             (str) word separator.
         """
         return ' '
+
+    @property
+    def word_separator_ids(self) -> list[int]:
+        """
+        Returns the word separator token ids.
+        """
+        return self.tokenizer.text_to_ids(self.word_separator)
 
     @staticmethod
     def load_model(model_name: str, device: torch.device) -> SALM:
@@ -102,13 +119,19 @@ class SALMASRInferenceWrapper:
         self.salm_model.cfg.perception.preprocessor.dither = 0.0
         self.salm_model.perception.preprocessor.featurizer.dither = 0.0
 
-    def generate(self, prompts, audios, audio_lens, max_new_tokens: int = 128) -> torch.Tensor:
+    def generate(
+        self,
+        prompts: list[list[dict[str]]] | torch.Tensor,
+        audios: torch.Tensor,
+        audio_lens: torch.Tensor,
+        max_new_tokens: int = 128,
+    ) -> torch.Tensor:
         """
         Generate the model output.
         Args:
-            prompts: (list[list[dict[str]]]) List of prompts.
-            audios: (torch.Tensor) Audio tensor.
-            audio_lens: (torch.Tensor) Audio length tensor.
+            prompts: (list[list[dict[str]]] | torch.Tensor) List of prompts or token ids.
+            audios: (torch.Tensor) Audio tensor of shape (batch_size, num_samples).
+            audio_lens: (torch.Tensor) Audio length tensor of shape (batch_size).
             max_new_tokens: (int) Maximum number of new tokens to generate.
         Returns:
             (torch.Tensor) Model output.
@@ -125,3 +148,18 @@ class SALMASRInferenceWrapper:
                 max_new_tokens=max_new_tokens,
             )
         return answer_ids
+
+    def preprocess_prompts(self, prompts: list[list[dict[str]]]) -> torch.Tensor:
+        """
+        Convert the prompts to token ids.
+        Args:
+            prompts: (list[list[dict[str]]]) List of prompts.
+        Returns:
+            (torch.Tensor) Token ids of size (batch_size, max_prompt_length).
+        """
+        formatter = PromptFormatter.resolve(self.salm_model.cfg.prompt_format)(self.tokenizer)
+        tokens = left_collate_vectors(
+            [formatter.encode_dialog(turns=prompt)["input_ids"] for prompt in prompts],
+            padding_value=self.salm_model.text_pad_id,
+        ).to(self.device)
+        return tokens

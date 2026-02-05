@@ -41,6 +41,7 @@ from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
+from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter, DEFAULT_CODEC_SETTINGS
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.label_prep import prepare_text_and_asr_labels
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
@@ -177,10 +178,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self._use_fsdp = False
         self._use_tp = False
 
-        # Cache for noise file names to avoid repeated glob operations
-        if self.cfg.get('use_old_noise_aug', None):
-            self._noise_files_cache = {}
-            self._lowpass_filter_cache = {}  # Cache for lowpass filter coefficients
+        # Initialize audio augmenter if any augmentation is enabled
+        if (self.cfg.get('use_noise_aug', None) or
+            self.cfg.get('use_room_ir_aug', None) or
+            self.cfg.get('use_mic_ir_aug', None) or
+            self.cfg.get('use_codec_aug', None)):
+            self.audio_augmenter = AudioAugmenter(sample_rate=self.source_sample_rate)
 
     def init_perception_from_another_s2s_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
@@ -309,111 +312,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return ans
 
-    def add_noise_to_batch(
-        self,
-        batch_audio,
-        noise_folder,
-        snr_db=20,
-        noise_prob_scale_user=0.3,
-        noise_prob_scale_user_min_snr=-15,
-        noise_prob_scale_user_max_snr=24,
-        snr_measure_dur=0.0,
-        noise_resample=True,
-        noise_prob_low_pass=0.1,
-    ):
-
-        batch_size, audio_length = batch_audio.shape
-
-        import glob
-
-        import librosa
-        import numpy as np
-        import soundfile as sf
-        from scipy.signal import butter, lfilter
-
-        # Use cached noise file list to avoid repeated glob operations
-        if noise_folder not in self._noise_files_cache:
-            noise_files = [f for f in glob.glob(noise_folder + "/*.wav")]
-            if not noise_files:
-                raise ValueError(f"No noise files found in {noise_folder}")
-            self._noise_files_cache[noise_folder] = noise_files
-        else:
-            noise_files = self._noise_files_cache[noise_folder]
-
-        for i in range(batch_size):
-
-            def get_scale_factor(signal, noise, snr_db):
-                if snr_measure_dur > 0:
-                    signal = signal[: int(snr_measure_dur * self.source_sample_rate)]
-                    noise = noise[: int(snr_measure_dur * self.source_sample_rate)]
-                signal_power = torch.mean(signal**2) + 1e-8
-                noise_power = torch.mean(noise**2) + 1e-8
-
-                target_noise_power = signal_power / (10 ** (snr_db / 10))
-                scaling_factor = torch.sqrt(target_noise_power / noise_power)
-                return scaling_factor
-
-            if random.random() < noise_prob_scale_user:
-                scaling_factor = get_scale_factor(
-                    batch_audio[i],
-                    batch_audio[i],
-                    random.randint(noise_prob_scale_user_min_snr, noise_prob_scale_user_max_snr),
-                )
-                batch_audio[i] = batch_audio[i] * scaling_factor
-
-            def get_noise(noise_files):
-
-                noise_path = random.choice(noise_files)
-                noise, sr = sf.read(noise_path, dtype='float32')
-
-                if noise_resample and sr != self.source_sample_rate:
-                    noise = librosa.resample(noise, orig_sr=sr, target_sr=self.source_sample_rate)
-
-                if len(noise.shape) > 1:
-                    noise = np.mean(noise, axis=1)
-
-                noise_tensor = torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device)
-                scaling_factor = get_scale_factor(batch_audio[i], noise_tensor, snr_db)
-                noise_tensor = noise_tensor * scaling_factor
-                return noise_tensor
-
-            noise = get_noise(noise_files)
-            noise2 = get_noise(noise_files)
-            noise3 = get_noise(noise_files)
-            noise = torch.cat([noise, noise2, noise3], axis=0)
-
-            if noise.size(0) < audio_length:
-                repeat_times = (audio_length // noise.size(0)) + 1
-                noise = noise.repeat(repeat_times)[:audio_length]
-            else:
-                start_idx = torch.randint(0, noise.size(0) - audio_length + 1, (1,)).item()
-                noise = noise[start_idx : start_idx + audio_length]
-
-            # Function to create a low-pass filter (with caching)
-            def butter_lowpass(cutoff, fs, order=5):
-                cache_key = (cutoff, fs, order)
-                if cache_key not in self._lowpass_filter_cache:
-                    nyquist = 0.5 * fs
-                    normal_cutoff = cutoff / nyquist
-                    b, a = butter(order, normal_cutoff, btype='low', analog=False)
-                    self._lowpass_filter_cache[cache_key] = (b, a)
-                return self._lowpass_filter_cache[cache_key]
-
-            # Function to apply the low-pass filter to data
-            def lowpass_filter(data, cutoff, fs, order=5):
-                b, a = butter_lowpass(cutoff, fs, order=order)
-                y_cpu = lfilter(b, a, data.cpu().numpy())
-                y_gpu = torch.tensor(y_cpu, dtype=torch.float32, device=data.device)
-                return y_gpu
-
-            if random.random() < noise_prob_low_pass:
-                cutoff = 1000.0
-                noise = lowpass_filter(noise, cutoff, self.source_sample_rate)
-
-            batch_audio[i] = batch_audio[i] + noise
-
-        return batch_audio
-
     def _is_noise_augmentation_dataset(self, formatter: str) -> bool:
         if self.cfg.get('force_use_noise_augmentation', False):
             return True
@@ -434,20 +332,19 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         return loss_scale
 
     def prepare_inputs(self, batch: dict):
-        if self.cfg.get('use_old_noise_aug', None):
-            noise_prob = self.cfg.get('old_noise_prob', 0.99)
-            noise_min_snr = self.cfg.get('old_noise_min_snr', 20)
-            noise_max_snr = self.cfg.get('old_noise_max_snr', 50)
-            noise_path = self.cfg.get('old_noise_aug_path', None)
+        # Apply augmentations in order: noise -> room IR -> mic IR -> codec
+        # Each augmentation has its own independent condition and flag
+
+        # 1. Noise augmentation (controlled by use_noise_aug flag)
+        if self.cfg.get('use_noise_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+            noise_prob = self.cfg.get('noise_prob', 0.99)
+            noise_min_snr = self.cfg.get('noise_min_snr', 20)
+            noise_max_snr = self.cfg.get('noise_max_snr', 50)
+            noise_path = self.cfg.get('noise_aug_path', None)
             noise_path_name = "*"
 
-            if (
-                self.training
-                and self._is_noise_augmentation_dataset(batch["formatter"][0])
-                and noise_prob
-                and random.random() < noise_prob
-            ):
-                batch["source_audio"] = self.add_noise_to_batch(
+            if noise_prob and random.random() < noise_prob and noise_path:
+                batch["source_audio"] = self.audio_augmenter.add_noise_to_batch(
                     batch["source_audio"],
                     os.path.join(noise_path, noise_path_name),
                     snr_db=random.randint(noise_min_snr, noise_max_snr),
@@ -457,6 +354,47 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     snr_measure_dur=self.cfg.get('snr_measure_dur', 0.0),
                     noise_resample=self.cfg.get('noise_resample', True),
                     noise_prob_low_pass=self.cfg.get('noise_prob_low_pass', 0.1),
+                )
+
+        # 2. Room impulse response augmentation
+        if self.cfg.get('use_room_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+            roomir_prob = self.cfg.get('roomir_prob', 0.0)
+            roomir_path = self.cfg.get('roomir_aug_path', None)
+
+            if roomir_prob > 0 and roomir_path and random.random() < roomir_prob:
+                batch["source_audio"] = self.audio_augmenter.add_room_ir_to_batch(
+                    batch["source_audio"],
+                    batch["source_audio_lens"],
+                    roomir_path,
+                    use_loudness_norm=self.cfg.get('roomir_use_loudness_norm', True),
+                )
+
+        # 3. Microphone impulse response augmentation
+        if self.cfg.get('use_mic_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+            micir_prob = self.cfg.get('micir_prob', 0.0)
+            micir_path = self.cfg.get('micir_aug_path', None)
+
+            if micir_prob > 0 and micir_path and random.random() < micir_prob:
+                batch["source_audio"] = self.audio_augmenter.add_mic_ir_to_batch(
+                    batch["source_audio"],
+                    batch["source_audio_lens"],
+                    micir_path,
+                    use_loudness_norm=self.cfg.get('micir_use_loudness_norm', True),
+                )
+
+        # 4. Codec augmentation
+        if self.cfg.get('use_codec_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+            codec_prob = self.cfg.get('codec_prob', 0.0)
+            codec_settings = self.cfg.get('codec_settings', None)
+
+            if codec_prob > 0 and random.random() < codec_prob:
+                # Use custom codec settings if provided, otherwise use defaults
+                if codec_settings is None:
+                    codec_settings = DEFAULT_CODEC_SETTINGS
+                batch["source_audio"] = self.audio_augmenter.add_codec_to_batch(
+                    batch["source_audio"],
+                    batch["source_audio_lens"],
+                    codec_settings,
                 )
 
         source_encoded, source_encoded_lens, _ = self.perception(

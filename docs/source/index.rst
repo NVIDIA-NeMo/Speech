@@ -1,20 +1,38 @@
-NVIDIA NeMo Framework Developer Docs
-====================================
+NVIDIA NeMo Toolkit Developer Docs
+===================================
 
-NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build, customize, and deploy generative AI models anywhere.
+`NVIDIA NeMo Toolkit <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
 
-`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ key capabilities include:
+Models
+------
 
-- Leaderboard-topping ASR models: Parakeet, Canary, FastConformer
-- Production-ready TTS with MagpieTTS
-- Speech Language Models (SpeechLM2): SALM, Duplex Speech-to-Speech
-- Streaming speaker diarization with Sortformer
-- HuggingFace Transformers integration for backbone LLMs
-- GPU-accelerated ASR decoding algorithms
-- Multi-GPU/multi-node training with mixed precision
-- Comprehensive Speech AI tools: forced alignment, data exploration, CTC segmentation
+- **ASR:** `Parakeet <https://huggingface.co/collections/nvidia/parakeet>`_, `Canary <https://huggingface.co/collections/nvidia/canary>`_, FastConformer -- with CTC, Transducer, TDT, and hybrid decoders
+- **TTS:** `MagpieTTS <https://huggingface.co/nvidia/magpie_tts_multilingual_357m>`_, `FastPitch <https://huggingface.co/nvidia/tts_en_fastpitch>`_ + `HiFi-GAN <https://huggingface.co/nvidia/tts_hifigan>`_ -- multi-language, multi-speaker
+- **Speaker:** `Sortformer <https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1>`_ streaming diarization, `TitaNet <https://huggingface.co/nvidia/speakerverification_en_titanet_large>`_ speaker recognition, `MarbleNet <https://huggingface.co/nvidia/Frame_VAD_Multilingual_MarbleNet_v2.0>`_ VAD
+- **Audio:** `Speech enhancement <https://huggingface.co/nvidia/sr_ssl_flowmatching_16k_430m>`_, source separation, neural audio codecs
+- **SpeechLM2:** `Canary-Qwen 2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`_ (SALM), Duplex Speech-to-Speech -- HuggingFace Transformers backbone integration
 
-`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for:
+Inference & Deployment
+----------------------
+
+- Streaming and real-time ASR with cache-aware Conformer
+- GPU-accelerated decoding with `NGPU-LM <https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/asr_customization/ngpulm_language_modeling_and_customization.html>`_ language model fusion
+- Export to ONNX
+
+Voice Agent
+-----------
+
+- Open-source conversational agent framework built on `Pipecat <https://github.com/pipecat-ai/pipecat>`_
+- Streaming STT + LLM + TTS pipeline with natural turn-taking
+- Live speaker diarization and tool calling support
+
+----
+
+NeMo is built for researchers and engineers. Each collection provides prebuilt, modular components
+that can be customized, extended, and composed -- from rapid prototyping to multi-node training
+to production inference.
+
+`NVIDIA NeMo Toolkit <https://github.com/NVIDIA/NeMo>`_ has separate collections for:
 
 * :doc:`Automatic Speech Recognition (ASR) <asr/intro>`
 
@@ -23,10 +41,6 @@ NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build
 * :doc:`Audio Processing <audio/intro>`
 
 * :doc:`SpeechLM2 <speechlm2/intro>`
-
-Each collection consists of prebuilt modules that include everything needed to train on your data.
-Every module can easily be customized, extended, and composed to create new generative AI
-model architectures.
 
 For quick guides and tutorials, see the "Getting started" section below.
 

@@ -8,13 +8,13 @@ Introduction
 
 .. _dummy_header:
 
-NVIDIA NeMo Framework is an end-to-end, cloud-native framework for building, customizing, and deploying generative AI models anywhere. It allows for the creation of state-of-the-art models for speech and audio processing. For detailed information on utilizing NeMo in your generative AI workflows, refer to the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/index.html>`_.
+NVIDIA NeMo Toolkit is an open-source toolkit for building, customizing, and deploying speech, audio, and multimodal language models. It allows for the creation of state-of-the-art models for speech and audio processing. For detailed information on utilizing NeMo in your generative AI workflows, refer to the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/index.html>`_.
 
 Training generative AI architectures typically requires significant data and computing resources. NeMo utilizes `PyTorch Lightning <https://www.pytorchlightning.ai/>`_ for efficient and performant multi-GPU/multi-node mixed-precision training.
 For Speech AI applications, Automatic Speech Recognition (ASR) and Text-to-Speech (TTS), NeMo is developed with native PyTorch and PyTorch Lightning, ensuring seamless integration and ease of use.
 
 
-`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ features separate collections for Automatic Speech Recognition (ASR), Text-to-Speech (TTS), Audio Processing, and SpeechLM2 models. Each collection comprises prebuilt modules that include everything needed to train on your data. These modules can be easily customized, extended, and composed to create new generative AI model architectures.
+`NVIDIA NeMo Toolkit <https://github.com/NVIDIA/NeMo>`_ features separate collections for Automatic Speech Recognition (ASR), Text-to-Speech (TTS), Audio Processing, and SpeechLM2 models. Each collection comprises prebuilt modules that include everything needed to train on your data. These modules can be easily customized, extended, and composed to create new generative AI model architectures.
 
 Pre-trained NeMo models are available to download on `NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`__ and `HuggingFace Hub <https://huggingface.co/nvidia>`__.
 
@@ -23,22 +23,36 @@ Prerequisites
 
 Before using NeMo, make sure you meet the following prerequisites:
 
-#. Python version 3.10 or above.
+#. Python version 3.12 or above.
 
-#. Pytorch version 2.6+.
+#. PyTorch version 2.7+.
 
 #. Access to an NVIDIA GPU for model training.
 
 Installation
 ------------
 
-Refer to the NeMo Framework `User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/installation.html>`__ for the latest installation instructions.
+From PyPI:
+
+.. code-block:: bash
+
+    pip install nemo_toolkit[asr,tts]
+
+Available extras: ``asr``, ``tts``, ``audio``, ``common``.
+
+From source:
+
+.. code-block:: bash
+
+    git clone https://github.com/NVIDIA/NeMo.git
+    cd NeMo
+    pip install -e '.[asr,tts]'
 
 
 Quick Start Guide
 -----------------
 
-To explore NeMo's capabilities, here are examples for ASR, TTS, speaker diarization, and speech language models. Ensure NeMo is :ref:`installed <installation>` before proceeding.
+To explore NeMo's capabilities, here are examples for ASR, TTS, speaker diarization, and speech language models.
 
 ASR with Parakeet
 ~~~~~~~~~~~~~~~~~

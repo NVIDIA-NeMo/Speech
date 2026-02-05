@@ -29,6 +29,7 @@ from scipy.signal import butter, fftconvolve, lfilter
 
 try:
     import pyloudnorm as pyln
+
     PYLOUDNORM_AVAILABLE = True
 except ImportError:
     PYLOUDNORM_AVAILABLE = False
@@ -69,12 +70,13 @@ class AudioAugmenter:
             noise_files = self._noise_files_cache[noise_folder]
 
         for i in range(batch_size):
+
             def get_scale_factor(signal, noise, snr_db):
                 if snr_measure_dur > 0:
                     signal = signal[: int(snr_measure_dur * self.sample_rate)]
                     noise = noise[: int(snr_measure_dur * self.sample_rate)]
-                signal_power = torch.mean(signal ** 2) + 1e-8
-                noise_power = torch.mean(noise ** 2) + 1e-8
+                signal_power = torch.mean(signal**2) + 1e-8
+                noise_power = torch.mean(noise**2) + 1e-8
 
                 target_noise_power = signal_power / (10 ** (snr_db / 10))
                 scaling_factor = torch.sqrt(target_noise_power / noise_power)
@@ -113,7 +115,7 @@ class AudioAugmenter:
                 noise = noise.repeat(repeat_times)[:audio_length]
             else:
                 start_idx = torch.randint(0, noise.size(0) - audio_length + 1, (1,)).item()
-                noise = noise[start_idx: start_idx + audio_length]
+                noise = noise[start_idx : start_idx + audio_length]
 
             if random.random() < noise_prob_low_pass:
                 cutoff = 1000.0
@@ -182,14 +184,18 @@ class AudioAugmenter:
             convolved = fftconvolve(audio_cpu, ir, mode="full")[:audio_length]
 
             # Calculate RMS before convolution for gain compensation
-            input_rms = np.sqrt(np.mean(audio_cpu ** 2)) + 1e-8
-            convolved_rms = np.sqrt(np.mean(convolved ** 2)) + 1e-8
+            input_rms = np.sqrt(np.mean(audio_cpu**2)) + 1e-8
+            convolved_rms = np.sqrt(np.mean(convolved**2)) + 1e-8
 
             if use_loudness_norm and PYLOUDNORM_AVAILABLE:
                 try:
                     convolved_loudness = meter.integrated_loudness(convolved)
                     # Check for invalid loudness values
-                    if convolved_loudness != float('-inf') and np.isfinite(convolved_loudness) and np.isfinite(speech_loudness):
+                    if (
+                        convolved_loudness != float('-inf')
+                        and np.isfinite(convolved_loudness)
+                        and np.isfinite(speech_loudness)
+                    ):
                         convolved = pyln.normalize.loudness(convolved, convolved_loudness, speech_loudness)
                         # Validate output doesn't contain NaN or inf
                         if not np.isfinite(convolved).all():
@@ -262,14 +268,18 @@ class AudioAugmenter:
             convolved = fftconvolve(audio_cpu, ir, mode="full")[:audio_length]
 
             # Calculate RMS before convolution for gain compensation
-            input_rms = np.sqrt(np.mean(audio_cpu ** 2)) + 1e-8
-            convolved_rms = np.sqrt(np.mean(convolved ** 2)) + 1e-8
+            input_rms = np.sqrt(np.mean(audio_cpu**2)) + 1e-8
+            convolved_rms = np.sqrt(np.mean(convolved**2)) + 1e-8
 
             if use_loudness_norm and PYLOUDNORM_AVAILABLE:
                 try:
                     convolved_loudness = meter.integrated_loudness(convolved)
                     # Check for invalid loudness values
-                    if convolved_loudness != float('-inf') and np.isfinite(convolved_loudness) and np.isfinite(speech_loudness):
+                    if (
+                        convolved_loudness != float('-inf')
+                        and np.isfinite(convolved_loudness)
+                        and np.isfinite(speech_loudness)
+                    ):
                         convolved = pyln.normalize.loudness(convolved, convolved_loudness, speech_loudness)
                         # Validate output doesn't contain NaN or inf
                         if not np.isfinite(convolved).all():
@@ -319,7 +329,9 @@ class AudioAugmenter:
                 # Validate output doesn't contain NaN or inf
                 if np.isfinite(degraded).all():
                     degraded = np.clip(degraded, -1.0, 1.0)
-                    batch_audio[i, :audio_length] = torch.tensor(degraded, dtype=batch_audio.dtype, device=batch_audio.device)
+                    batch_audio[i, :audio_length] = torch.tensor(
+                        degraded, dtype=batch_audio.dtype, device=batch_audio.device
+                    )
             except Exception:
                 # Codec failed, skip augmentation for this sample
                 pass
@@ -342,14 +354,14 @@ class AudioAugmenter:
                 ["ffmpeg", "-y", "-i", in_wav] + codec_args + [mid_file],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                check=False
+                check=False,
             )
 
             subprocess.run(
                 ["ffmpeg", "-y", "-i", mid_file, "-ar", str(self.sample_rate), out_wav],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                check=False
+                check=False,
             )
 
             decoded, _ = sf.read(out_wav, dtype='float32')
@@ -378,5 +390,5 @@ DEFAULT_CODEC_SETTINGS = {
     "low_libopus_24k_32k": ["-ar", "24000", "-c:a", "libopus", "-application", "audio", "-b:a", "32k", "-f", "ogg"],
     "low_libopus_24k_48k": ["-ar", "24000", "-c:a", "libopus", "-application", "audio", "-b:a", "48k", "-f", "ogg"],
     "low_libvorbis_24k_64k": ["-ar", "24000", "-c:a", "libvorbis", "-b:a", "64k", "-f", "ogg"],
-    "low_mp3_24k_64k": ["-ar", "24000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k", "-f", "mp3"]
+    "low_mp3_24k_64k": ["-ar", "24000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k", "-f", "mp3"],
 }

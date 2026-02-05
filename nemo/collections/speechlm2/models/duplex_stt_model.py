@@ -41,7 +41,7 @@ from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.models.duplex_s2s_model import tokens_to_str
-from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter, DEFAULT_CODEC_SETTINGS
+from nemo.collections.speechlm2.parts.augmentation import DEFAULT_CODEC_SETTINGS, AudioAugmenter
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.label_prep import prepare_text_and_asr_labels
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
@@ -179,10 +179,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self._use_tp = False
 
         # Initialize audio augmenter if any augmentation is enabled
-        if (self.cfg.get('use_noise_aug', None) or
-            self.cfg.get('use_room_ir_aug', None) or
-            self.cfg.get('use_mic_ir_aug', None) or
-            self.cfg.get('use_codec_aug', None)):
+        if (
+            self.cfg.get('use_noise_aug', None)
+            or self.cfg.get('use_room_ir_aug', None)
+            or self.cfg.get('use_mic_ir_aug', None)
+            or self.cfg.get('use_codec_aug', None)
+        ):
             self.audio_augmenter = AudioAugmenter(sample_rate=self.source_sample_rate)
 
     def init_perception_from_another_s2s_checkpoint(self, checkpoint_path):
@@ -336,7 +338,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # Each augmentation has its own independent condition and flag
 
         # 1. Noise augmentation (controlled by use_noise_aug flag)
-        if self.cfg.get('use_noise_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+        if (
+            self.cfg.get('use_noise_aug', None)
+            and self.training
+            and self._is_noise_augmentation_dataset(batch["formatter"][0])
+        ):
             noise_prob = self.cfg.get('noise_prob', 0.99)
             noise_min_snr = self.cfg.get('noise_min_snr', 20)
             noise_max_snr = self.cfg.get('noise_max_snr', 50)
@@ -357,7 +363,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
 
         # 2. Room impulse response augmentation
-        if self.cfg.get('use_room_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+        if (
+            self.cfg.get('use_room_ir_aug', None)
+            and self.training
+            and self._is_noise_augmentation_dataset(batch["formatter"][0])
+        ):
             roomir_prob = self.cfg.get('roomir_prob', 0.0)
             roomir_path = self.cfg.get('roomir_aug_path', None)
 
@@ -370,7 +380,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
 
         # 3. Microphone impulse response augmentation
-        if self.cfg.get('use_mic_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+        if (
+            self.cfg.get('use_mic_ir_aug', None)
+            and self.training
+            and self._is_noise_augmentation_dataset(batch["formatter"][0])
+        ):
             micir_prob = self.cfg.get('micir_prob', 0.0)
             micir_path = self.cfg.get('micir_aug_path', None)
 
@@ -383,7 +397,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
 
         # 4. Codec augmentation
-        if self.cfg.get('use_codec_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+        if (
+            self.cfg.get('use_codec_aug', None)
+            and self.training
+            and self._is_noise_augmentation_dataset(batch["formatter"][0])
+        ):
             codec_prob = self.cfg.get('codec_prob', 0.0)
             codec_settings = self.cfg.get('codec_settings', None)
 
@@ -1079,12 +1097,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             # Require that the pad window starts after a non-pad token
             if has_pad_window and pad_lookback_start > 0:
                 token_before_window = inference_state["gen_asr"][batch_idx, pad_lookback_start - 1]
-                has_pad_window = (token_before_window != self.text_pad_id)
+                has_pad_window = token_before_window != self.text_pad_id
             elif has_pad_window and pad_lookback_start == 0:
                 # If the pad window starts at position 0, it doesn't meet the requirement
                 has_pad_window = False
 
-            if (current_asr_token == self.tokenizer.eos or has_pad_window):
+            if current_asr_token == self.tokenizer.eos or has_pad_window:
                 # User has finished talking or remains silent for a while
                 if not (agent_text_window == self.text_bos_id).any():
                     inference_state["gen_text"][batch_idx, t] = self.text_bos_id

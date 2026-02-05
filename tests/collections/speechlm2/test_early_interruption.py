@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import MagicMock, PropertyMock
+
 import pytest
 import torch
-from unittest.mock import MagicMock, PropertyMock
 
 from nemo.collections.speechlm2.data import DuplexS2SDataset
 

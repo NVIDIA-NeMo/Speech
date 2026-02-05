@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
 import io
 import logging
@@ -28,6 +29,7 @@ import soundfile as sf
 from lhotse import CutSet, Features, MonoCut, Recording, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
+from lhotse.lazy import LazyIteratorChain
 from lhotse.serialization import load_yaml
 from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -35,6 +37,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyNeMoIterator,
     LazyNeMoTarredIterator,
+    LazyParquetIterator,
     expand_sharded_filepaths,
 )
 from nemo.collections.common.data.lhotse.text_adapters import (
@@ -60,6 +63,7 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
     # First, check if the dataset is specified in the new configuration format and use it if possible.
     if not isinstance(config, DictConfig):
         config = DictConfig(config)
+
     if config.get("input_cfg") is not None:
         cuts, is_tarred = read_dataset_config(config)
     else:
@@ -381,7 +385,8 @@ def parse_and_combine_datasets(
     tarred_status = []
 
     if isinstance(config_list, (str, Path)):
-        # Resolve local filepath /path/to/input_cfg.yaml or remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
+        # Resolve local filepath /path/to/input_cfg.yaml or
+        # remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
         config_list = OmegaConf.create(load_yaml(config_list))
     assert len(config_list) > 0, "Empty group in dataset config list."
 
@@ -534,6 +539,70 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         path = config.cuts_path
         cuts = CutSet.from_file(path).map(partial(resolve_relative_paths, manifest_path=path))
     return cuts, is_tarred
+
+
+@data_type_parser(["parquet"])
+def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
+    """
+    Read paths to Parquet files and create a CutSet.
+
+    Config options:
+    - manifest_filepath: path to .parquet file (or list of paths)
+    - audio_field: column name for audio (default: "audio")
+    - text_field: column name for text (default: "text")
+    - duration_field: column name for duration (default: "duration")
+    - lang_field: column name for language (default: "lang")
+    - sampling_rate: default sampling rate if not present (default: 16000)
+    - shuffle: whether to shuffle shards (default: False)
+    - shard_seed: seed for shuffling (default: "trng")
+    """
+    # 1. Get the path(s)
+    paths = config.manifest_filepath
+    if isinstance(paths, str):
+        paths = [paths]
+
+    # 2. Extract config options with defaults
+    audio_field = config.get("audio_field", "audio")
+    text_field = config.get("text_field", "text")
+    duration_field = config.get("duration_field", "duration")
+    lang_field = config.get("lang_field", "lang")
+    sampling_rate = config.get("sampling_rate", 16000)
+
+    # Extract shuffling options (CRITICAL for distributed training)
+    shuffle_shards = config.get("shuffle", False)
+    shard_seed = config.get("shard_seed", "trng")
+
+    # 3. Create Iterators for each file
+    iterators = []
+    for path in paths:
+        logging.info(f"Initializing Lhotse Parquet Iterator: '{path}'")
+        adapter = LazyParquetIterator(
+            path=path,
+            audio_field=audio_field,
+            text_field=text_field,
+            duration_field=duration_field,
+            lang_field=lang_field,
+            sampling_rate=sampling_rate,
+        )
+        iterators.append(adapter)
+
+    # 4. Chain them together using Lhotse's lazy chaining
+    if len(iterators) == 1:
+        source = iterators[0]
+    else:
+        # This handles shuffling the order of .parquet files for multi-GPU training
+        # as requested by pzelasko
+        source = LazyIteratorChain(*iterators, shuffle_iters=shuffle_shards, seed=shard_seed)
+
+    # 5. Create the final CutSet
+    cuts = CutSet(source)
+
+    # 6. Handle infinite looping if requested
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+
+    # Return cuts + is_tarred=True (since it's a stream, we treat it like tarred)
+    return cuts, True
 
 
 def cut_to_conversation(
@@ -960,9 +1029,9 @@ def s2s_cut_to_conversation(
         assert (
             len(per_turn_cut.supervisions) >= 1
         ), f"Expected at least one supervision per turn, got none in cut {cut.id}"
-        # If len(per_turn_cut.supervisions) > 1, only the first turn is considered for cut creation
-        # We assume that len(per_turn_cut.supervisions) >= 1 happens because one of the turns is completely contained within
-        # another turn
+        # If len(per_turn_cut.supervisions) > 1, only the first turn is considered for cut creation.
+        # We assume that len(per_turn_cut.supervisions) >= 1 happens because one of the turns
+        # is completely contained within another turn.
         turn_speaker = per_turn_cut.supervisions[0].speaker
         turn_text = per_turn_cut.supervisions[0].text
         if strip_timestamp_tokens:
@@ -1009,172 +1078,11 @@ def read_s2s_as_conversation(config) -> tuple[CutSet, bool]:
     return cuts, is_tarred
 
 
-@data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
-def read_s2s_duplex_overlap_as_s2s_duplex(config) -> tuple[CutSet, bool]:
-
-    def convert_overlap_cut(cut):
-        agent_segments = []
-        for seg in cut.agent_segments:
-            ss = SupervisionSegment(
-                id=cut.id,
-                recording_id=cut.id,
-                start=seg["start"] - move_agent_text_back_by,
-                duration=seg["end"] - seg["start"] + move_agent_text_back_by,
-                text=seg["text"],
-                speaker="agent",
-            )
-            agent_segments.append(ss)
-
-        user_segments = []
-        for seg in cut.user_segments:
-            ss = SupervisionSegment(
-                id=cut.id,
-                recording_id=cut.id,
-                start=seg["start"],
-                duration=seg["end"] - seg["start"],
-                text=seg["text"],
-                speaker="user",
-            )
-            user_segments.append(ss)
-
-        cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
-        cut.formatter = "s2s_duplex_overlap_as_s2s_duplex"
-        return cut
-
-    # load lhotse cuts
-    cuts, is_tarred = read_cutset_from_config(config)
-    move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
-    filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
-    agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
-
-    # convert cuts
-    cuts = cuts.map(convert_overlap_cut)
-
-    # Filter cuts where the first supervision is agent
-    if filter_samples_starting_with_agent:
-        cuts = filter_cuts_starting_with_agent(cuts, agent_roles)
-
-    return cuts, is_tarred
-
-
-def filter_cuts_starting_with_agent(cuts: CutSet, agent_roles=("agent", "assistant", "Assistant")) -> CutSet:
-    def filter_cut_fn(cut):
-        # sort supervisions by start
-        cut.supervisions = sorted(cut.supervisions, key=lambda s: s.start)
-        if len(cut.supervisions):
-            return cut.supervisions[0].speaker not in agent_roles
-        else:
-            return False  # filter emptly supervisions
-
-    return cuts.filter(filter_cut_fn)
-
-
-@data_type_parser(["s2s_duplex_rm_silence_between_turns"])
-def read_custom_s2s_duplex_no_silence(config) -> tuple[CutSet, bool]:
-    def convert_cut(
-        cut: MonoCut,
-    ) -> MonoCut:
-        sr = cut.recording.sampling_rate
-        duration = cut.duration
-        supervisions = sorted(cut.supervisions, key=lambda s: s.start)
-
-        audio_segments = []
-        new_supervisions = []
-
-        has_target = "target_audio" in cut.custom
-        if has_target:
-            target = cut.custom["target_audio"]
-            target_sr = target.sampling_rate
-            target_audio = target.resample(target_sr).load_audio()
-            target_segments = []
-
-        audio = cut.load_audio()
-        time_cursor = 0.0
-        time_shift = 0.0
-
-        for supervision in supervisions:
-            if supervision.duration <= 1e-4:
-                continue
-
-            # Skip any gap before this supervision
-            if supervision.start > time_cursor:
-                time_cursor = supervision.start  # jump cursor forward
-
-            start = round(supervision.start * sr)
-            end = round(supervision.end * sr)
-            speech_audio = audio[:, start:end]
-
-            # Adjust supervision timing by current time_shift
-            shifted_sup = fastcopy(supervision, start=supervision.start - time_cursor + time_shift)
-            new_supervisions.append(shifted_sup)
-
-            audio_segments.append(speech_audio)
-
-            if has_target:
-                t_start = round(supervision.start * target_sr)
-                t_end = round(supervision.end * target_sr)
-                target_segments.append(target_audio[:, t_start:t_end])
-
-            # Move cursor and shift forward by supervision duration (no silences in between)
-            time_shift += supervision.duration
-            time_cursor = supervision.end
-
-        full_audio = np.concatenate(audio_segments, axis=1)
-        new_recording = create_recording_from_array(full_audio, sr, cut.id)
-
-        custom_dict = dict(cut.custom)
-        if has_target:
-            full_target_audio = np.concatenate(target_segments, axis=1)
-            target_audio_dur = full_target_audio.shape[1] / target_sr
-            if target_audio_dur < new_recording.duration:
-                pad_samples = round((new_recording.duration - target_audio_dur) * target_sr)
-                silence = np.zeros((1, pad_samples), dtype=np.float32)
-                full_target_audio = np.concatenate([full_target_audio, silence], axis=1)
-            full_target_audio = full_target_audio[:, : round(new_recording.duration * target_sr)]
-            new_target_audio = create_recording_from_array(full_target_audio, target_sr, f"{cut.id}_target")
-            custom_dict["target_audio"] = new_target_audio
-
-        new_cut = MonoCut(
-            id=cut.id,
-            start=0.0,
-            duration=new_recording.duration,
-            channel=cut.channel,
-            recording=new_recording,
-            supervisions=new_supervisions,
-            custom=custom_dict,
-        )
-        new_cut.formatter = "s2s_duplex_rm_silence_between_turns"
-        return new_cut
-
-    # Load Lhotse CutSet
-    cuts, is_tarred = read_cutset_from_config(config)
-
-    # Read configuration
-    filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
-    per_turn_prob = config.get("pad_user_channel_turn_prob", 0.6)
-    agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
-
-    # Filter cuts where the first supervision is agent
-    if filter_samples_starting_with_agent:
-        cuts = filter_cuts_starting_with_agent(cuts, agent_roles)
-
-    cuts = cuts.map(convert_cut)
-
-    return cuts, is_tarred
-
-
 def create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
     with io.BytesIO() as buffer:
         sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
         buffer.seek(0)
         return Recording.from_bytes(buffer.read(), recording_id=recording_id)
-
-
-def _resolve_shar_inputs(path: Union[str, Path], only_metadata: bool) -> dict:
-    if only_metadata:
-        return dict(fields={"cuts": sorted(Path(path).glob("cuts.*"))})
-    else:
-        return dict(in_dir=path)
 
 
 def resolve_relative_paths(cut: Cut, manifest_path: str) -> Cut:

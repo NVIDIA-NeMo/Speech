@@ -360,21 +360,63 @@ def sample_audio(
     return audio, audio_filepath_abs, audio_filepath_rel
 
 
+# Titles that should NEVER cause sentence splits (always followed by names)
+_TITLE_ABBREVIATIONS = {
+    'mr',
+    'mrs',
+    'ms',
+    'dr',
+    'prof',
+    'sr',
+    'jr',
+    'rev',
+    'gov',
+    'gen',
+    'col',
+    'lt',
+    'sgt',
+    'capt',
+}
+
+# =============================================================================
+# Sentence separator definitions
+# =============================================================================
+
+# Default sentence endings (used for all languages)
+_DEFAULT_SENTENCE_ENDINGS = ['.', '?', '!']
+
+# Language-specific sentence endings (includes default endings)
+# Languages in this dict (ja, zh, hi) have special punctuation that splits
+# regardless of following whitespace (since these languages don't use spaces between sentences)
+_SENTENCE_ENDINGS = {
+    "ja": ['。', '？', '！', '…', '.', '?', '!'],  # Japanese + Western
+    "zh": ['。', '？', '！', '…', '.', '?', '!'],  # Chinese + Western
+    "hi": ['।', '॥', '.', '?', '!'],  # Hindi Danda + Western
+}
+
+
 def split_by_sentence(
     paragraph: str,
-    sentence_separators: Optional[List[str]] = None,
+    language: str = "en",
 ) -> List[str]:
     """
     Split a paragraph into sentences based on sentence-ending punctuation.
 
-    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by checking
-    if the separator is followed by a space before splitting. Sentence-ending
-    punctuation is preserved with each sentence.
+    Handles multiple languages with appropriate splitting behavior:
+    - Special language punctuation (ja/zh: 。？！…, hi: ।॥): splits regardless of
+      following whitespace, since these languages typically don't use spaces.
+    - Western punctuation (. ? !): splits only when followed by whitespace or
+      end-of-string, to avoid false splits on abbreviations.
+    - Title abbreviations (Dr., Mr., Mrs., Prof., etc.): never splits on these
+      since they are always followed by names.
+
+    Sentence-ending punctuation is preserved with each sentence.
 
     Args:
         paragraph: The input text paragraph to split into sentences.
-        sentence_separators: A list of strings representing sentence-ending
-            punctuation marks. Defaults to ['.', '?', '!', '...'].
+        language: Language code (e.g., "en", "ja", "hi", "zh"). Defaults to "en".
+            Special languages (ja, zh, hi) use their native punctuation that
+            splits regardless of following whitespace.
 
     Returns:
         List of sentence strings with punctuation preserved.
@@ -385,9 +427,19 @@ def split_by_sentence(
 
         >>> split_by_sentence("Dr. Smith is here. Good morning!")
         ["Dr. Smith is here.", "Good morning!"]
+
+        >>> split_by_sentence("こんにちは。元気ですか？", language="ja")
+        ["こんにちは。", "元気ですか？"]
     """
-    if sentence_separators is None:
-        sentence_separators = ['.', '?', '!', '...']
+    # Get sentence separators for this language
+    sentence_separators = _get_sentence_separators_for_language(language)
+
+    # For special languages (ja, zh, hi), their native punctuation splits without whitespace
+    # Special endings are those unique to the language (not in default)
+    if language in _SENTENCE_ENDINGS:
+        special_endings = set(sentence_separators) - set(_DEFAULT_SENTENCE_ENDINGS)
+    else:
+        special_endings = set()
 
     if not paragraph or not paragraph.strip():
         return []
@@ -400,16 +452,49 @@ def split_by_sentence(
     last_sep_idx = -1
 
     for i, char in enumerate(paragraph):
-        # Check if current char is a separator and next char is a space
-        # This avoids splitting abbreviations like "Dr." or "a.m."
+        if char not in sentence_separators:
+            continue
+
         next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
-        if char in sentence_separators and next_char == " ":
-            sentences.append(paragraph[last_sep_idx + 1 : i + 1].strip())
-            last_sep_idx = i + 1
+
+        # Determine if we should split at this position
+        # Special language punctuation: split regardless of following character (no spaces in these languages)
+        # Western punctuation: require whitespace or end-of-string
+        if char in special_endings:
+            should_split = True
+        else:
+            should_split = next_char == "" or next_char.isspace()
+
+        if not should_split:
+            continue
+
+        # Check if this is a title abbreviation - never split on titles (Dr., Mr., etc.)
+        if char == '.':
+            # Get the word before the period
+            word_start = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+            word_before = (
+                paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
+            )
+
+            # Never split on title abbreviations (they're always followed by names)
+            if word_before in _TITLE_ABBREVIATIONS:
+                continue
+
+        # Extract the sentence (from after last separator to current separator inclusive)
+        start_idx = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+        sentences.append(paragraph[start_idx : i + 1].strip())
+
+        # Update last_sep_idx: if next char is whitespace, point to it (so +1 skips it)
+        # If no whitespace (CJK), point to separator (so +1 gives us the next char)
+        if next_char.isspace():
+            last_sep_idx = i + 1  # Point to the whitespace, will be skipped
+        else:
+            last_sep_idx = i  # Point to separator, next sentence starts at i+1
 
     # Add remaining text as the last sentence
-    if last_sep_idx < len(paragraph):
-        remaining = paragraph[last_sep_idx + 1 :].strip()
+    if last_sep_idx < len(paragraph) - 1:
+        start_idx = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+        remaining = paragraph[start_idx:].strip()
         if remaining:
             sentences.append(remaining)
 
@@ -420,11 +505,69 @@ def split_by_sentence(
     return sentences
 
 
+def _get_sentence_separators_for_language(language: str) -> List[str]:
+    """
+    Get language-specific sentence separators.
+
+    For special languages (ja, zh, hi), returns their full punctuation set.
+    For all other languages, returns the default sentence endings.
+
+    Args:
+        language: Language code (e.g., "en", "ja", "hi").
+
+    Returns:
+        List of sentence separator characters for the given language.
+        Defaults to ['.', '?', '!'] for unlisted languages.
+    """
+    return _SENTENCE_ENDINGS.get(language, _DEFAULT_SENTENCE_ENDINGS)
+
+
+def get_word_count(text: str, language: str = "en") -> int:
+    """
+    Get word count for text in a language-aware manner.
+
+    For Japanese, uses pyopenjtalk morphological analysis for accurate word segmentation.
+    Falls back to character count if pyopenjtalk is unavailable or returns no words.
+    For Chinese, counts characters (as words are not space-separated).
+    For other languages, uses whitespace splitting.
+
+    Args:
+        text: Input text to count words for.
+        language: Language code (e.g., "en", "ja", "zh", "hi").
+
+    Returns:
+        Number of words (or characters for Chinese/Japanese fallback) in the text.
+    """
+    if not text or not text.strip():
+        return 0
+
+    if language == "zh":
+        # Chinese: count characters (no word boundaries)
+        return len([c for c in text if not c.isspace()])
+
+    if language == "ja":
+        try:
+            import pyopenjtalk
+
+            # run_frontend returns list of word dictionaries (NJD format)
+            njd = pyopenjtalk.run_frontend(text)
+            # Filter out None/invalid entries and count words
+            word_count = sum(1 for word in njd if isinstance(word, dict) and word.get('string', '').strip())
+            return word_count if word_count > 0 else len([c for c in text if not c.isspace()])
+        except ImportError:
+            # Fallback: use character count for Japanese if pyopenjtalk not available
+            return len([c for c in text if not c.isspace()])
+
+    # Default: whitespace splitting for English, Hindi, and other languages
+    return len(text.split())
+
+
 def chunk_and_tokenize_text_by_sentence(
     text: str,
     tokenizer_name: str,
     text_tokenizer: Any,
     eos_token_id: int,
+    language: str = "en",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """
     Tokenize text split by sentences, adding EOS token after each sentence.
@@ -434,6 +577,9 @@ def chunk_and_tokenize_text_by_sentence(
         tokenizer_name: Name of the tokenizer to use (e.g., "english_phoneme").
         text_tokenizer: The tokenizer instance.
         eos_token_id: End-of-sequence token ID to append.
+        language: Language code for selecting appropriate sentence separators.
+            Supported: "en", "ja", "hi", "zh", "es", "fr", "it", "de", "vi".
+            Defaults to "en".
 
     Returns:
         Tuple of:
@@ -441,7 +587,7 @@ def chunk_and_tokenize_text_by_sentence(
             - chunked_tokens_len: List of token lengths.
             - chunked_text: List of sentence strings.
     """
-    split_sentences = split_by_sentence(text)
+    split_sentences = split_by_sentence(text, language=language)
 
     chunked_tokens = []
     chunked_tokens_len = []

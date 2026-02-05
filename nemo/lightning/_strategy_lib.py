@@ -97,6 +97,7 @@ def init_parallel_ranks(
         and getattr(parallel_config, "tp_comm_bootstrap_backend", None) == 'mpi',
         use_te_rng_tracker=getattr(parallel_config, "use_te_rng_tracker", False),
         use_sharp=getattr(parallel_config, "use_sharp", False),
+        create_all_gather_group=getattr(parallel_config, "create_all_gather_group", False),
         use_tp_pp_dp_mapping=getattr(parallel_config, "use_tp_pp_dp_mapping", False),
         num_distributed_optimizer_instances=getattr(parallel_config, "num_distributed_optimizer_instances", 1),
         nccl_communicator_config_path=getattr(parallel_config, "nccl_communicator_config_path", None),
@@ -107,6 +108,7 @@ def init_parallel_ranks(
 
 def init_model_parallel(model: Optional[nn.Module] = None) -> None:
     """Initializes Megatron-LM model parallel if using model parallelism."""
+    import inspect
     import torch.distributed
     from megatron.core import parallel_state
 
@@ -121,6 +123,13 @@ def init_model_parallel(model: Optional[nn.Module] = None) -> None:
         # this happens with multiple calls to trainer.test for example
         parallel_state.destroy_model_parallel()
         if torch.distributed.is_initialized():
+            sig = inspect.signature(parallel_state.initialize_model_parallel)
+
+            # Check if Megatron-LM supports create_all_gather_group parameter (backward compatibility)
+            extra_kwargs = {}
+            if 'create_all_gather_group' in sig.parameters:
+                extra_kwargs['create_all_gather_group'] = app_state.create_all_gather_group
+
             parallel_state.initialize_model_parallel(
                 tensor_model_parallel_size=app_state.tensor_model_parallel_size,
                 pipeline_model_parallel_size=app_state.pipeline_model_parallel_size,
@@ -134,6 +143,7 @@ def init_model_parallel(model: Optional[nn.Module] = None) -> None:
                 num_distributed_optimizer_instances=app_state.num_distributed_optimizer_instances,
                 nccl_communicator_config_path=app_state.nccl_communicator_config_path,
                 create_gloo_process_groups=app_state.use_gloo_process_groups,
+                **extra_kwargs,
             )
 
             # assert that fake tp and pp rank match after model parallel init

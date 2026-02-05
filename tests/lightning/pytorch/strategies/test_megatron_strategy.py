@@ -139,3 +139,48 @@ class TestMegatronStrategy:
 
         with pytest.raises(AttributeError):
             strategy._update_step_kwargs(1, kwargs={"data_step": None, "forward_step": None}, step_name="first")
+
+    def test_create_all_gather_group_default(self):
+        """Test that create_all_gather_group defaults to False."""
+        strategy = MegatronStrategy()
+        assert strategy.create_all_gather_group == False
+
+    def test_create_all_gather_group_enabled(self):
+        """Test that create_all_gather_group can be set to True."""
+        strategy = MegatronStrategy(create_all_gather_group=True)
+        assert strategy.create_all_gather_group == True
+
+    def test_create_all_gather_group_in_parallelism_config(self):
+        """Test that create_all_gather_group can be configured via ParallelismConfig."""
+        import torch
+
+        from nemo.lightning.pytorch.strategies.megatron_strategy import ParallelismConfig
+
+        parallel_config = ParallelismConfig(
+            tensor_model_parallel_size=2,
+            pipeline_model_parallel_size=2,
+            virtual_pipeline_model_parallel_size=None,
+            microbatch_group_size_per_vp_stage=1,
+            context_parallel_size=1,
+            sequence_parallel=False,
+            expert_model_parallel_size=1,
+            moe_extended_tp=False,
+            pipeline_dtype=torch.float32,
+            create_all_gather_group=True,
+        )
+
+        assert parallel_config.create_all_gather_group == True
+
+        # Test default value
+        parallel_config_default = ParallelismConfig(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            virtual_pipeline_model_parallel_size=None,
+            microbatch_group_size_per_vp_stage=1,
+            context_parallel_size=1,
+            sequence_parallel=False,
+            expert_model_parallel_size=1,
+            moe_extended_tp=False,
+            pipeline_dtype=torch.float32,
+        )
+        assert parallel_config_default.create_all_gather_group == False

@@ -21,9 +21,9 @@ Connects two voice agents via WebSocket and provides:
 - Dynamic system prompt updates via RTVI actions
 - Conversation monitoring and metrics
 """
-
 import asyncio
 import json
+import os
 import queue
 import random
 import threading
@@ -169,15 +169,14 @@ class RTVIEvaluationBridge:
 
         # Random burst mode configuration (simulates browser's irregular sending pattern)
         self.use_burst_mode = False
-        self.burst_size_range = (2, 4)  # Random 2-4 frames per burst
-        self.burst_delay_ms = 1  # 1ms between frames in burst
+        self.burst_size_range = (3, 8)  # Random frames per burst
+        self.burst_delay_ms = 1  # sleep duration between frames in burst
         # Pause calculated per burst: (burst_size × 16ms) - burst_duration
         # This maintains 16ms average per frame while varying the pattern
 
         # Grace period and timeout configuration for send loops
-        self.grace_period = 5.0  # Extra time to drain audio after main duration
-        self.no_audio_timeout = 2.0  # Stop if no audio for N seconds during grace period
-        self.max_consecutive_silence = 5  # Stop after N consecutive silence chunks in grace period
+        self.grace_period = 10.0  # Extra time to drain audio after main duration
+        self.no_audio_timeout = 10.0  # Stop if no audio for N seconds during grace period
 
         self.user_ws = None
         self.agent_ws = None
@@ -1011,11 +1010,9 @@ class RTVIEvaluationBridge:
         loop = asyncio.get_event_loop()
         start_time = loop.time()
         chunk_count = 0
-        consecutive_silence = 0  # Track consecutive silence chunks (local counter)
 
         try:
             last_audio_time = loop.time()
-            queue_empty_for_drain = False  # Flag to indicate we're draining AudioStream buffer
 
             while True:
                 current_time = loop.time()
@@ -1027,15 +1024,8 @@ class RTVIEvaluationBridge:
                 # Stop conditions:
                 # 1. Exceeded duration + grace period
                 # 2. In grace period and no audio for no_audio_timeout seconds
-                # 3. In grace period and consecutive silence chunks (buffer drained)
                 if elapsed > (duration + self.grace_period):
                     logger.info(f"[AGENT→USER] Grace period expired after {elapsed:.1f}s, stopping")
-                    break
-
-                if in_grace_period and queue_empty_for_drain and consecutive_silence >= self.max_consecutive_silence:
-                    logger.info(
-                        f"[AGENT→USER] AudioStream buffer drained ({consecutive_silence} silence chunks), stopping"
-                    )
                     break
 
                 if in_grace_period and (current_time - last_audio_time) > self.no_audio_timeout:
@@ -1053,9 +1043,6 @@ class RTVIEvaluationBridge:
                         last_audio_time = current_time
                         chunks_retrieved += 1
                     except queue.Empty:
-                        # Queue is empty, but we might still have audio in AudioStream buffer
-                        if in_grace_period and chunks_retrieved == 0:
-                            queue_empty_for_drain = True
                         break
 
                 logger.debug(f"[AGENT→USER] Retrieved {chunks_retrieved} chunks from queue")
@@ -1077,10 +1064,6 @@ class RTVIEvaluationBridge:
 
                     # Check if it's silence
                     is_silence = audio_to_send == b'\x00' * len(audio_to_send)
-                    if is_silence and queue_empty_for_drain:
-                        consecutive_silence += 1
-                    else:
-                        consecutive_silence = 0
 
                     # Track sent audio
                     self.sent_to_user_chunks.append(audio_to_send)
@@ -1127,11 +1110,9 @@ class RTVIEvaluationBridge:
         loop = asyncio.get_event_loop()
         start_time = loop.time()
         chunk_count = 0
-        consecutive_silence = 0  # Track consecutive silence chunks (local counter)
 
         try:
             last_audio_time = loop.time()
-            queue_empty_for_drain = False  # Flag to indicate we're draining AudioStream buffer
 
             while True:
                 current_time = loop.time()
@@ -1143,15 +1124,8 @@ class RTVIEvaluationBridge:
                 # Stop conditions:
                 # 1. Exceeded duration + grace period
                 # 2. In grace period and no audio for no_audio_timeout seconds
-                # 3. In grace period and consecutive silence chunks (buffer drained)
                 if elapsed > (duration + self.grace_period):
                     logger.info(f"[USER→AGENT] Grace period expired after {elapsed:.1f}s, stopping")
-                    break
-
-                if in_grace_period and queue_empty_for_drain and consecutive_silence >= self.max_consecutive_silence:
-                    logger.info(
-                        f"[USER→AGENT] AudioStream buffer drained ({consecutive_silence} silence chunks), stopping"
-                    )
                     break
 
                 if in_grace_period and (current_time - last_audio_time) > self.no_audio_timeout:
@@ -1169,9 +1143,6 @@ class RTVIEvaluationBridge:
                         last_audio_time = current_time
                         chunks_retrieved += 1
                     except queue.Empty:
-                        # Queue is empty, but we might still have audio in AudioStream buffer
-                        if in_grace_period and chunks_retrieved == 0:
-                            queue_empty_for_drain = True
                         break
 
                 logger.debug(f"[USER→AGENT] Retrieved {chunks_retrieved} chunks from queue")
@@ -1184,7 +1155,7 @@ class RTVIEvaluationBridge:
 
                 # Send burst frames
                 for frame_in_burst in range(burst_size):
-                    if frame_in_burst > 0:
+                    if frame_in_burst > 0 and self.burst_delay_ms > 0:
                         # Small delay between frames in burst
                         await asyncio.sleep(self.burst_delay_ms / 1000.0)
 
@@ -1193,10 +1164,6 @@ class RTVIEvaluationBridge:
 
                     # Check if it's silence
                     is_silence = audio_to_send == b'\x00' * len(audio_to_send)
-                    if is_silence and queue_empty_for_drain:
-                        consecutive_silence += 1
-                    else:
-                        consecutive_silence = 0
 
                     # Track sent audio
                     self.sent_to_agent_chunks.append(audio_to_send)
@@ -1400,52 +1367,83 @@ class RTVIEvaluationBridge:
             self.metrics.current_segment_start = None
 
         # Debug: Save accumulated sent audio chunks for analysis
-        self._save_sent_audio_debug()
+        self._save_bridge_audio_log()
 
-    def _save_sent_audio_debug(self):
-        """Save final sent audio chunks to disk for debugging."""
-        import os
-        import wave
+    def _save_bridge_audio_log(self):
+        """Save final sent audio chunks to disk as stereo WAV for debugging."""
+        if not self.sent_to_agent_chunks and not self.sent_to_user_chunks:
+            logger.info("[DEBUG] No audio chunks to save")
+            return
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = "./eval_results/debug_sent_audio"
+        # Get output directory from log file parent folder
+        if self.log_file:
+            output_dir = Path(self.log_file).parent
+        else:
+            output_dir = Path("./eval_results")
+
+        output_path = output_dir / "bridge_audio_log.wav"
         os.makedirs(output_dir, exist_ok=True)
 
-        # Save USER→AGENT final sent audio
+        # Convert audio chunks to numpy arrays
+        # Channel 0 (Left): USER→AGENT audio at agent_input_sample_rate
+        # Channel 1 (Right): AGENT→USER audio at user_input_sample_rate
+
+        channel0 = np.array([], dtype=np.int16)
+        channel1 = np.array([], dtype=np.int16)
+
         if self.sent_to_agent_chunks:
-            filename = os.path.join(output_dir, f"sent_to_agent_{timestamp}.wav")
             audio_data = b"".join(self.sent_to_agent_chunks)
-            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            channel0 = np.frombuffer(audio_data, dtype=np.int16)
 
-            with wave.open(filename, 'wb') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(self.agent_input_sample_rate)
-                wav_file.writeframes(audio_array.tobytes())
-
-            duration = len(audio_array) / self.agent_input_sample_rate
-            logger.info(f"[DEBUG] Saved USER→AGENT sent audio: {filename}")
-            logger.info(
-                f"        Chunks: {len(self.sent_to_agent_chunks)}, Duration: {duration:.2f}s, Sample rate: {self.agent_input_sample_rate}Hz"
-            )
-
-        # Save AGENT→USER final sent audio
         if self.sent_to_user_chunks:
-            filename = os.path.join(output_dir, f"sent_to_user_{timestamp}.wav")
             audio_data = b"".join(self.sent_to_user_chunks)
-            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            channel1 = np.frombuffer(audio_data, dtype=np.int16)
 
-            with wave.open(filename, 'wb') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(self.user_input_sample_rate)
-                wav_file.writeframes(audio_array.tobytes())
+        # Resample both channels to output_sample_rate (typically 16kHz)
+        target_rate = self.output_sample_rate
 
-            duration = len(audio_array) / self.user_input_sample_rate
-            logger.info(f"[DEBUG] Saved AGENT→USER sent audio: {filename}")
-            logger.info(
-                f"        Chunks: {len(self.sent_to_user_chunks)}, Duration: {duration:.2f}s, Sample rate: {self.user_input_sample_rate}Hz"
-            )
+        if len(channel0) > 0 and self.agent_input_sample_rate != target_rate:
+            # Resample channel 0
+            resample_ratio = target_rate / self.agent_input_sample_rate
+            new_length = int(len(channel0) * resample_ratio)
+            channel0 = np.interp(
+                np.linspace(0, len(channel0) - 1, new_length), np.arange(len(channel0)), channel0
+            ).astype(np.int16)
+
+        if len(channel1) > 0 and self.user_input_sample_rate != target_rate:
+            # Resample channel 1
+            resample_ratio = target_rate / self.user_input_sample_rate
+            new_length = int(len(channel1) * resample_ratio)
+            channel1 = np.interp(
+                np.linspace(0, len(channel1) - 1, new_length), np.arange(len(channel1)), channel1
+            ).astype(np.int16)
+
+        # Pad shorter channel with silence to match longer one
+        max_length = max(len(channel0), len(channel1))
+
+        if len(channel0) < max_length:
+            channel0 = np.pad(channel0, (0, max_length - len(channel0)), mode='constant', constant_values=0)
+
+        if len(channel1) < max_length:
+            channel1 = np.pad(channel1, (0, max_length - len(channel1)), mode='constant', constant_values=0)
+
+        # Interleave channels for stereo: [L, R, L, R, ...]
+        stereo_data = np.empty(max_length * 2, dtype=np.int16)
+        stereo_data[0::2] = channel0  # Left channel (USER→AGENT)
+        stereo_data[1::2] = channel1  # Right channel (AGENT→USER)
+
+        # Save as stereo WAV
+        with wave.open(str(output_path), 'wb') as wav_file:
+            wav_file.setnchannels(2)  # Stereo
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(target_rate)
+            wav_file.writeframes(stereo_data.tobytes())
+
+        duration = max_length / target_rate
+        logger.info(f"[DEBUG] Saved stereo bridge audio: {output_path}")
+        logger.info(f"        Left (USER→AGENT): {len(self.sent_to_agent_chunks)} chunks")
+        logger.info(f"        Right (AGENT→USER): {len(self.sent_to_user_chunks)} chunks")
+        logger.info(f"        Duration: {duration:.2f}s, Sample rate: {target_rate}Hz")
 
     async def _monitor_user_message(self, frame):
         """
@@ -1460,6 +1458,8 @@ class RTVIEvaluationBridge:
         # Check if frame is valid
         if frame is None:
             return
+
+        logger.debug(f"[USER MONITOR] Frame type: {type(frame).__name__}, has audio: {hasattr(frame, 'audio')}")
 
         # Handle audio frames
         if hasattr(frame, 'audio') and frame.audio:
@@ -1490,14 +1490,16 @@ class RTVIEvaluationBridge:
                 data = frame.message
             message_type = data.get("type", "")
 
+            # Track when user bot starts speaking
+            if message_type == RTVI_BOT_STARTED_SPEAKING:
+                logger.debug("[TIMING] User started speaking")
             # Track user transcription segments (accumulate)
-            if message_type == RTVI_BOT_TRANSCRIPTION:
+            elif message_type == RTVI_BOT_TRANSCRIPTION:
                 text = data.get("data", {}).get("text", "")
                 if text:
                     # Accumulate text segments (they arrive incrementally)
                     self.metrics.user_current_transcript += text
                     logger.debug(f"[USER SEGMENT] {text}")
-
             # Track when user bot stops speaking (finalize turn)
             elif message_type == RTVI_BOT_STOPPED_SPEAKING:
                 self.metrics.user_last_audio_time = timestamp
@@ -1614,8 +1616,9 @@ class RTVIEvaluationBridge:
         if message_type == RTVI_BOT_STARTED_SPEAKING:
             if self.metrics.waiting_for_agent_response and self.metrics.user_last_audio_time:
                 latency_ms = (timestamp - self.metrics.user_last_audio_time) * 1000
-
                 logger.debug(f"[TIMING] Agent started speaking at {timestamp:.3f} (latency: {latency_ms:.1f}ms)")
+            else:
+                logger.debug("[TIMING] Agent started speaking")
 
         # Track agent transcription segments (accumulate)
         elif message_type == RTVI_BOT_TRANSCRIPTION:

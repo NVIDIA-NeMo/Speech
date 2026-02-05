@@ -123,7 +123,7 @@ class AudioStream:
         output_sample_rate: int,
         stream_resampler: bool = True,
         tag: str = "",
-        min_buffer_chunks: int = 10,
+        min_buffer_chunks: int = 5,
         drain_threshold: int = 5,
         min_sustain_chunks: int = 1,
     ):

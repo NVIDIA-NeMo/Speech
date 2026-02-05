@@ -168,11 +168,15 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
 
                     # Process TTS generation
                     try:
-                        audio_result = self._generate_audio(text)
+                        # Consume the generator completely in background thread to avoid blocking main event loop
+                        # _generate_audio yields audio chunks, so we collect them into a list
+                        audio_chunks = []
+                        for audio_chunk in self._generate_audio(text):
+                            audio_chunks.append(audio_chunk)
 
-                        # Send result directly to the waiting request
+                        # Send the list of audio chunks to the waiting request
                         asyncio.run_coroutine_threadsafe(
-                            response_queue.put(('success', audio_result)), self.get_event_loop()
+                            response_queue.put(('success', audio_chunks)), self.get_event_loop()
                         )
                     except Exception as e:
                         logger.error(f"Error in TTS generation: {e}")
@@ -310,10 +314,10 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                 # Process the audio result (same as before)
                 if (
                     inspect.isgenerator(audio_result)
-                    or hasattr(audio_result, '__iter__')
-                    and hasattr(audio_result, '__next__')
+                    or isinstance(audio_result, list)
+                    or (hasattr(audio_result, '__iter__') and hasattr(audio_result, '__next__'))
                 ):
-                    # Handle generator case
+                    # Handle generator/list case
                     first_chunk = True
                     for audio_chunk in audio_result:
                         if first_chunk:
@@ -338,6 +342,9 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                                 audio=audio_chunk_bytes, sample_rate=self.sample_rate, num_channels=1
                             )
                             yield frame
+
+                        # Yield control to event loop after each audio chunk
+                        await asyncio.sleep(0)
                 else:
                     # Handle single result case
                     await self.stop_ttfb_metrics()

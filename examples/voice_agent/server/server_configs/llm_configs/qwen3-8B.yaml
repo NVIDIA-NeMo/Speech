@@ -55,4 +55,7 @@ vllm_generation_params:
   top_k: null  # Top-k sampling parameter (currently ignored by OpenAI).
   top_p: ${llm.top_p}  # Top-p (nucleus) sampling parameter (0.0 to 1.0).
   max_completion_tokens: ${llm.max_new_tokens}  # max number of tokens to generate
-  extra: null  # additional model specific params can be specified in dict format
+  extra: 
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: False  # disable thinking

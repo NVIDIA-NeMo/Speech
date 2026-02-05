@@ -68,15 +68,7 @@ async def run_dynamic_evaluation(
     """
 
     os.makedirs(output_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    log_file = os.path.join(output_dir, f"eval_log_{timestamp}.txt")
-    setup_logging(log_file=log_file)
-
-    # Create audio directory if recording
-    if record_audio:
-        audio_dir = os.path.join(output_dir, "audio")
-        os.makedirs(audio_dir, exist_ok=True)
+    global_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     bridge = RTVIEvaluationBridge(
         user_url=user_url,
@@ -110,15 +102,23 @@ async def run_dynamic_evaluation(
         bridge.metrics.audio_start_timestamp = None
         bridge.metrics.current_segment_start = None
 
+        # Create scenario-specific directory
+        scenario_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        scenario_name_safe = scenario['name'].replace(' ', '_').replace('/', '_')
+        scenario_dir = os.path.join(output_dir, f"{scenario_name_safe}_{scenario_timestamp}")
+        os.makedirs(scenario_dir, exist_ok=True)
+
         # Initialize log file for this scenario
-        log_file = os.path.join(output_dir, f"conversation_{timestamp}_{idx+1:02d}_{scenario['name']}.log")
-        bridge.init_log_file(log_file)
+        log_file = os.path.join(scenario_dir, "bridge_log.txt")
+        conversation_log_file = os.path.join(scenario_dir, "conversation_log.txt")
+        bridge.init_log_file(conversation_log_file)
+        setup_logging(log_file=log_file)  # Update logging to write to this file
+        logger.info(f"Scenario directory: {scenario_dir}")
         logger.info(f"Logging to: {log_file}")
 
         # Set audio file for this scenario
         if record_audio:
-            scenario_name_safe = scenario['name'].replace(' ', '_').replace('/', '_')
-            audio_file = os.path.join(audio_dir, f"{timestamp}_{idx+1:02d}_{scenario_name_safe}.wav")
+            audio_file = os.path.join(scenario_dir, "conversation_audio.wav")
             bridge.audio_file = audio_file  # Set on bridge so monitoring can record audio
             logger.info(f"Recording audio to: {audio_file}")
         else:
@@ -155,6 +155,7 @@ async def run_dynamic_evaluation(
         # Collect metrics for this scenario
         metrics = bridge.get_metrics()
         metrics["scenario_name"] = scenario["name"]
+        metrics["scenario_directory"] = scenario_dir
         metrics["scenario_duration"] = (scenario_end - scenario_start).total_seconds()
         all_results.append(metrics)
 
@@ -179,12 +180,12 @@ async def run_dynamic_evaluation(
     await bridge.disconnect()
 
     # Save detailed results
-    results_file = os.path.join(output_dir, f"results_{timestamp}.json")
+    results_file = os.path.join(output_dir, f"results_{global_timestamp}.json")
     with open(results_file, "w") as f:
         json.dump(all_results, f, indent=2)
 
     # Save CSV with latency details
-    latency_csv_file = os.path.join(output_dir, f"latencies_{timestamp}.csv")
+    latency_csv_file = os.path.join(output_dir, f"latencies_{global_timestamp}.csv")
     with open(latency_csv_file, "w") as f:
         f.write("Scenario,User_Transcript,Agent_Transcript,Latency_ms\n")
         for result in all_results:
@@ -195,7 +196,7 @@ async def run_dynamic_evaluation(
                 f.write(f'"{scenario_name}","{user_text}","{agent_text}",{latency["latency_ms"]:.1f}\n')
 
     # Save summary
-    summary_file = os.path.join(output_dir, f"summary_{timestamp}.txt")
+    summary_file = os.path.join(output_dir, f"summary_{global_timestamp}.txt")
     with open(summary_file, "w") as f:
         f.write("EVALUATION SUMMARY\n")
         f.write("=" * 80 + "\n\n")
@@ -247,12 +248,14 @@ async def run_dynamic_evaluation(
     logger.info(f"Results saved to: {results_file}")
     logger.info(f"Latencies saved to: {latency_csv_file}")
     logger.info(f"Summary saved to: {summary_file}")
-    logger.info(f"Conversation log: {bridge.log_file}")
-    if record_audio:
-        logger.info(f"Audio files saved to: {audio_dir}/")
-        logger.info(f"  Format: Stereo WAV (user=left, agent=right)")
-        logger.info(f"  Sample rate: {output_sample_rate} Hz")
-        logger.info(f"  segLST files: {audio_dir}/*.seglst")
+    logger.info(f"\nScenario directories:")
+    for result in all_results:
+        logger.info(f"  {result['scenario_name']}: {result['scenario_directory']}")
+        if record_audio:
+            logger.info(f"    - audio.wav (stereo: user=left, agent=right)")
+            logger.info(f"    - audio.seglst (segment timestamps)")
+            logger.info(f"    - bridge_audio_log.wav (sent audio: user→agent=left, agent→user=right)")
+            logger.info(f"    - eval_log.txt")
     logger.info(f"\nTotal: {len(scenarios)} scenarios, {total_turns} turns, {total_duration:.1f}s")
 
     return all_results
@@ -315,7 +318,10 @@ Examples:
     scenarios = [
         {
             "name": "Friendly Conversation",
-            "user_prompt": """You are a friendly human user named Bob, and you are testing a voice assistant. Start by saying that "Hi I'm Bob", then ask the following questions one by one: 1. What is your name? 2. What's the captital of the United States?""",
+            "user_prompt": """You are a friendly human user named Bob, and you are testing a voice assistant. 
+            Start by saying that "Hi I'm Bob", then ask the following questions one by one: 
+            1. What is your name? 
+            2. What's the capital of the United States?""",
             "duration": 90,
         },
         #         {

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import time
 from datetime import datetime
 from typing import AsyncGenerator, List, Optional
 
@@ -63,7 +64,7 @@ class NeMoSTTInputParams(BaseModel):
     frame_len_in_secs: Optional[float] = 0.08  # 80ms for FastConformer model
     config_path: Optional[str] = None  # path to the Niva ASR config file
     raw_audio_frame_len_in_secs: Optional[float] = 0.016  # 16ms for websocket transport
-    buffer_size: Optional[int] = 5  # number of audio frames to buffer, 1 frame is 16ms
+    buffer_size: int = 5  # number of raw audio frames to buffer, 1 frame is 16ms
 
 
 class NemoSTTService(STTService):
@@ -86,7 +87,7 @@ class NemoSTTService(STTService):
         super().__init__(**kwargs)
         self._queue = asyncio.Queue()
         self._sample_rate = sample_rate
-        params.buffer_size = params.frame_len_in_secs // params.raw_audio_frame_len_in_secs
+
         self._params = params
         self._model_name = model
         self._ignore_eou_eob = ignore_eou_eob
@@ -106,9 +107,14 @@ class NemoSTTService(STTService):
 
         self._load_model()
 
-        self.audio_buffer = []
+        self._bytes_per_buffer = int(
+            self._params.buffer_size * self._params.raw_audio_frame_len_in_secs * sample_rate * 2
+        )
+        self._audio_buffer = bytearray()
         self.user_is_speaking = False
         self._has_logged_audio_chunk = False
+        self._audio_timestamps = []
+        logger.info(f"Initialized NeMo STT service with model `{model}` and params `{self._params}`")
 
     def _load_model(self):
         if self._backend == "legacy":
@@ -131,6 +137,17 @@ class NemoSTTService(STTService):
         """
         return True
 
+    def _reset_stt_state(self):
+        """Reset the state of the STT service."""
+        if isinstance(self._model, NemoStreamingASRService):
+            logger.debug("Resetting state of the model")
+            self._model.reset_state()
+        self._audio_buffer = []
+        self._audio_timestamps = []
+        self.user_is_speaking = False
+        self._has_logged_audio_chunk = False
+        self._is_vad_active = False
+
     async def start(self, frame: StartFrame):
         """Handle service start.
 
@@ -143,6 +160,9 @@ class NemoSTTService(STTService):
         if not hasattr(self, "_model"):
             self._load_model()
 
+        # Reset the state of the STT service
+        self._reset_stt_state()
+
     async def stop(self, frame: EndFrame):
         """Handle service stop.
 
@@ -152,6 +172,8 @@ class NemoSTTService(STTService):
         await super().stop(frame)
         # Clear any internal state if needed
         await self._queue.put(None)  # Signal to stop processing
+        # Reset the state of the STT service
+        self._reset_stt_state()
 
     async def cancel(self, frame: CancelFrame):
         """Handle service cancellation.
@@ -163,8 +185,39 @@ class NemoSTTService(STTService):
         # Clear any internal state
         await self._queue.put(None)  # Signal to stop processing
         self._queue = asyncio.Queue()  # Reset the queue
+        # Reset the state of the STT service
+        self._reset_stt_state()
 
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def process_audio_frame(self, frame: AudioRawFrame, direction: FrameDirection):
+        """Process an audio frame for speech recognition.
+
+        If the service is muted, this method does nothing. Otherwise, it
+        processes the audio frame and runs speech-to-text on it, yielding
+        transcription results. If the frame has a user_id, it is stored
+        for later use in transcription.
+
+        Args:
+            frame: The audio frame to process.
+            direction: The direction of frame processing.
+        """
+        if self._muted:
+            return
+
+        # UserAudioRawFrame contains a user_id (e.g. Daily, Livekit)
+        if hasattr(frame, "user_id"):
+            self._user_id = frame.user_id
+        # AudioRawFrame does not have a user_id (e.g. SmallWebRTCTransport, websockets)
+        else:
+            self._user_id = ""
+
+        if not frame.audio:
+            # Ignoring in case we don't have audio to transcribe.
+            logger.warning(f"Empty audio frame received for STT service: {self.name} {frame.num_frames}")
+            return
+
+        await self.process_generator(self.run_stt(frame.audio, frame))
+
+    async def run_stt(self, audio: bytes, audio_frame: Optional[AudioRawFrame] = None) -> AsyncGenerator[Frame, None]:
         """Process audio data and generate transcription frames.
 
         Args:
@@ -183,7 +236,12 @@ class NemoSTTService(STTService):
             is_final = False
             user_has_finished = False
             transcription = None
-            self.audio_buffer.append(audio)
+            self._audio_buffer.extend(audio)
+            if audio_frame and hasattr(audio_frame, 'timestamp'):
+                self._audio_timestamps.append(audio_frame.timestamp)
+            else:
+                self._audio_timestamps.append(timestamp_now)
+
             if not self._has_logged_audio_chunk:
                 # convert bytes to seconds
                 import numpy as np
@@ -191,27 +249,35 @@ class NemoSTTService(STTService):
                 audio_array = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
                 audio_seconds = len(audio_array) / self._sample_rate
                 logger.debug(f"Received audio chunk length: {len(audio)} bytes, seconds: {audio_seconds}")
-                if self._input_sample_rate != self._sample_rate:
-                    logger.warning(
-                        f"Input sample rate {self._input_sample_rate}Hz does not match expected sample rate {self._sample_rate}Hz, resampling audio to {self._sample_rate}Hz"
-                    )
                 self._has_logged_audio_chunk = True
 
-            if len(self.audio_buffer) >= self._params.buffer_size:
-                audio = b"".join(self.audio_buffer)
-                self.audio_buffer = []
+            if len(self._audio_buffer) >= self._bytes_per_buffer:
+                audio_chunk_bytes = bytes(self._audio_buffer[: self._bytes_per_buffer])
+                self._audio_buffer = self._audio_buffer[self._bytes_per_buffer :]
+
+                last_audio_timestamp = self._audio_timestamps[: self._params.buffer_size][-1]
+                self._audio_timestamps = self._audio_timestamps[self._params.buffer_size :]
 
                 # Append to continuous user audio buffer for stereo conversation recording
                 if self._audio_logger is not None:
-                    self._audio_logger.append_continuous_user_audio(audio)
+                    self._audio_logger.append_continuous_user_audio(audio_chunk_bytes)
 
-                asr_result = self._model.transcribe(audio)
+                # Run ASR inference in thread pool to avoid blocking event loop
+                start_time = time.time()
+                asr_result = await asyncio.to_thread(self._model.transcribe, audio_chunk_bytes)
+                end_time = time.time()
+                logger.debug(f"ASR inference time: {end_time - start_time} seconds")
                 transcription = asr_result.text
                 is_final = asr_result.is_final
+
+                delay = datetime.now() - last_audio_timestamp
+                logger.debug(
+                    f"Transcription: {transcription}, audio timestamp: {last_audio_timestamp}, delay: {delay}"
+                )
                 if self._audio_logger is not None:
                     if self._is_vad_active:
                         is_first_frame = False
-                        self._audio_logger.turn_audio_buffer.append(audio)
+                        self._audio_logger.turn_audio_buffer.append(audio_chunk_bytes)
                         # Accumulate transcriptions for turn-based logging
                         if transcription:
                             self._audio_logger.turn_transcription_buffer.append(transcription)
@@ -249,53 +315,30 @@ class NemoSTTService(STTService):
                 # Get the language from params or default to EN_US
                 language = self._params.language if self._params else Language.EN_US
 
-                # Create and push the transcription frame
+                # Create and yield the transcription frame
                 if self._has_turn_taking:
                     # if turn taking is enabled, we push interim transcription frames
                     # and let the turn taking service handle the final transcription
                     frame_type = InterimTranscriptionFrame
                 else:
                     # otherwise, we use the is_final flag to determine the frame type
-                    frame_type = TranscriptionFrame if not is_final else InterimTranscriptionFrame
-                await self.push_frame(
-                    frame_type(
-                        transcription,
-                        "",  # No speaker ID in this implementation
-                        time_now_iso8601(),
-                        language,
-                        result={"text": transcription},
-                    )
-                )
+                    frame_type = TranscriptionFrame if is_final else InterimTranscriptionFrame
 
-                # Handle the transcription
-                await self._handle_transcription(
-                    transcript=transcription,
-                    is_final=is_final,
-                    language=language,
+                # Yield the frame instead of pushing it to avoid blocking
+                yield frame_type(
+                    transcription,
+                    self._user_id,
+                    time_now_iso8601(),
+                    language,
+                    result={"text": transcription},
                 )
-
-            yield None
 
         except Exception as e:
             logger.error(f"Error in NeMo STT processing: {e}")
-            await self.push_frame(
-                ErrorFrame(
-                    str(e),
-                    time_now_iso8601(),
-                )
+            yield ErrorFrame(
+                str(e),
+                time_now_iso8601(),
             )
-            yield None
-
-    @traced_stt
-    async def _handle_transcription(self, transcript: str, is_final: bool, language: Optional[str] = None):
-        """Handle a transcription result.
-
-        Args:
-            transcript: The transcribed text
-            is_final: Whether this is a final transcription
-            language: The language of the transcription
-        """
-        pass  # Base implementation - can be extended for specific handling needs
 
     async def set_language(self, language: Language):
         """Update the service's recognition language.

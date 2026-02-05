@@ -89,7 +89,8 @@ class ConfigManager:
         """Initialize all configuration parameters from the loaded config."""
         # Default constants
         self.SAMPLE_RATE = 16000
-        self.RAW_AUDIO_FRAME_LEN_IN_SECS = 0.016
+        # websocket has 16ms frame length by default
+        self.RAW_AUDIO_FRAME_LEN_IN_SECS = self.server_config.transport.get("audio_in_frame_len_secs", 0.016)
         self.SYSTEM_PROMPT = " ".join(
             [
                 "You are a helpful AI agent named Lisa.",
@@ -165,6 +166,7 @@ class ConfigManager:
             att_context_size=self.server_config.stt.att_context_size,
             frame_len_in_secs=self.server_config.stt.frame_len_in_secs,
             raw_audio_frame_len_in_secs=self.RAW_AUDIO_FRAME_LEN_IN_SECS,
+            buffer_size=self.server_config.stt.get("buffer_size", 5),  # FC has 80ms frame, which is 5 * 16ms
         )
 
     def _configure_diarization(self):

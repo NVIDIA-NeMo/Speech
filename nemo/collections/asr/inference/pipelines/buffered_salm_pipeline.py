@@ -31,6 +31,7 @@ from nemo.collections.asr.inference.streaming.framing.request_options import ASR
 from nemo.collections.asr.inference.streaming.state.salm_state import SALMStreamingState
 from nemo.collections.asr.inference.utils.enums import ASROutputGranularity, RequestType
 from nemo.collections.asr.inference.utils.lcs_merge import lcs_merge
+from nemo.utils.decorators import experimental
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
@@ -53,8 +54,9 @@ def parse_hyp(answer: torch.Tensor, eos_tokens: list[int]):
     return answer[:end]
 
 
-class BufferedSALMAEDPipeline(BasePipeline):
-    """Buffered SALM AED pipeline."""
+@experimental
+class BufferedSALMPipeline(BasePipeline):
+    """Buffered SALM pipeline."""
 
     def __init__(
         self,
@@ -64,7 +66,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
         nmt_model: LLMTranslator | None = None,
     ):
         """
-        Initialize the BufferedSALMAEDPipeline.
+        Initialize the BufferedSALMPipeline.
         Args:
             cfg: (DictConfig) Configuration parameters.
             asr_model: (SALMASRInferenceWrapper) ASR model.
@@ -107,7 +109,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
         if self.request_type is RequestType.FEATURE_BUFFER:
-            raise ValueError("Feature buffer request type is not supported for SALM AED pipeline")
+            raise ValueError("Feature buffer request type is not supported for SALM pipeline")
 
         self.prompts = [[{"role": "user", "content": f"Transcribe the following: {self.asr_model.audio_locator_tag}"}]]
         self.tokens = self.asr_model.preprocess_prompts(self.prompts)
@@ -225,7 +227,7 @@ class BufferedSALMAEDPipeline(BasePipeline):
         Args:
             fbuffers: (list[FeatureBuffer]) List of feature buffers to transcribe.
         """
-        raise NotImplementedError("Feature buffer request type is not supported for SALM AED pipeline")
+        raise NotImplementedError("Feature buffer request type is not supported for SALM pipeline")
 
     def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
         """

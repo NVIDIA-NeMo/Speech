@@ -6,7 +6,7 @@ On this page, we’ll look into how NeMo works, providing you with a solid found
 NeMo Models
 -----------
 
-NVIDIA NeMo is a powerful framework for building and deploying neural network models, including those used in generative AI, speech recognition, and natural language processing. NeMo stands for “Neural Modules,” which are the building blocks of the models created using this platform. NeMo includes all of the following components wrapped into a singular, cohesive unit:
+NVIDIA NeMo is a powerful framework for building and deploying neural network models, including those used in generative AI, speech recognition, and speech synthesis. NeMo stands for “Neural Modules,” which are the building blocks of the models created using this platform. NeMo includes all of the following components wrapped into a singular, cohesive unit:
 
 * neural network architecture
 

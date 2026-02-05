@@ -3,18 +3,16 @@ NVIDIA NeMo Framework Developer Docs
 
 NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build, customize, and deploy generative AI models anywhere.
 
-`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ supports large-scale training features, including:
+`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ key capabilities include:
 
-- Mixed Precision Training
-- Parallelism
-- Distributed Optimizer
-- Fully Sharded Data Parallel (FSDP)
-- Flash Attention
-- Activation Recomputation
-- Positional Embeddings and Positional Interpolation
-- Post-Training Quantization (PTQ) and Quantization Aware Training (QAT) with `Model Optimizer <https://github.com/NVIDIA/Model-Optimizer>`_
-- Knowledge Distillation-based training with `Model Optimizer <https://github.com/NVIDIA/Model-Optimizer>`_
-- Sequence Packing
+- Leaderboard-topping ASR models: Parakeet, Canary, FastConformer
+- Production-ready TTS with MagpieTTS
+- Speech Language Models (SpeechLM2): SALM, Duplex Speech-to-Speech
+- Streaming speaker diarization with Sortformer
+- HuggingFace Transformers integration for backbone LLMs
+- GPU-accelerated ASR decoding algorithms
+- Multi-GPU/multi-node training with mixed precision
+- Comprehensive Speech AI tools: forced alignment, data exploration, CTC segmentation
 
 `NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for:
 
@@ -41,6 +39,7 @@ For quick guides and tutorials, see the "Getting started" section below.
 
    starthere/intro
    starthere/fundamentals
+   starthere/best-practices
    starthere/tutorials
 
 For more information, browse the developer docs for your area of interest in the contents section below or on the left sidebar.
@@ -48,13 +47,11 @@ For more information, browse the developer docs for your area of interest in the
 
 .. toctree::
    :maxdepth: 1
-   :caption: Key Optimizations
-   :name: Key Optimizations
+   :caption: Training
+   :name: Training
 
-   features/mixed_precision
    features/parallelisms
-   features/moe
-   features/optimizations/index
+   features/mixed_precision
 
 .. toctree::
    :maxdepth: 1

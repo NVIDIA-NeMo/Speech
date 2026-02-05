@@ -50,25 +50,17 @@ class SALMASRInferenceWrapper:
 
     @property
     def eos_token_ids(self) -> list[int]:
-        """
-        Returns the end of sentence token ids if there are multiple.
-        """
+        """Returns the end of sentence token ids."""
         return [self.salm_model.text_eos_id]
 
     @property
     def word_separator(self) -> str:
-        """
-        Returns word separator.
-        Returns:
-            (str) word separator.
-        """
+        """Returns word separator."""
         return ' '
 
     @property
     def word_separator_ids(self) -> list[int]:
-        """
-        Returns the word separator token ids.
-        """
+        """Returns the word separator token ids."""
         return self.tokenizer.text_to_ids(self.word_separator)
 
     @staticmethod

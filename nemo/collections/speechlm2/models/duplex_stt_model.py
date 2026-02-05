@@ -1113,6 +1113,48 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return ans, inference_state
 
+    def _maybe_apply_forced_turn_taking(self, t, inference_state, is_prompt_position):
+        """Apply forced turn-taking rules based on ASR channel tokens."""
+        if not self.cfg.get("force_turn_taking", False):
+            return
+
+        threshold = self.cfg.get("force_turn_taking_threshold", 40)
+        pad_window_steps = self.cfg.get("force_turn_taking_pad_window", 25)
+
+        for batch_idx in range(inference_state["B"]):
+            if is_prompt_position[batch_idx]:
+                continue
+
+            lookback_start = max(0, t - threshold)
+            agent_text_window = inference_state["gen_text"][batch_idx, lookback_start:t]
+            current_asr_token = inference_state["gen_asr"][batch_idx, t]
+
+            # ASR EOS or ~1 sec of pad tokens → insert agent BOS if not present in window
+            # Skip if we don't have enough tokens at the beginning
+            if t < pad_window_steps:
+                continue
+
+            pad_lookback_start = t - pad_window_steps
+            asr_recent_tokens = inference_state["gen_asr"][batch_idx, pad_lookback_start:t]
+            has_pad_window = (asr_recent_tokens == self.text_pad_id).all() if len(asr_recent_tokens) > 0 else False
+
+            # Require that the pad window starts after a non-pad token
+            if has_pad_window and pad_lookback_start > 0:
+                token_before_window = inference_state["gen_asr"][batch_idx, pad_lookback_start - 1]
+                has_pad_window = (token_before_window != self.text_pad_id)
+            elif has_pad_window and pad_lookback_start == 0:
+                # If the pad window starts at position 0, it doesn't meet the requirement
+                has_pad_window = False
+
+            if (current_asr_token == self.tokenizer.eos or has_pad_window):
+                # User has finished talking or remains silent for a while
+                if not (agent_text_window == self.text_bos_id).any():
+                    inference_state["gen_text"][batch_idx, t] = self.text_bos_id
+            elif current_asr_token == self.user_bos_id:
+                # User has started talking but agent has not stopped yet
+                if not (agent_text_window == self.text_eos_id).any():
+                    inference_state["gen_text"][batch_idx, t] = self.text_eos_id
+
     def _step_inference(self, t, inference_state, ans, force_bos_positions):
         """Perform inference for one step t in the autoregressive loop."""
         last_emb = self.embed_tokens(inference_state["gen_text"][:, t - 1]) * self.cfg.get(
@@ -1174,6 +1216,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 inference_state["gen_asr"][:, t] = torch.where(
                     is_prompt_position, inference_state["gen_asr"][:, t], generated_asr
                 )
+                self._maybe_apply_forced_turn_taking(t, inference_state, is_prompt_position)
 
         return ans
 

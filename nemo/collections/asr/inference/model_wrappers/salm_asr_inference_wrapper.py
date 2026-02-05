@@ -27,11 +27,20 @@ class SALMASRInferenceWrapper:
         compute_dtype: str = 'bfloat16',
         use_amp: bool = True,
     ):
+        """
+        Initialize the SALM ASR inference wrapper.
+        Args:
+            model_name: (str) model name at Hugging Face or NGC cloud.
+            device: (str) device to run the model on.
+            device_id: (int) device ID to run the model on.
+            compute_dtype: (str) compute dtype to run the model on.
+            use_amp: (bool) Use Automatic Mixed Precision
+        """
 
         self.device_str, self.device_id, self.compute_dtype = setup_device(device.strip(), device_id, compute_dtype)
         self.use_amp = use_amp
-        self.salm_model = self.load_model(model_name, self.device_str)
-        self.device = self.salm_model.device
+        self.device = torch.device(self.device_str)
+        self.salm_model = self.load_model(model_name, self.device)
         self.audio_locator_tag = self.salm_model.audio_locator_tag
         self.tokenizer = self.salm_model.tokenizer
         self.set_dither_to_zero()
@@ -56,18 +65,29 @@ class SALMASRInferenceWrapper:
             (SALM) loaded SALM model.
         """
         try:
-            model = SALM.from_pretrained(model_name, map_location=device).eval()
+            model = SALM.from_pretrained(model_name).eval()
+            model.to(device)
             return model
         except Exception as e:
             raise RuntimeError(f"Failed to load model {model_name}: {str(e)}")
 
     def get_window_stride(self) -> float:
+        """Returns the window stride of the model."""
         return self.salm_model.cfg.perception.preprocessor.window_stride
 
     def get_subsampling_factor(self) -> int:
+        """Returns the subsampling factor of the model."""
         return self.salm_model.cfg.perception.encoder.subsampling_factor
 
     def get_model_stride(self, in_secs: bool = False, in_milliseconds: bool = False) -> float:
+        """
+        Returns the model stride in seconds or milliseconds.
+        Args:
+            in_secs: (bool) Whether to return the model stride in seconds.
+            in_milliseconds: (bool) Whether to return the model stride in milliseconds.
+        Returns:
+            (float) model stride in seconds or milliseconds.
+        """
         if in_secs and in_milliseconds:
             raise ValueError("Cannot return both seconds and milliseconds at the same time.")
         token_duration = self.salm_model.token_equivalent_duration
@@ -78,10 +98,21 @@ class SALMASRInferenceWrapper:
         return token_duration
 
     def set_dither_to_zero(self) -> None:
+        """Sets the dither to zero."""
         self.salm_model.cfg.perception.preprocessor.dither = 0.0
         self.salm_model.perception.preprocessor.featurizer.dither = 0.0
 
     def generate(self, prompts, audios, audio_lens, max_new_tokens: int = 128) -> torch.Tensor:
+        """
+        Generate the model output.
+        Args:
+            prompts: (list[list[dict[str]]]) List of prompts.
+            audios: (torch.Tensor) Audio tensor.
+            audio_lens: (torch.Tensor) Audio length tensor.
+            max_new_tokens: (int) Maximum number of new tokens to generate.
+        Returns:
+            (torch.Tensor) Model output.
+        """
         with (
             torch.amp.autocast(device_type=self.device_str, dtype=self.compute_dtype, enabled=self.use_amp),
             torch.inference_mode(),
@@ -94,18 +125,3 @@ class SALMASRInferenceWrapper:
                 max_new_tokens=max_new_tokens,
             )
         return answer_ids
-
-    def ids_to_text(self, ids: torch.Tensor) -> list[str]:
-        """
-        Convert token ids to text.
-        Args:
-            ids: (torch.Tensor) Token ids to convert to text of size (batch_size, sequence_length).
-        Returns:
-            (list[str]) List of text strings.
-        """
-        texts = []
-        for b in range(ids.size(0)):
-            texts.append(
-                self.tokenizer.ids_to_text(ids[b].cpu().tolist())
-            )
-        return texts

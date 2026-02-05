@@ -36,7 +36,7 @@ class ASRDecodingType(StrEnumMixin, Enum):
 
     CTC = auto()
     RNNT = auto()
-    SALM_AED = auto()
+    SALM = auto()
 
 
 class ASROutputGranularity(StrEnumMixin, Enum):

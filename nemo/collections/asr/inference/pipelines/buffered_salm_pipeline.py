@@ -38,6 +38,14 @@ if TYPE_CHECKING:
 
 
 def parse_hyp(answer: torch.Tensor, eos_tokens: list[int]):
+    """
+    Parse the hypothesis. Extract the tokens before the EOS tokens.
+    Args:
+        answer: (torch.Tensor) Answer tensor.
+        eos_tokens: (list[int]) EOS tokens.
+    Returns:
+        (torch.Tensor) Parsed hypothesis.
+    """
     end = torch.isin(answer, torch.tensor(eos_tokens)).nonzero(as_tuple=True)[0]
     if end.numel() == 0:
         return answer
@@ -194,7 +202,6 @@ class BufferedSALMAEDPipeline(BasePipeline):
             if frame.is_last:
                 state.final_transcript = self.asr_model.tokenizer.ids_to_text(state.tokens)
                 state.partial_transcript = ""
-                print(state.final_transcript)
             else:
                 all_tokens = state.tokens.copy()
                 if len(state.incomplete_segment_tokens) > 0:
@@ -213,8 +220,6 @@ class BufferedSALMAEDPipeline(BasePipeline):
                     state.partial_transcript = self.asr_model.tokenizer.ids_to_text(all_tokens)
                 else:
                     state.partial_transcript = ""
-
-                print(state.partial_transcript)
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

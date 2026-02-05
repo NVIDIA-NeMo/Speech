@@ -99,7 +99,7 @@ class BaseBuilder:
                 asr_class = CTCInferenceWrapper
             case (ASRDecodingType.RNNT, PipelineType.BUFFERED):
                 asr_class = RNNTInferenceWrapper
-            case (ASRDecodingType.SALM_AED, PipelineType.BUFFERED):
+            case (ASRDecodingType.SALM, PipelineType.BUFFERED):
                 asr_class = SALMASRInferenceWrapper
                 # remove decoding_cfg, SALM AED does not use decoding_cfg yet
                 model_params.pop("decoding_cfg")

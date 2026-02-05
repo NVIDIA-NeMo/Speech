@@ -56,7 +56,7 @@ endpointing:
 # ========================
 streaming:
   sample_rate: 16000                          # Audio sample rate in Hz
-  batch_size: 64                              # Number of audio frames per batch
+  batch_size: 256                             # Number of audio frames per batch
   buffer_size: 4.0                            # Buffer size in seconds
   chunk_size: 2.0                             # Audio chunk size in seconds
   overlap_size: 2.0                           # Overlap size in seconds
@@ -70,7 +70,7 @@ streaming:
 matmul_precision: high                        # Matrix multiplication precision: highest, high, medium
 log_level: 20                                 # Logging level: 0 (NOTSET), 10 (DEBUG), 20 (INFO), 30 (WARNING), 40 (ERROR), 50 (CRITICAL)
 pipeline_type: buffered                       # Pipeline type: buffered, cache_aware
-asr_decoding_type: salm_aed                   # Decoding method: aed
+asr_decoding_type: salm                       # Decoding method: aed
 
 
 # ========================

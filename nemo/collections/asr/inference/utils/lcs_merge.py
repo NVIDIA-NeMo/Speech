@@ -16,6 +16,7 @@
 def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, int, int]:
     """
     Find the longest common substring between two lists of integers.
+    If there are multiple LCSs, return the rightmost one in the buffer.
     Args:
         buffer: (list[int]) The buffer of tokens.
         data: (list[int]) The new tokens to merge with the buffer.
@@ -23,9 +24,6 @@ def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, i
         (tuple[int, int, int]) The start and end indices of the longest common substring and its length.
     """
     n, m = len(buffer), len(data)
-
-    # dp[i][j] = length of longest common substring
-    # ending at buffer[i-1] and data[j-1]
     dp = [[0] * (m + 1) for _ in range(n + 1)]
 
     max_len = 0
@@ -36,8 +34,11 @@ def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, i
             if buffer[i - 1] == data[j - 1]:
                 dp[i][j] = dp[i - 1][j - 1] + 1
 
-                # Rightmost preference:
-                if dp[i][j] > max_len or (dp[i][j] == max_len and (i > end_i or (i == end_i and j > end_j))):
+                # Logic:
+                # 1. If we find a strictly longer substring, take it.
+                # 2. If it's the same length, update if this occurrence
+                #    ends further right in the buffer (larger i).
+                if dp[i][j] > max_len or (dp[i][j] == max_len and i >= end_i):
                     max_len = dp[i][j]
                     end_i = i
                     end_j = j
@@ -47,10 +48,7 @@ def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, i
     if max_len == 0:
         return -1, -1, 0
 
-    buf_start = end_i - max_len
-    data_start = end_j - max_len
-
-    return buf_start, data_start, max_len
+    return end_i - max_len, end_j - max_len, max_len
 
 
 def lcs_merge(

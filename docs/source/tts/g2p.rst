@@ -126,7 +126,7 @@ Using this unknown token forces a G2P model to produce the same masking token as
 Requirements
 ------------
 
-G2P requires the NeMo ASR collection to be installed. See `Installation instructions <https://docs.nvidia.com/nemo-framework/user-guide/latest/installation.html>`__ for more details.
+G2P requires the NeMo ASR collection to be installed (``pip install nemo_toolkit[asr]``).
 
 
 References

@@ -19,7 +19,7 @@ import tempfile
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import torchaudio
+import soundfile as sf
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from peft import PeftModel
@@ -71,7 +71,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         cfg = DictConfig(cfg)
         self.cfg = cfg.model
-        self.target_sample_rate = cfg.data.target_sample_rate
         self.source_sample_rate = cfg.data.source_sample_rate
         self.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
 
@@ -759,7 +758,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 asr_hyps=None,
                 samples_id=dataset_batch['sample_id'],
                 pred_audio=None,
-                pred_audio_sr=self.target_sample_rate,
                 user_audio=dataset_batch["source_audio"],
                 user_audio_sr=self.source_sample_rate,
                 src_refs=dataset_batch["source_texts"],
@@ -933,8 +931,14 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         """Initialize inference resources and prepare inputs."""
         if self.cfg.get("custom_sample_inference", None):
             device = input_signal.device
-            input_signal, sr = torchaudio.load(self.cfg.custom_sample_inference)
-            input_signal = input_signal.to(device)[:1, :]
+            audio, sr = sf.read(self.cfg.custom_sample_inference)
+            # sf.read returns (samples,) for mono or (samples, channels) for stereo
+            # Convert to (channels, samples) format
+            if audio.ndim == 1:
+                audio = audio[None, :]  # Add channel dimension for mono
+            else:
+                audio = audio.T  # Transpose to (channels, samples) for stereo
+            input_signal = torch.from_numpy(audio).float().to(device)[:1, :]
             input_signal = resample(input_signal, sr, self.source_sample_rate)
             input_signal_lens = torch.tensor([input_signal.size(-1)]).to(device)
 
@@ -1282,8 +1286,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             "inputs": [
                 {"name": "source_audio", "type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input"},
                 {"name": "source_audio_lens", "type": NeuralType(("B",), LengthsType()), "seq_length": "input"},
-                {"name": "target_audio", "type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input"},
-                {"name": "target_audio_lens", "type": NeuralType(("B",), LengthsType()), "seq_length": "input"},
                 {
                     "name": "target_tokens",
                     "type": NeuralType(("B", "T"), LabelsType()),

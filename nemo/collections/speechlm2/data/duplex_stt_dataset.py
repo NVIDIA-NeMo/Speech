@@ -384,6 +384,10 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         import soundfile as sf
         from lhotse import AudioSource
 
+        assert (
+            'target_audio' in cut.custom
+        ), f"Role swapping requires target_audio in cut.custom, but cut {cut.id} does not have it. Disable aug_by_swap_role or ensure your data includes target audio."
+
         swapped_supervisions = []
         for sup in cut.supervisions:
             if sup.speaker == 'User':

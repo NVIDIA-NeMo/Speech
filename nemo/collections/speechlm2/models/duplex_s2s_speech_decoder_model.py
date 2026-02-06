@@ -285,9 +285,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm, self.speech_generation):
             if is_frozen(m):
                 m.eval()
-        # Extract audio_data from new batch format
-        if batch.get("audio_data") is not None:
-            batch = batch["audio_data"]
         inputs = self.prepare_inputs(batch)
         forward_outputs = self(
             inputs["input_embeds"],
@@ -347,10 +344,6 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
                 continue  # some dataset is exhausted
-
-            # Extract audio_data from new batch format
-            if isinstance(dataset_batch, dict) and dataset_batch.get("audio_data") is not None:
-                dataset_batch = dataset_batch["audio_data"]
 
             results = self.offline_inference(
                 dataset_batch["source_audio"],

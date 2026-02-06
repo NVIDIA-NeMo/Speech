@@ -450,7 +450,7 @@ def build_tar_index_from_s3(tar_s3_path, chunk_size=512 * 1024):
             break
 
         # Get the 512-byte header from buffer
-        header = buffer[buffer_offset:buffer_offset + 512]
+        header = buffer[buffer_offset : buffer_offset + 512]
 
         # Check for end-of-archive marker (two consecutive zero blocks)
         if header[:100] == b'\x00' * 100:
@@ -476,7 +476,9 @@ def build_tar_index_from_s3(tar_s3_path, chunk_size=512 * 1024):
         # Move to next header: current header (512) + data (size rounded up to 512)
         offset += 512 + ((size + 511) // 512) * 512
 
-    logging.info(f"Tar index built: {len(index) // 2} files, {num_requests} requests, {total_bytes_downloaded/1024:.1f} KB downloaded")
+    logging.info(
+        f"Tar index built: {len(index) // 2} files, {num_requests} requests, {total_bytes_downloaded/1024:.1f} KB downloaded"
+    )
     return index
 
 
@@ -942,7 +944,9 @@ def load_data(
                     data[-1]['D'] = measures['deletions']
                     data[-1]['D-I'] = measures['deletions'] - measures['insertions']
                 if estimate_audio:
-                    signal, sr = load_audio_data(item['audio_filepath'], audio_base_path, tar_base_path, shard_index, dali_index_base)
+                    signal, sr = load_audio_data(
+                        item['audio_filepath'], audio_base_path, tar_base_path, shard_index, dali_index_base
+                    )
                     bw = eval_bandwidth(signal, sr)
                     item['freq_bandwidth'] = int(bw)
                     item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))

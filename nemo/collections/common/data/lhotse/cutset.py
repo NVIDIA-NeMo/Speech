@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
 import io
 import logging
@@ -28,6 +29,7 @@ import soundfile as sf
 from lhotse import CutSet, Features, MonoCut, Recording, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
+from lhotse.lazy import LazyIteratorChain
 from lhotse.serialization import load_yaml
 from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -35,6 +37,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyNeMoIterator,
     LazyNeMoTarredIterator,
+    LazyParquetIterator,
     expand_sharded_filepaths,
 )
 from nemo.collections.common.data.lhotse.text_adapters import (
@@ -59,6 +62,7 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
     # First, check if the dataset is specified in the new configuration format and use it if possible.
     if not isinstance(config, DictConfig):
         config = DictConfig(config)
+
     if config.get("input_cfg") is not None:
         cuts, is_tarred = read_dataset_config(config)
     else:
@@ -238,7 +242,9 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
 
 @data_type_parser("txt")
 def read_txt_paths(config: DictConfig) -> tuple[CutSet, bool]:
-    """Read paths to text files and create a CutSet."""
+    """
+    Read paths to text files and create a CutSet.
+    """
     cuts = CutSet(
         LhotseTextAdapter(
             paths=config.paths,
@@ -300,11 +306,12 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             system_prompt=config.get("tags", {}).get("system_prompt"),
+            context=config.get("tags", {}).get("context"),
             slice_length=config.get("slice_length"),
         )
     )
     if not config.get("force_finite", False):
-        cuts = cuts.repeat(preserve_id=True)
+        cuts = cuts.repeat()
     return cuts, True
 
 
@@ -352,7 +359,8 @@ def parse_and_combine_datasets(
     tarred_status = []
 
     if isinstance(config_list, (str, Path)):
-        # Resolve local filepath /path/to/input_cfg.yaml or remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
+        # Resolve local filepath /path/to/input_cfg.yaml or
+        # remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
         config_list = OmegaConf.create(load_yaml(config_list))
     assert len(config_list) > 0, "Empty group in dataset config list."
 
@@ -431,7 +439,6 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
         if isinstance(config.shar_path, (str, Path)):
-            logging.info(f"Initializing Lhotse Shar CutSet (tarred) from a single data source: '{config.shar_path}'")
             cuts = CutSet.from_shar(
                 **_resolve_shar_inputs(config.shar_path, metadata_only),
                 shuffle_shards=True,
@@ -443,10 +450,6 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         elif isinstance(config.shar_path, Sequence):
             # Multiple datasets in Lhotse Shar format: we will dynamically multiplex them
             # with probability approximately proportional to their size
-            logging.info(
-                "Initializing Lhotse Shar CutSet (tarred) from multiple data sources with a weighted multiplexer. "
-                "We found the following sources and weights: "
-            )
             cutsets = []
             weights = []
             for item in config.shar_path:
@@ -473,7 +476,6 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         seed=shard_seed,
                         slice_length=config.get("slice_length", None),
                     )
-                logging.info(f"- {path=} {weight=}")
                 cutsets.append(cs)
                 weights.append(weight)
 
@@ -511,6 +513,70 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         path = config.cuts_path
         cuts = CutSet.from_file(path).map(partial(resolve_relative_paths, manifest_path=path))
     return cuts, is_tarred
+
+
+@data_type_parser(["parquet"])
+def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
+    """
+    Read paths to Parquet files and create a CutSet.
+
+    Config options:
+    - manifest_filepath: path to .parquet file (or list of paths)
+    - audio_field: column name for audio (default: "audio")
+    - text_field: column name for text (default: "text")
+    - duration_field: column name for duration (default: "duration")
+    - lang_field: column name for language (default: "lang")
+    - sampling_rate: default sampling rate if not present (default: 16000)
+    - shuffle: whether to shuffle shards (default: False)
+    - shard_seed: seed for shuffling (default: "trng")
+    """
+    # 1. Get the path(s)
+    paths = config.manifest_filepath
+    if isinstance(paths, str):
+        paths = [paths]
+
+    # 2. Extract config options with defaults
+    audio_field = config.get("audio_field", "audio")
+    text_field = config.get("text_field", "text")
+    duration_field = config.get("duration_field", "duration")
+    lang_field = config.get("lang_field", "lang")
+    sampling_rate = config.get("sampling_rate", 16000)
+
+    # Extract shuffling options (CRITICAL for distributed training)
+    shuffle_shards = config.get("shuffle", False)
+    shard_seed = config.get("shard_seed", "trng")
+
+    # 3. Create Iterators for each file
+    iterators = []
+    for path in paths:
+        logging.info(f"Initializing Lhotse Parquet Iterator: '{path}'")
+        adapter = LazyParquetIterator(
+            path=path,
+            audio_field=audio_field,
+            text_field=text_field,
+            duration_field=duration_field,
+            lang_field=lang_field,
+            sampling_rate=sampling_rate,
+        )
+        iterators.append(adapter)
+
+    # 4. Chain them together using Lhotse's lazy chaining
+    if len(iterators) == 1:
+        source = iterators[0]
+    else:
+        # This handles shuffling the order of .parquet files for multi-GPU training
+        # as requested by pzelasko
+        source = LazyIteratorChain(*iterators, shuffle_iters=shuffle_shards, seed=shard_seed)
+
+    # 5. Create the final CutSet
+    cuts = CutSet(source)
+
+    # 6. Handle infinite looping if requested
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+
+    # Return cuts + is_tarred=True (since it's a stream, we treat it like tarred)
+    return cuts, True
 
 
 def cut_to_conversation(
@@ -737,6 +803,53 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
 @data_type_parser(["lhotse_as_conversation"])
 def read_lhotse_as_conversation(config) -> tuple[CutSet, bool]:
+    """
+    Conversion parser for regular ASR data.
+    Intended for converting ASR data in NeMo or Lhotse manifests from Lhotse Cut into NeMoMultimodalConversation.
+    The examples for multimodal LLM are constructed to present an optional "context" field and the acoustic representation as input,
+    and predict "text".
+
+    Example of original data JSON in NeMo manifest format::
+
+        {
+          "audio_filepath": "/path/to/audio.wav",
+          "duration": 3.48,
+          "text": "Of exclusive national competence, let me assure you".
+          "lang": "en",
+          "context": "Transcribe the following:",
+        }
+
+    Same example in Lhotse manifest format::
+
+        {
+          "id": "some-id-0",
+          "recording": {
+            "id": "some-id-0",
+            "sources": [
+              "type": "path",
+              "source": "/path/to/audio.wav",
+              "channel_ids": [0],
+            ],
+            "sampling_rate": 16000,
+            "duration": 3.48,
+            "num_samples": 55680,
+          },
+          "supervisions": [
+            "id": "some-id-0",
+            "start": 0.0,
+            "duration": 3.48,
+            "channel": 0,
+            "text": "Of exclusive national competence, let me assure you".
+            "language": "en",
+          ],
+          "start": 0.0,
+          "duration": 3.48,
+          "channel": 0,
+          "custom": {
+            "context": "Transcribe the following:",
+          }
+        }
+    """
     cuts, is_tarred = read_cutset_from_config(config)
     # Attach extra tags to every utterance dynamically, if provided.
     # We need to attach them before cuts are converted to conversations.
@@ -745,6 +858,99 @@ def read_lhotse_as_conversation(config) -> tuple[CutSet, bool]:
     cuts = cuts.map(
         partial(
             cut_to_conversation,
+            audio_locator_tag=config.audio_locator_tag,
+            token_equivalent_duration=config.token_equivalent_duration,
+        )
+    )
+    return cuts, is_tarred
+
+
+def sqa_cut_to_conversation(
+    cut: Cut, audio_locator_tag: str, token_equivalent_duration: float
+) -> NeMoMultimodalConversation:
+    """
+    Converts a lhotse Cut representing a SQA example into a NeMoMultimodalConversation.
+
+    The ``cut`` is expected to have ``question`` and ``answer`` fields.
+    """
+    if isinstance(cut, NeMoMultimodalConversation):
+        return cut
+    turns = [
+        TextTurn(value=cut.question, role="user"),
+        AudioTurn(cut=cut, role="user", audio_locator_tag=audio_locator_tag, text=getattr(cut, "text", "")),
+        TextTurn(value=cut.answer, role="assistant"),
+    ]
+    if hasattr(cut, "context"):
+        turns = [TextTurn(value=cut.context, role="user")] + turns
+    if hasattr(cut, "system_prompt"):
+        turns = [TextTurn(value=cut.system_prompt, role="system")] + turns
+    return NeMoMultimodalConversation(
+        id=cut.id,
+        turns=turns,
+        token_equivalent_duration=token_equivalent_duration,
+        custom=cut.custom,
+    )
+
+
+@data_type_parser(["sqa_as_conversation"])
+def read_sqa_as_conversation(config) -> tuple[CutSet, bool]:
+    """
+    Conversion parser for old spoken-question-answering data saved in NeMo format.
+    Intended for converting SQA data in NeMo or Lhotse manifests from Lhotse Cut into NeMoMultimodalConversation.
+    The examples for multimodal LLM are constructed to present "question" + acoustic representation as input,
+    and predict "answer".
+
+    Example of original data JSON in NeMo manifest format::
+
+        {
+          "audio_filepath": "/path/to/audio.wav",
+          "duration": 3.48,
+          "text": "Of exclusive national competence, let me assure you".
+          "lang": "en",
+          "question": "What is the nature of the competence described in the context?",
+          "answer": "The context mentions \"exclusive national competence\", indicating that the competence in question is solely within the authority of a nation.",
+        }
+
+    Same example in Lhotse manifest format::
+
+        {
+          "id": "some-id-0",
+          "recording": {
+            "id": "some-id-0",
+            "sources": [
+              "type": "path",
+              "source": "/path/to/audio.wav",
+              "channel_ids": [0],
+            ],
+            "sampling_rate": 16000,
+            "duration": 3.48,
+            "num_samples": 55680,
+          },
+          "supervisions": [
+            "id": "some-id-0",
+            "start": 0.0,
+            "duration": 3.48,
+            "channel": 0,
+            "text": "Of exclusive national competence, let me assure you".
+            "language": "en",
+          ],
+          "start": 0.0,
+          "duration": 3.48,
+          "channel": 0,
+          "custom": {
+            "question": "What is the nature of the competence described in the context?",
+            "answer": "The context mentions \"exclusive national competence\", indicating that the competence in question is solely within the authority of a nation.",
+          }
+        }
+    """
+    cuts, is_tarred = read_cutset_from_config(config)
+    # Attach extra tags to every utterance dynamically, if provided.
+    # We need to attach them before cuts are converted to conversations.
+    if (extra_tags := config.get("tags")) is not None:
+        cuts = cuts.map(partial(attach_tags, tags=extra_tags), apply_fn=None)
+    cuts = cuts.map(
+        partial(
+            sqa_cut_to_conversation,
             audio_locator_tag=config.audio_locator_tag,
             token_equivalent_duration=config.token_equivalent_duration,
         )
@@ -797,9 +1003,9 @@ def s2s_cut_to_conversation(
         assert (
             len(per_turn_cut.supervisions) >= 1
         ), f"Expected at least one supervision per turn, got none in cut {cut.id}"
-        # If len(per_turn_cut.supervisions) > 1, only the first turn is considered for cut creation
-        # We assume that len(per_turn_cut.supervisions) >= 1 happens because one of the turns is completely contained within
-        # another turn
+        # If len(per_turn_cut.supervisions) > 1, only the first turn is considered for cut creation.
+        # We assume that len(per_turn_cut.supervisions) >= 1 happens because one of the turns
+        # is completely contained within another turn.
         turn_speaker = per_turn_cut.supervisions[0].speaker
         turn_text = per_turn_cut.supervisions[0].text
         if strip_timestamp_tokens:
@@ -814,9 +1020,10 @@ def s2s_cut_to_conversation(
             logging.warning(f"Speaker '{turn_speaker}' not found in user or agent roles for cut {cut.id}")
             return FailedConversion()
         idx += 1
-    if hasattr(cut, "system_prompt") and all(t.role != "system" for t in turns):
+    if hasattr(cut, "context"):
+        turns = [TextTurn(value=cut.context, role="user")] + turns
+    if hasattr(cut, "system_prompt"):
         turns = [TextTurn(value=cut.system_prompt, role="system")] + turns
-
     return NeMoMultimodalConversation(
         id=cut.id,
         turns=turns,
@@ -828,6 +1035,10 @@ def s2s_cut_to_conversation(
 @data_type_parser(["s2s_as_conversation"])
 def read_s2s_as_conversation(config) -> tuple[CutSet, bool]:
     cuts, is_tarred = read_cutset_from_config(config)
+    # Attach extra tags to every utterance dynamically, if provided.
+    # We need to attach them before cuts are converted to conversations.
+    if (extra_tags := config.get("tags")) is not None:
+        cuts = cuts.map(partial(attach_tags, tags=extra_tags), apply_fn=None)
     cuts = cuts.map(
         partial(
             s2s_cut_to_conversation,
@@ -839,13 +1050,6 @@ def read_s2s_as_conversation(config) -> tuple[CutSet, bool]:
         )
     ).filter(lambda ex: not isinstance(ex, FailedConversion))
     return cuts, is_tarred
-
-
-def _resolve_shar_inputs(path: Union[str, Path], only_metadata: bool) -> dict:
-    if only_metadata:
-        return dict(fields={"cuts": sorted(Path(path).glob("cuts.*"))})
-    else:
-        return dict(in_dir=path)
 
 
 def resolve_relative_paths(cut: Cut, manifest_path: str) -> Cut:
@@ -918,10 +1122,6 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     notar_kwargs = {"metadata_only": metadata_only}
     is_tarred = config.get("tarred_audio_filepaths") is not None
     if isinstance(config.manifest_filepath, (str, Path)):
-        logging.info(
-            f"""Initializing Lhotse CutSet from a single NeMo manifest
-            (is_tarred={is_tarred}): '{config.manifest_filepath}'"""
-        )
         if is_tarred and not metadata_only:
             cuts = CutSet(
                 LazyNeMoTarredIterator(
@@ -950,11 +1150,6 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
         # Format option 3:
         #   i.e., NeMo concatenated dataset
         #   Assume it's [path1, path2, ...] (while tarred_audio_filepaths in the same format).
-        logging.info(
-            f"""Initializing Lhotse CutSet from multiple NeMo manifest
-            (is_tarred={is_tarred}) sources with a weighted multiplexer.
-            We found the following sources and weights: """
-        )
         cutsets = []
         weights = []
         tar_paths = config.tarred_audio_filepaths if is_tarred else repeat((None,))
@@ -993,7 +1188,6 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     f"We got: '{manifest_info}'"
                 )
                 weight = manifest_info[1]
-            logging.info(f"- {manifest_path=} {weight=}")
             # [optional] When we have a limit on the number of open streams,
             #   split the manifest to individual shards if applicable.
             #   This helps the multiplexing achieve closer data distribution

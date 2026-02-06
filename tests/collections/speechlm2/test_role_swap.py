@@ -129,6 +129,44 @@ def test_create_role_swapped_cut():
         else:
             assert rms < 0.01, f"Assistant turn '{s.text}' should be silent in STT source, RMS={rms:.4f}"
 
+    # Verify User audio is similar to target audio (880Hz)
+    # Load the original target audio for comparison
+    target_audio = target_rec.to_cut().load_audio().squeeze()
+
+    for s in sups:
+        if s.speaker == 'User':
+            # User turns should be from target_audio (originally Assistant turns)
+            # The original supervisions had these start times: 1.5 (hi there), 4.5 (doing well)
+            # which map to indices 0 and 2 in sups (User turns after swap)
+            start_sample = int(s.start * sampling_rate)
+            end_sample = int((s.start + s.duration) * sampling_rate)
+            segment = audio[start_sample:end_sample]
+            idx = list(sups).index(s)
+
+            original_start_times = {0: 1.5, 2: 4.5}  # map swapped index to original time
+            if idx in original_start_times:
+                orig_start = original_start_times[idx]
+                orig_start_sample = int(orig_start * sampling_rate)
+                orig_end_sample = int((orig_start + s.duration) * sampling_rate)
+                target_segment = target_audio[orig_start_sample:orig_end_sample]
+
+                # Verify lengths match exactly
+                len_diff = abs(len(segment) - len(target_segment))
+                assert len_diff == 0, (
+                    f"User turn '{s.text}' length must match exactly: "
+                    f"segment={len(segment)} samples, "
+                    f"target_segment={len(target_segment)} samples, "
+                    f"diff={len_diff}"
+                )
+
+                # Compute correlation between user audio and target audio
+                # Waveforms should be nearly identical
+                correlation = np.corrcoef(segment, target_segment)[0, 1]
+                assert correlation > 0.999, (
+                    f"User turn '{s.text}' should have nearly identical waveform to target audio. "
+                    f"Correlation={correlation:.6f}, expected > 0.999"
+                )
+
     # Metadata
     assert swapped_cut.custom['role_swapped'] is True
     assert swapped_cut.custom['total_turns'] == 4

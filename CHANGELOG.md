@@ -1,10 +1,14 @@
 # Changelog
 
 <!-- Next changelog -->
-## NVIDIA Neural Modules 2.6.0
+## NVIDIA Neural Modules 2.6.2
+
+### Highlights
+
+- This release addresses known security issues. For the latest NVIDIA Vulnerability Disclosure Information visit <https://www.nvidia.com/en-us/security/>, for acknowledgement please reach out to the NVIDIA PSIRT team at <PSIRT@nvidia.com>
+- Update tutorial on SDE and imports in Audio Notebook
 
 ### Detailed Changelogs:
-
 
 </details>
 
@@ -20,6 +24,7 @@
 - cp: `Clarify when to use TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD (15353)` into `r2.6.0` by @chtruong814 :: PR: #15358
 
 </details>
+
 ## NVIDIA Neural Modules 2.6.1
 
 ### Highlights
@@ -85,7 +90,7 @@
   - Add NeMo Voice Agent [PR](https://github.com/NVIDIA-NeMo/NeMo/pull/14325)
   - Hybrid RNNT-CTC Prompted Parakeet Model support [PR](https://github.com/NVIDIA-NeMo/NeMo/pull/14561)
   - [New] MT-Parakeet Streaming Models [release](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1)
-- Removed the Automodel module. Automodel is available in the repo https://github.com/NVIDIA-NeMo/Automodel.  
+- Removed the Automodel module. Automodel is available in the repo https://github.com/NVIDIA-NeMo/Automodel.
 - Removed the Deploy module. Export & Deploy is available in the repo https://github.com/NVIDIA-NeMo/Export-Deploy.
 - Non-Speech NeMo 2.0 collections are deprecated and will be removed in a later release. Their functionality is available in the Megatron Bridge repo at https://github.com/NVIDIA-NeMo/Megatron-Bridge.
 

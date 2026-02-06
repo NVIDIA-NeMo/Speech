@@ -80,5 +80,5 @@ class MergingStrategy(StrEnumMixin, Enum):
     Enumeration of the tokens merging strategies for the buffered inference.
     """
 
-    LCS = auto() # Longest Common Subsequence
-    LCSUBSTR = auto() # Longest Common Substring
+    LCS = auto()  # Longest Common Subsequence
+    LCSUBSTR = auto()  # Longest Common Substring

@@ -15,6 +15,7 @@
 from nemo.collections.asr.inference.utils.enums import MergingStrategy
 from nemo.collections.asr.parts.utils.streaming_utils import longest_common_subsequence_merge
 
+
 def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, int, int]:
     """
     Find the longest common substring between two lists of integers.
@@ -54,12 +55,12 @@ def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, i
 
 
 def lcs_merge(
-    buffer: list[int], 
-    data: list[int], 
-    search_size: int, 
-    sep_id: list[int] | None = None, 
+    buffer: list[int],
+    data: list[int],
+    search_size: int,
+    sep_id: list[int] | None = None,
     min_lcs_length: int = 1,
-    merging_strategy: MergingStrategy = MergingStrategy.LCSUBSTR
+    merging_strategy: MergingStrategy = MergingStrategy.LCSUBSTR,
 ) -> list[int]:
     """
     Merge the buffer and data using the LCS algorithm.

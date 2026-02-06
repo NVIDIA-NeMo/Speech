@@ -194,3 +194,18 @@ def load_checkpoint(checkpoint_path):
     else:
         checkpoint_state = torch.load(checkpoint_path, map_location="cpu")["state_dict"]
     return checkpoint_state
+
+
+def maybe_load_pretrained_models(model: torch.nn.Module):
+    """
+    Optionally load pretrained model weights based on configuration.
+
+    Checks for and loads:
+    - ``pretrained_perception_from_s2s``: Perception module weights from another S2S checkpoint
+    - ``pretrained_s2s_model``: Full S2S model weights from a checkpoint
+    """
+    if model.cfg.get("pretrained_perception_from_s2s", None):
+        model.init_perception_from_another_stt_checkpoint(model.cfg.pretrained_perception_from_s2s)
+
+    if model.cfg.get("pretrained_s2s_model", None):
+        model.load_pretrained_s2s_model(model.cfg.pretrained_s2s_model)

@@ -37,7 +37,6 @@ from torch.distributed.tensor.parallel import (
 from transformers import DynamicCache
 
 from nemo.collections.audio.parts.utils.transforms import resample
-from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
@@ -53,6 +52,7 @@ from nemo.collections.speechlm2.parts.metrics.wer import WER
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
+    maybe_load_pretrained_models,
     set_model_dict_for_partial_init,
     setup_speech_encoder,
 )
@@ -131,48 +131,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # Load the pretrained streaming ASR model
         setup_speech_encoder(self)
 
-        if self.cfg.get("pretrained_perception_from_s2s", None):
-            self.init_perception_from_another_s2s_checkpoint(self.cfg.pretrained_perception_from_s2s)
-
-        if self.cfg.get("pretrained_s2s_model", None):
-            logging.info(f"Loading pretrained s2s model from {self.cfg.pretrained_s2s_model}")
-            if os.path.isdir(self.cfg.pretrained_s2s_model) and self.cfg.get("incremental_loading", False):
-                # Hugging Face format
-                import gc
-
-                from safetensors import safe_open
-
-                # Load tensors incrementally to avoid OOM
-                model_state_dict = self.state_dict()
-                loaded_keys = []
-                missing_keys = []
-
-                with safe_open(
-                    os.path.join(self.cfg.pretrained_s2s_model, "model.safetensors"), framework="pt", device="cpu"
-                ) as f:
-                    available_keys = f.keys()
-                    for key in available_keys:
-                        if key in model_state_dict:
-                            # Load tensor and copy to model parameter
-                            tensor = f.get_tensor(key)
-                            model_state_dict[key].copy_(tensor)
-                            loaded_keys.append(key)
-                            del tensor  # Free memory immediately
-                        else:
-                            missing_keys.append(key)
-
-                        # Periodic garbage collection for very large models
-                        if len(loaded_keys) % 100 == 0:
-                            gc.collect()
-
-                logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
-                if missing_keys:
-                    logging.warning(f"Keys in checkpoint but not in model: {len(missing_keys)} keys")
-
-                del model_state_dict
-                gc.collect()
-            else:
-                self.init_from_model_from_ckpt(self.cfg.pretrained_s2s_model)
+        maybe_load_pretrained_models(self)
 
         self._use_fsdp = False
         self._use_tp = False
@@ -186,14 +145,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         ):
             self.audio_augmenter = AudioAugmenter(sample_rate=self.source_sample_rate)
 
-    def init_perception_from_another_s2s_checkpoint(self, checkpoint_path):
+    def init_perception_from_another_stt_checkpoint(self, checkpoint_path):
         if checkpoint_path is not None:
-            if '.nemo' in checkpoint_path:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
-                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
-            elif os.path.isdir(checkpoint_path):
+            if os.path.isdir(checkpoint_path):
                 logging.info(f"Loading from HuggingFace format directory: {checkpoint_path}")
                 pretrained_model = self.__class__.from_pretrained(checkpoint_path)
                 checkpoint_state = pretrained_model.state_dict()
@@ -207,14 +161,55 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.perception.state_dict())
             self.perception.load_state_dict(checkpoint_state, strict=True)
 
+    def load_pretrained_s2s_model(self, checkpoint_path):
+        """Load a pretrained S2S model from a checkpoint path.
+
+        Supports both incremental loading from safetensors (for large models to avoid OOM)
+        and standard loading from various checkpoint formats.
+        """
+        import gc
+
+        logging.info(f"Loading pretrained s2s model from {checkpoint_path}")
+
+        if os.path.isdir(checkpoint_path) and self.cfg.get("incremental_loading", False):
+            # Hugging Face format with incremental loading
+            from safetensors import safe_open
+
+            # Load tensors incrementally to avoid OOM
+            model_state_dict = self.state_dict()
+            loaded_keys = []
+            missing_keys = []
+
+            with safe_open(
+                os.path.join(checkpoint_path, "model.safetensors"), framework="pt", device="cpu"
+            ) as f:
+                available_keys = f.keys()
+                for key in available_keys:
+                    if key in model_state_dict:
+                        # Load tensor and copy to model parameter
+                        tensor = f.get_tensor(key)
+                        model_state_dict[key].copy_(tensor)
+                        loaded_keys.append(key)
+                        del tensor  # Free memory immediately
+                    else:
+                        missing_keys.append(key)
+
+                    # Periodic garbage collection for very large models
+                    if len(loaded_keys) % 100 == 0:
+                        gc.collect()
+
+            logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
+            if missing_keys:
+                logging.warning(f"Keys in checkpoint but not in model: {len(missing_keys)} keys")
+
+            del model_state_dict
+            gc.collect()
+        else:
+            self.init_from_model_from_ckpt(checkpoint_path)
+
     def init_from_model_from_ckpt(self, checkpoint_path):
         if checkpoint_path is not None:
-            if '.nemo' in checkpoint_path:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
-                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
-            elif os.path.isdir(checkpoint_path):
+            if os.path.isdir(checkpoint_path):
                 logging.info(f"Loading from HuggingFace format directory: {checkpoint_path}")
                 pretrained_model = self.__class__.from_pretrained(checkpoint_path)
                 checkpoint_state = pretrained_model.state_dict()

@@ -50,9 +50,7 @@ class BufferedPipelineBuilder(BaseBuilder):
         elif asr_decoding_type is ASRDecodingType.SALM:
             return cls.build_buffered_salm_pipeline(cfg)
 
-        raise ValueError(
-            "Invalid asr decoding type for buffered streaming. Need to be one of ['CTC', 'RNNT', 'SALM']"
-        )
+        raise ValueError("Invalid asr decoding type for buffered streaming. Need to be one of ['CTC', 'RNNT', 'SALM']")
 
     @classmethod
     def get_rnnt_decoding_cfg(cls, cfg: DictConfig) -> RNNTDecodingConfig:

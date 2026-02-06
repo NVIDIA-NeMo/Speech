@@ -1,79 +1,19 @@
 model:
   # Every name/path here starting with 'pretrained' is used to initialize the model weights.
   pretrained_llm: TinyLlama/TinyLlama_v1.1
-  pretrained_audio_codec: ???  # to be released
   pretrained_asr: stt_en_fastconformer_hybrid_large_streaming_80ms
   scoring_asr: stt_en_fastconformer_transducer_large  # used only in validation/evaluation
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
 
-  # Regexp (re.compile) patterns matching parameters to be frozen.
-  freeze_params:
-    - "^audio_codec\\..+$"  # Keep audio codec frozen as it only provides supervision for training.
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
-  audio_loss_weight: 4
-  text_loss_weight: 3
-
-  # Note: Uncomment the block below to enable LoRA on LLM via HuggingFace PEFT library.
-  #   It will automatically freeze LLM parameters even if freeze_params was unused,
-  #   and prevent freezing any parameter that has the string '.lora_' in its name.
-  # lora:
-  #   task_type: CAUSAL_LM
-  #   r: 8
-  #   lora_alpha: 32
-  #   lora_dropout: 0.1
+  text_loss_weight: 1.0  # STT model only predicts text, no audio generation
 
   perception:
      target:  nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
-     modality_adapter:
-       _target_: nemo.collections.asr.modules.ConformerEncoder
-       feat_in: 512
-       feat_out: -1 # you may set it if you need different output size other than the default d_model
-       n_layers: 2
-       d_model: 512
-       subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
-       subsampling_factor: 1 # must be power of 2 for striding and vggnet
-       subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
-       causal_downsampling: true
-       ff_expansion_factor: 4
-       self_attention_model: rel_pos # rel_pos or abs_pos
-       n_heads: 8 # may need to be lower for smaller d_models
-       # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
-       att_context_size: [70, 1] # -1 means unlimited context
-       att_context_style: chunked_limited # regular or chunked_limited
-       xscaling: true # scales up the input embeddings by sqrt(d_model)
-       untie_biases: true # unties the biases of the TransformerXL layers
-       pos_emb_max_len: 5000
-       conv_kernel_size: 9
-       conv_norm_type: layer_norm # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
-       # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
-       # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
-       conv_context_size: causal
-       ### regularization
-       dropout: 0 # The dropout used in most of the Conformer Modules
-       dropout_pre_encoder: 0 # The dropout used before the encoder
-       dropout_emb: 0.0 # The dropout used for embeddings
-       dropout_att: 0 # The dropout for multi-headed attention modules
-
-  speech_decoder:
-    n_layers: 12
-    d_model: 768
-    d_ffn: 3072
-    sa_n_heads: 12
-    kernel_size: 3
-    p_dropout: 0.1
-    p_dropout_out: 0.0
-    has_xattn: false
-    xa_d_memory: 768
-    xa_n_heads: 12
-    is_causal: true
-    apply_norm_to_cond: true
-    apply_norm_out: true
-    max_length_causal_mask: 5000
-    cond_on_prev_audio_tokens: True
-    detach_input: False
-    use_learnable_pos_emb: True
+     _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+       d_model: 1024
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -83,7 +23,6 @@ model:
     foreach: true # set to false if having issues with tensor-parallelism
 
   lr_scheduler:
-#    _target_: nemo.core.optim.lr_scheduler.InverseSquareRootAnnealing
     _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
     warmup_steps: 0  #2500
     min_lr: 1e-6
@@ -117,12 +56,11 @@ trainer:
 data:
   frame_length: 0.08
   source_sample_rate: 16000
-  target_sample_rate: 22050
   input_roles: ["user", "User"]
   output_roles: ["agent", "Assistant"]
 
   train_ds:
-    sample_rate: ${data.target_sample_rate}
+    sample_rate: ${data.source_sample_rate}
     input_cfg:
       - type: lhotse_shar
         shar_path: ???
@@ -145,14 +83,14 @@ data:
     datasets:
       val_set_0:  # rename to your dataset name, add more as needed
         shar_path: ???
-    sample_rate: ${data.target_sample_rate}
+    sample_rate: ${data.source_sample_rate}
     batch_size: 1
     seed: 42
     shard_seed: "randomized"
 
 exp_manager:
    exp_dir: null
-   explicit_log_dir: s2s_sdv2_results/
+   explicit_log_dir: duplex_stt_results/
    name: speechlm2
    create_tensorboard_logger: false
    create_checkpoint_callback: true
@@ -168,12 +106,12 @@ exp_manager:
    create_wandb_logger: false
    wandb_logger_kwargs:
      name: development-run
-     project: speechlm2_speech_decoder
+     project: speechlm2_duplex_stt
      resume: true
 
    checkpoint_callback_params:
      filename: "{step}"
-     monitor: val_asr_bleu
+     monitor: val_bleu
      mode: max
      every_n_train_steps: null
      every_n_epochs: 1

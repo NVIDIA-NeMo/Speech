@@ -211,7 +211,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             "formatter": ["s2s_duplex"],
         }
 
-
     def __getitem__(self, all_cuts: CutSet) -> dict:
         cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
         audio_data = None
@@ -376,7 +375,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             "text_data": text_data,
         }
 
-
     def _create_role_swapped_cut(self, cut):
         from io import BytesIO
 
@@ -498,6 +496,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         )
 
         return swapped_cut
+
 
 def _has_valid_input(self, cut: Cut) -> bool:
     return any(s.text.strip() for s in cut.supervisions if s.speaker in self.input_roles)

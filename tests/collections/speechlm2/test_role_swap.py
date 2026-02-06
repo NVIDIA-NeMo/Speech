@@ -87,14 +87,20 @@ def test_create_role_swapped_cut():
         SupervisionSegment(id="s1", recording_id="src", start=0.0, duration=1.0, speaker="User", text="hello"),
         SupervisionSegment(id="s2", recording_id="src", start=1.5, duration=1.0, speaker="Assistant", text="hi there"),
         SupervisionSegment(id="s3", recording_id="src", start=3.0, duration=1.0, speaker="User", text="how are you"),
-        SupervisionSegment(id="s4", recording_id="src", start=4.5, duration=1.0, speaker="Assistant", text="doing well"),
+        SupervisionSegment(
+            id="s4", recording_id="src", start=4.5, duration=1.0, speaker="Assistant", text="doing well"
+        ),
         SupervisionSegment(id="s5", recording_id="src", start=6.0, duration=1.0, speaker="User", text="great"),
         SupervisionSegment(id="s6", recording_id="src", start=7.5, duration=1.0, speaker="Assistant", text="bye"),
     ]
 
     cut = MonoCut(
-        id="test_cut", start=0, duration=total_duration, channel=0,
-        supervisions=supervisions, recording=source_rec,
+        id="test_cut",
+        start=0,
+        duration=total_duration,
+        channel=0,
+        supervisions=supervisions,
+        recording=source_rec,
         custom={'target_audio': target_rec, 'total_turns': 6},
     )
 

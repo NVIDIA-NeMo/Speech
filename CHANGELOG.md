@@ -1,6 +1,25 @@
 # Changelog
 
 <!-- Next changelog -->
+## NVIDIA Neural Modules 2.6.0
+
+### Detailed Changelogs:
+
+
+</details>
+
+#### Uncategorized:
+
+<details><summary>Changelog</summary>
+
+- cp: `Updated tutorial on SDE, due to changes in colab and libraries (15137)` into `r2.6.0` by @chtruong814 :: PR: #15289
+- chore: Bump version to 2.6.2 by @chtruong814 :: PR: #15335
+- cp: `unset weights_only=False (15312)` into `r2.6.0` by @chtruong814 :: PR: #15328
+- cp: Explicitly set torch >= 2.6.0 and remove weights_only=False (#15314) to r2.6.0 by @chtruong814 :: PR: #15337
+- cp: `Update Imports in Audio Notebook (15345)` into `r2.6.0` by @chtruong814 :: PR: #15346
+- cp: `Clarify when to use TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD (15353)` into `r2.6.0` by @chtruong814 :: PR: #15358
+
+</details>
 ## NVIDIA Neural Modules 2.6.1
 
 ### Highlights

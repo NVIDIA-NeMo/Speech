@@ -90,7 +90,7 @@ def lcs_merge(
     if merging_strategy == MergingStrategy.LCSUBSTR:
         i_rel, j_rel, length = longest_common_substring(buffer_slice, data)
     elif merging_strategy == MergingStrategy.LCS:
-        i_rel, j_rel, length = longest_common_subsequence_merge(buffer_slice, data)
+        (i_rel, j_rel, length), _ = longest_common_subsequence_merge(buffer_slice, data)
     else:
         raise ValueError("Invalid merging strategy")
 

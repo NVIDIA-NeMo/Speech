@@ -377,7 +377,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         }
 
 
-def _create_role_swapped_cut(self, cut):
+    def _create_role_swapped_cut(self, cut):
         from io import BytesIO
 
         import numpy as np
@@ -499,8 +499,8 @@ def _create_role_swapped_cut(self, cut):
 
         return swapped_cut
 
-    def _has_valid_input(self, cut: Cut) -> bool:
-        return any(s.text.strip() for s in cut.supervisions if s.speaker in self.input_roles)
+def _has_valid_input(self, cut: Cut) -> bool:
+    return any(s.text.strip() for s in cut.supervisions if s.speaker in self.input_roles)
 
 
 def _collate_token_channel(

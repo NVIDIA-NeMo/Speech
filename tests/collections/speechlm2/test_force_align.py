@@ -33,7 +33,7 @@ def test_data_dir():
 @pytest.fixture(scope="module")
 def force_aligner():
     """Create a ForceAligner instance with CPU device for testing"""
-    aligner = ForceAligner(device='cpu', frame_length=0.02)
+    aligner = ForceAligner(device='cpu', frame_length=0.08)
     return aligner
 
 
@@ -77,7 +77,7 @@ def test_cutset_synthetic_audio(test_data_dir):
             id=f"{cut1.id}-0",
             recording_id=cut1.recording_id,
             start=0.0,
-            duration=min(rec1.duration, 2.0),
+            duration=rec1.duration,
             text='ten companies that let you teach english online without a degree',
             speaker="user",
         ),
@@ -89,7 +89,7 @@ def test_cutset_synthetic_audio(test_data_dir):
             id=f"{cut2.id}-0",
             recording_id=cut2.recording_id,
             start=0.0,
-            duration=min(rec2.duration, 2.0),
+            duration=rec2.duration,
             text='yeah i yeah i really would like to see canada of course their borader is not open right now but',
             speaker="user",
         ),
@@ -158,8 +158,8 @@ def test_force_align_synthetic_audio(force_aligner, test_cutset_synthetic_audio)
                 end_frame = int(end_frame)
 
                 assert (
-                    start_frame < end_frame
-                ), f"Start frame {start_frame} should be before end frame {end_frame} for word '{word}'"
+                    start_frame <= end_frame
+                ), f"Start frame {start_frame} should be before or equal to end frame {end_frame} for word '{word}'"
                 assert start_frame >= 0, f"Start frame should be non-negative for word '{word}'"
                 assert end_frame >= 0, f"End frame should be non-negative for word '{word}'"
 

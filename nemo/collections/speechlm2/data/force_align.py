@@ -14,15 +14,12 @@
 
 import logging
 import multiprocessing as mp
-import os
 import re
-import tempfile
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-import soundfile as sf
 import torch
-from lhotse import CutSet, MonoCut, Seconds, SupervisionSegment
+from lhotse import CutSet
 
 # Use NeMo's force alignment utilities instead of torchaudio
 from nemo.collections.asr.models.asr_model import ASRModel
@@ -110,14 +107,17 @@ class ForceAligner:
 
     def batch_force_align_user_audio(self, cuts: CutSet, source_sample_rate: int = 16000) -> CutSet:
         """
-        Perform batch force alignment on all user audio segments.
+        Perform batched force alignment on all user audio segments.
+
+        Collects all user segments, writes temp files, runs a single batched
+        get_batch_variables + viterbi_decoding call, then maps results back.
 
         Args:
             cuts: CutSet containing all cuts to process
             source_sample_rate: Source sample rate of the audio
 
         Returns:
-            CutSet containing only cuts where force alignment succeeded
+            CutSet with updated supervision texts (timestamped where alignment succeeded)
         """
         if not self._model_loaded:
             self._load_asr_model()
@@ -127,176 +127,131 @@ class ForceAligner:
             logging.warning("ASR model not available for force alignment, returning empty cutset")
             return CutSet.from_cuts([])
 
+        # Collect all user supervisions
         user_supervisions = []
         user_cuts = []
-        cut_to_supervisions = {}
-
         for cut in cuts:
-            user_sups_in_cut = []
             for supervision in cut.supervisions:
                 if supervision.speaker.lower() == "user":
                     user_supervisions.append(supervision)
                     user_cuts.append(cut)
-                    user_sups_in_cut.append(supervision)
-            if user_sups_in_cut:
-                cut_to_supervisions[cut.id] = user_sups_in_cut
 
         if not user_supervisions:
             logging.info("No user supervisions found for force alignment")
             return cuts
 
-        logging.info(f"Performing force alignment on {len(user_supervisions)} user audio segments")
+        logging.info(f"Performing batched force alignment on {len(user_supervisions)} user audio segments")
 
-        # Process alignments
-        success_count = 0
-        failed_count = 0
+        # Prepare all audio arrays and texts for batched processing
+        audio_arrays = []
+        normalized_texts = []
+        valid_indices = []  # track which supervisions have valid audio/text
+        target_sample_rate = 16000
 
         for i, (supervision, cut) in enumerate(zip(user_supervisions, user_cuts)):
             try:
-                start_time = supervision.start
-                duration = supervision.duration
-
-                # Extract user segment audio
-                user_cut = cut.truncate(offset=start_time, duration=duration)
-
-                # Strip timestamps from text
                 text = self._strip_timestamps(supervision.text)
+                normalized_text = self._normalize_transcript(text)
+                if not normalized_text.strip():
+                    logging.warning(f"Text became empty after normalization: {supervision.text}")
+                    continue
 
-                # Get alignment using NeMo utilities
-                alignment_result = self._align_with_nemo(user_cut, text, source_sample_rate)
+                user_cut = cut.truncate(offset=supervision.start, duration=supervision.duration)
+                audio = user_cut.load_audio()
+                if audio.ndim > 1:
+                    audio = audio.mean(axis=0)
 
-                if alignment_result is not None:
-                    # Convert alignment to timestamped text
-                    original_text = supervision.text
-                    timestamped_text = self._convert_alignment_to_timestamped_text(alignment_result, original_text)
-                    supervision.text = timestamped_text
-                    success_count += 1
-                else:
+                if source_sample_rate != target_sample_rate:
+                    from scipy import signal
+
+                    num_samples = int(len(audio) * target_sample_rate / source_sample_rate)
+                    audio = signal.resample(audio, num_samples)
+
+                # Add silence padding for better alignment at the end
+                silence_samples = int(0.64 * target_sample_rate)
+                audio = np.concatenate([audio, np.zeros(silence_samples)])
+
+                audio_arrays.append(audio)
+                normalized_texts.append(normalized_text)
+                valid_indices.append(i)
+            except Exception as e:
+                logging.error(f"Failed to prepare segment {i} for alignment: {e}")
+
+        if not audio_arrays:
+            logging.warning("No valid segments to align")
+            return cuts
+
+        # Batched ASR inference + Viterbi decoding
+        success_count = 0
+        failed_count = 0
+        try:
+            (
+                log_probs_batch,
+                y_batch,
+                T_batch,
+                U_batch,
+                utt_obj_batch,
+                output_timestep_duration,
+            ) = get_batch_variables(
+                audio=audio_arrays,
+                model=self.asr_model,
+                gt_text_batch=normalized_texts,
+                align_using_pred_text=False,
+                output_timestep_duration=self.output_timestep_duration,
+            )
+
+            alignments_batch = viterbi_decoding(
+                log_probs_batch=log_probs_batch,
+                y_batch=y_batch,
+                T_batch=T_batch,
+                U_batch=U_batch,
+                viterbi_device=torch.device(self.device),
+            )
+
+            # Map results back to supervisions
+            for batch_idx, orig_idx in enumerate(valid_indices):
+                try:
+                    if batch_idx >= len(alignments_batch) or batch_idx >= len(utt_obj_batch):
+                        failed_count += 1
+                        continue
+
+                    utt_obj = utt_obj_batch[batch_idx]
+                    if not utt_obj.token_ids_with_blanks:
+                        failed_count += 1
+                        continue
+
+                    alignment = alignments_batch[batch_idx]
+                    utt_obj = add_t_start_end_to_utt_obj(utt_obj, alignment, output_timestep_duration)
+                    word_segments = self._extract_word_timestamps(utt_obj)
+
+                    if word_segments:
+                        timestamped_text = self._convert_alignment_to_timestamped_text(
+                            word_segments, user_supervisions[orig_idx].text
+                        )
+                        user_supervisions[orig_idx].text = timestamped_text
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    logging.error(f"Failed to process alignment for segment {orig_idx}: {e}")
                     failed_count += 1
 
-                # Periodic cleanup
-                if self.device == 'cuda' and torch.cuda.is_available() and (i + 1) % 10 == 0:
-                    torch.cuda.empty_cache()
-
-            except Exception as e:
-                logging.error(f"Failed to align segment {i}: {e}")
-                failed_count += 1
-
-                if self.device == 'cuda' and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+        except Exception as e:
+            logging.error(f"Batched force alignment failed: {e}")
+            failed_count = len(valid_indices)
+        finally:
+            if self.device == 'cuda' and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         if failed_count > 0:
             logging.warning(
                 f"Force alignment failed for {failed_count}/{len(user_supervisions)} user segments. "
-                f"Keeping all cuts with original text for failed alignments."
+                f"Keeping original text for failed alignments."
             )
         else:
             logging.info(f"Force alignment succeeded for all {success_count} user segments.")
 
         return cuts
-
-    def _align_with_nemo(self, cut: MonoCut, text: str, source_sample_rate: int) -> Optional[List[Dict[str, Any]]]:
-        """
-        Perform forced alignment using NeMo ASR model and CTC-based alignment.
-
-        Args:
-            cut: Lhotse MonoCut containing audio segment
-            text: Text transcript (without timestamps)
-            source_sample_rate: Sample rate of the audio
-
-        Returns:
-            List of word segments with timing information, or None if alignment fails
-        """
-        if not text.strip():
-            logging.warning("Empty text for alignment")
-            return None
-
-        # Normalize the text
-        normalized_text = self._normalize_transcript(text)
-        if not normalized_text.strip():
-            logging.warning(f"Text became empty after normalization: {text}")
-            return None
-
-        try:
-            # Load audio from cut
-            audio = cut.load_audio()
-            if audio.ndim > 1:
-                audio = audio.mean(axis=0)  # Convert to mono
-
-            # Resample to 16kHz if needed
-            target_sample_rate = 16000
-            if source_sample_rate != target_sample_rate:
-                # Use scipy for resampling to avoid torchaudio dependency
-                from scipy import signal
-
-                num_samples = int(len(audio) * target_sample_rate / source_sample_rate)
-                audio = signal.resample(audio, num_samples)
-                source_sample_rate = target_sample_rate
-
-            # Add silence padding for better alignment at the end
-            silence_duration = 0.64
-            silence_samples = int(silence_duration * target_sample_rate)
-            audio = np.concatenate([audio, np.zeros(silence_samples)])
-
-            # Save audio to temporary file (NeMo's aligner expects file paths)
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-                tmp_path = tmp_file.name
-                sf.write(tmp_path, audio, target_sample_rate)
-
-            try:
-                # Get alignment using NeMo's viterbi decoding
-                (
-                    log_probs_batch,
-                    y_batch,
-                    T_batch,
-                    U_batch,
-                    utt_obj_batch,
-                    output_timestep_duration,
-                ) = get_batch_variables(
-                    audio=[tmp_path],
-                    model=self.asr_model,
-                    gt_text_batch=[normalized_text],
-                    align_using_pred_text=False,
-                    output_timestep_duration=self.output_timestep_duration,
-                )
-
-                if len(utt_obj_batch) == 0 or len(utt_obj_batch[0].token_ids_with_blanks) == 0:
-                    logging.warning(f"Failed to tokenize text for alignment: {text}")
-                    return None
-
-                # Perform Viterbi decoding
-                alignments_batch = viterbi_decoding(
-                    log_probs_batch=log_probs_batch,
-                    y_batch=y_batch,
-                    T_batch=T_batch,
-                    U_batch=U_batch,
-                    viterbi_device=torch.device(self.device),
-                )
-
-                if len(alignments_batch) == 0:
-                    logging.warning(f"Viterbi decoding returned no alignments for text: {text}")
-                    return None
-
-                # Add timing information to utterance object
-                utt_obj = utt_obj_batch[0]
-                alignment = alignments_batch[0]
-                utt_obj = add_t_start_end_to_utt_obj(utt_obj, alignment, output_timestep_duration)
-
-                # Extract word-level timestamps
-                word_segments = self._extract_word_timestamps(utt_obj)
-
-                return word_segments if word_segments else None
-
-            finally:
-                # Clean up temporary file
-                try:
-                    os.unlink(tmp_path)
-                except Exception as e:
-                    logging.warning(f"Failed to delete temporary file {tmp_path}: {e}")
-
-        except Exception as e:
-            logging.error(f"Failed to align with NeMo: {e}")
-            return None
 
     def _extract_word_timestamps(self, utt_obj) -> List[Dict[str, Any]]:
         """
@@ -318,9 +273,10 @@ class ForceAligner:
                     # Check if this is a Word object (has 'text' and timing attributes)
                     if hasattr(word_or_token, 'text') and hasattr(word_or_token, 't_start'):
                         word = word_or_token
-                        # Only include words with valid timing (t_start and t_end >= 0)
+                        # Skip CTC blank tokens and include only words with valid timing
                         if (
-                            word.t_start is not None
+                            word.text not in ('<b>', '')
+                            and word.t_start is not None
                             and word.t_end is not None
                             and word.t_start >= 0
                             and word.t_end >= 0

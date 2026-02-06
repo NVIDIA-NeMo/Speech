@@ -40,6 +40,7 @@ from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setup_audio_codec, setup_speech_encoder
+from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
@@ -614,98 +615,3 @@ def replace_control_speech_codes(speech_codes: torch.Tensor, control_codes: torc
     assumed to consist of 'valid' codes representing silence.
     """
     return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
-
-
-def tokens_to_str(
-    tokens: torch.Tensor,
-    lengths: torch.Tensor,
-    tokenizer: AutoTokenizer,
-    pad_id: int,
-    user_bos_id: int = None,
-    eval_text_turn_taking: bool = False,
-    show_eot_timestamps: bool = False,
-) -> list[str]:
-    """
-    Convert token IDs to text strings, filtering out special tokens.
-
-    Args:
-        tokens: Token IDs tensor (B, T)
-        lengths: Length of each sequence (B,)
-        tokenizer: Tokenizer for decoding
-        pad_id: Pad token ID to filter out
-        user_bos_id: User BOS token ID to filter out (optional)
-        eval_text_turn_taking: If True, insert timestamps at bos/eos positions
-        show_eot_timestamps: If True, also insert timestamps at end-of-text (first pad after BOS)
-
-    Returns:
-        List of decoded text strings
-    """
-    ans = []
-
-    # Helper function to filter special tokens from token IDs
-    # This filtering is applied regardless of eval_text_turn_taking mode
-    def filter_special_tokens(token_ids):
-        # Filter out pad
-        token_ids = token_ids[token_ids != pad_id]
-        # Filter out agent bos/eos
-        token_ids = token_ids[token_ids != tokenizer.bos]
-        token_ids = token_ids[token_ids != tokenizer.eos]
-        return token_ids
-
-    for _, hyp_ids, hyp_len in zip(tokens.cpu(), tokens.cpu(), lengths.cpu()):
-        if eval_text_turn_taking:
-            # Insert timestamps to the text
-            agent_bos_positions = (hyp_ids == tokenizer.bos).nonzero(as_tuple=True)[0].tolist()
-            agent_eos_positions = (hyp_ids == tokenizer.eos).nonzero(as_tuple=True)[0].tolist()
-
-            # Detect end-of-text (EOT) positions: find first pad after each BOS
-            agent_eot_positions = []
-            if show_eot_timestamps:
-                for bos_pos in agent_bos_positions:
-                    # Find the corresponding EOS position for this BOS
-                    matching_eos = [eos for eos in agent_eos_positions if eos > bos_pos]
-                    end_search_pos = matching_eos[0] if matching_eos else len(hyp_ids)
-
-                    # Search for first pad token after BOS
-                    for pos in range(bos_pos + 1, end_search_pos):
-                        if hyp_ids[pos] == pad_id:
-                            agent_eot_positions.append(pos)
-                            break
-
-            # Combine and sort all positions with their types
-            all_positions = []
-            for pos in agent_bos_positions:
-                all_positions.append((pos, 'bos'))
-            for pos in agent_eos_positions:
-                all_positions.append((pos, 'eos'))
-            for pos in agent_eot_positions:
-                all_positions.append((pos, 'eot'))
-
-            # Sort by position
-            all_positions.sort(key=lambda x: x[0])
-
-            start_idx = 0
-            out_str = []
-            for pos, pos_type in all_positions:
-                text_ids = hyp_ids[start_idx:pos]
-                # Filter out special tokens before converting to text
-                text_ids = filter_special_tokens(text_ids)
-                start_idx = pos
-                timestamp = round(float(pos) * 0.08, 3)
-                out_str.append(tokenizer.ids_to_text(text_ids))
-                if pos_type == 'bos':
-                    out_str.append(f"<|{timestamp}|>")
-                elif pos_type == 'eos':
-                    out_str.append(f"<${timestamp}$>")
-                else:  # eot
-                    out_str.append(f"<{timestamp}>")
-            # Filter the remaining tokens after the last position
-            remaining_ids = filter_special_tokens(hyp_ids[start_idx:])
-            out_str.append(tokenizer.ids_to_text(remaining_ids))
-            ans.append(" ".join(out_str))
-        else:
-            # For non-turn-taking mode: filter out ALL special tokens, return only pure text
-            hyp_ids = hyp_ids[:hyp_len]
-            hyp_ids = filter_special_tokens(hyp_ids)
-            ans.append(tokenizer.ids_to_text(hyp_ids))
-    return ans

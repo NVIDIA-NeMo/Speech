@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, PropertyMock
 import pytest
 import torch
 
-from nemo.collections.speechlm2.data import DuplexS2SDataset
+from nemo.collections.speechlm2.data import DuplexSTTDataset
 
 
 @pytest.fixture
@@ -39,11 +39,10 @@ def dataset_with_early_interruption(mock_tokenizer):
     cfg = {"early_interruption_prob": 1.0, "early_interruption_overlap_tokens": 5}
     model_cfg = {"predict_user_text": False, "force_align_user_text": False}
 
-    dataset = DuplexS2SDataset(
+    dataset = DuplexSTTDataset(
         tokenizer=mock_tokenizer,
         frame_length=0.08,
         source_sample_rate=16000,
-        target_sample_rate=22050,
         input_roles=["user"],
         output_roles=["assistant"],
         cfg=cfg,
@@ -79,12 +78,8 @@ def test_early_interruption_basic_truncation(dataset_with_early_interruption):
     # Apply early interruption
     dataset_with_early_interruption._apply_early_interruption_augmentation(
         target_tokens=target_tokens,
-        target_audio=target_audio,
-        target_token_lens=target_token_lens,
-        target_audio_lens=target_audio_lens,
         source_tokens=source_tokens,
         source_audio=source_audio,
-        source_token_lens=source_token_lens,
         source_audio_lens=source_audio_lens,
         batch_idx=0,
     )
@@ -140,12 +135,8 @@ def test_early_interruption_with_multiple_turns(dataset_with_early_interruption)
     # Apply early interruption
     dataset_with_early_interruption._apply_early_interruption_augmentation(
         target_tokens=target_tokens,
-        target_audio=target_audio,
-        target_token_lens=target_token_lens,
-        target_audio_lens=target_audio_lens,
         source_tokens=source_tokens,
         source_audio=source_audio,
-        source_token_lens=source_token_lens,
         source_audio_lens=source_audio_lens,
         batch_idx=0,
     )
@@ -197,12 +188,8 @@ def test_early_interruption_overlap_tokens(dataset_with_early_interruption):
     # Apply early interruption
     dataset_with_early_interruption._apply_early_interruption_augmentation(
         target_tokens=target_tokens,
-        target_audio=target_audio,
-        target_token_lens=target_token_lens,
-        target_audio_lens=target_audio_lens,
         source_tokens=source_tokens,
         source_audio=source_audio,
-        source_token_lens=source_token_lens,
         source_audio_lens=source_audio_lens,
         batch_idx=0,
     )
@@ -258,11 +245,10 @@ def test_early_interruption_no_valid_turns():
     cfg = {"early_interruption_prob": 1.0, "early_interruption_overlap_tokens": 5}
     model_cfg = {"predict_user_text": False, "force_align_user_text": False}
 
-    dataset = DuplexS2SDataset(
+    dataset = DuplexSTTDataset(
         tokenizer=mock_tokenizer,
         frame_length=0.08,
         source_sample_rate=16000,
-        target_sample_rate=22050,
         input_roles=["user"],
         output_roles=["assistant"],
         cfg=cfg,
@@ -286,12 +272,8 @@ def test_early_interruption_no_valid_turns():
     # Apply early interruption - should not crash
     dataset._apply_early_interruption_augmentation(
         target_tokens=target_tokens,
-        target_audio=target_audio,
-        target_token_lens=target_token_lens,
-        target_audio_lens=target_audio_lens,
         source_tokens=source_tokens,
         source_audio=source_audio,
-        source_token_lens=source_token_lens,
         source_audio_lens=source_audio_lens,
         batch_idx=0,
     )
@@ -324,12 +306,8 @@ def test_early_interruption_frames_to_remove_calculation(dataset_with_early_inte
     # Apply early interruption
     dataset_with_early_interruption._apply_early_interruption_augmentation(
         target_tokens=target_tokens,
-        target_audio=target_audio,
-        target_token_lens=target_token_lens,
-        target_audio_lens=target_audio_lens,
         source_tokens=source_tokens,
         source_audio=source_audio,
-        source_token_lens=source_token_lens,
         source_audio_lens=source_audio_lens,
         batch_idx=0,
     )

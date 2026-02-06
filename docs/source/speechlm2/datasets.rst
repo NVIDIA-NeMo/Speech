@@ -11,7 +11,8 @@ Duplex S2S models use the Lhotse framework for audio data management. The primar
 
 1. **DuplexS2SDataset**: For general duplex speech-to-speech models
 2. **SALMDataset**: Specifically for the Speech-Augmented Language Model (SALM), which processes speech+text and outputs text.
-3. **DuplexEARTTSDataset**: Dataset for Duplex EARTTS model, extending DuplexS2SDataset with additional output fields for TTS, including audio prompting. It optionally prepends an audio prompt (speaker reference) to target_audio, which is used to initialize speaker conditioning in the EARTTS model. The dataset provides audio_prompt, audio_prompt_lens, non_prompt_mask, aligned_attention_mask, and aligned_position_ids, and supports custom speaker reference audio through the context_audio field, while preserving full compatibility with the original data format.
+3. **DuplexSTTDataset**: For the DuplexSTTModel, which processes conversational audio and generates text responses.
+4. **DuplexEARTTSDataset**: Dataset for Duplex EARTTS model, extending DuplexS2SDataset with additional output fields for TTS, including audio prompting. It optionally prepends an audio prompt (speaker reference) to target_audio, which is used to initialize speaker conditioning in the EARTTS model. The dataset provides audio_prompt, audio_prompt_lens, non_prompt_mask, aligned_attention_mask, and aligned_position_ids, and supports custom speaker reference audio through the context_audio field, while preserving full compatibility with the original data format.
 
 DuplexS2S Dataset Structure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -192,9 +193,26 @@ This dataset class is specialized for the SALM model, which focuses on understan
 .. code-block:: python
 
     from nemo.collections.speechlm2.data import SALMDataset
-    
+
     dataset = SALMDataset(
         tokenizer=model.tokenizer,                   # Text tokenizer
+    )
+
+DuplexSTTDataset
+****************
+
+This dataset class is specialized for the DuplexSTTModel, which processes duplex conversational audio and generates text responses. Unlike DuplexS2SDataset which outputs speech, this dataset prepares data for speech-to-text conversion in duplex conversations.
+
+.. code-block:: python
+
+    from nemo.collections.speechlm2.data import DuplexSTTDataset
+
+    dataset = DuplexSTTDataset(
+        tokenizer=model.tokenizer,                   # Text tokenizer
+        frame_length=0.08,                           # Frame length for audio processing
+        source_sample_rate=16000,                    # Audio sample rate
+        input_roles=["User"],                        # Roles to use as input
+        output_roles=["Assistant"],                  # Roles to generate text for
     )
 
 DataModule
@@ -209,7 +227,7 @@ The DataModule class in the speechlm2 collection manages dataset loading, prepar
     datamodule = DataModule(
         cfg_data,                  # Configuration dictionary for data
         tokenizer=model.tokenizer, # Text tokenizer
-        dataset=dataset            # Instance of DuplexS2SDataset or SALMDataset
+        dataset=dataset            # Instance of DuplexS2SDataset, DuplexSTTDataset, or SALMDataset
     )
 
 The DataModule takes care of:

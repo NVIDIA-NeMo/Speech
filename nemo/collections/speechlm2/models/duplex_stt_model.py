@@ -39,7 +39,6 @@ from transformers import DynamicCache
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
 from nemo.collections.speechlm2.parts.augmentation import DEFAULT_CODEC_SETTINGS, AudioAugmenter
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.label_prep import prepare_text_and_asr_labels
@@ -56,6 +55,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
     set_model_dict_for_partial_init,
     setup_speech_encoder,
 )
+from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 

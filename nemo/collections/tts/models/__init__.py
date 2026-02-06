@@ -23,15 +23,9 @@ from nemo.collections.tts.models.magpietts_preference_optimization import (
     MagpieTTSModelOfflinePODataGen,
     MagpieTTSModelOnlinePO,
 )
-from nemo.collections.tts.models.mixer_tts import MixerTTSModel
-from nemo.collections.tts.models.radtts import RadTTSModel
 from nemo.collections.tts.models.spectrogram_enhancer import SpectrogramEnhancerModel
 from nemo.collections.tts.models.ssl_tts import SSLDisentangler
-from nemo.collections.tts.models.tacotron2 import Tacotron2Model
 from nemo.collections.tts.models.two_stages import GriffinLimModel, MelPsuedoInverseModel, TwoStagesModel
-from nemo.collections.tts.models.univnet import UnivNetModel
-from nemo.collections.tts.models.vits import VitsModel
-from nemo.collections.tts.models.waveglow import WaveGlowModel
 
 __all__ = [
     "AlignerModel",
@@ -43,16 +37,10 @@ __all__ = [
     "HifiGanModel",
     "InferBatchOutput",
     "MelPsuedoInverseModel",
-    "MixerTTSModel",
-    "RadTTSModel",
     "MagpieTTSModel",
     "MagpieTTSModelOfflinePODataGen",
     "MagpieTTSModelOfflinePO",
     "MagpieTTSModelOnlinePO",
-    "Tacotron2Model",
     "TwoStagesModel",
-    "UnivNetModel",
-    "VitsModel",
-    "WaveGlowModel",
     "SpectrogramEnhancerModel",
 ]

@@ -29,7 +29,7 @@ from nemo.collections.asr.inference.streaming.framing.multi_stream import Contin
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.salm_state import SALMStreamingState
-from nemo.collections.asr.inference.utils.enums import ASROutputGranularity, RequestType
+from nemo.collections.asr.inference.utils.enums import ASROutputGranularity, MergingStrategy, RequestType
 from nemo.collections.asr.inference.utils.lcs_merge import lcs_merge
 from nemo.utils.decorators import experimental
 
@@ -99,6 +99,7 @@ class BufferedSALMPipeline(BasePipeline):
         self.overlap_size_in_secs = cfg.streaming.overlap_size
         self.overlap_ratio = self.overlap_size_in_secs / self.buffer_size_in_secs
         self.extra_overlap_tokens = 2  # extra tokens for better overlap detection
+        self.merging_strategy = MergingStrategy.from_str(cfg.streaming.merging_strategy)
 
         self.audio_bufferer = BatchedIncrementalAudioBufferer(
             self.sample_rate,
@@ -160,6 +161,7 @@ class BufferedSALMPipeline(BasePipeline):
             search_size=delay,
             sep_id=self.asr_model.word_separator_ids,
             min_lcs_length=1,
+            merging_strategy=self.merging_strategy,
         )
         state.tokens.extend(data[delay:])
 
@@ -213,6 +215,7 @@ class BufferedSALMPipeline(BasePipeline):
                         search_size=delay,
                         sep_id=self.asr_model.word_separator_ids,
                         min_lcs_length=1,
+                        merging_strategy=self.merging_strategy,
                     )
                     all_tokens.extend(state.incomplete_segment_tokens[delay:])
 

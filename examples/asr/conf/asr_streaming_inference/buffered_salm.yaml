@@ -60,6 +60,7 @@ streaming:
   buffer_size: 4.0                            # Buffer size in seconds
   chunk_size: 2.0                             # Audio chunk size in seconds
   overlap_size: 2.0                           # Overlap size in seconds
+  merging_strategy: lcsubstr                  # Merging strategy: lcs or lcsubstr
   request_type: frame                         # Type of request: frame or feature_buffer
   max_new_tokens: 64                          # Maximum number of new tokens to generate
 

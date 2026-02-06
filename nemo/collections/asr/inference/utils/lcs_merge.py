@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nemo.collections.asr.inference.utils.enums import MergingStrategy
+from nemo.collections.asr.parts.utils.streaming_utils import longest_common_subsequence_merge
 
 def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, int, int]:
     """
@@ -52,7 +54,12 @@ def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, i
 
 
 def lcs_merge(
-    buffer: list[int], data: list[int], search_size: int, sep_id: list[int] | None = None, min_lcs_length: int = 1
+    buffer: list[int], 
+    data: list[int], 
+    search_size: int, 
+    sep_id: list[int] | None = None, 
+    min_lcs_length: int = 1,
+    merging_strategy: MergingStrategy = MergingStrategy.LCSUBSTR
 ) -> list[int]:
     """
     Merge the buffer and data using the LCS algorithm.
@@ -62,6 +69,7 @@ def lcs_merge(
         search_size: (int) The size of the search window in the buffer.
         sep_id: (list[int] | None) The separator token ids. If no LCS is found, separator token is used to merge the buffer and data.
         min_lcs_length: (int) The minimum length of the LCS.
+        merging_strategy: (MergingStrategy) The merging strategy to use.
     Returns:
         (list[int]) The merged tokens.
     """
@@ -79,7 +87,13 @@ def lcs_merge(
 
     buffer_slice = buffer[-search_size:]
 
-    i_rel, j_rel, length = longest_common_substring(buffer_slice, data)
+    if merging_strategy == MergingStrategy.LCSUBSTR:
+        i_rel, j_rel, length = longest_common_substring(buffer_slice, data)
+    elif merging_strategy == MergingStrategy.LCS:
+        i_rel, j_rel, length = longest_common_subsequence_merge(buffer_slice, data)
+    else:
+        raise ValueError("Invalid merging strategy")
+
     if length < min_lcs_length:
         buffer += sep_id + data
         return buffer

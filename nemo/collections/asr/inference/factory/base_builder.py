@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 from omegaconf import open_dict
 from omegaconf.dictconfig import DictConfig
 
-from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
 from nemo.collections.asr.inference.model_wrappers.cache_aware_ctc_inference_wrapper import (
     CacheAwareCTCInferenceWrapper,
 )

@@ -273,6 +273,7 @@ def evaluate(
 
             # Update the FCD metric with real (ground truth) codes
             if fcd_metric is not None:
+                logging.info(f"Updating FCD metric with ground truth audio file {gt_audio_filepath}")
                 fcd_metric.update_from_audio_file(gt_audio_filepath, True)
 
         pred_audio_filepath = audio_file_lists[ridx]
@@ -334,6 +335,9 @@ def evaluate(
         if fcd_metric is not None:
             predicted_codes = torch.load(codes_file_lists[ridx]).unsqueeze(0).to(device)  # B, C, T
             predicted_codes_lens = torch.tensor([predicted_codes.size(-1)], dtype=torch.int, device=device)
+            logging.info(
+                f"Updating FCD metric with generated codes {predicted_codes.shape} and length {predicted_codes_lens}"
+            )
             fcd_metric.update(predicted_codes, predicted_codes_lens, False)
 
         pred_context_ssim = 0.0

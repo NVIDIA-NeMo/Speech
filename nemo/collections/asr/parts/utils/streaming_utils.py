@@ -257,13 +257,13 @@ def longest_common_subsequence_merge(X, Y, filepath=None):
             j_partial += j_exp
 
             # (3) Given new leftmost j_partial with expansions, backtrack the partial alignments
-            # counting how many diagonal skips occured to compute slice length
+            # counting how many diagonal skips occurred to compute slice length
             # as well as starting point of slice.
 
             # Partial backward trace to find start of slice
             while i_partial > 0 and j_partial > 0:
                 if LCSuff[i_partial][j_partial] == 0:
-                    # diagonal skip occured, move j to left 1 extra time
+                    # diagonal skip occurred, move j to left 1 extra time
                     j_partial -= 1
                     j_skip += 1
 

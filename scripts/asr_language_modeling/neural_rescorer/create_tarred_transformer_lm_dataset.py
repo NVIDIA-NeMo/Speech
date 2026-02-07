@@ -16,7 +16,7 @@
 Execution :
 
 python create_tarred_tokenized_text_lm_dataset.py \
-    --text_path=<comma seperated text filepaths> \
+    --text_path=<comma separated text filepaths> \
     --data_root=<path to output directory> \
     --tokenizer_name="bert-base-cased" \
     --tokenizer_vocab_file=<path to vocab file for tokenizer> \
@@ -44,7 +44,7 @@ from nemo.collections.common.tokenizers.tokenizer_utils import get_tokenizer
 parser = argparse.ArgumentParser(description='Tarred Tokenized dataset for text language modelling')
 
 # Data path arguments
-parser.add_argument('--text_path', required=True, default=None, type=str, help='Text paths, seperated by commas')
+parser.add_argument('--text_path', required=True, default=None, type=str, help='Text paths, separated by commas')
 parser.add_argument('--data_root', required=True, default=None, type=str, help='Output directory')
 
 # General arguments

@@ -145,7 +145,7 @@ def main(cfg):
         if os.path.exists(ckpt_path):
             state_path = ckpt_path
 
-        # Save the adapter modules in a seperate file
+        # Save the adapter modules in a separate file
         model.save_adapters(os.path.join(state_path, adapter_state_dict_name))
 
 

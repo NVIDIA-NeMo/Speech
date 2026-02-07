@@ -209,7 +209,7 @@ if __name__ == "__main__":
     parser.add_argument("--manifest", help="manifest file name", type=str, required=False, default=None)
     parser.add_argument(
         "--id",
-        help="field num seperated by '/' to be considered as speaker label from filelist file, can be ignored if manifest file is already provided with labels",
+        help="field num separated by '/' to be considered as speaker label from filelist file, can be ignored if manifest file is already provided with labels",
         type=int,
         required=False,
         default=None,

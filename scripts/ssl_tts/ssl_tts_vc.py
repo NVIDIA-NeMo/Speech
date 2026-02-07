@@ -203,7 +203,7 @@ def main():
     parser.add_argument('--hifi_ckpt_path', type=str)
     parser.add_argument('--fastpitch_ckpt_path', type=str)
     parser.add_argument('--source_audio_path', type=str)
-    parser.add_argument('--target_audio_path', type=str)  # can be a list seperated by comma
+    parser.add_argument('--target_audio_path', type=str)  # can be a list separated by comma
     parser.add_argument('--out_path', type=str)
     parser.add_argument('--source_target_out_pairs', type=str)
     parser.add_argument('--use_unique_tokens', type=int, default=0)

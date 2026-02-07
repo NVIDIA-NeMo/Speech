@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# USAGE: python process_asr_text_tokenizer.py --manifest=<path to train manifest files, seperated by commas> \
+# USAGE: python process_asr_text_tokenizer.py --manifest=<path to train manifest files, separated by commas> \
 #         --data_root="<output directory>" \
 #         --vocab_size=<number of tokens in vocabulary> \
 #         --tokenizer=<"spe" or "wpe"> \
@@ -45,7 +45,7 @@
 #   --tokenizer: Can be either spe or wpe . spe refers to the Google sentencepiece library tokenizer.
 #       wpe refers to the HuggingFace BERT Word Piece tokenizer.
 #
-#   --no_lower_case: When this flag is passed, it will force the tokenizer to create seperate tokens for
+#   --no_lower_case: When this flag is passed, it will force the tokenizer to create separate tokens for
 #       upper and lower case characters. By default, the script will turn all the text to lower case
 #       before tokenization (and if upper case characters are passed during training/inference, the
 #       tokenizer will emit a token equivalent to Out-Of-Vocabulary). Used primarily for the

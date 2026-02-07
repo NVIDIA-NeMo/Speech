@@ -23,9 +23,9 @@ Use the `process_asr_text_tokenizer.py` script under <NEMO_ROOT>/scripts/tokeniz
 
 ```sh
 python <NEMO_ROOT>/scripts/tokenizers/process_asr_text_tokenizer.py \
-        --manifest=<path to train manifest files, seperated by commas>
+        --manifest=<path to train manifest files, separated by commas>
         OR
-        --data_file=<path to text data, seperated by commas> \
+        --data_file=<path to text data, separated by commas> \
         --data_root="<output directory>" \
         --vocab_size=<number of tokens in vocabulary> \
         --tokenizer=<"spe" or "wpe"> \

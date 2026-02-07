@@ -271,10 +271,10 @@ def evaluate(
             if context_audio_filepath is not None:
                 context_audio_filepath = os.path.join(audio_dir, context_audio_filepath)
 
-            # Update the FCD metric with real (ground truth) codes
-            if fcd_metric is not None:
-                logging.info(f"Updating FCD metric with ground truth audio file {gt_audio_filepath}")
-                fcd_metric.update_from_audio_file(gt_audio_filepath, True)
+        # Update the FCD metric with real (ground truth) codes
+        if fcd_metric is not None:
+            logging.info(f"Updating FCD metric with ground truth audio file {gt_audio_filepath}")
+            fcd_metric.update_from_audio_file(gt_audio_filepath, True)
 
         pred_audio_filepath = audio_file_lists[ridx]
 

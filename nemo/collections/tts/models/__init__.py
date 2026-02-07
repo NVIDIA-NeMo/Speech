@@ -23,9 +23,7 @@ from nemo.collections.tts.models.magpietts_preference_optimization import (
     MagpieTTSModelOfflinePODataGen,
     MagpieTTSModelOnlinePO,
 )
-from nemo.collections.tts.models.spectrogram_enhancer import SpectrogramEnhancerModel
 from nemo.collections.tts.models.ssl_tts import SSLDisentangler
-from nemo.collections.tts.models.two_stages import GriffinLimModel, MelPsuedoInverseModel, TwoStagesModel
 
 __all__ = [
     "AlignerModel",
@@ -33,14 +31,10 @@ __all__ = [
     "FastPitchModel",
     "FastPitchModel_SSL",
     "SSLDisentangler",
-    "GriffinLimModel",
     "HifiGanModel",
     "InferBatchOutput",
-    "MelPsuedoInverseModel",
     "MagpieTTSModel",
     "MagpieTTSModelOfflinePODataGen",
     "MagpieTTSModelOfflinePO",
     "MagpieTTSModelOnlinePO",
-    "TwoStagesModel",
-    "SpectrogramEnhancerModel",
 ]

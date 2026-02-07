@@ -1060,42 +1060,6 @@ class VocoderDataset(Dataset):
         return len(self.data)
 
 
-class PairedRealFakeSpectrogramsDataset(Dataset):
-    def __init__(
-        self,
-        manifest_filepath: Union[str, Path],
-    ):
-        manifest_filepath = Path(manifest_filepath)
-        with Path(manifest_filepath).open() as f:
-            logging.info(f"Loading paired spectrogram dataset from {manifest_filepath}")
-            self.manifest = []
-            for line in f:
-                entry = json.loads(line.strip())
-                assert "mel_filepath" in entry
-                assert "mel_gt_filepath" in entry
-                self.manifest.append(entry)
-
-        logging.info(f"Manifest describes {len(self)} spectrogram pairs")
-
-    def __len__(self):
-        return len(self.manifest)
-
-    def __getitem__(self, index):
-        entry = self.manifest[index]
-        pred_spec = np.load(entry["mel_filepath"])
-        true_spec = np.load(entry["mel_gt_filepath"])
-        return torch.from_numpy(pred_spec.T), torch.from_numpy(true_spec.T)
-
-    def _collate_fn(self, batch):
-        pred_specs, true_specs = zip(*batch)
-        lengths = [spec.shape[0] for spec in true_specs]
-
-        pred_specs = torch.nn.utils.rnn.pad_sequence(pred_specs, batch_first=True)
-        true_specs = torch.nn.utils.rnn.pad_sequence(true_specs, batch_first=True)
-        lengths = torch.LongTensor(lengths)
-
-        return rearrange(pred_specs, "b l c -> b c l"), rearrange(true_specs, "b l c -> b c l"), lengths
-
 
 class FastPitchSSLDataset(Dataset):
     def __init__(

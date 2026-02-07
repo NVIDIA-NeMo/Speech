@@ -332,7 +332,7 @@ def evaluate(
 
         # Update FCD metric with generated codes
         if fcd_metric is not None:
-            predicted_codes = torch.load(codes_file_lists[ridx]).unsqueeze(0)  # B, C, T
+            predicted_codes = torch.load(codes_file_lists[ridx]).unsqueeze(0).to(device)  # B, C, T
             predicted_codes_lens = torch.tensor([predicted_codes.size(-1)], dtype=torch.int, device=device)
             fcd_metric.update(predicted_codes, predicted_codes_lens, False)
 

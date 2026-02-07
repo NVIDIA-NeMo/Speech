@@ -197,6 +197,9 @@ def evaluate(
     with_fcd=True,
     codec_model_path=None,
 ):
+    logging.info(f"Evaluating generated audio in {generated_audio_dir}...")
+    all_files = os.listdir(generated_audio_dir)
+    logging.info(f"All files in {generated_audio_dir}: {all_files}")
     audio_file_lists = find_generated_audio_files(generated_audio_dir)
     records = read_manifest(manifest_path)
     assert len(audio_file_lists) == len(records)

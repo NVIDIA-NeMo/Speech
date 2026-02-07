@@ -24,16 +24,11 @@ from typing import Callable, Dict, List, Optional, Union
 import librosa
 import numpy as np
 import torch
-from einops import rearrange
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
-    BaseTokenizer,
-    EnglishCharsTokenizer,
-    EnglishPhonemesTokenizer,
-)
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     BetaBinomialInterpolator,
     beta_binomial_prior_distribution,

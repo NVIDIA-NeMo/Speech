@@ -55,11 +55,6 @@ from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_
 from nemo.utils import logging
 from nemo.utils.decorators import deprecated
 
-HAVE_WANDB = True
-try:
-    import wandb
-except ModuleNotFoundError:
-    HAVE_WANDB = False
 
 try:
     from lightning.pytorch.utilities import rank_zero_only

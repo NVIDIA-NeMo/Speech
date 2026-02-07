@@ -14,16 +14,10 @@
 
 
 from loguru import logger
-from pipecat.frames.frames import Frame, LLMFullResponseEndFrame, LLMFullResponseStartFrame, TTSTextFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, Frame, TTSTextFrame
 from pipecat.observers.base_observer import FramePushed
-from pipecat.processors.frameworks.rtvi import (
-    RTVIBotLLMStartedMessage,
-    RTVIBotLLMStoppedMessage,
-    RTVIBotTranscriptionMessage,
-    RTVIBotTTSTextMessage,
-)
 from pipecat.processors.frameworks.rtvi import RTVIObserver as _RTVIObserver
-from pipecat.processors.frameworks.rtvi import RTVIProcessor, RTVITextMessageData
+from pipecat.processors.frameworks.rtvi import RTVIProcessor
 from pipecat.transports.base_output import BaseOutputTransport
 
 
@@ -32,8 +26,11 @@ class RTVIObserver(_RTVIObserver):
     An observer that processes RTVI frames and pushes them to the transport.
     """
 
+    TRANSPORT_OUTPUT_FRAMES = (TTSTextFrame, BotStartedSpeakingFrame, BotStoppedSpeakingFrame)
+
     def __init__(self, rtvi: RTVIProcessor, *args, **kwargs):
         super().__init__(rtvi, *args, **kwargs)
+        self.transport_output_seen = set()
 
     async def on_push_frame(self, data: FramePushed):
         """Process a frame being pushed through the pipeline.
@@ -44,29 +41,19 @@ class RTVIObserver(_RTVIObserver):
         src = data.source
         frame: Frame = data.frame
 
-        if frame.id in self._frames_seen:
-            return
+        if isinstance(frame, BotStoppedSpeakingFrame) and isinstance(src, BaseOutputTransport):
+            logger.debug(
+                f"Bot stopped speaking in RTVIObserver: {frame}, seen: {frame.id in self.transport_output_seen}"
+            )
+        if isinstance(frame, self.TRANSPORT_OUTPUT_FRAMES) and isinstance(src, BaseOutputTransport):
+            if frame.id not in self.transport_output_seen and frame.id in self._frames_seen:
+                self._frames_seen.remove(frame.id)
 
-        if not self._params.bot_llm_enabled:
-            if isinstance(frame, LLMFullResponseStartFrame):
-                await self.send_rtvi_message(RTVIBotLLMStartedMessage())
-                self._frames_seen.add(frame.id)
-            elif isinstance(frame, LLMFullResponseEndFrame):
-                await self.send_rtvi_message(RTVIBotLLMStoppedMessage())
-                self._frames_seen.add(frame.id)
-            elif isinstance(frame, TTSTextFrame) and isinstance(src, BaseOutputTransport):
-                message = RTVIBotTTSTextMessage(data=RTVITextMessageData(text=frame.text))
-                await self.send_rtvi_message(message)
-                await self._push_bot_transcription(frame.text)
-                self._frames_seen.add(frame.id)
-            else:
-                await super().on_push_frame(data)
-        else:
-            await super().on_push_frame(data)
+        await super().on_push_frame(data)
 
-    async def _push_bot_transcription(self, text: str):
-        """Push accumulated bot transcription as a message."""
-        if len(text.strip()) > 0:
-            message = RTVIBotTranscriptionMessage(data=RTVITextMessageData(text=text))
-            logger.debug(f"Pushing bot transcription: `{text}`")
-            await self.send_rtvi_message(message)
+        if isinstance(frame, self.TRANSPORT_OUTPUT_FRAMES) and isinstance(src, BaseOutputTransport):
+            self.transport_output_seen.add(frame.id)
+
+    def reset(self):
+        """Reset the observer."""
+        self.transport_output_seen.clear()

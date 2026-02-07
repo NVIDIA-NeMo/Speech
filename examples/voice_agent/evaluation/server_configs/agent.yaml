@@ -13,7 +13,7 @@ server:
 
 transport:
   audio_out_10ms_chunks: 10
-  record_audio_data: true
+  record_audio_data: false
   audio_log_dir: "./audio_logs_agent"
 
 vad:

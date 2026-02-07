@@ -26,7 +26,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIObserverParams, RTVIProcessor
+from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
@@ -371,7 +371,6 @@ async def run_bot_websocket_server(
 
     pipeline = Pipeline(pipeline)
 
-    rtvi_params = RTVIObserverParams(bot_llm_enabled=False)
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
@@ -383,7 +382,7 @@ async def run_bot_websocket_server(
             idle_timeout=None,  # Disable idle timeout
         ),
         observers=[
-            RTVIObserver(rtvi, params=rtvi_params),
+            RTVIObserver(rtvi),
             RTVIAudioLoggerObserver(audio_logger=audio_logger),
         ],
         idle_timeout_secs=None,

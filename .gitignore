@@ -186,5 +186,7 @@ slurm*.out
 node_modules/
 .vite/
 bot_server.*
-audio_logs/
 eval_results/
+audio_logs/
+audio_logs_user/
+audio_logs_agent/

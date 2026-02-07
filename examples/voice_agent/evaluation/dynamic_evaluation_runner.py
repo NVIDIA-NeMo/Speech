@@ -37,8 +37,7 @@ async def run_dynamic_evaluation(
     output_dir: str,
     scenarios: list[dict],
     duration_per_scenario: int = 60,
-    pause_between_scenarios: int = 5,
-    record_audio: bool = True,
+    pause_between_scenarios: int = 2,
     user_output_sample_rate: int = 24000,
     agent_output_sample_rate: int = 24000,
     user_input_sample_rate: int = 16000,
@@ -59,7 +58,6 @@ async def run_dynamic_evaluation(
             - duration: Optional duration override
         duration_per_scenario: Default duration per scenario (seconds)
         pause_between_scenarios: Seconds to pause between scenarios
-        record_audio: Whether to record audio (default: True)
         user_output_sample_rate: User TTS output sample rate (default: 24000)
         agent_output_sample_rate: Agent TTS output sample rate (default: 24000)
         user_input_sample_rate: User STT input sample rate (default: 16000)
@@ -87,20 +85,15 @@ async def run_dynamic_evaluation(
     all_results = []
 
     for idx, scenario in enumerate(scenarios):
+        # Reset bridge before each scenario (except the first) to clear WebSocket buffers
+        logger.info(f"\nResetting bridge before scenario {idx+1}...")
+        await bridge.reset(reconnect_websockets=True)
+        logger.info(f"Pausing {pause_between_scenarios} seconds before scenario {idx+1}...")
+        await asyncio.sleep(pause_between_scenarios)
+
         logger.info(f"\n{'='*80}")
         logger.info(f"Starting Scenario {idx+1}/{len(scenarios)}: {scenario['name']}")
         logger.info(f"{'='*80}\n")
-
-        # Reset metrics for new scenario
-        bridge.metrics.latencies = []
-        bridge.metrics.turns = []
-        bridge.metrics.segments = []
-
-        # Reset audio buffers
-        bridge.metrics.evaluator_audio_chunks = []
-        bridge.metrics.target_audio_chunks = []
-        bridge.metrics.audio_start_timestamp = None
-        bridge.metrics.current_segment_start = None
 
         # Create scenario-specific directory
         scenario_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -110,20 +103,13 @@ async def run_dynamic_evaluation(
 
         # Initialize log file for this scenario
         log_file = os.path.join(scenario_dir, "bridge_log.txt")
-        conversation_log_file = os.path.join(scenario_dir, "conversation_log.txt")
-        bridge.init_log_file(conversation_log_file)
         setup_logging(log_file=log_file)  # Update logging to write to this file
+
+        conversation_log_file = os.path.join(scenario_dir, "conversation_log.txt")
+        bridge.init_log_file(conversation_log_file, session_name=scenario_name_safe)
         logger.info(f"Scenario directory: {scenario_dir}")
         logger.info(f"Logging to: {log_file}")
-
-        # Set audio file for this scenario
-        if record_audio:
-            audio_file = os.path.join(scenario_dir, "conversation_audio.wav")
-            bridge.audio_file = audio_file  # Set on bridge so monitoring can record audio
-            logger.info(f"Recording audio to: {audio_file}")
-        else:
-            audio_file = None
-            bridge.audio_file = None
+        logger.info(f"Conversation saved to: {conversation_log_file}")
 
         # Update prompts (handler will automatically reset)
         await bridge.update_user_prompt(scenario["user_prompt"], auto_reset=False)
@@ -149,8 +135,7 @@ async def run_dynamic_evaluation(
         scenario_end = datetime.now()
 
         # Save audio and segLST for this scenario before resetting buffers
-        if audio_file:
-            bridge.save_audio_and_seglst(audio_file=audio_file)
+        bridge.save_audio_and_seglst()
 
         # Collect metrics for this scenario
         metrics = bridge.get_metrics()
@@ -171,11 +156,6 @@ async def run_dynamic_evaluation(
             logger.info(f"  Mean latency: {latency_stats['mean_ms']:.1f}ms")
             logger.info(f"  Median latency: {latency_stats['median_ms']:.1f}ms")
             logger.info(f"  P95 latency: {latency_stats['p95_ms']:.1f}ms")
-
-        # Pause between scenarios
-        if idx < len(scenarios) - 1:
-            logger.info(f"\nPausing {pause_between_scenarios} seconds before next scenario...")
-            await asyncio.sleep(pause_between_scenarios)
 
     await bridge.disconnect()
 
@@ -251,11 +231,6 @@ async def run_dynamic_evaluation(
     logger.info(f"\nScenario directories:")
     for result in all_results:
         logger.info(f"  {result['scenario_name']}: {result['scenario_directory']}")
-        if record_audio:
-            logger.info(f"    - audio.wav (stereo: user=left, agent=right)")
-            logger.info(f"    - audio.seglst (segment timestamps)")
-            logger.info(f"    - bridge_audio_log.wav (sent audio: user→agent=left, agent→user=right)")
-            logger.info(f"    - eval_log.txt")
     logger.info(f"\nTotal: {len(scenarios)} scenarios, {total_turns} turns, {total_duration:.1f}s")
 
     return all_results
@@ -305,9 +280,6 @@ Examples:
         "--duration", type=int, default=120, help="Default duration per scenario in seconds (default: 120)"
     )
     parser.add_argument("--pause", type=int, default=5, help="Pause between scenarios in seconds (default: 5)")
-    parser.add_argument(
-        "--no-audio", action="store_true", help="Disable audio recording (default: audio recording is enabled)"
-    )
     parser.add_argument(
         "--output-sample-rate", type=int, default=16000, help="Output sample rate for recorded audio (default: 16000)"
     )
@@ -366,7 +338,6 @@ Examples:
                 scenarios=scenarios,
                 duration_per_scenario=args.duration,
                 pause_between_scenarios=args.pause,
-                record_audio=not args.no_audio,
                 output_sample_rate=args.output_sample_rate,
             )
         )

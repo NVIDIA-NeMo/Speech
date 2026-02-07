@@ -266,14 +266,13 @@ class NemoSTTService(STTService):
                 start_time = time.time()
                 asr_result = await asyncio.to_thread(self._model.transcribe, audio_chunk_bytes)
                 end_time = time.time()
-                logger.debug(f"ASR inference time: {end_time - start_time} seconds")
                 transcription = asr_result.text
                 is_final = asr_result.is_final
-
                 delay = datetime.now() - last_audio_timestamp
                 logger.debug(
-                    f"Transcription: {transcription}, audio timestamp: {last_audio_timestamp}, delay: {delay}"
+                    f"ASR inference time: {end_time - start_time} seconds, delay: {delay}, transcription: {transcription}, audio timestamp: {last_audio_timestamp},"
                 )
+
                 if self._audio_logger is not None:
                     if self._is_vad_active:
                         is_first_frame = False

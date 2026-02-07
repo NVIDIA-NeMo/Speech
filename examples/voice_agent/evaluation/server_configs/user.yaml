@@ -13,14 +13,14 @@ server:
 
 transport:
   audio_out_10ms_chunks: 10
-  record_audio_data: true
+  record_audio_data: false
   audio_log_dir: "./audio_logs_user"
 
 vad:
   type: silero
   confidence: 0.6  # VAD threshold for detecting speech versus non-speech
   start_secs: 0.1  # min amount of speech to trigger UserStartSpeaking
-  stop_secs: 1.2  # min amount of silence to trigger UserStopSpeaking
+  stop_secs: 2.0  # min amount of silence to trigger UserStopSpeaking
   min_volume: 0.2  # Microphone volumn threshold for VAD
 
 stt:

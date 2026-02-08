@@ -65,6 +65,11 @@ def compute_ffn_flops_per_token(
     # For inference, we only count forward pass, so we compute and don't multiply by 6
 
     if is_moe:
+        if num_experts is None or top_k_experts is None:
+            raise ValueError("num_experts and top_k_experts are required when is_moe=True")
+        if top_k_experts > num_experts:
+            raise ValueError(f"top_k_experts ({top_k_experts}) must be <= num_experts ({num_experts})")
+
         # MoE FFN FLOPs (inference only)
         # Each expert: d_model -> d_ffn -> d_model
         gated_multiplier = 2 if has_gated_linear else 1

@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -89,7 +89,7 @@ class MoERouter(torch.nn.Module):
         # Compute routing probabilities
         # Note: For padded positions with zero logits [0,0,...,0], softmax gives uniform distribution [1/n,...,1/n]
         # This is fine - we need valid probabilities for top-k selection and normalization
-        # Sinkhorn routing is only applied during training (following Megatron-LM design)
+        # Sinkhorn routing is only applied during training
         # During inference, use softmax for speed (load balancing doesn't matter with small batches)
         if self.routing_strategy == "sinkhorn" and self.training:
             router_probs = self._sinkhorn_routing(router_logits, x_mask)
@@ -187,8 +187,9 @@ class MoERouter(torch.nn.Module):
             if err < e_tol:
                 break
 
-        # Compute scaled matrix: P = diag(d1) @ K @ diag(d2)
-        P = torch.diag(d1) @ K @ torch.diag(d2)  # (N, E)
+        # Compute scaled matrix using broadcasting (avoids materializing NxN diagonal matrices):
+        # P = diag(d1) @ K @ diag(d2)  =>  P[i, j] = d1[i] * K[i, j] * d2[j]
+        P = (d1[:, None] * K) * d2[None, :]  # (N, E)
 
         # Final row normalization to ensure each row sums to 1 (valid probability distribution)
         P = P / (P.sum(dim=-1, keepdim=True) + 1e-9)  # (N, E)
@@ -267,7 +268,9 @@ class PositionwiseConvFFMoE(torch.nn.Module):
 
         self.dropout = torch.nn.Dropout(p_dropout)
 
-    def forward(self, x: torch.Tensor, x_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, x_mask: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Apply Mixture of Experts feedforward layer.
 

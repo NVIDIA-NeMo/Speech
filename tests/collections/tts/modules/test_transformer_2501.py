@@ -902,6 +902,8 @@ class TestMoERouter:
         # Check shapes
         assert expert_weights.shape == (self.batch_size, self.seq_len, self.top_k)
         assert expert_indices.shape == (self.batch_size, self.seq_len, self.top_k)
+        assert router_logits.shape == (self.batch_size, self.seq_len, self.num_experts)
+        assert router_probs.shape == (self.batch_size, self.seq_len, self.num_experts)
 
         # Check that weights sum to 1
         weight_sums = expert_weights.sum(dim=-1)
@@ -1412,10 +1414,16 @@ class TestTransformerWithMoE:
         assert 'output' in output_dict
         assert output_dict['output'].shape == x.shape
 
-        # Check MoE routing info is collected
+        # Check MoE routing info is collected from all layers
         assert 'moe_routing_info' in output_dict
-        if output_dict['moe_routing_info'] is not None:
-            assert len(output_dict['moe_routing_info']) == self.n_layers
+        assert output_dict['moe_routing_info'] is not None
+        assert len(output_dict['moe_routing_info']) == self.n_layers
+
+        # Each layer should have logits, probs, and indices
+        for layer_routing in output_dict['moe_routing_info']:
+            assert 'router_logits' in layer_routing
+            assert 'router_probs' in layer_routing
+            assert 'expert_indices' in layer_routing
 
     def test_transformer_moe_loss_accumulation(self):
         """Test that MoE losses are accumulated across layers."""

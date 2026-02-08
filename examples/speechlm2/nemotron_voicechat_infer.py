@@ -41,6 +41,10 @@ def inference(cfg):
         model_config = OmegaConf.to_container(cfg, resolve=True)
         model = NemotronVoiceChat(model_config)
 
+        # load pretrained checkpoint and rescale the weights if needed
+        if model.tts_model.cfg.get("pretrained_model", None):
+            model.tts_model.restore_from_pretrained_checkpoint(model.tts_model.cfg.pretrained_model)
+
     dataset = DuplexS2SDataset(
         tokenizer=model.stt_model.tokenizer,
         frame_length=cfg.data.frame_length,

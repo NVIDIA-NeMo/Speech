@@ -24,7 +24,10 @@ def longest_common_substring(buffer: list[int], data: list[int]) -> tuple[int, i
         buffer: (list[int]) The buffer of tokens.
         data: (list[int]) The new tokens to merge with the buffer.
     Returns:
-        (tuple[int, int, int]) The start and end indices of the longest common substring and its length.
+        A tuple containing - (tuple[int, int, int]):
+          - Start index of the longest common substring in the buffer.
+          - Start index of the longest common substring in the data.
+          - Length of the longest common substring.
     """
     n, m = len(buffer), len(data)
     dp = [[0] * (m + 1) for _ in range(n + 1)]
@@ -93,7 +96,9 @@ def lcs_merge(
     elif merging_strategy == MergingStrategy.LCS:
         (i_rel, j_rel, length), _ = longest_common_subsequence_merge(buffer_slice, data)
     else:
-        raise ValueError("Invalid merging strategy")
+        raiseValueError(
+            f"Invalid merging strategy: {merging_strategy!r}. Supported strategies: {[s.name for s in MergingStrategy]}"
+        )
 
     if length < min_lcs_length:
         buffer += sep_id + data

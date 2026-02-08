@@ -12,12 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations 
+
+
+from typing import TYPE_CHECKING
 import torch
 
 from nemo.collections.asr.inference.utils.device_utils import setup_device
 from nemo.collections.common.prompts import PromptFormatter
-from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
-from nemo.collections.speechlm2.models import SALM
+
+if TYPE_CHECKING:
+    from nemo.collections.speechlm2.models import SALM
 
 
 class SALMASRInferenceWrapper:
@@ -74,6 +79,7 @@ class SALMASRInferenceWrapper:
             (SALM) loaded SALM model.
         """
         try:
+            from nemo.collections.speechlm2.models import SALM
             model = SALM.from_pretrained(model_name).eval()
             model.to(device)
             return model
@@ -149,6 +155,7 @@ class SALMASRInferenceWrapper:
         Returns:
             (torch.Tensor) Token ids of size (batch_size, max_prompt_length).
         """
+        from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
         formatter = PromptFormatter.resolve(self.salm_model.cfg.prompt_format)(self.tokenizer)
         tokens = left_collate_vectors(
             [formatter.encode_dialog(turns=prompt)["input_ids"] for prompt in prompts],

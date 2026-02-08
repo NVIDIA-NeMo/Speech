@@ -14,11 +14,8 @@
 
 import pytest
 
-from nemo.collections.asr.inference.utils.lcs_merge import (
-    longest_common_substring, 
-    lcs_merge,
-    MergingStrategy
-)
+from nemo.collections.asr.inference.utils.lcs_merge import MergingStrategy, lcs_merge, longest_common_substring
+
 
 class TestLCSMerge:
 
@@ -47,7 +44,7 @@ class TestLCSMerge:
     def test_longest_common_substring(self, buffer, data, expected_start1, expected_start2, expected_length):
         start1, start2, length = longest_common_substring(buffer, data)
         assert (start1, start2, length) == (expected_start1, expected_start2, expected_length)
-    
+
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "buffer, data, search_size, min_lcs_length, merging_strategy, expected_result",
@@ -61,12 +58,12 @@ class TestLCSMerge:
     )
     def test_lcs_merge(self, buffer, data, search_size, min_lcs_length, merging_strategy, expected_result):
         result = lcs_merge(
-            buffer, 
-            data, 
-            search_size=search_size, 
-            min_lcs_length=min_lcs_length, 
+            buffer,
+            data,
+            search_size=search_size,
+            min_lcs_length=min_lcs_length,
             merging_strategy=merging_strategy,
-            sep_id=None
+            sep_id=None,
         )
         assert result == expected_result
 
@@ -94,7 +91,9 @@ class TestLCSMerge:
         """Test that search_size <= 0 results in simple concatenation with separator."""
         buffer = [1, 2, 3]
         data = [4, 5, 6]
-        result = lcs_merge(buffer, data, search_size=search_size, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR)
+        result = lcs_merge(
+            buffer, data, search_size=search_size, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR
+        )
         assert result == [1, 2, 3, 4, 5, 6]
 
     @pytest.mark.unit
@@ -136,9 +135,7 @@ class TestLCSMerge:
         """Test that search_size larger than buffer still works correctly."""
         buffer = [1, 2, 3]
         data = [2, 3, 4, 5]
-        result = lcs_merge(
-            buffer, data, search_size=100, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=100, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR)
         assert result == [1, 2, 3, 4, 5]
 
     @pytest.mark.unit
@@ -146,9 +143,7 @@ class TestLCSMerge:
         """Test that search_size limits the overlap detection window."""
         buffer = [1, 2, 3, 4, 5, 6, 7, 8]
         data = [2, 3, 9, 10]  # overlap [2,3] is outside search window of last 3 elements
-        result = lcs_merge(
-            buffer, data, search_size=3, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=3, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR)
         # No overlap in last 3 elements [6,7,8], so data is appended
         assert result == [1, 2, 3, 4, 5, 6, 7, 8, 2, 3, 9, 10]
 
@@ -157,9 +152,7 @@ class TestLCSMerge:
         """Test that LCS shorter than min_lcs_length causes concatenation."""
         buffer = [1, 2, 3, 4, 5]
         data = [5, 6, 7]  # only 1 element overlap
-        result = lcs_merge(
-            buffer, data, search_size=5, min_lcs_length=2, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=5, min_lcs_length=2, merging_strategy=MergingStrategy.LCSUBSTR)
         # LCS length is 1, which is < min_lcs_length=2, so concatenate
         assert result == [1, 2, 3, 4, 5, 5, 6, 7]
 
@@ -168,9 +161,7 @@ class TestLCSMerge:
         """Test that LCS equal to min_lcs_length triggers merge."""
         buffer = [1, 2, 3, 4, 5]
         data = [4, 5, 6, 7]  # 2 element overlap
-        result = lcs_merge(
-            buffer, data, search_size=5, min_lcs_length=2, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=5, min_lcs_length=2, merging_strategy=MergingStrategy.LCSUBSTR)
         assert result == [1, 2, 3, 4, 5, 6, 7]
 
     @pytest.mark.unit
@@ -178,9 +169,7 @@ class TestLCSMerge:
         """Test when data is entirely contained in the end of buffer."""
         buffer = [1, 2, 3, 4, 5]
         data = [4, 5]
-        result = lcs_merge(
-            buffer, data, search_size=5, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=5, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR)
         assert result == [1, 2, 3, 4, 5]
 
     @pytest.mark.unit
@@ -188,9 +177,7 @@ class TestLCSMerge:
         """Test when data starts exactly where buffer search window begins."""
         buffer = [1, 2, 3, 4, 5]
         data = [3, 4, 5, 6, 7, 8]
-        result = lcs_merge(
-            buffer, data, search_size=3, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=3, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR)
         assert result == [1, 2, 3, 4, 5, 6, 7, 8]
 
     @pytest.mark.unit
@@ -198,9 +185,7 @@ class TestLCSMerge:
         """Test LCS strategy handles non-contiguous common subsequences."""
         buffer = [1, 2, 100, 3, 4]  # has 100 inserted
         data = [2, 3, 4, 5, 6]  # continuous 2, 3, 4
-        result = lcs_merge(
-            buffer, data, search_size=5, min_lcs_length=1, merging_strategy=MergingStrategy.LCS
-        )
+        result = lcs_merge(buffer, data, search_size=5, min_lcs_length=1, merging_strategy=MergingStrategy.LCS)
         # LCS finds [2, 3, 4] even with gap
         assert result == [1, 2, 100, 3, 4, 5, 6]
 
@@ -209,9 +194,7 @@ class TestLCSMerge:
         """Test merging with single element overlap."""
         buffer = [1, 2, 3]
         data = [3, 4, 5]
-        result = lcs_merge(
-            buffer, data, search_size=3, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=3, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR)
         assert result == [1, 2, 3, 4, 5]
 
     @pytest.mark.unit
@@ -219,9 +202,7 @@ class TestLCSMerge:
         """Test merging lists with repeated elements."""
         buffer = [1, 1, 1, 2, 2, 2]
         data = [2, 2, 2, 3, 3, 3]
-        result = lcs_merge(
-            buffer, data, search_size=6, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=6, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR)
         assert result == [1, 1, 1, 2, 2, 2, 3, 3, 3]
 
     @pytest.mark.unit
@@ -229,9 +210,7 @@ class TestLCSMerge:
         """Test merging longer sequences for performance sanity."""
         buffer = list(range(100))
         data = list(range(90, 150))  # overlap from 90-99
-        result = lcs_merge(
-            buffer, data, search_size=20, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR
-        )
+        result = lcs_merge(buffer, data, search_size=20, min_lcs_length=1, merging_strategy=MergingStrategy.LCSUBSTR)
         assert result == list(range(150))
 
 

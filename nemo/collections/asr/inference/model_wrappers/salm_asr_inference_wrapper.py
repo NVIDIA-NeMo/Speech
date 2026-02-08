@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations 
+from __future__ import annotations
 
 
 from typing import TYPE_CHECKING
@@ -80,6 +80,7 @@ class SALMASRInferenceWrapper:
         """
         try:
             from nemo.collections.speechlm2.models import SALM
+
             model = SALM.from_pretrained(model_name).eval()
             model.to(device)
             return model
@@ -156,6 +157,7 @@ class SALMASRInferenceWrapper:
             (torch.Tensor) Token ids of size (batch_size, max_prompt_length).
         """
         from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
+
         formatter = PromptFormatter.resolve(self.salm_model.cfg.prompt_format)(self.tokenizer)
         tokens = left_collate_vectors(
             [formatter.encode_dialog(turns=prompt)["input_ids"] for prompt in prompts],

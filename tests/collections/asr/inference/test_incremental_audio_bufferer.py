@@ -164,9 +164,7 @@ class TestIncrementalAudioBufferer:
         buffer_size_in_secs = 5.0
         overlap_size_in_secs = 2.5
         for audio in test_audios:
-            stream = MonoStream(
-                sample_rate, frame_size_in_secs=chunk_size_in_secs, stream_id=0, pad_last_frame=False
-            )
+            stream = MonoStream(sample_rate, frame_size_in_secs=chunk_size_in_secs, stream_id=0, pad_last_frame=False)
             stream.load_audio(audio, options=None)
             buf = IncrementalAudioBufferer(
                 sample_rate=sample_rate,

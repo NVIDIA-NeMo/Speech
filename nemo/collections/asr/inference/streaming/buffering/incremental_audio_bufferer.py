@@ -42,14 +42,13 @@ class IncrementalAudioBufferer:
         self.chunk_size = int(chunk_size_in_secs * sample_rate)
         self.overlap_size = int(overlap_size_in_secs * sample_rate)
 
-
         # Ensure overlap is within buffer bounds to keep drop_size non-negative and meaningful.
         if not (0 <= self.overlap_size <= self.buffer_size):
             raise ValueError(
                 f"Overlap size in samples ({self.overlap_size}) must satisfy "
                 f"0 <= overlap_size <= buffer_size ({self.buffer_size})."
             )
-        
+
         if self.buffer_size % self.chunk_size != 0:
             raise ValueError(f"Buffer size ({self.buffer_size}) must be divisible by chunk size ({self.chunk_size})")
 

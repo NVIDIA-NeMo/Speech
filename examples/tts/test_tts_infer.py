@@ -92,7 +92,11 @@ def main():
     asr_model, tts_model_spec, tts_model_vocoder = models
 
     parser = parsers.make_parser(
-        labels=asr_model.decoder.vocabulary, name="en", unk_id=-1, blank_id=-1, do_normalize=True,
+        labels=asr_model.decoder.vocabulary,
+        name="en",
+        unk_id=-1,
+        blank_id=-1,
+        do_normalize=True,
     )
     labels_map = dict([(i, asr_model.decoder.vocabulary[i]) for i in range(len(asr_model.decoder.vocabulary))])
 

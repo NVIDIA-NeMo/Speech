@@ -33,7 +33,12 @@ def check_support_condition_types(condition_types):
 
 
 def masked_instance_norm(
-    input: Tensor, mask: Tensor, weight: Tensor, bias: Tensor, momentum: float, eps: float = 1e-5,
+    input: Tensor,
+    mask: Tensor,
+    weight: Tensor,
+    bias: Tensor,
+    momentum: float,
+    eps: float = 1e-5,
 ) -> Tensor:
     r"""Applies Masked Instance Normalization for each channel in each data sample in a batch.
 
@@ -71,13 +76,20 @@ class MaskedInstanceNorm1d(torch.nn.InstanceNorm1d):
         super(MaskedInstanceNorm1d, self).__init__(num_features, eps, momentum, affine, track_running_stats)
 
     def forward(self, input: Tensor, mask: Tensor) -> Tensor:
-        return masked_instance_norm(input, mask, self.weight, self.bias, self.momentum, self.eps,)
+        return masked_instance_norm(
+            input,
+            mask,
+            self.weight,
+            self.bias,
+            self.momentum,
+            self.eps,
+        )
 
 
 class PartialConv1d(torch.nn.Conv1d):
     """
     Zero padding creates a unique identifier for where the edge of the data is, such that the model can almost always identify
-    exactly where it is relative to either edge given a sufficient receptive field. Partial padding goes to some lengths to remove 
+    exactly where it is relative to either edge given a sufficient receptive field. Partial padding goes to some lengths to remove
     this affect.
     """
 
@@ -231,7 +243,9 @@ class Attention(torch.nn.Module):
         self.memory_layer = LinearNorm(embedding_dim, attention_dim, bias=False, w_init_gain='tanh')
         self.v = LinearNorm(attention_dim, 1, bias=False)
         self.location_layer = LocationLayer(
-            attention_location_n_filters, attention_location_kernel_size, attention_dim,
+            attention_location_n_filters,
+            attention_location_kernel_size,
+            attention_dim,
         )
         self.score_mask_value = -float("inf")
 
@@ -255,7 +269,12 @@ class Attention(torch.nn.Module):
         return energies
 
     def forward(
-        self, attention_hidden_state, memory, processed_memory, attention_weights_cat, mask,
+        self,
+        attention_hidden_state,
+        memory,
+        processed_memory,
+        attention_weights_cat,
+        mask,
     ):
         """
         PARAMS
@@ -473,7 +492,9 @@ class ReferenceEncoder(NeuralModule):
         )
         post_conv_height = self.calculate_post_conv_lengths(n_mels, n_convs=len(cnn_filters))
         self.gru = torch.nn.GRU(
-            input_size=cnn_filters[-1] * post_conv_height, hidden_size=gru_hidden, batch_first=True,
+            input_size=cnn_filters[-1] * post_conv_height,
+            hidden_size=gru_hidden,
+            batch_first=True,
         )
 
     @property
@@ -533,7 +554,11 @@ class GlobalStyleToken(NeuralModule):
     """
 
     def __init__(
-        self, reference_encoder, gst_size=128, n_style_token=10, n_style_attn_head=4,
+        self,
+        reference_encoder,
+        gst_size=128,
+        n_style_token=10,
+        n_style_attn_head=4,
     ):
         super(GlobalStyleToken, self).__init__()
         self.reference_encoder = reference_encoder
@@ -575,7 +600,7 @@ class SpeakerLookupTable(torch.nn.Module):
 
 class SpeakerEncoder(NeuralModule):
     """
-    class SpeakerEncoder represents speakers representation. 
+    class SpeakerEncoder represents speakers representation.
     This module can combine GST (global style token) based speaker embeddings and lookup table speaker embeddings.
     """
 

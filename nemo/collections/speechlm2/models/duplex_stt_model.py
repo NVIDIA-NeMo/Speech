@@ -16,6 +16,7 @@ import os
 import random
 import tempfile
 
+import soundfile as sf
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -176,9 +177,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             loaded_keys = []
             missing_keys = []
 
-            with safe_open(
-                os.path.join(checkpoint_path, "model.safetensors"), framework="pt", device="cpu"
-            ) as f:
+            with safe_open(os.path.join(checkpoint_path, "model.safetensors"), framework="pt", device="cpu") as f:
                 available_keys = f.keys()
                 for key in available_keys:
                     if key in model_state_dict:

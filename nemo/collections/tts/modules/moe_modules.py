@@ -301,42 +301,79 @@ class PositionwiseConvFFMoE(torch.nn.Module):
         # router_logits: (B, T, num_experts)
         # router_probs: (B, T, num_experts)
 
-        # Initialize output
-        output = torch.zeros_like(x)
+        # Vectorized dispatch: flatten all (token, expert-slot) assignments once,
+        # sort by expert to get contiguous slices, then process each expert on its
+        # slice.
+        B, T, C = x.shape
+        top_k = expert_indices.shape[-1]
 
-        # Process each token with its selected experts
-        # For efficiency, we batch process tokens that use the same expert
-        for expert_idx in range(self.num_experts):
-            # Find all tokens that use this expert
-            expert_mask = (expert_indices == expert_idx).any(dim=-1)  # (B, T)
+        # Flatten token dimension: (B*T, C)
+        x_flat = x.view(-1, C)
+        num_tokens = x_flat.size(0)  # B * T
 
-            if not expert_mask.any():
-                continue
+        # Flatten routing assignments to 1-D vectors:
+        #   assign_expert: (num_tokens * top_k,)  — which expert each assignment targets
+        #   assign_weight: (num_tokens * top_k, 1) — routing weight for each assignment
+        assign_expert = expert_indices.reshape(-1)
+        assign_weight = expert_weights.reshape(-1, 1)
 
-            # Get tokens for this expert
-            expert_tokens = x[expert_mask]  # (N, C) where N is number of tokens using this expert
+        # Map each assignment back to its source token index (0 .. num_tokens-1).
+        # token_indices: (num_tokens * top_k,)
+        token_indices = torch.arange(num_tokens, device=x.device).unsqueeze(1).expand(num_tokens, top_k).reshape(-1)
 
-            if expert_tokens.numel() == 0:
-                continue
+        # Filter out padding assignments (expert_indices == -1 for padded positions).
+        # This is required because torch.bincount does not accept negative values,
+        # and padded tokens should not be processed by any expert.
+        valid_assign_mask = assign_expert != -1
+        assign_expert = assign_expert[valid_assign_mask]
+        assign_weight = assign_weight[valid_assign_mask]
+        token_indices = token_indices[valid_assign_mask]
 
-            # Get corresponding weights for this expert
-            # Find positions where this expert is selected
-            expert_weight_positions = expert_indices == expert_idx  # (B, T, top_k)
-            expert_token_weights = expert_weights[expert_weight_positions].view(-1, 1)  # (N, 1)
+        # Initialize flat output buffer.
+        output_flat = torch.zeros_like(x_flat)
 
-            expert_tokens = expert_tokens.unsqueeze(0)  # (1, N, C)
+        if assign_expert.numel() > 0:
+            # Sort assignments by expert so each expert's tokens form a contiguous slice.
+            sorted_expert, sort_idx = torch.sort(assign_expert)
+            sorted_token_indices = token_indices[sort_idx]
+            sorted_weights = assign_weight[sort_idx]
 
-            # Apply expert
-            expert_out = self.non_linearity(self.experts[expert_idx]['proj'](expert_tokens.transpose(1, 2)))
-            # expert_out: (1, N, C)
-            expert_out = self.dropout(self.experts[expert_idx]['o_net'](expert_out).transpose(1, 2))
+            # Compute per-expert assignment counts and slice boundaries.
+            counts = torch.bincount(sorted_expert, minlength=self.num_experts)
+            offsets = counts.cumsum(0)
+            starts = torch.zeros_like(offsets)
+            starts[1:] = offsets[:-1]
 
-            expert_out = expert_out.squeeze(0)  # (N, C)
+            # Process each expert on its contiguous slice of assignments.
+            for expert_idx in range(self.num_experts):
+                count = counts[expert_idx].item()
+                if count == 0:
+                    continue
 
-            # Weight and accumulate expert output
-            expert_out = expert_out * expert_token_weights
+                start = starts[expert_idx].item()
+                end = start + count
 
-            # Scatter back to output
-            output[expert_mask] += expert_out
+                expert_token_idx = sorted_token_indices[start:end]
+                expert_token_weights = sorted_weights[start:end]  # (N_assign, 1)
+
+                # Gather tokens for this expert: (N_assign, C)
+                # Note: expert_token_idx values are in [0, B*T-1] (token-space indices, not assignment-space indices),
+                # we can safely index into x_flat (B*T, C) with these indices.
+                expert_tokens = x_flat[expert_token_idx]
+
+                # Add batch dimension expected by conv layers: (1, N_assign, C)
+                expert_tokens = expert_tokens.unsqueeze(0)
+
+                # Apply expert FFN
+                expert_out = self.non_linearity(self.experts[expert_idx]['proj'](expert_tokens.transpose(1, 2)))
+                expert_out = self.dropout(self.experts[expert_idx]['o_net'](expert_out).transpose(1, 2))
+                expert_out = expert_out.squeeze(0)  # (N_assign, C)
+
+                # Weight and accumulate back to the source token positions.
+                expert_out = expert_out * expert_token_weights
+                output_flat.index_add_(0, expert_token_idx, expert_out)
+
+        # Reshape back to (B, T, C)
+        output = output_flat.view(B, T, C)
 
         return output, router_logits, router_probs, expert_indices

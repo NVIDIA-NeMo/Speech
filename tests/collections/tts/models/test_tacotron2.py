@@ -24,7 +24,6 @@ available_models = [model.pretrained_model_name for model in Tacotron2Model.list
 
 
 @pytest.fixture(params=available_models, ids=available_models)
-@pytest.mark.run_only_on('GPU')
 def pretrained_model(request, get_language_id_from_pretrained_model_name):
     model_name = request.param
     language_id = get_language_id_from_pretrained_model_name(model_name)

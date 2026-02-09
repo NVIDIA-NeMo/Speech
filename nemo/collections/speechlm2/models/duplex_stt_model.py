@@ -60,6 +60,17 @@ from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralT
 from nemo.utils import logging
 
 
+def maybe_rename_llm_kwargs_for_nemotron(kwargs: dict, model_cfg) -> dict:
+    """This is required because Nemotron models have a different signature than other HF models."""
+    if 'Nemotron' not in model_cfg.pretrained_llm:
+        return kwargs
+    cache = kwargs.pop("past_key_values")
+    if cache is not None:
+        cache_key = model_cfg.get("cache_key", "past_key_values")
+        kwargs[cache_key] = cache
+    return kwargs
+
+
 class DuplexSTTModel(LightningModule, HFHubMixin):
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (
@@ -257,21 +268,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         """
         Text prediction only (audio_loss_weight=0).
         """
-        # Handle different cache parameter names for different models
-        if 'Nemotron' in self.cfg.pretrained_llm:
-            kwargs = {
-                "inputs_embeds": input_embeds,
-                "return_dict": True,
-                "use_cache": cache is not None,
-            }
-            if cache is not None:
-                kwargs['use_cache'] = True
-                kwargs[self.cfg.get("cache_key", "past_key_values")] = cache
-            out = self.llm(**kwargs)
-        else:
-            out = self.llm(
-                inputs_embeds=input_embeds, past_key_values=cache, use_cache=cache is not None, return_dict=True
-            )
+        kwargs = dict(inputs_embeds=input_embeds, past_key_values=cache, use_cache=cache is not None, return_dict=True)
+        kwargs = maybe_rename_llm_kwargs_for_nemotron(kwargs, self.cfg)
+        out = self.llm(**kwargs)
 
         B, T = input_embeds.shape[:2]
         text_logits = self.lm_head(out['last_hidden_state'])
@@ -410,6 +409,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         target_tokens = batch["target_tokens"]
 
+        # Prepend prompt tokens to the sequence for few-shot learning or instruction following.
+        # This creates new tensors with space for prompt + data, then copies:
+        # 1. Prompt embeddings at the beginning
+        # 2. Audio encodings after the prompt
+        # 3. Target tokens (padded) aligned with the audio + prompt timeline
+        # All lengths are updated to account for the prompt prefix.
         if "prompt_tokens" in batch:
             prompt_embedded = self.embed_tokens(batch["prompt_tokens"])
             B, max_prompt_len, H = prompt_embedded.shape
@@ -659,9 +664,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return res
 
-    def on_train_epoch_start(self) -> None:
-        pass
-
     def on_validation_epoch_start(self) -> None:
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
         self.bleu = BLEU().reset()
@@ -775,9 +777,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
     def test_step(self, *args, **kwargs):
         return self.validation_step(*args, **kwargs)
-
-    def on_predict_epoch_start(self) -> None:
-        return self.on_train_epoch_start()
 
     def predict_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0):
         batch = batch["audio_data"]

@@ -195,6 +195,9 @@ class RTVIEvaluationBridge:
         use_burst_mode: bool = False,
         burst_size_range: Tuple[int, int] = (3, 8),
         burst_delay_ms: int = 0,
+        grace_period: float = 0.0,
+        no_audio_timeout: float = 0.0,
+        seglst_offset_seconds: float = -0.1,
     ):
         self.user_url = user_url
         self.agent_url = agent_url
@@ -215,8 +218,10 @@ class RTVIEvaluationBridge:
         # This maintains 16ms average per frame while varying the pattern
 
         # Grace period and timeout configuration for send loops
-        self.grace_period = 0.0  # Extra time to drain audio after main duration
-        self.no_audio_timeout = 0.0  # Stop if no audio for N seconds during grace period
+        self.grace_period = grace_period  # Extra time to drain audio after main duration
+        self.no_audio_timeout = no_audio_timeout  # Stop if no audio for N seconds during grace period
+
+        self.seglst_offset_seconds = seglst_offset_seconds  # Default additional offset for segLST timestamps
 
         self.user_ws = None
         self.agent_ws = None
@@ -276,11 +281,15 @@ class RTVIEvaluationBridge:
         """Initialize the log file"""
         if log_file:
             self.log_file = log_file
-            self.audio_file = log_file.replace(".txt", ".wav")
+            output_dir = Path(log_file).parent
+            self.audio_file = str(output_dir / "merged_audio_segments.wav")
+
         if session_name:
             self.session_name = session_name
+
         if not self.log_file:
             return False
+
         try:
             with open(self.log_file, "w") as f:
                 f.write("RTVI Evaluation Bridge - Conversation Log\n")
@@ -1339,11 +1348,6 @@ class RTVIEvaluationBridge:
             duration: Duration of the evaluation in seconds
         """
         logger.info(f"[THREADED BRIDGE] Routing audio for {duration} seconds...")
-        logger.info("[THREADED BRIDGE] Using 4-thread architecture for complete isolation")
-        logger.info(f"  Thread 1: Receive from user WS")
-        logger.info(f"  Thread 2: Send to user WS")
-        logger.info(f"  Thread 3: Receive from agent WS")
-        logger.info(f"  Thread 4: Send to agent WS")
 
         # Clear debug accumulation lists for this run (only final sent audio)
         self.sent_to_agent_chunks = []
@@ -1515,22 +1519,24 @@ class RTVIEvaluationBridge:
 
         # Debug: Save accumulated sent audio chunks for analysis
         self._save_bridge_audio_log()
+        self._save_audio_and_seglst()
 
     def _save_bridge_audio_log(self):
         """Save final sent audio chunks to disk as stereo WAV for debugging."""
+        # Get output directory from log file parent folder
+        if self.log_file:
+            output_dir = Path(self.log_file).parent
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = Path(self.log_file).with_suffix('.wav')
+        else:
+            logger.warning("[DEBUG] No log file to save audio")
+            return
+
         if not self.sent_to_agent_chunks and not self.sent_to_user_chunks:
             logger.info("[DEBUG] No audio chunks to save")
             return
 
-        # Get output directory from log file parent folder
-        if self.log_file:
-            output_dir = Path(self.log_file).parent
-        else:
-            output_dir = Path("./eval_results")
-
-        output_path = output_dir / "bridge_audio_log.wav"
-        os.makedirs(output_dir, exist_ok=True)
-
+        logger.info(f"[DEBUG] Saving bridge audio log to {output_path}")
         # Convert audio chunks to numpy arrays
         # Channel 0 (Left): USER→AGENT audio at agent_input_sample_rate
         # Channel 1 (Right): AGENT→USER audio at user_input_sample_rate
@@ -2065,12 +2071,11 @@ class RTVIEvaluationBridge:
 
         return resampled.astype(np.int16)
 
-    def save_audio_and_seglst(self, audio_file: str = None):
+    def _save_audio_and_seglst(self):
         """Save stereo audio file and segLST transcript file."""
-        if audio_file:
-            self.audio_file = audio_file
 
         if not self.audio_file:
+            logger.warning("[DEBUG] No audio file to save")
             return
 
         try:
@@ -2125,7 +2130,7 @@ class RTVIEvaluationBridge:
                 )
 
             # Save as WAV file
-            with wave.open(self.audio_file, 'wb') as wav_file:
+            with wave.open(str(self.audio_file), 'wb') as wav_file:
                 wav_file.setnchannels(2)  # Stereo
                 wav_file.setsampwidth(2)  # 16-bit
                 wav_file.setframerate(self.output_sample_rate)
@@ -2137,7 +2142,7 @@ class RTVIEvaluationBridge:
             logger.info(f"  Duration: {total_samples / self.output_sample_rate:.2f}s")
 
             # Save segLST file in JSON format
-            seglst_file = Path(self.audio_file).with_suffix('.seglst.json')
+            seglst_file = Path(self.log_file).with_suffix('.seglst.json')
 
             # Prepare JSON data
             session_id = self.session_name or Path(self.audio_file).stem
@@ -2150,8 +2155,8 @@ class RTVIEvaluationBridge:
                         "session_id": session_id,
                         "words": seg.transcript,
                         "speaker": seg.speaker,
-                        "start_time": seg.start_time,
-                        "end_time": seg.end_time,
+                        "start_time": seg.start_time + self.seglst_offset_seconds,
+                        "end_time": seg.end_time + self.seglst_offset_seconds,
                     }
                 )
 

@@ -134,9 +134,6 @@ async def run_dynamic_evaluation(
         await bridge.route_audio(duration=duration)
         scenario_end = datetime.now()
 
-        # Save audio and segLST for this scenario before resetting buffers
-        bridge.save_audio_and_seglst()
-
         # Collect metrics for this scenario
         metrics = bridge.get_metrics()
         metrics["scenario_name"] = scenario["name"]

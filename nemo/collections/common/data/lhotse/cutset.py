@@ -637,14 +637,53 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     """
     Convert a CutSet with overlapping agent/user segments into a standard S2S duplex format.
 
+    Use Case:
+        This parser is designed for conversational data where agent and user speech can overlap
+        in time (e.g., natural turn-taking with interruptions or backchanneling). The input
+        format stores agent and user segments separately as `agent_segments` and `user_segments`
+        attributes on each cut. This function converts them into a unified timeline of sequential
+        SupervisionSegments, which is the standard format expected by DuplexS2S models.
+
+    Expected Input Data Format:
+        Each cut should have:
+        - cut.agent_segments: List[Dict] with keys:
+            - "start" (float): Start time in seconds
+            - "end" (float): End time in seconds
+            - "text" (str): Agent's transcription
+        - cut.user_segments: List[Dict] with keys:
+            - "start" (float): Start time in seconds
+            - "end" (float): End time in seconds
+            - "text" (str): User's transcription
+
+    Example:
+        Input cut with overlapping segments:
+            cut.agent_segments = [
+                {"start": 0.5, "end": 2.0, "text": "Hello, how can I help?"},
+                {"start": 3.0, "end": 4.5, "text": "Sure, I can do that."}
+            ]
+            cut.user_segments = [
+                {"start": 1.8, "end": 3.2, "text": "I need assistance"},
+                {"start": 4.0, "end": 5.5, "text": "Thank you"}
+            ]
+
+        Output cut.supervisions (sorted by start time):
+            [
+                SupervisionSegment(start=0.5, duration=1.5, text="Hello, how can I help?", speaker="agent"),
+                SupervisionSegment(start=1.8, duration=1.4, text="I need assistance", speaker="user"),
+                SupervisionSegment(start=3.0, duration=1.5, text="Sure, I can do that.", speaker="agent"),
+                SupervisionSegment(start=4.0, duration=1.5, "Thank you", speaker="user")
+            ]
+
     Args:
         config: Dictionary containing parser options:
-            - move_agent_text_back_by (float): Time offset to shift agent text back.
-            - filter_samples_starting_with_agent (bool): Whether to remove samples starting with agent.
-            - agent_roles (List[str]): Roles considered as agent.
+            - move_agent_text_back_by (float): Time offset to shift agent text back (default: 0).
+                Useful for aligning agent text with earlier audio timing.
+            - filter_samples_starting_with_agent (bool): Whether to remove samples starting with agent (default: False).
+                When True, only keeps samples where the first speaker is a user.
+            - agent_roles (List[str]): Roles considered as agent (default: ["agent", "Assistant", "assistant"]).
 
     Returns:
-        Tuple[CutSet, bool]: Converted cuts and a flag indicating if the data was tarred.
+        Tuple[CutSet, bool]: Converted cuts with unified supervisions, and a flag indicating if the data was tarred.
     """
     move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
     filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)

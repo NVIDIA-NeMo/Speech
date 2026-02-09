@@ -23,11 +23,13 @@ from typing import Optional
 import torch
 from threadpoolctl import threadpool_limits
 
-# If UTMOSv2 cache is not set but HF_HOME is, use HF_HOME for the cache location
-# This helps avoid re-downloading the UTMSOv2 model each time.
-# Note "UTMOSV2_CHACHE" is not a typo, it is the name used in the UTMOSv2 library.
+# If UTMOSv2 cache is not set but HF_HOME is, use an area under HF_HOME for the cache location
+# This avoids re-downloading the UTMSOv2 model each time.
+# Note that the second word in "UTMOSV2_CHACHE" is not a typo -- that is the name used in the UTMOSv2 library.
 if "UTMOSV2_CHACHE" not in os.environ and "HF_HOME" in os.environ:
-    os.environ["UTMOSV2_CHACHE"] = os.environ["HF_HOME"]
+    utmos_cache_dir = os.path.join(os.environ["HF_HOME"], "utmosv2")
+    os.makedirs(utmos_cache_dir, exist_ok=True)
+    os.environ["UTMOSV2_CHACHE"] = utmos_cache_dir
 
 """
 Uses the UTMOSv2 model to estimate the MOS of a speech audio file.

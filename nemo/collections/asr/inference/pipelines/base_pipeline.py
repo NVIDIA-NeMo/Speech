@@ -240,6 +240,13 @@ class BasePipeline(PipelineInterface):
         for (state, step_output), translation, new_prefix, prev_prefix, is_final in zip(
             states_to_translate, translations, new_prefixes, current_prefixes, final_transcript_mask
         ):
+            # Save current partial translation as previous before updating
+            # (similar to how we do it for transcripts in cleanup_after_response)
+            if hasattr(state, 'previous_translation_info'):
+                # For partial translations, track the previous value
+                prev_translation, _ = state.previous_translation_info
+                step_output.previous_partial_translation = prev_translation
+            
             if is_final:
                 step_output.final_translation = translation
                 step_output.partial_translation = ""

@@ -787,7 +787,7 @@ class MagpieTTSDatasetDPO(MagpieTTSDataset):
         return {"chosen": chosen_collated, "rejected": rejected_collated}
 
 
-class LongFormTTSInferenceDataset(MagpieTTSDataset):
+class ChunkedTTSInferenceDataset(MagpieTTSDataset):
     """
     Unified dataset for TTS inference with automatic text chunking.
 
@@ -795,7 +795,7 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
     and other preprocessing logic. Uses language-aware chunking to automatically
     decide whether to split text into sentences:
     - Short text (below language threshold): returns single chunk
-    - Long text (above language threshold): returns multiple sentence chunks
+    - Long text (above language threshold): returns multiple sentence chunks (multi-chunk)
 
     Both language (for threshold) and tokenizer are determined per-sample:
     - Language from manifest's 'language' field

@@ -634,7 +634,7 @@ DEFAULT_LANGUAGE_THRESHOLDS = LanguageThresholds()
 
 
 # Centralized mapping from language codes to tokenizer name candidates
-# Used by both do_tts() and LongFormTTSInferenceDataset
+# Used by both do_tts() and ChunkedTTSInferenceDataset
 LANGUAGE_TOKENIZER_MAP: Dict[str, List[str]] = {
     "en": ["english_phoneme", "english"],
     "de": ["german_phoneme", "german"],
@@ -689,7 +689,7 @@ def chunk_text_for_inference(
     Unified text chunking for inference: returns single chunk if below threshold,
     multiple sentence chunks if above threshold.
 
-    This function unifies the standard and longform inference paths by automatically
+    This function unifies the standard and chunked inference paths by automatically
     determining whether to split text based on language-specific thresholds.
 
     Args:

@@ -33,7 +33,7 @@ import torch
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
-from nemo.collections.tts.data.text_to_speech_dataset import LongFormTTSInferenceDataset
+from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInferenceDataset
 from nemo.collections.tts.models import MagpieTTSModel
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
@@ -144,7 +144,6 @@ class MagpieInferenceRunner:
         self._configure_tokenizer()
 
         # Cached state from create_dataset (set when create_dataset is called)
-        self._use_longform: Optional[bool] = None
         self._manifest_records: Optional[List[dict]] = None
         self._audio_base_dir: Optional[str] = None
 
@@ -164,10 +163,10 @@ class MagpieInferenceRunner:
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
-    ) -> LongFormTTSInferenceDataset:
+    ) -> ChunkedTTSInferenceDataset:
         """Create a unified dataset for inference.
 
-        Always creates LongFormTTSInferenceDataset which uses language-aware chunking
+        Always creates ChunkedTTSInferenceDataset which uses language-aware chunking
         to automatically handle both short and long texts:
         - Short text (below threshold): processed as single chunk
         - Long text (above threshold): split into sentence chunks
@@ -178,7 +177,7 @@ class MagpieInferenceRunner:
             context_duration_max: Maximum context duration (uses model default if None).
 
         Returns:
-            Configured LongFormTTSInferenceDataset instance.
+            Configured ChunkedTTSInferenceDataset instance.
         """
         # Use model defaults if not specified
         if context_duration_min is None:
@@ -204,13 +203,13 @@ class MagpieInferenceRunner:
         # Always use unified dataset (handles both short and long texts automatically)
         # Language for chunking thresholds is determined per-sample from manifest
         logging.info("Creating unified inference dataset")
-        dataset = self._create_longform_dataset(dataset_meta, context_duration_min, context_duration_max)
+        dataset = self._create_chunked_inference_dataset(dataset_meta, context_duration_min, context_duration_max)
 
         return dataset
 
     def run_inference_on_dataset(
         self,
-        dataset: LongFormTTSInferenceDataset,
+        dataset: ChunkedTTSInferenceDataset,
         output_dir: str,
         manifest_records: Optional[List[dict]] = None,
         audio_base_dir: Optional[str] = None,
@@ -315,15 +314,15 @@ class MagpieInferenceRunner:
 
         return mean_metrics
 
-    def _create_longform_dataset(
+    def _create_chunked_inference_dataset(
         self,
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
-    ) -> LongFormTTSInferenceDataset:
+    ) -> ChunkedTTSInferenceDataset:
         """Create a unified inference dataset.
 
-        Creates LongFormTTSInferenceDataset which uses language-aware chunking
+        Creates ChunkedTTSInferenceDataset which uses language-aware chunking
         to automatically handle both short and long texts.
 
         Args:
@@ -332,7 +331,7 @@ class MagpieInferenceRunner:
             context_duration_max: Maximum context duration (uses model default if None).
 
         Returns:
-            Configured LongFormTTSInferenceDataset instance.
+            Configured ChunkedTTSInferenceDataset instance.
         """
         # Use model defaults if not specified
         if context_duration_min is None:
@@ -346,7 +345,7 @@ class MagpieInferenceRunner:
             context_duration_max = 5.0
 
         # Create unified dataset - language and tokenizer are determined per-sample from manifest
-        dataset = LongFormTTSInferenceDataset(
+        dataset = ChunkedTTSInferenceDataset(
             dataset_meta=dataset_meta,
             sample_rate=self.model.output_sample_rate,
             codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
@@ -367,7 +366,7 @@ class MagpieInferenceRunner:
 
     def _run_unified_inference(
         self,
-        dataset: LongFormTTSInferenceDataset,
+        dataset: ChunkedTTSInferenceDataset,
         output_dir: str,
         manifest_records: List[dict],
         audio_base_dir: str,
@@ -376,11 +375,11 @@ class MagpieInferenceRunner:
     ) -> Tuple[List[dict], List[str], List[str]]:
         """Run unified inference with automatic single/multi-chunk handling.
 
-        Processes all samples through generate_long_form_speech, passing the
+        Processes all samples through generate_speech, passing the
         is_single_chunk flag for optimization when text is short.
 
         Args:
-            dataset: LongFormTTSInferenceDataset created by create_dataset().
+            dataset: ChunkedTTSInferenceDataset created by create_dataset().
             output_dir: Directory to save generated audio and artifacts.
             manifest_records: List of manifest record dictionaries.
             audio_base_dir: Base directory for resolving audio paths.
@@ -422,7 +421,7 @@ class MagpieInferenceRunner:
             max_num_chunks = max(len(tokens) for tokens in batch['chunked_tokens'])
 
             # Create chunk state for this batch
-            chunk_state = self.model.create_longform_chunk_state(batch_size=batch_size)
+            chunk_state = self.model.create_chunk_state(batch_size=batch_size)
 
             # Accumulators for predicted codes
             predicted_codes_per_sample = [[] for _ in range(batch_size)]
@@ -453,8 +452,8 @@ class MagpieInferenceRunner:
 
                 beginning_of_text = chunk_idx == 0
 
-                # Call generate_long_form_speech (unified entry point)
-                output = self.model.generate_long_form_speech(
+                # Call generate_speech (unified entry point)
+                output = self.model.generate_speech(
                     batch,
                     chunk_state=chunk_state,
                     end_of_text=is_end_of_text,

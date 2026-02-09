@@ -140,11 +140,11 @@ class ContextTensorsOutput:
 
 
 @dataclass
-class LongformDecoderState:
-    """Tracks state during longform speech generation.
+class ChunkedDecoderState:
+    """Tracks state during chunked speech generation (single- or multi-chunk).
 
     This dataclass encapsulates all the mutable state variables used in the
-    autoregressive decoding loop of generate_long_form_speech, reducing parameter
+    autoregressive decoding loop of generate_speech, reducing parameter
     passing and improving code organization.
 
     Attributes:
@@ -171,11 +171,11 @@ class LongformDecoderState:
 
 
 @dataclass
-class LongformConfig:
-    """Immutable configuration for longform inference tuning parameters.
+class ChunkedInferenceConfig:
+    """Immutable configuration for chunked inference tuning parameters.
 
-    These parameters control the behavior of longform (multi-chunk) speech generation.
-    Initialized once in MagpieTTSModel.__init__ and accessed via self.longform_config.
+    These parameters control the behavior of chunked (single- or multi-chunk) speech generation.
+    Initialized once in MagpieTTSModel.__init__ and accessed via self.chunked_inference_config.
 
     Attributes:
         history_len_heuristic: Maximum history tokens to retain across chunks.
@@ -203,11 +203,11 @@ class LongformConfig:
 
 
 @dataclass
-class LongformChunkState:
-    """Mutable state persisting across chunks during longform generation.
+class ChunkState:
+    """Mutable state persisting across chunks during chunked generation.
 
-    Created by the inference runner via model.create_longform_chunk_state(),
-    passed to generate_long_form_speech(), and updated in-place across chunk iterations.
+    Created by the inference runner via model.create_chunk_state(),
+    passed to generate_speech(), and updated in-place across chunk iterations.
 
     Attributes:
         batch_size: Number of items in the batch.
@@ -619,8 +619,8 @@ class MagpieTTSModel(ModelPT):
         # Class-level cache for text normalizers. Used during inference.
         self._text_normalizers: Dict[str, Any] = {}
 
-        # Longform inference configuration (immutable tuning parameters)
-        self.longform_config = LongformConfig()
+        # Chunked inference configuration (immutable tuning parameters)
+        self.chunked_inference_config = ChunkedInferenceConfig()
 
     def _register_tokenizer_artifacts(self, cfg: DictConfig) -> None:
         """
@@ -2776,7 +2776,7 @@ class MagpieTTSModel(ModelPT):
                 times each timestep has been attended. Used to detect attention sinks.
             batch_size (int): Number of items in the batch.
             left_offset (list, optional): List of offsets to adjust timestep indices for each batch item,
-                used in longform inference when text is provided in chunks. Relevant only in longform
+                used in chunked inference when text is provided in chunks. Relevant only in multi-chunk
                 generation.
 
         Returns:
@@ -3596,7 +3596,7 @@ class MagpieTTSModel(ModelPT):
         num_chunks = len(chunked_tokens)
 
         with torch.no_grad():
-            chunk_state = self.create_longform_chunk_state(batch_size=1)
+            chunk_state = self.create_chunk_state(batch_size=1)
             all_codes = []
 
             for chunk_idx, (tokens, tokens_len) in enumerate(zip(chunked_tokens, chunked_tokens_len)):
@@ -3608,7 +3608,7 @@ class MagpieTTSModel(ModelPT):
                 end_of_text = [chunk_idx == num_chunks - 1]
                 beginning_of_text = chunk_idx == 0
 
-                output = self.generate_long_form_speech(
+                output = self.generate_speech(
                     batch,
                     chunk_state=chunk_state,
                     end_of_text=end_of_text,
@@ -3632,30 +3632,30 @@ class MagpieTTSModel(ModelPT):
     def list_available_models(cls) -> List[PretrainedModelInfo]:
         return []
 
-    def create_longform_chunk_state(self, batch_size: int) -> LongformChunkState:
-        """Create fresh state for longform inference over a batch.
+    def create_chunk_state(self, batch_size: int) -> ChunkState:
+        """Create fresh state for chunked inference over a batch.
 
-        This method creates a LongformChunkState dataclass instance that tracks
-        mutable state across multiple calls to generate_long_form_speech() when
-        processing long text in chunks.
+        This method creates a ChunkState dataclass instance that tracks
+        mutable state across multiple calls to generate_speech() when
+        processing text in one or more chunks.
 
         The returned state object should be:
         1. Created once per batch by the inference runner
-        2. Passed to each call of generate_long_form_speech()
+        2. Passed to each call of generate_speech()
         3. Updated in-place during generation
 
         Args:
             batch_size: Number of items in the batch.
 
         Returns:
-            LongformChunkState with initialized state for the batch.
+            ChunkState with initialized state for the batch.
 
         Example:
-            >>> chunk_state = model.create_longform_chunk_state(batch_size=4)
+            >>> chunk_state = model.create_chunk_state(batch_size=4)
             >>> for chunk in text_chunks:
-            ...     output = model.generate_long_form_speech(batch, chunk_state, ...)
+            ...     output = model.generate_speech(batch, chunk_state, ...)
         """
-        return LongformChunkState(batch_size=batch_size)
+        return ChunkState(batch_size=batch_size)
 
     def _set_attention_prior_weights(
         self,
@@ -3681,7 +3681,7 @@ class MagpieTTSModel(ModelPT):
             text_len: Length of text for this batch item.
             eps_sq: Squared epsilon for strong suppression.
         """
-        prior_weights = self.longform_config.prior_weights
+        prior_weights = self.chunked_inference_config.prior_weights
 
         # Suppress history (before attended - 1)
         history_end = max(1, attended_pos - 1)
@@ -3723,7 +3723,7 @@ class MagpieTTSModel(ModelPT):
             left_offset: Chunk offset for this batch item.
             eps_sq: Squared epsilon for strong suppression.
         """
-        threshold = self.longform_config.attention_sink_threshold
+        threshold = self.chunked_inference_config.attention_sink_threshold
 
         for timestep, count in attended_timestep_counter.items():
             if timestep > left_offset and count >= threshold:
@@ -3744,7 +3744,7 @@ class MagpieTTSModel(ModelPT):
         Update tracking state for text completion detection.
 
         A text is considered "near end" when the attended position is within
-        `longform_near_end_threshold` positions of the text end.
+        ``near_end_threshold`` positions of the text end.
 
         Args:
             batch_idx: Index of current batch item.
@@ -3754,7 +3754,7 @@ class MagpieTTSModel(ModelPT):
             unfinished_texts: Dict to update in-place.
             finished_texts_counter: Dict to update in-place.
         """
-        is_near_end = attended_pos >= text_len - self.longform_config.near_end_threshold
+        is_near_end = attended_pos >= text_len - self.chunked_inference_config.near_end_threshold
 
         # Text is unfinished if not near end AND not already marked finished
         unfinished_texts[batch_idx] = not is_near_end and not is_finished
@@ -3763,7 +3763,7 @@ class MagpieTTSModel(ModelPT):
         if is_near_end or is_finished:
             finished_texts_counter.setdefault(batch_idx, 0)
 
-    def construct_longform_inference_prior(
+    def construct_multi_chunk_prior(
         self,
         prior_epsilon: float,
         cross_attention_scores: torch.Tensor,
@@ -3778,7 +3778,7 @@ class MagpieTTSModel(ModelPT):
         left_offset: Optional[List[int]] = None,
     ) -> Tuple[torch.Tensor, Dict[int, bool], Dict[int, int]]:
         """
-        Construct attention prior for longform inference with chunked text.
+        Construct attention prior for multi-chunk inference with chunked text.
 
         Builds a soft attention prior that guides the decoder to attend to appropriate
         text positions, preventing attention drift and encouraging monotonic progression.
@@ -3819,7 +3819,7 @@ class MagpieTTSModel(ModelPT):
             is_finished = bidx in end_indices or bidx in chunk_end_dict
 
             # Short sentences: uniform prior (no guidance needed)
-            if text_len <= self.longform_config.short_sentence_threshold:
+            if text_len <= self.chunked_inference_config.short_sentence_threshold:
                 attn_prior[bidx, 0, :] = 1.0
             else:
                 # Set attention weights around attended position
@@ -3845,7 +3845,7 @@ class MagpieTTSModel(ModelPT):
 
     def _check_eos_and_update_state(
         self,
-        chunk_state: LongformChunkState,
+        chunk_state: ChunkState,
         audio_codes_next: torch.Tensor,
         all_codes_next_argmax: torch.Tensor,
         chunk_end_dict: Dict[int, int],
@@ -3880,7 +3880,7 @@ class MagpieTTSModel(ModelPT):
             # End of speech detected. Update the state.
             if end_frame_index != float('inf'):
                 if end_of_text[item_idx]:
-                    # Speech for entire longform text has ended. Update the state.
+                    # Speech for entire multi-chunk text has ended. Update the state.
                     chunk_state.end_indices[item_idx] = chunk_state.overall_idx
                     chunk_end_dict[item_idx] = current_step
                     logging.info(
@@ -3893,14 +3893,14 @@ class MagpieTTSModel(ModelPT):
                     logging.info(f"Chunk end detected for item {item_idx} at local timestep {current_step}")
             elif (
                 not end_of_text[item_idx]
-                and finished_texts_counter.get(item_idx, -1) >= self.longform_config.forceful_chunk_end_threshold
+                and finished_texts_counter.get(item_idx, -1) >= self.chunked_inference_config.forceful_chunk_end_threshold
             ):
                 chunk_end_dict[item_idx] = current_step
                 logging.info(f"Forceful chunk end detected for item {item_idx} at local timestep {current_step}")
 
     def _should_terminate_loop(
         self,
-        chunk_state: LongformChunkState,
+        chunk_state: ChunkState,
         chunk_end_dict: Dict[int, int],
         end_of_text: List[bool],
         batch_size: int,
@@ -3934,7 +3934,7 @@ class MagpieTTSModel(ModelPT):
 
         return False
 
-    def _run_longform_forward_with_cfg(
+    def _run_chunked_forward_with_cfg(
         self,
         context_tensors: Dict[str, Any],
         audio_codes_embedded: torch.Tensor,
@@ -4010,9 +4010,9 @@ class MagpieTTSModel(ModelPT):
 
         return all_code_logits, attn_probs, dec_out
 
-    def _initialize_longform_attn_prior(
+    def _initialize_chunked_attn_prior(
         self,
-        chunk_state: LongformChunkState,
+        chunk_state: ChunkState,
         current_chunk_len: torch.Tensor,
         batch_text_lens: torch.Tensor,
         max_text_len: int,
@@ -4022,7 +4022,7 @@ class MagpieTTSModel(ModelPT):
         device: torch.device,
     ) -> Optional[torch.Tensor]:
         """
-        Initialize attention prior for longform generation with left offset tracking.
+        Initialize attention prior for chunked generation with left offset tracking.
 
         This method constructs the initial attention prior when continuing from
         previous chunks, accounting for the sliding window over text history.
@@ -4059,7 +4059,7 @@ class MagpieTTSModel(ModelPT):
 
             # Set prior weights for new chunk
             current_starting_point = batch_text_lens[_idx] - current_chunk_len[_idx]
-            prior_weights = self.longform_config.prior_weights_init
+            prior_weights = self.chunked_inference_config.prior_weights_init
             _attn_prior[_idx, :, :current_starting_point] = prior_epsilon * prior_epsilon
             _attn_prior[_idx, :, current_starting_point] = prior_weights[0]
             _attn_prior[_idx, :, current_starting_point + 1] = prior_weights[1]
@@ -4071,7 +4071,7 @@ class MagpieTTSModel(ModelPT):
 
     def _update_context_from_history(
         self,
-        chunk_state: LongformChunkState,
+        chunk_state: ChunkState,
         context_tensors: Dict[str, Any],
         current_chunk_len: torch.Tensor,
         max_text_len: int,
@@ -4080,7 +4080,7 @@ class MagpieTTSModel(ModelPT):
         batch_size: int,
     ) -> None:
         """
-        Update context tensors with cached history for longform generation.
+        Update context tensors with cached history for chunked generation.
 
         This method splices historical context embeddings into the current context
         tensors to maintain continuity across text chunks.
@@ -4107,16 +4107,16 @@ class MagpieTTSModel(ModelPT):
                 )
         chunk_state.history_context_tensor = context_tensors.cond
 
-    def _prepare_longform_text_tensors(
+    def _prepare_chunked_text_tensors(
         self,
-        chunk_state: LongformChunkState,
+        chunk_state: ChunkState,
         batch: Dict[str, torch.Tensor],
         current_chunk_len: torch.Tensor,
         beginning_of_text: bool,
         device: torch.device,
     ) -> Tuple[Dict[str, torch.Tensor], int]:
         """
-        Prepare text tensors with history for longform inference.
+        Prepare text tensors with history for chunked inference.
 
         This method handles the sliding window logic for text tokens, combining
         historical text with new chunks and applying window size constraints.
@@ -4153,7 +4153,7 @@ class MagpieTTSModel(ModelPT):
                 current_text = batch["text"][_idx][: current_chunk_len[_idx]]
 
             # Apply sliding window
-            history_len = min(current_chunk_len[_idx], self.longform_config.history_len_heuristic)
+            history_len = min(current_chunk_len[_idx], self.chunked_inference_config.history_len_heuristic)
             true_window_size = current_chunk_len[_idx] + history_len
             if not beginning_of_text:
                 current_text = current_text[max(0, current_text.shape[0] - true_window_size) :]
@@ -4172,10 +4172,10 @@ class MagpieTTSModel(ModelPT):
 
         return batch, max_text_len
 
-    def generate_long_form_speech(
+    def generate_speech(
         self,
         batch,
-        chunk_state: LongformChunkState,
+        chunk_state: ChunkState,
         end_of_text,
         beginning_of_text,
         use_cfg=True,
@@ -4187,7 +4187,7 @@ class MagpieTTSModel(ModelPT):
         maskgit_sampling_type=None,
     ):
         """
-        Unified speech generation supporting both single-chunk and multi-chunk (longform) modes.
+        Unified speech generation supporting both single-chunk and multi-chunk modes.
 
         This method is the unified inference entry point. For short text (single chunk where
         beginning_of_text=True and end_of_text=[True]), it behaves similarly to standard inference.
@@ -4198,8 +4198,8 @@ class MagpieTTSModel(ModelPT):
 
         Args:
             batch (dict): Input batch containing 'text' and 'text_lens'.
-            chunk_state (LongformChunkState): Mutable state object tracking history across chunks.
-                Created via model.create_longform_chunk_state() and updated in-place.
+            chunk_state (ChunkState): Mutable state object tracking history across chunks.
+                Created via model.create_chunk_state() and updated in-place.
             end_of_text (List[bool]): Whether entire text has been provided for each batch item.
             beginning_of_text (bool): Whether this is the first chunk.
             use_cfg (bool): Whether to use classifier-free guidance.
@@ -4222,7 +4222,7 @@ class MagpieTTSModel(ModelPT):
             batch_size = batch["text"].size(0)
 
             # Prepare text tensors with history
-            batch, max_text_len = self._prepare_longform_text_tensors(
+            batch, max_text_len = self._prepare_chunked_text_tensors(
                 chunk_state, batch, current_chunk_len, beginning_of_text, device
             )
             context_tensors = self.prepare_context_tensors(batch)
@@ -4259,8 +4259,8 @@ class MagpieTTSModel(ModelPT):
                     )
                 )
 
-            # Initialize attention prior for longform generation
-            initial_attn_prior = self._initialize_longform_attn_prior(
+            # Initialize attention prior for chunked generation
+            initial_attn_prior = self._initialize_chunked_attn_prior(
                 chunk_state,
                 current_chunk_len,
                 batch['text_lens'],
@@ -4273,7 +4273,7 @@ class MagpieTTSModel(ModelPT):
             chunk_state.previous_attn_len = copy.deepcopy(batch['text_lens'].detach().tolist())
 
             # Create decoder state object to track all local mutable state
-            state = LongformDecoderState(
+            state = ChunkedDecoderState(
                 audio_codes_input=audio_codes_input,
                 audio_codes_lens=audio_codes_lens,
                 audio_codes_mask=audio_codes_mask,
@@ -4316,7 +4316,7 @@ class MagpieTTSModel(ModelPT):
                     attn_prior = [attn_prior, None]
 
                 # Run forward pass with optional CFG
-                all_code_logits, attn_probs, dec_out = self._run_longform_forward_with_cfg(
+                all_code_logits, attn_probs, dec_out = self._run_chunked_forward_with_cfg(
                     context_tensors=context_tensors,
                     audio_codes_embedded=_audio_codes_embedded,
                     audio_codes_mask=_audio_codes_mask,
@@ -4353,7 +4353,7 @@ class MagpieTTSModel(ModelPT):
 
                     # Use different attention priors for first chunk vs subsequent chunks:
                     # - First chunk: use standard inference prior (more permissive, no history suppression)
-                    # - Subsequent chunks: use longform prior (more restrictive, suppresses history/future)
+                    # - Subsequent chunks: use multi-chunk prior (more restrictive, suppresses history/future)
                     if beginning_of_text:
                         # First chunk: use standard inference prior
                         (state.attn_prior, state.unfinished_texts, state.finished_texts_counter) = (
@@ -4371,9 +4371,9 @@ class MagpieTTSModel(ModelPT):
                             )
                         )
                     else:
-                        # Subsequent chunks: use longform inference prior
+                        # Subsequent chunks: use multi-chunk inference prior
                         (state.attn_prior, state.unfinished_texts, state.finished_texts_counter) = (
-                            self.construct_longform_inference_prior(
+                            self.construct_multi_chunk_prior(
                                 prior_epsilon=self.inference_parameters.attention_prior_epsilon,
                                 cross_attention_scores=alignment_attention_scores,
                                 text_lens=context_tensors.text_lens,
@@ -4391,9 +4391,9 @@ class MagpieTTSModel(ModelPT):
                 for key in state.finished_texts_counter:
                     state.finished_texts_counter[key] += 1
                     limit = (
-                        self.longform_config.finished_limit_with_eot
+                        self.chunked_inference_config.finished_limit_with_eot
                         if end_of_text[key]
-                        else self.longform_config.finished_limit_without_eot
+                        else self.chunked_inference_config.finished_limit_without_eot
                     )
                     if state.finished_texts_counter[key] > limit:
                         # We should allow EOS to be predicted now.
@@ -4406,7 +4406,7 @@ class MagpieTTSModel(ModelPT):
                     finished_items = {
                         k: v
                         for k, v in state.finished_texts_counter.items()
-                        if v >= self.longform_config.finished_limit_with_eot
+                        if v >= self.chunked_inference_config.finished_limit_with_eot
                     }
                     unfinished_items = {k: v for k, v in state.unfinished_texts.items() if v}
 
@@ -4454,7 +4454,7 @@ class MagpieTTSModel(ModelPT):
                     )  # (B, num_codebooks)
                 all_codes_next_argmax = self.sample_codes_from_logits(
                     all_code_logits_t,
-                    temperature=self.longform_config.argmax_temperature,
+                    temperature=self.chunked_inference_config.argmax_temperature,
                     topk=1,
                     unfinished_items=unfinished_items,
                     finished_items=finished_items,

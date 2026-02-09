@@ -91,6 +91,8 @@ def inference(cfg):
         add_audio_prompt=cfg.data.get("add_audio_prompt", True),
         audio_prompt_duration=cfg.data.get("audio_prompt_duration", 3),
         num_delay_speech_tokens=cfg.model.get("num_delay_speech_tokens", 2),
+        add_system_prompt=cfg.model.get("use_system_prompt", False),
+        ignore_data_system_prompt=cfg.model.get("ignore_data_system_prompt", False)
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

@@ -16,6 +16,7 @@ import os
 import time
 from collections import Counter
 from contextlib import contextmanager
+import hydra
 
 import librosa
 import torch
@@ -45,7 +46,7 @@ from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.asr_cer_wer import Intelligibility
 from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
-from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
+from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen, freeze_and_subset
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import (
     load_checkpoint,
@@ -158,7 +159,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             assert callable(self.language_model.get_input_embeddings)
             embed_tokens: nn.Embedding = self.language_model.get_input_embeddings()
         else:
-            embed_tokens_state_dict = torch.load(cfg.pretrained_lm_embedding_path, map_location="cpu")
+            embed_tokens_state_dict = torch.load(
+                cfg.pretrained_lm_embedding_path, map_location="cpu", weights_only=True
+            )
 
             # Create token embedding layer
             vocab_size, hidden_size = embed_tokens_state_dict["weight"].size()
@@ -196,6 +199,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 )
 
             self.load_state_dict(checkpoint_state, strict=True)
+            logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")
 
     @property
     def device(self):
@@ -378,34 +382,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 full_dropout_mask, torch.full_like(target_text_tokens, self.text_pad_id), target_text_tokens
             )
 
-        if self.training and self.cfg.get("text_eos_duplicate_prob", 0.0) > 0:
-            p = self.cfg.text_eos_duplicate_prob
-
-            # [B, T] mask of EOS positions
-            eos_mask = target_text_tokens == self.text_eos_id
-
-            # Flatten EOS positions: tensor of shape [N, 2] where each row = (batch_idx, time_idx)
-            eos_positions = eos_mask.nonzero(as_tuple=False)  # [N, 2]
-
-            if eos_positions.numel() > 0:
-                N = eos_positions.shape[0]
-
-                # One random decision per EOS occurrence
-                duplicate_decision = torch.rand(N, device=target_text_tokens.device) < p  # [N]
-
-                # Filter only EOS tokens that will be duplicated and are not at position t=0
-                valid = (eos_positions[:, 1] > 0) & duplicate_decision  # [N]
-
-                if valid.any():
-                    # Select only valid EOS positions
-                    valid_positions = eos_positions[valid]  # [M, 2]
-
-                    # Indices for the token BEFORE the EOS (t-1)
-                    b_idx = valid_positions[:, 0]
-                    t_idx = valid_positions[:, 1] - 1
-
-                    # Replace token before EOS with an EOS
-                    target_text_tokens[b_idx, t_idx] = self.text_eos_id
 
         # BOS dropout to make the model more robust
         if self.training and self.cfg.get("text_bos_dropout_prob", 0.0) > 0:
@@ -427,6 +403,45 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 torch.full_like(target_text_tokens, self.text_pad_id),
                 target_text_tokens,
             )
+
+        # BOS dropout to make the model more robust
+        if self.training and self.cfg.get("text_bos_dropout_prob", 0.0) > 0:
+            prob = self.cfg.text_bos_dropout_prob  # e.g., 0.5
+            
+            # Identify all BOS positions [B, T]
+            bos_mask = (target_text_tokens == self.text_bos_id)
+            
+            # Get indices of sequences that actually have a BOS token
+            # We need to know *where* the BOS tokens are to drop them.
+            # tensor of coordinates: [[batch_idx, seq_idx], ...]
+            bos_indices = torch.nonzero(bos_mask) 
+            num_bos = bos_indices.shape[0]
+
+            if num_bos > 0:
+                # Create a random dropout decision for each BOS instance
+                drop_decisions = torch.rand(num_bos, device=target_text_tokens.device) < prob
+
+                # Ensure at least one is dropped
+                if drop_decisions.sum() == 0:
+                    # Pick one random index from the available BOS locations to drop
+                    force_idx = torch.randint(0, num_bos, (1,), device=target_text_tokens.device)
+                    drop_decisions[force_idx] = True
+
+                # 5. Apply the dropout
+                # We need to map the decisions back to the full tensor
+                # Create a mask of the same shape as target_text_tokens
+                full_dropout_mask = torch.zeros_like(target_text_tokens, dtype=torch.bool)
+                
+                # Set True only at the specific (batch, seq) coordinates we chose to drop
+                # bos_indices[:, 0] are batch indices, bos_indices[:, 1] are seq indices
+                full_dropout_mask[bos_indices[:, 0], bos_indices[:, 1]] = drop_decisions
+
+                # 6. Replace dropped BOS with PAD
+                target_text_tokens = torch.where(
+                    full_dropout_mask,
+                    torch.full_like(target_text_tokens, self.text_pad_id),
+                    target_text_tokens,
+                )
 
         # shift text tokens
         subword_ids = F.pad(target_text_tokens[:, 1:], [0, 1])
@@ -458,7 +473,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "context_hidden_state": context_hidden_state,
             "output_lens": target_codes_lens,
             "non_prompt_mask": non_prompt_mask,
-            "target_text_tokens": target_text_tokens,
+            "target_text_tokens": target_text_tokens
         }
 
     def training_step(self, batch: dict, batch_idx: int):
@@ -549,6 +564,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.log("weights/mean", weight_mean, on_epoch=True, sync_dist=True)
 
     def on_validation_epoch_start(self) -> None:
+        if torch.distributed.is_initialized():
+            self.trainer.strategy.model.require_backward_grad_sync = False
+
         ensures_codec_target_dtype(
             self
         )  # potentially reloads the audio codec to make sure it's in target codec precision
@@ -559,6 +577,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.secs = SECS(self.cfg.get("scoring_se", "titanet_large")).reset()
 
     def on_validation_epoch_end(self, prefix="val") -> None:
+        if torch.distributed.is_initialized():
+            self.trainer.strategy.model.require_backward_grad_sync = True
         asr_bleu = self.asr_bleu.compute()
         for k, m in asr_bleu.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
@@ -594,7 +614,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             audio_pred, audio_len = self.audio_codec.decode(tf_audio_codes_pred, inputs["output_lens"])
 
-        return audio_pred.squeeze(1), audio_len
+        return audio_pred.squeeze(1), audio_len, tts_output
 
     def _get_generation_config(self, guidance_enabled: bool = False):
         """Get default generation config for EAR-TTS."""
@@ -606,6 +626,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "eos_threshold": -3.0,
         }
 
+    @torch.inference_mode()
     def run_evaluation_one_batch(self, name, dataset_batch, use_dataloader_init=False):
         """
         Runs evaluation and scoring for a single data batch, logging metrics and updating result buffers.
@@ -621,7 +642,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         results = {}
         inputs = self.prepare_inputs(dataset_batch)
 
-        results["audio_tf"], results["audio_tf_len"] = self.get_teacher_force_inference_audio(dataset_batch)
+        results["audio_tf"], results["audio_tf_len"], tts_output = self.get_teacher_force_inference_audio(dataset_batch)
+
         if use_dataloader_init:
             # cut it on prompt
             init_inputs = {
@@ -630,7 +652,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 "non_prompt_mask": inputs["non_prompt_mask"],
                 "context_hidden_state": inputs["context_hidden_state"],
                 "subword_ids": inputs["subword_ids"],
-                "subword_mask": inputs["subword_mask"],
+                "subword_mask": inputs["subword_mask"]
             }
             # cut init_inputs to consider only the prompt
             for key in init_inputs:
@@ -639,12 +661,73 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                         [init_inputs[key][i, :plen] for i, plen in enumerate(dataset_batch["prompt_lens"])]
                     )
         else:
+            """
+            def compare_init_inputs(dl_inputs, model_inputs):
+                all_keys = set(dl_inputs.keys()) | set(model_inputs.keys())
+                
+                print(f"{'Key':<25} | {'Match?':<8} | {'Details'}")
+                print("-" * 60)
+                
+                for key in all_keys:
+                    if key not in dl_inputs:
+                        print(f"{key:<25} | MISSING  | Key not in dataloader_init_inputs")
+                        continue
+                    if key not in model_inputs:
+                        print(f"{key:<25} | MISSING  | Key not in model.get_init_inputs")
+                        continue
+                        
+                    t1 = dl_inputs[key]
+                    t2 = model_inputs[key]
+                    
+                    # Handle NoneTypes
+                    if t1 is None or t2 is None:
+                        if t1 == t2:
+                            print(f"{key:<25} | OK       | Both are None")
+                        else:
+                            print(f"{key:<25} | FAIL     | One is None, other is {type(t1 or t2)}")
+                        continue
+
+                    # Compare Shapes
+                    if t1.shape != t2.shape:
+                        print(f"{key:<25} | FAIL     | Shape mismatch: {list(t1.shape)} vs {list(t2.shape)}")
+                        continue
+                        
+                    # Compare Values
+                    if torch.allclose(t1.to(t2.device), t2, atol=1e-6):
+                        print(f"{key:<25} | OK       | Exact/Close match")
+                    else:
+                        diff = (t1.to(t2.device) - t2).abs().max()
+                        print(f"{key:<25} | FAIL     | Value mismatch (Max Diff: {diff:.6f})")
+
+            # cut it on prompt
+            init_inputs = {
+                "code": inputs["code"],
+                "audio_mask": inputs["audio_mask"],
+                "non_prompt_mask": inputs["non_prompt_mask"],
+                "context_hidden_state": inputs["context_hidden_state"],
+                "subword_ids": inputs["subword_ids"],
+                "subword_mask": inputs["subword_mask"]
+            }
+            # cut init_inputs to consider only the prompt
+            for key in init_inputs:
+                if init_inputs[key] is not None:
+                    init_inputs[key] = torch.stack(
+                        [init_inputs[key][i, :plen] for i, plen in enumerate(dataset_batch["prompt_lens"])]
+                    )
+            
+            dataloader_init_inputs = copy.deepcopy(init_inputs)
+            """
+
             # set init inputs and get it
             self.set_init_inputs(
                 speaker_audio=dataset_batch["audio_prompt"],
                 speaker_audio_lens=dataset_batch["audio_prompt_lens"],
+                system_prompt=dataset_batch["system_prompts_raw"][0], # use the first position of the batch as system prompt
             )
             init_inputs = self.get_init_inputs(B=inputs["subword_ids"].size(0))
+
+            # Run the comparison
+            # compare_init_inputs(dataloader_init_inputs, init_inputs)
 
         # remove the prompt from the target_text_tokens to emulate S2S connected inference
         next_subword_ids = torch.stack(
@@ -766,6 +849,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 tokenizer=self.tokenizer,
             )
 
+    @torch.inference_mode()
     def validation_step(self, batch: dict, batch_idx: int):
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
@@ -783,7 +867,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long().repeat(B)
                 new_dataset_batch["audio_prompt"] = speaker_audio
                 new_dataset_batch["audio_prompt_lens"] = speaker_audio_lens
-                self.run_evaluation_one_batch(name, new_dataset_batch)
+                self.run_evaluation_one_batch(name, new_dataset_batch, use_dataloader_init=False)
 
             # run inference using dataloader speaker references
             else:
@@ -798,7 +882,115 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
     def test_step(self, *args, **kwargs):
         return self.validation_step(*args, **kwargs)
 
-    def set_init_inputs(self, speaker_audio, speaker_audio_lens, system_prompt=None, user_prompt=None):
+    def set_audio_prompt_lantent(
+        self,
+        speaker_audio,
+        speaker_audio_lens,
+        system_prompt=None,
+        batch_size=1,
+        name="default_speaker",
+    ):
+        """
+        Compute and cache an audio prompt latent representation for a given speaker.
+
+        This function runs a one-time "warmup" forward pass through the TTS model using
+        the provided speaker audio (and optional system prompt) to extract an
+        `audio_prompt_lantent`. The latent is cached and can be reused during inference
+        to bypass (and potentially remove) the speaker-prompt projection path; as a
+        result, this inference path is not intended to support voice cloning from
+        arbitrary user-provided reference audio.
+
+        Typical usage:
+            - Call once per speaker (or per prompt configuration).
+            - Cache the resulting latent under a unique `name`.
+            - Reuse the cached latent during subsequent inference calls.
+
+        Args:
+            speaker_audio (Tensor):
+                Input speaker audio waveform(s), shape [B, T].
+            speaker_audio_lens (Tensor):
+                Lengths of the speaker audio, shape [B].
+            system_prompt (Optional[str]):
+                Optional system prompt text to condition the model during prompt encoding.
+            batch_size (int):
+                Batch size used during the warmup forward pass (commonly 1).
+            name (str):
+                Key under which the computed audio prompt latent is cached.
+
+        Side Effects:
+            - Creates/updates `self.audio_prompt_latents[name]` with a detached, cloned
+            tensor stored on CPU.
+            - Performs a forward pass through `self.tts_model` with caching enabled.
+
+        Returns:
+            Tensor:
+                The cached audio prompt latent (stored on CPU).
+        """
+        self.set_init_inputs(
+            speaker_audio=speaker_audio,
+            speaker_audio_lens=speaker_audio_lens,
+            system_prompt=system_prompt,
+        )
+        init_inputs = self.get_init_inputs(B=batch_size)
+        init_inputs.update(
+            {
+                "use_cache": True,
+                "past_key_values": None,
+                "guidance_enabled": False,
+            }
+        )
+
+        audio_prompt_lantent = self.tts_model(**init_inputs).audio_prompt_lantent
+
+        if not hasattr(self, "audio_prompt_latents"):
+            self.audio_prompt_latents = {}
+
+        cached = audio_prompt_lantent.detach().clone().cpu()
+        self.audio_prompt_latents[name] = cached
+        return cached
+
+    def get_audio_prompt_lantent(self, name, B):
+        """
+        Retrieve a cached audio prompt latent and adapt it to the requested batch size.
+
+        This fetches a latent previously cached via `set_audio_prompt_lantent()` and
+        ensures the returned tensor has batch size `B` by:
+        - returning as-is when the batch already matches,
+        - truncating when the cached batch is larger than `B`,
+        - expanding when the cached batch is smaller (commonly batch=1 warmup).
+
+        Args:
+            name (str):
+                Key of the cached audio prompt latent to retrieve.
+            B (int):
+                Desired batch size.
+
+        Returns:
+            Tensor:
+                Audio prompt latent with batch dimension equal to `B`, moved to `self.device`.
+                Shape: [B, ..., D]
+
+        Raises:
+            KeyError:
+                If `name` does not exist in `self.audio_prompt_latents`.
+        """
+        if not hasattr(self, "audio_prompt_latents") or name not in self.audio_prompt_latents:
+            raise KeyError(
+                f"Unknown audio prompt latent '{name}'. Call set_audio_prompt_lantent(...) first."
+            )
+
+        audio_prompt_latent = self.audio_prompt_latents[name]  # cached on CPU
+
+        if audio_prompt_latent.shape[0] == B:
+            out = audio_prompt_latent
+        elif audio_prompt_latent.shape[0] >= B:
+            out = audio_prompt_latent[:B]
+        else:
+            out = audio_prompt_latent[:1].expand(B, *audio_prompt_latent.shape[1:])
+
+        return out.to(self.device)
+
+    def set_init_inputs(self, speaker_audio, speaker_audio_lens, system_prompt=None):
         """
         Registers and prepares initial input buffers for text/audio prompt and context, to warm up AR inference.
 
@@ -806,7 +998,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             speaker_audio (torch.Tensor): Batch of prompt audio, (B, T).
             speaker_audio_lens (torch.Tensor): Lengths for each sample in speaker_audio, (B,).
             system_prompt (str, optional): System prompt for context.
-            user_prompt (str, optional): User message for context.
 
         Returns:
             dict: Dictionary of input tensors to be passed to inference, with registered buffers.
@@ -854,20 +1045,25 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             prompt_audio_text_pad_size = int(prompt_audio_size // self.target_samples_per_frame)
 
         # create a eos token id
-        first_text_frame = torch.tensor([self.tokenizer.eos], dtype=torch.long, device=self.device)
+        if system_prompt is not None and self.cfg.get("use_system_prompt", None) and system_prompt != "":
+            text_prompt = torch.as_tensor(
+                    [self.tokenizer.bos] + self.tokenizer.text_to_ids(system_prompt) + [self.tokenizer.eos], dtype=torch.long, device=self.device
+                )
+        else:
+            text_prompt = torch.tensor([self.tokenizer.eos], dtype=torch.long, device=self.device)
 
         # create a padding tensor
         prompt_audio_text_pad = (
-            torch.ones(prompt_audio_text_pad_size, device=self.device, dtype=first_text_frame.dtype) * self.text_pad_id
+            torch.ones(prompt_audio_text_pad_size, device=self.device, dtype=text_prompt.dtype) * self.text_pad_id
         )
         prompt_audio_text_pad[-1] = self.tokenizer.eos
 
         # Prepend an initial text EOS token followed by padding tokens that match
         # the number of audio-prompt frames (in text-token units).
-        target_text_tokens = torch.cat([first_text_frame, prompt_audio_text_pad.to(first_text_frame.dtype)])
+        target_text_tokens = torch.cat([text_prompt, prompt_audio_text_pad.to(text_prompt.dtype)])
 
         # create pad audio for the description
-        pad_size = first_text_frame.size(-1) * self.target_samples_per_frame
+        pad_size = text_prompt.size(-1) * self.target_samples_per_frame
         pad_audio = (
             torch.zeros(pad_size, device=prompt_audio.device, dtype=prompt_audio.dtype)
             .unsqueeze(0)
@@ -924,11 +1120,14 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "subword_mask": subword_mask.bool()[:, :-1],
             "non_prompt_mask": non_prompt_mask.bool()[:, :-1],
         }
-        # register to acess later
+        self._init_input_cache = {}
         for k, v in init_inputs.items():
-            name = f"init_input_{k}"
-            if v is not None:
-                self.register_buffer(name, v)
+            if v is None:
+                self._init_input_cache[k] = None
+            else:
+                # clone → removes inference tensor flag
+                # detach → ensures no graph refs
+                self._init_input_cache[k] = v.detach().clone()
 
         return init_inputs
 
@@ -941,7 +1140,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "context_hidden_state",
             "subword_ids",
             "subword_mask",
-            "non_prompt_mask",
+            "non_prompt_mask"
         ],
     ):
         """
@@ -969,23 +1168,24 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         init_inputs = {}
         for name in init_inputs_names:
-            buf_name = f"init_input_{name}"
-            buf = getattr(self, buf_name, None)
+            buf = self._init_input_cache.get(name, None)
 
             if buf is None:
                 init_inputs[name] = None
                 continue
 
-            # Use as-is if batch matches
+            # Batch already matches
             if buf.shape[0] == B:
                 init_inputs[name] = buf
+            elif buf.shape[0] >= B:
+                init_inputs[name] = buf[:B]
             else:
-                # Otherwise, assume batch=1 and expand to target B
+                # assume batch=1 warmup → expand
                 init_inputs[name] = buf[:1].expand(B, *buf.shape[1:])
 
         return init_inputs
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def infer_codes_one_step(
         self,
         current_subword_id,
@@ -995,7 +1195,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         past_key_values,
         guidance_enabled=True,
         generation_config=None,
-        ignore_eos_flag_stop=True,
+        ignore_eos_flag_stop=True
     ):
         """
         Runs a single autoregressive prediction step to infer audio codec codes.
@@ -1042,14 +1242,14 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "use_cache": True,
             "guidance_enabled": guidance_enabled,
             "generation_config": generation_config,
-            "ignore_eos_flag_stop": ignore_eos_flag_stop,
+            "ignore_eos_flag_stop": ignore_eos_flag_stop
         }
 
         outputs = self.tts_model(**inputs)
 
         return outputs["codes"], outputs["past_key_values"]
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def decode_one_audio_step(self, gen_audio_codes_history, number_prev_tokens=None):
         """
         Decodes one step of generated audio codec tokens to raw waveform.
@@ -1080,7 +1280,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         audio_len[:] = self.audio_codec.config.wav_to_token_ratio
         return audio_pred_cur_step, audio_len
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def offline_inference(
         self,
         next_subword_ids: torch.Tensor,
@@ -1193,7 +1393,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
             # create subword_mask
             current_subword_mask = subword_mask[:, i].unsqueeze(-1)
-
+    
             code, past_key_values = self.infer_codes_one_step(
                 current_subword_id=current_subword_id,
                 prev_subword_id=prev_subword_id,
@@ -1238,6 +1438,64 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             super().backward(*args, **kwargs)
 
     def configure_optimizers(self):
+        # Check if we should use the custom grouping
+        if self.cfg.get("exclude_norm_from_wd", True):
+            # Leverage the original NeMo function for freezing/logging
+            trainable_params_gen = freeze_and_subset(
+                self.named_parameters(),
+                exclude_patterns=self.cfg.get("freeze_patterns", []),
+                keep_patterns=self.cfg.get("prevent_freeze_patterns", []),
+            )
+            trainable_params_set = set(trainable_params_gen)
+
+            # Identify layers for Weight Decay exclusion
+            no_decay_keywords = ["bias", "norm", "layernorm"]
+            
+            decay_group = []
+            no_decay_group = []
+            no_decay_names = []
+            total_trainable_layers = 0
+
+            for name, param in self.named_parameters():
+                if param in trainable_params_set:
+                    total_trainable_layers += 1
+                    if any(nd in name.lower() for nd in no_decay_keywords):
+                        no_decay_group.append(param)
+                        no_decay_names.append(name)
+                    else:
+                        decay_group.append(param)
+
+            logging.info("=" * 70)
+            logging.info("OPTIMIZER STRATEGY: Mixed Precision Stability")
+            logging.info(f"Total Trainable Layers: {total_trainable_layers}")
+            logging.info("-" * 70)
+            logging.info(f"REGULARIZATION: Applying weight_decay={self.cfg.optimizer.get('weight_decay', 0.1)} to {len(decay_group)} weight layers.")
+            logging.info(f"STABILITY: Excluding {len(no_decay_names)} Normalization and Bias layers from weight decay.")
+            
+            # Audit trail for the excluded layers
+            for n in no_decay_names[:10]:
+                logging.info(f"  [WD=0.0] -> {n}")
+            if len(no_decay_names) > 10:
+                logging.info(f"  ... (+ {len(no_decay_names) - 10} additional normalization/bias layers)")
+            logging.info("=" * 70)
+
+            # 3. Parameter Grouping for AdamW
+            optim_groups = [
+                {"params": decay_group, "weight_decay": self.cfg.optimizer.get("weight_decay", 0.1)},
+                {"params": no_decay_group, "weight_decay": 0.0},
+            ]
+
+            # 4. Instantiate via Hydra
+            optimizer = hydra.utils.instantiate(self.cfg.optimizer, optim_groups, _convert_='all')
+            
+            ans = {"optimizer": optimizer}
+            if "lr_scheduler" in self.cfg:
+                lr_scheduler = hydra.utils.instantiate(self.cfg.lr_scheduler, optimizer)
+                ans["lr_scheduler"] = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
+
+            return ans
+
+        # Fallback to the standard NeMo behavior if the flag is False
         return configure_optimizers(self)
 
     @property
@@ -1465,6 +1723,7 @@ def ensures_codec_target_dtype(model):
 
     """
     if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == model.audio_codec_run_dtype:
+        model.audio_codec.eval()
         return  # already correct precision → no-op
 
     setup_audio_codec(model)
@@ -1493,6 +1752,8 @@ def setup_audio_codec(model):
 
     for p in model.audio_codec.parameters():
         p.requires_grad = False
+
+    model.audio_codec.eval()
 
     assert callable(model.tts_model.set_rvq_embs)
 

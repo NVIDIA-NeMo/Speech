@@ -392,7 +392,7 @@ _DEFAULT_SENTENCE_ENDINGS = ['.', '?', '!']
 _SENTENCE_ENDINGS = {
     "ja": ['。', '？', '！', '…', '.', '?', '!'],  # Japanese + Western
     "zh": ['。', '？', '！', '…', '.', '?', '!'],  # Chinese + Western
-    "hi": ['।', '॥', '.', '?', '!'],              # Hindi Danda + Western
+    "hi": ['।', '॥', '.', '?', '!'],  # Hindi Danda + Western
 }
 
 
@@ -494,6 +494,7 @@ def split_by_sentence(
     sentences = [sent if sent[0].isupper() else sent[0].upper() + sent[1:] for sent in sentences if sent]
 
     return sentences
+
 
 def _get_sentence_separators_for_language(language: str) -> List[str]:
     """

@@ -219,17 +219,27 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
     @property
     def text_pad_id(self) -> int:
         """
-        Text pad ID is used as a 'blank' for frames when the model is not speaking
-        and for frames where the model is speaking but has already predicted the
-        entire text channel's content.
+        Text pad ID is used as a 'blank' for frames when the model is not generating text.
+
+        DuplexSTTModel Input/Output Format:
+        - Input: User audio (speech)
+        - Output: Text tokens only
+
+        Text pad ID is used for:
+        1. Frames during user speech (where the model is listening)
+        2. Frames after the model completes its text response
 
         Example:
 
-            flow:         |---user---||-------assistant--------||-user-|
-            text channel:  0000000000  1xxxxxxx0000000000000002  000000
+            flow:              |---user audio---||---assistant text---||-user audio-|
+            text channel:       0000000000000000  1xxxxxxx00000000002   0000000000000
+            (model output)
 
-        Where 0 indicates PAD ID, 1 indicates BOS ID, 2 indacates EOS ID,
-        and x indicates tokens corresponding to actual text
+        Where:
+        - 0 indicates PAD ID (model not generating text)
+        - 1 indicates BOS ID (beginning of assistant response)
+        - 2 indicates EOS ID (end of assistant response)
+        - x indicates text tokens corresponding to the assistant's response
 
         """
         return get_pad_id(self.tokenizer)

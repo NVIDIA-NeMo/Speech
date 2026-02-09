@@ -84,41 +84,24 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             trust_remote_code=self.cfg.get("trust_remote_code", True),
         ).train()
 
-        # Handle different model types with all their specific configurations
-        if 'Nemotron' in self.cfg.pretrained_llm:
-            # ====== NEMOTRON-SPECIFIC HANDLING ======
-            self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
-            self.tokenizer.bos_token = '<s>'
-            self.tokenizer.eos_token = '</s>'
-            self.tokenizer.pad_token = '<SPECIAL_12>'
+        # Initialize tokenizer with optional special tokens from config
+        self.tokenizer = AutoTokenizer(
+            self.cfg.pretrained_llm,
+            use_fast=True,
+            bos_token=self.cfg.get("bos_token", None),
+            eos_token=self.cfg.get("eos_token", None),
+            pad_token=self.cfg.get("pad_token", None),
+        )
 
-            self.llm = getattr(llm, self.cfg.get("base_model_name", "backbone"))
-            self.lm_head = llm.lm_head
-            embed_tokens_name = self.cfg.get("embed_tokens_name", "embeddings")
-            self.embed_tokens = getattr(self.llm, embed_tokens_name)
+        # Extract LLM components with configurable attribute names
+        llm_attr_name = self.cfg.get("llm_attr_name", "model")
+        self.llm = getattr(llm, llm_attr_name)
+        self.lm_head = llm.lm_head
 
-            delattr(self.llm, embed_tokens_name)
-        elif 'Qwen2.5' in self.cfg.pretrained_llm:
-            # ====== QWEN2.5-SPECIFIC HANDLING ======
-            self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
-            logging.warning("Tokenizer does not have a `bos_token`. Setting it to '<|im_start|>'.")
-            self.tokenizer.bos_token = '<|im_start|>'
-            self.tokenizer.eos_token = '<|im_end|>'
-
-            if self.cfg.get("use_extra_id_for_pad", False):
-                self.tokenizer.pad_token = '<|extra_1|>'
-
-            self.llm = llm.model
-            self.lm_head = llm.lm_head
-            self.embed_tokens = self.llm.embed_tokens
-
-            del self.llm.embed_tokens
-        else:
-            self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
-            self.llm = llm.model
-            self.lm_head = llm.lm_head
-            self.embed_tokens = self.llm.embed_tokens
-            del self.llm.embed_tokens
+        # Extract embedding layer with configurable attribute name
+        embed_tokens_attr_name = self.cfg.get("embed_tokens_attr_name", "embed_tokens")
+        self.embed_tokens = getattr(self.llm, embed_tokens_attr_name)
+        delattr(self.llm, embed_tokens_attr_name)
 
         if self.predict_user_text:
             self.asr_head = copy.deepcopy(self.lm_head)

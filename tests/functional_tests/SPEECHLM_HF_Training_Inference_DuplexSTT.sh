@@ -30,3 +30,14 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     ckpt_path=s2s_stt_results/checkpoints/step\=10-last.ckpt \
     ckpt_config=s2s_stt_results/exp_config.yaml \
     output_dir=test_speechlm2_stt_hf_model
+
+# Test inference on the converted HF model
+torchrun --nproc-per-node 1 --no-python \
+  coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+    examples/speechlm2/stt_duplex_infer.py \
+      model.pretrained_llm=/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1 \
+      model.pretrained_asr=/home/TestData/speechlm/pretrained_models/stt_en_fastconformer_hybrid_large_streaming_80ms.nemo \
+      data.validation_ds.datasets.val_set_0.shar_path=/home/TestData/speechlm/lhotse/speechlm2/train_micro \
+      trainer.devices=1 \
+      exp_manager.explicit_log_dir=s2s_stt_inference_results \
+      ++model.pretrained_s2s_model=test_speechlm2_stt_hf_model

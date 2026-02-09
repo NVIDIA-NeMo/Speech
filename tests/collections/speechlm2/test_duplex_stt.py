@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 
 import pytest
 import torch
@@ -27,22 +26,9 @@ if torch.cuda.is_available():
 
 
 def resolve_pretrained_models():
-    if os.path.exists("/home/TestData/speechlm/pretrained_models"):
-        # CI pre-cached paths:
-        return {
-            "pretrained_llm": "/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1",
-            "pretrained_audio_codec": "/home/TestData/speechlm/pretrained_models/low-frame-rate-speech-codec-22khz.nemo",
-            "pretrained_asr": "/home/TestData/speechlm/pretrained_models/stt_en_fastconformer_hybrid_large_streaming_80ms.nemo",
-            "scoring_asr": "/home/TestData/speechlm/pretrained_models/stt_en_fastconformer_transducer_large.nemo",
-        }
-    else:
-        # HF URLs:
-        return {
-            "pretrained_asr": "stt_en_fastconformer_hybrid_large_streaming_80ms",
-            "scoring_asr": "stt_en_fastconformer_transducer_large",
-            "pretrained_llm": "TinyLlama/TinyLlama_v1.1",
-            "pretrained_audio_codec": "nvidia/low-frame-rate-speech-codec-22khz",
-        }
+    return {
+        "pretrained_llm": "TinyLlama/TinyLlama_v1.1",
+    }
 
 
 def create_model(
@@ -63,12 +49,9 @@ def create_model(
             "perception": {
                 "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
                 "modality_adapter": {
-                    "_target_": "nemo.collections.asr.modules.ConformerEncoder",
-                    "feat_in": 512,
-                    "feat_out": -1,
-                    "n_layers": 1,
-                    "d_model": 512,
-                    "subsampling_factor": 1,
+                    "_target_": "torch.nn.Linear",
+                    "in_features": 512,
+                    "out_features": 512,
                 },
             },
             "speech_decoder": {
@@ -120,7 +103,6 @@ def dataset(model):
 @pytest.fixture(scope="session")
 def training_cutset_batch():
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True))
-    cut.target_audio = dummy_recording(1, with_data=True)
     cut.supervisions = [
         SupervisionSegment(
             id=cut.id,

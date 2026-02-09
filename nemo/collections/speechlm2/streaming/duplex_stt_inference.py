@@ -173,11 +173,6 @@ class DuplexSTTStreamingInference:
         ans = self.model(
             inference_state["input_embeds"][:, :1],
             cache=inference_state["cache"],
-            input_audio_tokens=None,
-            seq_mask=None,
-            target_text_tokens=None,
-            modality_adapter_emb=inference_state["source_encoded"][:, :1],
-            speaker_encoder_emb=None,
         )
 
         if inference_state["start_gen_pos"] == 0:
@@ -257,11 +252,6 @@ class DuplexSTTStreamingInference:
             ans = self.model(
                 inference_state["input_embeds"][:, t : t + 1],
                 cache=ans["cache"],
-                input_audio_tokens=None,
-                seq_mask=None,
-                target_text_tokens=None,
-                modality_adapter_emb=inference_state["source_encoded"][:, t : t + 1],
-                speaker_encoder_emb=None,
             )
             if not is_prompt_position.all():
                 generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
@@ -272,11 +262,6 @@ class DuplexSTTStreamingInference:
             ans = self.model(
                 inference_state["input_embeds"][:, : t + 1],
                 cache=None,
-                input_audio_tokens=None,
-                seq_mask=None,
-                target_text_tokens=None,
-                modality_adapter_emb=inference_state["source_encoded"][:, : t + 1],
-                speaker_encoder_emb=None,
             )
             if not is_prompt_position.all():
                 generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
@@ -363,7 +348,6 @@ class DuplexSTTStreamingInference:
         self,
         input_signal: torch.Tensor,
         input_signal_lens: torch.Tensor,
-        decode_audio: bool = True,
         input_pad_len: int = 0,
         force_bos_positions=None,
         prompt_tokens: torch.Tensor = None,

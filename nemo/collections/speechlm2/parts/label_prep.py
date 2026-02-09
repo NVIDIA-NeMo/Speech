@@ -15,7 +15,6 @@
 """Utility functions for preparing model inputs including text and ASR channels."""
 
 import torch
-from nemo.utils import logging
 
 
 def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
@@ -24,9 +23,8 @@ def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
     Skips move if it would go out of bounds or overwrite another EOS/PAD.
     Safe for GPU execution.
     """
-    B, T = tokens.shape
+    _, T = tokens.shape
     tokens = tokens.clone()
-    device = tokens.device
 
     # Find all EOS positions
     eos_mask = tokens == eos_token_id
@@ -66,7 +64,6 @@ def prepare_text_and_asr_labels(
     source_encoded,
     cfg,
     predict_user_text,
-    user_bos_id,
     user_eos_id,
     text_pad_id,
     text_bos_id,
@@ -91,7 +88,6 @@ def prepare_text_and_asr_labels(
         source_encoded: Encoded source audio features (B, T, D)
         cfg: Configuration object with model settings
         predict_user_text: Whether to predict user text in addition to agent text
-        user_bos_id: Token ID for user turn beginning
         user_eos_id: Token ID for user turn ending
         text_pad_id: Token ID for text padding
         text_bos_id: Token ID for agent text beginning
@@ -178,9 +174,7 @@ def prepare_text_and_asr_labels(
             dtype=torch.long,
         )
         target_tokens = torch.cat([pad, target_tokens[:, :-delay_by]], dim=-1)
-        # batch["target_token_lens"] = batch["target_token_lens"] + delay_by
 
-    original_target_tokens = target_tokens.clone()
     if cfg.get("delay_text_eos_by", None):
         target_tokens = delay_eos(target_tokens, text_eos_id, text_pad_id, shift=cfg.delay_text_eos_by)
 
@@ -213,7 +207,6 @@ def prepare_text_and_asr_labels(
         target_tokens_flat = target_tokens.clone()
 
         # Keep user and agent text in separate channels and allow overlap between them
-
         # To be consistent with the single channel case, replace the user_eos_id with agent_eos_id
         source_tokens_flat = source_tokens_flat.clone()
         source_tokens_flat[source_tokens_flat == user_eos_id] = text_eos_id

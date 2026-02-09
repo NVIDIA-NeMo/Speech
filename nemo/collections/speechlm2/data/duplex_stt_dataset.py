@@ -431,7 +431,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
 
         first_remaining_start = filtered_supervisions[0].start
         last_remaining_end = max(s.start + s.duration for s in filtered_supervisions)
-        new_duration = last_remaining_end - first_remaining_start
 
         adjusted_supervisions = []
         for sup in filtered_supervisions:

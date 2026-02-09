@@ -260,11 +260,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self,
         input_embeds: Tensor,
         cache=None,
-        input_audio_tokens=None,
-        seq_mask=None,
-        target_text_tokens=None,
-        modality_adapter_emb=None,
-        speaker_encoder_emb=None,
     ) -> dict[str, Tensor]:
         """
         Text prediction only (audio_loss_weight=0).
@@ -486,7 +481,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             source_encoded=source_encoded,
             cfg=self.cfg,
             predict_user_text=self.predict_user_text,
-            user_bos_id=self.user_bos_id,
             user_eos_id=self.user_eos_id,
             text_pad_id=self.text_pad_id,
             text_bos_id=self.text_bos_id,
@@ -799,7 +793,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         prediction = self.streaming_inference.offline_inference(
             batch["source_audio"],
             batch["source_audio_lens"],
-            decode_audio=self.cfg.prediction.decode_audio,
             input_pad_len=self.cfg.prediction.max_new_seconds * self.cfg.prediction.input_sample_rate,
             force_bos_positions=force_bos_positions,
             prompt_tokens=prompt_tokens,

@@ -185,7 +185,7 @@ dependencies:
     - lazy-loader==0.4
     - ledoc-ui==0.1.0
     - leptonai==0.26.6
-    - lhotse>=1.31.1
+    - lhotse>=1.32.2
     - libcst==1.8.5
     - librosa==0.11.0
     - lightning==2.4.0

@@ -1444,7 +1444,32 @@ def _convert_tarred_to_duplex(cut, agent_silence_duration):
 
 @data_type_parser(["nemo_tarred_to_duplex"])
 def read_nemo_tarred_to_duplex(config) -> tuple[CutSet, bool]:
-    """Convert single supervision NeMo data to duplex format with user speech and agent silence."""
+    """Convert single-supervision NeMo tarred data to duplex format with user speech and agent silence.
+
+    This parser wraps ``nemo_tarred`` and converts each single-supervision cut
+    into a two-supervision (user + agent) duplex cut.  The user supervision
+    keeps the original audio and text, while the agent supervision is silence
+    with empty text.  A silent ``target_audio`` recording (all zeros, same
+    length as the source) is attached via ``cut.custom["target_audio"]``.
+
+    Input config YAML example (used inside an ``input_cfg`` list)::
+
+        - manifest_filepath: /path/to/manifest__OP_0..63_CL_.json
+          tarred_audio_filepaths: /path/to/audio__OP_0..63_CL_.tar
+          type: nemo_tarred_to_duplex
+          agent_silence_duration: 2.0   # optional, default -0.08
+          weight: 1.0
+
+    Each line in the NeMo manifest JSON is the standard NeMo format::
+
+        {"audio_filepath": "relative/path.wav", "text": "transcript", "duration": 4.5}
+
+    ``agent_silence_duration`` controls how much silence is used for the agent
+    turn.  A positive value appends that many seconds of silence after the
+    user audio.  A negative value (the default, ``-0.08``) re-uses the last
+    ``abs(value)`` seconds of the user audio as the agent region instead of
+    appending new silence.
+    """
 
     # by default, use the last part of user audio as agent silence duration
     agent_silence_duration = config.get("agent_silence_duration", -0.08)

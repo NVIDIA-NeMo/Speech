@@ -196,16 +196,127 @@ def load_checkpoint(checkpoint_path):
     return checkpoint_state
 
 
+def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
+    """Load perception module from another STT/S2S checkpoint.
+
+    Args:
+        model: The model whose perception module will be initialized
+        checkpoint_path: Path to checkpoint file or HF directory
+    """
+    if checkpoint_path is None:
+        return
+
+    import os
+    from nemo.utils import logging
+
+    if os.path.isdir(checkpoint_path):
+        logging.info(f"Loading from HuggingFace format directory: {checkpoint_path}")
+        pretrained_model = model.__class__.from_pretrained(checkpoint_path)
+        checkpoint_state = pretrained_model.state_dict()
+        del pretrained_model
+    else:
+        checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+
+    checkpoint_state = {
+        k.replace("perception.", ""): v for k, v in checkpoint_state.items() if "perception." in k
+    }
+    checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.perception.state_dict())
+    model.perception.load_state_dict(checkpoint_state, strict=True)
+
+
+def init_model_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
+    """Load full model state from a checkpoint.
+
+    Args:
+        model: The model to initialize
+        checkpoint_path: Path to checkpoint file or HF directory
+    """
+    if checkpoint_path is None:
+        return
+
+    import os
+    from nemo.utils import logging
+
+    if os.path.isdir(checkpoint_path):
+        logging.info(f"Loading from HuggingFace format directory: {checkpoint_path}")
+        pretrained_model = model.__class__.from_pretrained(checkpoint_path)
+        checkpoint_state = pretrained_model.state_dict()
+        del pretrained_model
+    else:
+        checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+
+    checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.state_dict())
+    model.load_state_dict(checkpoint_state, strict=True)
+
+
+def load_pretrained_model(model: torch.nn.Module, checkpoint_path: str):
+    """Load a pretrained S2S model from a checkpoint path.
+
+    Supports both incremental loading from safetensors (for large models to avoid OOM)
+    and standard loading from various checkpoint formats.
+
+    Args:
+        model: The model to load weights into
+        checkpoint_path: Path to checkpoint file or HF directory
+    """
+    if checkpoint_path is None:
+        return
+
+    import gc
+    import os
+    from nemo.utils import logging
+
+    logging.info(f"Loading pretrained s2s model from {checkpoint_path}")
+
+    if os.path.isdir(checkpoint_path) and model.cfg.get("incremental_loading", False):
+        # Hugging Face format with incremental loading
+        from safetensors import safe_open
+
+        # Load tensors incrementally to avoid OOM
+        model_state_dict = model.state_dict()
+        loaded_keys = []
+        missing_keys = []
+
+        with safe_open(os.path.join(checkpoint_path, "model.safetensors"), framework="pt", device="cpu") as f:
+            available_keys = f.keys()
+            for key in available_keys:
+                if key in model_state_dict:
+                    # Load tensor and copy to model parameter
+                    tensor = f.get_tensor(key)
+                    model_state_dict[key].copy_(tensor)
+                    loaded_keys.append(key)
+                    del tensor  # Free memory immediately
+                else:
+                    missing_keys.append(key)
+
+                # Periodic garbage collection for very large models
+                if len(loaded_keys) % 100 == 0:
+                    gc.collect()
+
+        logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
+        if missing_keys:
+            logging.warning(f"Keys in checkpoint but not in model: {len(missing_keys)} keys")
+
+        del model_state_dict
+        gc.collect()
+    else:
+        init_model_from_checkpoint(model, checkpoint_path)
+
+
 def maybe_load_pretrained_models(model: torch.nn.Module):
     """
     Optionally load pretrained model weights based on configuration.
 
     Checks for and loads:
     - ``pretrained_perception_from_s2s``: Perception module weights from another S2S checkpoint
-    - ``pretrained_s2s_model``: Full S2S model weights from a checkpoint
+    - ``pretrained_s2s_model``: Full S2S model weights from a checkpoint (supports incremental loading)
+    - ``init_model_from_ckpt``: Full model state from a checkpoint (partial init with shape matching)
     """
     if model.cfg.get("pretrained_perception_from_s2s", None):
-        model.init_perception_from_another_stt_checkpoint(model.cfg.pretrained_perception_from_s2s)
+        init_perception_from_checkpoint(model, model.cfg.pretrained_perception_from_s2s)
 
     if model.cfg.get("pretrained_s2s_model", None):
-        model.load_pretrained_s2s_model(model.cfg.pretrained_s2s_model)
+        load_pretrained_model(model, model.cfg.pretrained_s2s_model)
+
+    if model.cfg.get("init_model_from_ckpt", None):
+        init_model_from_checkpoint(model, model.cfg.init_model_from_ckpt)

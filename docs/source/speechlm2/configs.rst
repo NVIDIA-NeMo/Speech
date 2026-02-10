@@ -31,7 +31,7 @@ SALM Configuration
 ------------------
 
 The SALM (Speech-Augmented Language Model) configuration includes settings for the pretrained LLM, audio perception module, and training parameters.
-See the `SALM paper<https://arxiv.org/abs/2310.09424>`_ for more details.
+See the `SALM paper <https://arxiv.org/abs/2310.09424>`_ for more details.
 
 .. code-block:: yaml
 

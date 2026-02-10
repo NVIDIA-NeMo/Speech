@@ -14,7 +14,7 @@ DuplexEARTTS
 
 DuplexEARTTS is a streaming text-to-speech model designed for duplex speech-to-speech systems. It focuses on low-latency, fully streamable speech generation by converting text tokens into audio representations in real time.
 
-The architecture is based on the Streaming TTS model proposed in `Audio Flamingo 3<https://arxiv.org/abs/2507.08128>`_, with several extensions for duplex interaction:
+The architecture is based on the Streaming TTS model proposed in `Audio Flamingo 3 <https://arxiv.org/abs/2507.08128>`_, with several extensions for duplex interaction:
 
 * **Gated fusion of text and audio representations**: (`GatedProjectedSumRMSNorm`), enabling better multimodal integration.
 * **Subword-aware embeddings**: (`SubwordFlagEmbedding`) to improve pronunciation for words composed of multiple text tokens.
@@ -36,7 +36,7 @@ SALM (Speech-Augmented Language Model)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 SALM is a speech-augmented language model that integrates an audio perception module with a pre-trained LLM. The model is designed to understand speech input and generate text responses.
-This is an implementation of the `SALM paper<https://arxiv.org/abs/2310.09424>`_.
+This is an implementation of the `SALM paper <https://arxiv.org/abs/2310.09424>`_.
 
 Key components:
 

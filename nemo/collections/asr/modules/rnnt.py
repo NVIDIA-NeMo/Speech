@@ -321,12 +321,10 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         Args:
             decoder_states (list of list of torch.Tensor): list of decoder states
-                [B, 1, C]
-                    - B: Batch size.
-                    - C: Dimensionality of the hidden state.
+                of shape ``[B, 1, C]`` where B is batch size and C is hidden state dim.
 
         Returns:
-            batch_states (list of torch.Tensor): batch of decoder states [[B x C]]
+            batch_states (list of torch.Tensor): batch of decoder states ``[[B x C]]``.
         """
         new_state = torch.stack([s[0] for s in decoder_states])
 
@@ -388,7 +386,7 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
         Replaces states in `dst_states` with states from `src_states` based on the given `mask`.
 
         Args:
-            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states`(if provided).
+            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states` (if provided).
             src_states (tuple[torch.Tensor, torch.Tensor]): Values selected at indices where `mask` is True.
             dst_states (tuple[torch.Tensor, torch.Tensor], optional): The output states.
             other_src_states (tuple[torch.Tensor, torch.Tensor], optional): Values selected at indices where `mask` is False.
@@ -1016,19 +1014,17 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
 
     def batch_initialize_states(self, decoder_states: List[List[torch.Tensor]]) -> List[torch.Tensor]:
         """
-        Creates a stacked decoder states to be passed to prediction network
+        Creates a stacked decoder states to be passed to prediction network.
 
         Args:
             decoder_states (list of list of list of torch.Tensor): list of decoder states
-                [B, C, L, H]
-                    - B: Batch size.
-                    - C: e.g., for LSTM, this is 2: hidden and cell states
-                    - L: Number of layers in prediction RNN.
-                    - H: Dimensionality of the hidden state.
+                of shape ``[B, C, L, H]`` where B is batch size, C is the number of state
+                types (e.g., 2 for LSTM: hidden and cell), L is number of layers, and
+                H is the hidden state dimensionality.
 
         Returns:
             batch_states (list of torch.Tensor): batch of decoder states
-                [C x torch.Tensor[L x B x H]
+                ``[C x torch.Tensor[L x B x H]]``.
         """
         # stack decoder states into tensor of shape [B x layers x L x H]
         # permute to the target shape [layers x L x B x H]
@@ -1066,6 +1062,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Aggregates decoder states based on the given indices.
+
         Args:
             src_states (Tuple[torch.Tensor, torch.Tensor]): source states of
                 shape `([L x (batch_size * beam_size, H)], [L x (batch_size * beam_size, H)])`
@@ -1075,10 +1072,12 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
                 the indices in beam that map the source states to the destination states.
             dst_states (Optional[Tuple[torch.Tensor, torch.Tensor]]): If provided, the method
                 updates these tensors in-place.
+
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
+            Tuple[torch.Tensor, torch.Tensor]: The aggregated states.
+
         Note:
-            - The `indices` tensor is expanded to match the shape of the source states
+            The `indices` tensor is expanded to match the shape of the source states
             during the gathering operation.
         """
         layers_num = src_states[0].shape[0]
@@ -1148,7 +1147,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
         Replaces states in `dst_states` with states from `src_states` based on the given `mask`.
 
         Args:
-            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states`(if provided).
+            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states` (if provided).
             src_states (Tuple[torch.Tensor, torch.Tensor]): Values selected at indices where `mask` is True.
             dst_states (Tuple[torch.Tensor, torch.Tensor])): The output states.
             other_src_states (Tuple[torch.Tensor, torch.Tensor], optional): Values selected at indices where `mask` is False.

@@ -17,6 +17,7 @@ from typing import List, Type, Union
 
 import numpy as np
 import pytest
+from lhotse.utils import is_module_available
 from numpy.random import default_rng
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
@@ -329,6 +330,7 @@ class TestRoomSimulation:
 
     max_diff_tol = 1e-5
 
+    @pytest.mark.skipif(not is_module_available("h5py"), reason="h5py not available")
     @pytest.mark.unit
     def test_simulate_room_mix(self, test_data_dir):
         """Test room simulation for fixed parameters."""

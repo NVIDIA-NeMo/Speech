@@ -310,13 +310,9 @@ def maybe_load_pretrained_models(model: torch.nn.Module):
     Checks for and loads:
     - ``pretrained_perception_from_s2s``: Perception module weights from another S2S checkpoint
     - ``pretrained_s2s_model``: Full S2S model weights from a checkpoint (supports incremental loading)
-    - ``init_model_from_ckpt``: Full model state from a checkpoint (partial init with shape matching)
     """
     if model.cfg.get("pretrained_perception_from_s2s", None):
         init_perception_from_checkpoint(model, model.cfg.pretrained_perception_from_s2s)
 
     if model.cfg.get("pretrained_s2s_model", None):
         load_pretrained_model(model, model.cfg.pretrained_s2s_model)
-
-    if model.cfg.get("init_model_from_ckpt", None):
-        init_model_from_checkpoint(model, model.cfg.init_model_from_ckpt)

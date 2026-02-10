@@ -239,3 +239,99 @@ def prepare_text_and_asr_labels(
         })
 
     return result
+
+
+def maybe_prepend_prompt_tokens(
+    batch,
+    embed_fn,
+    source_encoded,
+    source_encoded_lens,
+    text_pad_id,
+):
+    """Optionally prepend prompt embeddings to source/target sequences.
+
+    If ``batch`` does not contain ``"prompt_tokens"``, returns inputs unchanged.
+
+    When prompt tokens are present, creates new tensors with space for prompt + data, then copies:
+    1. Prompt embeddings at the beginning of source_encoded
+    2. Audio encodings after the prompt
+    3. Target tokens (padded) aligned with the audio + prompt timeline
+    4. Source tokens (if present) aligned similarly for ASR head
+
+    All lengths are updated to account for the prompt prefix.
+    Batch entries (target_token_lens, source_tokens, source_token_lens) are updated in place.
+
+    Args:
+        batch: Dictionary containing batch data. Must have "target_tokens" and "target_token_lens".
+            Optionally contains "prompt_tokens", "prompt_token_lens", "source_tokens", "source_token_lens".
+        embed_fn: Callable to embed prompt token IDs into embeddings (e.g. model.embed_tokens).
+        source_encoded: Encoded source audio features (B, T_src, H).
+        source_encoded_lens: Source encoding lengths (B,).
+        text_pad_id: Token ID for padding.
+
+    Returns:
+        tuple of (source_encoded, source_encoded_lens, target_tokens).
+    """
+    target_tokens = batch["target_tokens"]
+
+    if "prompt_tokens" not in batch:
+        return source_encoded, source_encoded_lens, target_tokens
+
+    prompt_embedded = embed_fn(batch["prompt_tokens"])
+    prompt_token_lens = batch["prompt_token_lens"]
+    target_token_lens = batch["target_token_lens"]
+    source_tokens = batch.get("source_tokens")
+    source_token_lens = batch.get("source_token_lens")
+
+    B, max_prompt_len, H = prompt_embedded.shape
+    T_src = source_encoded.shape[1]
+    T_tgt = target_tokens.shape[1]
+
+    new_source_encoded = torch.zeros(
+        B, max_prompt_len + T_src, H, dtype=source_encoded.dtype, device=source_encoded.device
+    )
+    new_target_tokens = torch.full(
+        (B, max_prompt_len + T_tgt), text_pad_id, dtype=target_tokens.dtype, device=target_tokens.device
+    )
+
+    new_source_tokens = None
+    if source_tokens is not None:
+        T_src_tok = source_tokens.shape[1]
+        new_source_tokens = torch.full(
+            (B, max_prompt_len + T_src_tok),
+            text_pad_id,
+            dtype=source_tokens.dtype,
+            device=source_tokens.device,
+        )
+
+    source_encoded_lens = source_encoded_lens.clone()
+    target_token_lens = target_token_lens.clone()
+    if source_token_lens is not None:
+        source_token_lens = source_token_lens.clone()
+
+    for i, prompt_len in enumerate(prompt_token_lens):
+        prompt_len = prompt_len.item()
+
+        if prompt_len > 0:
+            new_source_encoded[i, :prompt_len, :] = prompt_embedded[i, :prompt_len, :]
+
+        src_len = source_encoded_lens[i].item()
+        new_source_encoded[i, prompt_len : prompt_len + src_len, :] = source_encoded[i, :src_len, :]
+
+        tgt_len = target_token_lens[i].item()
+        new_target_tokens[i, prompt_len : prompt_len + tgt_len] = target_tokens[i, :tgt_len]
+
+        source_encoded_lens[i] = prompt_len + src_len
+        target_token_lens[i] = prompt_len + tgt_len
+
+        if new_source_tokens is not None:
+            src_tok_len = source_token_lens[i].item()
+            new_source_tokens[i, prompt_len : prompt_len + src_tok_len] = source_tokens[i, :src_tok_len]
+            source_token_lens[i] = prompt_len + src_tok_len
+
+    batch["target_token_lens"] = target_token_lens
+    if new_source_tokens is not None:
+        batch["source_tokens"] = new_source_tokens
+        batch["source_token_lens"] = source_token_lens
+
+    return new_source_encoded, source_encoded_lens, new_target_tokens

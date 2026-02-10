@@ -13,7 +13,6 @@
 # limitations under the License.
 import copy
 import os
-import random
 import tempfile
 
 import soundfile as sf
@@ -38,9 +37,9 @@ from torch.distributed.tensor.parallel import (
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.collections.speechlm2.parts.augmentation import DEFAULT_CODEC_SETTINGS, AudioAugmenter
+from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
-from nemo.collections.speechlm2.parts.label_prep import prepare_text_and_asr_labels
+from nemo.collections.speechlm2.parts.label_prep import maybe_prepend_prompt_tokens, prepare_text_and_asr_labels
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.metrics.empty_text import EmptyTextMetric
@@ -221,7 +220,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return ans
 
-    def _is_noise_augmentation_dataset(self, formatter: str) -> bool:
+    def _is_augmentation_dataset(self, formatter: str) -> bool:
         if self.cfg.get('force_use_noise_augmentation', False):
             return True
         return formatter != 's2s_duplex_overlap_as_s2s_duplex' and formatter != 'nemo_tarred_to_duplex'
@@ -241,151 +240,27 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         return loss_scale
 
     def prepare_inputs(self, batch: dict):
-        # Apply augmentations in order: noise -> room IR -> mic IR -> codec
-        # Each augmentation has its own independent condition and flag
 
-        # 1. Noise augmentation (controlled by use_noise_aug flag)
-        if (
-            self.cfg.get('use_noise_aug', None)
-            and self.training
-            and self._is_noise_augmentation_dataset(batch["formatter"][0])
-        ):
-            noise_prob = self.cfg.get('noise_prob', 0.99)
-            noise_min_snr = self.cfg.get('noise_min_snr', 20)
-            noise_max_snr = self.cfg.get('noise_max_snr', 50)
-            noise_path = self.cfg.get('noise_aug_path', None)
-            noise_path_name = "*"
+        # Audio data augmentation
+        if hasattr(self, 'audio_augmenter') and self.training and self._is_augmentation_dataset(batch["formatter"][0]):
+            batch["source_audio"] = self.audio_augmenter.augment_batch(
+                self.cfg, batch["source_audio"], batch["source_audio_lens"]
+            )
 
-            if noise_prob and random.random() < noise_prob and noise_path:
-                batch["source_audio"] = self.audio_augmenter.add_noise_to_batch(
-                    batch["source_audio"],
-                    os.path.join(noise_path, noise_path_name),
-                    snr_db=random.randint(noise_min_snr, noise_max_snr),
-                    noise_prob_scale_user=self.cfg.get('noise_prob_scale_user', 0.3),
-                    noise_prob_scale_user_min_snr=self.cfg.get('noise_prob_scale_user_min_snr', -15),
-                    noise_prob_scale_user_max_snr=self.cfg.get('noise_prob_scale_user_max_snr', 24),
-                    snr_measure_dur=self.cfg.get('snr_measure_dur', 0.0),
-                    noise_resample=self.cfg.get('noise_resample', True),
-                    noise_prob_low_pass=self.cfg.get('noise_prob_low_pass', 0.1),
-                )
-
-        # 2. Room impulse response augmentation
-        if (
-            self.cfg.get('use_room_ir_aug', None)
-            and self.training
-            and self._is_noise_augmentation_dataset(batch["formatter"][0])
-        ):
-            roomir_prob = self.cfg.get('roomir_prob', 0.0)
-            roomir_path = self.cfg.get('roomir_aug_path', None)
-
-            if roomir_prob > 0 and roomir_path and random.random() < roomir_prob:
-                batch["source_audio"] = self.audio_augmenter.add_room_ir_to_batch(
-                    batch["source_audio"],
-                    batch["source_audio_lens"],
-                    roomir_path,
-                    use_loudness_norm=self.cfg.get('roomir_use_loudness_norm', True),
-                )
-
-        # 3. Microphone impulse response augmentation
-        if (
-            self.cfg.get('use_mic_ir_aug', None)
-            and self.training
-            and self._is_noise_augmentation_dataset(batch["formatter"][0])
-        ):
-            micir_prob = self.cfg.get('micir_prob', 0.0)
-            micir_path = self.cfg.get('micir_aug_path', None)
-
-            if micir_prob > 0 and micir_path and random.random() < micir_prob:
-                batch["source_audio"] = self.audio_augmenter.add_mic_ir_to_batch(
-                    batch["source_audio"],
-                    batch["source_audio_lens"],
-                    micir_path,
-                    use_loudness_norm=self.cfg.get('micir_use_loudness_norm', True),
-                )
-
-        # 4. Codec augmentation
-        if (
-            self.cfg.get('use_codec_aug', None)
-            and self.training
-            and self._is_noise_augmentation_dataset(batch["formatter"][0])
-        ):
-            codec_prob = self.cfg.get('codec_prob', 0.0)
-            codec_settings = self.cfg.get('codec_settings', None)
-
-            if codec_prob > 0 and random.random() < codec_prob:
-                # Use custom codec settings if provided, otherwise use defaults
-                if codec_settings is None:
-                    codec_settings = DEFAULT_CODEC_SETTINGS
-                batch["source_audio"] = self.audio_augmenter.add_codec_to_batch(
-                    batch["source_audio"],
-                    batch["source_audio_lens"],
-                    codec_settings,
-                )
-
+        # Speech encoder forward pass
         source_encoded, source_encoded_lens, _ = self.perception(
             input_signal=batch["source_audio"],
             input_signal_length=batch["source_audio_lens"],
             return_encoder_emb=True,
         )
 
-        target_tokens = batch["target_tokens"]
-
-        # Prepend prompt tokens to the sequence for few-shot learning or instruction following.
-        # This creates new tensors with space for prompt + data, then copies:
-        # 1. Prompt embeddings at the beginning
-        # 2. Audio encodings after the prompt
-        # 3. Target tokens (padded) aligned with the audio + prompt timeline
-        # All lengths are updated to account for the prompt prefix.
-        if "prompt_tokens" in batch:
-            prompt_embedded = self.embed_tokens(batch["prompt_tokens"])
-            B, max_prompt_len, H = prompt_embedded.shape
-            T_src = source_encoded.shape[1]
-            T_tgt = target_tokens.shape[1]
-
-            new_source_encoded = torch.zeros(
-                B, max_prompt_len + T_src, H, dtype=source_encoded.dtype, device=source_encoded.device
-            )
-            new_target_tokens = torch.full(
-                (B, max_prompt_len + T_tgt), self.text_pad_id, dtype=target_tokens.dtype, device=target_tokens.device
-            )
-            # If source_tokens are present (used by ASR head for user text prediction),
-            # prepend PADs to align ASR labels with the prompt span as well.
-            if "source_tokens" in batch:
-                source_tokens = batch["source_tokens"]
-                T_src_tok = source_tokens.shape[1]
-                new_source_tokens = torch.full(
-                    (B, max_prompt_len + T_src_tok),
-                    self.text_pad_id,
-                    dtype=source_tokens.dtype,
-                    device=source_tokens.device,
-                )
-
-            # For each item, insert prompt and original data at correct offsets
-            for i, prompt_len in enumerate(batch["prompt_token_lens"]):
-                prompt_len = prompt_len.item()
-
-                if prompt_len > 0:
-                    new_source_encoded[i, :prompt_len, :] = prompt_embedded[i, :prompt_len, :]
-
-                src_len = source_encoded_lens[i].item()
-                new_source_encoded[i, prompt_len : prompt_len + src_len, :] = source_encoded[i, :src_len, :]
-
-                tgt_len = batch["target_token_lens"][i].item()
-                new_target_tokens[i, prompt_len : prompt_len + tgt_len] = target_tokens[i, :tgt_len]
-
-                source_encoded_lens[i] = prompt_len + src_len
-                batch["target_token_lens"][i] = prompt_len + tgt_len
-
-                # If source_tokens exist, copy them after the prompt and update lengths
-                if "source_tokens" in batch:
-                    src_len = batch["source_token_lens"][i].item()
-                    new_source_tokens[i, prompt_len : prompt_len + src_len] = source_tokens[i, :src_len]
-                    batch["source_token_lens"][i] = prompt_len + src_len
-
-            source_encoded = new_source_encoded
-            target_tokens = new_target_tokens
-            if "source_tokens" in batch:
-                batch["source_tokens"] = new_source_tokens
+        source_encoded, source_encoded_lens, target_tokens = maybe_prepend_prompt_tokens(
+            batch=batch,
+            embed_fn=self.embed_tokens,
+            source_encoded=source_encoded,
+            source_encoded_lens=source_encoded_lens,
+            text_pad_id=self.text_pad_id,
+        )
 
         if (diff := target_tokens.shape[1] - source_encoded.shape[1]) < 0:
             target_tokens = torch.cat(

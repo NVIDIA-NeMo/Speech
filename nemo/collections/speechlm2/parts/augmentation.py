@@ -375,6 +375,75 @@ class AudioAugmenter:
             return decoded
 
 
+    def augment_batch(self, cfg, source_audio, source_audio_lens):
+        """Apply all configured augmentations to batch audio.
+
+        Applies augmentations in order: noise -> room IR -> mic IR -> codec.
+        Each augmentation is independently controlled by its own config flag and probability.
+
+        Args:
+            cfg: Model configuration with augmentation settings.
+            source_audio: Batch audio tensor (B, T).
+            source_audio_lens: Audio lengths tensor (B,).
+
+        Returns:
+            Augmented source_audio tensor.
+        """
+        # 1. Noise augmentation
+        if cfg.get('use_noise_aug', None):
+            noise_prob = cfg.get('noise_prob', 0.99)
+            noise_path = cfg.get('noise_aug_path', None)
+            if noise_prob and random.random() < noise_prob and noise_path:
+                source_audio = self.add_noise_to_batch(
+                    source_audio,
+                    os.path.join(noise_path, "*"),
+                    snr_db=random.randint(cfg.get('noise_min_snr', 20), cfg.get('noise_max_snr', 50)),
+                    noise_prob_scale_user=cfg.get('noise_prob_scale_user', 0.3),
+                    noise_prob_scale_user_min_snr=cfg.get('noise_prob_scale_user_min_snr', -15),
+                    noise_prob_scale_user_max_snr=cfg.get('noise_prob_scale_user_max_snr', 24),
+                    snr_measure_dur=cfg.get('snr_measure_dur', 0.0),
+                    noise_resample=cfg.get('noise_resample', True),
+                    noise_prob_low_pass=cfg.get('noise_prob_low_pass', 0.1),
+                )
+
+        # 2. Room impulse response augmentation
+        if cfg.get('use_room_ir_aug', None):
+            roomir_prob = cfg.get('roomir_prob', 0.0)
+            roomir_path = cfg.get('roomir_aug_path', None)
+            if roomir_prob > 0 and roomir_path and random.random() < roomir_prob:
+                source_audio = self.add_room_ir_to_batch(
+                    source_audio,
+                    source_audio_lens,
+                    roomir_path,
+                    use_loudness_norm=cfg.get('roomir_use_loudness_norm', True),
+                )
+
+        # 3. Microphone impulse response augmentation
+        if cfg.get('use_mic_ir_aug', None):
+            micir_prob = cfg.get('micir_prob', 0.0)
+            micir_path = cfg.get('micir_aug_path', None)
+            if micir_prob > 0 and micir_path and random.random() < micir_prob:
+                source_audio = self.add_mic_ir_to_batch(
+                    source_audio,
+                    source_audio_lens,
+                    micir_path,
+                    use_loudness_norm=cfg.get('micir_use_loudness_norm', True),
+                )
+
+        # 4. Codec augmentation
+        if cfg.get('use_codec_aug', None):
+            codec_prob = cfg.get('codec_prob', 0.0)
+            if codec_prob > 0 and random.random() < codec_prob:
+                codec_settings = cfg.get('codec_settings', None) or DEFAULT_CODEC_SETTINGS
+                source_audio = self.add_codec_to_batch(
+                    source_audio,
+                    source_audio_lens,
+                    codec_settings,
+                )
+
+        return source_audio
+
+
 DEFAULT_CODEC_SETTINGS = {
     "high_libopus_8k_5k": ["-ar", "8000", "-c:a", "libopus", "-application", "voip", "-b:a", "5.5k", "-f", "ogg"],
     "high_g726_8k_16k": ["-ar", "8000", "-c:a", "adpcm_g726", "-b:a", "16k", "-f", "wav"],

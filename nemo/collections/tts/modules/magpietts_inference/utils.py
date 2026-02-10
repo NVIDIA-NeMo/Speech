@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Tuple
 
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+import nemo
 from nemo.collections.tts.models import MagpieTTSModel
 from nemo.utils import logging
 
@@ -94,12 +96,6 @@ def update_config_for_inference(
     """
     model_cfg.codecmodel_path = codecmodel_path
 
-    # Update text tokenizer paths for backward compatibility
-    if hasattr(model_cfg, 'text_tokenizer'):
-        model_cfg.text_tokenizer.g2p.phoneme_dict = "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
-        model_cfg.text_tokenizer.g2p.heteronyms = "scripts/tts_dataset_files/heteronyms-052722"
-        model_cfg.text_tokenizer.g2p.phoneme_probability = 1.0
-
     # Disable training datasets
     model_cfg.train_ds = None
     model_cfg.validation_ds = None
@@ -151,6 +147,31 @@ def update_config_for_inference(
     if hasattr(model_cfg, 'sample_rate'):
         sample_rate = model_cfg.sample_rate
         del model_cfg.sample_rate
+
+    # Resolve phoneme_dict and heteronyms to absolute paths (they are relative to repo root),
+    # to handle use cases where the project is run from a different directory (e.g. in NeMo Skills).
+    _repo_root = Path(nemo.__file__).resolve().parent.parent
+
+    def _resolve_g2p_paths(g2p: DictConfig) -> None:
+        if g2p is None:
+            return
+        with open_dict(g2p):
+            if (
+                hasattr(g2p, "phoneme_dict")
+                and isinstance(g2p.phoneme_dict, str)
+                and not os.path.isabs(g2p.phoneme_dict)
+            ):
+                g2p.phoneme_dict = str(_repo_root / g2p.phoneme_dict)
+            if hasattr(g2p, "heteronyms") and isinstance(g2p.heteronyms, str) and not os.path.isabs(g2p.heteronyms):
+                g2p.heteronyms = str(_repo_root / g2p.heteronyms)
+
+    if hasattr(model_cfg, "text_tokenizer") and model_cfg.text_tokenizer is not None:
+        if hasattr(model_cfg.text_tokenizer, "g2p"):
+            _resolve_g2p_paths(model_cfg.text_tokenizer.g2p)
+    if hasattr(model_cfg, "text_tokenizers") and model_cfg.text_tokenizers is not None:
+        for _tokenizer_cfg in model_cfg.text_tokenizers.values():
+            if hasattr(_tokenizer_cfg, "g2p"):
+                _resolve_g2p_paths(_tokenizer_cfg.g2p)
 
     return model_cfg, sample_rate
 

@@ -86,6 +86,9 @@ class EvaluationMetrics:
     start_time: datetime = None
     end_time: datetime = None
 
+    # Buffered log entries (start_time, formatted_entry) - sorted and written at end
+    log_entries: List[Tuple[float, str]] = field(default_factory=list)
+
     # Audio timing state
     user_last_audio_time: Optional[float] = None
     agent_last_audio_time: Optional[float] = None
@@ -108,7 +111,6 @@ class EvaluationMetrics:
 
     # Segment tracking for segLST output
     segments: List[SegmentEntry] = field(default_factory=list)
-    current_segment_start: Optional[float] = None
     current_user_segment: Optional[SegmentEntry] = None
     current_agent_segment: Optional[SegmentEntry] = None
 
@@ -160,13 +162,13 @@ class EvaluationMetrics:
         self.latencies = []
         self.turns = []
         self.segments = []
+        self.log_entries = []
 
         # Reset audio buffers
         self.user_audio_chunks = []
         self.agent_audio_chunks = []
         self.audio_start_timestamp = None
         self.thread_start_timestamp = None
-        self.current_segment_start = None
         self.current_user_segment = None
         self.current_agent_segment = None
 
@@ -196,7 +198,6 @@ class RTVIEvaluationBridge:
         user_url: str,
         agent_url: str,
         log_file: Optional[str] = None,
-        audio_file: Optional[str] = None,
         session_name: Optional[str] = None,
         user_output_sample_rate: int = 24000,
         agent_output_sample_rate: int = 24000,
@@ -208,16 +209,37 @@ class RTVIEvaluationBridge:
         burst_size_range: Tuple[int, int] = (3, 8),
         burst_delay_ms: int = 0,
         grace_period: float = 5.0,
-        no_audio_timeout: float = 0.0,
-        seglst_start_offset_seconds: float = -0.1,
-        seglst_end_offset_seconds: float = -0.35,
+        no_audio_timeout: float = 5.0,
+        seglst_start_offset_seconds: float = -0.00,
+        seglst_end_offset_seconds: float = -0.00,
         turn_end_silence_threshold: float = 0.35,
         noise_config: Optional[NoiseConfig] = None,
     ):
+        """
+        Args:
+            user_url: URL of the user WebSocket
+            agent_url: URL of the agent WebSocket
+            log_file: Path to the log file
+            session_name: Name of the session
+            user_output_sample_rate: Sample rate of the user output
+            agent_output_sample_rate: Sample rate of the agent output
+            user_input_sample_rate: Sample rate of the user input
+            agent_input_sample_rate: Sample rate of the agent input
+            output_sample_rate: Sample rate of the output
+            audio_chunk_in_seconds: Duration of the audio chunk in seconds
+            use_burst_mode: Whether to use burst mode, default to steady mode with fixed interval
+            burst_size_range: Range of the burst size
+            burst_delay_ms: Delay between the frames in the burst
+            grace_period: Grace period after the main duration, used to drain the websocket
+            no_audio_timeout: Timeout for no audio when in grace period
+            seglst_start_offset_seconds: Start offset for the segLST, used to adjust the start time of the segLST timestamps
+            seglst_end_offset_seconds: End offset for the segLST, used to adjust the end time of the segLST timestamps
+            turn_end_silence_threshold: Silence threshold for the turn, used to determine the end-of-turn by continuous silence
+            noise_config: Noise configuration, used to configure the noise for the audio stream
+        """
         self.user_url = user_url
         self.agent_url = agent_url
         self.log_file = log_file
-        self.audio_file = audio_file
         self.user_output_sample_rate = user_output_sample_rate
         self.agent_output_sample_rate = agent_output_sample_rate
         self.user_input_sample_rate = user_input_sample_rate
@@ -404,6 +426,15 @@ class RTVIEvaluationBridge:
                 if silence_duration >= self.turn_end_silence_threshold:
                     # Close segment after sustained silence
                     segment.end_time = self._get_relative_time(last_speech)
+
+                    # Ensure end_time is not before start_time (can happen with timing jitter)
+                    if segment.end_time < segment.start_time:
+                        logger.warning(
+                            f"[AUDIO SEG] {speaker.capitalize()} segment has end_time < start_time, "
+                            f"adjusting: {segment.start_time:.3f}s -> {segment.end_time:.3f}s"
+                        )
+                        segment.end_time = segment.start_time
+
                     duration = segment.end_time - segment.start_time
 
                     logger.info(
@@ -411,8 +442,8 @@ class RTVIEvaluationBridge:
                         f"(duration: {duration:.3f}s, {len(segment.audio_chunks)} chunks)"
                     )
 
-                    # Only save segments with audio
-                    if len(segment.audio_chunks) > 0:
+                    # Only save segments with audio and valid duration
+                    if len(segment.audio_chunks) > 0 and duration >= 0:
                         self.metrics.audio_segments.append(segment)
 
                     # Clear in-progress segment
@@ -568,8 +599,6 @@ class RTVIEvaluationBridge:
                 else:
                     logger.error(f"Agent connection failed after {max_retries} attempts")
                     raise
-
-        self.metrics.start_time = datetime.now()
 
         # Send RTVI client-ready handshake to both agents
         await self._send_client_ready(self.user_ws)
@@ -734,6 +763,9 @@ class RTVIEvaluationBridge:
             # Disconnect existing WebSocket connections (without printing stats)
             await self.disconnect(print_stats=False)
 
+            # Wait for 2 seconds to ensure the WebSocket connections are closed
+            await asyncio.sleep(2.0)
+
             # Reconnect to both agents
             await self.connect()
             logger.info("WebSocket reconnection complete")
@@ -744,6 +776,7 @@ class RTVIEvaluationBridge:
 
         # Reset all metrics
         self.metrics.reset()
+        self.metrics.start_time = datetime.now()
 
         logger.info("Both agents reset complete")
 
@@ -829,87 +862,6 @@ class RTVIEvaluationBridge:
         except Exception as e:
             logger.error(f"Error waiting for response: {e}")
             return False
-
-    def _should_forward_frame(self, frame, source="unknown") -> bool:
-        """
-        Determine if a frame should be forwarded between agents.
-        Only forwards audio frames - filters out all other messages.
-
-        Args:
-            frame: Already deserialized frame from receive loop
-            source: Source of the frame for logging
-        """
-        try:
-            if frame is None:
-                return False  # Don't forward unknown frames
-
-            # Only forward raw audio frames (not message frames)
-            if hasattr(frame, 'audio') and frame.audio:
-                return True
-
-            # Check if it's a message frame with audio data
-            if hasattr(frame, 'message') and frame.message:
-                if isinstance(frame.message, str):
-                    data = json.loads(frame.message)
-                else:
-                    data = frame.message
-
-                msg_type = data.get("type", "")
-
-                # Only forward raw audio messages
-                if msg_type in ["raw-audio", "raw-audio-batch"]:
-                    return True
-                else:
-                    # Filter out all other messages
-                    return False
-
-            return False  # Don't forward anything else
-        except Exception as e:
-            logger.debug(f"[{source}] Error checking frame for forwarding: {e}")
-            return False  # Don't forward if we can't determine
-
-    async def _reconnect_websocket(self, direction: str, max_retries: int = 3) -> websockets.WebSocketClientProtocol:
-        """
-        Reconnect to a websocket endpoint.
-
-        Args:
-            direction: "USER" or "AGENT"
-            max_retries: Maximum reconnection attempts
-
-        Returns:
-            New WebSocket connection
-        """
-        url = self.user_url if direction == "USER" else self.agent_url
-
-        for attempt in range(max_retries):
-            try:
-                logger.warning(
-                    f"[RECONNECT {direction}] Attempting reconnection to {url} (attempt {attempt + 1}/{max_retries})"
-                )
-                ws = await websockets.connect(url, ping_interval=20, ping_timeout=10, close_timeout=10)
-
-                # Send client-ready handshake
-                await self._send_client_ready(ws)
-
-                # Update the connection reference
-                if direction == "USER":
-                    self.user_ws = ws
-                else:
-                    self.agent_ws = ws
-
-                logger.info(f"[RECONNECT {direction}] Successfully reconnected")
-                return ws
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    wait_time = 2**attempt
-                    logger.warning(
-                        f"[RECONNECT {direction}] Failed (attempt {attempt + 1}): {e}, retrying in {wait_time}s..."
-                    )
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"[RECONNECT {direction}] Failed after {max_retries} attempts")
-                    raise
 
     async def _receive_to_queue(
         self,
@@ -1277,6 +1229,7 @@ class RTVIEvaluationBridge:
             duration: Duration of the evaluation in seconds
         """
         logger.info(f"[THREADED BRIDGE] Routing audio for {duration} seconds...")
+        self.metrics.start_time = datetime.now()
 
         # Clear debug accumulation lists for this run (only final sent audio)
         self.sent_to_agent_chunks = []
@@ -1332,17 +1285,17 @@ class RTVIEvaluationBridge:
             }
             self.metrics.turns.append(turn_data)
 
-            # Calculate turn timing
-            if self.metrics.current_segment_start is not None:
-                segment_start = self._get_relative_time(self.metrics.current_segment_start)
+            # Calculate turn timing from current_user_segment
+            if self.metrics.current_user_segment is not None:
+                segment_start = self.metrics.current_user_segment.start_time
                 segment_end = self._get_relative_time(timestamp)
             else:
                 segment_start = 0.0
                 segment_end = self._get_relative_time(timestamp)
 
             if self.log_file:
-                with open(self.log_file, "a") as f:
-                    f.write(self._format_turn_log("user", complete_text, segment_start, segment_end))
+                log_entry = self._format_turn_log("user", complete_text, segment_start, segment_end)
+                self.metrics.log_entries.append((segment_start, log_entry))
 
             # Finalize user segment if one exists
             if self.audio_file and self.metrics.current_user_segment is not None:
@@ -1370,9 +1323,9 @@ class RTVIEvaluationBridge:
             }
             self.metrics.turns.append(turn_data)
 
-            # Calculate turn timing
-            if self.metrics.current_segment_start is not None:
-                segment_start = self._get_relative_time(self.metrics.current_segment_start)
+            # Calculate turn timing from current_agent_segment
+            if self.metrics.current_agent_segment is not None:
+                segment_start = self.metrics.current_agent_segment.start_time
                 segment_end = self._get_relative_time(timestamp)
             else:
                 segment_start = 0.0
@@ -1384,8 +1337,8 @@ class RTVIEvaluationBridge:
                 latency_ms = self.metrics.latencies[-1].latency_ms
 
             if self.log_file:
-                with open(self.log_file, "a") as f:
-                    f.write(self._format_turn_log("agent", complete_text, segment_start, segment_end, latency_ms))
+                log_entry = self._format_turn_log("agent", complete_text, segment_start, segment_end, latency_ms)
+                self.metrics.log_entries.append((segment_start, log_entry))
 
             # Finalize agent segment if one exists
             if self.audio_file and self.metrics.current_agent_segment is not None:
@@ -1396,54 +1349,33 @@ class RTVIEvaluationBridge:
 
             self.metrics.agent_current_transcript = ""
 
-        # Finalize any pending audio segment (even if no transcript received yet)
-        # This ensures all recorded audio has a corresponding segment entry
-        # Note: Only needed if segments weren't already finalized above
-        if (
-            self.audio_file
-            and self.metrics.current_segment_start is not None
-            and self.metrics.thread_start_timestamp is not None
-            and self.metrics.current_user_segment is None  # Not already finalized
-            and self.metrics.current_agent_segment is None  # Not already finalized
-        ):
-            # Calculate relative times using thread start as reference
-            segment_start = self._get_relative_time(self.metrics.current_segment_start)
-            segment_end = self._get_relative_time(timestamp)
-
-            # Determine which speaker based on recent audio activity
-            # If neither has transcript, use the most recent audio time to determine speaker
-            if user_has_transcript:
-                speaker = "user"
-                transcript = self.metrics.user_current_transcript or "[incomplete]"
-            elif agent_has_transcript:
-                speaker = "agent"
-                transcript = self.metrics.agent_current_transcript or "[incomplete]"
-            else:
-                # No transcript available, determine by last audio time
-                user_last = self.metrics.user_last_audio_time or 0
-                agent_last = self.metrics.agent_last_audio_time or 0
-                if agent_last > user_last:
-                    speaker = "agent"
-                    transcript = "[no transcript received]"
-                    logger.info(f"[AGENT FINAL] Finalizing audio segment with no transcript")
-                else:
-                    speaker = "user"
-                    transcript = "[no transcript received]"
-                    logger.info(f"[USER FINAL] Finalizing audio segment with no transcript")
-
-            segment = SegmentEntry(
-                start_time=segment_start, end_time=segment_end, speaker=speaker, transcript=transcript
-            )
-            self.metrics.segments.append(segment)
-            logger.info(f"[SEGMENT FINAL] Created final segment: {speaker} {segment_start:.3f}-{segment_end:.3f}s")
-            self.metrics.current_segment_start = None
-
         # Finalize any in-progress audio segments
         self._finalize_audio_segments()
+
+        # Write sorted log entries to conversation log
+        self._write_sorted_log_entries()
 
         # Debug: Save accumulated sent audio chunks for analysis
         self._save_bridge_audio_log()
         self._save_audio_and_seglst()
+
+    def _write_sorted_log_entries(self):
+        """Write all buffered log entries to file, sorted by start time."""
+        if not self.log_file or not self.metrics.log_entries:
+            return
+
+        try:
+            # Sort entries by start_time (first element of tuple)
+            sorted_entries = sorted(self.metrics.log_entries, key=lambda x: x[0])
+
+            # Append all sorted entries to log file
+            with open(self.log_file, "a") as f:
+                for _start_time, log_entry in sorted_entries:
+                    f.write(log_entry)
+
+            logger.info(f"[LOG] Wrote {len(sorted_entries)} conversation turns to log file (sorted by time)")
+        except Exception as e:
+            logger.error(f"[LOG] Error writing sorted log entries: {e}")
 
     def _save_bridge_audio_log(self):
         """Save final sent audio chunks to disk as stereo WAV for debugging."""
@@ -1575,11 +1507,6 @@ class RTVIEvaluationBridge:
 
             # Track when user bot starts speaking
             if message_type == RTVI_BOT_STARTED_SPEAKING:
-                # Set segment start when user starts speaking (not on first audio which may be silence)
-                if self.audio_file and self.metrics.current_segment_start is None:
-                    self.metrics.current_segment_start = timestamp
-                    logger.debug(f"[USER SEGMENT] Started segment at {timestamp:.3f}")
-
                 # Create a new segment for this turn
                 if self.audio_file:
                     relative_time = self._get_relative_time(timestamp)
@@ -1637,37 +1564,35 @@ class RTVIEvaluationBridge:
                         segment_start = matched_audio_segment.start_time
                         segment_end = matched_audio_segment.end_time
                     else:
-                        # Fallback to protocol-based timing
-                        if self.metrics.current_segment_start is not None:
-                            segment_start = self._get_relative_time(self.metrics.current_segment_start)
+                        # Fallback to protocol-based timing from current_user_segment
+                        if self.metrics.current_user_segment is not None:
+                            segment_start = self.metrics.current_user_segment.start_time
                             segment_end = self._get_relative_time(timestamp)
                         else:
-                            # Fallback if segment start wasn't set
+                            # Fallback if segment wasn't created
                             segment_start = 0.0
                             segment_end = self._get_relative_time(timestamp)
 
                     if self.log_file:
-                        with open(self.log_file, "a") as f:
-                            f.write(self._format_turn_log("user", complete_text, segment_start, segment_end))
+                        log_entry = self._format_turn_log("user", complete_text, segment_start, segment_end)
+                        self.metrics.log_entries.append((segment_start, log_entry))
 
                     # Create segment entry for segLST
-                    if self.audio_file and self.metrics.current_segment_start is not None:
+                    if self.audio_file and self.metrics.current_user_segment is not None:
                         # Finalize the current segment with transcript and end time
-                        if self.metrics.current_user_segment is not None:
-                            self.metrics.current_user_segment.end_time = segment_end
-                            self.metrics.current_user_segment.transcript = complete_text
-                            self.metrics.segments.append(self.metrics.current_user_segment)
-                            self.metrics.current_user_segment = None
-                        else:
-                            # Fallback: create segment without audio chunks (shouldn't happen normally)
-                            segment = SegmentEntry(
-                                start_time=segment_start,
-                                end_time=segment_end,
-                                speaker="user",
-                                transcript=complete_text,
-                            )
-                            self.metrics.segments.append(segment)
-                        self.metrics.current_segment_start = None
+                        self.metrics.current_user_segment.end_time = segment_end
+                        self.metrics.current_user_segment.transcript = complete_text
+                        self.metrics.segments.append(self.metrics.current_user_segment)
+                        self.metrics.current_user_segment = None
+                    elif self.audio_file and segment_start != 0.0:
+                        # Fallback: create segment without audio chunks (shouldn't happen normally)
+                        segment = SegmentEntry(
+                            start_time=segment_start,
+                            end_time=segment_end,
+                            speaker="user",
+                            transcript=complete_text,
+                        )
+                        self.metrics.segments.append(segment)
 
                     # Clear accumulated text for next turn
                     self.metrics.user_current_transcript = ""
@@ -1687,35 +1612,33 @@ class RTVIEvaluationBridge:
                     self.metrics.turns.append(turn_data)
 
                     # Calculate turn timing for log and segLST
-                    if self.metrics.current_segment_start is not None:
-                        segment_start = self._get_relative_time(self.metrics.current_segment_start)
+                    if self.metrics.current_user_segment is not None:
+                        segment_start = self.metrics.current_user_segment.start_time
                         segment_end = self._get_relative_time(timestamp)
                     else:
                         segment_start = 0.0
                         segment_end = self._get_relative_time(timestamp)
 
                     if self.log_file:
-                        with open(self.log_file, "a") as f:
-                            f.write(self._format_turn_log("user", complete_text, segment_start, segment_end))
+                        log_entry = self._format_turn_log("user", complete_text, segment_start, segment_end)
+                        self.metrics.log_entries.append((segment_start, log_entry))
 
                     # Create segment entry for segLST with interrupted placeholder
-                    if self.audio_file and self.metrics.current_segment_start is not None:
+                    if self.audio_file and self.metrics.current_user_segment is not None:
                         # Finalize the current segment with interrupted text
-                        if self.metrics.current_user_segment is not None:
-                            self.metrics.current_user_segment.end_time = segment_end
-                            self.metrics.current_user_segment.transcript = complete_text
-                            self.metrics.segments.append(self.metrics.current_user_segment)
-                            self.metrics.current_user_segment = None
-                        else:
-                            # Fallback: create segment without audio chunks
-                            segment = SegmentEntry(
-                                start_time=segment_start,
-                                end_time=segment_end,
-                                speaker="user",
-                                transcript=complete_text,
-                            )
-                            self.metrics.segments.append(segment)
-                        self.metrics.current_segment_start = None
+                        self.metrics.current_user_segment.end_time = segment_end
+                        self.metrics.current_user_segment.transcript = complete_text
+                        self.metrics.segments.append(self.metrics.current_user_segment)
+                        self.metrics.current_user_segment = None
+                    elif self.audio_file and segment_start != 0.0:
+                        # Fallback: create segment without audio chunks
+                        segment = SegmentEntry(
+                            start_time=segment_start,
+                            end_time=segment_end,
+                            speaker="user",
+                            transcript=complete_text,
+                        )
+                        self.metrics.segments.append(segment)
 
     async def _monitor_agent_message(self, frame):
         """
@@ -1822,9 +1745,9 @@ class RTVIEvaluationBridge:
                     segment_start = matched_audio_segment.start_time
                     segment_end = matched_audio_segment.end_time
                 else:
-                    # Fallback to protocol-based timing
-                    if self.metrics.current_segment_start is not None:
-                        segment_start = self._get_relative_time(self.metrics.current_segment_start)
+                    # Fallback to protocol-based timing from current_agent_segment
+                    if self.metrics.current_agent_segment is not None:
+                        segment_start = self.metrics.current_agent_segment.start_time
                         segment_end = self._get_relative_time(timestamp)
                     else:
                         segment_start = 0.0
@@ -1840,8 +1763,8 @@ class RTVIEvaluationBridge:
                             break
 
                 if self.log_file:
-                    with open(self.log_file, "a") as f:
-                        f.write(self._format_turn_log("agent", complete_text, segment_start, segment_end, latency_ms))
+                    log_entry = self._format_turn_log("agent", complete_text, segment_start, segment_end, latency_ms)
+                    self.metrics.log_entries.append((segment_start, log_entry))
 
                 # Finalize segment if one exists
                 if self.audio_file and self.metrics.current_agent_segment is not None:
@@ -1852,16 +1775,9 @@ class RTVIEvaluationBridge:
 
                 # Clear accumulated text
                 self.metrics.agent_current_transcript = ""
-                # Clear segment start since we auto-finalized this turn
-                self.metrics.current_segment_start = None
 
             # Mark that agent is now speaking
             self.metrics.agent_bot_is_speaking = True
-
-            # Set segment start when agent starts speaking (not on first audio which may be silence)
-            if self.audio_file and self.metrics.current_segment_start is None:
-                self.metrics.current_segment_start = timestamp
-                logger.debug(f"[AGENT SEGMENT] Started segment at {timestamp:.3f}")
 
             # Create a new segment for this turn
             if self.audio_file:
@@ -1931,9 +1847,9 @@ class RTVIEvaluationBridge:
                     segment_start = matched_audio_segment.start_time
                     segment_end = matched_audio_segment.end_time
                 else:
-                    # Fallback to protocol-based timing
-                    if self.metrics.current_segment_start is not None:
-                        segment_start = self._get_relative_time(self.metrics.current_segment_start)
+                    # Fallback to protocol-based timing from current_agent_segment
+                    if self.metrics.current_agent_segment is not None:
+                        segment_start = self.metrics.current_agent_segment.start_time
                         segment_end = self._get_relative_time(timestamp)
                     else:
                         segment_start = 0.0
@@ -1949,11 +1865,11 @@ class RTVIEvaluationBridge:
                             break
 
                 if self.log_file:
-                    with open(self.log_file, "a") as f:
-                        f.write(self._format_turn_log("agent", complete_text, segment_start, segment_end, latency_ms))
+                    log_entry = self._format_turn_log("agent", complete_text, segment_start, segment_end, latency_ms)
+                    self.metrics.log_entries.append((segment_start, log_entry))
 
                 # Create segment entry for segLST
-                if self.audio_file and self.metrics.current_segment_start is not None:
+                if self.audio_file and self.metrics.current_agent_segment is not None:
                     # Finalize the current segment with transcript and end time
                     if self.metrics.current_agent_segment is not None:
                         self.metrics.current_agent_segment.end_time = segment_end
@@ -1966,7 +1882,6 @@ class RTVIEvaluationBridge:
                             start_time=segment_start, end_time=segment_end, speaker="agent", transcript=complete_text
                         )
                         self.metrics.segments.append(segment)
-                    self.metrics.current_segment_start = None
 
                 # Clear accumulated text for next turn
                 self.metrics.agent_current_transcript = ""
@@ -1993,42 +1908,30 @@ class RTVIEvaluationBridge:
                     }
                     self.metrics.turns.append(turn_data)
 
-                    # Calculate turn timing for log and segLST
-                    if self.metrics.current_segment_start is not None:
-                        segment_start = self._get_relative_time(self.metrics.current_segment_start)
+                    # Calculate turn timing for log and segLST from current_agent_segment
+                    if self.metrics.current_agent_segment is not None:
+                        segment_start = self.metrics.current_agent_segment.start_time
                         segment_end = self._get_relative_time(timestamp)
                     else:
                         segment_start = 0.0
                         segment_end = self._get_relative_time(timestamp)
 
                     if self.log_file:
-                        with open(self.log_file, "a") as f:
-                            f.write(self._format_turn_log("agent", complete_text, segment_start, segment_end))
+                        log_entry = self._format_turn_log("agent", complete_text, segment_start, segment_end)
+                        self.metrics.log_entries.append((segment_start, log_entry))
 
                     # Create segment entry for segLST with interrupted placeholder
-                    if self.audio_file and self.metrics.current_segment_start is not None:
+                    if self.audio_file and self.metrics.current_agent_segment is not None:
                         # Finalize the current segment with interrupted text
-                        if self.metrics.current_agent_segment is not None:
-                            self.metrics.current_agent_segment.end_time = segment_end
-                            self.metrics.current_agent_segment.transcript = complete_text
-                            self.metrics.segments.append(self.metrics.current_agent_segment)
-                            self.metrics.current_agent_segment = None
-                        else:
-                            # Fallback: create segment without audio chunks
-                            segment = SegmentEntry(
-                                start_time=segment_start,
-                                end_time=segment_end,
-                                speaker="agent",
-                                transcript=complete_text,
-                            )
-                            self.metrics.segments.append(segment)
-                        self.metrics.current_segment_start = None
+                        self.metrics.current_agent_segment.end_time = segment_end
+                        self.metrics.current_agent_segment.transcript = complete_text
+                        self.metrics.segments.append(self.metrics.current_agent_segment)
+                        self.metrics.current_agent_segment = None
                 else:
                     # This is the first agent turn - just clean up without logging
                     logger.info(f"[AGENT] Skipping first empty/interrupted turn on connection")
                     if self.metrics.current_agent_segment is not None:
                         self.metrics.current_agent_segment = None
-                    self.metrics.current_segment_start = None
 
     def _resample_audio_for_saving(self, audio_chunks: List[bytes], from_rate: int, to_rate: int) -> np.ndarray:
         """
@@ -2151,13 +2054,26 @@ class RTVIEvaluationBridge:
             segments_json = []
             sorted_segments = sorted(segments_to_save, key=lambda s: s.start_time)
             for seg in sorted_segments:
+                # Apply offsets but ensure end_time remains after start_time
+                start_with_offset = seg.start_time + self.seglst_start_offset_seconds
+                end_with_offset = seg.end_time + self.seglst_end_offset_seconds
+
+                # Validate: if offsets cause negative duration, skip offsets for this segment
+                if end_with_offset <= start_with_offset:
+                    logger.warning(
+                        f"[SEGLST] Offsets would create negative duration for {seg.speaker} segment "
+                        f"(original: {seg.start_time:.3f}-{seg.end_time:.3f}), skipping offsets"
+                    )
+                    start_with_offset = seg.start_time
+                    end_with_offset = seg.end_time
+
                 segments_json.append(
                     {
                         "session_id": session_id,
                         "words": seg.transcript,
                         "speaker": seg.speaker,
-                        "start_time": seg.start_time + self.seglst_start_offset_seconds,
-                        "end_time": seg.end_time + self.seglst_end_offset_seconds,
+                        "start_time": start_with_offset,
+                        "end_time": end_with_offset,
                     }
                 )
 

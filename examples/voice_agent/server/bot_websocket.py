@@ -173,6 +173,9 @@ async def run_bot_websocket_server(
         port=port,
     )
 
+    input_transport = ws_transport.input()
+    output_transport = ws_transport.output()
+
     logger.info("Initializing STT service...")
 
     stt = NemoSTTService(
@@ -265,6 +268,9 @@ async def run_bot_websocket_server(
         """Reset both user and assistant context aggregators"""
         logger.info("Resetting conversation context...")
         try:
+            if task_running:
+                await task.queue_frames([EndTaskFrame()])
+                await asyncio.sleep(1.0)
             user_context_aggregator.reset()
             assistant_context_aggregator.reset()
             user_context_aggregator.set_messages(copy.deepcopy(original_messages))
@@ -293,6 +299,9 @@ async def run_bot_websocket_server(
     ) -> bool:
         """Update the system prompt dynamically and reset the conversation"""
         try:
+            if task_running:
+                await task.queue_frames([EndTaskFrame()])
+                await asyncio.sleep(1.0)
             new_prompt = arguments.get("prompt", "")
             if not new_prompt:
                 logger.error("No prompt provided in update_system_prompt action")
@@ -357,7 +366,7 @@ async def run_bot_websocket_server(
     logger.info("Setting up pipeline...")
 
     pipeline = [
-        ws_transport.input(),
+        input_transport,
         rtvi,
         stt,
     ]
@@ -365,9 +374,7 @@ async def run_bot_websocket_server(
     if USE_DIAR:
         pipeline.append(diar)
 
-    pipeline.extend(
-        [turn_taking, user_context_aggregator, llm, tts, ws_transport.output(), assistant_context_aggregator]
-    )
+    pipeline.extend([turn_taking, user_context_aggregator, llm, tts, output_transport, assistant_context_aggregator])
 
     pipeline = Pipeline(pipeline)
 
@@ -445,6 +452,11 @@ async def run_bot_websocket_server(
         if audio_logger:
             audio_logger.finalize_session()
             logger.info("Audio logger session finalized")
+        if task_running:
+            try:
+                await task.queue_frames([EndTaskFrame()])
+            except Exception as e:
+                logger.error(f"Error sending EndTaskFrame: {e}")
 
     logger.info("Starting pipeline runner...")
 

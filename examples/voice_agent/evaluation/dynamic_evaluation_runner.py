@@ -72,7 +72,6 @@ async def run_dynamic_evaluation(
         user_url=user_url,
         agent_url=agent_url,
         log_file=None,  # Will be set per scenario
-        audio_file=None,  # Will be set per scenario
         user_output_sample_rate=user_output_sample_rate,
         agent_output_sample_rate=agent_output_sample_rate,
         user_input_sample_rate=user_input_sample_rate,
@@ -125,6 +124,8 @@ async def run_dynamic_evaluation(
 
         if "noise_config" in scenario:
             bridge.set_noise_config(scenario["noise_config"])
+        else:
+            bridge.set_noise_config(None)
 
         # Wait for agents to stabilize after reset
         logger.info("Waiting for agents to stabilize after prompt update...")
@@ -290,7 +291,7 @@ Examples:
     # Default scenarios
     scenarios = [
         {
-            "name": "Friendly Conversation",
+            "name": "Friendly_Conversation-Noisy",
             "user_prompt": """You are a friendly human user named Bob, and you are testing a voice assistant. 
             Start by saying that "Hi I'm Bob", then ask the following questions one by one, wait for response before asking the next question: 
             1. Tell me a joke about a cat. 
@@ -305,6 +306,18 @@ Examples:
                 "gain_db": 0.0,
                 "max_noise_duration": 600.0,
             },
+        },
+        {
+            "name": "Friendly_Conversation-Clean",
+            "user_prompt": """You are a friendly human user named Bob, and you are testing a voice assistant. 
+            Start by saying that "Hi I'm Bob", then ask the following questions one by one, wait for response before asking the next question: 
+            1. Tell me a joke about a cat. 
+            2. What's the capital of the United States?
+            3. What's the result of 1+1?
+            4. What's the color of the sky?
+            After the agent has answered all the questions, say "Thank you for your answers. Goodbye." and keep responding with empty responses "\n".
+            """,
+            "duration": 90,
         },
         #         {
         #             "name": "Challenging Questions",

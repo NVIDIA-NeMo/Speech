@@ -2024,7 +2024,7 @@ class MagpieTTSModel(ModelPT):
 
         # For 1D tensor - direct use
         context_lens = torch.where(batch['has_text_context'], context_text_lens, context_audio_codes_lens)
-        context_embedded = context_embedded[:, :context_lens.max(), :]
+        context_embedded = context_embedded[:, : context_lens.max(), :]
 
         return context_embedded, context_lens
 

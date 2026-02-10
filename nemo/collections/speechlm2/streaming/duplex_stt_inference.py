@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import soundfile as sf
 import torch
 import torch.distributed as dist
-import soundfile as sf
 from transformers import DynamicCache
 
 from nemo.collections.audio.parts.utils.transforms import resample
@@ -137,7 +137,9 @@ class DuplexSTTStreamingInference:
 
         input_embeds[:, 0] += self.model._get_bos_embedding() * self.model.cfg.get("duplex_text_channel_weight", 1.0)
         if self.model.predict_user_text:
-            input_embeds[:, 0] += self.model._get_asr_bos_embedding() * self.model.cfg.get("duplex_asr_text_weight", 1.0)
+            input_embeds[:, 0] += self.model._get_asr_bos_embedding() * self.model.cfg.get(
+                "duplex_asr_text_weight", 1.0
+            )
 
         start_gen_pos = 0
         if prompt_token_lens is not None:
@@ -220,7 +222,9 @@ class DuplexSTTStreamingInference:
 
             pad_lookback_start = t - pad_window_steps
             asr_recent_tokens = inference_state["gen_asr"][batch_idx, pad_lookback_start:t]
-            has_pad_window = (asr_recent_tokens == self.model.text_pad_id).all() if len(asr_recent_tokens) > 0 else False
+            has_pad_window = (
+                (asr_recent_tokens == self.model.text_pad_id).all() if len(asr_recent_tokens) > 0 else False
+            )
 
             # Require that the pad window starts after a non-pad token
             if has_pad_window and pad_lookback_start > 0:
@@ -320,7 +324,9 @@ class DuplexSTTStreamingInference:
 
         if self.model.predict_user_text:
             gen_text_src = gen_asr
-            src_text_cleaned = [self.model.tokenizer.ids_to_text(gen_text_src[b]) for b in range(gen_text_src.shape[0])]
+            src_text_cleaned = [
+                self.model.tokenizer.ids_to_text(gen_text_src[b]) for b in range(gen_text_src.shape[0])
+            ]
         else:
             gen_text_src = None
             src_text_cleaned = None
@@ -329,9 +335,13 @@ class DuplexSTTStreamingInference:
             max_prompt_len = prompt_token_lens.max().item()
             if max_prompt_len > 0:
                 current_T = gen_text.shape[1]
-                gen_text_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.model.device, dtype=torch.long)
+                gen_text_trimmed = torch.zeros(
+                    B, current_T - max_prompt_len, device=self.model.device, dtype=torch.long
+                )
                 if self.model.predict_user_text:
-                    gen_asr_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.model.device, dtype=torch.long)
+                    gen_asr_trimmed = torch.zeros(
+                        B, current_T - max_prompt_len, device=self.model.device, dtype=torch.long
+                    )
                 lengths_trimmed = lengths.clone()
 
                 for i, prompt_len in enumerate(prompt_token_lens):

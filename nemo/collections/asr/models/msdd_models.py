@@ -1258,7 +1258,7 @@ class NeuralDiarizer(LightningModule):
             seq_len = end - stt
             if stt < clus_label_tensor.shape[0]:
                 target_clus_label_tensor = clus_label_tensor[stt:end]
-                emb_seq, seg_length = (
+                emb_seq, _ = (
                     signals[stt:end, :, :],
                     min(
                         self.diar_window_length,
@@ -1291,7 +1291,7 @@ class NeuralDiarizer(LightningModule):
         return emb_vectors_split, emb_seq, seq_len
 
     def get_range_clus_avg_emb(
-        self, test_batch: List[torch.Tensor], _test_data_collection: List[Any], device: torch.device('cpu')
+        self, test_batch: List[torch.Tensor], _test_data_collection: List[Any], device: torch.device
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         This function is only used when `get_range_average` function is called. This module calculates
@@ -1470,7 +1470,7 @@ class NeuralDiarizer(LightningModule):
                 verbose=self._cfg.verbose,
             )
             outputs.append(output)
-        logging.info(f"  \n")
+        logging.info("  \n")
         return outputs
 
     @classmethod

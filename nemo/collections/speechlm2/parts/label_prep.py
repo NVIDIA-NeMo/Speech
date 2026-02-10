@@ -63,11 +63,9 @@ def prepare_text_and_asr_labels(
     target_tokens,
     source_encoded,
     cfg,
-    predict_user_text,
     text_pad_id,
     text_bos_id,
     text_eos_id,
-    advance_text_channel_by=None,
     use_tp=False,
     device_mesh=None,
 ):
@@ -85,12 +83,16 @@ def prepare_text_and_asr_labels(
         batch: Dictionary containing batch data including source_tokens, target_tokens, etc.
         target_tokens: Target text tokens (B, T)
         source_encoded: Encoded source audio features (B, T, D)
-        cfg: Configuration object with model settings
-        predict_user_text: Whether to predict user text in addition to agent text
+        cfg: Configuration object with model settings. Reads the following keys:
+            - predict_user_text (bool): Whether to predict user text in addition to agent text
+            - advance_text_channel_by (int, optional): Number of frames to advance text channel
+            - delay_text_channel_by (int, optional): Number of frames to delay text channel
+            - delay_text_eos_by (int, optional): Number of frames to delay EOS tokens
+            - delay_text_bos_by (int, optional): Number of frames to delay BOS tokens
+            - delay_source_text_by (int, optional): Number of frames to delay source text
         text_pad_id: Token ID for text padding
         text_bos_id: Token ID for text beginning
         text_eos_id: Token ID for text ending
-        advance_text_channel_by: Number of frames to advance text channel prediction
         use_tp: Whether tensor parallelism is enabled
         device_mesh: Device mesh for tensor parallelism
 
@@ -141,6 +143,8 @@ def prepare_text_and_asr_labels(
                 Before: [[2, 789, 101, 3, 0, 0, 0, 0]]
                 After:  [[0, 0, 2, 789, 101, 3, 0, 0]]
     """
+    predict_user_text = cfg.get("predict_user_text", False)
+    advance_text_channel_by = cfg.get("advance_text_channel_by", None)
 
     # Apply text channel delay and advance adjustments
     # move back text channel by x, in inference it advance the text channel prediction

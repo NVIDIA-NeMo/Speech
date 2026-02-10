@@ -84,7 +84,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self.source_sample_rate = cfg.data.source_sample_rate
         self.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
 
-        self.advance_text_channel_by = self.cfg.get("advance_text_channel_by", None)
         self.predict_user_text = self.cfg.get("predict_user_text", False)
 
         # Load LLM first
@@ -280,11 +279,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             target_tokens=target_tokens,
             source_encoded=source_encoded,
             cfg=self.cfg,
-            predict_user_text=self.predict_user_text,
             text_pad_id=self.text_pad_id,
             text_bos_id=self.text_bos_id,
             text_eos_id=self.text_eos_id,
-            advance_text_channel_by=self.advance_text_channel_by,
             use_tp=self._use_tp,
             device_mesh=self.device_mesh if self._use_tp else None,
         )

@@ -45,7 +45,6 @@ def inference(cfg):
         source_sample_rate=cfg.data.source_sample_rate,
         input_roles=cfg.data.input_roles,
         output_roles=cfg.data.output_roles,
-        include_turn_metadata=True,
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

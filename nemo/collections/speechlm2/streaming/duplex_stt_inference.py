@@ -38,7 +38,6 @@ class DuplexSTTStreamingInference:
         input_signal: torch.Tensor,
         input_signal_lens: torch.Tensor,
         input_pad_len: int,
-        force_bos_positions,
         prompt_tokens: torch.Tensor,
         prompt_token_lens: torch.Tensor,
     ):
@@ -55,11 +54,6 @@ class DuplexSTTStreamingInference:
             input_signal = torch.from_numpy(audio).float().to(device)[:1, :]
             input_signal = resample(input_signal, sr, self.model.source_sample_rate)
             input_signal_lens = torch.tensor([input_signal.size(-1)]).to(device)
-
-        if force_bos_positions is not None:
-            assert input_signal.shape[0] == len(
-                force_bos_positions
-            ), "force_bos_positions must have the same length as batch size"
 
         if input_pad_len > 0:
             input_signal = torch.nn.functional.pad(input_signal, (0, input_pad_len), mode='constant', value=0)
@@ -156,7 +150,6 @@ class DuplexSTTStreamingInference:
         return {
             "input_signal": input_signal,
             "input_signal_lens": input_signal_lens,
-            "source_encoded": source_encoded,
             "lengths": lengths,
             "B": B,
             "T": T,
@@ -253,7 +246,7 @@ class DuplexSTTStreamingInference:
                 if not (agent_text_window == self.model.text_eos_id).any():
                     inference_state["gen_text"][batch_idx, t] = self.model.text_eos_id
 
-    def _step_inference(self, t, inference_state, ans, force_bos_positions):
+    def _step_inference(self, t, inference_state, ans):
         """Perform inference for one step t in the autoregressive loop."""
         last_emb = self.model.embed_tokens(inference_state["gen_text"][:, t - 1]) * self.model.cfg.get(
             "duplex_text_channel_weight", 1.0
@@ -263,15 +256,6 @@ class DuplexSTTStreamingInference:
                 "duplex_asr_text_weight", 1.0
             )
             last_emb += last_asr_emb
-        if force_bos_positions is not None:
-            for batch_idx in range(last_emb.shape[0]):
-                if (
-                    force_bos_positions[batch_idx] == t
-                    and not (inference_state["gen_text"][batch_idx, :t] == self.model.text_bos_id).any()
-                ):
-                    last_emb[batch_idx] = self.model.embed_tokens(
-                        torch.full((1,), fill_value=self.model.text_bos_id, device=self.model.device)
-                    ) * self.model.cfg.get("duplex_text_channel_weight", 1.0)
 
         inference_state["input_embeds"][:, t] += last_emb
 
@@ -370,7 +354,6 @@ class DuplexSTTStreamingInference:
             "src_text": src_text_cleaned,
             "tokens_text_src": gen_text_src,
             "tokens_text": gen_text,
-            "tokens_audio": None,
             "tokens_len": lengths,
             "source_audio": inference_state["input_signal"],
             "source_audio_len": inference_state["input_signal_lens"],
@@ -384,7 +367,6 @@ class DuplexSTTStreamingInference:
         input_signal: torch.Tensor,
         input_signal_lens: torch.Tensor,
         input_pad_len: int = 0,
-        force_bos_positions=None,
         prompt_tokens: torch.Tensor = None,
         prompt_token_lens: torch.Tensor = None,
     ) -> dict[str, torch.Tensor]:
@@ -392,12 +374,12 @@ class DuplexSTTStreamingInference:
         Autoregressive prediction (text only).
         """
         inference_state = self._init_inference(
-            input_signal, input_signal_lens, input_pad_len, force_bos_positions, prompt_tokens, prompt_token_lens
+            input_signal, input_signal_lens, input_pad_len, prompt_tokens, prompt_token_lens
         )
 
         ans, inference_state = self._step_zero(inference_state)
 
         for t in range(1, inference_state["T"]):
-            ans = self._step_inference(t, inference_state, ans, force_bos_positions)
+            ans = self._step_inference(t, inference_state, ans)
 
         return self._post_inference(inference_state, prompt_token_lens)

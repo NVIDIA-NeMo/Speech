@@ -21,7 +21,6 @@ def tokens_to_str(
     lengths: torch.Tensor,
     tokenizer: AutoTokenizer,
     pad_id: int,
-    user_bos_id: int = None,
     eval_text_turn_taking: bool = False,
     show_eot_timestamps: bool = False,
 ) -> list[str]:
@@ -33,7 +32,6 @@ def tokens_to_str(
         lengths: Length of each sequence (B,)
         tokenizer: Tokenizer for decoding
         pad_id: Pad token ID to filter out
-        user_bos_id: User BOS token ID to filter out (optional)
         eval_text_turn_taking: If True, insert timestamps at bos/eos positions
         show_eot_timestamps: If True, also insert timestamps at end-of-text (first pad after BOS)
 
@@ -52,7 +50,7 @@ def tokens_to_str(
         token_ids = token_ids[token_ids != tokenizer.eos]
         return token_ids
 
-    for _, hyp_ids, hyp_len in zip(tokens.cpu(), tokens.cpu(), lengths.cpu()):
+    for hyp_ids, hyp_len in zip(tokens.cpu(), lengths.cpu()):
         if eval_text_turn_taking:
             # Insert timestamps to the text
             agent_bos_positions = (hyp_ids == tokenizer.bos).nonzero(as_tuple=True)[0].tolist()

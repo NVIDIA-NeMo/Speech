@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import glob
 import json
 import os
-import shutil
 import time
 from collections import defaultdict
 from typing import List, Optional
@@ -52,10 +50,6 @@ Key abstraction:
     - `ResultsLogger`: A lightweight utility class that manages audio dumping
       and metadata bookkeeping across inference batches.
 """
-
-
-def safe_remove_path(path):
-    shutil.rmtree(path, ignore_errors=True)
 
 
 def get_rank():
@@ -161,44 +155,6 @@ class ResultsLogger:
         sf.write(out_audio_path, combined_wav.numpy().astype('float32').T, pred_audio_sr)
         logging.info(f"Audio saved at: {out_audio_path}")
 
-    @staticmethod
-    def merge_turns_chronologically(
-        turns_list_1: Optional[List[dict]] = None,
-        turns_list_2: Optional[List[dict]] = None,
-    ) -> List[dict]:
-        """
-        Merge two lists of turns chronologically based on start_time.
-
-        Args:
-            turns_list_1: List of turn dicts with keys: start_time, duration, role, text
-            turns_list_2: List of turn dicts with keys: start_time, duration, role, text
-                         OR predicted turns with keys: start_time, end_time, duration, text,
-                         token_ids, start_token_idx, end_token_idx, num_tokens, is_complete
-
-        Returns:
-            List of turn dicts sorted by start_time, each with role and text
-        """
-        all_turns = []
-
-        if turns_list_1:
-            all_turns.extend(turns_list_1)
-        if turns_list_2:
-            all_turns.extend(turns_list_2)
-
-        # Sort by start_time
-        all_turns.sort(key=lambda x: x.get('start_time', 0))
-
-        # Extract role and text for each turn
-        merged_turns = [
-            {
-                "role": turn.get("role", "agent"),  # Default to agent for predicted turns
-                "text": turn.get("text", ""),
-            }
-            for turn in all_turns
-        ]
-
-        return merged_turns
-
     def update(
         self,
         name: str,
@@ -212,10 +168,6 @@ class ResultsLogger:
         user_audio_sr: Optional[int] = None,
         src_refs: Optional[list[str]] = None,
         src_hyps: Optional[list[str]] = None,
-        system_prompt=None,
-        source_turns: Optional[List[List[dict]]] = None,
-        target_turns: Optional[List[List[dict]]] = None,
-        pred_turns: Optional[List[List[dict]]] = None,
         target_audio: Optional[torch.Tensor] = None,
         pred_audio_tf: Optional[torch.Tensor] = None,
         pre_audio_trimmed: Optional[torch.Tensor] = None,
@@ -316,33 +268,6 @@ class ResultsLogger:
                     out_dict['tokens_text'] = " ".join(tokenizer.ids_to_tokens(results['tokens_text'][i]))
                 else:
                     out_dict['tokens_text'] = results['tokens_text'][i].tolist()
-
-            # Add conversation turns only if there are multiple user turns (multi-turn conversation)
-            if source_turns is not None:
-                user_turns = source_turns[i]
-                has_multi_turn_conversation = len(user_turns) > 1
-
-                if has_multi_turn_conversation and (target_turns is not None or pred_turns is not None):
-                    if system_prompt is not None:
-                        out_dict["system_prompt"] = system_prompt[i]
-
-                    conversation_turns = {}
-
-                    # Create ground truth conversation: source (user) + target (agent) turns
-                    if target_turns is not None:
-                        conversation_turns["gt_conversation"] = self.merge_turns_chronologically(
-                            turns_list_1=user_turns,
-                            turns_list_2=target_turns[i],
-                        )
-
-                    # Create predicted conversation: source (user) + predicted (agent) turns
-                    if pred_turns is not None:
-                        conversation_turns["pred_conversation"] = self.merge_turns_chronologically(
-                            turns_list_1=user_turns,
-                            turns_list_2=pred_turns[i],
-                        )
-
-                    out_dict["conversation_turns"] = conversation_turns
 
             self.cached_results[name].append(out_dict)
 

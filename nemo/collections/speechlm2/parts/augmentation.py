@@ -19,7 +19,7 @@ import os
 import random
 import subprocess
 import tempfile
-from typing import Optional, Tuple
+from typing import Optional
 
 import librosa
 import numpy as np

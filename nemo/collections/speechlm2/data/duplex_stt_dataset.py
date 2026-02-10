@@ -56,9 +56,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             Whether to augment data by swapping user/agent roles. Defaults to False.
             Note: Enabling this requires agent audio to be available in cut.custom['target_audio'].
 
-        include_turn_metadata (bool, optional):
-            Whether to include detailed turn metadata in the output. Defaults to False.
-
         cfg (dict, optional):
             Dataset configuration (e.g., word_align_position).
 
@@ -74,7 +71,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         input_roles: list[str] = None,
         output_roles: list[str] = None,
         aug_by_swap_role: bool = False,
-        include_turn_metadata: bool = False,
         cfg: dict = None,
         model_cfg: dict = None,
     ):
@@ -84,7 +80,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
         self.aug_by_swap_role = aug_by_swap_role
-        self.include_turn_metadata = include_turn_metadata
 
         self.word_align_position = cfg.get("word_align_position", "left") if cfg is not None else "left"
         self.predict_user_text = model_cfg.get("predict_user_text", False) if model_cfg is not None else False
@@ -324,35 +319,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 audio_data['prompt_tokens'] = prompt_tokens
                 audio_data['prompt_token_lens'] = prompt_token_lens
 
-            if self.include_turn_metadata:
-                audio_data["target_turn_texts"] = [
-                    [
-                        {
-                            "start_time": s.start,
-                            "duration": s.duration,
-                            "role": s.speaker,
-                            "text": s.text,
-                        }
-                        for s in cut.supervisions
-                        if s.speaker in self.output_roles
-                    ]
-                    for cut in all_cuts_combined
-                ]
-                audio_data["source_turn_texts"] = [
-                    [
-                        {
-                            "start_time": s.start,
-                            "duration": s.duration,
-                            "role": s.speaker,
-                            "text": s.text,
-                        }
-                        for s in cut.supervisions
-                        if s.speaker in self.input_roles
-                    ]
-                    for cut in all_cuts_combined
-                ]
-                audio_data["system_prompt"] = [cut.custom.get('system_prompt', '') for cut in all_cuts_combined]
-
         text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
         text_data = None
         if text_cuts:
@@ -430,8 +396,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             return None
 
         first_remaining_start = filtered_supervisions[0].start
-        last_remaining_end = max(s.start + s.duration for s in filtered_supervisions)
-
         adjusted_supervisions = []
         for sup in filtered_supervisions:
             adjusted_sup = SupervisionSegment(
@@ -500,9 +464,8 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
 
         return swapped_cut
 
-
-def _has_valid_input(self, cut: Cut) -> bool:
-    return any(s.text.strip() for s in cut.supervisions if s.speaker in self.input_roles)
+    def _has_valid_input(self, cut: Cut) -> bool:
+        return any(s.text.strip() for s in cut.supervisions if s.speaker in self.input_roles)
 
 
 def _collate_token_channel(

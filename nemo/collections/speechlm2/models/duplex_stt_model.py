@@ -13,16 +13,12 @@
 # limitations under the License.
 import copy
 import os
-import tempfile
 
-import soundfile as sf
 import torch
-import torch.distributed as dist
-import torch.nn.functional as F
 from lightning import LightningModule
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from peft import PeftModel
-from torch import Tensor, nn
+from torch import Tensor
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import Replicate, Shard
 from torch.distributed.tensor.parallel import (
@@ -34,7 +30,6 @@ from torch.distributed.tensor.parallel import (
     parallelize_module,
 )
 
-from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter
@@ -53,7 +48,6 @@ from nemo.collections.speechlm2.parts.pretrained import (
     set_model_dict_for_partial_init,
     setup_speech_encoder,
 )
-from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
 from nemo.collections.speechlm2.streaming.duplex_stt_inference import DuplexSTTStreamingInference
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
@@ -341,7 +335,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         ans = {
             "input_embeds": input_embeds,
             "input_lens": source_encoded_lens - 1,
-            "output_lens": source_encoded_lens - 1,
             "text_labels": text_labels,
             "loss_scale": loss_scale,
             "seq_mask": seq_mask,
@@ -524,14 +517,22 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 prompt_token_lens=prompt_token_lens,
             )
 
-            self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
+            # Strip timestamps for metrics
+            import re
+            text_clean = [re.sub(r"<[\|$].*?[\|$]>", "", s).strip() for s in results["text"]]
 
+            # Agent text metrics
+            self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=text_clean)
             if "source_tokens" in dataset_batch and results["tokens_text"] is not None:
                 self.turn_taking_metrics.update(
                     name=name, source_tokens=dataset_batch["source_tokens"], pred_tokens=results["tokens_text"]
                 )
 
-            pred_turns_list = self._split_agent_tokens_into_turns(results["tokens_text"])
+            # User text metrics
+            if self.predict_user_text:
+                self.src_bleu.update(name=name, refs=dataset_batch["source_texts"], hyps=results["src_text"])
+                self.src_wer.update(name=name, refs=dataset_batch["source_texts"], hyps=results["src_text"])
+                self.empty_user_text.update(name=name, hyps=results["src_text"])
 
             self.results_logger.update(
                 name=name,
@@ -542,20 +543,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 user_audio_sr=self.source_sample_rate,
                 src_refs=dataset_batch["source_texts"],
                 src_hyps=results["src_text"],
-                system_prompt=dataset_batch.get("system_prompt", None),
-                source_turns=dataset_batch.get("source_turn_texts"),
-                target_turns=dataset_batch.get("target_turn_texts"),
-                pred_turns=pred_turns_list,
             )
-
-            if self.cfg.get("eval_text_turn_taking", False):
-                import re
-                results["text"] = [re.sub(r"<\|.*?\|>", "", s).strip() for s in results["text"]]
-
-            if self.predict_user_text:
-                self.src_bleu.update(name=name, refs=dataset_batch["source_texts"], hyps=results["src_text"])
-                self.src_wer.update(name=name, refs=dataset_batch["source_texts"], hyps=results["src_text"])
-                self.empty_user_text.update(name=name, hyps=results["src_text"])
 
     def on_test_epoch_start(self) -> None:
         return self.on_validation_epoch_start()
@@ -569,17 +557,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
     def predict_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0):
         batch = batch["audio_data"]
 
-        force_bos_positions = None
-        force_bos_num_tokens_after_user_eos = self.cfg.prediction.get("force_bos_num_tokens_after_user_eos", None)
-        if force_bos_num_tokens_after_user_eos is not None:
-            force_bos_positions = []
-            for cur_source_tokens in batch["source_tokens"]:
-                tmp = torch.where(cur_source_tokens == self.text_eos_id)[0]
-                if len(tmp) > 0:
-                    force_bos_positions.append(tmp[0].item() + force_bos_num_tokens_after_user_eos)
-                else:
-                    force_bos_positions.append(None)
-
         prompt_tokens = batch.get("prompt_tokens", None)
         prompt_token_lens = batch.get("prompt_token_lens", None)
 
@@ -587,7 +564,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             batch["source_audio"],
             batch["source_audio_lens"],
             input_pad_len=self.cfg.prediction.max_new_seconds * self.cfg.prediction.input_sample_rate,
-            force_bos_positions=force_bos_positions,
             prompt_tokens=prompt_tokens,
             prompt_token_lens=prompt_token_lens,
         )
@@ -605,93 +581,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         text_bos = torch.full((1,), fill_value=self.text_pad_id, device=self.device)
         input_embeds = self.embed_asr_tokens(text_bos)
         return input_embeds
-
-    def _split_agent_tokens_into_turns(self, tokens_text: torch.Tensor):
-        """Split sequence of agent_tokens into turns as detected by text_bos_id and text_eos_id."""
-        batch_size, seq_len = tokens_text.shape
-        token_duration = 0.08
-
-        turns_list = []
-
-        for b in range(batch_size):
-            current_tokens = tokens_text[b].cpu().numpy()
-
-            in_turn = False
-            current_turn_start = None
-            current_turn_tokens = []
-            batch_turns = []
-
-            def _save_current_turn(turn_start, turn_tokens, end_token_idx, is_complete=True):
-                if turn_start is None:
-                    return
-
-                start_time = turn_start * token_duration
-                end_time = (end_token_idx + 1) * token_duration
-                duration = end_time - start_time
-
-                if len(turn_tokens) > 0:
-                    turn_tokens_filtered = [t for t in turn_tokens if t != self.text_pad_id]
-                    text = self.tokenizer.ids_to_text(turn_tokens_filtered)
-                else:
-                    text = ""
-
-                turn = {
-                    "start_time": start_time,
-                    "end_time": end_time,
-                    "duration": duration,
-                    "text": text,
-                    "token_ids": turn_tokens.copy(),
-                    "start_token_idx": turn_start,
-                    "end_token_idx": end_token_idx,
-                    "num_tokens": len(turn_tokens),
-                    "is_complete": is_complete,
-                }
-                batch_turns.append(turn)
-
-            for t in range(seq_len):
-                token_id = current_tokens[t]
-
-                if token_id == self.text_bos_id:
-                    if in_turn and current_turn_start is not None:
-                        logging.debug(
-                            f"Batch {b}: Found BOS at position {t} while already in a turn "
-                            f"(started at {current_turn_start}). Saving incomplete turn."
-                        )
-                        _save_current_turn(
-                            current_turn_start, current_turn_tokens, end_token_idx=t - 1, is_complete=False
-                        )
-
-                    in_turn = True
-                    current_turn_start = t
-                    current_turn_tokens = []
-
-                elif token_id == self.text_eos_id:
-                    if in_turn:
-                        _save_current_turn(current_turn_start, current_turn_tokens, end_token_idx=t, is_complete=True)
-
-                        current_turn_start = None
-                        current_turn_tokens = []
-                        in_turn = False
-
-                elif token_id == self.text_pad_id:
-                    if in_turn:
-                        current_turn_tokens.append(token_id)
-                else:
-                    if in_turn:
-                        current_turn_tokens.append(token_id)
-
-            if in_turn and current_turn_start is not None:
-                logging.debug(
-                    f"Batch {b}: Sequence ended while in a turn (started at {current_turn_start}). "
-                    f"Saving incomplete turn."
-                )
-                _save_current_turn(
-                    current_turn_start, current_turn_tokens, end_token_idx=seq_len - 1, is_complete=False
-                )
-
-            turns_list.append(batch_turns)
-
-        return turns_list
 
     def backward(self, *args, **kwargs):
         with loss_parallel():

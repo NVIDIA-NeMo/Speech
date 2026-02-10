@@ -64,6 +64,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         sample_rate: int = 22050,
         think_tokens: Optional[List[str]] = None,
         audio_logger: Optional[AudioLogger] = None,
+        ignore_strings: Optional[List[str]] = None,
         **kwargs,
     ):
         super().__init__(sample_rate=sample_rate, **kwargs)
@@ -77,7 +78,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
             assert (
                 isinstance(think_tokens, list) and len(think_tokens) == 2
             ), f"think_tokens must be a list of two strings, but got type {type(think_tokens)}: {think_tokens}"
-
+        self._ignore_strings = set(ignore_strings) if ignore_strings is not None else None
         # Background processing infrastructure - no response handler needed
         self._tts_queue = asyncio.Queue()
         self._processing_task = None
@@ -252,13 +253,34 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
             # LLM is not thinking
             return text
 
+    def _drop_special_tokens(self, text: str) -> Optional[str]:
+        """
+        Drop the special tokens from the text.
+        """
+        if self._ignore_strings is None:
+            return text
+        for ignore_string in self._ignore_strings:
+            if ignore_string in text:
+                logger.debug(f"Dropping string `{ignore_string}` from text: `{text}`")
+                return text.replace(ignore_string, "")
+        return text
+
     async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
         """Generate speech from text using the Nemo TTS model."""
-        text = self._handle_think_tokens(text)
 
         if not text:
             yield None
             return
+
+        if self._think_tokens is not None:
+            text = self._handle_think_tokens(text)
+
+        if not text:
+            yield None
+            return
+
+        if self._ignore_strings is not None:
+            text = self._drop_special_tokens(text)
 
         logger.debug(f"{self}: Generating TTS [{text}]")
 
@@ -851,6 +873,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             text_aggregator=text_aggregator,
             think_tokens=config.get("think_tokens", None),
             audio_logger=audio_logger,
+            ignore_strings=config.get("ignore_strings", None),
         )
     elif model == "magpie":
         return MagpieTTSService(
@@ -862,6 +885,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             text_aggregator=text_aggregator,
             think_tokens=config.get("think_tokens", None),
             audio_logger=audio_logger,
+            ignore_strings=config.get("ignore_strings", None),
         )
     elif model == "kokoro":
         return KokoroTTSService(
@@ -873,6 +897,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             think_tokens=config.get("think_tokens", None),
             sample_rate=24000,
             audio_logger=audio_logger,
+            ignore_strings=config.get("ignore_strings", None),
         )
     else:
         raise ValueError(f"Invalid model: {model}, only 'fastpitch-hifigan', 'magpie' and 'kokoro' are supported")

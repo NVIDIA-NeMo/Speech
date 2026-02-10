@@ -59,3 +59,4 @@ tts:
   device: "cuda"
   ignore_strings:  # strings/characters to ignore in TTS
     - "*"
+    - "<unk>"

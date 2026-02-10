@@ -1,35 +1,35 @@
-name: nemo-voice
+name: nemo-voice-debug
 channels:
   - defaults
 dependencies:
-  - _libgcc_mutex=0.1=main
-  - _openmp_mutex=5.1=1_gnu
-  - bzip2=1.0.8=h5eee18b_6
-  - ca-certificates=2025.9.9=h06a4308_0
-  - ld_impl_linux-64=2.40=h12ee557_0
-  - libffi=3.4.4=h6a678d5_1
-  - libgcc-ng=11.2.0=h1234567_1
-  - libgomp=11.2.0=h1234567_1
-  - libstdcxx-ng=11.2.0=h1234567_1
-  - libuuid=1.41.5=h5eee18b_0
-  - libxcb=1.17.0=h9b100fa_0
-  - libzlib=1.3.1=hb25bd0a_0
-  - ncurses=6.5=h7934f7d_0
-  - openssl=3.0.18=hd6dcaed_0
-  - pip=25.2=pyhc872135_0
-  - pthread-stubs=0.3=h0ce48e5_1
-  - python=3.10.12=h955ad1f_0
-  - readline=8.3=hc2a1206_0
-  - setuptools=80.9.0=py310h06a4308_0
-  - sqlite=3.50.2=hb25bd0a_1
-  - tk=8.6.15=h54e0aa7_0
-  - wheel=0.45.1=py310h06a4308_0
-  - xorg-libx11=1.8.12=h9b100fa_1
-  - xorg-libxau=1.0.12=h9b100fa_0
-  - xorg-libxdmcp=1.1.5=h9b100fa_0
-  - xorg-xorgproto=2024.1=h5eee18b_1
-  - xz=5.6.4=h5eee18b_1
-  - zlib=1.3.1=hb25bd0a_0
+  - _libgcc_mutex=0.1
+  - _openmp_mutex=5.1
+  - bzip2=1.0.8
+  - ca-certificates=2025.9.9
+  - ld_impl_linux-64=2.40
+  - libffi=3.4.4
+  - libgcc-ng=11.2.0
+  - libgomp=11.2.0
+  - libstdcxx-ng=11.2.0
+  - libuuid=1.41.5
+  - libxcb=1.17.0
+  - libzlib=1.3.1
+  - ncurses=6.5
+  - openssl=3.0.18
+  - pip=25.2
+  - pthread-stubs=0.3
+  - python=3.10.12
+  - readline=8.3
+  - setuptools=80.9.0
+  - sqlite=3.50.2
+  - tk=8.6.15
+  - wheel=0.45.1
+  - xorg-libx11=1.8.12
+  - xorg-libxau=1.0.12
+  - xorg-libxdmcp=1.1.5
+  - xorg-xorgproto=2024.1
+  - xz=5.6.4
+  - zlib=1.3.1
   - pip:
     - absl-py==2.3.1
     - accelerate==1.10.1
@@ -121,7 +121,6 @@ dependencies:
     - einops==0.8.1
     - einops-exts==0.0.4
     - email-validator==2.3.0
-    - en-core-web-sm==3.8.0
     - espeakng==1.0.3
     - espeakng-loader==0.2.4
     - evaluate==0.4.6

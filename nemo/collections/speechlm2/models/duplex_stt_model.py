@@ -490,6 +490,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         source_encoded = inputs["source_encoded"]
         text_inputs = inputs["text_inputs"]
         text_labels = inputs["text_labels"]
+        target_token_lens = inputs["target_token_lens"]  # Use adjusted lengths from label_prep
         if self.predict_user_text:
             asr_inputs = inputs["asr_inputs"]
             asr_labels = inputs["asr_labels"]
@@ -503,8 +504,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         seq_mask = torch.ones_like(text_labels.unsqueeze(-1), device=self.device, dtype=torch.bool)
 
         if self.cfg.get("mask_sequence_loss", True):
-            for i in range(batch["target_token_lens"].size(0)):
-                speech_end_idx = batch["target_token_lens"][i]
+            for i in range(target_token_lens.size(0)):
+                speech_end_idx = target_token_lens[i]
                 seq_mask[i, speech_end_idx:, :] = 0
 
         loss_scale = seq_mask.clone().float()

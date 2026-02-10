@@ -98,6 +98,8 @@ def prepare_text_and_asr_labels(
         dict: Dictionary containing:
             - text_inputs: Text input tokens (B, T-1)
             - text_labels: Text label tokens (B, T-1)
+            - target_token_lens: Adjusted target token lengths (B,)
+            - source_encoded: Encoded source features (B, T, D)
             - asr_inputs: ASR input tokens (B, T-1) if predict_user_text is True
             - asr_labels: ASR label tokens (B, T-1) if predict_user_text is True
 
@@ -114,13 +116,12 @@ def prepare_text_and_asr_labels(
 
             Output:
                 {
-                    'text_inputs': [[0, 0, 0, 2, 789, 101, 3]],    # (1, 7) - agent text input
-                    'text_labels': [[0, 0, 2, 789, 101, 3, 0]],    # (1, 7) - agent text target
-                    'asr_inputs': [[0, 2, 123, 456, 3, 0, 0]],     # (1, 7) - user text input
-                    'asr_labels': [[2, 123, 456, 3, 0, 0, 0]],     # (1, 7) - user text target
+                    'text_inputs': [[0, 0, 0, 2, 789, 101, 3]],       # (1, 7) - agent text input
+                    'text_labels': [[0, 0, 2, 789, 101, 3, 0]],       # (1, 7) - agent text target
+                    'asr_inputs': [[0, 2, 123, 456, 3, 0, 0]],        # (1, 7) - user text input
+                    'asr_labels': [[2, 123, 456, 3, 0, 0, 0]],        # (1, 7) - user text target
+                    'target_token_lens': tensor([7]),                 # Adjusted lengths
                     'source_encoded': Tensor of shape (1, 8, 1024),
-                    'source_token_lens': [...],
-                    'target_token_lens': [...]
                 }
 
         With predict_user_text=False (single channel):
@@ -154,9 +155,8 @@ def prepare_text_and_asr_labels(
         target_tokens = torch.cat([target_tokens[:, advance_text_channel_by:], pad], dim=-1)
         # make sure that eos/bos is in the place (it can cut tokens from the first advance_text_channel_by tokens and this will breaks everything)
 
-    if cfg.get("delay_text_channel_by", 0) > 0:
-        delay_by = cfg.get("delay_text_channel_by", 0)
-
+    delay_by = cfg.get("delay_text_channel_by", 0)
+    if delay_by > 0:
         eos_mask = (target_tokens == text_eos_id) & (
             torch.arange(target_tokens.size(1), device=target_tokens.device).unsqueeze(0)
             >= (target_tokens.size(1) - delay_by)
@@ -179,6 +179,12 @@ def prepare_text_and_asr_labels(
     if cfg.get("delay_text_bos_by", None):
         target_tokens = delay_eos(target_tokens, text_bos_id, text_pad_id, shift=cfg.delay_text_bos_by)
 
+    # Clone lengths for adjustment (needed for both single and dual-channel due to TP trimming)
+    target_token_lens = batch["target_token_lens"].clone()
+
+    # Handle dual-channel specific processing
+    source_tokens_delayed = None
+
     if predict_user_text:
         source_tokens = batch["source_tokens"]
 
@@ -187,8 +193,10 @@ def prepare_text_and_asr_labels(
             source_tokens = source_tokens[:, :min_len]
             target_tokens = target_tokens[:, :min_len]
             source_encoded = source_encoded[:, :min_len]
+            # Update lengths after truncation
+            target_token_lens = torch.clamp(target_token_lens, max=min_len)
 
-        # Optionally delay the prediction of source_tokens by a flag
+        # Optionally delay the prediction of source_tokens
         delay_source_text_by = cfg.get("delay_source_text_by", 0)
         if delay_source_text_by > 0:
             pad = torch.full(
@@ -201,51 +209,33 @@ def prepare_text_and_asr_labels(
         else:
             source_tokens_delayed = source_tokens
 
-        source_tokens_flat = source_tokens_delayed.clone()
-        target_tokens_flat = target_tokens.clone()
-
-        # Keep user and agent text in separate channels and allow overlap between them
-        asr_inputs = source_tokens_flat[:, :-1]
-        asr_labels = source_tokens_flat[:, 1:]
-        text_inputs = target_tokens_flat[:, :-1]
-        text_labels = target_tokens_flat[:, 1:]
-
-        result = {
-            "asr_inputs": asr_inputs,
-            "asr_labels": asr_labels,
-            "source_token_lens": batch["source_token_lens"],
-            "text_inputs": text_inputs,
-            "text_labels": text_labels,
-            "target_token_lens": batch["target_token_lens"],
-            "source_encoded": source_encoded,
-        }
-        return result
-    else:
-        target_tokens_flat = target_tokens
-
+    # Apply tensor parallelism alignment (common for both single and dual-channel)
     if use_tp:
         tp_world_size = device_mesh["tensor_parallel"].size()
         if (remainder := (target_tokens.shape[1] - 1) % tp_world_size) != 0:
             target_tokens = target_tokens[:, :-remainder]
             source_encoded = source_encoded[:, :-remainder]
+            if source_tokens_delayed is not None:
+                source_tokens_delayed = source_tokens_delayed[:, :-remainder]
+            # Update lengths after TP trimming
+            target_token_lens = torch.clamp(target_token_lens, max=target_tokens.shape[1])
 
+    # Create input/label pairs (common slicing logic)
     text_inputs = target_tokens[:, :-1]
     text_labels = target_tokens[:, 1:]
 
     result = {
         "text_inputs": text_inputs,
         "text_labels": text_labels,
+        "source_encoded": source_encoded,
+        "target_token_lens": target_token_lens,  # Always return adjusted lengths
     }
 
-    # Split the merged text channel into asr and text channels (no overlap between them)
-    if cfg.get("predict_user_text", False):
-        asr_ids = target_tokens.clone()
-        asr_inputs = asr_ids[:, :-1]
-        asr_labels = asr_ids[:, 1:]
-
-        result["asr_inputs"] = asr_inputs
-        result["asr_labels"] = asr_labels
-
-    result["source_encoded"] = source_encoded
+    # Add dual-channel outputs if enabled
+    if predict_user_text:
+        result.update({
+            "asr_inputs": source_tokens_delayed[:, :-1],
+            "asr_labels": source_tokens_delayed[:, 1:],
+        })
 
     return result

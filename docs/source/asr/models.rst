@@ -174,6 +174,8 @@ which help aggregate information from outside the limited context, then training
 
 You may find more examples under ``<NeMo_git_root>/examples/asr/conf/fastconformer/``.
 
+.. _cache-aware streaming conformer:
+
 Cache-aware Streaming Conformer
 -------------------------------
 

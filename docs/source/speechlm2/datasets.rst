@@ -292,7 +292,7 @@ Note that the actual dataset paths and blend are defined by the YAML config, not
 To learn more about the YAML data config, see :ref:`the Extended multi-dataset configuration format <asr-dataset-config-format>` section in the ASR documentation.
 
 Preparing S2S Datasets
-------------------
+----------------------
 
 Creating Lhotse Manifests
 ^^^^^^^^^^^^^^^^^^^^^^^^^

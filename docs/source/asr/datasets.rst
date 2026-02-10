@@ -670,6 +670,8 @@ Some other Lhotse related arguments we support:
 
 The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
 
+.. _asr-dataset-config-format:
+
 Extended multi-dataset configuration format
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -1,3 +1,5 @@
+.. _nemo tts collection api:
+
 NeMo TTS API
 ============
 

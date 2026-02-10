@@ -403,7 +403,6 @@ cd /opt
 git clone https://github.com/NVIDIA/NeMo
 cd NeMo
 git checkout ${REF:-'main'}
-bash docker/common/install_dep.sh --library all
 pip install ".[all]"
 ```
 

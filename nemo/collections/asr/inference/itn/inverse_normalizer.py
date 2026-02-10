@@ -34,7 +34,7 @@ try:
     from nemo_text_processing.text_normalization.en.graph_utils import INPUT_CASED, INPUT_LOWER_CASED
 
     HAVE_NEMO_TEXT_PROCESSING = True
-except ImportError as e:
+except ImportError:
     INPUT_CASED, INPUT_LOWER_CASED = "undefined", "undefined"
     HAVE_NEMO_TEXT_PROCESSING = False
 

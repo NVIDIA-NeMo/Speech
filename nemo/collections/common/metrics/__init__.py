@@ -20,3 +20,12 @@ from nemo.collections.common.metrics.metric_string_to_torchmetric import (
     TextMetricsSet,
 )
 from nemo.collections.common.metrics.perplexity import Perplexity
+
+__all__ = [
+    "ClassificationMetricsSet",
+    "GlobalAverageLossMetric",
+    "MetricStringToTorchMetric",
+    "Perplexity",
+    "TextMetricsSet",
+    "TopKClassificationAccuracy",
+]

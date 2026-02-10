@@ -64,7 +64,6 @@ def prepare_text_and_asr_labels(
     source_encoded,
     cfg,
     predict_user_text,
-    user_eos_id,
     text_pad_id,
     text_bos_id,
     text_eos_id,
@@ -88,10 +87,9 @@ def prepare_text_and_asr_labels(
         source_encoded: Encoded source audio features (B, T, D)
         cfg: Configuration object with model settings
         predict_user_text: Whether to predict user text in addition to agent text
-        user_eos_id: Token ID for user turn ending
         text_pad_id: Token ID for text padding
-        text_bos_id: Token ID for agent text beginning
-        text_eos_id: Token ID for agent text ending
+        text_bos_id: Token ID for text beginning
+        text_eos_id: Token ID for text ending
         advance_text_channel_by: Number of frames to advance text channel prediction
         use_tp: Whether tensor parallelism is enabled
         device_mesh: Device mesh for tensor parallelism
@@ -105,21 +103,21 @@ def prepare_text_and_asr_labels(
 
     Example:
         Input conversation (simplified):
-            User: "Hello" → source_tokens: [PAD, USER_BOS, 123, 456, USER_EOS, PAD, PAD, PAD]
-            Agent: "Hi there" → target_tokens: [PAD, PAD, PAD, TEXT_BOS, 789, 101, TEXT_EOS, PAD]
+            User: "Hello" → source_tokens: [PAD, BOS, 123, 456, EOS, PAD, PAD, PAD]
+            Agent: "Hi there" → target_tokens: [PAD, PAD, PAD, BOS, 789, 101, EOS, PAD]
 
         With predict_user_text=True:
             Input:
                 target_tokens: [[0, 0, 0, 2, 789, 101, 3, 0]]  # Shape: (1, 8)
-                source_tokens: [[0, 1, 123, 456, 4, 0, 0, 0]]  # From batch
+                source_tokens: [[0, 2, 123, 456, 3, 0, 0, 0]]  # From batch
                 source_encoded: Tensor of shape (1, 8, 1024)
 
             Output:
                 {
                     'text_inputs': [[0, 0, 0, 2, 789, 101, 3]],    # (1, 7) - agent text input
                     'text_labels': [[0, 0, 2, 789, 101, 3, 0]],    # (1, 7) - agent text target
-                    'asr_inputs': [[0, 1, 123, 456, 3, 0, 0]],     # (1, 7) - user text input (user_eos→text_eos)
-                    'asr_labels': [[1, 123, 456, 3, 0, 0, 0]],     # (1, 7) - user text target
+                    'asr_inputs': [[0, 2, 123, 456, 3, 0, 0]],     # (1, 7) - user text input
+                    'asr_labels': [[2, 123, 456, 3, 0, 0, 0]],     # (1, 7) - user text target
                     'source_encoded': Tensor of shape (1, 8, 1024),
                     'source_token_lens': [...],
                     'target_token_lens': [...]
@@ -207,9 +205,6 @@ def prepare_text_and_asr_labels(
         target_tokens_flat = target_tokens.clone()
 
         # Keep user and agent text in separate channels and allow overlap between them
-        # To be consistent with the single channel case, replace the user_eos_id with agent_eos_id
-        source_tokens_flat = source_tokens_flat.clone()
-        source_tokens_flat[source_tokens_flat == user_eos_id] = text_eos_id
         asr_inputs = source_tokens_flat[:, :-1]
         asr_labels = source_tokens_flat[:, 1:]
         text_inputs = target_tokens_flat[:, :-1]

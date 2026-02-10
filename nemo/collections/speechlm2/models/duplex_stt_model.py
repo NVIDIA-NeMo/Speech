@@ -117,8 +117,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.predict_user_text:
             self.asr_head = copy.deepcopy(self.lm_head)
             self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
-        self.user_bos_id = self.tokenizer.text_to_ids('^')[0]
-        self.user_eos_id = self.tokenizer.text_to_ids('$')[0]
 
         maybe_install_lora(self)
 
@@ -481,7 +479,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             source_encoded=source_encoded,
             cfg=self.cfg,
             predict_user_text=self.predict_user_text,
-            user_eos_id=self.user_eos_id,
             text_pad_id=self.text_pad_id,
             text_bos_id=self.text_bos_id,
             text_eos_id=self.text_eos_id,
@@ -535,9 +532,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     asr_labels.unsqueeze(-1) == self.text_pad_id,
                     pad_weight,
                     torch.where(
-                        asr_labels.unsqueeze(-1) == self.user_bos_id,
+                        asr_labels.unsqueeze(-1) == self.text_bos_id,
                         bos_weight,
-                        torch.where(asr_labels.unsqueeze(-1) == self.user_eos_id, eos_weight, text_weight),
+                        torch.where(asr_labels.unsqueeze(-1) == self.text_eos_id, eos_weight, text_weight),
                     ),
                 )
 
@@ -664,7 +661,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self.bleu = BLEU().reset()
 
         self.turn_taking_metrics = TurnTakingMetrics(
-            eos_token_id=self.tokenizer.text_to_ids('$')[0],
+            eos_token_id=self.text_eos_id,
             bos_token_id=self.text_bos_id,
             tolerance=13,
             latency_multiplier=0.08,
@@ -740,9 +737,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 name=name,
                 refs=dataset_batch["target_texts"],
                 hyps=results["text"],
-                asr_hyps=None,
                 samples_id=dataset_batch['sample_id'],
-                pred_audio=None,
                 user_audio=dataset_batch["source_audio"],
                 user_audio_sr=self.source_sample_rate,
                 src_refs=dataset_batch["source_texts"],
@@ -755,13 +750,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
             if self.cfg.get("eval_text_turn_taking", False):
                 import re
-
                 results["text"] = [re.sub(r"<\|.*?\|>", "", s).strip() for s in results["text"]]
 
             if self.predict_user_text:
-                src_text_clean = [s.replace("^", " ").replace("$", " ") for s in results["src_text"]]
-                self.src_bleu.update(name=name, refs=dataset_batch["source_texts"], hyps=src_text_clean)
-                self.src_wer.update(name=name, refs=dataset_batch["source_texts"], hyps=src_text_clean)
+                self.src_bleu.update(name=name, refs=dataset_batch["source_texts"], hyps=results["src_text"])
+                self.src_wer.update(name=name, refs=dataset_batch["source_texts"], hyps=results["src_text"])
                 self.empty_user_text.update(name=name, hyps=results["src_text"])
 
     def on_test_epoch_start(self) -> None:

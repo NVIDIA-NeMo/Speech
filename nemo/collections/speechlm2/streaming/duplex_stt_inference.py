@@ -190,6 +190,21 @@ class DuplexSTTStreamingInference:
         threshold = self.model.cfg.get("force_turn_taking_threshold", 40)
         pad_window_steps = self.model.cfg.get("force_turn_taking_pad_window", 25)
 
+        # Backward compatibility: support old checkpoints trained with '^' and '$'
+        # For old models, set model.user_bos_token="^" and model.user_eos_token="$" in config
+        user_bos_token = self.model.cfg.get("user_bos_token", None)
+        user_eos_token = self.model.cfg.get("user_eos_token", None)
+
+        if user_bos_token is not None:
+            legacy_user_bos_id = self.model.tokenizer.text_to_ids(user_bos_token)[0]
+        else:
+            legacy_user_bos_id = None
+
+        if user_eos_token is not None:
+            legacy_user_eos_id = self.model.tokenizer.text_to_ids(user_eos_token)[0]
+        else:
+            legacy_user_eos_id = None
+
         for batch_idx in range(inference_state["B"]):
             if is_prompt_position[batch_idx]:
                 continue
@@ -215,11 +230,21 @@ class DuplexSTTStreamingInference:
                 # If the pad window starts at position 0, it doesn't meet the requirement
                 has_pad_window = False
 
-            if current_asr_token == self.model.tokenizer.eos or has_pad_window:
+            # Check for user EOS: either tokenizer.eos (new) or legacy user_eos (old models)
+            is_user_eos = current_asr_token == self.model.tokenizer.eos
+            if legacy_user_eos_id is not None:
+                is_user_eos = is_user_eos or (current_asr_token == legacy_user_eos_id)
+
+            # Check for user BOS: either text_bos_id (new) or legacy user_bos (old models)
+            is_user_bos = current_asr_token == self.model.text_bos_id
+            if legacy_user_bos_id is not None:
+                is_user_bos = is_user_bos or (current_asr_token == legacy_user_bos_id)
+
+            if is_user_eos or has_pad_window:
                 # User has finished talking or remains silent for a while
                 if not (agent_text_window == self.model.text_bos_id).any():
                     inference_state["gen_text"][batch_idx, t] = self.model.text_bos_id
-            elif current_asr_token == self.model.user_bos_id:
+            elif is_user_bos:
                 # User has started talking but agent has not stopped yet
                 if not (agent_text_window == self.model.text_eos_id).any():
                     inference_state["gen_text"][batch_idx, t] = self.model.text_eos_id

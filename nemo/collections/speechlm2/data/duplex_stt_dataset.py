@@ -283,8 +283,8 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 self.tokenizer,
                 self.frame_length,
                 roles=self.input_roles,
-                bos_id=self.tokenizer.text_to_ids('^')[0],
-                eos_id=self.tokenizer.text_to_ids('$')[0],
+                bos_id=self.tokenizer.bos,
+                eos_id=self.tokenizer.eos,
                 word_align_position=self.word_align_position,
                 remove_timestamps=not self.predict_user_text,
             )

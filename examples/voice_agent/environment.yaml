@@ -362,7 +362,7 @@ dependencies:
     - pytest-runner==6.0.1
     - python-dateutil==2.9.0.post0
     - python-dotenv==1.1.1
-    - python-graphviz==0.21
+    - graphviz==0.21  # need to change from python-graphviz==0.21 to avoid package not found
     - python-json-logger==3.3.0
     - python-multipart==0.0.20
     - python-weather==2.1.1
@@ -508,4 +508,3 @@ dependencies:
     - zarr==2.18.3
     - zipp==3.23.0
     - zstandard==0.25.0
-prefix: /home/heh/anaconda3/envs/nemo-voice-debug

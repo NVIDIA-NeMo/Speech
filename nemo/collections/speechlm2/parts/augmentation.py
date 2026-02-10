@@ -374,7 +374,6 @@ class AudioAugmenter:
 
             return decoded
 
-
     def augment_batch(self, cfg, source_audio, source_audio_lens):
         """Apply all configured augmentations to batch audio.
 

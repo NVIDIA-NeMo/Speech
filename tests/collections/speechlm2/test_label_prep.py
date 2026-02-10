@@ -38,17 +38,21 @@ def test_maybe_prepend_prompt_tokens_with_source_tokens():
     source_encoded_lens = torch.tensor([5, 4])
 
     # Target tokens
-    target_tokens = torch.tensor([
-        [1, 100, 101, 102, 2, 0],  # BOS, tokens, EOS, PAD
-        [1, 200, 201, 2, 0, 0],
-    ])
+    target_tokens = torch.tensor(
+        [
+            [1, 100, 101, 102, 2, 0],  # BOS, tokens, EOS, PAD
+            [1, 200, 201, 2, 0, 0],
+        ]
+    )
     target_token_lens = torch.tensor([5, 4])
 
     # Source tokens (for ASR head)
-    source_tokens = torch.tensor([
-        [1, 50, 51, 52, 2, 0],
-        [1, 60, 61, 2, 0, 0],
-    ])
+    source_tokens = torch.tensor(
+        [
+            [1, 50, 51, 52, 2, 0],
+            [1, 60, 61, 2, 0, 0],
+        ]
+    )
     source_token_lens = torch.tensor([5, 4])
 
     batch = {
@@ -98,15 +102,15 @@ def test_maybe_prepend_prompt_tokens_with_source_tokens():
 
     # Check target tokens are shifted by prompt_len
     assert new_target_tokens[0, :prompt_len_0].tolist() == [PAD] * prompt_len_0
-    assert new_target_tokens[0, prompt_len_0:prompt_len_0 + 5].tolist() == [1, 100, 101, 102, 2]
+    assert new_target_tokens[0, prompt_len_0 : prompt_len_0 + 5].tolist() == [1, 100, 101, 102, 2]
     assert new_target_tokens[1, :prompt_len_1].tolist() == [PAD] * prompt_len_1
-    assert new_target_tokens[1, prompt_len_1:prompt_len_1 + 4].tolist() == [1, 200, 201, 2]
+    assert new_target_tokens[1, prompt_len_1 : prompt_len_1 + 4].tolist() == [1, 200, 201, 2]
 
     # Check source tokens are shifted by prompt_len
     assert batch["source_tokens"][0, :prompt_len_0].tolist() == [PAD] * prompt_len_0
-    assert batch["source_tokens"][0, prompt_len_0:prompt_len_0 + 5].tolist() == [1, 50, 51, 52, 2]
+    assert batch["source_tokens"][0, prompt_len_0 : prompt_len_0 + 5].tolist() == [1, 50, 51, 52, 2]
     assert batch["source_tokens"][1, :prompt_len_1].tolist() == [PAD] * prompt_len_1
-    assert batch["source_tokens"][1, prompt_len_1:prompt_len_1 + 4].tolist() == [1, 60, 61, 2]
+    assert batch["source_tokens"][1, prompt_len_1 : prompt_len_1 + 4].tolist() == [1, 60, 61, 2]
 
 
 def test_maybe_prepend_prompt_tokens_no_prompt():

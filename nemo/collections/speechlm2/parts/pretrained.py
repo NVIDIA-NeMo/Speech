@@ -217,9 +217,7 @@ def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str
     else:
         checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
-    checkpoint_state = {
-        k.replace("perception.", ""): v for k, v in checkpoint_state.items() if "perception." in k
-    }
+    checkpoint_state = {k.replace("perception.", ""): v for k, v in checkpoint_state.items() if "perception." in k}
     checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.perception.state_dict())
     model.perception.load_state_dict(checkpoint_state, strict=True)
 

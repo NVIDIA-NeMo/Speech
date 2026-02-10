@@ -405,10 +405,13 @@ def _log_transformer_component(name: str, cfg: DictConfig) -> dict:
         logging.info(f"  - FLOPs per token (router): ~{flops_info['router_flops_per_token']:,}")
         logging.info(f"  - FLOPs per token (total): ~{flops_info['total_flops_per_token']:,}")
 
-        # Compare to dense baseline (d_ffn=4*d_model)
-        dense_flops_info = compute_ffn_flops_per_token(d_model=d_model, d_ffn=4 * d_model, is_moe=False)
+        # Compare to dense baseline using the standard transformer convention (d_ffn=4*d_model).
+        # Note: this assumes the dense model it replaces uses d_ffn=4*d_model. If the actual dense
+        # baseline uses a different d_ffn, adjust accordingly.
+        dense_baseline_d_ffn = 4 * d_model
+        dense_flops_info = compute_ffn_flops_per_token(d_model=d_model, d_ffn=dense_baseline_d_ffn, is_moe=False)
         flops_reduction = dense_flops_info['total_flops_per_token'] / flops_info['total_flops_per_token']
-        logging.info(f"  - FLOPs reduction vs dense (d_ffn={4 * d_model}): ~{flops_reduction:.1f}x")
+        logging.info(f"  - FLOPs reduction vs dense (d_ffn={dense_baseline_d_ffn}): ~{flops_reduction:.1f}x")
 
         return flops_info
     else:

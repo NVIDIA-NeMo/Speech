@@ -22,9 +22,6 @@ class MoERouter(torch.nn.Module):
     """
     Router for Mixture of Experts that selects which experts to use for each token.
     Supports multiple routing strategies including top-k and Sinkhorn routing.
-
-    Note: This module only performs routing. Loss computation is handled separately
-    in `nemo.collections.tts.losses.moe_loss` for proper separation of concerns.
     """
 
     def __init__(
@@ -86,11 +83,10 @@ class MoERouter(torch.nn.Module):
         # Mask router logits to ensure padded positions remain zero
         router_logits = router_logits * x_mask.unsqueeze(-1)
 
-        # Compute routing probabilities
-        # Note: For padded positions with zero logits [0,0,...,0], softmax gives uniform distribution [1/n,...,1/n]
-        # This is fine - we need valid probabilities for top-k selection and normalization
-        # Sinkhorn routing is only applied during training
-        # During inference, use softmax for speed (load balancing doesn't matter with small batches)
+        # Compute routing probabilities for each token.
+        # Padded positions with logits of [0, 0, ..., 0] will produce a uniform softmax ([1/n, ..., 1/n]);
+        # this is acceptable, since we require valid probabilities for top-k selection and normalization.
+        # Sinkhorn routing is used only during training for balancing, while at inference simple softmax is used for efficiency.
         if self.routing_strategy == "sinkhorn" and self.training:
             router_probs = self._sinkhorn_routing(router_logits, x_mask)
         else:
@@ -229,13 +225,23 @@ class PositionwiseConvFFMoE(torch.nn.Module):
             p_dropout (float): Dropout probability
             num_experts (int): Number of expert networks
             top_k_experts (int): Number of experts to use per token
-            kernel_size (int): Convolution kernel size
+            kernel_size (int): Convolution kernel size. Must be 1 for MoE so that each expert
+                is a standard pointwise linear FFN (Conv1d with kernel_size=1 is equivalent to
+                nn.Linear applied independently at each position).
             bias (bool): Whether to use bias in convolution layers
             is_causal (bool): Whether to use causal convolution
             non_linearity (Callable): Activation function
             router_jitter_noise (float): Noise for router exploration
             routing_strategy (str): Routing strategy ("top_k" or "sinkhorn")
         """
+        if kernel_size != 1:
+            raise ValueError(
+                f"`PositionwiseConvFFMoE` requires kernel_size=1, got {kernel_size}. "
+                f"Each MoE expert must be a pointwise linear FFN (Conv1d with kernel_size=1 == nn.Linear). "
+                f"kernel_size > 1 is not supported because (1) standard MoE experts are linear layers, "
+                f"and (2) MoE dispatch gathers tokens from arbitrary (batch, time) positions, so "
+                f"Conv1d with kernel_size > 1 would mix non-adjacent tokens."
+            )
         super().__init__()
         self.d_model = d_model
         self.d_ffn = d_ffn
@@ -302,8 +308,7 @@ class PositionwiseConvFFMoE(torch.nn.Module):
         # router_probs: (B, T, num_experts)
 
         # Vectorized dispatch: flatten all (token, expert-slot) assignments once,
-        # sort by expert to get contiguous slices, then process each expert on its
-        # slice.
+        # sort by expert to get contiguous slices, then process each expert on its slice.
         B, T, C = x.shape
         top_k = expert_indices.shape[-1]
 

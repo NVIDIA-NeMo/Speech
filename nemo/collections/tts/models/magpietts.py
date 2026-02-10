@@ -584,7 +584,7 @@ class MagpieTTSModel(ModelPT):
             # Similar to decoder_context_tts, but we use context encoder
             # Decoder gets output from context encoder instead of raw context tokens embeddings
             context_encoder_cfg = dict(cfg.context_encoder)
-            context_encoder_cfg.pop('router_load_balancing_loss_coeff', None)  # New name
+            context_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
             context_encoder_cfg.pop('router_z_loss_coeff', None)
             self.context_encoder = transformer_2501.Transformer(**context_encoder_cfg)
             self.transcript_decoder_layers = [
@@ -2606,12 +2606,16 @@ class MagpieTTSModel(ModelPT):
         moe_expert_usage_stats = None
 
         if self.use_moe and moe_routing_info is not None:
-            # Note: router_logits, router_probs, and expert_indices contain context audio dimensions if
-            # additional decoder input is provided. We include context audio dimensions in the loss computation
-            # and expert usage statistics.
-            # Note: router_logits and router_probs are already masked (padded positions = 0) by MoERouter.
-            # expert_indices are set to -1 for padded positions.
-            # We pass x_mask to loss functions to ensure averages are computed only over valid tokens.
+            # The decoder input is: [context_audio | target_audio | padding]. MoE routing runs on this full concatenated
+            # sequence, so router_logits, router_probs, and expert_indices contain context audio dimensions. We include
+            # context audio in the MoE loss computation (not stripped like the main CE loss) because:
+            #   1. Load balancing loss needs to see all tokens the router dispatches, including context. Excluding
+            #      context would make experts that specialize in processing context audio look underused, producing
+            #      misleading gradients.
+            #   2. At inference, context audio is always present and routed through experts. Training the router to
+            #      balance load only on target tokens would create a train/inference mismatch in routing behavior.
+            # Padding is excluded via x_mask. Router already masks padded positions, router_logits/router_probs=0,
+            # expert_indices=-1, and we pass x_mask to loss functions to ensure averages are computed only over valid (non-padding) tokens.
             all_router_logits = []
             all_router_probs = []
             all_expert_indices = []

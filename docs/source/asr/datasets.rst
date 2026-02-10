@@ -534,7 +534,7 @@ An example using an AIS cluster at ``hostname:port`` with a tarred dataset for t
   model.train_ds.manifest_filepath=ais://train_bucket/tarred_audio_manifest.json \
   model.train_ds.tarred_audio_filepaths=ais://train_bucket/audio__OP_0..511_CL_.tar \
   ++model.train_ds.defer_setup=true \
-  mode.validation_ds.manifest_filepath=ais://validation_bucket/validation_manifest.json \
+  model.validation_ds.manifest_filepath=ais://validation_bucket/validation_manifest.json \
   ++model.validation_ds.defer_setup=true
 
 
@@ -875,6 +875,7 @@ Data format examples::
 
     # file: chat_0.jsonl
     {"id": "conv-0", "conversations": [{"from": "user", "value": "speak to me", "type": "text"}, {"from": "assistant": "value": "/path/to/audio.wav", "duration": 17.1, "type": "audio"}]}
+    {"id": "conv-1", "conversations": [{"from": "user", "value": "speak to me", "type": "text"}, {"from": "assistant": "value": "/path/to/audio.wav", "duration": 5, "offset": 17.1, "type": "audio"}]}
 
 Dataloading configuration example::
 

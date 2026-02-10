@@ -5,7 +5,7 @@ lightning>2.2.1,<=2.4.0
 omegaconf<=2.3
 peft
 torchmetrics>=0.11.0
-transformers~=4.53.0
+transformers~=4.57.0
 wandb
 webdataset>=0.2.86
 nv_one_logger_core>=2.3.1

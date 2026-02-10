@@ -21,3 +21,16 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     right_context_secs=2.0 \
     timestamps=true \
     output_filename="/tmp/stt_streaming_test_res.json"
+
+# Boosting ground truth - sanity check for per-utterance boosting
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+    examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \
+    model_path="/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo" \
+    dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
+    use_per_stream_biasing=true \
+    chunk_secs=2.0 \
+    left_context_secs=10.0 \
+    right_context_secs=2.0 \
+    batch_size=5 \
+    timestamps=true \
+    output_filename="/tmp/stt_streaming_test_res.json"

@@ -50,7 +50,11 @@ from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     plot_alignment_to_numpy,
 )
-from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_and_tokenize_text_by_sentence, stack_tensors
+from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    chunk_and_tokenize_text_by_sentence,
+    get_word_count,
+    stack_tensors,
+)
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
@@ -3518,13 +3522,19 @@ class MagpieTTSModel(ModelPT):
             "it": 53,
             "de": 50,
             "zh": 100,
+            "hi": 50,
+            "ja": 50,  # Japanese word count (pyopenjtalk morphemes)
         }
-        # For Zh word count cannot be calculated by split(), hence calculating character count.
-        if language == "zh":
-            word_count = len(list(text))
-        else:
-            word_count = len(text.split())
-        is_longform = word_count >= longform_word_thresholds[language]
+        # Use language-aware word counting (handles Japanese, Chinese, etc.)
+        word_count = get_word_count(text, language)
+        # Safely get threshold; fall back to English if language is unknown
+        threshold = longform_word_thresholds.get(language, longform_word_thresholds["en"])
+        if language not in longform_word_thresholds:
+            logging.warning(
+                f"Longform word threshold for language '{language}' is not defined. "
+                "Falling back to English longform threshold."
+            )
+        is_longform = word_count >= threshold
 
         if is_longform:
             if language == "zh":
@@ -3613,6 +3623,8 @@ class MagpieTTSModel(ModelPT):
             "it": ["italian_phoneme", "italian"],
             "vi": ["vietnamese_phoneme", "vietnamese"],
             "zh": ["mandarin_phoneme", "mandarin", "chinese"],
+            "ja": ["japanese_phoneme", "japanese"],
+            "hi": ["hindi_chartokenizer", "hindi"],
         }
 
         # Find matching tokenizer
@@ -3635,9 +3647,15 @@ class MagpieTTSModel(ModelPT):
 
         with torch.no_grad():
             if is_longform:
+                logging.info("Longform inference is needed")
                 # Longform path - process text - sentence by sentence
+                # Disable KV cache for longform inference to avoid dimension mismatch
+                self.decoder.reset_cache(use_cache=False)
+                if hasattr(self, 'local_transformer'):
+                    self.local_transformer.reset_cache(use_cache=False)
+
                 chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
-                    normalized_text, tokenizer_name, self.tokenizer, self.eos_id
+                    normalized_text, tokenizer_name, self.tokenizer, self.eos_id, language=language
                 )
 
                 chunk_state = self.create_longform_chunk_state(batch_size=1)
@@ -3658,6 +3676,7 @@ class MagpieTTSModel(ModelPT):
                         end_of_text=end_of_text,
                         beginning_of_text=beginning_of_text,
                         use_cfg=use_cfg,
+                        use_local_transformer_for_inference=True,
                     )
                     if output.predicted_codes_lens[0] > 0:
                         all_codes.append(output.predicted_codes[0, :, : output.predicted_codes_lens[0]])
@@ -4011,7 +4030,7 @@ class MagpieTTSModel(ModelPT):
         dummy_additional_decoder_input: Optional[torch.Tensor],
         dummy_addition_dec_mask: Optional[torch.Tensor],
         batch_size: int,
-    ) -> Tuple[torch.Tensor, Any]:
+    ) -> Tuple[torch.Tensor, Any, torch.Tensor]:
         """
         Run forward pass with optional classifier-free guidance.
 
@@ -4029,7 +4048,7 @@ class MagpieTTSModel(ModelPT):
             batch_size: Number of items in the batch.
 
         Returns:
-            Tuple of (logits, attention_probs).
+            Tuple of (logits, attention_probs, decoder_output).
         """
         if use_cfg:
             # Combine conditional and unconditional inputs
@@ -4049,7 +4068,7 @@ class MagpieTTSModel(ModelPT):
                 )
                 cfg_audio_mask[batch_size:, : dummy_additional_decoder_input.size(1)] = dummy_addition_dec_mask
 
-            combined_logits, attn_probs, _ = self.forward(
+            combined_logits, attn_probs, dec_out = self.forward(
                 dec_input_embedded=cfg_audio_embedded,
                 dec_input_mask=cfg_audio_mask,
                 cond=cfg_cond,
@@ -4061,8 +4080,9 @@ class MagpieTTSModel(ModelPT):
             cond_logits = combined_logits[:batch_size]
             uncond_logits = combined_logits[batch_size:]
             all_code_logits = (1 - cfg_scale) * uncond_logits + cfg_scale * cond_logits
+            # NOTE: Keep dec_out doubled for local transformer CFG handling
         else:
-            all_code_logits, attn_probs, _ = self.forward(
+            all_code_logits, attn_probs, dec_out = self.forward(
                 dec_input_embedded=audio_codes_embedded,
                 dec_input_mask=audio_codes_mask,
                 cond=context_tensors.cond,
@@ -4071,7 +4091,7 @@ class MagpieTTSModel(ModelPT):
                 multi_encoder_mapping=context_tensors.multi_encoder_mapping,
             )
 
-        return all_code_logits, attn_probs
+        return all_code_logits, attn_probs, dec_out
 
     def _initialize_longform_attn_prior(
         self,
@@ -4242,6 +4262,12 @@ class MagpieTTSModel(ModelPT):
         end_of_text,
         beginning_of_text,
         use_cfg=True,
+        use_local_transformer_for_inference=False,
+        maskgit_n_steps=3,
+        maskgit_noise_scale=0.0,
+        maskgit_fixed_schedule=None,
+        maskgit_dynamic_cfg_scale=False,
+        maskgit_sampling_type=None,
     ):
         """
         Generates speech for long-form text by progressively shifting through text tokens.
@@ -4258,6 +4284,12 @@ class MagpieTTSModel(ModelPT):
             end_of_text (List[bool]): Whether entire text has been provided for each batch item.
             beginning_of_text (bool): Whether this is the first chunk.
             use_cfg (bool): Whether to use classifier-free guidance.
+            use_local_transformer_for_inference (bool): Whether to use local transformer for sampling.
+            maskgit_n_steps (int): Number of MaskGit refinement steps.
+            maskgit_noise_scale (float): Noise scale for MaskGit sampling.
+            maskgit_fixed_schedule (Optional[List[int]]): Fixed schedule for MaskGit.
+            maskgit_dynamic_cfg_scale (bool): Whether to use dynamic CFG scale in MaskGit.
+            maskgit_sampling_type (Optional[str]): Type of MaskGit sampling.
 
         Returns:
             InferBatchOutput: Contains predicted_codes, predicted_codes_lens, and empty audio fields.
@@ -4365,7 +4397,7 @@ class MagpieTTSModel(ModelPT):
                     attn_prior = [attn_prior, None]
 
                 # Run forward pass with optional CFG
-                all_code_logits, attn_probs = self._run_longform_forward_with_cfg(
+                all_code_logits, attn_probs, dec_out = self._run_longform_forward_with_cfg(
                     context_tensors=context_tensors,
                     audio_codes_embedded=_audio_codes_embedded,
                     audio_codes_mask=_audio_codes_mask,
@@ -4439,13 +4471,47 @@ class MagpieTTSModel(ModelPT):
                     unfinished_items = {k: v for k, v in state.unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)
-                audio_codes_next = self.sample_codes_from_logits(
-                    all_code_logits_t,
-                    temperature=self.inference_parameters.temperature,
-                    topk=self.inference_parameters.topk,
-                    unfinished_items=unfinished_items,
-                    finished_items=finished_items,
-                )  # (B, num_codebooks)
+
+                if use_local_transformer_for_inference:
+                    if self.local_transformer_type == LocalTransformerType.AR:
+                        # Autoregressive sampling with local transformer
+                        audio_codes_next = self.local_transformer_sample_autoregressive(
+                            dec_output=dec_out[:, -1, :],
+                            temperature=self.inference_parameters.temperature,
+                            topk=self.inference_parameters.topk,
+                            unfinished_items=unfinished_items,
+                            finished_items=finished_items,
+                            use_cfg=use_cfg,
+                            cfg_scale=cfg_scale,
+                            use_kv_cache=self.inference_parameters.use_LT_kv_cache,
+                        )
+                    elif self.local_transformer_type == LocalTransformerType.MASKGIT:
+                        audio_codes_next = self.local_transformer_sample_maskgit(
+                            dec_output=dec_out[:, -1, :],
+                            temperature=self.inference_parameters.temperature,
+                            topk=self.inference_parameters.topk,
+                            unfinished_items=unfinished_items,
+                            finished_items=finished_items,
+                            use_cfg=use_cfg,
+                            cfg_scale=cfg_scale,
+                            n_steps=maskgit_n_steps,
+                            noise_scale=maskgit_noise_scale,
+                            fixed_schedule=maskgit_fixed_schedule,
+                            dynamic_cfg_scale=maskgit_dynamic_cfg_scale,
+                            sampling_type=maskgit_sampling_type,
+                        )
+                    else:
+                        raise ValueError(
+                            f"Local transformer inference requested but local transformer type is {self.local_transformer_type}"
+                        )
+                else:
+                    audio_codes_next = self.sample_codes_from_logits(
+                        all_code_logits_t,
+                        temperature=self.inference_parameters.temperature,
+                        topk=self.inference_parameters.topk,
+                        unfinished_items=unfinished_items,
+                        finished_items=finished_items,
+                    )  # (B, num_codebooks)
                 all_codes_next_argmax = self.sample_codes_from_logits(
                     all_code_logits_t,
                     temperature=self.longform_config.argmax_temperature,

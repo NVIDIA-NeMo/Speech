@@ -192,6 +192,9 @@ class LlamaBidirectionalForSequenceClassification(LlamaForSequenceClassification
         )
 
 
+AutoModel.register(LlamaBidirectionalConfig, LlamaBidirectionalModel)  # required for transformers >= 4.57
+
+
 class LlamaBidirectionalHFAdapter(torch.nn.Module):
     """Wraps a Text embedding model with pooling and normalization."""
 

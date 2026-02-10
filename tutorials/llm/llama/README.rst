@@ -2,6 +2,12 @@
 Getting Started with Llama 3 and Llama 3.1
 ==========================================
 
+.. note::
+   **Deprecation Notice:** NeMo 2.0 LLM/VLM support is deprecated and will be replaced by 
+   `NeMo Megatron-Bridge <https://github.com/NVIDIA-NeMo/Megatron-Bridge>`_ and 
+   `NeMo AutoModel <https://github.com/NVIDIA-NeMo/AutoModel>`_. 
+   Please refer to those projects for LLM training and fine-tuning workflows.
+
 This repository contains Jupyter Notebook tutorials using the NeMo Framework for Llama-3 and Llama-3.1 models by Meta.
 
 .. list-table:: 
@@ -26,6 +32,3 @@ This repository contains Jupyter Notebook tutorials using the NeMo Framework for
    * - `NeMo SlimPajama Data Pipeline and Pretraining tutorial <./slimpajama>`_
      - `SlimPajama <https://huggingface.co/datasets/cerebras/SlimPajama-627B>`_
      - Step-by-step guide to preprocess the SlimPajama dataset and pretrain a Llama3 8B model using NeMo 2.0
-   * - `ChipNeMo - Custom tokenization + Domain Adaptive Pre-training on Llama 2 7b <./domain-adaptive-pretraining>`_
-     - Chip domain/hardware datasets from open-source GitHub, Wikipedia and ArXiv papers.
-     - Tutorial on custom tokenization and Domain-Adaptive Pre-training for a ChipNeMo-like code generation use case.

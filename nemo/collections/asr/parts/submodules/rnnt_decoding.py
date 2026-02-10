@@ -451,6 +451,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
                     fusion_models=fusion_models,
                     fusion_models_alpha=fusion_models_alpha,
+                    enable_per_stream_biasing=self.cfg.greedy.get('enable_per_stream_biasing', False),
                 )
             case TransducerDecodingStrategyType.GREEDY_BATCH, TransducerModelType.TDT:
                 self.decoding = rnnt_greedy_decoding.GreedyBatchedTDTInfer(
@@ -469,6 +470,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
                     fusion_models=fusion_models,
                     fusion_models_alpha=fusion_models_alpha,
+                    enable_per_stream_biasing=self.cfg.greedy.get('enable_per_stream_biasing', False),
                 )
             case TransducerDecodingStrategyType.GREEDY_BATCH, TransducerModelType.MULTI_BLANK:
                 if fusion_models is not None:

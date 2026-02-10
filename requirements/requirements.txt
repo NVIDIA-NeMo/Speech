@@ -14,7 +14,7 @@ scikit-learn
 setuptools>=70.0.0
 tensorboard
 text-unidecode
-torch
+torch>=2.6.0
 tqdm>=4.41.0
 wget
 wrapt

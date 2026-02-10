@@ -16,17 +16,21 @@ import random
 import warnings
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Optional, Sequence, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
+import lhotse
 import numpy as np
 import torch
 from lhotse import CutSet, RecordingSet
 from lhotse.cut import Cut
 from lhotse.dataset import (
+    ClippingTransform,
+    Compress,
     CutConcatenate,
     DynamicBucketingSampler,
     DynamicCutSampler,
     IterableDatasetWrapper,
+    LowpassUsingResampling,
     ReverbWithImpulseResponse,
     RoundRobinSampler,
     ZipSampler,
@@ -186,6 +190,27 @@ class LhotseDataLoadingConfig:
     #   f. Padding to a minimum duration. Examples shorter than this will be padded, others are unaffected.
     pad_min_duration: Optional[float] = None
     pad_direction: str = "right"  # "right" | "left" | "both" | "random"
+    #   g. Bandwidth limitation via back-and-forth resampling
+    lowpass_enabled: bool = False
+    lowpass_frequencies_interval: Tuple[float, float] = (3500.0, 8000.0)
+    lowpass_prob: float = 0.5
+    #   h. Lossy compression augmentation (opus, mp3, vorbis, gsm)
+    #   implemented via soundfile, so compression level is specified via number in [0.0, 1.0]
+    #   0.0 denotes the highest bitrate and denotes the lowest bitrate for a given codec
+    #   overall, parameters mirror lhotse interface
+    compression_enabled: bool = False
+    compression_prob: float = 0.5
+    compression_level_interval: Tuple[float, float] = (0.8, 0.99)
+    compression_codecs: Tuple[str] = ("opus",)
+    compression_codec_weights: Optional[List[float]] = None
+    compression_enable_for_custom_fields: bool = False
+    #   i. Clipping/saturation augmentation
+    clipping_enabled: bool = False
+    clipping_gain_db: Tuple[float, float] = (0.0, 24.0)
+    clipping_normalize: bool = True
+    clipping_oversampling: Optional[int] = 2
+    clipping_prob_hard: float = 0.5
+    clipping_prob: float = 0.5
 
     # 5. Other Lhotse options.
     text_field: str = "text"  # key to read the transcript from
@@ -639,12 +664,53 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         if config.concatenate_merge_supervisions:
             sampler = sampler.map(_merge_supervisions)
 
+    if config.lowpass_enabled:
+        if lhotse.get_current_resampling_backend() != "libsox":
+            logging.warning(
+                "Lowpass augmentation works best with libsox backend. Consider setting resamping backend in Lhotse to libsox."
+            )
+        sampler = sampler.map(
+            LowpassUsingResampling(
+                frequencies_interval=OmegaConf.to_container(config.lowpass_frequencies_interval),
+                p=config.lowpass_prob,
+                seed=config.shard_seed,
+            )
+        )
+
+    if config.clipping_enabled:
+        sampler = sampler.map(
+            ClippingTransform(
+                gain_db=OmegaConf.to_container(config.clipping_gain_db),
+                normalize=config.clipping_normalize,
+                p=config.clipping_prob,
+                p_hard=config.clipping_prob_hard,
+                oversampling=config.clipping_oversampling,
+                seed=config.shard_seed,
+            )
+        )
+
     if config.rir_enabled:
         sampler = sampler.map(
             ReverbWithImpulseResponse(
                 rir_recordings=RecordingSet.from_file(config.rir_path) if config.rir_path is not None else None,
                 p=config.rir_prob,
                 randgen=random.Random(config.seed),
+            )
+        )
+
+    if config.compression_enabled:
+        sampler = sampler.map(
+            Compress(
+                codecs=OmegaConf.to_container(config.compression_codecs),
+                p=config.compression_prob,
+                compression_level=OmegaConf.to_container(config.compression_level_interval),
+                codec_weights=(
+                    OmegaConf.to_container(config.compression_codec_weights)
+                    if config.compression_codec_weights
+                    else config.compression_codec_weights
+                ),
+                compress_custom_fields=config.compression_enable_for_custom_fields,
+                seed=config.shard_seed,
             )
         )
 

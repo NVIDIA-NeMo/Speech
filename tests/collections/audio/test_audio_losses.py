@@ -29,16 +29,6 @@ from nemo.collections.audio.losses.audio import (
     convolution_invariant_target,
     scale_invariant_target,
 )
-
-try:
-    import importlib
-
-    importlib.import_module('torchaudio')
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
-
 from nemo.collections.audio.losses.maxine import CombinedLoss
 from nemo.collections.audio.parts.utils.audio import (
     calculate_sdr_numpy,
@@ -1089,7 +1079,6 @@ class TestAudioLosses:
             MAELoss(ndim=5)
 
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
     def test_maxine_combined_loss(self, test_data_dir):
         INPUT_LOCATION = os.path.join(test_data_dir, 'audio', 'maxine', 'input.bin')
         ATOL = 1e-2

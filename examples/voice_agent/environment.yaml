@@ -16,11 +16,11 @@ dependencies:
   - libzlib=1.3.1
   - ncurses=6.5
   - openssl=3.0.18
-  - pip=25.2
+  - pip>=25.2
   - pthread-stubs=0.3
-  - python=3.10.12
+  - python=3.12
   - readline=8.3
-  - setuptools=80.9.0
+  - setuptools=79.0.0
   - sqlite=3.50.2
   - tk=8.6.15
   - wheel=0.45.1
@@ -205,7 +205,7 @@ dependencies:
     - lazy-loader==0.4
     - ledoc-ui==0.1.0
     - leptonai==0.26.6
-    - lhotse==1.31.1
+    - lhotse>=1.32.2
     - libcst==1.8.5
     - librosa==0.11.0
     - lightning==2.4.0
@@ -213,7 +213,7 @@ dependencies:
     - lilcom==1.8.1
     - llguidance==1.3.0
     - llvmlite==0.44.0
-    - lm-format-enforcer==0.11.3
+    - lm-format-enforcer>=0.11.3
     - loguru==0.7.3
     - lxml==6.0.2
     - mako==1.3.10
@@ -255,22 +255,20 @@ dependencies:
     - numcodecs==0.13.1
     - numexpr==2.13.1
     - numpy==1.26.4
-    - nv-one-logger-core==2.3.1
-    - nv-one-logger-pytorch-lightning-integration==2.3.1
-    - nv-one-logger-training-telemetry==2.3.1
-    - nvidia-cublas-cu12==12.8.4.1
-    - nvidia-cuda-cupti-cu12==12.8.90
-    - nvidia-cuda-nvrtc-cu12==12.8.93
-    - nvidia-cuda-runtime-cu12==12.8.90
-    - nvidia-cudnn-cu12==9.10.2.21
-    - nvidia-cudnn-frontend==1.17.0
-    - nvidia-cufft-cu12==11.3.3.83
-    - nvidia-cufile-cu12==1.13.1.3
-    - nvidia-curand-cu12==10.3.9.90
-    - nvidia-cusolver-cu12==11.7.3.90
-    - nvidia-cusparse-cu12==12.5.8.93
-    - nvidia-cusparselt-cu12==0.7.1
-    - nvidia-cutlass-dsl==4.3.4
+    - nv-one-logger-core==2.3.0
+    - nv-one-logger-pytorch-lightning-integration==2.3.0
+    - nv-one-logger-training-telemetry==2.3.0
+    - nvidia-cublas-cu12==12.6.4.1
+    - nvidia-cuda-cupti-cu12==12.6.80
+    - nvidia-cuda-nvrtc-cu12==12.6.77
+    - nvidia-cuda-runtime-cu12==12.6.77
+    - nvidia-cudnn-cu12==9.5.1.17
+    - nvidia-cufft-cu12==11.3.0.4
+    - nvidia-cufile-cu12==1.11.1.6
+    - nvidia-curand-cu12==10.3.7.77
+    - nvidia-cusolver-cu12==11.7.1.2
+    - nvidia-cusparse-cu12==12.5.4.2
+    - nvidia-cusparselt-cu12==0.6.3
     - nvidia-lm-eval==25.6.1
     - nvidia-ml-py==13.580.82
     - nvidia-modelopt==0.35.0
@@ -291,7 +289,7 @@ dependencies:
     - opentelemetry-api==1.37.0
     - optuna==4.5.0
     - orjson==3.11.3
-    - outlines-core==0.2.11
+    - outlines-core>=0.2.11
     - overrides==7.7.0
     - packaging==24.2
     - pandas==2.3.3
@@ -493,8 +491,8 @@ dependencies:
     - word2number==1.1
     - wrapt==1.17.3
     - xattr==1.2.0
-    - xformers==0.0.33
-    - xgrammar==0.1.27
+    - xformers>=0.0.33
+    - xgrammar>=0.1.21
     - xxhash==3.6.0
     - yarl==1.20.1
     - zarr==2.18.3

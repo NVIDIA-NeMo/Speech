@@ -255,7 +255,6 @@ class HFCheckpointIO(CheckpointIO, IOMixin):
                 path / 'trainer.pt',
                 map_location='cpu',
                 mmap=True,
-                weights_only=False,
             )
 
         if self.adapter_only:
@@ -266,8 +265,10 @@ class HFCheckpointIO(CheckpointIO, IOMixin):
                 trainer_state['state_dict'] = self.model.load_pretrained(path / HF_WEIGHTS_PATH)
             except (EnvironmentError, HFValidationError):
                 raise EnvironmentError(
-                    f"Failed to load weights from {path}. If this is a local checkpoint, please make sure the path exists and has the correct format. "
-                    f"If this is a model from the HuggingFace Hub, please provide a valid repo_id of a model on the Hub."
+                    f"Failed to load weights from {path}. If this is a local checkpoint, "
+                    "please make sure the path exists and has the correct format. "
+                    "If this is a model from the HuggingFace Hub, "
+                    "please provide a valid repo_id of a model on the Hub."
                 )
         else:
             raise RuntimeError(

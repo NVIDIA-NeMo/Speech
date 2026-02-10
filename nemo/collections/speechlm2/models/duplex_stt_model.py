@@ -751,6 +751,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
             if self.cfg.get("eval_text_turn_taking", False):
                 import re
+
                 results["text"] = [re.sub(r"<\|.*?\|>", "", s).strip() for s in results["text"]]
 
             if self.predict_user_text:

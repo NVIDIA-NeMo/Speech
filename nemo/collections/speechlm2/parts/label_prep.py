@@ -233,9 +233,11 @@ def prepare_text_and_asr_labels(
 
     # Add dual-channel outputs if enabled
     if predict_user_text:
-        result.update({
-            "asr_inputs": source_tokens_delayed[:, :-1],
-            "asr_labels": source_tokens_delayed[:, 1:],
-        })
+        result.update(
+            {
+                "asr_inputs": source_tokens_delayed[:, :-1],
+                "asr_labels": source_tokens_delayed[:, 1:],
+            }
+        )
 
     return result

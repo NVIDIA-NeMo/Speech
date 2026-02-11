@@ -289,6 +289,8 @@ multi-GPU/multi-node training.
 - Pytorch 2.6 or above
 - NVIDIA GPU (if you intend to do model training)
 
+As of [Pytorch 2.6](https://docs.pytorch.org/docs/stable/notes/serialization.html#torch-load-with-weights-only-true), `torch.load` defaults to using `weights_only=True`. Some model checkpoints may require using `weights_only=False`. In this case, you can set the env var `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` before running code that uses `torch.load`. However, this should only be done with trusted files. Loading files from untrusted sources with more than weights only can have the risk of arbitrary code execution.
+
 ## Developer Documentation
 
 | Version | Status                                                                                                                                                              | Description                                                                                                                    |

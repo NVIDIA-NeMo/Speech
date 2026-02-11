@@ -861,21 +861,22 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
         data = self.data_samples[idx]
         text = data.text  # entry.get("normalized_text", entry.get("text", ""))
 
+        # Call parent to get ALL the context audio, text conditioning, etc.
+        example = super().__getitem__(idx)
+
         # Sentence chunking (longform-specific)
         chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
             text,
             self.tokenizer_name,
             self.text_tokenizer,
             self.eos_id,
+            language=example['language'],
         )
 
         # Handle empty text edge case
         if not chunked_tokens:
             chunked_tokens = [torch.tensor([self.eos_id], dtype=torch.int32)]
             chunked_tokens_len = [1]
-
-        # Call parent to get ALL the context audio, text conditioning, etc.
-        example = super().__getitem__(idx)
 
         # Add longform-specific fields
         example['idx'] = idx

@@ -280,6 +280,24 @@ def test_grad_scaler(mock_mpu, *args):
         pass
 
 
+def test_app_state_create_all_gather_group() -> None:
+    """Test that AppState properly stores and retrieves create_all_gather_group value."""
+    from nemo.utils import AppState
+
+    app_state = AppState()
+
+    # Test default value
+    assert app_state.create_all_gather_group == False
+
+    # Test setter
+    app_state.create_all_gather_group = True
+    assert app_state.create_all_gather_group == True
+
+    # Test setter with False
+    app_state.create_all_gather_group = False
+    assert app_state.create_all_gather_group == False
+
+
 # TODO @chcui uncomment after fabric API is merged
 # @patch('nemo.lightning._strategy_lib.DataLoader', return_value=MagicMock())
 # @patch('megatron.core.parallel_state')

@@ -100,7 +100,7 @@ You can also transcribe speech via the command line using the following `script 
 
 .. code-block:: bash
 
-    python <path_to_NeMo>/blob/main/examples/asr/transcribe_speech.py \
+    python <path_to_NeMo>/examples/asr/transcribe_speech.py \
         pretrained_name="stt_en_fastconformer_transducer_large" \
         audio_dir=<path_to_audio_dir> # path to dir containing audio files to transcribe
 

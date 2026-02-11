@@ -50,7 +50,11 @@ from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     plot_alignment_to_numpy,
 )
-from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_and_tokenize_text_by_sentence, stack_tensors
+from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    chunk_and_tokenize_text_by_sentence,
+    get_word_count,
+    stack_tensors,
+)
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
@@ -3518,13 +3522,19 @@ class MagpieTTSModel(ModelPT):
             "it": 53,
             "de": 50,
             "zh": 100,
+            "hi": 50,
+            "ja": 50,  # Japanese word count (pyopenjtalk morphemes)
         }
-        # For Zh word count cannot be calculated by split(), hence calculating character count.
-        if language == "zh":
-            word_count = len(list(text))
-        else:
-            word_count = len(text.split())
-        is_longform = word_count >= longform_word_thresholds[language]
+        # Use language-aware word counting (handles Japanese, Chinese, etc.)
+        word_count = get_word_count(text, language)
+        # Safely get threshold; fall back to English if language is unknown
+        threshold = longform_word_thresholds.get(language, longform_word_thresholds["en"])
+        if language not in longform_word_thresholds:
+            logging.warning(
+                f"Longform word threshold for language '{language}' is not defined. "
+                "Falling back to English longform threshold."
+            )
+        is_longform = word_count >= threshold
 
         if is_longform:
             if language == "zh":
@@ -3613,6 +3623,8 @@ class MagpieTTSModel(ModelPT):
             "it": ["italian_phoneme", "italian"],
             "vi": ["vietnamese_phoneme", "vietnamese"],
             "zh": ["mandarin_phoneme", "mandarin", "chinese"],
+            "ja": ["japanese_phoneme", "japanese"],
+            "hi": ["hindi_chartokenizer", "hindi"],
         }
 
         # Find matching tokenizer
@@ -3635,9 +3647,15 @@ class MagpieTTSModel(ModelPT):
 
         with torch.no_grad():
             if is_longform:
+                logging.info("Longform inference is needed")
                 # Longform path - process text - sentence by sentence
+                # Disable KV cache for longform inference to avoid dimension mismatch
+                self.decoder.reset_cache(use_cache=False)
+                if hasattr(self, 'local_transformer'):
+                    self.local_transformer.reset_cache(use_cache=False)
+
                 chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
-                    normalized_text, tokenizer_name, self.tokenizer, self.eos_id
+                    normalized_text, tokenizer_name, self.tokenizer, self.eos_id, language=language
                 )
 
                 chunk_state = self.create_longform_chunk_state(batch_size=1)

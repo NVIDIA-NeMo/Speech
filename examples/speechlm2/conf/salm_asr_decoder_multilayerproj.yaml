@@ -1,7 +1,7 @@
 model:
   # Every name/path here starting with 'pretrained' is used to initialize the model weights.
-  pretrained_llm: Qwen/Qwen3-1.7B
-  pretrained_asr: nvidia/canary-1b-flash
+  pretrained_llm: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+  pretrained_asr: nvidia/parakeet-tdt-0.6b-v2
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
 
@@ -15,7 +15,7 @@ model:
     - "^perception\\.encoder\\..+$"
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
-  prompt_format: qwen
+  prompt_format: llama3
   audio_locator_tag: "<|audioplaceholder|>"  # placeholder token for audio turn is expected
 
   # Note: Uncomment the block below to enable LoRA on LLM via HuggingFace PEFT library.
@@ -26,21 +26,15 @@ model:
   #   r: 128
   #   lora_alpha: 256
   #   lora_dropout: 0.01
-  #   # target_modules are only necessary if the `pretrained_llm` is not yet registered in PEFT library
-  #   target_modules: ["q_proj", "v_proj"]
 
   perception:
-     target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
-     output_dim: 2048
+     target: nemo.collections.speechlm2.modules.perception.AudioTranscriptionPerceptionModule
+     output_dim: 4096
      modality_adapter:
-       _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
-       d_model: 1024
-     # spec_augment:
-     #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-     #   freq_masks: 2 # set to zero to disable it
-     #   time_masks: 10 # set to zero to disable it
-     #   freq_width: 27
-     #   time_width: 5  # 5 frames = 50ms
+       _target_: nemo.collections.asr.modules.QformerConnector
+       target_layer_ids: [0, 5, 11, 17, 23]
+       input_dim: 1024
+       output_dim: 4096
 
   optimizer:
     _target_: torch.optim.AdamW

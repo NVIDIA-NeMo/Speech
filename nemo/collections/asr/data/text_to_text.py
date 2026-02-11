@@ -335,7 +335,9 @@ class TextToTextDatasetBase:
                 tts_tokenizer_global = copy.deepcopy(tokenizer)
 
             with concurrent.futures.ProcessPoolExecutor(
-                initializer=_init_tts_tokenize_process, initargs=(tts_parser,), max_workers=tokenizer_workers,
+                initializer=_init_tts_tokenize_process,
+                initargs=(tts_parser,),
+                max_workers=tokenizer_workers,
             ) as pool:
                 # chunk size for pool map is empirically chosen as a trade-off between speed and responsiveness
                 for i, tokenized_text in enumerate(

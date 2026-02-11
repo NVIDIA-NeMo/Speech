@@ -59,7 +59,7 @@ jobs:
         run: |
           pip install -U pip
           pip install git-python
-          
+
           if [[ "$HAS_FORCE_SPEECH_CI_LABEL" == "true" ]]; then
             echo '["speech"]' | tee -a test_modules.json
           elif [[ "$HAS_FORCE_NEMO2_CI_LABEL" == "true" ]]; then
@@ -278,28 +278,6 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-nemo2:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-nemo2.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
-          || needs.pre-flight.outputs.components_to_run == '["all"]'
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
-
   Nemo_CICD_Test:
     needs:
       - pre-flight
@@ -307,7 +285,6 @@ jobs:
       - cicd-import-tests
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
-      - cicd-main-nemo2
       - cicd-main-speech
     if: always()
     runs-on: ubuntu-latest

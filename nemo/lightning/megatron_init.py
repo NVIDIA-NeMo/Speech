@@ -101,6 +101,7 @@ def initialize_model_parallel_for_nemo(
     num_distributed_optimizer_instances=1,
     nccl_communicator_config_path=None,
     use_sharp=False,
+    create_all_gather_group=False,
     use_gloo_process_groups: bool = True,
 ):
     """Initialize model parallel groups in NeMo."""
@@ -130,6 +131,7 @@ def initialize_model_parallel_for_nemo(
     app_state.pipeline_model_parallel_comm_backend = pipeline_model_parallel_comm_backend
     app_state.use_fp8 = use_fp8
     app_state.use_sharp = use_sharp
+    app_state.create_all_gather_group = create_all_gather_group
     app_state.init_mpi_proc_group = init_mpi_proc_group
     app_state.expert_tensor_parallel_size = expert_tensor_parallel_size
     app_state.num_distributed_optimizer_instances = num_distributed_optimizer_instances

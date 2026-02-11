@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
 import io
 import logging
@@ -28,6 +29,7 @@ import soundfile as sf
 from lhotse import CutSet, Features, MonoCut, Recording, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
+from lhotse.lazy import LazyIteratorChain
 from lhotse.serialization import load_yaml
 from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -35,6 +37,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyNeMoIterator,
     LazyNeMoTarredIterator,
+    LazyParquetIterator,
     expand_sharded_filepaths,
 )
 from nemo.collections.common.data.lhotse.text_adapters import (
@@ -59,6 +62,7 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
     # First, check if the dataset is specified in the new configuration format and use it if possible.
     if not isinstance(config, DictConfig):
         config = DictConfig(config)
+
     if config.get("input_cfg") is not None:
         cuts, is_tarred = read_dataset_config(config)
     else:
@@ -355,7 +359,8 @@ def parse_and_combine_datasets(
     tarred_status = []
 
     if isinstance(config_list, (str, Path)):
-        # Resolve local filepath /path/to/input_cfg.yaml or remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
+        # Resolve local filepath /path/to/input_cfg.yaml or
+        # remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
         config_list = OmegaConf.create(load_yaml(config_list))
     assert len(config_list) > 0, "Empty group in dataset config list."
 
@@ -508,6 +513,70 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         path = config.cuts_path
         cuts = CutSet.from_file(path).map(partial(resolve_relative_paths, manifest_path=path))
     return cuts, is_tarred
+
+
+@data_type_parser(["parquet"])
+def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
+    """
+    Read paths to Parquet files and create a CutSet.
+
+    Config options:
+    - manifest_filepath: path to .parquet file (or list of paths)
+    - audio_field: column name for audio (default: "audio")
+    - text_field: column name for text (default: "text")
+    - duration_field: column name for duration (default: "duration")
+    - lang_field: column name for language (default: "lang")
+    - sampling_rate: default sampling rate if not present (default: 16000)
+    - shuffle: whether to shuffle shards (default: False)
+    - shard_seed: seed for shuffling (default: "trng")
+    """
+    # 1. Get the path(s)
+    paths = config.manifest_filepath
+    if isinstance(paths, str):
+        paths = [paths]
+
+    # 2. Extract config options with defaults
+    audio_field = config.get("audio_field", "audio")
+    text_field = config.get("text_field", "text")
+    duration_field = config.get("duration_field", "duration")
+    lang_field = config.get("lang_field", "lang")
+    sampling_rate = config.get("sampling_rate", 16000)
+
+    # Extract shuffling options (CRITICAL for distributed training)
+    shuffle_shards = config.get("shuffle", False)
+    shard_seed = config.get("shard_seed", "trng")
+
+    # 3. Create Iterators for each file
+    iterators = []
+    for path in paths:
+        logging.info(f"Initializing Lhotse Parquet Iterator: '{path}'")
+        adapter = LazyParquetIterator(
+            path=path,
+            audio_field=audio_field,
+            text_field=text_field,
+            duration_field=duration_field,
+            lang_field=lang_field,
+            sampling_rate=sampling_rate,
+        )
+        iterators.append(adapter)
+
+    # 4. Chain them together using Lhotse's lazy chaining
+    if len(iterators) == 1:
+        source = iterators[0]
+    else:
+        # This handles shuffling the order of .parquet files for multi-GPU training
+        # as requested by pzelasko
+        source = LazyIteratorChain(*iterators, shuffle_iters=shuffle_shards, seed=shard_seed)
+
+    # 5. Create the final CutSet
+    cuts = CutSet(source)
+
+    # 6. Handle infinite looping if requested
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+
+    # Return cuts + is_tarred=True (since it's a stream, we treat it like tarred)
+    return cuts, True
 
 
 def cut_to_conversation(
@@ -934,9 +1003,9 @@ def s2s_cut_to_conversation(
         assert (
             len(per_turn_cut.supervisions) >= 1
         ), f"Expected at least one supervision per turn, got none in cut {cut.id}"
-        # If len(per_turn_cut.supervisions) > 1, only the first turn is considered for cut creation
-        # We assume that len(per_turn_cut.supervisions) >= 1 happens because one of the turns is completely contained within
-        # another turn
+        # If len(per_turn_cut.supervisions) > 1, only the first turn is considered for cut creation.
+        # We assume that len(per_turn_cut.supervisions) >= 1 happens because one of the turns
+        # is completely contained within another turn.
         turn_speaker = per_turn_cut.supervisions[0].speaker
         turn_text = per_turn_cut.supervisions[0].text
         if strip_timestamp_tokens:
@@ -981,13 +1050,6 @@ def read_s2s_as_conversation(config) -> tuple[CutSet, bool]:
         )
     ).filter(lambda ex: not isinstance(ex, FailedConversion))
     return cuts, is_tarred
-
-
-def _resolve_shar_inputs(path: Union[str, Path], only_metadata: bool) -> dict:
-    if only_metadata:
-        return dict(fields={"cuts": sorted(Path(path).glob("cuts.*"))})
-    else:
-        return dict(in_dir=path)
 
 
 def resolve_relative_paths(cut: Cut, manifest_path: str) -> Cut:

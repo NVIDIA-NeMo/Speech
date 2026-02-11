@@ -216,7 +216,7 @@ def evaluate(
     with_utmosv2=True,
     with_fcd=True,
     codec_model_path=None,
-    asr_batch_size=8,
+    asr_batch_size=32,
 ):
     logging.info(f"Evaluating generated audio in {generated_audio_dir}...")
 

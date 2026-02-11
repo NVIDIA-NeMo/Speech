@@ -62,7 +62,7 @@ class UTMOSv2Calculator:
                 mos_score = self.model.predict(input_path=file_path, num_repetitions=1, num_workers=0)
         return mos_score
 
-    def process_directory(self, input_dir: str, batch_size: int = 16) -> list[dict[str, str | float]]:
+    def process_directory(self, input_dir: str, batch_size: int = 32) -> list[dict[str, str | float]]:
         """
         Computes UTMOSv2 scores for all `*.wav` files in the given directory.
         Args:
@@ -76,7 +76,7 @@ class UTMOSv2Calculator:
             # while actually slowing down the prediction. Limit the number of threads here.
             with threadpool_limits(limits=1):
                 results = self.model.predict(
-                    input_dir=input_dir, num_repetitions=1, num_workers=batch_size, batch_size=batch_size
+                    input_dir=input_dir, num_repetitions=1, num_workers=batch_size * 2, batch_size=batch_size
                 )
         return results
 

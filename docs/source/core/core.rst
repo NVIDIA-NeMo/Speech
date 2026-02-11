@@ -684,7 +684,7 @@ Use a Custom Model Card Template for the Hub
 Nested NeMo Models
 ------------------
 
-In some cases, it may be helpful to use NeMo models inside other NeMo models. For example, we can incorporate language models into ASR models to use in a decoding process to improve accuracy or use hybrid ASR-TTS models to generate audio from the text on the fly to train or fine-tune the ASR model.
+In some cases, it may be helpful to use NeMo models inside other NeMo models. For example, we can incorporate language models into ASR models to use in a decoding process to improve accuracy.
 
 There are three ways to instantiate child models inside parent models:
 

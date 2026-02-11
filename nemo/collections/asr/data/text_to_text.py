@@ -373,7 +373,7 @@ class TextToTextDatasetBase:
 
 
 class TextToTextDataset(TextToTextDatasetBase, Dataset):
-    """Text-to-Text Map-style Dataset for hybrid ASR-TTS models"""
+    """Text-to-Text Map-style Dataset."""
 
     def __init__(
         self,
@@ -418,8 +418,8 @@ class TextToTextDataset(TextToTextDatasetBase, Dataset):
 
 class TextToTextIterableDataset(TextToTextDatasetBase, IterableDataset):
     """
-    Text-to-Text Iterable Dataset for hybrid ASR-TTS models
-    Only part necessary for current process should be loaded and stored
+    Text-to-Text Iterable Dataset.
+    Only part necessary for current process should be loaded and stored.
     """
 
     def __init__(

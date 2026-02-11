@@ -147,9 +147,6 @@ Tutorial Overview
      - Multi-lingual ASR
      - `Multi-lingual ASR <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Multilang_ASR.ipynb>`_
    * - ASR
-     - Hybrid ASR-TTS Models
-     - `Hybrid ASR-TTS Models <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_TTS_Tutorial.ipynb>`_
-   * - ASR
      - ASR Confidence Estimation
      - `ASR Confidence Estimation <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_Confidence_Estimation.ipynb>`_
 

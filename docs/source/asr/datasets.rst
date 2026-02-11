@@ -263,7 +263,7 @@ Semi Sorted Batching
 
 Sorting samples by duration and spliting them into batches speeds up training, but can degrade the quality of the model. To avoid quality degradation and maintain some randomness in the partitioning process, we add pseudo noise to the sample length when sorting.
 
-It may result into training speeedup of more than 40 percent with the same quality. To enable and use semi sorted batching add some lines in config.
+It may result into training speedup of more than 40 percent with the same quality. To enable and use semi sorted batching add some lines in config.
 
   .. code::
 
@@ -288,8 +288,8 @@ For more details about this algorithm, see the `paper <https://www.isca-archive.
 Bucketing Datasets
 ---------------------
 
-Splitting the training samples into buckets with different lengths and sampling from the same bucket for each batch would increase the computation efficicncy.
-It may result into training speeedup of more than 2X. To enable and use the bucketing feature, you need to create the bucketing version of the dataset by using `conversion script here <https://github.com/NVIDIA/NeMo/tree/stable/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
+Splitting the training samples into buckets with different lengths and sampling from the same bucket for each batch would increase the computation efficiency.
+It may result into training speedup of more than 2X. To enable and use the bucketing feature, you need to create the bucketing version of the dataset by using `conversion script here <https://github.com/NVIDIA/NeMo/tree/stable/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
 You may use --buckets_num to specify the number of buckets (Recommend to use 4 to 8 buckets). It creates multiple tarred datasets, one per bucket, based on the audio durations. The range of [min_duration, max_duration) is split into equal sized buckets.
 
 To enable the bucketing feature in the dataset section of the config files, you need to pass the multiple tarred datasets as a list of lists.
@@ -323,7 +323,7 @@ When bucketing_batch_size is not set, train_ds.batch_size is going to be used fo
 
 bucketing_batch_size can be set as an integer or a list of integers to explicitly specify the batch size for each bucket.
 if bucketing_batch_size is set to be an integer, then linear scaling is being used to scale-up the batch sizes for batches with shorted audio size. For example, setting train_ds.bucketing_batch_size=8 for 4 buckets would use these sizes [32,24,16,8] for different buckets.
-When bucketing_batch_size is set, traind_ds.batch_size need to be set to 1.
+When bucketing_batch_size is set, train_ds.batch_size need to be set to 1.
 
 Training an ASR model on audios sorted based on length may affect the accuracy of the model. We introduced some strategies to mitigate it.
 We support three types of bucketing strategies:
@@ -332,7 +332,7 @@ We support three types of bucketing strategies:
 *   synced_randomized (default): each epoch would have a different order of buckets. Order of the buckets is shuffled every epoch.
 *   fully_randomized: similar to synced_randomized but each GPU has its own random order. So GPUs would not be synced.
 
-Tha parameter train_ds.bucketing_strategy can be set to specify one of these strategies. The recommended strategy is synced_randomized which gives the highest training speedup.
+The parameter train_ds.bucketing_strategy can be set to specify one of these strategies. The recommended strategy is synced_randomized which gives the highest training speedup.
 The fully_randomized strategy would have lower speedup than synced_randomized but may give better accuracy.
 
 Bucketing may improve the training speed more than 2x but may affect the final accuracy of the model slightly. Training for more epochs and using 'synced_randomized' strategy help to fill this gap.

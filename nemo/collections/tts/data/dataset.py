@@ -1055,7 +1055,6 @@ class VocoderDataset(Dataset):
         return len(self.data)
 
 
-
 class FastPitchSSLDataset(Dataset):
     def __init__(
         self,

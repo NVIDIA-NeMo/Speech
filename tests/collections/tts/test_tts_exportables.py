@@ -54,4 +54,3 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'hfg.onnx')
             model.export(output=filename, use_dynamo=True, verbose=True, check_trace=True)
-

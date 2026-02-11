@@ -198,6 +198,20 @@ def evaluate(
     codec_model_path=None,
 ):
     logging.info(f"Evaluating generated audio in {generated_audio_dir}...")
+
+    # Timing collection for profiling
+    from collections import defaultdict
+
+    timing_stats = defaultdict(lambda: {'total': 0.0, 'count': 0})
+
+    def record_time(section_name, elapsed):
+        timing_stats[section_name]['total'] += elapsed
+        timing_stats[section_name]['count'] += 1
+
+    eval_start_time = time.time()
+
+    # Time file discovery and manifest reading
+    t0 = time.time()
     audio_file_lists = find_generated_audio_files(generated_audio_dir)
     records = read_manifest(manifest_path)
     assert len(audio_file_lists) == len(records)
@@ -206,9 +220,12 @@ def evaluate(
             raise ValueError("codec_model_path is required when with_fcd is True")
         codes_file_lists = find_generated_codec_files(generated_audio_dir)
         assert len(codes_file_lists) == len(records)
+    record_time('file_discovery', time.time() - t0)
 
     device = "cuda"
 
+    # Time model loading
+    t0 = time.time()
     whisper_processor = None  # Address CodeQL issue even though this variable is only used when language != "en"
     utmosv2_scores = None  # Address CodeQL issue even though this variable is only used when with_utmosv2 is true
     if language == "en":
@@ -223,7 +240,9 @@ def evaluate(
         whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
         whisper_model = whisper_model.to(device)
         whisper_model.eval()
+    record_time('load_asr_model', time.time() - t0)
 
+    t0 = time.time()
     if sv_model_type == "wavlm":
         feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained('microsoft/wavlm-base-plus-sv')
         speaker_verification_model = WavLMForXVector.from_pretrained('microsoft/wavlm-base-plus-sv').to(device).eval()
@@ -243,12 +262,16 @@ def evaluate(
         )
     speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
     speaker_verification_model_alternate.eval()
+    record_time('load_speaker_models', time.time() - t0)
 
+    t0 = time.time()
     if with_fcd:
         fcd_metric = FrechetCodecDistance(codec_name=codec_model_path).to(device)
     else:
         fcd_metric = None
+    record_time('load_fcd_model', time.time() - t0)
 
+    t0 = time.time()
     if with_utmosv2:
         if not UTMOSV2_AVAILABLE:
             logging.warning(
@@ -256,6 +279,8 @@ def evaluate(
                 "UTMOSv2 scores will be set to NaN for all files."
             )
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
+    record_time('compute_utmosv2', time.time() - t0)
+
     filewise_metrics = []
     pred_texts = []
     gt_texts = []
@@ -270,8 +295,10 @@ def evaluate(
                 context_audio_filepath = os.path.join(audio_dir, context_audio_filepath)
 
         # Update the FCD metric with real (ground truth) codes
+        t0 = time.time()
         if fcd_metric is not None:
             fcd_metric.update_from_audio_file(gt_audio_filepath, True)
+        record_time('fcd_update_gt', time.time() - t0)
 
         pred_audio_filepath = audio_file_lists[ridx]
 
@@ -280,6 +307,7 @@ def evaluate(
         else:
             utmosv2_score = float('nan')
 
+        t0 = time.time()
         try:
             if language == "en":
                 with torch.inference_mode():
@@ -308,6 +336,7 @@ def evaluate(
             logging.info("Error during ASR: {}".format(e))
             pred_text = ""
             gt_audio_text = ""
+        record_time('asr_transcription', time.time() - t0)
 
         if "original_text" in record:
             gt_text = process_text(record['original_text'])
@@ -316,8 +345,10 @@ def evaluate(
         else:
             gt_text = process_text(record['text'])
 
+        t0 = time.time()
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
+        record_time('wer_cer_computation', time.time() - t0)
 
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")
@@ -329,13 +360,16 @@ def evaluate(
         gt_audio_texts.append(gt_audio_text)
 
         # Update FCD metric with generated codes
+        t0 = time.time()
         if fcd_metric is not None:
             predicted_codes = torch.load(codes_file_lists[ridx]).unsqueeze(0).to(device)  # B, C, T
             predicted_codes_lens = torch.tensor([predicted_codes.size(-1)], dtype=torch.int, device=device)
             fcd_metric.update(predicted_codes, predicted_codes_lens, False)
+        record_time('fcd_update_pred', time.time() - t0)
 
         pred_context_ssim = 0.0
         gt_context_ssim = 0.0
+        t0 = time.time()
         with torch.inference_mode():
             extract_embedding_fn = partial(
                 extract_embedding,
@@ -400,6 +434,7 @@ def evaluate(
                         gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
                     ).item()
             total_generated_audio_seconds += get_wav_file_duration(pred_audio_filepath)
+        record_time('speaker_embedding', time.time() - t0)
 
         filewise_metrics.append(
             {
@@ -424,12 +459,15 @@ def evaluate(
         )
 
     # compute frechet distance for the whole dataset
+    t0 = time.time()
     if fcd_metric is not None:
         fcd = fcd_metric.compute().cpu().item()
         fcd_metric.reset()
     else:
         fcd = float('nan')
+    record_time('fcd_compute_final', time.time() - t0)
 
+    t0 = time.time()
     filewise_metrics_keys_to_save = [
         'cer',
         'wer',
@@ -484,7 +522,30 @@ def evaluate(
     avg_metrics["utmosv2_avg"] = sum([m['utmosv2'] for m in filewise_metrics]) / len(filewise_metrics)
     avg_metrics["total_gen_audio_seconds"] = total_generated_audio_seconds
     avg_metrics["frechet_codec_distance"] = fcd
+    record_time('metrics_aggregation', time.time() - t0)
+
+    total_eval_time = time.time() - eval_start_time
     pprint.pprint(avg_metrics)
+
+    # Print timing breakdown
+    logging.info("\n" + "=" * 60)
+    logging.info("EVALUATION TIMING BREAKDOWN")
+    logging.info("=" * 60)
+    logging.info(f"{'Section':<30} {'Total (s)':<12} {'Count':<8} {'Avg (s)':<12} {'% of Total':<10}")
+    logging.info("-" * 60)
+
+    # Sort by total time descending
+    sorted_stats = sorted(timing_stats.items(), key=lambda x: x[1]['total'], reverse=True)
+    for section, stats in sorted_stats:
+        total_time = stats['total']
+        count = stats['count']
+        avg_time = total_time / count if count > 0 else 0
+        pct = (total_time / total_eval_time * 100) if total_eval_time > 0 else 0
+        logging.info(f"{section:<30} {total_time:<12.2f} {count:<8} {avg_time:<12.4f} {pct:<10.1f}%")
+
+    logging.info("-" * 60)
+    logging.info(f"{'TOTAL EVALUATION TIME':<30} {total_eval_time:<12.2f}")
+    logging.info("=" * 60 + "\n")
 
     return avg_metrics, filtered_filewise_metrics
 

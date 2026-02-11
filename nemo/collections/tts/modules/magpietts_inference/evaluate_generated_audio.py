@@ -135,6 +135,26 @@ def transcribe_with_whisper(whisper_model, whisper_processor, audio_path, langua
     return result
 
 
+def transcribe_with_whisper_batch(whisper_model, whisper_processor, audio_paths, language, device, batch_size=8):
+    """Transcribe multiple audio files with Whisper in batches. Returns list of transcriptions (one per path)."""
+    forced_decoder_ids = (
+        whisper_processor.get_decoder_prompt_ids(language=language, task="transcribe") if language else None
+    )
+    all_transcriptions = []
+    for start in range(0, len(audio_paths), batch_size):
+        batch_paths = audio_paths[start : start + batch_size]
+        speech_arrays = [librosa.load(p, sr=16000)[0] for p in batch_paths]
+        inputs = whisper_processor(
+            speech_arrays, sampling_rate=16000, return_tensors="pt", padding=True
+        ).input_features
+        inputs = inputs.to(device)
+        with torch.inference_mode():
+            predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
+        transcriptions = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
+        all_transcriptions.extend(transcriptions)
+    return all_transcriptions
+
+
 def pad_audio_to_min_length(audio_np: np.ndarray, sampling_rate: int, min_seconds: float) -> np.ndarray:
     """
     Pad audio to make it at least `min_seconds` long by adding silence at the end if needed.
@@ -196,6 +216,7 @@ def evaluate(
     with_utmosv2=True,
     with_fcd=True,
     codec_model_path=None,
+    asr_batch_size=8,
 ):
     logging.info(f"Evaluating generated audio in {generated_audio_dir}...")
 
@@ -281,10 +302,73 @@ def evaluate(
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
     record_time('compute_utmosv2', time.time() - t0)
 
-    filewise_metrics = []
+    # Resolve ground-truth audio paths for all records (for batched ASR)
+    resolved_gt_audio_paths = []
+    for record in records:
+        p = record.get('audio_filepath', None)
+        if audio_dir is not None and p is not None:
+            p = os.path.join(audio_dir, p)
+        resolved_gt_audio_paths.append(p)
+
+    # Batched ASR stage: transcribe all predicted and all gt audios in batches
+    t0 = time.time()
     pred_texts = []
+    if language == "en":
+        for start in range(0, len(audio_file_lists), asr_batch_size):
+            batch_paths = audio_file_lists[start : start + asr_batch_size]
+            try:
+                with torch.inference_mode():
+                    batch_results = asr_model.transcribe(batch_paths, batch_size=len(batch_paths), use_lhotse=False)
+                for r in batch_results:
+                    pred_texts.append(process_text(r.text))
+            except Exception as e:
+                logging.info("Error during batched ASR (predicted): {}".format(e))
+                pred_texts.extend([""] * len(batch_paths))
+    else:
+        try:
+            raw_pred = transcribe_with_whisper_batch(
+                whisper_model, whisper_processor, audio_file_lists, language, device, batch_size=asr_batch_size
+            )
+            pred_texts = [process_text(t) for t in raw_pred]
+        except Exception as e:
+            logging.info("Error during batched ASR (predicted): {}".format(e))
+            pred_texts = [""] * len(audio_file_lists)
+
+    gt_audio_texts = [None] * len(records)
+    gt_indices_and_paths = [(i, p) for i, p in enumerate(resolved_gt_audio_paths) if p is not None]
+    if gt_indices_and_paths:
+        indices, gt_paths = zip(*gt_indices_and_paths)
+        indices, gt_paths = list(indices), list(gt_paths)
+        if language == "en":
+            for start in range(0, len(gt_paths), asr_batch_size):
+                batch_paths = gt_paths[start : start + asr_batch_size]
+                batch_indices = indices[start : start + asr_batch_size]
+                try:
+                    with torch.inference_mode():
+                        batch_results = asr_model.transcribe(
+                            batch_paths, batch_size=len(batch_paths), use_lhotse=False
+                        )
+                    for idx, r in zip(batch_indices, batch_results):
+                        gt_audio_texts[idx] = process_text(r.text)
+                except Exception as e:
+                    logging.info("Error during batched ASR (gt audio): {}".format(e))
+                    for idx in batch_indices:
+                        gt_audio_texts[idx] = ""
+        else:
+            try:
+                raw_gt = transcribe_with_whisper_batch(
+                    whisper_model, whisper_processor, gt_paths, language, device, batch_size=asr_batch_size
+                )
+                for idx, t in zip(indices, raw_gt):
+                    gt_audio_texts[idx] = process_text(t)
+            except Exception as e:
+                logging.info("Error during batched ASR (gt audio): {}".format(e))
+                for idx in indices:
+                    gt_audio_texts[idx] = ""
+    record_time('asr_transcription', time.time() - t0)
+
+    filewise_metrics = []
     gt_texts = []
-    gt_audio_texts = []
     total_generated_audio_seconds = 0.0
     for ridx, record in enumerate(records):
         gt_audio_filepath = record.get('audio_filepath', None)
@@ -301,42 +385,13 @@ def evaluate(
         record_time('fcd_update_gt', time.time() - t0)
 
         pred_audio_filepath = audio_file_lists[ridx]
+        pred_text = pred_texts[ridx]
+        gt_audio_text = gt_audio_texts[ridx]
 
         if with_utmosv2 and UTMOSV2_AVAILABLE:
             utmosv2_score = utmosv2_scores[os.path.normpath(pred_audio_filepath)]
         else:
             utmosv2_score = float('nan')
-
-        t0 = time.time()
-        try:
-            if language == "en":
-                with torch.inference_mode():
-                    pred_text = asr_model.transcribe([pred_audio_filepath], batch_size=1, use_lhotse=False)[0].text
-                    pred_text = process_text(pred_text)
-                    if gt_audio_filepath is not None:
-                        gt_audio_text = asr_model.transcribe([gt_audio_filepath], batch_size=1, use_lhotse=False)[
-                            0
-                        ].text
-                        gt_audio_text = process_text(gt_audio_text)
-                    else:
-                        gt_audio_text = None
-            else:
-                pred_text = transcribe_with_whisper(
-                    whisper_model, whisper_processor, pred_audio_filepath, language, device
-                )
-                pred_text = process_text(pred_text)
-                if gt_audio_filepath is not None:
-                    gt_audio_text = transcribe_with_whisper(
-                        whisper_model, whisper_processor, gt_audio_filepath, language, device
-                    )
-                    gt_audio_text = process_text(gt_audio_text)
-                else:
-                    gt_audio_text = None
-        except Exception as e:
-            logging.info("Error during ASR: {}".format(e))
-            pred_text = ""
-            gt_audio_text = ""
-        record_time('asr_transcription', time.time() - t0)
 
         if "original_text" in record:
             gt_text = process_text(record['original_text'])
@@ -355,9 +410,7 @@ def evaluate(
         # Format cer and wer to 2 decimal places
         logging.info(f"CER: {detailed_cer[0]:.4f} | WER: {detailed_wer[0]:.4f}")
 
-        pred_texts.append(pred_text)
         gt_texts.append(gt_text)
-        gt_audio_texts.append(gt_audio_text)
 
         # Update FCD metric with generated codes
         t0 = time.time()

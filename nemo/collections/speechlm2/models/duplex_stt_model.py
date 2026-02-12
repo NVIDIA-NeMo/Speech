@@ -519,6 +519,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
             # Strip timestamps for metrics
             import re
+
             text_clean = [re.sub(r"<[\|$].*?[\|$]>", "", s).strip() for s in results["text"]]
 
             # Agent text metrics

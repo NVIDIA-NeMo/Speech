@@ -113,7 +113,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model
-        setup_speech_encoder(self)
+        setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
 
         maybe_load_pretrained_models(self)
 
@@ -318,7 +318,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     bos_weight,
                     torch.where(text_labels.unsqueeze(-1) == self.text_eos_id, eos_weight, text_weight),
                 ),
-            )
+            ) * seq_mask.float()
             # Don't penalize the agent replies for ASR training
             loss_scale = self._maybe_zero_out_scale_for_asr(loss_scale, text_labels, batch)
             if self.predict_user_text:
@@ -330,7 +330,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         bos_weight,
                         torch.where(asr_labels.unsqueeze(-1) == self.text_eos_id, eos_weight, text_weight),
                     ),
-                )
+                ) * seq_mask.float()
 
         ans = {
             "input_embeds": input_embeds,

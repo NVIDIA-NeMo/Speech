@@ -196,6 +196,22 @@ def load_checkpoint(checkpoint_path):
     return checkpoint_state
 
 
+def _load_checkpoint_state(checkpoint_path: str) -> dict:
+    """Load checkpoint state dict from a file or HF directory.
+
+    Args:
+        checkpoint_path: Path to checkpoint file or HF directory with model.safetensors
+    """
+    import os
+
+    if os.path.isdir(checkpoint_path):
+        from safetensors.torch import load_file
+
+        return load_file(os.path.join(checkpoint_path, "model.safetensors"))
+    else:
+        return torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+
+
 def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     """Load perception module from another STT/S2S checkpoint.
 
@@ -206,16 +222,10 @@ def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str
     if checkpoint_path is None:
         return
 
-    import os
     from nemo.utils import logging
 
-    if os.path.isdir(checkpoint_path):
-        logging.info(f"Loading from HuggingFace format directory: {checkpoint_path}")
-        pretrained_model = model.__class__.from_pretrained(checkpoint_path)
-        checkpoint_state = pretrained_model.state_dict()
-        del pretrained_model
-    else:
-        checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+    logging.info(f"Loading perception from checkpoint: {checkpoint_path}")
+    checkpoint_state = _load_checkpoint_state(checkpoint_path)
 
     checkpoint_state = {
         k.replace("perception.", ""): v for k, v in checkpoint_state.items() if "perception." in k
@@ -234,16 +244,10 @@ def init_model_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     if checkpoint_path is None:
         return
 
-    import os
     from nemo.utils import logging
 
-    if os.path.isdir(checkpoint_path):
-        logging.info(f"Loading from HuggingFace format directory: {checkpoint_path}")
-        pretrained_model = model.__class__.from_pretrained(checkpoint_path)
-        checkpoint_state = pretrained_model.state_dict()
-        del pretrained_model
-    else:
-        checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+    logging.info(f"Loading model from checkpoint: {checkpoint_path}")
+    checkpoint_state = _load_checkpoint_state(checkpoint_path)
 
     checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.state_dict())
     model.load_state_dict(checkpoint_state, strict=True)

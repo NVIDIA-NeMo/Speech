@@ -220,15 +220,6 @@ def update_config_for_inference(
             model_cfg.forced_context_audio_eos_id = num_audio_tokens - 1
             model_cfg.forced_context_audio_bos_id = num_audio_tokens - 2
 
-    # Ensure non-MoE checkpoints work seamlessly
-    for transformer_name in ['encoder', 'decoder', 'context_encoder']:
-        if hasattr(model_cfg, transformer_name):
-            transformer_cfg = getattr(model_cfg, transformer_name)
-            if not hasattr(transformer_cfg, 'use_moe'):
-                # Non-MoE checkpoint: set default to False
-                transformer_cfg.use_moe = False
-                logging.info(f"Setting use_moe=False for {transformer_name} (non-MoE checkpoint compatibility)")
-
     # Extract and remove sample_rate (now in model class)
     sample_rate = None
     if hasattr(model_cfg, 'sample_rate'):

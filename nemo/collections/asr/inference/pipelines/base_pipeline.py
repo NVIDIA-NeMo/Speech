@@ -73,6 +73,8 @@ class TranscribeStepOutput:
     # Current step transcript/translation is the transcript/translation generated from the current frame
     current_step_transcript: str = ""
     current_step_translation: str = ""
+    
+    previous_partial_translation: str = ""
 
     @classmethod
     def from_state(cls, state: StreamingState, request: Request, sep: str = ' ') -> 'TranscribeStepOutput':
@@ -104,6 +106,7 @@ class TranscribeStepOutput:
             final_segments=final_segments,
             partial_transcript=state.partial_transcript,
             current_step_transcript=state.current_step_transcript,
+            previous_partial_translation=state.previous_translation_info[0],
         )
 
     def __str__(self) -> str:
@@ -257,6 +260,8 @@ class BasePipeline(PipelineInterface):
                 step_output.partial_translation = translation
                 step_output.final_translation = ""
                 state.set_translation_info(translation, new_prefix)
+                
+            assert hasattr(state, 'previous_translation_info')
 
             lcp = os.path.commonprefix([prev_prefix, new_prefix])
             step_output.current_step_translation = new_prefix[len(lcp) :]

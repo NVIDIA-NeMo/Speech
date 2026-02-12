@@ -18,7 +18,7 @@ from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.common.data.utils import move_data_to_device
-from nemo.collections.speechlm2.data import DuplexS2SDataset
+from nemo.collections.speechlm2.data import DuplexSTTDataset
 from nemo.collections.speechlm2.models import DuplexSTTModel
 
 if torch.cuda.is_available():
@@ -48,11 +48,10 @@ def create_model(
             "text_loss_weight": 3,
             "perception": {
                 "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
-                "modality_adapter": {
-                    "_target_": "torch.nn.Linear",
-                    "in_features": 512,
-                    "out_features": 512,
-                },
+                "preprocessor": {"_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor", "features": 80},
+                "encoder": {"_target_": "nemo.collections.asr.modules.ConformerEncoder", "feat_in": 80, "d_model": 512, "n_heads": 8, "n_layers": 1, "subsampling_factor": 8},
+                "modality_adapter": {"_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector", "d_model": 512},
+                "output_dim": 2048,
             },
             "speech_decoder": {
                 "n_layers": 1,
@@ -90,11 +89,10 @@ def model():
 
 @pytest.fixture(scope="session")
 def dataset(model):
-    return DuplexS2SDataset(
+    return DuplexSTTDataset(
         model.tokenizer,
         frame_length=0.08,
         source_sample_rate=16000,
-        target_sample_rate=22050,
         input_roles=["user"],
         output_roles=["assistant"],
     )
@@ -140,7 +138,7 @@ def training_cutset_batch():
     return CutSet([cut])
 
 
-def test_s2s_speech_decoder_training_step(model, dataset, training_cutset_batch):
+def test_stt_training_step(model, dataset, training_cutset_batch):
     model.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model.device)
@@ -156,27 +154,9 @@ def model_with_asr():
     return create_model(predict_user_text=True)
 
 
-def test_s2s_speech_decoder_training_step_with_asr(model_with_asr, dataset, training_cutset_batch):
-    # Model is initialized with ASR head enabled
-    model_with_asr.on_train_epoch_start()
-    batch = dataset[training_cutset_batch]
-    batch = move_data_to_device(batch, device=model_with_asr.device)
-    results = model_with_asr.training_step(batch, batch_idx=0)
-    assert torch.is_tensor(results["loss"])
-    assert not torch.isnan(results["loss"])
-    assert results["loss"] > 0
-
-    assert "asr_loss" in results
-    assert torch.is_tensor(results["asr_loss"])
-    assert not torch.isnan(results["asr_loss"])
-    assert results["asr_loss"] >= 0
-
-
 @pytest.fixture(scope="function")
 def model_with_noise():
     """Model fixture with noise augmentation enabled."""
-    # Explicitly enable the old noise augmentation and force it
-    # Use some reasonable nonzero dummy values for noise params
     model = create_model(
         force_use_noise_augmentation=True,
         old_noise_prob=0.9,
@@ -199,8 +179,22 @@ def model_with_asr_and_noise():
     return model
 
 
-def test_s2s_speech_decoder_training_step_with_noise(model_with_asr_and_noise, dataset, training_cutset_batch):
-    # Model is initialized with both ASR head and noise augmentation enabled
+def test_stt_training_step_with_asr(model_with_asr, dataset, training_cutset_batch):
+    model_with_asr.on_train_epoch_start()
+    batch = dataset[training_cutset_batch]
+    batch = move_data_to_device(batch, device=model_with_asr.device)
+    results = model_with_asr.training_step(batch, batch_idx=0)
+    assert torch.is_tensor(results["loss"])
+    assert not torch.isnan(results["loss"])
+    assert results["loss"] > 0
+
+    assert "asr_loss" in results
+    assert torch.is_tensor(results["asr_loss"])
+    assert not torch.isnan(results["asr_loss"])
+    assert results["asr_loss"] >= 0
+
+
+def test_stt_training_step_with_noise(model_with_asr_and_noise, dataset, training_cutset_batch):
     model_with_asr_and_noise.on_train_epoch_start()
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model_with_asr_and_noise.device)
@@ -215,7 +209,7 @@ def test_s2s_speech_decoder_training_step_with_noise(model_with_asr_and_noise, d
     assert results["asr_loss"] >= 0
 
 
-def test_s2s_speech_decoder_validation_step(model, dataset, training_cutset_batch):
+def test_stt_validation_step(model, dataset, training_cutset_batch):
     model.on_validation_epoch_start()
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model.device)
@@ -223,9 +217,9 @@ def test_s2s_speech_decoder_validation_step(model, dataset, training_cutset_batc
     assert results is None  # no return value
 
 
-def test_s2s_speech_decoder_offline_generation(model):
+def test_stt_offline_generation(model):
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding
-    ans = model.offline_inference(
+    ans = model.streaming_inference.offline_inference(
         input_signal=torch.randn(1, 16000, device=model.device),
         input_signal_lens=torch.tensor([16000], device=model.device),
     )
@@ -235,7 +229,6 @@ def test_s2s_speech_decoder_offline_generation(model):
         'src_text',
         'tokens_text_src',
         'tokens_text',
-        'tokens_audio',
         'tokens_len',
         'source_audio',
         'source_audio_len',
@@ -251,10 +244,10 @@ def test_s2s_speech_decoder_offline_generation(model):
     assert (gen_text < model.text_vocab_size).all()
 
 
-def test_s2s_speech_decoder_offline_generation_regression_with_asr(model_with_asr):
+def test_stt_offline_generation_with_asr(model_with_asr):
     """Test offline generation with ASR head enabled for user text prediction."""
     # 16000 samples == 1 second == 12.5 frames ~= 14 frames after encoder padding
-    ans = model_with_asr.offline_inference(
+    ans = model_with_asr.streaming_inference.offline_inference(
         input_signal=torch.randn(1, 16000, device=model_with_asr.device),
         input_signal_lens=torch.tensor([16000], device=model_with_asr.device),
     )
@@ -265,7 +258,6 @@ def test_s2s_speech_decoder_offline_generation_regression_with_asr(model_with_as
         'src_text',
         'tokens_text_src',
         'tokens_text',
-        'tokens_audio',
         'tokens_len',
         'source_audio',
         'source_audio_len',
@@ -292,3 +284,36 @@ def test_s2s_speech_decoder_offline_generation_regression_with_asr(model_with_as
     assert asr_tokens.dtype == torch.long
     assert (asr_tokens >= 0).all()
     assert (asr_tokens < model_with_asr.text_vocab_size).all()
+
+
+def test_trailing_pad_loss_scale_is_masked(dataset, training_cutset_batch):
+    """Test that trailing pad positions (from batching) have loss_scale=0 when token_loss_weight is set."""
+    model = create_model(predict_user_text=True)
+    # Enable token_loss_weight with non-zero pad weight
+    model.cfg["token_loss_weight"] = {"pad": 1.0, "bos": 10.0, "eos": 5.0, "text": 5.0}
+    model.cfg["mask_sequence_loss"] = True
+    if torch.cuda.is_available():
+        model.to("cuda")
+
+    batch = dataset[training_cutset_batch]
+    batch = move_data_to_device(batch, device=model.device)
+    inputs = model.prepare_inputs(batch["audio_data"])
+
+    loss_scale = inputs["loss_scale"]  # (B, T, 1)
+    asr_loss_scale = inputs["asr_loss_scale"]  # (B, T, 1)
+    seq_mask = inputs["seq_mask"]  # (B, T, 1)
+    target_token_lens = batch["audio_data"]["target_token_lens"]
+
+    for i in range(target_token_lens.size(0)):
+        end_idx = target_token_lens[i]
+        # Trailing positions (after target_token_lens) must have loss_scale=0
+        assert (loss_scale[i, end_idx:, :] == 0).all(), (
+            f"Batch {i}: loss_scale not zero after position {end_idx}"
+        )
+        assert (asr_loss_scale[i, end_idx:, :] == 0).all(), (
+            f"Batch {i}: asr_loss_scale not zero after position {end_idx}"
+        )
+        # In-sequence positions should have non-zero loss_scale
+        assert (loss_scale[i, :end_idx, :] > 0).any(), (
+            f"Batch {i}: loss_scale all zero before position {end_idx}"
+        )

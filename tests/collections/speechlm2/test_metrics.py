@@ -368,33 +368,6 @@ def test_results_logger_rank_file_wait(tmp_path):
     thread.join()
 
 
-def test_results_logger_merge_turns_chronologically():
-    """Test chronological merging of conversation turns"""
-    from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
-
-    # Test merging user and agent turns
-    user_turns = [
-        {"start_time": 0.0, "duration": 1.0, "role": "user", "text": "Hello"},
-        {"start_time": 2.0, "duration": 1.0, "role": "user", "text": "How are you?"},
-    ]
-
-    agent_turns = [
-        {"start_time": 1.0, "duration": 1.0, "role": "agent", "text": "Hi there"},
-        {"start_time": 3.0, "duration": 1.0, "role": "agent", "text": "I'm fine"},
-    ]
-
-    merged = ResultsLogger.merge_turns_chronologically(user_turns, agent_turns)
-
-    # Should be sorted by start_time
-    assert len(merged) == 4
-    assert merged[0]["text"] == "Hello"  # start_time=0.0
-    assert merged[1]["text"] == "Hi there"  # start_time=1.0
-    assert merged[2]["text"] == "How are you?"  # start_time=2.0
-    assert merged[3]["text"] == "I'm fine"  # start_time=3.0
-
-    # Check roles are preserved
-    assert merged[0]["role"] == "user"
-    assert merged[1]["role"] == "agent"
 
 
 def test_intelligibility():

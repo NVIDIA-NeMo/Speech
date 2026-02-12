@@ -28,12 +28,15 @@ Example Usage:
         ModelLoadConfig,
     )
 
-    # Load model (returns model, checkpoint_name, moe_info, flops_per_component)
+    # Load model
     model_config = ModelLoadConfig(
         nemo_file="/path/to/model.nemo",
         codecmodel_path="/path/to/codec.nemo",
     )
-    model, checkpoint_name, moe_info, flops_per_component = load_magpie_model(model_config)
+    model, checkpoint_name = load_magpie_model(model_config)
+
+    # Log architecture summary and retrieve MoE info + FLOPs metrics
+    moe_info, flops_per_component = log_model_architecture_summary(model)
 
     # Create runner and run inference
     inference_config = InferenceConfig()

@@ -261,9 +261,7 @@ def update_checkpoint_state_dict(state_dict: dict) -> dict:
     return new_state_dict
 
 
-def load_magpie_model(
-    config: ModelLoadConfig, device: str = "cuda"
-) -> Tuple[MagpieTTSModel, str, str, Dict[str, dict]]:
+def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[MagpieTTSModel, str]:
     """Load a MagpieTTS model from checkpoint or NeMo archive.
 
     Supports two loading modes:
@@ -275,11 +273,7 @@ def load_magpie_model(
         device: Device to load the model onto ("cuda" or "cpu").
 
     Returns:
-        Tuple of:
-            - model: Loaded MagpieTTS model
-            - checkpoint_name: Name for output labeling
-            - moe_info: String for checkpoint naming (e.g., "MoE_8x2_d2048_softmax_"), empty for dense
-            - flops_per_component: Dict mapping component name (e.g., "decoder") to its FLOPs metrics
+        Tuple of (loaded model, checkpoint name for output labeling).
 
     Raises:
         ValueError: If configuration is invalid or sample rates don't match.
@@ -345,13 +339,9 @@ def load_magpie_model(
     # Move to device and set to eval mode
     model.to(device)
     model.eval()
-
-    # Log architecture summary and get MoE info + FLOPs metrics
-    moe_info, flops_per_component = log_model_architecture_summary(model)
-
     logging.info("Model loaded and ready for inference.")
 
-    return model, checkpoint_name, moe_info, flops_per_component
+    return model, checkpoint_name
 
 
 def _log_transformer_component(name: str, cfg: DictConfig) -> dict:

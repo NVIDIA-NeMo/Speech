@@ -69,6 +69,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     ModelLoadConfig,
     get_experiment_name_from_checkpoint_path,
     load_magpie_model,
+    log_model_architecture_summary,
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 from nemo.collections.tts.modules.magpietts_modules import EOSDetectionMethod
@@ -185,8 +186,11 @@ def run_inference_and_evaluation(
     if not eval_config.with_utmosv2 and 'utmosv2' in violin_plot_metrics:
         violin_plot_metrics.remove('utmosv2')
 
-    # Load model (also logs architecture summary and returns MoE info + FLOPs metrics)
-    model, checkpoint_name, moe_info, flops_per_component = load_magpie_model(model_config)
+    # Load model
+    model, checkpoint_name = load_magpie_model(model_config)
+
+    # Log architecture summary and get MoE info + FLOPs metrics
+    moe_info, flops_per_component = log_model_architecture_summary(model)
 
     # Add experiment name prefix if requested
     if log_exp_name and model_config.checkpoint_file:

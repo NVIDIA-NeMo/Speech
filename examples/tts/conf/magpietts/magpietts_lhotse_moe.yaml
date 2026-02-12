@@ -154,7 +154,7 @@ model:
   decoder:
     n_layers: 12
     d_model: 768
-    d_ffn: 1536  # 3072 / top_k_experts = 3072 / 2, match inference computation as dense baseline
+    d_ffn: 1536  # Per-expert FFN hidden dimension. Set to 1536 (=3072/top_k) for FLOPs-matched MoE, or 3072 for full-capacity experts (2x inference FLOPs vs dense).
     sa_n_heads: 12
     kernel_size: 1
     p_dropout: 0.1

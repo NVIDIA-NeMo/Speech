@@ -398,6 +398,8 @@ class TestChunkTextForInference:
         # Empty text should still return something valid
         assert len(tokens) == 1
         assert tokens[0][-1].item() == eos_id
+
+
 class TestSentenceSplitting:
     """Tests for sentence splitting and tokenization functions."""
 

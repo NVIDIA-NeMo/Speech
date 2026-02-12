@@ -18,7 +18,6 @@ import random
 import time
 from dataclasses import dataclass, field, fields
 from functools import partial
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -27,7 +26,6 @@ import torch
 import wandb
 from hydra.utils import instantiate
 from lhotse.serialization import load_yaml
-from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
 from omegaconf import DictConfig, OmegaConf, open_dict

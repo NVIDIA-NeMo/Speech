@@ -375,8 +375,9 @@ class MagpieInferenceRunner:
     ) -> Tuple[List[dict], List[str], List[str]]:
         """Run unified inference with automatic single/multi-chunk handling.
 
-        Processes all samples through generate_speech, passing the
-        is_single_chunk flag for optimization when text is short.
+        Processes all samples through generate_speech, passing
+        beginning_of_text and end_of_text so the model can handle both
+        single-chunk (short text) and multi-chunk (long text) cases correctly.
 
         Args:
             dataset: ChunkedTTSInferenceDataset created by create_dataset().

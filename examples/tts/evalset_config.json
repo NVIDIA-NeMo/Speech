@@ -8,6 +8,11 @@
         "manifest_path": "/home/TestData/an4_dataset/an4_val_context_v1_tiny.json",
         "audio_dir": "/",
         "feature_dir": null
+    },
+    "an4_val_ci_longform_tiny": {
+        "manifest_path": "/home/TestData/an4_dataset/an4_val_context_v1_longform_tiny.json",
+        "audio_dir": "/",
+        "feature_dir": null
     }
 }
 

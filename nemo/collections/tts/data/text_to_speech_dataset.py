@@ -908,7 +908,7 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
 
         # Handle empty text edge case
         if not chunked_tokens:
-            chunked_tokens = [torch.utils.data.default_collate([self.eos_id]).int()]
+            chunked_tokens = [torch.tensor([self.eos_id], dtype=torch.int32)]
             chunked_tokens_len = [1]
 
 
@@ -946,7 +946,7 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
             # Pad chunked tokens to max_num_chunks with single EOS token
             num_padding = max_num_chunks - len(sample['chunked_tokens'])
             padded_tokens = sample['chunked_tokens'] + [
-                torch.utils.data.default_collate([self.eos_id]).int() for _ in range(num_padding)
+                torch.tensor([self.eos_id], dtype=torch.int32) for _ in range(num_padding)
             ]
             padded_lens = sample['chunked_tokens_len'] + [1] * num_padding
 

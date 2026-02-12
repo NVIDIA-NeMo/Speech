@@ -18,7 +18,7 @@ import random
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import librosa
 import numpy as np
@@ -403,14 +403,17 @@ def split_by_sentence(
     """
     Split a paragraph into sentences based on sentence-ending punctuation.
 
-    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by checking
-    if the separator is followed by a space before splitting. Sentence-ending
-    punctuation is preserved with each sentence.
+    Sentence separators are chosen from the given language (e.g. ".", "?", "!"
+    for English; "。", "？", "！" plus Western punctuation for Japanese/Chinese).
+    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by
+    requiring a space after the separator before splitting for Western punctuation;
+    for languages like ja/zh/hi, native punctuation splits without requiring a space.
+    Sentence-ending punctuation is preserved with each sentence.
 
     Args:
         paragraph: The input text paragraph to split into sentences.
-        sentence_separators: A list of strings representing sentence-ending
-            punctuation marks. Defaults to ['.', '?', '!', '...'].
+        language: Language code (e.g. "en", "ja", "zh", "hi"). Determines which
+            sentence-ending characters are used. Defaults to "en".
 
     Returns:
         List of sentence strings with punctuation preserved.
@@ -563,8 +566,8 @@ class LanguageThresholds:
 
     Attributes:
         thresholds: Dict mapping language code to word count threshold.
-            For character-based languages (like Chinese), this is character count.
-        character_based: Set of language codes that use character count instead of word count.
+            For character-based languages (like Chinese, Japanese), this is character count;
+            see get_word_count() for which languages use character vs word count.
     """
 
     thresholds: Dict[str, int] = field(
@@ -576,7 +579,7 @@ class LanguageThresholds:
             "it": 53,  # Italian
             "vi": 50,  # Vietnamese
             "zh": 100,  # Chinese (character count)
-            "hi": 50,  # Hindi (character count)
+            "hi": 50,  # Hindi
             "ja": 80,  # Japanese (character count)
         }
     )
@@ -736,6 +739,7 @@ def chunk_text_for_inference(
             tokenizer_name=tokenizer_name,
             text_tokenizer=text_tokenizer,
             eos_token_id=eos_token_id,
+            language=language,
         )
     else:
         # Short text: return as single chunk

@@ -368,8 +368,6 @@ def test_results_logger_rank_file_wait(tmp_path):
     thread.join()
 
 
-
-
 def test_intelligibility():
     metric = Intelligibility(pretrained_asr=None, verbose=False, reuse_asr_hyps=True)
     metric.update(

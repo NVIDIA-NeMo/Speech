@@ -310,27 +310,33 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             eos_weight = token_weights.get("eos", 1.0)
             text_weight = token_weights.get("text", 1.0)
 
-            loss_scale = torch.where(
-                text_labels.unsqueeze(-1) == self.text_pad_id,
-                pad_weight,
+            loss_scale = (
                 torch.where(
-                    text_labels.unsqueeze(-1) == self.text_bos_id,
-                    bos_weight,
-                    torch.where(text_labels.unsqueeze(-1) == self.text_eos_id, eos_weight, text_weight),
-                ),
-            ) * seq_mask.float()
+                    text_labels.unsqueeze(-1) == self.text_pad_id,
+                    pad_weight,
+                    torch.where(
+                        text_labels.unsqueeze(-1) == self.text_bos_id,
+                        bos_weight,
+                        torch.where(text_labels.unsqueeze(-1) == self.text_eos_id, eos_weight, text_weight),
+                    ),
+                )
+                * seq_mask.float()
+            )
             # Don't penalize the agent replies for ASR training
             loss_scale = self._maybe_zero_out_scale_for_asr(loss_scale, text_labels, batch)
             if self.predict_user_text:
-                asr_loss_scale = torch.where(
-                    asr_labels.unsqueeze(-1) == self.text_pad_id,
-                    pad_weight,
+                asr_loss_scale = (
                     torch.where(
-                        asr_labels.unsqueeze(-1) == self.text_bos_id,
-                        bos_weight,
-                        torch.where(asr_labels.unsqueeze(-1) == self.text_eos_id, eos_weight, text_weight),
-                    ),
-                ) * seq_mask.float()
+                        asr_labels.unsqueeze(-1) == self.text_pad_id,
+                        pad_weight,
+                        torch.where(
+                            asr_labels.unsqueeze(-1) == self.text_bos_id,
+                            bos_weight,
+                            torch.where(asr_labels.unsqueeze(-1) == self.text_eos_id, eos_weight, text_weight),
+                        ),
+                    )
+                    * seq_mask.float()
+                )
 
         ans = {
             "input_embeds": input_embeds,

@@ -18,6 +18,7 @@ import random
 import time
 from dataclasses import dataclass, field, fields
 from functools import partial
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -25,6 +26,7 @@ import soundfile as sf
 import torch
 import wandb
 from hydra.utils import instantiate
+from lhotse.serialization import load_yaml
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
@@ -3891,7 +3893,8 @@ class MagpieTTSModel(ModelPT):
                     logging.info(f"Chunk end detected for item {item_idx} at local timestep {current_step}")
             elif (
                 not end_of_text[item_idx]
-                and finished_texts_counter.get(item_idx, -1) >= self.chunked_inference_config.forceful_chunk_end_threshold
+                and finished_texts_counter.get(item_idx, -1)
+                >= self.chunked_inference_config.forceful_chunk_end_threshold
             ):
                 chunk_end_dict[item_idx] = current_step
                 logging.info(f"Forceful chunk end detected for item {item_idx} at local timestep {current_step}")

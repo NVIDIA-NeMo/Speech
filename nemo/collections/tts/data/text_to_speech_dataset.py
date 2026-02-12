@@ -911,7 +911,6 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
             chunked_tokens = [torch.tensor([self.eos_id], dtype=torch.int32)]
             chunked_tokens_len = [1]
 
-
         # Add chunking-related fields
         example['idx'] = idx
         example['chunked_tokens'] = chunked_tokens

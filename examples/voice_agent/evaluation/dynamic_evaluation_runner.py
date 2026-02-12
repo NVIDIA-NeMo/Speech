@@ -21,14 +21,53 @@ Each scenario can specify different prompts for evaluator and target agents.
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+from evaluation_bridge import VoiceAgentEvaluationBridge
 
-from loguru import logger
-from rtvi_evaluation_bridge import RTVIEvaluationBridge
-from nemo.agents.voice_agent.utils import setup_logging
+
+class FileLogger:
+    def __init__(self, log_file: Optional[str] = None):
+        self.log_file = log_file
+
+    def _get_caller_location(self) -> str:
+        """Return file:function:line of the caller, skipping frames inside FileLogger."""
+        logger_methods = {"log", "info", "error", "warning", "debug", "__call__", "_get_caller_location"}
+        for frame_info in inspect.stack():
+            if frame_info.function not in logger_methods:
+                path = Path(frame_info.filename).resolve()
+                return f"{path.name}:{frame_info.function}:{frame_info.lineno}"
+        return "unknown"
+
+    def log(self, message: str, include_caller: bool = True):
+        if include_caller:
+            message = f"{self._get_caller_location()} | {message}"
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        message = f"{timestamp} | {message}"
+        if self.log_file:
+            with open(self.log_file, "a") as f:
+                f.write(message + "\n")
+        print(message, flush=True)
+
+    def __call__(self, message: str, include_caller: bool = True):
+        self.log(message, include_caller=include_caller)
+
+    def info(self, message: str, include_caller: bool = True):
+        self.log(f"[INFO]: {message}", include_caller=include_caller)
+
+    def error(self, message: str, include_caller: bool = True):
+        self.log(f"[ERROR]: {message}", include_caller=include_caller)
+
+    def warning(self, message: str, include_caller: bool = True):
+        self.log(f"[WARNING]: {message}", include_caller=include_caller)
+
+    def debug(self, message: str, include_caller: bool = True):
+        self.log(f"[DEBUG]: {message}", include_caller=include_caller)
 
 
 async def run_dynamic_evaluation(
@@ -43,6 +82,8 @@ async def run_dynamic_evaluation(
     user_input_sample_rate: int = 16000,
     agent_input_sample_rate: int = 16000,
     output_sample_rate: int = 24000,
+    global_timestamp: str = None,
+    logger: FileLogger = None,
 ):
     """
     Run evaluation with dynamic scenario switching and latency measurement.
@@ -65,13 +106,16 @@ async def run_dynamic_evaluation(
         output_sample_rate: Output sample rate for recorded audio (default: 24000)
     """
 
-    os.makedirs(output_dir, exist_ok=True)
-    global_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if not logger:
+        logger = FileLogger()
 
-    bridge = RTVIEvaluationBridge(
+    os.makedirs(output_dir, exist_ok=True)
+    global_timestamp = global_timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    bridge = VoiceAgentEvaluationBridge(
         user_url=user_url,
         agent_url=agent_url,
-        log_file=None,  # Will be set per scenario
+        output_dir=None,  # Will be set per scenario
         user_output_sample_rate=user_output_sample_rate,
         agent_output_sample_rate=agent_output_sample_rate,
         user_input_sample_rate=user_input_sample_rate,
@@ -82,26 +126,17 @@ async def run_dynamic_evaluation(
     all_results = []
 
     for idx, scenario in enumerate(scenarios):
-        logger.info(f"\n{'='*80}")
+        logger.info(f"{'='*80}")
         logger.info(f"Starting Scenario {idx+1}/{len(scenarios)}: {scenario['name']}")
         logger.info(f"Scenario config: {scenario}")
         logger.info(f"{'='*80}\n")
+
         # Create scenario-specific directory
-        scenario_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        scenario_name_safe = scenario['name'].replace(' ', '_').replace('/', '_')
-        scenario_dir = os.path.join(output_dir, f"{scenario_name_safe}_{scenario_timestamp}")
+        scenario_dir = os.path.join(output_dir, scenario['name'])
         os.makedirs(scenario_dir, exist_ok=True)
 
-        # Initialize log file for this scenario
-        log_file = os.path.join(scenario_dir, "bridge_log.txt")
-        setup_logging(log_file=log_file)  # Update logging to write to this file
-        conversation_log_file = os.path.join(scenario_dir, "conversation_log.txt")
-        logger.info(f"Scenario directory: {scenario_dir}")
-        logger.info(f"Logging to: {log_file}")
-        logger.info(f"Conversation saved to: {conversation_log_file}")
-
-        logger.info(f"\nPreparing for scenario {idx+1}...")
-        await bridge.prepare_for_scenario(scenario, conversation_log_file)
+        logger.info(f"Preparing for scenario: {scenario['name']}...")
+        await bridge.prepare_for_scenario(scenario, scenario_dir)
         await asyncio.sleep(pause_between_scenarios)
 
         # Run scenario
@@ -121,7 +156,7 @@ async def run_dynamic_evaluation(
 
         # Log scenario summary
         latency_stats = metrics["latency_stats"]
-        logger.info(f"\n{'='*80}")
+        logger.info(f"{'='*80}")
         logger.info(f"Scenario '{scenario['name']}' Complete")
         logger.info(f"{'='*80}")
         logger.info(f"  Total turns: {metrics['total_turns']}")
@@ -195,7 +230,7 @@ async def run_dynamic_evaluation(
             f.write(f"  Min: {all_latencies[0]:.1f}ms\n")
             f.write(f"  Max: {all_latencies[-1]:.1f}ms\n")
 
-    logger.info(f"\n{'='*80}")
+    logger.info(f"{'='*80}")
     logger.info(f"Evaluation Complete!")
     logger.info(f"{'='*80}")
     logger.info(f"Results saved to: {results_file}")
@@ -252,7 +287,7 @@ Examples:
     parser.add_argument(
         "--duration", type=int, default=120, help="Default duration per scenario in seconds (default: 120)"
     )
-    parser.add_argument("--pause", type=int, default=5, help="Pause between scenarios in seconds (default: 5)")
+    parser.add_argument("--pause", type=float, default=0.5, help="Pause between scenarios in seconds (default: 0.5)")
     parser.add_argument(
         "--output-sample-rate", type=int, default=16000, help="Output sample rate for recorded audio (default: 16000)"
     )
@@ -275,21 +310,22 @@ Examples:
             "noise_config": {
                 "noise_files": "/home/heh/github/NeMo-main/examples/voice_agent/evaluation/nemo_experiments/id_494165-FX_Car_Driving.wav",
                 "gain_db": 0.0,
-                "max_noise_duration": 600.0,
+                "max_noise_duration": 100.0,
+                "random_offset": True,
             },
         },
-        # {
-        #     "name": "Friendly_Conversation-Clean",
-        #     "user_prompt": """You are a friendly human user named Bob, and you are testing a voice assistant.
-        #     Start by saying that "Hi I'm Bob", then ask the following questions one by one, wait for response before asking the next question:
-        #     1. Tell me a joke about a cat.
-        #     2. What's the capital of the United States?
-        #     3. What's the result of 1+1?
-        #     4. What's the color of the sky?
-        #     After the agent has answered all the questions, say "Thank you for your answers. Goodbye." and keep responding with empty responses "\n".
-        #     """,
-        #     "duration": 90,
-        # },
+        {
+            "name": "Friendly_Conversation-Clean",
+            "user_prompt": """You are a friendly human user named Bob, and you are testing a voice assistant.
+            Start by saying that "Hi I'm Bob", then ask the following questions one by one, wait for response before asking the next question:
+            1. Tell me a joke about a cat.
+            2. What's the capital of the United States?
+            3. What's the result of 1+1?
+            4. What's the color of the sky?
+            After the agent has answered all the questions, say "Thank you for your answers. Goodbye." and keep responding with empty responses "\n".
+            """,
+            "duration": 90,
+        },
         #         {
         #             "name": "Challenging Questions",
         #             "user_prompt": """You are a human user. You are testing a voice assistant with difficult questions.
@@ -305,13 +341,17 @@ Examples:
         #             "duration": 60,
         #         },
     ]
+    session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_dir = os.path.join(args.output_dir, f"eval_{session_timestamp}")
+    os.makedirs(session_dir, exist_ok=True)
+
+    logger = FileLogger(os.path.join(session_dir, f"evaluation_log.txt"))
 
     # Load scenarios from file if provided
     if args.scenarios_file:
         scenarios_path = Path(args.scenarios_file)
         if not scenarios_path.exists():
-            logger.error(f"Scenarios file not found: {args.scenarios_file}")
-            return 1
+            raise FileNotFoundError(f"Scenarios file not found: {args.scenarios_file}")
 
         with open(scenarios_path) as f:
             scenarios = json.load(f)
@@ -325,11 +365,13 @@ Examples:
             run_dynamic_evaluation(
                 user_url=args.user_url,
                 agent_url=args.agent_url,
-                output_dir=args.output_dir,
+                output_dir=session_dir,
                 scenarios=scenarios,
                 duration_per_scenario=args.duration,
                 pause_between_scenarios=args.pause,
                 output_sample_rate=args.output_sample_rate,
+                global_timestamp=session_timestamp,
+                logger=logger,
             )
         )
         return 0
@@ -345,4 +387,4 @@ Examples:
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()

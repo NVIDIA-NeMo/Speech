@@ -69,6 +69,8 @@ class NoiseGenerator:
         self.random_offset = random_offset
         self.noise_audio_data = self.load_audio_files()
         self.current_position = 0  # Track current position in samples
+        if self.random_offset:
+            self.current_position = np.random.randint(0, len(self.noise_audio_data))
 
     def load_audio_files(self) -> np.ndarray:
         """
@@ -235,6 +237,7 @@ class NoiseConfig:
     noise_files: Union[List[str], str]
     gain_db: float = 0.0
     max_noise_duration: Optional[float] = 600.0
+    random_offset: bool = True
 
 
 class AudioStream:
@@ -277,6 +280,7 @@ class AudioStream:
                 self.noise_config.noise_files,
                 self.output_sample_rate,
                 max_duration=self.noise_config.max_noise_duration,
+                random_offset=self.noise_config.random_offset,
             )
         else:
             self.gain_db = None

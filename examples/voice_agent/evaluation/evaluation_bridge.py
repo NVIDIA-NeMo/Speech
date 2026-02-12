@@ -46,6 +46,8 @@ from pipecat.processors.frameworks.rtvi import (
 )
 from pipecat.serializers.protobuf import MessageFrame, ProtobufFrameSerializer
 
+from nemo.agents.voice_agent.utils import setup_logging
+
 # Import AudioStream for buffering and resampling
 from nemo.agents.voice_agent.utils.audio import AudioStream, NoiseConfig
 
@@ -184,7 +186,7 @@ class EvaluationMetrics:
         self.audio_agent_last_speech_time = None
 
 
-class RTVIEvaluationBridge:
+class VoiceAgentEvaluationBridge:
     """
     Evaluation bridge that connects two voice agents via WebSocket
     and provides control through RTVI actions.
@@ -201,8 +203,8 @@ class RTVIEvaluationBridge:
         self,
         user_url: str,
         agent_url: str,
-        log_file: Optional[str] = None,
-        session_name: Optional[str] = None,
+        output_dir: Optional[str] = None,
+        scenario_name: Optional[str] = None,
         user_output_sample_rate: int = 24000,
         agent_output_sample_rate: int = 24000,
         user_input_sample_rate: int = 16000,
@@ -217,13 +219,14 @@ class RTVIEvaluationBridge:
         seglst_end_offset_seconds: float = -0.00,
         turn_end_silence_threshold: float = 0.35,
         noise_config: Optional[NoiseConfig] = None,
+        log_level: str = "DEBUG",
     ):
         """
         Args:
             user_url: URL of the user WebSocket
             agent_url: URL of the agent WebSocket
-            log_file: Path to the log file
-            session_name: Name of the session
+            output_dir: Directory for all output files (conversation log, audio, segLST)
+            scenario_name: Name of the scenario
             user_output_sample_rate: Sample rate of the user output
             agent_output_sample_rate: Sample rate of the agent output
             user_input_sample_rate: Sample rate of the user input
@@ -241,13 +244,19 @@ class RTVIEvaluationBridge:
         """
         self.user_url = user_url
         self.agent_url = agent_url
-        self.log_file = log_file
+        self.output_dir = output_dir
+        self.scenario_name = scenario_name
+        self.log_file = None
+        self.audio_file = None
+        self.seglst_file = None
+        self.bridge_audio_file = None
         self.user_output_sample_rate = user_output_sample_rate
         self.agent_output_sample_rate = agent_output_sample_rate
         self.user_input_sample_rate = user_input_sample_rate
         self.agent_input_sample_rate = agent_input_sample_rate
         self.output_sample_rate = output_sample_rate
         self.audio_chunk_in_seconds = audio_chunk_in_seconds
+        self.log_level = log_level
 
         # Random burst mode configuration (simulates browser's irregular sending pattern)
         self.use_burst_mode = use_burst_mode  # Disable burst mode by default
@@ -317,27 +326,26 @@ class RTVIEvaluationBridge:
         else:
             logger.info(f"Steady mode: sending at constant {self.audio_chunk_in_seconds * 1000:.0f}ms intervals")
 
-        # Initialize conversation log file
-        if log_file:
-            self.init_log_file(log_file, session_name)
-        else:
-            logger.warning("No log file provided, conversation log will not be saved")
+        # Initialize output directory and log files
+        if output_dir:
+            self.init_output_dir(output_dir, scenario_name, log_level)
 
         self.bridge_ready = False
 
-    def init_log_file(self, log_file: Optional[str] = None, session_name: Optional[str] = None):
-        """Initialize the conversation log file"""
-        logger.info(f"Initializing log file: {log_file}, session name: {session_name}")
-        if log_file:
-            self.log_file = log_file
-            output_dir = Path(log_file).parent
-            self.audio_file = str(output_dir / "concat_audio_segments.wav")
+    def init_output_dir(self, output_dir: str, scenario_name: Optional[str] = None, log_level: str = "DEBUG"):
+        """Initialize the output directory and all derived log/audio file paths."""
+        logger.info(f"Initializing output directory: {output_dir}, session name: {scenario_name}")
+        self.output_dir = output_dir
+        self.scenario_name = scenario_name
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        self.log_file = str(Path(output_dir) / "conversation_log.txt")
+        self.audio_file = str(Path(output_dir) / "concat_audio_segments.wav")
+        self.seglst_file = str(Path(output_dir) / "conversation_log.seglst.json")
+        self.bridge_audio_file = str(Path(output_dir) / "conversation_log.wav")
 
-        if session_name:
-            self.session_name = session_name
-
-        if not self.log_file:
-            return False
+        # Initialize logging for this scenario
+        bridge_log_file = str(Path(output_dir) / "bridge_log.txt")
+        setup_logging(log_file=bridge_log_file, log_level=log_level)  # Update logging to write to this file
 
         try:
             with open(self.log_file, "w") as f:
@@ -360,9 +368,10 @@ class RTVIEvaluationBridge:
         else:
             self.noise_config = None
 
-    async def prepare_for_scenario(self, scenario: Union[dict, DictConfig], log_file: str):
-        # Initialize log file for this scenario
-        self.init_log_file(log_file, session_name=scenario['name'])
+    async def prepare_for_scenario(self, scenario: Union[dict, DictConfig], output_dir: str, log_level: str = "DEBUG"):
+        """Prepare the bridge for a scenario"""
+        # Initialize output directory for this scenario
+        self.init_output_dir(output_dir, scenario_name=scenario['name'], log_level=log_level)
 
         # Reset bridge before each scenario, and create connection to update the prompts
         await self.connect()
@@ -1388,14 +1397,11 @@ class RTVIEvaluationBridge:
 
     def _save_bridge_audio_log(self):
         """Save final sent audio chunks to disk as stereo WAV for debugging."""
-        # Get output directory from log file parent folder
-        if self.log_file:
-            output_dir = Path(self.log_file).parent
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = Path(self.log_file).with_suffix('.wav')
-        else:
-            logger.warning("[DEBUG] No log file to save audio")
+        if not self.bridge_audio_file:
+            logger.warning("[DEBUG] No bridge_audio_file to save audio")
             return
+
+        output_path = Path(self.bridge_audio_file)
 
         if not self.sent_to_agent_chunks and not self.sent_to_user_chunks:
             logger.info("[DEBUG] No audio chunks to save")
@@ -2055,10 +2061,9 @@ class RTVIEvaluationBridge:
             logger.info(f"  Duration: {total_samples / self.output_sample_rate:.2f}s")
 
             # Save segLST file in JSON format
-            seglst_file = Path(self.log_file).with_suffix('.seglst.json')
 
             # Prepare JSON data
-            session_id = self.session_name or Path(self.audio_file).stem
+            session_id = self.scenario_name or Path(self.audio_file).stem
 
             segments_json = []
             sorted_segments = sorted(segments_to_save, key=lambda s: s.start_time)
@@ -2087,10 +2092,10 @@ class RTVIEvaluationBridge:
                 )
 
             # Write JSON file
-            with open(seglst_file, 'w') as f:
+            with open(self.seglst_file, 'w') as f:
                 json.dump(segments_json, f, indent=2)
 
-            logger.info(f"segLST saved: {seglst_file}")
+            logger.info(f"segLST saved: {self.seglst_file}")
             logger.info(f"  Total segments: {len(segments_to_save)}")
             if self.metrics.audio_segments:
                 logger.info(f"  (Using audio-based segments for accurate timing)")

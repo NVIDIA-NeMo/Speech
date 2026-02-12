@@ -17,6 +17,8 @@ from typing import Callable, Tuple
 import torch
 import torch.nn.functional as F
 
+from nemo.collections.tts.modules.ffn_modules import ConvolutionLayer
+
 
 class MoERouter(torch.nn.Module):
     """
@@ -248,9 +250,6 @@ class PositionwiseConvFFMoE(torch.nn.Module):
         self.num_experts = num_experts
         self.top_k_experts = top_k_experts
         self.non_linearity = non_linearity
-
-        # Import here to avoid circular dependency
-        from nemo.collections.tts.modules.transformer_2501 import ConvolutionLayer
 
         # Router for expert selection
         self.router = MoERouter(

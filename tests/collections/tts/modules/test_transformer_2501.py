@@ -19,15 +19,9 @@ import numpy as np
 import pytest
 import torch
 
+from nemo.collections.tts.modules.ffn_modules import ConvolutionLayer, PositionwiseConvFF
 from nemo.collections.tts.modules.moe_modules import MoERouter, PositionwiseConvFFMoE
-from nemo.collections.tts.modules.transformer_2501 import (
-    ConvolutionLayer,
-    CrossAttention,
-    PositionwiseConvFF,
-    SelfAttention,
-    Transformer,
-    TransformerLayer,
-)
+from nemo.collections.tts.modules.transformer_2501 import CrossAttention, SelfAttention, Transformer, TransformerLayer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import beta_binomial_prior_distribution
 
 

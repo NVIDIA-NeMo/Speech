@@ -58,7 +58,7 @@ try:
 
     from nemo.utils import webdataset as wds
 
-except ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     from nemo.utils.exceptions import LightningNotInstalledException
 
     HAVE_OMEGACONG_WEBDATASET = False

@@ -20,4 +20,3 @@ There are also additional NeMo-related tools hosted in separate github repositor
    :maxdepth: 1
 
    speech_data_processor
-   ../nlp/text_normalization/intro

@@ -89,7 +89,7 @@ If you are loading audio files for your experiment, you will likely want to use 
 
 Text Normalizer Configuration
 ------------------------------
-Text normalization (TN) converts text from written form into its verbalized form, and it is an essential preprocessing step before text-to-speech Synthesis. TN ensures that TTS can handle all input texts without skipping unknown symbols. For example, "$123" is converted to "one hundred and twenty three dollars". Currently, NeMo supports text normalizers for English, German, Spanish, and Chinese. Refer to the previous Section :doc:`../nlp/text_normalization/intro` for more details. Below shows an example of specifying text normalizer for English.
+Text normalization (TN) converts text from written form into its verbalized form, and it is an essential preprocessing step before text-to-speech Synthesis. TN ensures that TTS can handle all input texts without skipping unknown symbols. For example, "$123" is converted to "one hundred and twenty three dollars". Currently, NeMo supports text normalizers for English, German, Spanish, and Chinese. Refer to the ``nemo_text_processing`` package for more details. Below shows an example of specifying text normalizer for English.
 
 .. code-block:: yaml
 

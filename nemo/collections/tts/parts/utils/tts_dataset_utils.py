@@ -424,6 +424,9 @@ def split_by_sentence(
 
         >>> split_by_sentence("Dr. Smith is here. Good morning!")
         ["Dr. Smith is here.", "Good morning!"]
+
+        >>> split_by_sentence("こんにちは。元気ですか？", language="ja")
+        ["こんにちは。", "元気ですか？"]
     """
     # Get sentence separators for this language
     sentence_separators = _get_sentence_separators_for_language(language)
@@ -531,6 +534,9 @@ def chunk_and_tokenize_text_by_sentence(
         tokenizer_name: Name of the tokenizer to use (e.g., "english_phoneme").
         text_tokenizer: The tokenizer instance.
         eos_token_id: End-of-sequence token ID to append.
+        language: Language code for selecting appropriate sentence separators.
+            Supported: "en", "ja", "hi", "zh", "es", "fr", "it", "de", "vi".
+            Defaults to "en".
 
     Returns:
         Tuple of:

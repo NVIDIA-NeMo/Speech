@@ -1092,7 +1092,7 @@ class ModularAudioGPTModel(SpeechLLMAdapterMixin, MegatronGPTSFTModel):
                 peft_cfg_cls = PEFT_CONFIG_MAP[model_cfg.peft.peft_scheme]
                 model.load_adapters(cfg.model.peft.restore_from_path, peft_cfg_cls(model_cfg), map_location="cpu")
             else:
-                torch_state_dict = torch.load(cfg.model.peft.restore_from_path, weights_only=False)['state_dict']
+                torch_state_dict = torch.load(cfg.model.peft.restore_from_path)['state_dict']
                 model.load_state_dict(torch_state_dict, strict=False)
         elif cfg.model.peft.restore_from_ckpt.checkpoint_dir and cfg.model.peft.restore_from_ckpt.checkpoint_name:
             checkpoint_path = os.path.join(
@@ -1111,7 +1111,7 @@ class ModularAudioGPTModel(SpeechLLMAdapterMixin, MegatronGPTSFTModel):
                     peft_cfg_cls = PEFT_CONFIG_MAP[cfg.model.peft.peft_scheme]
                     model.load_adapters(checkpoint_path, peft_cfgs=peft_cfg_cls(model_cfg), map_location="cpu")
                 else:
-                    model.load_state_dict(torch.load(checkpoint_path, weights_only=False), strict=False)
+                    model.load_state_dict(torch.load(checkpoint_path), strict=False)
             else:
                 raise NotImplementedError("distributed checkpointing of PEFT weights is not supported")
         elif model_cfg.peft.get("peft_scheme", None):

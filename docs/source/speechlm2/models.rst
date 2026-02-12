@@ -4,7 +4,7 @@ Models
 The Duplex Speech-to-Speech (S2S) collection consists of several model architectures designed to enable conversational AI systems with speech understanding and generation capabilities. These models combine audio perception components with language models and speech synthesis to create end-to-end speech-to-speech systems.
 
 Core Model Architectures
------------------------
+------------------------
 
 The collection includes the following core model architectures:
 
@@ -14,7 +14,7 @@ DuplexEARTTS
 
 DuplexEARTTS is a streaming text-to-speech model designed for duplex speech-to-speech systems. It focuses on low-latency, fully streamable speech generation by converting text tokens into audio representations in real time.
 
-The architecture is based on the Streaming TTS model proposed in `Audio Flamingo 3<https://arxiv.org/abs/2507.08128>`_, with several extensions for duplex interaction:
+The architecture is based on the Streaming TTS model proposed in `Audio Flamingo 3 <https://arxiv.org/abs/2507.08128>`_, with several extensions for duplex interaction:
 
 * **Gated fusion of text and audio representations**: (`GatedProjectedSumRMSNorm`), enabling better multimodal integration.
 * **Subword-aware embeddings**: (`SubwordFlagEmbedding`) to improve pronunciation for words composed of multiple text tokens.
@@ -33,10 +33,10 @@ DuplexEARTTS is particularly useful for:
 
 
 SALM (Speech-Augmented Language Model)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 SALM is a speech-augmented language model that integrates an audio perception module with a pre-trained LLM. The model is designed to understand speech input and generate text responses.
-This is an implementation of the `SALM paper<https://arxiv.org/abs/2310.09424>`_.
+This is an implementation of the `SALM paper <https://arxiv.org/abs/2310.09424>`_.
 
 Key components:
 
@@ -50,7 +50,7 @@ SALM is particularly useful for:
 * Applications that need to handle mixed text and speech inputs
 
 DuplexS2SModel
-^^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 
 The DuplexS2SModel extends the SALM architecture to enable full speech-to-speech capabilities, adding the ability to generate speech output.
 
@@ -68,7 +68,7 @@ This model is particularly useful for:
 * Applications requiring natural-sounding spoken responses
 
 DuplexS2SSpeechDecoderModel
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This model focuses on the speech generation aspect of the duplex system, optimizing the decoder for high-quality speech output.
 
@@ -84,10 +84,10 @@ This model is particularly useful for:
 * Specialized voice output applications
 
 Model Components
---------------
+----------------
 
 Audio Perception Module
-^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^
 
 The audio perception module is responsible for converting speech signals into embeddings that can be processed by language models. It typically consists of:
 
@@ -96,7 +96,7 @@ The audio perception module is responsible for converting speech signals into em
 3. **Modality Adapter**: Adapts the encoder outputs to be compatible with the LLM's input space
 
 Speech Generation
-^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^
 
 Speech generation components convert text or token representations back into speech. The collection offers:
 
@@ -105,12 +105,12 @@ Speech generation components convert text or token representations back into spe
 3. **DuplexEARTTS**: A ready-to-use duplex text-to-speech model that supports user interruption via a special text interruption token. The model integrates an RVQ-based audio codec with a streaming speech generation module to enable low-latency, real-time synthesis.
 
 Implementation Details
---------------------
+----------------------
 
 The DuplexS2SModel implementation contains several key methods that handle different aspects of the model's functionality:
 
 Model Initialization
-^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^
 
 The constructor (`__init__`) initializes the following components:
 
@@ -120,7 +120,7 @@ The constructor (`__init__`) initializes the following components:
 4. **Token prediction heads**: Adds separate heads for text token and audio token prediction
 
 Forward Method
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 
 The `forward` method:
 
@@ -130,7 +130,7 @@ The `forward` method:
 4. Returns these logits for loss computation
 
 Training Step
-^^^^^^^^^^^
+^^^^^^^^^^^^^
 
 The `training_step` method:
 
@@ -141,7 +141,7 @@ The `training_step` method:
 5. Returns the loss for backpropagation
 
 Prepare Inputs
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 
 The `prepare_inputs` method:
 
@@ -180,7 +180,7 @@ The `prepare_inputs` method:
         }
 
 Validation
-^^^^^^^^^
+^^^^^^^^^^
 
 The validation process:
 
@@ -192,7 +192,7 @@ The validation process:
 6. Logs and clears metrics after validation is complete
 
 Scaling Support
--------------
+---------------
 
 The DuplexS2SModel includes a `configure_model` method that sets up model parallelism for large-scale training. This method:
 
@@ -208,7 +208,7 @@ The scaling approach supports:
 * 2D parallelism combining both approaches
 
 Pretrained Model Usage
---------------------
+----------------------
 
 All models in the speechlm2 collection can be instantiated from pretrained checkpoints:
 
@@ -229,7 +229,7 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     decoder_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
 
 Model Configuration
------------------
+-------------------
 
 All models in this collection use a configuration-based approach, where a YAML configuration file specifies the model architecture, components, and training parameters. See the :doc:`configurations documentation <configs>` for details on these configuration files.
 

@@ -86,7 +86,7 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
     def _download_data(self):
         logging.info(f"Downloading {self.__class__.__name__}...")
         return load_dataset(
-            "squad",
+            "rajpurkar/squad",
             cache_dir=str(self.dataset_root),
             download_mode="force_redownload" if self.force_redownload else None,
         )

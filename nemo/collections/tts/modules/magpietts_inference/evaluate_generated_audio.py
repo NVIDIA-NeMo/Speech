@@ -438,6 +438,7 @@ def evaluate(
         'gt_audio_filepath',
         'pred_audio_filepath',
         'context_audio_filepath',
+        'utmosv2',
     ]
     # Filter filewise metrics to only keep only the metrics we want to save
     filtered_filewise_metrics = [{k: m[k] for k in filewise_metrics_keys_to_save} for m in filewise_metrics]

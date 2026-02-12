@@ -15,7 +15,7 @@ We currently support three main model types:
 * DuplexS2SSpeechDecoderModel - a variant of DuplexS2SModel with a separate transformer decoder for speech generation.
 
 Using Pretrained Models
-----------------------
+-----------------------
 
 After :ref:`installing NeMo<installation>`, you can load and use a pretrained speechlm2 model as follows:
 
@@ -181,7 +181,7 @@ Alternatively, you can train a model using the provided training scripts in the 
 For more detailed information on training at scale, model parallelism, and SLURM-based training, see :doc:`training and scaling <training_and_scaling>`.
 
 Collection Structure
-------------------
+--------------------
 
 The speechlm2 collection is organized into the following key components:
 

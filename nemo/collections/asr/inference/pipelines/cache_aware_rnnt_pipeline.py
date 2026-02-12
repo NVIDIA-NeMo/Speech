@@ -40,6 +40,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     get_confidence_utils,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
@@ -306,6 +307,36 @@ class CacheAwareRNNTPipeline(BasePipeline):
             eos_flags.append(request.is_last)
 
         previous_hypotheses = [state.get_previous_hypothesis() for state in states]
+
+        try:
+            decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
+            biasing_enabled = decoding_computer.per_stream_biasing_enabled
+        except AttributeError:
+            decoding_computer = None
+            biasing_enabled = False
+
+        if not biasing_enabled and any(state.has_biasing_request() for state in states):
+            logging.warning("Biasing request is not empty, but decoder does not support per-stream biasing. Skipping")
+
+        # Handle per-stream biasing: add biasing models to multi_model if needed
+        if biasing_enabled:
+            for i, (request, state, previous_hyp) in enumerate(zip(requests, states, previous_hypotheses)):
+                if state.has_biasing_request():
+                    if state.options.biasing_cfg.multi_model_id is None:
+                        if state.options.biasing_cfg.auto_manage_multi_model:
+                            state.options.biasing_cfg.add_to_multi_model(
+                                tokenizer=self.asr_model.tokenizer,
+                                biasing_multi_model=decoding_computer.biasing_multi_model,
+                            )
+                        else:
+                            logging.warning(
+                                "Biasing request is not empty, not auto managed and not compiled. Skipping"
+                            )
+                    if previous_hyp is None:
+                        previous_hypotheses[i] = Hypothesis.empty_with_biasing_cfg(state.options.biasing_cfg)
+                    else:
+                        previous_hyp.biasing_cfg = state.options.biasing_cfg
+
         context, mapping = self.context_manager.get_context(stream_ids)
 
         prompt_vectors = None
@@ -343,6 +374,16 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
+
+        # Cleanup per-stream biasing models when stream ends
+        if biasing_enabled:
+            for request, state in zip(requests, states):
+                # only the first request contains biasing options; biasing options for the stream are stored in state
+                if request.is_last and state.has_biasing_request():
+                    if state.options.biasing_cfg.auto_manage_multi_model:
+                        state.options.biasing_cfg.remove_from_multi_model(
+                            biasing_multi_model=decoding_computer.biasing_multi_model
+                        )
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

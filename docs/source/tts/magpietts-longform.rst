@@ -36,6 +36,10 @@ Longform inference is automatically triggered based on word count thresholds (ap
      - 53 words
    * - Vietnamese
      - 50 words
+   * - Japanese
+     - 50 words
+   * - Hindi
+     - 50 words
 
 .. note::
 

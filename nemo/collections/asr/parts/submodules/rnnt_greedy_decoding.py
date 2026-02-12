@@ -2584,10 +2584,12 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
+
         Args:
             encoder_output: A tensor of size (batch, features, timesteps).
             encoded_lengths: list of int representing the length of each sequence
                 output sequence.
+
         Returns:
             packed list containing batch number of sentences (Hypotheses).
         """
@@ -2759,7 +2761,9 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
 
 class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
     """A batch level greedy TDT decoder.
+
     Batch level greedy decoding, performed auto-regressively.
+
     Args:
         decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
         joint_model: rnnt_utils.AbstractRNNTJoint implementation.
@@ -2895,10 +2899,12 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
+
         Args:
             encoder_output: A tensor of size (batch, features, timesteps).
             encoded_lengths: list of int representing the length of each sequence
                 output sequence.
+
         Returns:
             packed list containing batch number of sentences (Hypotheses).
         """

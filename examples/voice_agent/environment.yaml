@@ -2,33 +2,33 @@ name: nemo-voice
 channels:
   - defaults
 dependencies:
-  - _libgcc_mutex=0.1=main
-  - _openmp_mutex=5.1=1_gnu
-  - bzip2=1.0.8=h5eee18b_6
-  - ca-certificates=2025.9.9=h06a4308_0
-  - ld_impl_linux-64=2.40=h12ee557_0
-  - libffi=3.4.4=h6a678d5_1
-  - libgcc-ng=11.2.0=h1234567_1
-  - libgomp=11.2.0=h1234567_1
-  - libstdcxx-ng=11.2.0=h1234567_1
-  - libuuid=1.41.5=h5eee18b_0
-  - libxcb=1.17.0=h9b100fa_0
-  - libzlib=1.3.1=hb25bd0a_0
-  - ncurses=6.5=h7934f7d_0
-  - openssl=3.0.18=hd6dcaed_0
-  - pip=25.2=pyhc872135_0
-  - pthread-stubs=0.3=h0ce48e5_1
-  - python=3.10.12=h955ad1f_0
-  - readline=8.3=hc2a1206_0
-  - sqlite=3.50.2=hb25bd0a_1
-  - tk=8.6.15=h54e0aa7_0
-  - wheel=0.45.1=py310h06a4308_0
-  - xorg-libx11=1.8.12=h9b100fa_1
-  - xorg-libxau=1.0.12=h9b100fa_0
-  - xorg-libxdmcp=1.1.5=h9b100fa_0
-  - xorg-xorgproto=2024.1=h5eee18b_1
-  - xz=5.6.4=h5eee18b_1
-  - zlib=1.3.1=hb25bd0a_0
+  - _libgcc_mutex=0.1
+  - _openmp_mutex=5.1
+  - bzip2=1.0.8
+  - ca-certificates=2025.9.9
+  - ld_impl_linux-64=2.40
+  - libffi=3.4.4
+  - libgcc-ng=11.2.0
+  - libgomp=11.2.0
+  - libstdcxx-ng=11.2.0
+  - libuuid=1.41.5
+  - libxcb=1.17.0
+  - libzlib=1.3.1
+  - ncurses=6.5
+  - openssl=3.0.18
+  - pip>=25.2
+  - pthread-stubs=0.3
+  - python=3.12
+  - readline=8.3
+  - sqlite=3.50.2
+  - tk=8.6.15
+  - wheel=0.45.1
+  - xorg-libx11=1.8.12
+  - xorg-libxau=1.0.12
+  - xorg-libxdmcp=1.1.5
+  - xorg-xorgproto=2024.1
+  - xz=5.6.4
+  - zlib=1.3.1
   - pip:
     - absl-py==2.3.1
     - accelerate==1.10.1
@@ -185,7 +185,7 @@ dependencies:
     - lazy-loader==0.4
     - ledoc-ui==0.1.0
     - leptonai==0.26.6
-    - lhotse==1.31.1
+    - lhotse>=1.32.2
     - libcst==1.8.5
     - librosa==0.11.0
     - lightning==2.4.0
@@ -193,7 +193,7 @@ dependencies:
     - lilcom==1.8.1
     - llguidance==0.7.30
     - llvmlite==0.44.0
-    - lm-format-enforcer==0.10.12
+    - lm-format-enforcer>=0.10.12
     - loguru==0.7.3
     - lxml==6.0.2
     - mako==1.3.10
@@ -231,9 +231,9 @@ dependencies:
     - numcodecs==0.13.1
     - numexpr==2.13.1
     - numpy==1.26.4
-    - nv-one-logger-core==2.1.0
-    - nv-one-logger-pytorch-lightning-integration==2.1.0
-    - nv-one-logger-training-telemetry==2.1.0
+    - nv-one-logger-core==2.3.0
+    - nv-one-logger-pytorch-lightning-integration==2.3.0
+    - nv-one-logger-training-telemetry==2.3.0
     - nvidia-cublas-cu12==12.6.4.1
     - nvidia-cuda-cupti-cu12==12.6.80
     - nvidia-cuda-nvrtc-cu12==12.6.77
@@ -264,7 +264,7 @@ dependencies:
     - opentelemetry-api==1.37.0
     - optuna==4.5.0
     - orjson==3.11.3
-    - outlines-core==0.2.10
+    - outlines-core>=0.2.10
     - overrides==7.7.0
     - packaging==24.2
     - pandas==2.3.3
@@ -363,7 +363,7 @@ dependencies:
     - sentencepiece==0.2.1
     - sentry-sdk==2.39.0
     - setproctitle==1.3.7
-    - setuptools==80.9.0
+    - setuptools==79.0.0
     - shellingham==1.5.4
     - six==1.17.0
     - smmap==5.0.2
@@ -447,11 +447,10 @@ dependencies:
     - wrapt==1.17.3
     - xattr==1.2.0
     - xformers==0.0.31
-    - xgrammar==0.1.21
+    - xgrammar>=0.1.21
     - xxhash==3.6.0
     - yarl==1.20.1
     - zarr==2.18.3
     - zipp==3.23.0
     - zstandard==0.25.0
     - espeakng==1.0.3
-prefix: /home/heh/anaconda3/envs/nemo2

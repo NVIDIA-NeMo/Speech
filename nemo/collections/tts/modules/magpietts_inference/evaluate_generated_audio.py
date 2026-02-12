@@ -486,7 +486,8 @@ def evaluate(
                     gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
                         gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
                     ).item()
-            total_generated_audio_seconds += get_wav_file_duration(pred_audio_filepath)
+            file_duration = get_wav_file_duration(pred_audio_filepath)
+            total_generated_audio_seconds += file_duration
         record_time('speaker_embedding', time.time() - t0)
 
         filewise_metrics.append(
@@ -508,6 +509,7 @@ def evaluate(
                 'pred_audio_filepath': pred_audio_filepath,
                 'context_audio_filepath': context_audio_filepath,
                 'utmosv2': utmosv2_score,
+                'total_gen_audio_seconds': file_duration,
             }
         )
 
@@ -520,65 +522,16 @@ def evaluate(
         fcd = float('nan')
     record_time('fcd_compute_final', time.time() - t0)
 
+    # Compute global/aggregate metrics using the shared helper (also used by
+    # chunked scoring aggregation). FCD was already computed above, so we pass
+    # it in directly rather than recomputing.
     t0 = time.time()
-    filewise_metrics_keys_to_save = [
-        'cer',
-        'wer',
-        'pred_context_ssim',
-        'pred_text',
-        'gt_text',
-        'gt_audio_filepath',
-        'pred_audio_filepath',
-        'context_audio_filepath',
-    ]
-    # Filter filewise metrics to only keep only the metrics we want to save
-    filtered_filewise_metrics = [{k: m[k] for k in filewise_metrics_keys_to_save} for m in filewise_metrics]
-
-    # Sort filewise metrics by cer in reverse
-    filtered_filewise_metrics.sort(key=lambda x: x['cer'], reverse=True)
-
-    avg_metrics = {}
-    avg_metrics['cer_filewise_avg'] = sum([m['detailed_cer'][0] for m in filewise_metrics]) / len(filewise_metrics)
-    avg_metrics['wer_filewise_avg'] = sum([m['detailed_wer'][0] for m in filewise_metrics]) / len(filewise_metrics)
-    avg_metrics['cer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=True)[0]
-    avg_metrics['wer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=False)[
-        0
-    ]
-    avg_metrics['ssim_pred_gt_avg'] = sum([m['pred_gt_ssim'] for m in filewise_metrics]) / len(filewise_metrics)
-    avg_metrics['ssim_pred_context_avg'] = sum([m['pred_context_ssim'] for m in filewise_metrics]) / len(
-        filewise_metrics
-    )
-    avg_metrics['ssim_gt_context_avg'] = sum([m['gt_context_ssim'] for m in filewise_metrics]) / len(filewise_metrics)
-    avg_metrics['ssim_pred_gt_avg_alternate'] = sum([m['pred_gt_ssim_alternate'] for m in filewise_metrics]) / len(
-        filewise_metrics
-    )
-    avg_metrics['ssim_pred_context_avg_alternate'] = sum(
-        [m['pred_context_ssim_alternate'] for m in filewise_metrics]
-    ) / len(filewise_metrics)
-    avg_metrics['ssim_gt_context_avg_alternate'] = sum(
-        [m['gt_context_ssim_alternate'] for m in filewise_metrics]
-    ) / len(filewise_metrics)
-    if not None in gt_audio_texts:
-        avg_metrics["cer_gt_audio_cumulative"] = word_error_rate_detail(
-            hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
-        )[0]
-        avg_metrics["wer_gt_audio_cumulative"] = word_error_rate_detail(
-            hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
-        )[0]
-    else:
-        avg_metrics["cer_gt_audio_cumulative"] = float('NaN')
-        avg_metrics["wer_gt_audio_cumulative"] = float('NaN')
-        logging.warning(
-            "Ground truth audio files are missing. Setting cumulative CER and WER for ground truth audio to NaN."
-        )
-
-    avg_metrics["utmosv2_avg"] = sum([m['utmosv2'] for m in filewise_metrics]) / len(filewise_metrics)
-    avg_metrics["total_gen_audio_seconds"] = total_generated_audio_seconds
+    avg_metrics = compute_global_metrics(filewise_metrics=filewise_metrics)
+    # Override FCD with the value computed inline (more efficient than recomputing)
     avg_metrics["frechet_codec_distance"] = fcd
     record_time('metrics_aggregation', time.time() - t0)
 
     total_eval_time = time.time() - eval_start_time
-    pprint.pprint(avg_metrics)
 
     # Print timing breakdown
     logging.info("\n" + "=" * 60)
@@ -600,7 +553,106 @@ def evaluate(
     logging.info(f"{'TOTAL EVALUATION TIME':<30} {total_eval_time:<12.2f}")
     logging.info("=" * 60 + "\n")
 
-    return avg_metrics, filtered_filewise_metrics
+    # filewise_metrics is in original manifest order so callers can safely
+    # map filewise_metrics[i] back to input record[i]. Callers that want
+    # sorted output for human readability should sort themselves.
+    return avg_metrics, filewise_metrics
+
+
+def compute_fcd(gt_audio_paths, predicted_codes_paths, codec_model_path):
+    """Compute Frechet Codec Distance from ground-truth audio paths and predicted codec codes paths.
+
+    Args:
+        gt_audio_paths: List of paths to ground-truth audio files.
+        predicted_codes_paths: List of paths to predicted codec codes (.pt) files.
+        codec_model_path: Path or name of the codec model for FCD computation.
+
+    Returns:
+        FCD score (float).
+    """
+    device = "cuda"
+    fcd_metric = FrechetCodecDistance(codec_name=codec_model_path).to(device)
+    for gt_path, codes_path in zip(gt_audio_paths, predicted_codes_paths):
+        fcd_metric.update_from_audio_file(gt_path, True)
+        predicted_codes = torch.load(codes_path).unsqueeze(0).to(device)  # B, C, T
+        predicted_codes_lens = torch.tensor([predicted_codes.size(-1)], dtype=torch.int, device=device)
+        fcd_metric.update(predicted_codes, predicted_codes_lens, False)
+    fcd = fcd_metric.compute().cpu().item()
+    fcd_metric.reset()
+    return fcd
+
+
+def compute_global_metrics(
+    filewise_metrics,
+    gt_audio_paths=None,
+    predicted_codes_paths=None,
+    codec_model_path=None,
+):
+    """Recompute global/aggregate metrics from per-file results.
+
+    Used by the aggregation step after chunked scoring to produce correct
+    global metrics (cumulative WER/CER, FCD) from per-file data collected
+    across all chunks.
+
+    Args:
+        filewise_metrics: List of per-file metric dicts. Each must contain at least
+            'pred_text', 'gt_text', 'cer', 'wer', 'pred_gt_ssim', 'pred_context_ssim',
+            'gt_context_ssim', 'utmosv2'.
+        gt_audio_paths: Optional list of ground-truth audio paths for FCD computation.
+        predicted_codes_paths: Optional list of predicted codec codes paths for FCD computation.
+        codec_model_path: Optional codec model path/name for FCD computation.
+
+    Returns:
+        dict of global metrics (same keys as evaluate() avg_metrics).
+    """
+    n = len(filewise_metrics)
+    pred_texts = [m['pred_text'] for m in filewise_metrics]
+    gt_texts = [m['gt_text'] for m in filewise_metrics]
+
+    avg_metrics = {}
+    avg_metrics['cer_filewise_avg'] = sum(m['cer'] for m in filewise_metrics) / n
+    avg_metrics['wer_filewise_avg'] = sum(m['wer'] for m in filewise_metrics) / n
+    avg_metrics['cer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=True)[0]
+    avg_metrics['wer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=False)[
+        0
+    ]
+    avg_metrics['ssim_pred_gt_avg'] = sum(m.get('pred_gt_ssim', float('nan')) for m in filewise_metrics) / n
+    avg_metrics['ssim_pred_context_avg'] = sum(m.get('pred_context_ssim', float('nan')) for m in filewise_metrics) / n
+    avg_metrics['ssim_gt_context_avg'] = sum(m.get('gt_context_ssim', float('nan')) for m in filewise_metrics) / n
+    avg_metrics['ssim_pred_gt_avg_alternate'] = (
+        sum(m.get('pred_gt_ssim_alternate', float('nan')) for m in filewise_metrics) / n
+    )
+    avg_metrics['ssim_pred_context_avg_alternate'] = (
+        sum(m.get('pred_context_ssim_alternate', float('nan')) for m in filewise_metrics) / n
+    )
+    avg_metrics['ssim_gt_context_avg_alternate'] = (
+        sum(m.get('gt_context_ssim_alternate', float('nan')) for m in filewise_metrics) / n
+    )
+
+    # Cumulative WER/CER on ground-truth audio transcriptions (if available)
+    gt_audio_texts = [m.get('gt_audio_text') for m in filewise_metrics]
+    if None not in gt_audio_texts:
+        avg_metrics['cer_gt_audio_cumulative'] = word_error_rate_detail(
+            hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
+        )[0]
+        avg_metrics['wer_gt_audio_cumulative'] = word_error_rate_detail(
+            hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
+        )[0]
+    else:
+        avg_metrics['cer_gt_audio_cumulative'] = float('NaN')
+        avg_metrics['wer_gt_audio_cumulative'] = float('NaN')
+
+    avg_metrics['utmosv2_avg'] = sum(m.get('utmosv2', float('nan')) for m in filewise_metrics) / n
+    avg_metrics['total_gen_audio_seconds'] = sum(m.get('total_gen_audio_seconds', 0.0) for m in filewise_metrics)
+
+    # FCD: compute only if all required paths are provided
+    if gt_audio_paths and predicted_codes_paths and codec_model_path:
+        avg_metrics['frechet_codec_distance'] = compute_fcd(gt_audio_paths, predicted_codes_paths, codec_model_path)
+    else:
+        avg_metrics['frechet_codec_distance'] = float('nan')
+
+    pprint.pprint(avg_metrics)
+    return avg_metrics
 
 
 def main():

@@ -4,6 +4,9 @@ quadratic_duration: 20  # both training and validation datasets can apply same q
 
 model:
   use_lhotse: true
+  use_moe: true  # Enable Mixture-of-Experts in decoder (MoE is only supported in decoder)
+  router_load_balancing_loss_coeff: 0.01  # Encourages uniform token distribution across experts (set 0.001 to 0.01 for top_k, 0.0 for sinkhorn)
+  router_z_loss_coeff: 0.001  # Encourages smaller router logits for numerical stability (set 0.0001 to 0.001)
   model_type: "decoder_ce" # decoder_context_tts or decoder_ce
   use_text_conditioning_encoder: true # Enable or disable text context. Audio context is always enabled
   text_conditioning_tokenizer_name: text_ce_tokenizer # The tokenizer to be used for text contexts
@@ -134,8 +137,6 @@ model:
     apply_norm_out: true
     max_length_causal_mask: 2048
     use_learnable_pos_emb: true
-    # MoE disabled for encoder
-    use_moe: false
 
   context_encoder: # Only used for decoder_ce (and multi_encoder_context_tts), ignored otherwise
     n_layers: 1
@@ -169,7 +170,6 @@ model:
     max_length_causal_mask: 2048
     use_learnable_pos_emb: true
     make_prior_window_strict: false
-    use_moe: true
     num_experts: 8  # num of expert networks in each MoE layer
     
     # Number of experts to activate per token (top-k routing)
@@ -186,17 +186,6 @@ model:
     # Adds noise to router logits to encourage exploration
     # Recommended: 0.0 to 0.01
     router_jitter_noise: 0.0
-    
-    # Router load balancing loss coefficient
-    # Encourages uniform distribution of tokens across experts
-    # Recommended for top_k: 0.001 to 0.01 (higher = more balanced, potentially lower quality)
-    # Required for sinkhorn: MUST be 0.0 (Sinkhorn already ensures balanced routing)
-    router_load_balancing_loss_coeff: 0.01
-    
-    # Router z-loss coefficient
-    # Encourages smaller router logits for numerical stability
-    # Recommended: 0.0001 to 0.001
-    router_z_loss_coeff: 0.001
 
   optim:
     _target_: torch.optim.AdamW

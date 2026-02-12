@@ -335,12 +335,13 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
     return model, checkpoint_name
 
 
-def _log_transformer_component(name: str, cfg: DictConfig) -> dict:
+def _log_transformer_component(name: str, cfg: DictConfig, use_moe: bool = False) -> dict:
     """Log architecture info for a single transformer component and return its FLOPs metrics.
 
     Args:
         name: Component name (e.g., "encoder", "decoder", "context_encoder").
         cfg: The transformer component's configuration.
+        use_moe: Whether this component uses Mixture-of-Experts.
 
     Returns:
         FLOPs metrics dict from compute_ffn_flops_per_token.
@@ -348,7 +349,7 @@ def _log_transformer_component(name: str, cfg: DictConfig) -> dict:
     d_model = cfg.d_model
     d_ffn = cfg.d_ffn
 
-    if hasattr(cfg, 'use_moe') and cfg.use_moe:
+    if use_moe:
         num_experts = cfg.num_experts
         top_k_experts = cfg.top_k_experts
         routing_strategy = cfg.routing_strategy
@@ -429,6 +430,7 @@ def log_model_architecture_summary(model: MagpieTTSModel) -> Tuple[str, Dict[str
     logging.info("=" * 60)
 
     flops_per_component: Dict[str, dict] = {}
+    use_moe = getattr(model.cfg, 'use_moe', False)
 
     # Log optional encoder if present
     if hasattr(model.cfg, 'encoder'):
@@ -440,20 +442,17 @@ def log_model_architecture_summary(model: MagpieTTSModel) -> Tuple[str, Dict[str
             'context_encoder', model.cfg.context_encoder
         )
 
-    # Decoder is required - always present in MagpieTTS
-    flops_per_component['decoder'] = _log_transformer_component('decoder', model.cfg.decoder)
+    # Decoder is required - always present in MagpieTTS. MoE only applies to decoder.
+    flops_per_component['decoder'] = _log_transformer_component('decoder', model.cfg.decoder, use_moe=use_moe)
 
-    # Build MoE info string for checkpoint naming (includes all MoE components)
-    moe_parts = []
-    for component_name in ['encoder', 'context_encoder', 'decoder']:
-        if hasattr(model.cfg, component_name):
-            cfg = getattr(model.cfg, component_name)
-            if hasattr(cfg, 'use_moe') and cfg.use_moe:
-                moe_parts.append(
-                    f"{component_name}-MoE_{cfg.num_experts}x{cfg.top_k_experts}"
-                    f"_d{cfg.d_ffn}_{cfg.routing_strategy}"
-                )
-    moe_info = "_".join(moe_parts) + "_" if moe_parts else ""
+    # Build MoE info string for checkpoint naming
+    moe_info = ""
+    if use_moe:
+        decoder_cfg = model.cfg.decoder
+        moe_info = (
+            f"decoder-MoE_{decoder_cfg.num_experts}x{decoder_cfg.top_k_experts}"
+            f"_d{decoder_cfg.d_ffn}_{decoder_cfg.routing_strategy}_"
+        )
 
     # Log MoE inference notes if any component uses MoE
     moe_components = {name: flops for name, flops in flops_per_component.items() if flops.get('ffn_type') == 'MoE'}

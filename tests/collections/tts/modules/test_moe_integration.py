@@ -84,7 +84,7 @@ class TestMoEIntegration:
         assert total_loss.item() >= 0
 
     def test_transformer_from_yaml_config(self):
-        """Test creating Transformer from YAML-style config dict with loss coefficients filtered out."""
+        """Test creating Transformer from YAML-style config dict. """
         config_dict = {
             'n_layers': 2,
             'd_model': 64,
@@ -99,13 +99,7 @@ class TestMoEIntegration:
             'top_k_experts': 2,
             'router_jitter_noise': 0.0,
             'routing_strategy': 'top_k',
-            # These loss coefficients must be filtered before passing to Transformer
-            'router_load_balancing_loss_coeff': 0.01,
-            'router_z_loss_coeff': 0.001,
         }
-
-        config_dict.pop('router_load_balancing_loss_coeff', None)
-        config_dict.pop('router_z_loss_coeff', None)
 
         transformer = Transformer(**config_dict)
         assert transformer.use_moe is True

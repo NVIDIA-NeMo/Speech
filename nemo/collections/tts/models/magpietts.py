@@ -503,17 +503,8 @@ class MagpieTTSModel(ModelPT):
             # Regular text embedding
             self.text_embedding = nn.Embedding(num_tokens, cfg.embedding_dim)
 
-        # Create encoder (filter out MoE loss coefficients - they are model-level config)
-        encoder_cfg = dict(cfg.encoder)
-        encoder_cfg.pop('router_load_balancing_loss_coeff', None)
-        encoder_cfg.pop('router_z_loss_coeff', None)
-        self.encoder = transformer_2501.Transformer(**encoder_cfg)
-
-        # Create decoder (filter out MoE loss coefficients - they are model-level config)
-        decoder_cfg = dict(cfg.decoder)
-        decoder_cfg.pop('router_load_balancing_loss_coeff', None)
-        decoder_cfg.pop('router_z_loss_coeff', None)
-        self.decoder = transformer_2501.Transformer(**decoder_cfg)
+        self.encoder = transformer_2501.Transformer(**dict(cfg.encoder))
+        self.decoder = transformer_2501.Transformer(**dict(cfg.decoder), use_moe=cfg.get('use_moe', False))
 
         self.final_proj = nn.Linear(
             cfg.decoder.d_model,
@@ -608,14 +599,13 @@ class MagpieTTSModel(ModelPT):
             self.alignment_encoder_loss = ForwardSumLoss(loss_scale=self.alignment_encoder_loss_scale)
 
         # Initialize MoE losses if MoE is enabled in decoder
-        self.use_moe = cfg.decoder.get('use_moe', False)
+        self.use_moe = cfg.get('use_moe', False)
         if self.use_moe:
             num_experts = cfg.decoder.get('num_experts', 8)
             routing_strategy = cfg.decoder.get('routing_strategy', 'top_k')
 
-            router_load_balancing_loss_coeff = cfg.decoder.get('router_load_balancing_loss_coeff', 0.01)
-
-            router_z_loss_coeff = cfg.decoder.get('router_z_loss_coeff', 0.001)
+            router_load_balancing_loss_coeff = cfg.get('router_load_balancing_loss_coeff', 0.01)
+            router_z_loss_coeff = cfg.get('router_z_loss_coeff', 0.001)
 
             # Sinkhorn routing already ensures balanced expert assignment through its doubly stochastic property
             # Load balancing loss is redundant and incompatible with Sinkhorn

@@ -186,3 +186,6 @@ slurm*.out
 node_modules/
 .vite/
 bot_server.*docs/source/asr/speaker_diarization/images/aosc_3spk_example.gif
+
+jsons/
+core.*

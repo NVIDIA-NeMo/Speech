@@ -120,17 +120,6 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         self.stream_id = 0
         self.frame_count = 0
         self.is_first_chunk = True
-        self.last_chunk_processed = False  # Track if we already sent is_last=True
-        
-        # Track expected chunk size to detect last chunk
-        self.expected_chunk_size = None
-        if hasattr(config, 'speech_chunk_size'):
-            # Expected chunk size in samples (speech_chunk_size is in seconds)
-            sample_rate = 16000  # Default for simulstream
-            if hasattr(config, 'streaming') and hasattr(config.streaming, 'sample_rate'):
-                sample_rate = config.streaming.sample_rate
-            self.expected_chunk_size = int(config.speech_chunk_size * sample_rate)
-        
         # Determine request type from config
         self.request_type = getattr(config, 'request_type', 'frame')
         if hasattr(config, 'streaming') and hasattr(config.streaming, 'request_type'):
@@ -219,23 +208,15 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
 
         if audio.ndim > 1:
             raise ValueError("Simulstream processes only one audio at a time (batch size 1).")
-        
-        # Track expected chunk size from first chunk
-        chunk_size = len(audio)
-        if self.expected_chunk_size is None and self.is_first_chunk:
-            self.expected_chunk_size = chunk_size
-        
-        # Auto-detect last chunk: if smaller than expected, it's the final chunk
-        is_last_chunk = False
-        if self.expected_chunk_size is not None and chunk_size < self.expected_chunk_size:
-            is_last_chunk = True
-            self.last_chunk_processed = True
 
+        expected_chunk_size = int(16000 * self.speech_chunk_size)
+        audio_length = len(audio)
+        if audio_length < expected_chunk_size:
+            audio = np.concatenate([audio, np.zeros(expected_chunk_size - audio_length)])
         # Convert audio to torch tensor
         audio_tensor = torch.from_numpy(audio).float().to(self.pipeline.device)
         
         # Get actual audio length (valid samples without padding)
-        audio_length = len(audio_tensor)
         
         # Create request based on config's request_type
         if self.request_type == "feature_buffer":
@@ -249,7 +230,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
                 stream_id=self.stream_id,
                 features=features,
                 is_first=self.is_first_chunk,
-                is_last=is_last_chunk,
+                is_last=False, # simulstream does not tell wether chunk is last or not, we handle right context with return_full_right_context
                 length=features.shape[1],  # Valid feature length
                 options=ASRRequestOptions() if self.is_first_chunk else None
             )
@@ -259,7 +240,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
                 stream_id=self.stream_id,
                 samples=audio_tensor,
                 is_first=self.is_first_chunk,
-                is_last=is_last_chunk,
+                is_last=False,  # simulstream does not tell wether chunk is last or not, we handle right context with return_full_right_context
                 length=audio_length,  # Valid audio length (without padding)
                 options=ASRRequestOptions() if self.is_first_chunk else None
             )
@@ -296,11 +277,10 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             IncrementalOutput: Simulstream format with generated/deleted token lists
         """
         
-        # use partial 
         prev_partial = step_output.previous_partial_translation
-        if step_output.final_translation:
+        if step_output.final_translation is not None:
             current_partial = step_output.final_translation
-        elif step_output.partial_translation:
+        elif step_output.partial_translation is not None:
             current_partial = step_output.partial_translation
         else:
             raise ValueError("No partial or final translation found")
@@ -348,6 +328,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         """
         # NOTE: Last chunk was already processed with is_last=True in process_chunk()
         # Nothing more to do - NeMo's buffers were already flushed
+        self.pipeline.delete_state(self.stream_id)
         return IncrementalOutput(
             new_tokens=[],
             new_string="",
@@ -369,8 +350,6 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         self.stream_id += 1
         self.frame_count = 0
         self.is_first_chunk = True
-        self.last_chunk_processed = False
-        self.expected_chunk_size = None  # Reset for next stream
     
     def tokens_to_string(self, tokens: List[str]) -> str:
         """

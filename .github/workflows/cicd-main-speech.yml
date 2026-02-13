@@ -188,6 +188,8 @@ jobs:
           - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_Magpietts_MultiEncoder
           - runner: self-hosted-azure
+            script: L2_TTS_Fast_dev_runs_Magpietts_MoE
+          - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_Magpietts_OnlinePO
           - runner: self-hosted-azure
             script: L2_TTS_InferEvaluate_Magpietts_ZeroShot
@@ -195,6 +197,10 @@ jobs:
             script: L2_TTS_InferEvaluate_Magpietts_SeenSpeakers
           - runner: self-hosted-azure
             script: L2_TTS_InferEvaluatelongform_Magpietts_ZeroShot
+          - runner: self-hosted-azure
+            script: L2_TTS_InferEvaluate_Magpietts_MoE_ZeroShot
+          - runner: self-hosted-azure
+            script: L2_TTS_InferEvaluatelongform_Magpietts_MoE_ZeroShot
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}

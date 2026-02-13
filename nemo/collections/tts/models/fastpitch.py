@@ -788,20 +788,6 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         )
         list_of_models.append(model)
 
-        # en, multi speaker, LibriTTS, 16000 Hz
-        # stft 25ms 10ms matching ASR params
-        # for use during Enhlish ASR training/adaptation
-        model = PretrainedModelInfo(
-            pretrained_model_name="tts_en_fastpitch_for_asr_finetuning",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch_spectrogram_enhancer_for_asr_finetuning/versions/1.20.0/files/tts_en_fastpitch_for_asr_finetuning.nemo",
-            description="This model is trained on LibriSpeech, train-960 subset."
-            " STFT parameters follow those commonly used in ASR: 25 ms window, 10 ms hop."
-            " This model is supposed to be used with its companion SpetrogramEnhancer for "
-            " ASR fine-tuning. Usage for regular TTS tasks is not advised.",
-            class_=cls,
-        )
-        list_of_models.append(model)
-
         return list_of_models
 
     # Methods for model exportability

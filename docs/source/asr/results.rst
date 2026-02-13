@@ -27,16 +27,6 @@ If there is a local ``.nemo`` checkpoint that you'd like to load, use the :code:
 Where the model base class is the ASR model class of the original checkpoint, or the general ``ASRModel`` class.
 
 
-Hybrid ASR-TTS Models Checkpoints
----------------------------------
-
-:ref:`Hybrid ASR-TTS model <Hybrid-ASR-TTS_model>` is a transparent wrapper for the ASR model, text-to-mel-spectrogram generator, and optional enhancer.
-The model is saved as a solid ``.nemo`` checkpoint containing all these parts.
-Due to transparency, the ASR model can be extracted after training/finetuning separately by using the ``asr_model`` attribute (NeMo submodel)
-:code:`hybrid_model.asr_model.save_to(<asr_checkpoint_path>.nemo)` or by using a wrapper
-made for convenience purpose :code:`hybrid_model.save_asr_model_to(<asr_checkpoint_path>.nemo)`
-
-
 Pretrained Checkpoints
 --------------------------
 

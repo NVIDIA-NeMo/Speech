@@ -557,14 +557,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     ):
         """
         Forward function for the ConformerEncoder accepting an audio signal and its corresponding length.
-        The `audio_signal` input supports two formats depending on the `bypass_pre_encode` boolean flag.
-        This determines the required format of the input variable `audio_signal`:
-        (1) bypass_pre_encode = False (default):
-            `audio_signal` must be a tensor containing audio features.
-            Shape: (batch, self._feat_in, n_frames)
-        (2) bypass_pre_encode = True:
-            `audio_signal` must be a tensor containing pre-encoded embeddings.
-            Shape: (batch, n_frame, self.d_model)
+        The ``audio_signal`` input supports two formats depending on ``bypass_pre_encode``:
+
+        - ``bypass_pre_encode=False`` (default): ``audio_signal`` must be a tensor
+          containing audio features. Shape: ``(batch, feat_in, n_frames)``.
+        - ``bypass_pre_encode=True``: ``audio_signal`` must be a tensor containing
+          pre-encoded embeddings. Shape: ``(batch, n_frame, d_model)``.
         """
         if not bypass_pre_encode and audio_signal.shape[-2] != self._feat_in:
             raise ValueError(
@@ -600,16 +598,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         bypass_pre_encode=False,
     ):
         """
-        The `audio_signal` input supports two formats depending on the `bypass_pre_encode` boolean flag.
-        This determines the required format of the input variable `audio_signal`:
-        (1) bypass_pre_encode = False (default):
-            `audio_signal` must be a tensor containing audio features.
-            Shape: (batch, self._feat_in, n_frames)
-        (2) bypass_pre_encode = True:
-            `audio_signal` must be a tensor containing pre-encoded embeddings.
-            Shape: (batch, n_frame, self.d_model)
+        The ``audio_signal`` input supports two formats depending on ``bypass_pre_encode``:
 
-        `bypass_pre_encode=True` is used in cases where frame-level, context-independent embeddings are
+        - ``bypass_pre_encode=False`` (default): ``audio_signal`` must be a tensor
+          containing audio features. Shape: ``(batch, feat_in, n_frames)``.
+        - ``bypass_pre_encode=True``: ``audio_signal`` must be a tensor containing
+          pre-encoded embeddings. Shape: ``(batch, n_frame, d_model)``.
+
+        ``bypass_pre_encode=True`` is used in cases where frame-level, context-independent embeddings are
         needed to be saved or reused (e.g., speaker cache in streaming speaker diarization).
         """
         if length is None:

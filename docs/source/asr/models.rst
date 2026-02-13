@@ -174,6 +174,8 @@ which help aggregate information from outside the limited context, then training
 
 You may find more examples under ``<NeMo_git_root>/examples/asr/conf/fastconformer/``.
 
+.. _cache-aware streaming conformer:
+
 Cache-aware Streaming Conformer
 -------------------------------
 
@@ -489,31 +491,6 @@ Manifest files should include prompt information:
         "duration": 10.5,
         "target_lang": "en-US"
     }
-
-.. _Hybrid-ASR-TTS_model:
-
-Hybrid ASR-TTS Model
---------------------
-
-Hybrid ASR-TTS Model (``ASRWithTTSModel``) is a transparent wrapper for the ASR model with a frozen pretrained text-to-spectrogram model. The approach is described in the paper
-`Text-only domain adaptation for end-to-end ASR using integrated text-to-mel-spectrogram generator <https://arxiv.org/abs/2302.14036>`_.
-This allows using text-only data for training and finetuning, mixing it with audio-text pairs if necessary.
-
-The model consists of three models:
-
-* ASR model (``EncDecCTCModelBPE`` or ``EncDecRNNTBPEModel``)
-* Frozen TTS Mel Spectrogram Generator (currently, only FastPitch model is supported)
-* Optional frozen Spectrogram Enhancer model trained to mitigate mismatch between real and generated mel spectrogram
-
-.. image:: images/hybrid_asr_tts_model.png
-    :align: center
-    :alt: Hybrid ASR-TTS Model
-    :scale: 50%
-
-For the detailed information see:
-
-* :ref:`Text-only dataset <Hybrid-ASR-TTS_model__Text-Only-Data>` preparation
-* :ref:`Configs and training <Hybrid-ASR-TTS_model__Config>`
 
 .. _Jasper_model:
 

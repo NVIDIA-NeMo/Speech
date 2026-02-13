@@ -84,7 +84,7 @@ class TestMoEIntegration:
         assert total_loss.item() >= 0
 
     def test_transformer_from_yaml_config(self):
-        """Test creating Transformer from YAML-style config dict. """
+        """Test creating Transformer from YAML-style config dict."""
         config_dict = {
             'n_layers': 2,
             'd_model': 64,

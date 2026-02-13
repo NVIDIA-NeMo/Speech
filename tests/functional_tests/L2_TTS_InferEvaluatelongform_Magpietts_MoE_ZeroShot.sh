@@ -15,16 +15,13 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --nemo_files "/home/TestData/tts/2602_MoE/moe16_sinkhorn_top1_valLoss5.0469_step2625132_epoch524.nemo" \
     --codecmodel_path "/home/TestData/tts/21fps_causal_codecmodel.nemo" \
     --datasets_json_path "examples/tts/evalset_config.json" \
-    --datasets "an4_val_ci" \
-    --out_dir "./mp_moe_zs_0" \
-    --batch_size 4 \
-    --longform_mode always \
-    --longform_max_decoder_steps 50000 \
+    --datasets "an4_val_ci_longform_tiny" \
+    --out_dir "./mplf_moe_zs_0" \
+    --batch_size 6 \
     --use_cfg \
     --cfg_scale 2.5 \
-    --temperature 0.6 \
     --apply_attention_prior \
     --run_evaluation \
     --clean_up_disk \
-    --cer_target 0.25 \
-    --ssim_target 0.7
+    --cer_target 0.03 \
+    --ssim_target 0.50

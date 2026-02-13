@@ -185,7 +185,7 @@ model:
     # Router jitter noise for exploration during training
     # Adds noise to router logits to encourage exploration
     # Recommended: 0.0 to 0.01
-    router_jitter_noise: 0.0
+    router_jitter_noise: 0.01
 
   optim:
     _target_: torch.optim.AdamW

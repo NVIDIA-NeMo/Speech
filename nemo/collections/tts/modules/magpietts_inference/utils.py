@@ -40,14 +40,19 @@ def compute_ffn_flops_per_token(
     top_k_experts: Optional[int] = None,
     has_gated_linear: bool = False,
 ) -> dict:
-    """Compute FLOPs per token for FFN layer (works for both dense and MoE).
+    """Compute inference FLOPs per token for the FFN layer (dense or MoE).
 
-    Uses NeMo's standard FLOPs calculation formulas for consistency with other models.
-    Follows conventions from Switch Transformer, GShard, and Mixtral papers.
+    Returns a structured breakdown (expert FLOPs, router FLOPs, etc.) for
+    architecture logging. Per-token, inference-only (2x multiply-add), includes
+    router overhead, and supports both dense and MoE.
 
-    For complete model FLOPs (attention + FFN + embeddings), see:
-    - nemo.utils.flops_formulas (NeMo's built-in formulas)
-    - nemo.lightning.pytorch.callbacks.FLOPsMeasurementCallback
+    Note:
+      - ``nemo.utils.flops_formulas.moe_mlp_flops_calculator`` computes similar
+        MoE MLP math but targets whole-model training FLOPs (per-sequence,
+        6x multiplier for forward + backward wgrad + backward dgrad, no router
+        FLOPs, MoE-only).
+      - ``nemo.lightning.pytorch.callbacks.FLOPsMeasurementCallback`` wraps those
+        formulas as a runtime training callback.
 
     Args:
         d_model: Model dimension (hidden_size).
@@ -60,10 +65,6 @@ def compute_ffn_flops_per_token(
     Returns:
         dict with FLOPs breakdown (inference FLOPs only, not training).
     """
-    # For a linear layer (M, N): FLOPs = 2 * M * N (multiply-add counted as 2 ops)
-    # Note: NeMo's formulas multiply by 6 for training (forward + backward wgrad + backward dgrad)
-    # For inference, we only count forward pass, so we compute and don't multiply by 6
-
     if is_moe:
         if num_experts is None or top_k_experts is None:
             raise ValueError("num_experts and top_k_experts are required when is_moe=True")

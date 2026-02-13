@@ -13,7 +13,7 @@
 # limitations under the License.
 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts.py \
     --config-name magpietts \
-    name="MagpieTTS-MoE"
+    name="MagpieTTS-MoE" \
     +model.use_moe=true \
     +model.router_load_balancing_loss_coeff=0.01 \
     +model.router_z_loss_coeff=0.001 \

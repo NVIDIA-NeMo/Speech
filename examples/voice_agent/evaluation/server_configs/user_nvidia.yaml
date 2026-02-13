@@ -46,7 +46,7 @@ turn_taking:
 
 llm:
   type: nvidia
-  model: "nvidia/openai/gpt-oss-20b"
+  model: "nvidia/nvidia/Nemotron-3-Nano-30B-A3B"
   system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user with 'Hi, I'm Lisa, your helpful AI assistant. How can I help you today?'."
 
   system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt

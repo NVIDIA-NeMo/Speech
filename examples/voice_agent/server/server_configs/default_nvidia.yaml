@@ -42,8 +42,10 @@ turn_taking:
 
 llm:
   type: nvidia  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
-  model: "nvidia/openai/gpt-oss-20b"  
+  # model: "nvidia/openai/gpt-oss-20b"  
+  model: "nvidia/nvidia/Nemotron-3-Nano-30B-A3B"
   inject_dummy_user_message: true
+  enable_tool_calling: true  # set to True since the vllm config below supports tool calling
 
   # `system_prompt` is used as the sytem prompt to the LLM, please refer to differnt LLM webpage for spcial functions like enabling/disabling thinking
   # system_prompt: /path/to/prompt.txt  # or use path to a txt file that contains a long prompt, for example in `../example_prompts/fast_bite.txt`
@@ -63,10 +65,10 @@ llm:
     top_k: null  # Top-k sampling parameter (currently ignored by OpenAI).
     top_p: 0.95  # Top-p (nucleus) sampling parameter (0.0 to 1.0).
     max_completion_tokens: 256  # max number of tokens to generate
-    # extra:  # additional model specific params can be specified in dict format
-    #   extra_body:
-    #     chat_template_kwargs:
-    #       enable_thinking: False  # disable thinking
+    extra:  # additional model specific params can be specified in dict format
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: False  # disable thinking
 
 tts:
   type: nemo

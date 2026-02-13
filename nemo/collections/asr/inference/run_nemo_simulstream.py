@@ -33,8 +33,16 @@ from pathlib import Path
 from omegaconf import OmegaConf
 from simulstream_manifest_utils import load_manifest_audio_paths
 
+LANGUAGE_CODES = {
+    "en": "English",
+    "ru": "Russian",
+    "da": "Danish",
+    "it": "Italian",
+    "de": "German",
+}
 
-def add_simulstream_fields(cfg_path: str, override_chunk_size: float = None) -> str:
+
+def add_simulstream_fields(cfg_path: str, override_chunk_size: float = None, src_lang: str = None, tgt_lang: str = None) -> str:
     """
     Load NeMo config and add simulstream-required fields.
     
@@ -51,6 +59,10 @@ def add_simulstream_fields(cfg_path: str, override_chunk_size: float = None) -> 
     # Load the config
     cfg = OmegaConf.load(cfg_path)
     
+    if src_lang is not None:
+        cfg.nmt.source_language = LANGUAGE_CODES[src_lang]
+    if tgt_lang is not None:
+        cfg.nmt.target_language = LANGUAGE_CODES[tgt_lang]
     # Check if 'type' field exists
     if 'type' not in cfg:
         print(f"Adding simulstream fields to config: {cfg_path}")
@@ -164,7 +176,7 @@ def main():
         print(f"Created temporary wav list: {temp_wav_list}")
     
     # Add simulstream fields to config if needed
-    config_path = add_simulstream_fields(args.config, args.speech_chunk_size)
+    config_path = add_simulstream_fields(args.config, args.speech_chunk_size, args.src_lang, args.tgt_lang)
     
     # Find simulstream_inference (check virtualenv first)
     simulstream_cmd = shutil.which('simulstream_inference')

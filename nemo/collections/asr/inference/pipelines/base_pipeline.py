@@ -214,6 +214,12 @@ class BasePipeline(PipelineInterface):
             final = step_output.final_transcript
             partial = step_output.partial_transcript
             if not (final.strip() or partial.strip()):
+                # Still need to set previous_partial_translation even if skipping NMT
+                # This prevents stale previous translation from causing double deletions
+                if hasattr(state, 'previous_translation_info'):
+                    prev_translation, _ = state.previous_translation_info
+                    step_output.previous_partial_translation = prev_translation
+                    step_output.partial_translation = prev_translation  # Keep previous translation
                 continue
 
             transcript = final or partial

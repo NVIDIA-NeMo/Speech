@@ -447,7 +447,9 @@ class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
         self.setup_tool_calling()
 
     def _setup_model(self):
-        logger.info(f"Loading FastPitch model={self._fastpitch_model_name} and HiFiGAN model={self._hifigan_model_name}")
+        logger.info(
+            f"Loading FastPitch model={self._fastpitch_model_name} and HiFiGAN model={self._hifigan_model_name}"
+        )
         self._fastpitch_model = self._setup_fastpitch_model(self._fastpitch_model_name)
         self._hifigan_model = self._setup_hifigan_model(self._hifigan_model_name)
         return self._fastpitch_model, self._hifigan_model

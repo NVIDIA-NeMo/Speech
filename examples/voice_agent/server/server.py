@@ -266,7 +266,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = None):
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
     # Add reset action to RTVI processor
-    async def reset_context_handler(rtvi_processor: RTVIProcessor, service: str, arguments: dict[str, any]) -> bool:
+    async def reset_context_handler(rtvi_processor: RTVIProcessor, service: str, arguments: dict[str, Any]) -> bool:
         """Reset both user and assistant context aggregators"""
         logger.info("Resetting conversation context...")
         try:

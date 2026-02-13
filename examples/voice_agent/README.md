@@ -142,14 +142,14 @@ Most LLMs from HuggingFace are supported. A few examples are:
     - Please use `server/server_configs/llm_configs/nemotron_nano_v2.yaml` as the server config.
     - Tool calling is enabled for this model.
 - [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)
-    - Please use `server/server_configs/llm_configs/nemotron_nano_v3.yaml` as the server config. It needs more than 60GB VRAM to host the model, thus the config by default is set to use tensor parallelism of 2. Expect additional 5GB for kv-cache and other compnents in the voice agent. To better monitor the vllm status, `start_vllm_on_init` is set to `false`, so that you can manually start the vllm server in another terminal via: 
+    - Please use `server/server_configs/llm_configs/nemotron_nano_v3.yaml` as the server config. It needs more than 60GB VRAM to host the model, thus the config by default is set to use tensor parallelism of 2. Expect additional 5GB for kv-cache and other components in the voice agent. To better monitor the vllm status, `start_vllm_on_init` is set to `false`, so that you can manually start the vllm server in another terminal via: 
     ```bash
         vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
-            --trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.85 --max-model-len 8192 \
+            --trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.8 --max-model-len 8192 \
             --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser qwen3_coder --enable-prefix-caching \
             --reasoning-parser-plugin server/parsers/nano_v3_reasoning_parser.py --reasoning-parser nano_v3
     ```
-    - If you have a GPU with FP8 support, the VRAM requirement is reduced to about 30GB. You can swtich to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) by modifying the llm config accordingly.
+    - If you have a GPU with FP8 support, the VRAM requirement is reduced to about 30GB. You can switch to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) by modifying the llm config accordingly.
     - Tool calling is enabled for this model.
 - [Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
     - Please use `server/server_configs/llm_configs/qwen2.5-7B.yaml` as the server config.
@@ -176,7 +176,7 @@ A lot of LLMs support thinking/reasoning mode, which is useful for complex tasks
 
 Different models may have different ways to support thinking/reasoning mode, please refer to the model's homepage for details on their thinking/reasoning mode support. Meanwhile, in many cases, they support enabling thinking/reasoning can be achieved by adding `/think` or `/no_think` to the end of the system prompt, and the thinking/reasoning content is wrapped by the tokens `["<think>", "</think>"]`. Some models may also support enabling thinking/reasoning by setting `llm.apply_chat_template_kwargs.enable_thinking=true/false` in the server config when `llm.type=hf`.
 
-If thinking/reasoning mode is enabled (e.g., in `server/server_configs/qwen3-8B_think.yaml`), the voice agent server will print out the thinking/reasoning content so that you can see the process of the LLM thinking and still have a smooth conversation experience. The thinking/reasoning content will not go through the TTS process, so you will only hear the final answer, and this is achieved by specifying the pair of thinking tokens `tts.think_tokens=["<think>", "</think>"]` in the server config.
+If thinking/reasoning mode is enabled (e.g., in `server/server_configs/llm_configs/qwen3-8B_think.yaml`), the voice agent server will print out the thinking/reasoning content so that you can see the process of the LLM thinking and still have a smooth conversation experience. The thinking/reasoning content will not go through the TTS process, so you will only hear the final answer, and this is achieved by specifying the pair of thinking tokens `tts.think_tokens=["<think>", "</think>"]` in the server config.
 
 For vLLM server, if you specify `--reasoning_parser` in `vllm_server_params`, the thinking/reasoning content will be filtered out and does not show up in the output.
 
@@ -198,8 +198,8 @@ Speaker diarization aims to distinguish different speakers in the input speech a
 As of now, we only support detecting 1 speaker per user turn, but different turns come from different speakers, with a maximum of 4 speakers in the whole conversation. 
 
 Currently supported models are:
- - [nvidia/diar_streaming_sortformer_4spk-v2](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) (default)
-
+ - [nvidia/diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) (default)
+ - [nvidia/diar_streaming_sortformer_4spk-v2](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2)
 
 Please note that in some circumstances, the diarization model might not work well in noisy environments, or it may confuse the speakers. In this case, you can disable the diarization by setting `diar.enabled` to `false` in `server/server_configs/default.yaml`.
 
@@ -265,12 +265,12 @@ More details on tool calling with Pipecat can be found in the [Pipecat documenta
 
 We notice that sometimes the LLM cannot do anything that's not related to the provided tools, or it might not actually use the tools even though it says it's using them. To alleviate this issue, we insert additional instructions to the system prompt to regulate its behavior (e.g., in `server/server_configs/llm_configs/nemotron_nano_v2.yaml`).
 
-Sometimes, after answering a question related to the tools, the LLM might refuce to answer questions that are not related to the tools, or vice versa. This phenomenon can be called "commitment bias" or "tunnel vision". To alleviate this issue, we can insert additional instructions to the system prompt and explicitly asking the LLM to use or not use the tools in the user's query.
+Sometimes, after answering a question related to the tools, the LLM might refuse to answer questions that are not related to the tools, or vice versa. This phenomenon can be called "commitment bias" or "tunnel vision". To alleviate this issue, we can insert additional instructions to the system prompt and explicitly asking the LLM to use or not use the tools in the user's query.
 
 
 ## 📝 Notes & FAQ
 - Only one connection to the server is supported at a time, a new connection will disconnect the previous one, but the context will be preserved.
-- If directly loading from HuggingFace and got I/O erros, you can set `llm.model=<local_path>`, where the model is downloaded using a command like `huggingface-cli download Qwen/Qwen2.5-7B-Instruct --local-dir <local_path>`. Same for TTS models.
+- If directly loading from HuggingFace and got I/O errors, you can set `llm.model=<local_path>`, where the model is downloaded using a command like `huggingface-cli download Qwen/Qwen2.5-7B-Instruct --local-dir <local_path>`. Same for TTS models.
 - The current ASR and diarization models are not noise-robust, you might need to use a noise-cancelling microphone or a quiet environment. But we will release better models soon.
 - The diarization model works best with speakers that have much more different voices from each other, while it might not work well on some accents due to the limited training data.
 - If you see errors like `SyntaxError: Unexpected reserved word` when running `npm run dev`, please update the Node.js version.

@@ -278,13 +278,12 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         """
         
         prev_partial = step_output.previous_partial_translation
-        if step_output.final_translation is not None:
+        if step_output.final_translation:
             current_partial = step_output.final_translation
-        elif step_output.partial_translation is not None:
+        elif step_output.partial_translation:
             current_partial = step_output.partial_translation
         else:
-            raise ValueError("No partial or final translation found")
-    
+            current_partial = ""
         
         # Tokenize by whitespace (word-level tokens)
         prev_tokens = prev_partial.split() if prev_partial else []

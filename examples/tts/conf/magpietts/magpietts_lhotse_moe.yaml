@@ -153,6 +153,7 @@ model:
     use_learnable_pos_emb: true
 
   decoder:
+    use_moe: ${model.use_moe}
     n_layers: 12
     d_model: 768
     d_ffn: 1536  # Per-expert FFN hidden dimension. Set to 1536 (=3072/top_k) for FLOPs-matched MoE, or 3072 for full-capacity experts (2x inference FLOPs vs dense).

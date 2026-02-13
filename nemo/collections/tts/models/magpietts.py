@@ -504,7 +504,7 @@ class MagpieTTSModel(ModelPT):
             self.text_embedding = nn.Embedding(num_tokens, cfg.embedding_dim)
 
         self.encoder = transformer_2501.Transformer(**dict(cfg.encoder))
-        self.decoder = transformer_2501.Transformer(**dict(cfg.decoder), use_moe=cfg.get('use_moe', False))
+        self.decoder = transformer_2501.Transformer(**dict(cfg.decoder))
 
         self.final_proj = nn.Linear(
             cfg.decoder.d_model,
@@ -1249,6 +1249,28 @@ class MagpieTTSModel(ModelPT):
         return total_codebook_loss, loss_mask
 
     def forward(self, dec_input_embedded, dec_input_mask, cond, cond_mask, attn_prior, multi_encoder_mapping):
+        """
+        Forward pass through the decoder transformer, followed by a linear projection to audio codebook logits.
+
+        Args:
+            dec_input_embedded (torch.Tensor): Embedded decoder input of shape (B, T, C).
+            dec_input_mask (torch.Tensor): Boolean mask for decoder input of shape (B, T).
+            cond (torch.Tensor or List[torch.Tensor]): Conditioning tensor(s) for cross-attention.
+            cond_mask (torch.Tensor or List[torch.Tensor]): Mask(s) for conditioning tensor(s).
+            attn_prior (torch.Tensor or None): Prior attention weights for cross-attention.
+            multi_encoder_mapping (List[Optional[int]] or None): Per-layer mapping to conditioning inputs.
+
+        Returns:
+            Tuple of:
+                all_code_logits (torch.Tensor): Logits of shape (B, T', num_codebooks * num_tokens_per_codebook).
+                attn_probabilities (list): Attention probabilities from each decoder layer.
+                dec_output (torch.Tensor): Raw decoder output of shape (B, T', d_model).
+                moe_routing_info (list or None): None if MoE is disabled. If MoE is enabled,
+                    a list of dicts (one per layer) each containing:
+                    - 'router_logits' (torch.Tensor): Raw router logits (B, T, num_experts).
+                    - 'router_probs' (torch.Tensor): Router probabilities (B, T, num_experts).
+                    - 'expert_indices' (torch.Tensor): Selected expert indices (B, T, top_k).
+        """
         decoder_out = self.decoder(
             dec_input_embedded,
             dec_input_mask,

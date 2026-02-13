@@ -453,7 +453,14 @@ class TransformerLayer(torch.nn.Module):
 
         Returns dict with keys
             output <torch tensor> (B, T1, C): Output tensor
-            attn_probabilities <dict>: Attention probabilities
+            attn_probabilities <dict>: Attention probabilities with keys
+                'self_attn_probabilities': Self-attention probabilities
+                'cross_attn_probabilities': Cross-attention probabilities (None if no cross-attention)
+            moe_routing_info <dict or None>: MoE routing information (None if MoE is disabled).
+                If MoE is enabled, contains:
+                    'router_logits' <torch tensor> (B, T, num_experts): Raw router logits for z-loss
+                    'router_probs' <torch tensor> (B, T, num_experts): Router probabilities for load balancing loss
+                    'expert_indices' <torch tensor> (B, T, top_k): Selected expert indices for usage statistics
         """
         x = x * x_mask.unsqueeze(-1)
         x_, s_attn_prob = self.self_attention(query=self.norm_self(x), query_mask=x_mask)
@@ -684,8 +691,9 @@ class Transformer(torch.nn.Module):
         Returns dict with keys:
             output <torch tensor> (B, T1, C): Output tensor
             attn_probabilities <list>: Attention probabilities of each layer
-            moe_routing_info <list>: List of MoE routing info dicts from each layer (if MoE enabled)
-                Each dict contains 'router_logits' and 'router_probs' for loss computation in the model
+            moe_routing_info <list or None>: List of MoE routing info dicts from each layer (None if MoE disabled).
+                Each dict contains 'router_logits', 'router_probs', and 'expert_indices' for
+                loss computation and usage statistics in the model.
         """
         if isinstance(cond, list) and len(self.layers) < len(cond):
             raise ValueError(

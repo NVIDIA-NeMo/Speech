@@ -88,8 +88,6 @@ for refresh_cache in [True, False]:
     # testclass_downloads(nemo_nlp.models.IntentSlotClassificationModel, refresh_cache, ['Joint_Intent_Slot_Assistant'])
 
     # Test TTS collection
-    testclass_downloads(nemo_tts.models.Tacotron2Model, refresh_cache, ['Tacotron2-22050Hz'])
-    testclass_downloads(nemo_tts.models.WaveGlowModel, refresh_cache, ['WaveGlow-22050Hz'])
     testclass_downloads(nemo_tts.models.SqueezeWaveModel, refresh_cache, ['SqueezeWave-22050Hz'])
     testclass_downloads(nemo_tts.models.GlowTTSModel, refresh_cache, ['GlowTTS-22050Hz'])
 

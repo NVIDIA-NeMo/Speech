@@ -1,15 +1,15 @@
 Training and Scaling
-===================
+====================
 
 This page provides detailed information on training speechlm2 models, including setup requirements, running experiments at scale, debugging, and parallelism strategies.
 
 Running Experiments
------------------
+-------------------
 
 The speechlm2 collection includes several scripts to facilitate running experiments, especially on SLURM-based clusters.
 
 SLURM Job Submission
-^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^
 
 For training on SLURM clusters, use the following workflow:
 
@@ -25,7 +25,7 @@ The ``auto_launcher_with_seed.sh`` script:
 3. Ensures each tensor parallel rank is seeded identically
 
 SLURM Submission Script
-^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^
 
 Example ``s2s_tinyllama_repro.sub`` script:
 
@@ -39,7 +39,7 @@ Example ``s2s_tinyllama_repro.sub`` script:
     #SBATCH --time=24:00:00
     #SBATCH --exclusive
     #SBATCH --output=s2s_tinyllama_repro_%j.out
-    
+
     # Check that the global random seed base is provided
     if [ -z "$1" ]; then
       echo "Usage: $0 <global_random_seed_base>"
@@ -49,7 +49,7 @@ Example ``s2s_tinyllama_repro.sub`` script:
 
     EXP_NAME="s2s_training"
     RESULTS_DIR="results/${EXP_NAME}"
-    
+
     srun --ntasks=${SLURM_NTASKS} --ntasks-per-node=${SLURM_NTASKS_PER_NODE} \
       python -u examples/speechlm2/s2s_duplex_train.py \
       --config-path=/path/to/config/dir \
@@ -59,19 +59,19 @@ Example ``s2s_tinyllama_repro.sub`` script:
       trainer.num_nodes=$SLURM_JOB_NUM_NODES \
       exp_manager.explicit_log_dir=${RESULTS_DIR} \
       data.train_ds.seed=$SEED \
-      data.validation_ds.seed=$SEED 
+      data.validation_ds.seed=$SEED
 
 
 Configuration Files
-^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^
 
 The main configuration file (``s2s_training.yaml``) contains all model, training, and data parameters. See :doc:`configs` for more details. It's recommended to copy and modify this file rather than overriding options in the SLURM script to maintain versioning and configuration clarity.
 
 Debugging
---------
+---------
 
 Running Locally with torchrun
-^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For local debugging and profiling, use ``torchrun``:
 
@@ -83,12 +83,12 @@ For local debugging and profiling, use ``torchrun``:
       --config-name=s2s_training.yaml
 
 Scaling Strategies
-----------------
+------------------
 
 The speechlm2 collection includes support for model parallelism to scale training to large models across multiple GPUs.
 
 Model Parallel Strategies
-^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The collection supports multiple parallelism strategies:
 
@@ -98,7 +98,7 @@ The collection supports multiple parallelism strategies:
 4. **2D Parallelism**: Combination of FSDP2 with TP/SP
 
 Configuration
-^^^^^^^^^^^
+^^^^^^^^^^^^^
 
 To configure parallelism, modify the ``trainer.strategy`` section in your YAML config:
 
@@ -118,7 +118,7 @@ To configure parallelism, modify the ``trainer.strategy`` section in your YAML c
 The model's ``configure_model`` method automatically sets up the appropriate parallelization based on this configuration.
 
 FSDP2 Configuration
-^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^
 
 For Fully Sharded Data Parallel training:
 
@@ -126,10 +126,10 @@ For Fully Sharded Data Parallel training:
 2. Set ``tensor_parallel`` to 1 (disabled)
 
 FSDP2 shards the model parameters across GPUs, all-gathers them for forward/backward passes, and then de-allocates after computation. This allows training of larger models with limited GPU memory.
-See :doc:`PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
+See `PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
 
 Tensor Parallelism Configuration
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For Tensor Parallelism:
 
@@ -137,10 +137,10 @@ For Tensor Parallelism:
 2. Set ``data_parallel`` to 1 (or higher for 2D parallelism)
 
 The ``parallelize_module`` function applies a parallelization plan to specific model components, like splitting attention heads or embedding dimensions across GPUs.
-See :doc:`PyTorch TP <https://pytorch.org/docs/stable/distributed.tensor.parallel.html>`_ for more details.
+See `PyTorch TP <https://pytorch.org/docs/stable/distributed.tensor.parallel.html>`_ for more details.
 
 Implementation Details
--------------------
+----------------------
 
 The core implementation of model parallelism is in the ``configure_model`` method of the model classes. Key aspects include:
 
@@ -149,10 +149,10 @@ The core implementation of model parallelism is in the ``configure_model`` metho
 3. **Model-Specific Adaptations**: Handling architectural differences between different LLMs
 
 Advanced Usage
-------------
+--------------
 
 Script Customization
-^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^
 
 When customizing the training scripts, keep these points in mind:
 

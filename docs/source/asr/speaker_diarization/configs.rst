@@ -220,8 +220,8 @@ Model name convention for Sortformer Diarizer: sortformer_diarizer_<loss_type>_<
       name: null
       project: null
 
-Hydra Configurations for Streaming Sortformer Diarizer Training 
------------------------------------------------------
+Hydra Configurations for Streaming Sortformer Diarizer Training
+----------------------------------------------------------------
 
 Model name convention for Streaming Sortformer Diarizer: streaming_sortformer_diarizer_<speaker count limit>-<version>.yaml
 
@@ -459,8 +459,8 @@ Model name convention for Streaming Sortformer Diarizer: streaming_sortformer_di
       project: null
 
 
-Hydra Configurations for (Streaming) Sortformer Diarization Post-processing 
----------------------------------------------------------------
+Hydra Configurations for (Streaming) Sortformer Diarization Post-processing
+-----------------------------------------------------------------------------
 
 Post-processing converts the floating point number based Tensor output to time stamp output. While generating the speaker-homogeneous segments, onset and offset threshold, 
 paddings can be considered to render the time stamps that can lead to the lowest diarization error rate (DER). This post-processing can be applied to both offline and streaming Sortformer diarizer.

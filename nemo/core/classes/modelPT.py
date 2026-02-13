@@ -403,13 +403,14 @@ class ModelPT(LightningModule, Model):
 
     def save_to(self, save_path: str):
         """
-        Saves model instance (weights and configuration) into .nemo file
-         You can use "restore_from" method to fully restore instance from .nemo file.
+        Saves model instance (weights and configuration) into .nemo file.
+        You can use "restore_from" method to fully restore instance from .nemo file.
 
         .nemo file is an archive (tar.gz) with the following:
-            model_config.yaml - model configuration in .yaml format. You can deserialize this into cfg argument for
-                                model's constructor
-            model_wights.ckpt - model checkpoint
+
+        - model_config.yaml - model configuration in .yaml format. You can deserialize this into cfg argument for
+          model's constructor
+        - model_wights.ckpt - model checkpoint
 
         Args:
             save_path: Path to .nemo file where model instance should be saved
@@ -1526,35 +1527,29 @@ class ModelPT(LightningModule, Model):
             save_restore_connector (SaveRestoreConnector): Can be overrided to add custom save and restore logic.
 
         Example:
-            To convert the .nemo tarfile into a single Model level PyTorch checkpoint
-            ::
-            state_dict = nemo.collections.asr.models.EncDecCTCModel.extract_state_dict_from('asr.nemo', './asr_ckpts')
+            To convert the .nemo tarfile into a single Model level PyTorch checkpoint::
 
+                state_dict = nemo.collections.asr.models.EncDecCTCModel.extract_state_dict_from('asr.nemo', './ckpts')
 
-            To restore a model from a Model level checkpoint
-            ::
-            model = nemo.collections.asr.models.EncDecCTCModel(cfg)  # or any other method of restoration
-            model.load_state_dict(torch.load("./asr_ckpts/model_weights.ckpt"))
+            To restore a model from a Model level checkpoint::
 
+                model = nemo.collections.asr.models.EncDecCTCModel(cfg)  # or any other method of restoration
+                model.load_state_dict(torch.load("./ckpts/model_weights.ckpt"))
 
-            To convert the .nemo tarfile into multiple Module level PyTorch checkpoints
-            ::
-            state_dict = nemo.collections.asr.models.EncDecCTCModel.extract_state_dict_from(
-                            'asr.nemo',
-                            './asr_ckpts',
-                            split_by_module=True
-                        )
+            To convert the .nemo tarfile into multiple Module level PyTorch checkpoints::
 
+                state_dict = nemo.collections.asr.models.EncDecCTCModel.extract_state_dict_from(
+                    'asr.nemo', './ckpts', split_by_module=True
+                )
 
-            To restore a module from a Module level checkpoint
-            ::
-            model = nemo.collections.asr.models.EncDecCTCModel(cfg)  # or any other method of restoration
+            To restore a module from a Module level checkpoint::
 
-            # load the individual components
-            model.preprocessor.load_state_dict(torch.load("./asr_ckpts/preprocessor.ckpt"))
-            model.encoder.load_state_dict(torch.load("./asr_ckpts/encoder.ckpt"))
-            model.decoder.load_state_dict(torch.load("./asr_ckpts/decoder.ckpt"))
+                model = nemo.collections.asr.models.EncDecCTCModel(cfg)  # or any other method of restoration
 
+                # load the individual components
+                model.preprocessor.load_state_dict(torch.load("./ckpts/preprocessor.ckpt"))
+                model.encoder.load_state_dict(torch.load("./ckpts/encoder.ckpt"))
+                model.decoder.load_state_dict(torch.load("./ckpts/decoder.ckpt"))
 
         Returns:
             The state dict that was loaded from the original .nemo checkpoint

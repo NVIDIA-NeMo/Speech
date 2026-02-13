@@ -1781,6 +1781,7 @@ class MagpieTTSModel(ModelPT):
                 codes=context_audio_codes, codes_len=context_audio_codes_lens
             )
             # > 3 ensures, it is a valid context audio tensor (and not dummy tensor used in text context)
+            # This does not handle the case in which a batch has a mixture of text and audio context examples
             context_audio, context_audio_lens, _ = self.codes_to_audio(context_audio_codes, context_audio_codes_lens)
 
         for logger in self.loggers:
@@ -1803,7 +1804,7 @@ class MagpieTTSModel(ModelPT):
 
                 if is_wandb:
                     wandb_audio_log[f"Audio/Example_{idx}"] = list()
-                    if context_audio_np is not None:
+                    if context_audio_np is not None and context_audio_np.shape[0] > 0:
                         wandb_audio_log[f"Audio/Example_{idx}"].append(
                             wandb.Audio(context_audio_np, sample_rate=self.output_sample_rate, caption="context")
                         )
@@ -1815,7 +1816,7 @@ class MagpieTTSModel(ModelPT):
                     )
 
                 if is_tb:
-                    if context_audio_np is not None:
+                    if context_audio_np is not None and context_audio_np.shape[0] > 0:
                         logger.experiment.add_audio(
                             f'Example_{idx}/context',
                             context_audio_np,
@@ -2023,6 +2024,7 @@ class MagpieTTSModel(ModelPT):
 
         # For 1D tensor - direct use
         context_lens = torch.where(batch['has_text_context'], context_text_lens, context_audio_codes_lens)
+        context_embedded = context_embedded[:, : context_lens.max(), :]
 
         return context_embedded, context_lens
 

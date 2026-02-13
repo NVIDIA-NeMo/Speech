@@ -1,117 +1,96 @@
 .. _mix_precision:
 
 Mixed Precision Training
-------------------------
+========================
 
-Mixed precision training significantly enhances computational efficiency by conducting operations in low-precision format, while selectively maintaining minimal data in single-precision to preserve critical information throughout key areas of the network. NeMo Framework now supports FP16, BF16, and FP8 via Transformer Engine (TE) across most models.
+Mixed precision training enhances computational efficiency by conducting operations in low-precision
+format while selectively maintaining critical data in single-precision. NeMo supports FP16 and BF16
+precision via PyTorch Lightning, in both mixed and true half-precision modes.
 
+Precision Modes
+---------------
 
-Half-Precision Training
-=======================
+PyTorch Lightning provides two categories of half-precision training:
 
-NeMo Framework supports half-precision FP16 and BF16 computation training via Megatron Core and the distributed optimizer.
-This training recipe uses half-precision in all layer computation keeping the model states (optimizer states and master parameters) in single-precision.
-To avoid repeated data type casting at each layer computation, Megatron Core keeps a separate copy of half-precision parameters that is updated after each optimizer step.
+**Mixed Precision** (``"bf16-mixed"`` / ``"16-mixed"``):
+    Operations run in half-precision where safe, but model weights are kept in FP32.
+    Gradients are computed in half-precision and accumulated in FP32. This is the safest
+    option and generally a good default for ASR and TTS training.
 
-Half-precision training is enabled when setting trainer's ``plugins`` to either of ``fp16-mixed`` or ``bf16-mixed``.
-The parameter gradients are computed in the same half-precision, and the precision of gradient reduce-scatter across data-parallel GPUs is set automatically according to the trainer's precision.
+**True Half Precision** (``"bf16-true"`` / ``"fp16-true"``):
+    The entire model -- weights, activations, and gradients -- runs in half-precision.
+    This uses less memory than mixed precision (no FP32 weight copy) and is faster,
+    but requires the model to be numerically stable in half-precision.
+    SpeechLM2 models use ``"bf16-true"`` by default for training.
 
-Implement Half-Precision Training
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Configuration
+-------------
 
-.. code-block:: python
+Set precision through the PyTorch Lightning trainer's ``precision`` argument.
 
-  import nemo_run as run
+In YAML (with Hydra):
 
-  from nemo import lightning as nl
-  from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed, fp16_mixed
-  
-  trainer_args = {TRAINER_ARGS}
+.. code-block:: yaml
 
-  # Set up trainer with bf16 precision
-  trainer_bf16 = run.Config(
-    nl.Trainer,
-    plugins=bf16_mixed(),
-    **trainer_args,
-  )
+    trainer:
+        precision: "bf16-mixed"    # BF16 mixed precision
+        # precision: "16-mixed"    # FP16 mixed precision
+        # precision: "bf16-true"   # True BF16 half precision
+        # precision: "fp16-true"   # True FP16 half precision
 
-  # Set up trainer with fp16 precision
-  trainer_fp16 = run.Config(
-    nl.Trainer,
-    plugins=fp16_mixed(),
-    **trainer_args,
-  )
-
-It's also possible to change precision for a specific recipe:
+In Python:
 
 .. code-block:: python
 
-  from functools import partial
+    import lightning.pytorch as pl
 
-  from nemo.collections import llm
-  from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed, fp16_mixed
+    trainer = pl.Trainer(
+        precision="bf16-mixed",
+        devices=2,
+        accelerator="gpu",
+    )
 
-  # Load recipe
-  recipe = partial(llm.llama3_8b.pretrain_recipe)()
+Choosing a Precision Format
+----------------------------
 
-  # Change precision
-  recipe.trainer.plugins = fp16_mixed()
+- **BF16** has the same dynamic range as FP32, which makes it more numerically stable and generally
+  easier to use. It is the recommended choice for most Speech AI training workloads.
+- **FP16** offers slightly higher throughput on some hardware but has a reduced dynamic range.
+  In mixed precision mode, PyTorch Lightning handles loss scaling automatically.
 
-FP8 Training
-============
+HalfPrecisionForAudio
+----------------------
 
-NVIDIA H100 GPU introduced support for a new datatype, FP8 (8-bit floating point), enabling higher throughput of matrix multiplies and convolutions. NeMo Framework uses the NVIDIA `TransformerEngine <https://github.com/NVIDIA/TransformerEngine>`_ (TE) to leverage speedups from FP8. For a more detailed overview, refer to the TE `documentation <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/index.html>`_, specifically the FP8 `format <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/api/common.html#transformer_engine.common.recipe.Format>`_ and `recipe <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/api/common.html#transformer_engine.common.recipe.DelayedScaling>`_.
+Audio waveform tensors are sensitive to precision loss -- downcasting raw audio samples to half-precision
+can degrade signal quality and hurt model accuracy. NeMo provides the ``HalfPrecisionForAudio`` plugin
+(in ``nemo.utils.trainer_utils``) that extends Lightning's ``HalfPrecision`` plugin to preserve
+full-precision for audio tensors while still casting all other inputs to half-precision.
 
-.. list-table:: FP8 arguments
-   :widths: 10 20
-   :header-rows: 1
+Specifically, when the training mini-batch is a dictionary, any tensor whose key contains
+the substring ``"audio"`` is kept in its original precision (typically FP32). All other floating-point
+tensors are cast to the target half-precision dtype.
 
-   * - Argument
-     - Description
-   * - fp8
-     - The training recipe format for FP8 can be set to either 'hybrid' or 'e4m3', with 'hybrid' being the default. In the 'hybrid' format, activations and weight tensors use the E4M3 format, while gradients use the E5M2 format to meet the additional dynamic range requirements for backward tensors.
-   * - fp8_margin
-     - The scaling factor for FP8 tensors can be shifted by a factor of $2 ^ {margin}$ using this argument.
-   * - fp8_amax_history_len
-     - The window size for amax history. The window size determines how many instances of the most recent absolute max values (amaxes) are stored per tensor.
-   * - fp8_amax_compute_algo
-     - The choice between “max” and “most_recent” specifies how to select an amax value from the given history.
-   * - fp8_params
-     - Indicates whether to store module-level parameters in FP8. Enabling this option can reduce memory consumption by eliminating the need to store a copy of weights in higher precision for cases where these weights are externally maintained, such as master parameters in the optimizer. For more information, refer to the `fp8_model_init <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/api/pytorch.html#transformer_engine.pytorch.fp8_model_init>`_ API in TE.
-
-Implement FP8 Training
-^^^^^^^^^^^^^^^^^^^^^^
+This plugin is used automatically when you launch training with NeMo's ``resolve_trainer_cfg``
+utility (used by all NeMo example training scripts). When the trainer config specifies
+``precision: "bf16-true"`` or ``precision: "fp16-true"``, ``resolve_trainer_cfg`` replaces
+the precision setting with the ``HalfPrecisionForAudio`` plugin:
 
 .. code-block:: python
 
-  import nemo_run as run
+    from nemo.utils.trainer_utils import resolve_trainer_cfg
 
-  from nemo import lightning as nl
-  from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed, fp16_with_fp8_mixed
-  
-  trainer_args = {TRAINER_ARGS}
-  fp8_args = {FP8_ARGS}
+    # In YAML: trainer.precision = "bf16-true"
+    # resolve_trainer_cfg automatically installs HalfPrecisionForAudio
+    trainer = pl.Trainer(**resolve_trainer_cfg(cfg.trainer))
 
-  # Set up trainer with bf16 & fp8 precision
-  trainer_bf16_fp8 = run.Config(
-    nl.Trainer,
-    plugins=bf16_with_fp8_mixed(),
-    **trainer_args,
-    **fp8_args,
-  )
+If you construct the trainer manually, you can install the plugin directly:
 
-  # Set up trainer with fp16 & fp8 precision
-  trainer_fp16_fp8 = run.Config(
-    nl.Trainer,
-    plugins=fp16_with_fp8_mixed(),
-    **trainer_args,
-    **fp8_args,
-  )
+.. code-block:: python
 
-Resources
-^^^^^^^^^
+    from nemo.utils.trainer_utils import HalfPrecisionForAudio
 
-- `Transformer Engine documentation <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/index.html>`_
-- `Intro to FP8, floating point formats, and mixed precision training <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html#Introduction-to-FP8>`_
-- `Performance optimizations <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/advanced_optimizations.html>`_ that are natively supported in NeMo Framework by enabling FP8 training with TE
-- `Transformer Engine installation <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html>`_
+    trainer = pl.Trainer(
+        plugins=[HalfPrecisionForAudio("bf16-true")],
+        devices=2,
+        accelerator="gpu",
+    )

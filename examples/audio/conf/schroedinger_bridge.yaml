@@ -39,7 +39,7 @@ model:
 
   decoder:
     _target_: nemo.collections.audio.modules.transforms.SpectrogramToAudio
-    fft_length: ${model.encoder.fft_length} 
+    fft_length: ${model.encoder.fft_length}
     hop_length: ${model.encoder.hop_length}
     magnitude_power: ${model.encoder.magnitude_power}
     scale: ${model.encoder.scale}
@@ -71,12 +71,12 @@ model:
 
   # Loss in the encoded domain
   loss_encoded:
-    _target_: nemo.collections.audio.losses.MSELoss
+    _target_: nemo.collections.audio.losses.audio.MSELoss
     ndim: 4 # loss is calculated on the score in the encoded domain (batch, channel, dimension, time)
 
   # Loss in the time domain
   loss_time:
-    _target_: nemo.collections.audio.losses.MAELoss
+    _target_: nemo.collections.audio.losses.audio.MAELoss
   loss_time_weight: 0.001
 
   metrics:
@@ -91,7 +91,7 @@ model:
         _target_: torchmetrics.audio.PerceptualEvaluationSpeechQuality
         fs: ${model.sample_rate}
         mode: wb
-    
+
   optim:
     name: adam
     lr: 1e-4

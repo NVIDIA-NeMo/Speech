@@ -6,7 +6,7 @@ On this page, we’ll look into how NeMo works, providing you with a solid found
 NeMo Models
 -----------
 
-NVIDIA NeMo is a powerful framework for building and deploying neural network models, including those used in generative AI, speech recognition, and natural language processing. NeMo stands for “Neural Modules,” which are the building blocks of the models created using this platform. NeMo includes all of the following components wrapped into a singular, cohesive unit:
+NVIDIA NeMo is a powerful framework for building and deploying neural network models, including those used in generative AI, speech recognition, and speech synthesis. NeMo stands for “Neural Modules,” which are the building blocks of the models created using this platform. NeMo includes all of the following components wrapped into a singular, cohesive unit:
 
 * neural network architecture
 
@@ -193,7 +193,7 @@ The examples scripts directory also contains many inference scripts such as `tra
 Specifying Training Data
 ------------------------
 
-NeMo will handle the creation of data loaders for you, as long as you put your data into the expected input format. You may also need to train a tokenizer before starting training. To learn more about data formats, see :doc:`LLM <../nlp/nemo_megatron/gpt/gpt_training>`, :doc:`Multimodal <../multimodal/mllm/datasets>`, :ref:`Speech AI <section-with-manifest-format-explanation>`, and :doc:`Vision models <../vision/datasets>`.
+NeMo will handle the creation of data loaders for you, as long as you put your data into the expected input format. You may also need to train a tokenizer before starting training. To learn more about data formats, see :ref:`Speech AI <section-with-manifest-format-explanation>`.
 
 
 Model Checkpoints
@@ -227,16 +227,12 @@ Here are some options:
 
 * Domain-specific documentation:
 
-  * For Large Language Models (LLMs), checkout the :doc:`LLM <../nlp/nemo_megatron/intro>` documentation.
-  * For Multimodal tasks, refer to the :doc:`Multimodal <../multimodal/mllm/intro>` documentation.
-
-  * If you’re interested in Automatic Speech Recognition (ASR), explore the :doc:`ASR <../asr/intro>` documentation.
+  * If you're interested in Automatic Speech Recognition (ASR), explore the :doc:`ASR <../asr/intro>` documentation.
   * For Text-to-Speech (TTS), find details in the :doc:`TTS <../tts/intro>` documentation.
-  * For Vision Models, consult the :doc:`Vision Models <../vision/intro>` documentation.
 
 * `NeMo Primer <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/00_NeMo_Primer.ipynb>`__: This tutorial provides a hands-on introduction to NeMo, PyTorch Lightning, and OmegaConf. It covers how to use, modify, save, and restore NeMo models.
 
 * `NeMo Models <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/01_NeMo_Models.ipynb>`__: In this tutorial, you'll learn the fundamentals of creating NeMo models.
 
-* NeMo Core Documentation: Explore the :doc:`NeMo Core <../core/core>` documentation for NeMo, which explains the inner workings of NeMo Framework.
+* NeMo Core Documentation: Explore the :doc:`NeMo Core <../core/core>` documentation for NeMo, which explains the inner workings of NeMo Toolkit.
 

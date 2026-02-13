@@ -206,7 +206,7 @@ dependencies:
     - lazy-loader==0.4
     - ledoc-ui==0.1.0
     - leptonai==0.26.6
-    - lhotse==1.32.2
+    - lhotse>=1.32.2
     - libcst==1.8.5
     - librosa==0.11.0
     - lightning==2.4.0
@@ -214,7 +214,7 @@ dependencies:
     - lilcom==1.8.1
     - llguidance==1.3.0
     - llvmlite==0.44.0
-    - lm-format-enforcer==0.11.3
+    - lm-format-enforcer>=0.11.3
     - loguru==0.7.3
     - lxml==6.0.2
     - mako==1.3.10
@@ -293,7 +293,7 @@ dependencies:
     - opentelemetry-api==1.37.0
     - optuna==4.5.0
     - orjson==3.11.3
-    - outlines-core==0.2.11
+    - outlines-core>=0.2.11
     - overrides==7.7.0
     - packaging==24.2
     - pandas==2.3.3

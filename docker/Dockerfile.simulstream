@@ -1,0 +1,35 @@
+FROM nvcr.io/nvidia/nemo:25.11.01
+
+# Set working directory
+WORKDIR /workspace
+
+# Checkout specific NeMo commit from GitHub
+RUN cd /opt/NeMo && \
+    git remote add github https://github.com/NVIDIA-NeMo/NeMo.git && \
+    git fetch github && \
+    git checkout 6bbb1f9e183bae74ee7bac42f9bdbca7e879b9ac
+
+# Install simulstream from specific commit in GitHub
+RUN git clone https://github.com/lilithgrigoryan/simulstream.git /opt/simulstream && \
+    cd /opt/simulstream && \
+    git checkout 65ad5686d96f96d2c9e8c90f9014d0ce4eed0386 && \
+    pip install -e .
+
+# Install additional packages for NeMo to run
+RUN pip install whisper-normalizer
+RUN cd /opt/NeMo && pip install -r requirements/requirements_lightning.txt
+
+# Install additional packages for simulstream scoring
+RUN pip install unbabel-comet
+RUN pip install mweralign
+
+# Set some flags to prevent hanging. Pure magic.
+ENV MKL_THREADING_LAYER=GNU
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+
+# Set working directory back to workspace
+WORKDIR /workspace
+
+# Default command
+CMD ["/bin/bash"]

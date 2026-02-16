@@ -958,8 +958,10 @@ class AdapterModelPTMixin(AdapterModuleMixin):
             else:
                 map_location = 'cpu'
 
-        # Load the state dict and extract the internal config
-        state_dict = torch.load(filepath, map_location=map_location)
+        # Load the state dict and extract the internal config.
+        # PyTorch 2.6 changed torch.load() default `weights_only=True`, which
+        # rejects non-tensor objects such as the adapter DictConfig payload.
+        state_dict = torch.load(filepath, map_location=map_location, weights_only=False)
         config = state_dict.pop('__cfg__')
 
         # Normalize the name to a list of names (exact match with the state dict)

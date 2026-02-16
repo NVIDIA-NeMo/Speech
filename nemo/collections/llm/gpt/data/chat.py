@@ -77,16 +77,17 @@ class ChatDataModule(FineTuningDataModule):
     @lru_cache
     def _create_dataset(self, path, pack_metadata_path=None, is_test=False, **kwargs):
         # pylint: disable=C0115,C0116
+        is_not_packing = self.packed_sequence_size <= 0
         return create_sft_dataset(
             path,
             tokenizer=self.tokenizer,
-            seq_length=(self.seq_length if is_test or self.packed_sequence_size <= 0 else self.packed_sequence_size),
+            seq_length=(self.seq_length if is_not_packing else self.packed_sequence_size),
             memmap_workers=self.memmap_workers,
             seed=self.seed,
             chat=True,
             is_test=is_test,
-            pack_metadata_file_path=None,  # packing is not supported
-            pad_cu_seqlens=False,
-            use_hf_tokenizer_chat_template=self.use_hf_tokenizer_chat_template,
+            pack_metadata_file_path=None if is_not_packing else pack_metadata_path,
+            pad_cu_seqlens=False if is_not_packing else self.pad_cu_seqlens,
+            use_hf_tokenizer_chat_template=self.use_hf_tokenizer_chat_template if is_not_packing else False,
             **kwargs,
         )

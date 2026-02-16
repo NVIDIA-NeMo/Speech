@@ -318,7 +318,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
             self.decoding = ctc_beam_decoding.BeamCTCInfer(
                 blank_id=blank_id,
                 beam_size=self.cfg.beam.get('beam_size', 1),
-                search_type='default',
+                search_type=self.cfg.beam.get('search_type', 'default'),
                 return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
                 preserve_alignments=self.preserve_alignments,
                 compute_timestamps=self.compute_timestamps,

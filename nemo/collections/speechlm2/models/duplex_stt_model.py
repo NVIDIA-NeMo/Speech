@@ -73,10 +73,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         super().__init__()
         self.save_hyperparameters()
 
-        cfg = DictConfig(cfg)
-        self.cfg = cfg.model
-        self.source_sample_rate = cfg.data.source_sample_rate
-        self.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
+        self.cfg = DictConfig(cfg)
+        self.source_sample_rate = self.cfg.source_sample_rate
+        self.validation_save_path = os.path.join(self.cfg.validation_save_path, "validation_logs")
 
         self.predict_user_text = self.cfg.get("predict_user_text", False)
 

@@ -40,41 +40,25 @@ def create_model(
 ):
     """Helper function to create a model with configurable settings."""
     cfg = {
-        "model": {
-            **resolve_pretrained_models(),
-            "pretrained_weights": False,
-            "freeze_params": ["^audio_codec\\..+$"],
-            "audio_loss_weight": 1,
-            "text_loss_weight": 3,
-            "perception": {
-                "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
-                "preprocessor": {"_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor", "features": 80},
-                "encoder": {"_target_": "nemo.collections.asr.modules.ConformerEncoder", "feat_in": 80, "d_model": 512, "n_heads": 8, "n_layers": 1, "subsampling_factor": 8},
-                "modality_adapter": {"_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector", "d_model": 512},
-                "output_dim": 2048,
-            },
-            "speech_decoder": {
-                "n_layers": 1,
-                "d_model": 768,
-                "d_ffn": 3072,
-                "sa_n_heads": 12,
-                "kernel_size": 3,
-                "is_causal": True,
-            },
-            "predict_user_text": predict_user_text,
-            "force_use_noise_augmentation": force_use_noise_augmentation,
-            "old_noise_prob": old_noise_prob,
-            "old_noise_min_snr": old_noise_min_snr,
-            "old_noise_max_snr": old_noise_max_snr,
-            "optimizer": {"_target_": "torch.optim.AdamW"},
+        **resolve_pretrained_models(),
+        "pretrained_weights": False,
+        "audio_loss_weight": 1,
+        "text_loss_weight": 3,
+        "source_sample_rate": 16000,
+        "validation_save_path": "/tmp/test_duplex_stt_logs",
+        "perception": {
+            "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
+            "preprocessor": {"_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor", "features": 80},
+            "encoder": {"_target_": "nemo.collections.asr.modules.ConformerEncoder", "feat_in": 80, "d_model": 512, "n_heads": 8, "n_layers": 1, "subsampling_factor": 8},
+            "modality_adapter": {"_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector", "d_model": 512},
+            "output_dim": 2048,
         },
-        "data": {
-            "target_sample_rate": 22050,
-            "source_sample_rate": 16000,
-        },
-        "exp_manager": {
-            "explicit_log_dir": "/tmp/test_duplex_stt_logs",
-        },
+        "predict_user_text": predict_user_text,
+        "force_use_noise_augmentation": force_use_noise_augmentation,
+        "old_noise_prob": old_noise_prob,
+        "old_noise_min_snr": old_noise_min_snr,
+        "old_noise_max_snr": old_noise_max_snr,
+        "optimizer": {"_target_": "torch.optim.AdamW"},
     }
     model = DuplexSTTModel(cfg)
     if torch.cuda.is_available():

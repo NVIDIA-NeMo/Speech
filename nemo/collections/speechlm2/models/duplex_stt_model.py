@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import re
 import os
 
 import torch
@@ -212,18 +213,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return ans
 
-    def _is_augmentation_dataset(self, formatter: str) -> bool:
+    def _is_augmentation_dataset(self, task: str) -> bool:
         if self.cfg.get('force_use_noise_augmentation', False):
             return True
-        return formatter != 's2s_duplex_overlap_as_s2s_duplex' and formatter != 'nemo_tarred_to_duplex'
+        return task not in ('s2s_duplex_overlap_as_s2s_duplex', 'asr')
 
     def _maybe_zero_out_scale_for_asr(
         self, loss_scale: torch.Tensor, text_labels: torch.Tensor, batch: dict
     ) -> torch.Tensor:
         """
-        Zero out the loss scale after text_bos_id token for ASR datasets.
+        Zero out the loss scale after text_bos_id token for ASR datasets to not penalize the agent being silent in ASR training.
         """
-        if batch['formatter'][0] == 'nemo_tarred_to_duplex':
+        if batch['task'][0] == 'asr':
             for i in range(text_labels.shape[0]):
                 bos_indices = (text_labels[i] == self.text_bos_id).nonzero(as_tuple=True)
                 if bos_indices[0].numel() > 0:
@@ -234,7 +235,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
     def prepare_inputs(self, batch: dict):
 
         # Audio data augmentation
-        if hasattr(self, 'audio_augmenter') and self.training and self._is_augmentation_dataset(batch["formatter"][0]):
+        if hasattr(self, 'audio_augmenter') and self.training and self._is_augmentation_dataset(batch["task"][0]):
             batch["source_audio"] = self.audio_augmenter.augment_batch(
                 self.cfg, batch["source_audio"], batch["source_audio_lens"]
             )
@@ -517,8 +518,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             )
 
             # Strip timestamps for metrics
-            import re
-
             text_clean = [re.sub(r"<[\|$].*?[\|$]>", "", s).strip() for s in results["text"]]
 
             # Agent text metrics

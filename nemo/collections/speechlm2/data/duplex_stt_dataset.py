@@ -86,6 +86,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         self.force_align_user_text = model_cfg.get("force_align_user_text", False) if model_cfg is not None else None
         self.force_align_device = model_cfg.get("force_align_device", "cuda") if model_cfg is not None else "cuda"
 
+        self.prepend_word_space = cfg.get("prepend_word_space", True) if cfg is not None else True
         self.early_interruption_prob = cfg.get("early_interruption_prob", 0.0) if cfg is not None else 0.0
 
         self.cfg = cfg
@@ -203,14 +204,14 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             "source_token_lens": torch.tensor([1], dtype=torch.long),
             "source_texts": [""],
             "target_texts": [""],
-            "formatter": ["s2s_duplex"],
+            "task": ["s2s_duplex"],
         }
 
     def __getitem__(self, all_cuts: CutSet) -> dict:
         cuts = all_cuts.filter(lambda c: isinstance(c, Cut))
         audio_data = None
 
-        if cuts and hasattr(cuts[0], 'formatter') and cuts[0].formatter == 'nemo_tarred_to_duplex':
+        if cuts and getattr(cuts[0], 'task', None) == 'asr':
             filtered_cuts = []
             skipped_cuts = []
             for cut in cuts:
@@ -246,10 +247,10 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             else:
                 all_cuts_combined = cuts
 
-            prompt_tokens, prompt_token_lens = _collate_system_prompt(all_cuts_combined, self.tokenizer)
+            prompt_tokens, prompt_token_lens = collate_system_prompt(all_cuts_combined, self.tokenizer)
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
 
-            target_tokens, target_token_lens = _collate_token_channel(
+            target_tokens, target_token_lens = collate_token_channel(
                 all_cuts_combined,
                 self.tokenizer,
                 self.frame_length,
@@ -273,7 +274,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                     )
                     return self._create_minimal_batch()
 
-            source_tokens, source_token_lens = _collate_token_channel(
+            source_tokens, source_token_lens = collate_token_channel(
                 all_cuts_combined,
                 self.tokenizer,
                 self.frame_length,
@@ -282,6 +283,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 eos_id=self.tokenizer.eos,
                 word_align_position=self.word_align_position,
                 remove_timestamps=not self.predict_user_text,
+                prepend_word_space=self.prepend_word_space,
             )
 
             # Early interruption augmentation
@@ -312,7 +314,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                     " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles)
                     for cut in all_cuts_combined
                 ],
-                "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in all_cuts_combined],
+                "task": [getattr(cut, "task", "s2s_duplex") for cut in all_cuts_combined],
             }
 
             if torch.sum(prompt_token_lens) > 0:
@@ -468,7 +470,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         return any(s.text.strip() for s in cut.supervisions if s.speaker in self.input_roles)
 
 
-def _collate_token_channel(
+def collate_token_channel(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
     frame_length: Seconds,
@@ -477,6 +479,7 @@ def _collate_token_channel(
     eos_id: int = None,
     word_align_position: str = 'left',
     remove_timestamps: bool = False,
+    prepend_word_space: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     pad_id = get_pad_id(tokenizer)
     tokens = [
@@ -490,6 +493,7 @@ def _collate_token_channel(
             eos_id=eos_id,
             word_align_position=word_align_position,
             remove_timestamps=remove_timestamps,
+            prepend_word_space=prepend_word_space,
         )
         for c in cuts
     ]
@@ -498,7 +502,7 @@ def _collate_token_channel(
     return tokens, token_lens
 
 
-def _collate_system_prompt(
+def collate_system_prompt(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -531,6 +535,7 @@ def _build_token_channel(
     eos_id: int = None,
     word_align_position: str = 'left',
     remove_timestamps: bool = False,
+    prepend_word_space: bool = True,
 ) -> torch.Tensor:
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
@@ -559,6 +564,7 @@ def _build_token_channel(
                     available_frames_for_text=available_frames_for_text,
                     word_align_position=word_align_position,
                     remove_timestamps=remove_timestamps,
+                    prepend_word_space=prepend_word_space,
                 )
             )
 
@@ -594,10 +600,12 @@ def _text_to_ids(
     available_frames_for_text=None,
     word_align_position='left',
     remove_timestamps=False,
+    prepend_word_space=True,
 ):
     if not remove_timestamps and re.compile(_TIMESTAMP_PATTERN_STR).search(text):
         text_ids = _text_with_timestamps_to_ids(
-            text, tokenizer, _TIMESTAMP_PATTERN_STR, available_frames_for_text, word_align_position
+            text, tokenizer, _TIMESTAMP_PATTERN_STR, available_frames_for_text, word_align_position,
+            prepend_word_space=prepend_word_space,
         )
     else:
         _TIMESTAMP_PATTERN = re.compile(_TIMESTAMP_PATTERN_STR)
@@ -613,9 +621,10 @@ def _text_with_timestamps_to_ids(
     _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
     available_frames_for_text=None,
     word_align_position='left',
+    prepend_word_space=True,
 ) -> list[int]:
     text_ids, start_times, end_times, word_lens = _extract_text_and_time_tokens(
-        text, tokenizer, _TIMESTAMP_PATTERN_STR
+        text, tokenizer, _TIMESTAMP_PATTERN_STR, prepend_word_space=prepend_word_space,
     )
     text_ids_with_timestamps = _expand_text_with_timestamps_and_word_lengths(
         text_ids,
@@ -630,7 +639,7 @@ def _text_with_timestamps_to_ids(
     return text_ids_with_timestamps
 
 
-def _extract_text_and_time_tokens(text, tokenizer: TokenizerSpec, _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>"):
+def _extract_text_and_time_tokens(text, tokenizer: TokenizerSpec, _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>", prepend_word_space=True):
     time_tokens = re.findall(_TIMESTAMP_PATTERN_STR, text)
     start_time = [int(time_tokens[i]) for i in range(0, len(time_tokens), 2)]
     end_time = [int(time_tokens[i]) for i in range(1, len(time_tokens), 2)]
@@ -638,7 +647,7 @@ def _extract_text_and_time_tokens(text, tokenizer: TokenizerSpec, _TIMESTAMP_PAT
     text_ids = []
     word_lens = []
     for i, word in enumerate(words):
-        word_with_space = word if i == 0 else ' ' + word
+        word_with_space = word if i == 0 or not prepend_word_space else ' ' + word
         word_ids = tokenizer.text_to_ids(word_with_space)
         word_len = len(word_ids)
         text_ids.extend(word_ids)

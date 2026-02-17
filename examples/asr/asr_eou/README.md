@@ -273,11 +273,13 @@ TEST_NAME="[test_name1,test_name2,...]"
 TEST_BATCH=32
 NUM_WORKERS=8
 
+SAVE_PRED_TO_FILE=/path/to/predictions.json  # optional, if you want to save the predictions to a file, will slow down the evaluation speed. Set to `null` to disable.
 PRETRAINED_NEMO=/path/to/EOU/model.nemo
 CONFIG_NAME=fastconformer_transducer_bpe_streaming_xlarge
 
 python speech_to_text_eou_eval.py \
     --config-name $CONFIG_NAME \
+    ++save_pred_to_file=$SAVE_PRED_TO_FILE \
     ++init_from_nemo_model=$PRETRAINED_NEMO \
     ~model.train_ds \
     ~model.validation_ds \

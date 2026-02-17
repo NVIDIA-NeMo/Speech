@@ -32,7 +32,7 @@ from nemo.utils import logging
 """
 Transcribe audio manifests on distributed GPUs. Useful for transcription of moderate amounts of audio data.
 This script also supports splitting the manifest into chunks and merging the results back together.
-This script is a modified version of `transcribe_speech_distributed.py` that only takes manifest files as input.
+This script is a modified version of `transcribe_speech.py` that only takes manifest files as input.
 It is useful for transcribing a large amount of audio data that does not fit into a single job.
 
 # Arguments
@@ -142,6 +142,16 @@ class TranscriptionConfig(SingleTranscribeConfig):
 
 
 def get_unfinished_manifest(manifest_list: List[Path], output_dir: Path):
+    """
+    Get the manifest files that have not finished processing yet, including those that are partly processed.
+
+    Args:
+        manifest_list: List of manifest files to process.
+        output_dir: Directory to write the transcriptions.
+
+    Returns:
+        List of manifest files that have not finished processing yet.
+    """
     unfinished = []
     for manifest_file in manifest_list:
         output_manifest_file = output_dir / manifest_file.name
@@ -153,6 +163,19 @@ def get_unfinished_manifest(manifest_list: List[Path], output_dir: Path):
 def get_manifest_for_current_rank(
     manifest_list: List[Path], gpu_id: int = 0, num_gpu: int = 1, node_idx: int = 0, num_node: int = 1
 ):
+    """
+    Get the manifest files for the current rank.
+
+    Args:
+        manifest_list: List of manifest files to process.
+        gpu_id: ID of the current GPU.
+        num_gpu: Number of GPUs per node.
+        node_idx: Index of the current node.
+        num_node: Total number of nodes.
+
+    Returns:
+        List of manifest files for the current rank.
+    """
     node_manifest_list = []
     assert num_node > 0, f"num_node ({num_node}) must be greater than 0"
     assert num_gpu > 0, f"num_gpu ({num_gpu}) must be greater than 0"
@@ -170,6 +193,16 @@ def get_manifest_for_current_rank(
 
 
 def maybe_split_manifest(manifest_list: List[Path], cfg: TranscriptionConfig) -> List[Path]:
+    """
+    Split the manifest files into chunks of the specified size.
+
+    Args:
+        manifest_list: List of manifest files to process.
+        cfg: Configuration.
+
+    Returns:
+        List of sharded manifest files.
+    """
     if cfg.split_size is None or cfg.split_size <= 0:
         return manifest_list
 
@@ -196,6 +229,15 @@ def maybe_split_manifest(manifest_list: List[Path], cfg: TranscriptionConfig) ->
 
 
 def maybe_merge_manifest(cfg: TranscriptionConfig):
+    """
+    Merge the sharded manifest files back into the original manifest files and write them to the output directory.
+
+    Args:
+        cfg: Configuration.
+
+    Returns:
+        None.
+    """
     if cfg.split_size is None or cfg.split_size <= 0:
         return
 
@@ -230,7 +272,9 @@ def maybe_merge_manifest(cfg: TranscriptionConfig):
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
 def run_distributed_transcribe(cfg: TranscriptionConfig):
-
+    """
+    Run distributed transcription with the given configuration.
+    """
     logging.info(f"Running distributed transcription with config: {cfg}")
 
     if cfg.dataset_manifest is None:

@@ -61,7 +61,6 @@ class TestEOUMetrics:
         assert eou_metrics.latency == []
         assert np.isclose(eou_metrics.early_cutoff, [0.32])
 
-
         # Test case 2: Latency
         pred_eou_time = 0.96
         preds = make_eou_frame_labels(duration, pred_eou_time, frame_len_in_secs)
@@ -90,7 +89,3 @@ class TestEOUMetrics:
         assert eou_metrics.missing == 1
         assert eou_metrics.latency == []
         assert eou_metrics.early_cutoff == []
-
-
-
-    

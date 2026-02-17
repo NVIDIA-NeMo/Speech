@@ -58,7 +58,6 @@ class ModelCheckpoint(PTLModelCheckpoint):
             model, trainer, and dataloader to allow for reproducibility of experiments.
         save_context_on_train_end: Whether to dump the artifacts on_train_end regardless of whether
             ``always_save_context`` is ``True``.
-        async_save: Whether to enable asynchronous checkpointing.
 
     Attributes:
         UNFINISHED_CHECKPOINT_SUFFIX (str): Suffix for unfinished checkpoint files.
@@ -70,6 +69,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
         best_model_score (float): Score of the best checkpoint.
         best_model_path (str): Path to the best checkpoint.
         kth_best_model_path (str): Path to the kth best checkpoint.
+        async_save: Whether to enable asynchronous checkpointing.
     """
 
     UNFINISHED_CHECKPOINT_SUFFIX = "-unfinished"

@@ -15,7 +15,7 @@ import os
 
 import torch
 from lightning.pytorch import Trainer
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 
 from nemo.collections.speechlm2 import DataModule, DuplexSTTDataset, DuplexSTTModel
 from nemo.core.config import hydra_runner
@@ -35,8 +35,9 @@ def inference(cfg):
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
-    cfg.model.source_sample_rate = cfg.data.source_sample_rate
-    cfg.model.validation_save_path = str(log_dir)
+    with open_dict(cfg.model):
+        cfg.model.source_sample_rate = cfg.data.source_sample_rate
+        cfg.model.validation_save_path = str(log_dir)
 
     with trainer.init_module():
         model = DuplexSTTModel(OmegaConf.to_container(cfg.model, resolve=True))

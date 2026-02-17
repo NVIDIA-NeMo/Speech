@@ -17,7 +17,7 @@ import os
 import torch
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 
 from nemo.collections.speechlm2 import DataModule, DuplexSTTDataset, DuplexSTTModel
 from nemo.core.config import hydra_runner
@@ -49,8 +49,9 @@ def train(cfg):
         if isinstance(callback, ModelCheckpoint):
             callback.CHECKPOINT_EQUALS_CHAR = "-"
 
-    cfg.model.source_sample_rate = cfg.data.source_sample_rate
-    cfg.model.validation_save_path = str(log_dir)
+    with open_dict(cfg.model):
+        cfg.model.source_sample_rate = cfg.data.source_sample_rate
+        cfg.model.validation_save_path = str(log_dir)
 
     with trainer.init_module():
         model = DuplexSTTModel(OmegaConf.to_container(cfg.model, resolve=True))

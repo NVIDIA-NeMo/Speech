@@ -538,9 +538,6 @@ An example using an AIS cluster at ``hostname:port`` with a tarred dataset for t
   ++model.validation_ds.defer_setup=true
 
 
-.. _Hybrid-ASR-TTS_model__Text-Only-Data:
-
-
 Lhotse Dataloading
 ------------------
 
@@ -669,6 +666,8 @@ Some other Lhotse related arguments we support:
 * ``seed`` sets a random seed for the shuffle buffer.
 
 The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
+
+.. _asr-dataset-config-format:
 
 Extended multi-dataset configuration format
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1221,20 +1220,3 @@ Other, more exotic configurations:
 * With ``seed="trng"``, the base random seed itself will be drawn using a TRNG. It will be different on each GPU training process. This setting is not recommended.
 
 * With ``seed="randomized"``, the base random seed is set to Python's global RNG seed. It might be different on each GPU training process. This setting is not recommended.
-
-Preparing Text-Only Data for Hybrid ASR-TTS Models
---------------------------------------------------
-
-:ref:`Hybrid ASR-TTS models <Hybrid-ASR-TTS_model>` require a text-only dataset for training the ASR model.
-Each record in the dataset (in ``.json`` file) should contain the following fields:
-
-* ``text``: text to use as a target for the ASR model
-* ``tts_text`` or/and ``tts_text_normalized``: text to use as a source for TTS model. ``tts_text_normalized`` should contain normalized text for TTS model. If there is no such field, ``tts_text`` will be used after normalization using the normalizer from the TTS model. It is highly recommended to normalize the text and create ``tts_text_normalized`` field manually, since current normalizers are unsuitable for processing a large amount of text on the fly.
-
-**Example record:**
-
-.. code-block:: json
-
-    {"text": "target for one hundred billion parameters asr model",
-     "tts_text": "Target for 100B parameters ASR model.",
-     "tts_text_normalized": "Target for one hundred billion parameters ASR model."}

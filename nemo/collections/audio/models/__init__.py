@@ -11,3 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from nemo.collections.audio.models.audio_to_audio import AudioToAudioModel
+from nemo.collections.audio.models.enhancement import (
+    EncMaskDecAudioToAudioModel,
+    FlowMatchingAudioToAudioModel,
+    PredictiveAudioToAudioModel,
+    SchroedingerBridgeAudioToAudioModel,
+    ScoreBasedGenerativeAudioToAudioModel,
+)
+
+__all__ = [
+    "AudioToAudioModel",
+    "EncMaskDecAudioToAudioModel",
+    "FlowMatchingAudioToAudioModel",
+    "PredictiveAudioToAudioModel",
+    "SchroedingerBridgeAudioToAudioModel",
+    "ScoreBasedGenerativeAudioToAudioModel",
+]

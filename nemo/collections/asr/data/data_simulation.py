@@ -67,122 +67,86 @@ class MultiSpeakerSimulator(object):
     Multispeaker Audio Session Simulator - Simulates multispeaker audio sessions using single-speaker audio files and
     corresponding word alignments.
 
-    Change Log:
-    v1.0: Dec 2022
-        - First working verison, supports multispeaker simulation with overlaps, silence and RIR
-        v1.0.1: Feb 2023
-            - Multi-GPU support for speed up
-            - Faster random sampling routine
-            - Fixed sentence duration bug
-            - Silence and overlap length sampling algorithms are updated to guarantee `mean_silence` approximation
-        v1.0.2: March 2023
-            - Added support for segment-level gain perturbation and session-level white-noise perturbation
-            - Modified speaker sampling mechanism to include as many speakers as possible in each data-generation run
-            - Added chunking mechanism to avoid freezing in multiprocessing processes
-
-    v1.1.0 March 2023
-        - Faster audio-file loading with maximum audio duration parameter
-        - Re-organized MultiSpeakerSimulator class and moved util functions to util files.
-        v1.1.1 March 2023
-            - Changed `silence_mean` to use exactly the same sampling equation as `overlap_mean`.
-
-
     Args:
         cfg: OmegaConf configuration loaded from yaml file.
 
-    Parameters:
-      manifest_filepath (str): Manifest file with paths to single speaker audio files
-      sr (int): Sampling rate of the input audio files from the manifest
-      random_seed (int): Seed to random number generator
+    Configuration parameters (YAML)::
 
-    session_config:
-      num_speakers (int): Number of unique speakers per multispeaker audio session
-      num_sessions (int): Number of sessions to simulate
-      session_length (int): Length of each simulated multispeaker audio session (seconds). Short sessions
-                            (e.g. ~240 seconds) tend to fall short of the expected overlap-ratio and silence-ratio.
+        Parameters:
+          manifest_filepath (str): Manifest file with paths to single speaker audio files
+          sr (int): Sampling rate of the input audio files from the manifest
+          random_seed (int): Seed to random number generator
 
-    session_params:
-      max_audio_read_sec (int): The maximum audio length in second when loading an audio file.
-                                The bigger the number, the slower the reading speed. Should be greater than 2.5 second.
-      sentence_length_params (list): k,p values for a negative_binomial distribution which is sampled to get the
-                                     sentence length (in number of words)
-      dominance_var (float): Variance in speaker dominance (where each speaker's dominance is sampled from a normal
-                             distribution centered on 1/`num_speakers`, and then the dominance values are together
-                             normalized to 1)
-      min_dominance (float): Minimum percentage of speaking time per speaker (note that this can cause the dominance of
-                             the other speakers to be slightly reduced)
-      turn_prob (float): Probability of switching speakers after each utterance
+        session_config:
+          num_speakers (int): Number of unique speakers per multispeaker audio session
+          num_sessions (int): Number of sessions to simulate
+          session_length (int): Length of each simulated multispeaker audio session (seconds)
 
-      mean_silence (float): Mean proportion of silence to speaking time in the audio session. Should be in range [0, 1).
-      mean_silence_var (float): Variance for mean silence in all audio sessions.
-                                This value should be 0 <= mean_silence_var < mean_silence * (1 - mean_silence).
-      per_silence_var (float):  Variance for each silence in an audio session, set large values (e.g., 20) for de-correlation.
-      per_silence_min (float): Minimum duration for each silence, default to 0.
-      per_silence_max (float): Maximum duration for each silence, default to -1 for no maximum.
-      mean_overlap (float): Mean proportion of overlap in the overall non-silence duration. Should be in range [0, 1) and
-                            recommend [0, 0.15] range for accurate results.
-      mean_overlap_var (float): Variance for mean overlap in all audio sessions.
-                                This value should be 0 <= mean_overlap_var < mean_overlap * (1 - mean_overlap).
-      per_overlap_var (float): Variance for per overlap in each session, set large values to de-correlate silence lengths
-                               with the latest speech segment lengths
-      per_overlap_min (float): Minimum per overlap duration in seconds
-      per_overlap_max (float): Maximum per overlap duration in seconds, set -1 for no maximum
-      start_window (bool): Whether to window the start of sentences to smooth the audio signal (and remove silence at
-                            the start of the clip)
-      window_type (str): Type of windowing used when segmenting utterances ("hamming", "hann", "cosine")
-      window_size (float): Length of window at the start or the end of segmented utterance (seconds)
-      start_buffer (float): Buffer of silence before the start of the sentence (to avoid cutting off speech or starting
-                            abruptly)
-      split_buffer (float): Split RTTM labels if greater than twice this amount of silence (to avoid long gaps between
-                            utterances as being labelled as speech)
-      release_buffer (float): Buffer before window at end of sentence (to avoid cutting off speech or ending abruptly)
-      normalize (bool): Normalize speaker volumes
-      normalization_type (str): Normalizing speakers ("equal" - same volume per speaker, "var" - variable volume per
-                                speaker)
-      normalization_var (str): Variance in speaker volume (sample from standard deviation centered at 1)
-      min_volume (float): Minimum speaker volume (only used when variable normalization is used)
-      max_volume (float): Maximum speaker volume (only used when variable normalization is used)
-      end_buffer (float): Buffer at the end of the session to leave blank
+        session_params:
+          max_audio_read_sec (int): Max audio length in seconds when loading an audio file
+          sentence_length_params (list): k,p values for a negative_binomial distribution
+          dominance_var (float): Variance in speaker dominance
+          min_dominance (float): Minimum percentage of speaking time per speaker
+          turn_prob (float): Probability of switching speakers after each utterance
+          mean_silence (float): Mean proportion of silence to speaking time [0, 1)
+          mean_silence_var (float): Variance for mean silence in all audio sessions
+          per_silence_var (float): Variance for each silence in an audio session
+          per_silence_min (float): Minimum duration for each silence (default: 0)
+          per_silence_max (float): Maximum duration for each silence (default: -1, no max)
+          mean_overlap (float): Mean proportion of overlap in non-silence duration [0, 1)
+          mean_overlap_var (float): Variance for mean overlap in all audio sessions
+          per_overlap_var (float): Variance for per overlap in each session
+          per_overlap_min (float): Minimum per overlap duration in seconds
+          per_overlap_max (float): Maximum per overlap duration in seconds (-1 for no max)
+          start_window (bool): Whether to window the start of sentences
+          window_type (str): Type of windowing ("hamming", "hann", "cosine")
+          window_size (float): Length of window at start/end of segmented utterance (seconds)
+          start_buffer (float): Buffer of silence before the start of the sentence
+          split_buffer (float): Split RTTM labels if greater than twice this amount of silence
+          release_buffer (float): Buffer before window at end of sentence
+          normalize (bool): Normalize speaker volumes
+          normalization_type (str): "equal" or "var" volume per speaker
+          normalization_var (str): Variance in speaker volume
+          min_volume (float): Minimum speaker volume (variable normalization only)
+          max_volume (float): Maximum speaker volume (variable normalization only)
+          end_buffer (float): Buffer at the end of the session to leave blank
 
-    outputs:
-      output_dir (str): Output directory for audio sessions and corresponding label files
-      output_filename (str): Output filename for the wav and RTTM files
-      overwrite_output (bool): If true, delete the output directory if it exists
-      output_precision (int): Number of decimal places in output files
+        outputs:
+          output_dir (str): Output directory for audio sessions and label files
+          output_filename (str): Output filename for the wav and RTTM files
+          overwrite_output (bool): If true, delete the output directory if it exists
+          output_precision (int): Number of decimal places in output files
 
-    background_noise:
-      add_bg (bool): Add ambient background noise if true
-      background_manifest (str): Path to background noise manifest file
-      snr (int): SNR for background noise (using average speaker power), set `snr_min` and `snr_max` values to enable random SNR
-      snr_min (int):  Min random SNR for background noise (using average speaker power), set `null` to use fixed SNR
-      snr_max (int):  Max random SNR for background noise (using average speaker power), set `null` to use fixed SNR
+        background_noise:
+          add_bg (bool): Add ambient background noise if true
+          background_manifest (str): Path to background noise manifest file
+          snr (int): SNR for background noise (using average speaker power)
+          snr_min (int): Min random SNR (set null to use fixed SNR)
+          snr_max (int): Max random SNR (set null to use fixed SNR)
 
-    segment_augmentor:
-      add_seg_aug (bool): Set True to enable augmentation on each speech segment (Default: False)
-      segmentor:
-        gain:
-            prob (float): Probability range (uniform distribution) gain augmentation for individual segment
-            min_gain_dbfs (float): minimum gain in terms of dB
-            max_gain_dbfs (float): maximum gain in terms of dB
+        segment_augmentor:
+          add_seg_aug (bool): Enable augmentation on each speech segment (Default: False)
+          segmentor.gain:
+            prob (float): Probability of gain augmentation
+            min_gain_dbfs (float): minimum gain in dB
+            max_gain_dbfs (float): maximum gain in dB
 
-    session_augmentor:
-      add_sess_aug: (bool) set True to enable audio augmentation on the whole session (Default: False)
-      segmentor:
-        white_noise:
+        session_augmentor:
+          add_sess_aug (bool): Enable audio augmentation on the whole session (Default: False)
+          segmentor.white_noise:
             prob (float): Probability of adding white noise (Default: 1.0)
-            min_level (float): minimum gain in terms of dB
-            max_level (float): maximum gain in terms of dB
+            min_level (float): minimum gain in dB
+            max_level (float): maximum gain in dB
 
-    speaker_enforcement:
-      enforce_num_speakers (bool): Enforce that all requested speakers are present in the output wav file
-      enforce_time (list): Percentage of the way through the audio session that enforcement mode is triggered (sampled
-                           between time 1 and 2)
+        speaker_enforcement:
+          enforce_num_speakers (bool): Enforce all requested speakers are present
+          enforce_time (list): Percentage through session that enforcement triggers
 
-    segment_manifest: (parameters for regenerating the segment manifest file)
-      window (float): Window length for segmentation
-      shift (float): Shift length for segmentation
-      step_count (int): Number of the unit segments you want to create per utterance
-      deci (int): Rounding decimals for segment manifest file
+        segment_manifest:
+          window (float): Window length for segmentation
+          shift (float): Shift length for segmentation
+          step_count (int): Number of unit segments per utterance
+          deci (int): Rounding decimals for segment manifest file
     """
 
     def __init__(self, cfg):
@@ -1286,29 +1250,25 @@ class RIRMultiSpeakerSimulator(MultiSpeakerSimulator):
     Args:
         cfg: OmegaConf configuration loaded from yaml file.
 
-    Parameters (in addition to the base MultiSpeakerSimulator parameters):
-    rir_generation:
-      use_rir (bool): Whether to generate synthetic RIR
-      toolkit (str): Which toolkit to use ("pyroomacoustics", "gpuRIR")
-      room_config:
-        room_sz (list): Size of the shoebox room environment (1d array for specific, 2d array for random range to be
-                        sampled from)
-        pos_src (list): Positions of the speakers in the simulated room environment (2d array for specific, 3d array
-                        for random ranges to be sampled from)
-        noise_src_pos (list): Position in room for the ambient background noise source
-      mic_config:
-        num_channels (int): Number of output audio channels
-        pos_rcv (list): Microphone positions in the simulated room environment (1d/2d array for specific, 2d/3d array
-                        for range assuming num_channels is 1/2+)
-        orV_rcv (list or null): Microphone orientations (needed for non-omnidirectional microphones)
-        mic_pattern (str): Microphone type ("omni" - omnidirectional) - currently only omnidirectional microphones are
-                           supported for pyroomacoustics
-      absorbtion_params: (Note that only `T60` is used for pyroomacoustics simulations)
-        abs_weights (list): Absorption coefficient ratios for each surface
-        T60 (float): Room reverberation time (`T60` is the time it takes for the RIR to decay by 60DB)
-        att_diff (float): Starting attenuation (if this is different than att_max, the diffuse reverberation model is
-                          used by gpuRIR)
-        att_max (float): End attenuation when using the diffuse reverberation model (gpuRIR)
+    Additional configuration parameters (on top of ``MultiSpeakerSimulator``)::
+
+        rir_generation:
+          use_rir (bool): Whether to generate synthetic RIR
+          toolkit (str): Which toolkit to use ("pyroomacoustics", "gpuRIR")
+          room_config:
+            room_sz (list): Size of the shoebox room environment
+            pos_src (list): Positions of the speakers in the simulated room
+            noise_src_pos (list): Position in room for background noise source
+          mic_config:
+            num_channels (int): Number of output audio channels
+            pos_rcv (list): Microphone positions in the simulated room
+            orV_rcv (list or null): Microphone orientations
+            mic_pattern (str): Microphone type ("omni")
+          absorbtion_params:
+            abs_weights (list): Absorption coefficient ratios for each surface
+            T60 (float): Room reverberation time (decay by 60dB)
+            att_diff (float): Starting attenuation for diffuse reverberation model
+            att_max (float): End attenuation for diffuse reverberation model (gpuRIR)
     """
 
     def __init__(self, cfg):

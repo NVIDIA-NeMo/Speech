@@ -44,29 +44,6 @@ Tutorial Overview
      - Getting Started: NeMo Models on Hugging Face Hub
      - `NeMo Models on HF Hub <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/Publish_NeMo_Model_On_Hugging_Face_Hub.ipynb>`_
 
-.. list-table:: **Multimodal Tutorials**
-   :widths: 20 25 55
-   :header-rows: 1
-
-   * - Domain
-     - Title
-     - GitHub URL
-   * - Multimodal
-     - Preparations and Advanced Applications: Multimodal Data Preparation
-     - `Multimodal Data Preparation <https://github.com/NVIDIA/NeMo/blob/main/tutorials/multimodal/Multimodal%20Data%20Preparation.ipynb>`_
-   * - Multimodal
-     - Preparations and Advanced Applications: NeVA (LLaVA) Tutorial
-     - `NeVA (LLaVA) Tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/multimodal/NeVA%20Tutorial.ipynb>`_
-   * - Multimodal
-     - Preparations and Advanced Applications: Stable Diffusion Tutorial
-     - `Stable Diffusion Tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/multimodal/Stable%20Diffusion%20Tutorial.ipynb>`_
-   * - Multimodal
-     - Preparations and Advanced Applications: DreamBooth Tutorial
-     - `DreamBooth Tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/multimodal/DreamBooth%20Tutorial.ipynb>`_
-   * - Multimodal
-     - Preparations and Advanced Applications: Stable Diffusion XL Quantization Tutorial
-     - `SDXL Quantization Tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/multimodal/SDXL%20Quantization.ipynb>`_
-
 .. list-table:: **Automatic Speech Recognition (ASR) Tutorials**
    :widths: 15 30 55
    :header-rows: 1
@@ -147,9 +124,6 @@ Tutorial Overview
      - Multi-lingual ASR
      - `Multi-lingual ASR <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Multilang_ASR.ipynb>`_
    * - ASR
-     - Hybrid ASR-TTS Models
-     - `Hybrid ASR-TTS Models <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_TTS_Tutorial.ipynb>`_
-   * - ASR
      - ASR Confidence Estimation
      - `ASR Confidence Estimation <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_Confidence_Estimation.ipynb>`_
 
@@ -208,19 +182,3 @@ Tutorial Overview
      - Utility Tools for Speech and Text: CTC Segmentation
      - `CTC Segmentation <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/tools/CTC_Segmentation_Tutorial.ipynb>`_
 
-.. list-table:: **Text Processing (TN/ITN) Tutorials**
-   :widths: 25 35 60
-   :header-rows: 1
-
-   * - Domain
-     - Title
-     - GitHub URL
-   * - Text Processing
-     - Text Normalization Techniques: Text Normalization
-     - `Text Normalization <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/text_processing/Text_(Inverse)_Normalization.ipynb>`_
-   * - Text Processing
-     - Text Normalization Techniques: Inverse Text Normalization with Thutmose Tagger
-     - `Inverse Text Normalization with Thutmose Tagger <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/nlp/ITN_with_Thutmose_Tagger.ipynb>`_
-   * - Text Processing
-     - Text Normalization Techniques: WFST Tutorial
-     - `WFST Tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/text_processing/WFST_Tutorial.ipynb>`_

@@ -44,7 +44,7 @@ start_vllm_on_init: true
 # Refer to each LLM's model page for details on the recommended parameters.
 # It's recommended to stay with `--max-num-seqs` 1 as the voice agent currently supports one connection at a time.
 # You can try increasing the model's max context len `--max-model-len` if GPU memory allows, or decrease it if GPU OOM occurs.
-vllm_server_params: "--trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.85 --max-model-len 8192 --enable-auto-tool-choice --tool-parser-plugin server/parsers/nemotron_toolcall_parser_streaming.py --tool-call-parser nemotron_json"  
+vllm_server_params: "--trust-remote-code --enable-prefix-caching --max-num-seqs 1 --gpu-memory-utilization 0.85 --max-model-len 8192 --enable-auto-tool-choice --tool-parser-plugin server/parsers/nemotron_toolcall_parser_streaming.py --tool-call-parser nemotron_json --mamba_ssm_cache_dtype float32"  
 # `params` are the inference parameters that would be passed into OpenAI API, 
 # please put additional model-specific parameters in `extra`
 vllm_generation_params:

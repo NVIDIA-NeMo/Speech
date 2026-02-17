@@ -268,4 +268,5 @@ For more information, see additional sections in the ASR docs on the left-hand-s
    configs
    api
    all_chkpt
+   streaming_decoding/canary_chunked_and_streaming_decoding
    examples/kinyarwanda_asr.rst

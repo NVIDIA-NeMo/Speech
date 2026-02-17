@@ -59,10 +59,6 @@ def _load_vocoder(model_name: Optional[str], checkpoint_path: Optional[str], typ
         from nemo.collections.tts.models import HifiGanModel
 
         model_type = HifiGanModel
-    elif type == "univnet":
-        from nemo.collections.tts.models import UnivNetModel
-
-        model_type = UnivNetModel
     else:
         raise ValueError(f"Unknown vocoder type '{type}'")
 

@@ -34,12 +34,15 @@ As of now, we only support English input and output, but more languages will be 
 
 
 ## 💡 Upcoming Next
+- Better tool calling support for LLMs.
+- Better inference latency for Magpie TTS model.
+- Evaluation tools and benchmarks for voice agents.
 - Accuracy and robustness ASR model improvements.
-- Better TTS with more natural voice (e.g., [Magpie-TTS](https://build.nvidia.com/nvidia/magpie-tts-multilingual)).
 - Combine ASR and speaker diarization model to handle overlapping speech.
 
 
 ## 📅 Latest Updates
+- 2026-01-26: Added support for [NVIDIA-Nemotron-3-Nano-30B-A3B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16) LLM model, and support for [magpie_tts_multilingual_357m](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) TTS model.
 - 2025-12-31: Added examples for [tool calling](#tool-calling), such as changing the speaking speed, switching between male/female voices and British/American accents, and getting the current weather of a city. Diarization model is updated to [nvidia/diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) with improved performance.
 - 2025-11-14: Added support for joint ASR and EOU detection with [Parakeet-realtime-eou-120m](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) model.
 - 2025-10-10: Added support for [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) TTS model.
@@ -137,6 +140,17 @@ If you want to use a different port for client connection, you can modify `clien
 Most LLMs from HuggingFace are supported. A few examples are:
 - [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) (default)
     - Please use `server/server_configs/llm_configs/nemotron_nano_v2.yaml` as the server config.
+    - Tool calling is enabled for this model.
+- [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)
+    - Please use `server/server_configs/llm_configs/nemotron_nano_v3.yaml` as the server config. It needs more than 60GB VRAM to host the model, thus the config by default is set to use tensor parallelism of 2. Expect additional 5GB for kv-cache and other components in the voice agent. To better monitor the vllm status, `start_vllm_on_init` is set to `false`, so that you can manually start the vllm server in another terminal via: 
+    ```bash
+        vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
+            --trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.8 --max-model-len 8192 \
+            --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser qwen3_coder --enable-prefix-caching \
+            --reasoning-parser-plugin server/parsers/nano_v3_reasoning_parser.py --reasoning-parser nano_v3
+    ```
+    - If you have a GPU with FP8 support, the VRAM requirement is reduced to about 30GB. You can switch to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) by modifying the llm config accordingly.
+    - Tool calling is enabled for this model.
 - [Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
     - Please use `server/server_configs/llm_configs/qwen2.5-7B.yaml` as the server config.
 - [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)
@@ -162,7 +176,7 @@ A lot of LLMs support thinking/reasoning mode, which is useful for complex tasks
 
 Different models may have different ways to support thinking/reasoning mode, please refer to the model's homepage for details on their thinking/reasoning mode support. Meanwhile, in many cases, they support enabling thinking/reasoning can be achieved by adding `/think` or `/no_think` to the end of the system prompt, and the thinking/reasoning content is wrapped by the tokens `["<think>", "</think>"]`. Some models may also support enabling thinking/reasoning by setting `llm.apply_chat_template_kwargs.enable_thinking=true/false` in the server config when `llm.type=hf`.
 
-If thinking/reasoning mode is enabled (e.g., in `server/server_configs/qwen3-8B_think.yaml`), the voice agent server will print out the thinking/reasoning content so that you can see the process of the LLM thinking and still have a smooth conversation experience. The thinking/reasoning content will not go through the TTS process, so you will only hear the final answer, and this is achieved by specifying the pair of thinking tokens `tts.think_tokens=["<think>", "</think>"]` in the server config.
+If thinking/reasoning mode is enabled (e.g., in `server/server_configs/llm_configs/qwen3-8B_think.yaml`), the voice agent server will print out the thinking/reasoning content so that you can see the process of the LLM thinking and still have a smooth conversation experience. The thinking/reasoning content will not go through the TTS process, so you will only hear the final answer, and this is achieved by specifying the pair of thinking tokens `tts.think_tokens=["<think>", "</think>"]` in the server config.
 
 For vLLM server, if you specify `--reasoning_parser` in `vllm_server_params`, the thinking/reasoning content will be filtered out and does not show up in the output.
 
@@ -184,8 +198,8 @@ Speaker diarization aims to distinguish different speakers in the input speech a
 As of now, we only support detecting 1 speaker per user turn, but different turns come from different speakers, with a maximum of 4 speakers in the whole conversation. 
 
 Currently supported models are:
- - [nvidia/diar_streaming_sortformer_4spk-v2](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) (default)
-
+ - [nvidia/diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) (default)
+ - [nvidia/diar_streaming_sortformer_4spk-v2](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2)
 
 Please note that in some circumstances, the diarization model might not work well in noisy environments, or it may confuse the speakers. In this case, you can disable the diarization by setting `diar.enabled` to `false` in `server/server_configs/default.yaml`.
 
@@ -196,7 +210,8 @@ Here are the supported TTS models:
     - Please use `server/server_configs/tts_configs/kokoro_82M.yaml` as the server config.
 - [FastPitch-HiFiGAN](https://huggingface.co/nvidia/tts_en_fastpitch) is an NVIDIA-NeMo TTS model. It only supports English output. 
     - Please use `server/server_configs/tts_configs/nemo_fastpitch-hifigan.yaml` as the server config.
-
+- [magpie_tts_multilingual_357m](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) is a multilingual TTS model.
+    - Please use `server/server_configs/tts_configs/magpie_tts_multilingual_357m.yaml` as the server config.
 We will support more TTS models in the future.
 
 
@@ -242,7 +257,7 @@ Additional tools can be added in two ways:
 - Adding a new [direct function](https://docs.pipecat.ai/guides/learn/function-calling#using-direct-functions-shorthand) such as the `get_city_weather` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/basic_tools.py`.
 - Adding new tools to adjust the behavior of each of the STT/TTS/Diar/LLM/TurnTaking components, by adding the `ToolCallingMixin` to the component and implementing the `setup_tool_calling` method as the `KokoroTTSService` class in `nemo/agents/voice_agent/pipecat/services/nemo/tts.py`.
 
-The tools are then registered to the LLM via the `register_direct_tools_to_llm` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/mixins.py`, as shown in the example in `examples/voice_agent/server/bot_websocket_server.py`.
+The tools are then registered to the LLM via the `register_direct_tools_to_llm` function in `nemo/agents/voice_agent/pipecat/utils/tool_calling/mixins.py`, as shown in the example in `examples/voice_agent/server/server.py`.
 
 More details on tool calling with Pipecat can be found in the [Pipecat documentation](https://docs.pipecat.ai/guides/learn/function-calling).
 
@@ -250,12 +265,12 @@ More details on tool calling with Pipecat can be found in the [Pipecat documenta
 
 We notice that sometimes the LLM cannot do anything that's not related to the provided tools, or it might not actually use the tools even though it says it's using them. To alleviate this issue, we insert additional instructions to the system prompt to regulate its behavior (e.g., in `server/server_configs/llm_configs/nemotron_nano_v2.yaml`).
 
-Sometimes, after answering a question related to the tools, the LLM might refuce to answer questions that are not related to the tools, or vice versa. This phenomenon can be called "commitment bias" or "tunnel vision". To alleviate this issue, we can insert additional instructions to the system prompt and explicitly asking the LLM to use or not use the tools in the user's query.
+Sometimes, after answering a question related to the tools, the LLM might refuse to answer questions that are not related to the tools, or vice versa. This phenomenon can be called "commitment bias" or "tunnel vision". To alleviate this issue, we can insert additional instructions to the system prompt and explicitly asking the LLM to use or not use the tools in the user's query.
 
 
 ## 📝 Notes & FAQ
 - Only one connection to the server is supported at a time, a new connection will disconnect the previous one, but the context will be preserved.
-- If directly loading from HuggingFace and got I/O erros, you can set `llm.model=<local_path>`, where the model is downloaded using a command like `huggingface-cli download Qwen/Qwen2.5-7B-Instruct --local-dir <local_path>`. Same for TTS models.
+- If directly loading from HuggingFace and got I/O errors, you can set `llm.model=<local_path>`, where the model is downloaded using a command like `huggingface-cli download Qwen/Qwen2.5-7B-Instruct --local-dir <local_path>`. Same for TTS models.
 - The current ASR and diarization models are not noise-robust, you might need to use a noise-cancelling microphone or a quiet environment. But we will release better models soon.
 - The diarization model works best with speakers that have much more different voices from each other, while it might not work well on some accents due to the limited training data.
 - If you see errors like `SyntaxError: Unexpected reserved word` when running `npm run dev`, please update the Node.js version.
@@ -268,7 +283,7 @@ Sometimes, after answering a question related to the tools, the LLM might refuce
 
 NVIDIA also provides a variety of [NIM](https://developer.nvidia.com/nim?sortBy=developer_learning_library%2Fsort%2Ffeatured_in.nim%3Adesc%2Ctitle%3Aasc&hitsPerPage=12) services for better ASR, TTS and LLM performance with more efficient deployment on either cloud or local servers.
 
-You can also modify the `server/bot_websocket_server.py` to use NVIDIA NIM services for better LLM, ASR and TTS performance, by referring to these Pipecat services:
+You can also modify the `server/server.py` to use NVIDIA NIM services for better LLM, ASR and TTS performance, by referring to these Pipecat services:
 - [NVIDIA NIM LLM Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/nim/llm.py)
 - [NVIDIA Riva ASR Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/riva/stt.py)
 - [NVIDIA Riva TTS Service](https://github.com/pipecat-ai/pipecat/blob/main/src/pipecat/services/riva/tts.py)

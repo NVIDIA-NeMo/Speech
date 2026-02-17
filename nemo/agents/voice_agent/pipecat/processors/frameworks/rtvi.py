@@ -12,22 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 from loguru import logger
-from pipecat.frames.frames import (
-    BotStoppedSpeakingFrame,
-    Frame,
-    LLMFullResponseEndFrame,
-    LLMFullResponseStartFrame,
-    LLMTextFrame,
-    TTSTextFrame,
-)
+from pipecat.frames.frames import Frame, LLMFullResponseEndFrame, LLMFullResponseStartFrame, TTSTextFrame
 from pipecat.observers.base_observer import FramePushed
 from pipecat.processors.frameworks.rtvi import (
     RTVIBotLLMStartedMessage,
     RTVIBotLLMStoppedMessage,
-    RTVIBotLLMTextMessage,
     RTVIBotTranscriptionMessage,
     RTVIBotTTSTextMessage,
 )
@@ -35,19 +26,14 @@ from pipecat.processors.frameworks.rtvi import RTVIObserver as _RTVIObserver
 from pipecat.processors.frameworks.rtvi import RTVIProcessor, RTVITextMessageData
 from pipecat.transports.base_output import BaseOutputTransport
 
-from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
-
 
 class RTVIObserver(_RTVIObserver):
     """
     An observer that processes RTVI frames and pushes them to the transport.
     """
 
-    def __init__(
-        self, rtvi: RTVIProcessor, text_aggregator: Optional[SimpleSegmentedTextAggregator] = None, *args, **kwargs
-    ):
+    def __init__(self, rtvi: RTVIProcessor, *args, **kwargs):
         super().__init__(rtvi, *args, **kwargs)
-        self._text_aggregator = text_aggregator if text_aggregator else SimpleSegmentedTextAggregator("?!:.")
 
     async def on_push_frame(self, data: FramePushed):
         """Process a frame being pushed through the pipeline.
@@ -63,45 +49,24 @@ class RTVIObserver(_RTVIObserver):
 
         if not self._params.bot_llm_enabled:
             if isinstance(frame, LLMFullResponseStartFrame):
-                await self.push_transport_message_urgent(RTVIBotLLMStartedMessage())
+                await self.send_rtvi_message(RTVIBotLLMStartedMessage())
                 self._frames_seen.add(frame.id)
             elif isinstance(frame, LLMFullResponseEndFrame):
-                await self.push_transport_message_urgent(RTVIBotLLMStoppedMessage())
+                await self.send_rtvi_message(RTVIBotLLMStoppedMessage())
                 self._frames_seen.add(frame.id)
             elif isinstance(frame, TTSTextFrame) and isinstance(src, BaseOutputTransport):
                 message = RTVIBotTTSTextMessage(data=RTVITextMessageData(text=frame.text))
-                await self.push_transport_message_urgent(message)
+                await self.send_rtvi_message(message)
                 await self._push_bot_transcription(frame.text)
-                self._frames_seen.add(frame.id)
-            elif isinstance(frame, BotStoppedSpeakingFrame):
-                # The bot stopped speaking, flush the remaining text buffer
-                await self._flush_text_buffer()
                 self._frames_seen.add(frame.id)
             else:
                 await super().on_push_frame(data)
         else:
             await super().on_push_frame(data)
 
-    async def _flush_text_buffer(self):
-        """Flush the text buffer."""
-        text = self._text_aggregator.text
-        if text.strip():
-            await self._push_bot_transcription(text)
-            self._text_aggregator.reset()
-
-    async def _handle_llm_text_frame(self, frame: LLMTextFrame):
-        """Handle LLM text output frames."""
-        message = RTVIBotLLMTextMessage(data=RTVITextMessageData(text=frame.text))
-        await self.push_transport_message_urgent(message)
-
-        completed_text = await self._text_aggregator.aggregate(frame.text)
-        if completed_text:
-            await self._push_bot_transcription(completed_text)
-
     async def _push_bot_transcription(self, text: str):
         """Push accumulated bot transcription as a message."""
         if len(text.strip()) > 0:
             message = RTVIBotTranscriptionMessage(data=RTVITextMessageData(text=text))
             logger.debug(f"Pushing bot transcription: `{text}`")
-            await self.push_transport_message_urgent(message)
-            self._bot_transcription = ""
+            await self.send_rtvi_message(message)

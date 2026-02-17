@@ -51,13 +51,13 @@ model:
     num_features: 256 # Number of features at RNN input
     num_layers: 5 # Number of RNN layers
     bidirectional: true # Use bi-directional RNN
-    
+
   mask_processor:
     _target_: nemo.collections.audio.modules.masking.MaskReferenceChannel # Apply mask on the reference channel
     ref_channel: 0 # Reference channel for the output
 
   loss:
-    _target_: nemo.collections.audio.losses.SDRLoss
+    _target_: nemo.collections.audio.losses.audio.SDRLoss
     scale_invariant: true # Use scale-invariant SDR
 
   metrics:
@@ -68,7 +68,7 @@ model:
       sdr_ch0: # SDR on output channel 0
         _target_: torchmetrics.audio.SignalDistortionRatio
         channel: 0
-    
+
   optim:
     name: adamw
     lr: 1e-4

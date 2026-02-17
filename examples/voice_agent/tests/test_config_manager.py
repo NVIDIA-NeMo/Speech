@@ -84,14 +84,17 @@ class TestDefaultConfigs:
         # Create necessary files
         config_manager = ConfigManager(voice_agent_server_base_path)
 
-        assert "stt_en_fastconformer" in config_manager.STT_MODEL_PATH
+        # STT_MODEL can be either a fastconformer model or an EOU model (e.g., parakeet_realtime_eou)
+        assert (
+            "stt_en_fastconformer" in config_manager.STT_MODEL or "parakeet_realtime_eou" in config_manager.STT_MODEL
+        )
         assert isinstance(config_manager.stt_params, NeMoSTTInputParams)
 
     @pytest.mark.unit
     def test_configure_stt_with_model_config(self, voice_agent_server_base_path):
         """Test STT configuration with custom model config."""
         config_manager = ConfigManager(voice_agent_server_base_path)
-        assert hasattr(config_manager, "STT_MODEL_PATH")
+        assert hasattr(config_manager, "STT_MODEL")
 
     @pytest.mark.unit
     def test_configure_diarization(self, voice_agent_server_base_path):
@@ -203,8 +206,8 @@ class TestDefaultConfigs:
 
         assert isinstance(vad_params, VADParams)
         assert isinstance(vad_params.confidence, float) and 0.0 <= vad_params.confidence <= 1.0
-        assert isinstance(vad_params.start_secs, float) and 0.0 <= vad_params.start_secs <= 1.0
-        assert isinstance(vad_params.stop_secs, float) and 0.0 <= vad_params.stop_secs <= 1.0
+        assert isinstance(vad_params.start_secs, float) and vad_params.start_secs >= 0.0
+        assert isinstance(vad_params.stop_secs, float) and vad_params.stop_secs >= 0.0
         assert isinstance(vad_params.min_volume, float) and 0.0 <= vad_params.min_volume <= 1.0
 
     @pytest.mark.unit

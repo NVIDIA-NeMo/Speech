@@ -230,7 +230,6 @@ class HFGPTOSSImporter(_BaseGPTOSSImporter):
 
     # pylint: disable=C0115,C0116
     def apply(self, output_path: Path, trust_remote_code: bool | None = None) -> Path:
-        logging.setLevel(logging.DEBUG)
         self.trust_remote_code = trust_remote_code
         source_state = self.hf_ckpt_load()
         source = _ModelState(source_state)

@@ -17,7 +17,6 @@ import functools
 import json
 import logging
 import os
-import pickle
 import shutil
 from io import BytesIO
 from pathlib import Path
@@ -52,19 +51,7 @@ def load_extra_state_from_bytes(val: Optional[Union[torch.Tensor, BytesIO]]) -> 
     Returns:
         Optional[dict]: Deserialized extra_state, or None if the bytes storage is empty.
     """
-    if val is None:
-        return None
-
-    # TransformerEngine shifted from storing extra_states bytes storage from _io.BytesIO to torch.Tensor
-    if isinstance(val, torch.Tensor):
-        if val.numel() == 0:
-            return None
-
-        val = val.detach().numpy(force=True).tobytes()
-        return pickle.loads(val)
-
-    val.seek(0)
-    return torch.load(val, weights_only=True)
+    raise Exception("nemo.export is deprecated. Please use the repo https://github.com/NVIDIA-NeMo/Export-Deploy.")
 
 
 def preprocess_scaling_factors_for_local_export(state_dict: Dict[str, Any]) -> Dict[str, Any]:

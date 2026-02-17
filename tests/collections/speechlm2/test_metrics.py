@@ -13,7 +13,7 @@
 # limitations under the License.
 import pytest
 
-from nemo.collections.speechlm2.parts.metrics import BLEU, WER
+from nemo.collections.speechlm2.parts.metrics import BLEU, WER, Intelligibility
 
 
 def test_bleu():
@@ -50,3 +50,27 @@ def test_wer():
     assert ans["wer_dataset_1"] == 0.0
     assert ans["wer_dataset_2"] == 1 / 3
     assert ans["wer"] == 1 / 6  # average across datasets
+
+
+def test_intelligibility():
+    metric = Intelligibility(pretrained_asr=None, verbose=False, reuse_asr_hyps=True)
+    metric.update(
+        name="dataset_1",
+        refs=["a b c d e f g h i j k l", "m n o p r s t u v"],
+        asr_hyps=["a b c d e f g h i j k l", "m n o p r s t u v"],
+        pred_audio=None,
+    )
+    metric.update(
+        name="dataset_2",
+        refs=["a b c"],
+        asr_hyps=["a b d"],
+        pred_audio=None,
+    )
+    ans = metric.compute()
+    # wer
+    assert ans["wer_dataset_1"] == 0.0
+    assert ans["wer_dataset_2"] == 1 / 3
+    assert ans["wer"] == 1 / 6  # average across datasets
+    # cer
+    assert ans["cer_dataset_1"] == 0.0
+    assert ans["cer_dataset_2"] == 1 / 5

@@ -291,20 +291,28 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
         if timestamps is not None:
+            need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
                     "Timestamps requested, setting decoding timestamps to True. Capture them in Hypothesis object, \
                         with output[0][idx].timestep['word'/'segment'/'char']"
                 )
                 return_hypotheses = True
-                with open_dict(self.cfg.decoding):
-                    self.cfg.decoding.compute_timestamps = True
+                if self.cfg.decoding.get("compute_timestamps", None) is not True:
+                    # compute_timestamps None, False or non-existent -> change to True
+                    need_change_decoding = True
+                    with open_dict(self.cfg.decoding):
+                        self.cfg.decoding.compute_timestamps = True
             else:
                 return_hypotheses = False
-                with open_dict(self.cfg.decoding):
-                    self.cfg.decoding.compute_timestamps = False
+                if self.cfg.decoding.get("compute_timestamps", None) is not False:
+                    # compute_timestamps None, True or non-existent -> change to False
+                    need_change_decoding = True
+                    with open_dict(self.cfg.decoding):
+                        self.cfg.decoding.compute_timestamps = False
 
-            self.change_decoding_strategy(self.cfg.decoding, verbose=False)
+            if need_change_decoding:
+                self.change_decoding_strategy(self.cfg.decoding, verbose=False)
 
         return super().transcribe(
             audio=audio,
@@ -1000,6 +1008,45 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
+
+    def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
+        super()._transcribe_on_begin(audio=audio, trcfg=trcfg)
+        # add biasing requests to the decoding computer
+        try:
+            biasing_multi_model = self.decoding.decoding.decoding_computer.biasing_multi_model
+        except AttributeError:
+            biasing_multi_model = None
+        if trcfg.partial_hypothesis:
+            for partial_hyp in trcfg.partial_hypothesis:
+                if (
+                    isinstance(partial_hyp, Hypothesis)
+                    and partial_hyp.has_biasing_request()
+                    and partial_hyp.biasing_cfg.auto_manage_multi_model
+                    and partial_hyp.biasing_cfg.multi_model_id is None
+                ):
+                    if biasing_multi_model is not None:
+                        partial_hyp.biasing_cfg.add_to_multi_model(
+                            tokenizer=self.tokenizer, biasing_multi_model=biasing_multi_model
+                        )
+                    else:
+                        logging.warning("Requested biasing for hypothesis, but multi-model is not found, skipping.")
+
+    def _transcribe_on_end(self, trcfg: TranscribeConfig):
+        super()._transcribe_on_end(trcfg=trcfg)
+        try:
+            biasing_multi_model = self.decoding.decoding.decoding_computer.biasing_multi_model
+        except AttributeError:
+            biasing_multi_model = None
+
+        # remove biasing requests from the decoding computer
+        if biasing_multi_model is not None and trcfg.partial_hypothesis:
+            for partial_hyp in trcfg.partial_hypothesis:
+                if (
+                    isinstance(partial_hyp, Hypothesis)
+                    and partial_hyp.has_biasing_request()
+                    and partial_hyp.biasing_cfg.auto_manage_multi_model
+                ):
+                    partial_hyp.biasing_cfg.remove_from_multi_model(biasing_multi_model=biasing_multi_model)
 
     def on_after_backward(self):
         super().on_after_backward()

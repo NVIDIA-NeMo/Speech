@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .datamodule import DataModule
+from .duplex_ear_tts_dataset import DuplexEARTTSDataset
 from .s2s_dataset import DuplexS2SDataset
 from .salm_dataset import SALMDataset
 
 __all__ = [
     'DataModule',
     'DuplexS2SDataset',
+    'DuplexEARTTSDataset',
     'SALMDataset',
 ]

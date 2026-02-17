@@ -16,7 +16,7 @@
 
 """Utilities for generating text."""
 
-import pickle
+import json
 import sys
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, List, Optional, Tuple, Union
@@ -129,7 +129,7 @@ def send_generate_info(
 
     # send end strings
     string_tensor = torch.as_tensor(
-        np.frombuffer(pickle.dumps(end_strings), dtype=np.int8), device=torch.cuda.current_device()
+        np.frombuffer(json.dumps(end_strings).encode('utf-8'), dtype=np.int8), device=torch.cuda.current_device()
     )
     size = torch.as_tensor([string_tensor.size(0)], device=torch.cuda.current_device(), dtype=torch.int64)
     torch.distributed.broadcast(size, src, model_parallel_group)
@@ -140,7 +140,8 @@ def send_generate_info(
 
     if context_start_idx is not None:
         context_idx_tensor = torch.as_tensor(
-            np.frombuffer(pickle.dumps(context_start_idx), dtype=np.int8), device=torch.cuda.current_device()
+            np.frombuffer(json.dumps(context_start_idx).encode('utf-8'), dtype=np.int8),
+            device=torch.cuda.current_device(),
         )
         ctx_size = torch.as_tensor([context_idx_tensor.size(0)], device=torch.cuda.current_device(), dtype=torch.int64)
         torch.distributed.broadcast(ctx_size, src, model_parallel_group)
@@ -186,7 +187,7 @@ def receive_generate_info(has_multi_audios=False):
     string_tensor = torch.empty(array_size[0], dtype=torch.int8, device=torch.cuda.current_device())
     torch.distributed.broadcast(string_tensor, src, model_parallel_group)
     bytes = string_tensor.cpu().numpy().tobytes()
-    end_strings = pickle.loads(bytes)
+    end_strings = json.loads(bytes.decode('utf-8'))
 
     num_audios = None
     context_start_idx = None
@@ -199,7 +200,7 @@ def receive_generate_info(has_multi_audios=False):
         context_idx_tensor = torch.empty(array_size[0], dtype=torch.int8, device=torch.cuda.current_device())
         torch.distributed.broadcast(context_idx_tensor, src, model_parallel_group)
         bytes = context_idx_tensor.cpu().numpy().tobytes()
-        context_start_idx = pickle.loads(bytes)
+        context_start_idx = json.loads(bytes.decode('utf-8'))
 
     return (
         context_length_tensor,

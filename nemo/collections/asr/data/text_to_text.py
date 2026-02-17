@@ -335,7 +335,9 @@ class TextToTextDatasetBase:
                 tts_tokenizer_global = copy.deepcopy(tokenizer)
 
             with concurrent.futures.ProcessPoolExecutor(
-                initializer=_init_tts_tokenize_process, initargs=(tts_parser,), max_workers=tokenizer_workers,
+                initializer=_init_tts_tokenize_process,
+                initargs=(tts_parser,),
+                max_workers=tokenizer_workers,
             ) as pool:
                 # chunk size for pool map is empirically chosen as a trade-off between speed and responsiveness
                 for i, tokenized_text in enumerate(
@@ -373,7 +375,7 @@ class TextToTextDatasetBase:
 
 
 class TextToTextDataset(TextToTextDatasetBase, Dataset):
-    """Text-to-Text Map-style Dataset for hybrid ASR-TTS models"""
+    """Text-to-Text Map-style Dataset."""
 
     def __init__(
         self,
@@ -418,8 +420,8 @@ class TextToTextDataset(TextToTextDatasetBase, Dataset):
 
 class TextToTextIterableDataset(TextToTextDatasetBase, IterableDataset):
     """
-    Text-to-Text Iterable Dataset for hybrid ASR-TTS models
-    Only part necessary for current process should be loaded and stored
+    Text-to-Text Iterable Dataset.
+    Only part necessary for current process should be loaded and stored.
     """
 
     def __init__(

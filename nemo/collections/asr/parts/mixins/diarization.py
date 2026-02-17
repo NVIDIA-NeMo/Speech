@@ -49,7 +49,6 @@ def resample_audio(samples: np.ndarray, orig_sr: int, target_sr: int) -> np.ndar
         return samples.astype(np.float32, copy=False)
 
     resampled_samples = samples.astype(np.float32, copy=False)
-    # User-requested API
     resampled_samples = librosa.core.resample(resampled_samples, orig_sr=orig_sr, target_sr=target_sr)
     return resampled_samples.astype(np.float32, copy=False)
 
@@ -132,7 +131,7 @@ class SpkDiarizationMixin(ABC):
     """
     An abstract class for diarize-able models.
 
-    Creates a template function `diarize()` that provides an interface to perform transcription of audio tensors or
+    Creates a template function `diarize()` that provides an interface to perform diarization of audio tensors or
     filepaths.
     """
 
@@ -409,7 +408,7 @@ class SpkDiarizationMixin(ABC):
         # Model's mode and device
         diarcfg._internal.training_mode = self.training
 
-        # Switch model to evaluation mode
+        # Save preprocessor settings before switching to evaluation mode
         if hasattr(self, 'preprocessor'):
             if hasattr(self.preprocessor, 'featurizer') and hasattr(self.preprocessor.featurizer, 'dither'):
                 diarcfg._internal.dither_value = self.preprocessor.featurizer.dither
@@ -541,7 +540,8 @@ class SpkDiarizationMixin(ABC):
 
         else:
             raise ValueError(
-                f"Input `audio` is of type {type(audio[0])}. " "Only `str` (path to audio file) is supported as input."
+                f"Input `audio` is of type {type(audio[0])}. "
+                "Only `str` (path to audio file) or `np.ndarray` are supported as input."
             )
 
     def _diarize_input_manifest_processing(
@@ -632,7 +632,7 @@ class SpkDiarizationMixin(ABC):
 
     def _diarize_on_end(self, diarcfg: DiarizeConfig):
         """
-        Internal function to teardown the model after transcription. Perform all teardown and post-checks here.
+        Internal function to teardown the model after diarization. Perform all teardown and post-checks here.
 
         Args:
             diarcfg: The diarization config dataclass. Subclasses can change this to a different dataclass if needed.

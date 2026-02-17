@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import re
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from loguru import logger
 from pipecat.utils.string import match_endofsentence
+from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
 
@@ -28,7 +29,6 @@ def has_partial_decimal(text: str) -> bool:
     clearly a complete sentence (e.g., "It costs $3.14.") or a bullet point
     (e.g., "1. Alpha; 2.").
     """
-    text = text.strip()
 
     # Check for bullet point pattern: ends with 1-3 digits followed by period
     # Examples: "1.", "12.", "123.", or "text; 2."
@@ -90,15 +90,57 @@ def find_last_period_index(text: str) -> int:
     if text[idx - 1].isdigit():
         # if the period is after a digit, it's likely a partial decimal, return -1
         return -1
-    elif idx > 2 and text[idx - 3 : idx + 1] in ["e.g.", "i.e."]:
+    elif text[idx - 1].isupper():
+        # if the period is after a capital letter (e.g., "Washington, D.C."), it's likely a abbreviation, return -1
+        return -1
+    elif idx > 1 and text[idx - 2 : idx + 1].lower() in ["a.m.", "p.m."]:
+        # if the period is after a.m. or p.m., it's likely a time, return -1
+        return -1
+    elif idx > 2 and text[idx - 3 : idx + 1] in ["e.g.", "i.e.", "etc."]:
         # The period is after a character/word that is likely to be a abbreviation, return -1
+        return -1
+    elif idx >= 2 and text[idx - 2 : idx + 1].lower() in ["st.", "mr.", "mrs.", "ms.", "dr."]:
+        # if the period is after a character/word that is likely to be a abbreviation, return -1
         return -1
 
     # the text seems to have a complete sentence, return the index of the last period
     return idx
 
 
+def find_last_comma_index(text: str, min_residual_length: int = 5) -> int:
+    """
+    Find the last occurrence of a valid comma in the text,
+    ignoring the commas in the numbers (e.g., "1,234,567").
+    If the leftover text after the comma is too short, it may be an abbreviation, return -1.
+
+    Args:
+        text: The text to find the last occurrence of a valid comma.
+        min_residual_length: The minimum length of the leftover text after the rightmost comma
+                             to be considered as a valid sentence (e.g., "Santa Clara, CA, US.").
+    Returns:
+        The index of the last occurrence of a valid comma, or -1 if no valid comma is found.
+    """
+    # find the last occurrence of a comma in the text
+    idx = text.rfind(",")
+    if idx == -1:
+        return -1
+    # check if the comma is in a number
+    if re.search(r'\d+,\d+', text[: idx + 1]):
+        # the comma is in a number, return -1
+        return -1
+
+    # check if the leftover text after the comma is too short
+    if len(text[idx + 1 :]) <= min_residual_length:
+        # the leftover text is too short, it may be an abbreviation, return -1
+        return -1
+
+    # the comma is not in a number, return the index of the comma
+    return idx
+
+
 class SimpleSegmentedTextAggregator(SimpleTextAggregator):
+    """A simple text aggregator that segments the text into sentences based on punctuation marks."""
+
     def __init__(
         self,
         punctuation_marks: str | list[str] = ".,!?;:\n",
@@ -110,7 +152,7 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         """
         Args:
             punctuation_marks: The punctuation marks to use for sentence detection.
-            ignore_marks: The marks to ignore in the text.
+            ignore_marks: The strings to ignore in the text (e.g., "*").
             min_sentence_length: The minimum length of a sentence to be considered.
             use_legacy_eos_detection: Whether to use the legacy EOS detection from pipecat.
             **kwargs: Additional arguments to pass to the SimpleTextAggregator constructor.
@@ -118,10 +160,7 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         super().__init__(**kwargs)
         self._use_legacy_eos_detection = use_legacy_eos_detection
         self._min_sentence_length = min_sentence_length
-        if not ignore_marks:
-            self._ignore_marks = set()
-        else:
-            self._ignore_marks = set(ignore_marks)
+        self._ignore_marks = set(["*"] if ignore_marks is None else set(ignore_marks))
         if not punctuation_marks:
             self._punctuation_marks = list()
         else:
@@ -154,6 +193,8 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         for punc in self._punctuation_marks:
             if punc == ".":
                 idx = find_last_period_index(text)
+            elif punc == ",":
+                idx = find_last_comma_index(text)
             else:
                 idx = text.find(punc)
             if idx != -1:
@@ -161,12 +202,17 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
                 return idx + 1 + offset
         return None
 
-    async def aggregate(self, text: str) -> Optional[str]:
+    async def aggregate(self, text: str) -> AsyncIterator[Aggregation]:
+        """Aggregate the input text and return the first complete sentence in the text.
+
+        Args:
+            text: The text to aggregate.
+
+        Returns:
+            The first complete sentence in the text, or None if none is found.
+        """
         result: Optional[str] = None
         self._text += str(text)
-
-        for ignore_mark in self._ignore_marks:
-            self._text = self._text.replace(ignore_mark, "")
 
         eos_end_index = self._find_segment_end(self._text)
 
@@ -186,4 +232,7 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
                 logger.debug(f"Text Aggregator Result: `{result}`, full text: `{self._text}`, input text: `{text}`")
                 self._text = self._text[eos_end_index:]
 
-        return result
+        if result:
+            for ignore_mark in self._ignore_marks:
+                result = result.replace(ignore_mark, "")
+            yield Aggregation(text=result, type=AggregationType.SENTENCE)

@@ -1667,14 +1667,7 @@ class TensorRTLLM(ITritonDeployable):
             self.p_table = None
 
     def _load_prompt_tables(self):
-        if self.model_dir is not None:
-            pt_path = Path(os.path.join(self.model_dir, 'prompt_tables.pkl'))
-            if pt_path.exists():
-                with open(pt_path, 'rb') as f:
-                    self.ptuning_tables = pickle.load(f)
-                self._prep_ptuning_table()
-            else:
-                self.ptuning_tables = []
+        raise Exception("nemo.export is deprecated. Please use the repo https://github.com/NVIDIA-NeMo/Export-Deploy.")
 
     def _get_prompt_embedding_table_ckpt(self, prompt_embeddings_checkpoint_path):
         with TarPath(prompt_embeddings_checkpoint_path) as checkpoint_archive:

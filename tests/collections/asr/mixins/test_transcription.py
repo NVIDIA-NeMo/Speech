@@ -24,8 +24,10 @@ from omegaconf import open_dict
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.asr.data.audio_to_text import _speech_collate_fn
+from nemo.collections.asr.models.aed_multitask_models import MultiTaskTranscriptionConfig
 from nemo.collections.asr.parts.mixins import TranscribeConfig, TranscriptionMixin
 from nemo.collections.asr.parts.mixins.transcription import GenericTranscriptionType
+from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecodingConfig
 from nemo.collections.asr.parts.utils import Hypothesis
 
 
@@ -79,7 +81,6 @@ class DummyDataset(Dataset):
         return len(self.audio_tensors)
 
 
-@pytest.mark.with_downloads()
 @pytest.fixture()
 def audio_files(test_data_dir):
     """
@@ -545,3 +546,30 @@ class TestTranscriptionMixin:
         # check timestamp
         assert output[0].timestamp['segment'][0]['start'] == pytest.approx(0.16)
         assert output[0].timestamp['segment'][0]['end'] == pytest.approx(0.56)
+
+    @pytest.mark.unit
+    def test_transcribe_returns_xattn(self, audio_files, canary_1b_v2):
+        canary_1b_v2.eval()
+        audio1, audio2 = audio_files
+
+        orig_decoding_config = copy.deepcopy(canary_1b_v2.cfg.decoding)
+
+        decoding_config = MultiTaskDecodingConfig()
+        decoding_config.return_xattn_scores = True
+        canary_1b_v2.change_decoding_strategy(decoding_config)
+
+        config = MultiTaskTranscriptionConfig(
+            batch_size=4,
+            return_hypotheses=True,
+            num_workers=0,
+            verbose=False,
+            prompt={'source_lang': 'en', 'target_lang': 'en'},
+            enable_chunking=False,
+        )
+
+        output = canary_1b_v2.transcribe([audio1, audio2], override_config=config)
+        assert output[0].xatt_scores is not None
+        assert output[1].xatt_scores is not None
+
+        # Reset the decoding strategy to original
+        canary_1b_v2.change_decoding_strategy(orig_decoding_config)

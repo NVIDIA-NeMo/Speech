@@ -11,6 +11,7 @@ Duplex S2S models use the Lhotse framework for audio data management. The primar
 
 1. **DuplexS2SDataset**: For general duplex speech-to-speech models
 2. **SALMDataset**: Specifically for the Speech-Augmented Language Model (SALM), which processes speech+text and outputs text.
+3. **DuplexEARTTSDataset**: Dataset for Duplex EARTTS model, extending DuplexS2SDataset with additional output fields for TTS, including audio prompting. It optionally prepends an audio prompt (speaker reference) to target_audio, which is used to initialize speaker conditioning in the EARTTS model. The dataset provides audio_prompt, audio_prompt_lens, non_prompt_mask, aligned_attention_mask, and aligned_position_ids, and supports custom speaker reference audio through the context_audio field, while preserving full compatibility with the original data format.
 
 DuplexS2S Dataset Structure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -115,7 +116,7 @@ SALMDataset Structure
 ^^^^^^^^^^^^^^^^^^^^^
 
 Data used for SALM can be either regular speech-to-text data (in any NeMo or Lhotse format), or a dataset of multi-turn conversions.
-For the most part, please refer to `the Configuring multimodal dataloading section <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/datasets.html#configuring-multimodal-dataloading>`_ in the ASR documentation.
+For the most part, please refer to :doc:`the ASR datasets documentation <../asr/datasets>` for details on data formats and multimodal dataloading.
 
 When using speech-to-text data, you'll need read it with a special ``lhotse_as_conversation`` data reader
 that creates a two-turn, query+response, multi-modal conversation data types out of regular Lhotse cuts.
@@ -291,7 +292,7 @@ Note that the actual dataset paths and blend are defined by the YAML config, not
 To learn more about the YAML data config, see :ref:`the Extended multi-dataset configuration format <asr-dataset-config-format>` section in the ASR documentation.
 
 Preparing S2S Datasets
-------------------
+----------------------
 
 Creating Lhotse Manifests
 ^^^^^^^^^^^^^^^^^^^^^^^^^

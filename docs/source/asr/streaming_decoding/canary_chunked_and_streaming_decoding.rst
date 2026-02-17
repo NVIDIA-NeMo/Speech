@@ -104,7 +104,7 @@ Key Parameters
 The script supports latency calculation based on `Length-Adaptive Average Lagging metric (LAAL) <https://aclanthology.org/2022.autosimtrans-1.2.pdf>`_ for both streaming policies.
 
 Brief comparison of the two streaming policies:
-----------------------------------------------
+------------------------------------------------
 
 * **Wait-k**: Higher accuracy, requires larger left context, higher latency
 * **AlignAtt**: Lower latency, suitable for production, predicts multiple tokens per chunk

@@ -422,9 +422,9 @@ class CodecExtractor(pl.LightningModule):
                     encoded=context_audios_encoded, encoded_len=context_audios_encoded_len
                 )
             return {
-                "target_codes": target_tokens.to(dtype=torch.int16, device="cpu"),
+                "target_codes": target_tokens.to(dtype=torch.uint16, device="cpu"),
                 "target_codes_lengths": target_audios_encoded_len.to(device="cpu"),
-                "context_codes": context_tokens.to(dtype=torch.int16, device="cpu"),
+                "context_codes": context_tokens.to(dtype=torch.uint16, device="cpu"),
                 "context_codes_lengths": context_audios_encoded_len.to(device="cpu"),
             }
         except Exception as e:

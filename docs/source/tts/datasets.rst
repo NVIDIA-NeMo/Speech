@@ -23,6 +23,48 @@ Once there is a manifest that describes each audio file in the dataset, assign t
 
 Following the instructions below on how to run the corpus-specific scripts, you can get started with either directly processing those public datasets, or creating your custom scripts to preprocess your custom datasets scripts.
 
+TTS Data Collection Classes and Datasets
+----------------------------------------
+The ``nemo.collections.tts.data`` package provides dataset classes and helpers used by TTS models. The descriptions below are drawn from the docstrings in the source; see the code for full argument lists and defaults.
+
+**dataset.py**
+
+* **TTSDataset** — Dataset for training spectrogram generators and end-to-end TTS models. It loads main data (audio, text) and optional supplementary types (log mel, durations, align prior matrix, pitch, energy, speaker id). Some supplementary data is computed on the fly and saved under ``sup_data_path``. Expects JSON-line manifests with fields such as ``audio_filepath``, ``text``, optional ``normalized_text``, ``mel_filepath``, ``duration``. Supports trimming, STFT/mel args, min/max duration, ignore lists, and optional pitch augmentation and segment max duration.
+
+* **VocoderDataset** — Dataset for training and fine-tuning vocoders with optional pre-computed mel-spectrograms. Manifest lines include ``audio_filepath``, optional ``duration`` and ``mel_filepath`` (.npy or .pt). Supports ``n_segments`` for random segments, min/max duration, ignore file, trim, and ``load_precomputed_mel`` with ``hop_length``.
+
+* **FastPitchSSLDataset** — Dataset for FastPitchModel_SSL. Requires supplementary data from ``scripts/ssl_tts/make_supdata.py``. Manifest should include ``audio_filepath``, optional ``speaker`` and ``duration``. Supports ``ssl_content_emb_type`` (probs/embedding/log_probs/embedding_and_probs), pitch conditioning and normalization (speaker_wise/global/none), ``sup_data_dir``, ``speaker_stats_pitch_fp``, and ``speaker_conditioning_type`` (per_sample/mean/interpolate).
+
+* **DistributedBucketSampler** — Sampler that keeps similar input lengths in a batch. Length groups are given by boundaries; samples outside those boundaries are removed. Integrates with distributed training (num_replicas, rank, shuffle).
+
+**text_to_speech_dataset.py**
+
+* **DatasetMeta** — Dataclass with ``manifest_path``, ``audio_dir``, ``feature_dir``, ``sample_weight``, ``tokenizer_names``.
+
+* **DatasetSample** — Dataclass with ``dataset_name``, ``manifest_entry``, ``audio_dir``, ``feature_dir``, ``text``, ``speaker``, ``speaker_index``, ``tokenizer_names``.
+
+* **TextToSpeechDataset** — Class for processing and loading text-to-speech training examples. Arguments include ``dataset_meta``, ``sample_rate``, ``text_tokenizer``, optional ``weighted_sampling_steps_per_epoch``, ``speaker_path``, ``featurizers``, ``feature_processors``, ``align_prior_hop_length``, ``min_duration``, ``max_duration``, and ``volume_norm``.
+
+* **MagpieTTSDataset** — For Magpie-TTS. In addition to the manifest structure for TextToSpeechDataset, supports ``context_audio_filepath``, ``context_audio_duration``, ``target_audio_codes_path``, ``context_audio_codes_path``. If code paths are missing or ``load_cached_codes_if_available=False``, audio is loaded and codes computed in the model. Supports codec frame rate, BOS/EOS ids, prior scaling, tokenizer config, 16 kHz audio for speaker verification, text conditioning tokenizer, context duration min/max, and text context remapping.
+
+* **MagpieTTSDatasetDPO** — For DPO training. Manifests are created with ``scripts/magpietts/dpo/create_text_contextpairs.py`` and ``scripts/magpietts/dpo/create_preference_pairs.py``. Returns chosen/rejected pairs with reward labels.
+
+* **LongFormTTSInferenceDataset** — Dataset for longform TTS inference with sentence-level text chunking. Inherits MagpieTTSDataset for context audio and text conditioning; adds sentence-level chunking. Arguments include ``dataset_meta``, ``sample_rate``, ``tokenizer_name``, codec/token IDs, and context duration and text conditioning options.
+
+**text_to_speech_dataset_lhotse.py**
+
+* **MagpieTTSLhotseDataset** — PyTorch Dataset for MagpieTTS using Lhotse CutSets, for target utterances with optional text or audio context. It loads pre-computed audio codes or raw audio, applies volume normalization, and tokenizes text. Context audio/codes are sliced or repeated to fit ``context_duration_min``–``context_duration_max``. Optional 16 kHz audio for speaker verification and alignment priors. Tokenizers are initialized lazily per worker. Supports ``load_cached_codes_if_available``, ``dataset_type``, ``pad_context_text_to_max_duration``, and ``use_text_conditioning_tokenizer`` with ``tokenizer_config``.
+
+**vocoder_dataset.py**
+
+* **DatasetMeta** — Dataclass with ``manifest_path``, ``audio_dir``, ``sample_weight``, optional ``audio_tar_filepaths``.
+
+* **DatasetSample** — Dataclass with ``dataset_name``, ``manifest_entry``, ``audio_dir``.
+
+* **VocoderDataset** — Class for processing and loading vocoder training examples. Uses ``dataset_meta`` and ``sample_rate``; audio is resampled if needed. Supports featurizers and feature processors.
+
+* **TarredVocoderDataset** — Similar to VocoderDataset but loads tarred audio (WebDataset). Accepts a comma-separated JSON manifest and path(s) to tarballs; supports brace expansion. Options include ``n_samples``, ``shuffle_n``, min/max/trunc duration, ``feature_processors``, and ``shard_strategy`` (scatter vs replicate) for DDP. The helper **preprocess_manifest** filters by duration and builds samples/weights; **audio_collate_fn** stacks batched audio and lengths.
+
 Public TTS Datasets
 ------------------------------
 This table below summarizes the statistics for a collection of high-quality public datasets used by NeMo TTS. We recommend to start customizing the scripts for your custom datasets that have close sampling rate and number of speakers.

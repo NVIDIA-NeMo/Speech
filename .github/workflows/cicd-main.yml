@@ -46,6 +46,8 @@ jobs:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
       HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
+      HAS_FORCE_SPEECH_CI_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'force-run-speech-ci') }}
+      HAS_FORCE_NEMO2_CI_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'force-run-nemo2-ci') }}
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
@@ -58,7 +60,11 @@ jobs:
           pip install -U pip
           pip install git-python
 
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          if [[ "$HAS_FORCE_SPEECH_CI_LABEL" == "true" ]]; then
+            echo '["speech"]' | tee -a test_modules.json
+          elif [[ "$HAS_FORCE_NEMO2_CI_LABEL" == "true" ]]; then
+            echo '["speech"]' | tee -a test_modules.json
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
           else
             echo '["nemo2", "export-deploy", "speech"]' | tee -a test_modules.json
@@ -272,28 +278,6 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-nemo2:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-nemo2.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
-          || needs.pre-flight.outputs.components_to_run == '["all"]'
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
-
   Nemo_CICD_Test:
     needs:
       - pre-flight
@@ -301,7 +285,6 @@ jobs:
       - cicd-import-tests
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
-      - cicd-main-nemo2
       - cicd-main-speech
     if: always()
     runs-on: ubuntu-latest

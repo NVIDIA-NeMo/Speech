@@ -119,7 +119,7 @@ class ConfigManager:
 
     def _configure_stt(self):
         """Configure STT parameters."""
-        self.STT_MODEL_PATH = self.server_config.stt.model
+        self.STT_MODEL = self.server_config.stt.model
         self.STT_DEVICE = self.server_config.stt.device
         # Apply STT-specific configuration based on model type
         # Try to get STT config file name from server config first
@@ -127,10 +127,14 @@ class ConfigManager:
             yaml_file_name = os.path.basename(self.server_config.stt.model_config)
         else:
             # Get STT configuration from registry
-            if self.server_config.stt.type == "nemo" and "stt_en_fastconformer" in self.model_registry.stt_models:
-                yaml_file_name = self.model_registry.stt_models[self.server_config.stt.model].yaml_id
+            if str(self.STT_MODEL).endswith(".nemo"):
+                model_name = os.path.splitext(os.path.basename(self.STT_MODEL))[0]
             else:
-                error_msg = f"STT model {self.STT_MODEL_PATH} with type {self.server_config.stt.type} is not supported configuration."
+                model_name = self.STT_MODEL
+            if model_name in self.model_registry.stt_models:
+                yaml_file_name = self.model_registry.stt_models[model_name].yaml_id
+            else:
+                error_msg = f"STT model {model_name} is not in model registry: {self.model_registry.stt_models}."
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -143,7 +147,8 @@ class ConfigManager:
         for key in stt_config:
             if key in self.server_config.stt and self.server_config.stt[key] != stt_config[key]:
                 logger.info(
-                    f"STT config field `{key}` is overridden from `{self.server_config.stt[key]}` to `{stt_config[key]}` by {stt_config_path}"
+                    f"STT config field `{key}` is overridden from `{self.server_config.stt[key]}` "
+                    f"to `{stt_config[key]}` by {stt_config_path}"
                 )
             self.server_config.stt[key] = stt_config[key]
 
@@ -176,6 +181,7 @@ class ConfigManager:
     def _configure_llm(self):
         """Configure LLM parameters."""
         llm_model_id = self.server_config.llm.model
+        is_registry_model = False
 
         # Try to get LLM config file name from server config first
         if self.server_config.llm.get("model_config", None) is not None:
@@ -184,18 +190,22 @@ class ConfigManager:
             # Get LLM configuration from registry
             if llm_model_id in self.model_registry.llm_models:
                 yaml_file_name = self.model_registry.llm_models[llm_model_id].yaml_id
+                is_registry_model = True
             else:
                 logger.warning(
-                    f"LLM model {llm_model_id} is not included in the model registry. Using a generic HuggingFace LLM config."
+                    f"LLM model {llm_model_id} is not included in the model registry. "
+                    "Using a generic HuggingFace LLM config instead."
                 )
                 yaml_file_name = self.model_registry.llm_models[self._generic_hf_llm_model_id].yaml_id
 
         # Load and merge LLM configuration
         llm_config_path = f"{os.path.abspath(self._server_base_path)}/server_configs/llm_configs/{yaml_file_name}"
 
-        if self.model_registry.llm_models[llm_model_id].get(
-            "reasoning_supported", False
-        ) and self.server_config.llm.get("enable_reasoning", False):
+        if (
+            is_registry_model
+            and self.model_registry.llm_models[llm_model_id].get("reasoning_supported", False)
+            and self.server_config.llm.get("enable_reasoning", False)
+        ):
             llm_config_path = llm_config_path.replace(".yaml", "_think.yaml")
 
         if not os.path.exists(llm_config_path):
@@ -208,7 +218,8 @@ class ConfigManager:
         for key in llm_config:
             if key in self.server_config.llm and self.server_config.llm[key] != llm_config[key]:
                 logger.info(
-                    f"LLM config field `{key}` is overridden from `{self.server_config.llm[key]}` to `{llm_config[key]}` by {llm_config_path}"
+                    f"LLM config field `{key}` is overridden from `{self.server_config.llm[key]}` to "
+                    f"`{llm_config[key]}` by {llm_config_path}"
                 )
             self.server_config.llm[key] = llm_config[key]
 
@@ -226,7 +237,7 @@ class ConfigManager:
             logger.info(f"No system prompt provided, using default system prompt: {self.SYSTEM_PROMPT}")
 
         if self.server_config.llm.get("system_prompt_suffix", None) is not None:
-            self.SYSTEM_PROMPT += self.server_config.llm.system_prompt_suffix
+            self.SYSTEM_PROMPT += "\n" + self.server_config.llm.system_prompt_suffix
             logger.info(f"Adding system prompt suffix: {self.server_config.llm.system_prompt_suffix}")
 
         logger.info(f"System prompt: {self.SYSTEM_PROMPT}")
@@ -240,10 +251,10 @@ class ConfigManager:
             yaml_file_name = os.path.basename(self.server_config.tts.model_config)
         else:
             # Get TTS configuration from registry
-            if self.server_config.tts.type == "nemo" and "fastpitch-hifigan" in self.server_config.tts.model:
+            if tts_model_id in self.model_registry.tts_models:
                 yaml_file_name = self.model_registry.tts_models[tts_model_id].yaml_id
             else:
-                error_msg = f"TTS model {self.server_config.tts.model} with type {self.server_config.tts.type} is not supported configuration."
+                error_msg = f"TTS model {tts_model_id} is not in model registry: {self.model_registry.tts_models}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
@@ -256,7 +267,8 @@ class ConfigManager:
         for key in tts_config:
             if key in self.server_config.tts and self.server_config.tts[key] != tts_config[key]:
                 logger.info(
-                    f"TTS config field `{key}` is overridden from `{self.server_config.tts[key]}` to `{tts_config[key]}` by {tts_config_path}"
+                    f"TTS config field `{key}` is overridden from `{self.server_config.tts[key]}` to "
+                    f"`{tts_config[key]}` by {tts_config_path}"
                 )
             self.server_config.tts[key] = tts_config[key]
 

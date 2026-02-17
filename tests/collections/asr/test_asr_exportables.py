@@ -48,7 +48,8 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'qn.onnx')
             model.export(
-                output=filename, check_trace=True,
+                output=filename,
+                check_trace=True,
             )
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
@@ -62,7 +63,8 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'edc.onnx')
             model.export(
-                output=filename, check_trace=True,
+                output=filename,
+                check_trace=True,
             )
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
@@ -105,7 +107,9 @@ class TestExportable:
             input_example = torch.randn(4, model.encoder._feat_in, 777, device=device)
             input_example_length = torch.full(size=(input_example.shape[0],), fill_value=777, device=device)
             model.export(
-                output=filename, input_example=tuple([input_example, input_example_length]), check_trace=True,
+                output=filename,
+                input_example=tuple([input_example, input_example_length]),
+                check_trace=True,
             )
 
     @pytest.mark.run_only_on('GPU')
@@ -128,7 +132,8 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir, torch.cuda.amp.autocast():
             filename = os.path.join(tmpdir, 'citri_se.onnx')
             model.export(
-                output=filename, check_trace=True,
+                output=filename,
+                check_trace=True,
             )
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
@@ -261,7 +266,8 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'qn.onnx')
             model.export(
-                output=filename, check_trace=True,
+                output=filename,
+                check_trace=True,
             )
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
@@ -364,7 +370,10 @@ def speech_classification_model():
 
     decoder = {
         'cls': 'nemo.collections.asr.modules.ConvASRDecoderClassification',
-        'params': {'feat_in': 32, 'num_classes': 30,},
+        'params': {
+            'feat_in': 32,
+            'num_classes': 30,
+        },
     }
 
     modelConfig = DictConfig(

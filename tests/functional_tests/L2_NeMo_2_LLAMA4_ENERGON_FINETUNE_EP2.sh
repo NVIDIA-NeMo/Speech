@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-TRANSFORMERS_OFFLINE=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/vlm/llama4/llama4_finetune.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/vlm/llama4/llama4_finetune.py \
     --devices=2 --data_type=energon --use_toy_model \
     --data_path=/home/TestData/tiny_datasets/llava-energon \
     --mbs=1 --gbs=4 --max_steps=4 \

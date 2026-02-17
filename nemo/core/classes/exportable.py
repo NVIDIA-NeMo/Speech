@@ -273,6 +273,7 @@ class Exportable(ABC):
                             opset_version=onnx_opset_version,
                             keep_initializers_as_inputs=keep_initializers_as_inputs,
                             export_modules_as_functions=export_modules_as_functions,
+                            dynamo=False,  # Use legacy TorchScript-based exporter for LSTM compatibility
                         )
 
                     if check_trace:

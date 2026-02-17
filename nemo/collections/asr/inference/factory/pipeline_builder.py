@@ -13,13 +13,12 @@
 # limitations under the License.
 
 
-from typing import Any
-
 import torch
 from omegaconf.dictconfig import DictConfig
 
 from nemo.collections.asr.inference.factory.buffered_pipeline_builder import BufferedPipelineBuilder
 from nemo.collections.asr.inference.factory.cache_aware_pipeline_builder import CacheAwarePipelineBuilder
+from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.utils.enums import PipelineType
 from nemo.utils import logging
 
@@ -54,7 +53,7 @@ class PipelineBuilder:
         logging.setLevel(log_level)
 
     @staticmethod
-    def build_pipeline(cfg: DictConfig) -> Any:
+    def build_pipeline(cfg: DictConfig) -> BasePipeline:
         """
         Build the pipeline based on the config.
         Args:

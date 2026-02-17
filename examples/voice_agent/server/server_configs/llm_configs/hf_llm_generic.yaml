@@ -6,6 +6,7 @@
 dtype: bfloat16  # torch.dtype for LLM
 system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
 system_prompt_suffix: "/no_think"  # a string that would be appended to the system prompt, used to enable/disable thinking
+enable_tool_calling: False  # Tool calling is not supported by default, since different LLMs have diffferent implementations
 
 ##############################
 ## Common generation config ##

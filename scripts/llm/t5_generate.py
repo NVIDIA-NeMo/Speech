@@ -43,14 +43,14 @@ def get_args():
         metavar='N',
         type=str,
         nargs='+',
-        help='Prompts with each prompt within quotes and seperated by space.',
+        help='Prompts with each prompt within quotes and separated by space.',
     )
     parser.add_argument(
         "--encoder-prompts",
         metavar='N',
         type=str,
         nargs='+',
-        help='Encoder input prompts with each prompt within quotes and seperated by space.',
+        help='Encoder input prompts with each prompt within quotes and separated by space.',
     )
     parser.add_argument("--max-batch-size", type=int, default=1, help='Max number of prompts to process at once.')
 

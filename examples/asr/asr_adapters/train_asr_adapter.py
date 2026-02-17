@@ -242,7 +242,7 @@ def main(cfg):
             state_path = ckpt_path
         state_path = os.path.join(state_path, adapter_state_dict_name)
 
-        # Save the adapter modules in a seperate file
+        # Save the adapter modules in a separate file
         model.save_adapters(str(state_path))
 
     if 'delete_ckpt_after_train' in cfg:

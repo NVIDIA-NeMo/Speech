@@ -114,7 +114,7 @@ def get_ssl_features_disentangled(
     ssl_model, wav_featurizer, audio_path, emb_type="embedding_and_probs", use_unique_tokens=False, device="cpu"
 ):
     """
-    Extracts content embedding, speaker embedding and duration tokens to be used as inputs for FastPitchModel_SSL 
+    Extracts content embedding, speaker embedding and duration tokens to be used as inputs for FastPitchModel_SSL
     synthesizer. Content embedding and speaker embedding extracted using SSLDisentangler model.
     Args:
         ssl_model: SSLDisentangler model
@@ -203,7 +203,7 @@ def main():
     parser.add_argument('--hifi_ckpt_path', type=str)
     parser.add_argument('--fastpitch_ckpt_path', type=str)
     parser.add_argument('--source_audio_path', type=str)
-    parser.add_argument('--target_audio_path', type=str)  # can be a list seperated by comma
+    parser.add_argument('--target_audio_path', type=str)  # can be a list separated by comma
     parser.add_argument('--out_path', type=str)
     parser.add_argument('--source_target_out_pairs', type=str)
     parser.add_argument('--use_unique_tokens', type=int, default=0)

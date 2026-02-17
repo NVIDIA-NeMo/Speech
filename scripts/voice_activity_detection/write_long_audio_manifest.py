@@ -27,7 +27,7 @@ This script is designed for inference of frame level Voice Activity Detection (V
 This script serves three goals:
     (1) Write audio files to manifest
     (2) Split audio file for avoiding CUDA memory issue
-    (3) Take care of joint of seperate json line for an audio file
+    (3) Take care of joint of separate json line for an audio file
 
 Usage:
 python write_long_audio_manifest.py  --inp_dir=<FULL PATH OF FOLDER OF AUDIO FILES>  --split_duration=300 --window_length_in_sec=0.63 --num_worker=10

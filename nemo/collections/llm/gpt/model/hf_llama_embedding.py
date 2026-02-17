@@ -313,7 +313,7 @@ def get_llama_bidirectional_hf_model(
     # configure pooling
     pooling_module = Pooling(pooling_mode=pooling_mode)
 
-    # NV-Embed-v1 model has seperate embedding model and a built-in pooling module
+    # NV-Embed-v1 model has separate embedding model and a built-in pooling module
     if (
         model.__class__.__name__ == "NVEmbedModel"
         and hasattr(model, "latent_attention_model")

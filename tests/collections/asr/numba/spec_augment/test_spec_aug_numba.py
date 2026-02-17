@@ -293,5 +293,5 @@ class TestSpecAugmentNumba:
         x_copy = x.clone()
         launch_kernel(data, cfg)
 
-        # Assert no data edits occured
+        # Assert no data edits occurred
         assert (data['x'] - x_copy).abs().mean() <= 1e-9

@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+from lightning.pytorch import Trainer
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf, open_dict
 
@@ -367,7 +368,7 @@ class ASREOUModelMixin:
 
 
 class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
-    def __init__(self, cfg: DictConfig, trainer):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
 
         self._patch_decoding_cfg(cfg)
         super().__init__(cfg=cfg, trainer=trainer)
@@ -408,8 +409,14 @@ class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
             tokenizer=self.tokenizer,
         )
 
-    def _transcribe_forward(self, batch: AudioToTextEOUBatch, trcfg: TranscribeConfig):
-        encoded, encoded_len = self.forward(input_signal=batch.audio_signal, input_signal_length=batch.audio_lengths)
+    def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
+        if isinstance(batch, AudioToTextEOUBatch):
+            signal = batch.audio_signal
+            signal_len = batch.audio_lengths
+        else:
+            signal = batch[0]
+            signal_len = batch[1]
+        encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
         output = dict(encoded=encoded, encoded_len=encoded_len)
         return output
 
@@ -744,6 +751,17 @@ class EncDecHybridRNNTCTCBPEEOUModel(EncDecHybridRNNTCTCBPEModel, ASREOUModelMix
             dataset=dataset,
             tokenizer=self.tokenizer,
         )
+
+    def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
+        if isinstance(batch, AudioToTextEOUBatch):
+            signal = batch.audio_signal
+            signal_len = batch.audio_lengths
+        else:
+            signal = batch[0]
+            signal_len = batch[1]
+        encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+        output = dict(encoded=encoded, encoded_len=encoded_len)
+        return output
 
     def training_step(self, batch: AudioToTextEOUBatch, batch_nb):
         signal = batch.audio_signal

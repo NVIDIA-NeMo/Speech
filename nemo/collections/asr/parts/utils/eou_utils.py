@@ -159,6 +159,7 @@ def evaluate_eou(
         missing += len(reference) - r_idx
 
     missing -= len(earlycut_ids)  # Remove the references that were missed due to early cutoff
+    false_negatives -= len(earlycut_ids) # Remove the references that were missed due to early cutoff
     return EOUResult(
         latency=latency,
         early_cutoff=early_cutoff,

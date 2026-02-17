@@ -12,83 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 from typing import List
 
 import numpy as np
 import pytest
-from omegaconf import DictConfig
 
-from nemo.collections.asr.models.asr_eou_models import EncDecHybridRNNTCTCBPEEOUModel, EncDecRNNTBPEEOUModel
 from nemo.collections.asr.parts.utils.eou_utils import EOUResult, cal_eou_metrics_from_frame_labels
-
-
-@pytest.fixture()
-def asr_model(test_data_dir):
-    preprocessor = {'cls': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor', 'params': dict({})}
-
-    model_defaults = {'enc_hidden': 1024, 'pred_hidden': 64}
-
-    encoder = {
-        'cls': 'nemo.collections.asr.modules.ConvASREncoder',
-        'params': {
-            'feat_in': 64,
-            'activation': 'relu',
-            'conv_mask': True,
-            'jasper': [
-                {
-                    'filters': model_defaults['enc_hidden'],
-                    'repeat': 1,
-                    'kernel': [1],
-                    'stride': [1],
-                    'dilation': [1],
-                    'dropout': 0.0,
-                    'residual': False,
-                    'separable': True,
-                    'se': True,
-                    'se_context_size': -1,
-                }
-            ],
-        },
-    }
-
-    decoder = {
-        '_target_': 'nemo.collections.asr.modules.RNNTDecoder',
-        'prednet': {
-            'pred_hidden': model_defaults['pred_hidden'],
-            'pred_rnn_layers': 1,
-        },
-    }
-
-    joint = {
-        '_target_': 'nemo.collections.asr.modules.RNNTJoint',
-        'jointnet': {
-            'joint_hidden': 32,
-            'activation': 'relu',
-        },
-    }
-
-    decoding = {'strategy': 'greedy_batch', 'greedy': {'max_symbols': 30}}
-
-    tokenizer = {'dir': os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128"), 'type': 'wpe'}
-
-    loss = {'loss_name': 'default', 'warprnnt_numba_kwargs': {'fastemit_lambda': 0.001}}
-
-    modelConfig = DictConfig(
-        {
-            'preprocessor': DictConfig(preprocessor),
-            'model_defaults': DictConfig(model_defaults),
-            'encoder': DictConfig(encoder),
-            'decoder': DictConfig(decoder),
-            'joint': DictConfig(joint),
-            'tokenizer': DictConfig(tokenizer),
-            'decoding': DictConfig(decoding),
-            'loss': DictConfig(loss),
-        }
-    )
-
-    model_instance = EncDecRNNTBPEEOUModel(cfg=modelConfig)
-    return model_instance
 
 
 def make_eou_frame_labels(duration: float, eou_time: float, frame_len_in_secs: float = 0.08) -> List[float]:
@@ -130,4 +59,38 @@ class TestEOUMetrics:
         assert eou_metrics.num_predictions == 1
         assert eou_metrics.missing == 0
         assert eou_metrics.latency == []
-        assert eou_metrics.early_cutoff == [0.32]
+        assert np.isclose(eou_metrics.early_cutoff, [0.32])
+
+
+        # Test case 2: Latency
+        pred_eou_time = 0.96
+        preds = make_eou_frame_labels(duration, pred_eou_time, frame_len_in_secs)
+        eou_metrics: EOUResult = cal_eou_metrics_from_frame_labels(
+            prediction=preds, reference=ref_labels, frame_len_in_secs=frame_len_in_secs
+        )
+        assert eou_metrics.true_positives == 0
+        assert eou_metrics.false_positives == 0
+        assert eou_metrics.false_negatives == 1
+        assert eou_metrics.num_utterances == 1
+        assert eou_metrics.num_predictions == 1
+        assert eou_metrics.missing == 0
+        assert np.isclose(eou_metrics.latency, [0.32])
+        assert eou_metrics.early_cutoff == []
+
+        # Test case 3: miss detection
+        preds = [0] * len(ref_labels)
+        eou_metrics: EOUResult = cal_eou_metrics_from_frame_labels(
+            prediction=preds, reference=ref_labels, frame_len_in_secs=frame_len_in_secs
+        )
+        assert eou_metrics.true_positives == 0
+        assert eou_metrics.false_positives == 0
+        assert eou_metrics.false_negatives == 1
+        assert eou_metrics.num_utterances == 1
+        assert eou_metrics.num_predictions == 0
+        assert eou_metrics.missing == 1
+        assert eou_metrics.latency == []
+        assert eou_metrics.early_cutoff == []
+
+
+
+    

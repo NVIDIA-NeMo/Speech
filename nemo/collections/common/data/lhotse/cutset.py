@@ -47,6 +47,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     NeMoMultimodalConversation,
     NeMoMultimodalConversationJsonlAdapter,
     NeMoMultimodalConversationShareGPTJsonlAdapter,
+    NeMoMultimodalConversationShareGPTWebdatasetAdapter,
     NeMoSFTJsonlAdapter,
     TextTurn,
 )
@@ -324,10 +325,29 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             tarred_audio_filepaths=config.get("tarred_audio_filepaths"),
             audio_locator_tag=config.audio_locator_tag,
             audio_placeholders=config.audio_placeholders,
+            audio_root=config.get("audio_root"),
             token_equivalent_duration=config.get("token_equivalent_duration"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             slice_length=config.get("slice_length"),
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
+@data_type_parser(["share_gpt_webdataset"])
+def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
+    """Read ShareGPT conversations from WebDataset tar archives."""
+    cuts = CutSet(
+        NeMoMultimodalConversationShareGPTWebdatasetAdapter(
+            data_dir=config.data_dir,
+            audio_locator_tag=config.audio_locator_tag,
+            audio_placeholders=config.get("audio_placeholders"),
+            token_equivalent_duration=config.get("token_equivalent_duration"),
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
         )
     )
     if not config.get("force_finite", False):

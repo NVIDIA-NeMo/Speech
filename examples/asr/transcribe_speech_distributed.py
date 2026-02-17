@@ -14,7 +14,7 @@
 
 from collections import defaultdict
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
 from typing import List
@@ -232,7 +232,7 @@ def maybe_merge_manifest(cfg: TranscriptionConfig):
         return
 
     # only merge manifest on the first GPU of the first node
-    if not cfg.gpu_idx == 0 and cfg.node_idx == 0:
+    if not (cfg.gpu_idx == 0 and cfg.node_idx == 0):
         return
 
     sharded_manifest_dir = Path(cfg.output_dir)

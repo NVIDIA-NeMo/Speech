@@ -13,6 +13,8 @@
 # limitations under the License.
 
 """
+A script to add EOB labels to a manifest file.
+
 Example usage:
 
 ```bash
@@ -162,6 +164,15 @@ def check_if_backchannel(text):
 
 
 def add_eob_labels(manifest_path):
+    """
+    Add EOB labels to a manifest file.
+    Args:
+        manifest_path: Path to the manifest file.
+
+    Returns:
+        manifest: List of dictionaries with the EOB label added.
+        num_eob: Number of EOB labels added.
+    """
     num_eob = 0
     manifest = read_manifest(manifest_path)
     for i, item in enumerate(manifest):

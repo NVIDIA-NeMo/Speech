@@ -77,7 +77,16 @@ parser.add_argument(
 )
 
 
-def extract_nemo_tokenizer(nemo_filepath, output_dir):
+def extract_nemo_tokenizer(nemo_filepath: str, output_dir: Path) -> str:
+    """
+    Extract a tokenizer from a Nemo file.
+    Args:
+        nemo_filepath: Path to the Nemo file.
+        output_dir: Path to the output directory.
+
+    Returns:
+        tokenizer: Path to the tokenizer file.
+    """
     SaveRestoreConnector._unpack_nemo_file(path2file=nemo_filepath, out_folder=output_dir)
     tokenizer = None
     for file in Path(output_dir).glob("**/*"):
@@ -90,6 +99,16 @@ def extract_nemo_tokenizer(nemo_filepath, output_dir):
 
 
 def edit_spt_model(input_file, output_dir, tokens, is_userdefined, extract_only=False):
+    """
+    Edit a sentencepiece model to add special tokens.
+    Args:
+        input_file: Path to the input sentencepiece model file.
+        output_dir: Path to the output directory.
+        tokens: List of special tokens to add.
+        is_userdefined: Whether the special tokens are user-defined.
+        extract_only: Whether to extract the tokenizer only.
+    """
+
     if extract_only:
         logging.info("Extracting tokenizer only, no special tokens will be added.")
 
@@ -163,9 +182,17 @@ def edit_spt_model(input_file, output_dir, tokens, is_userdefined, extract_only=
 
 def inject_special_tokens(input_file, output_dir, tokens, is_userdefined=True, extract_only=False):
     """
-    NOTE: is_userdefined should be set to True in order for ASR model to work
-    with the new special tokens properly.
+    Inject special tokens into a sentencepiece model.
+    NOTE: is_userdefined should be set to True in order for ASR model to work with the new special tokens properly.
+
+    Args:
+        input_file: Path to the input sentencepiece model file.
+        output_dir: Path to the output directory.
+        tokens: List of special tokens to add.
+        is_userdefined: Whether the special tokens are user-defined.
+        extract_only: Whether to extract the tokenizer only.
     """
+
     if not os.path.exists(input_file):
         raise ValueError(f"Input file {input_file} does not exist")
 

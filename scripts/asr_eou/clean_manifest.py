@@ -13,6 +13,8 @@
 # limitations under the License.
 
 """
+A rule-based text cleaning script for preparing text for ASR-EOU model training.
+
 Example usage:
 
 ```bash

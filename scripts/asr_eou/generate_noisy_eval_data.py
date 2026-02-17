@@ -49,7 +49,7 @@ import soundfile as sf
 import torch
 import yaml
 from lhotse.cut import MixedCut
-from omegaconf import ListConfig, OmegaConf, open_dict
+from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_eou_label_lhotse import LhotseSpeechToTextBpeEOUDataset
@@ -61,7 +61,13 @@ from nemo.utils import logging
 
 
 @hydra_runner(config_path="conf/", config_name="data")
-def main(cfg):
+def main(cfg: DictConfig):
+    """
+    Generate noisy evaluation data for ASR and end of utterance detection.
+
+    Args:
+        cfg: DictConfig object containing the configuration.
+    """
     # Seed everything for reproducibility
     seed = cfg.data.get('seed', None)
     if seed is None:
@@ -122,7 +128,14 @@ def main(cfg):
         process_manifest(data_cfg, output_dir)
 
 
-def process_manifest(data_cfg, output_dir):
+def process_manifest(data_cfg: DictConfig, output_dir: Path):
+    """
+    Process a manifest file and generate noisy evaluation data.
+
+    Args:
+        data_cfg: Configuration.
+        output_dir: Output directory.
+    """
     # Load the input manifest
     input_manifest = read_manifest(data_cfg.manifest_filepath)
     logging.info(f'Found {len(input_manifest)} items in input manifest: {data_cfg.manifest_filepath}')

@@ -1,4 +1,4 @@
-# It contains the default values for training a cache-aware streaming FastConformer-Transducer ASR+EOU model, large size (~115M) with sub-word encoding.
+# It contains the default values for training a cache-aware streaming FastConformer-Transducer ASR+EOU model, Xlarge size (~600M) with sub-word encoding.
 # Here are the recommended configs for different variants of FastConformer-Transducer-BPE, other parameters are the same as in this config file.
 #
 #  +--------------+---------+---------+----------+----------------+--------------+--------------------------+-----------------+------------+
@@ -64,9 +64,11 @@ model:
       min_pre_pad_duration: 0.0
       max_pad_duration: 6.0  # maximum duration of pre/post padding in seconds
       max_total_duration: 40.0  # maximum total duration of the padded audio in seconds
-      pad_distribution: 'uniform'  # distribution of padding duration, 'uniform' or 'normal'
+      pad_distribution: 'uniform'  # distribution of padding duration, 'uniform' or 'normal' or 'constant'
       normal_mean: 0.5  # mean of normal distribution used when pad_distribution='normal'
       normal_std: 2.0  # standard deviation of normal distribution  used when pad_distribution='normal'
+      pre_pad_duration: 0.2  # amount of pre-padding when pad_distribution='constant'
+      post_pad_duration: 3.0 # amount of post-padding when pad_distribution='constant'
       
     augmentor:
       white_noise:

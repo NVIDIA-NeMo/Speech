@@ -220,6 +220,14 @@ def drop_pnc(text):
 
 
 def clean_text(manifest: List[dict]):
+    """
+    Clean the text in the manifest.
+    Args:
+        manifest: List of dictionaries with the text to clean.
+
+    Returns:
+        manifest: List of dictionaries with the cleaned text.
+    """
     punctuations = punctuation.replace("'", "")
     # replace_with_space = [char for char in '/?*\",.:=?_{|}~¨«·»¡¿„…‧‹›≪≫!:;ː→']
     replace_with_blank = [char for char in '`¨´‘’“”`ʻ‘’“"‘”']

@@ -13,19 +13,19 @@
 # limitations under the License.
 
 """
+This script calculates the EOU metrics using predictions and references in SegLST format.
+
 Example usage:
 
 The PREDICTION_ROOT and REFERENCE_ROOT directories should have the following structure:
 
 <PREDICTION_ROOT>:
 ->dataset1/
-    eou/
-       -> sample1.json
-       -> sample2.json
+    -> sample1.json
+    -> sample2.json
 ->dataset2/
-    eou/
-       -> sample1.json
-       -> sample2.json
+    -> sample1.json
+    -> sample2.json
 
 <REFERENCE_ROOT>:
 ->dataset1/
@@ -49,7 +49,7 @@ each sample.json should contain a list of dictionaries with the following fields
 }
     
 ```bash
-python eval_eou_with_niva.py \
+python eval_eou_metrics.py \
     --prediction $PREDICTION_ROOT \
     --reference $REFERENCE_ROOT  \
     --multiple
@@ -114,7 +114,6 @@ def load_segLST(directory: str, use_eob: bool = False, ignore_eob: bool = False)
 def evaluate_eou_predictions(
     prediction_dir: str, reference_dir: str, use_eob: bool = False, ignore_eob: bool = False
 ) -> List[EOUResult]:
-    prediction_dir = Path(prediction_dir) / "eou"
     prediction_segLST = load_segLST(prediction_dir, use_eob, ignore_eob)
     reference_segLST = load_segLST(reference_dir, use_eob, ignore_eob)
 

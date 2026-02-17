@@ -20,6 +20,19 @@ import numpy as np
 
 @dataclass
 class EOUResult:
+    """
+    A dataclass to store the EOU results.
+    Args:
+        latency: List of latencies in seconds.
+        early_cutoff: List of early cutoffs in seconds.
+        true_positives: Number of true positives.
+        false_negatives: Number of false negatives.
+        false_positives: Number of false positives.
+        num_utterances: Number of utterances.
+        num_predictions: Number of predictions.
+        missing: Number of missing predictions.
+    """
+
     latency: list
     early_cutoff: list
     true_positives: int
@@ -243,7 +256,14 @@ def get_percentiles(values: List[float], percentiles: List[float], tag: str = ""
 
 
 def aggregate_eou_metrics(eou_metrics: List[EOUResult], target_percentiles: List = [50, 90, 95]) -> Dict[str, float]:
-    # Aggregate EOU metrics
+    """
+    Aggregate EOU metrics to produce metrics for logging.
+    Args:
+        eou_metrics: List of EOUResult objects.
+        target_percentiles: List of target percentiles.
+    Returns:
+        Dict: A dictionary containing the aggregated EOU metrics.
+    """
     num_eou_utterances = sum([x.num_utterances for x in eou_metrics])
     eou_latency = flatten_nested_list([x.latency for x in eou_metrics])
     eou_early_cutoff = flatten_nested_list([x.early_cutoff for x in eou_metrics])

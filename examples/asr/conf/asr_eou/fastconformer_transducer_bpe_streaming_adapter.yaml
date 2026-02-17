@@ -1,4 +1,5 @@
-# It contains the default values for training a cache-aware streaming FastConformer-Transducer ASR+EOU model, large size (~115M) with sub-word encoding.
+# It contains the default values for training a cache-aware streaming FastConformer-Transducer ASR+EOU model, large size (~120M) with sub-word encoding. 
+# This config adds trainable adapters to the frozen conformer encoder, and fully finetune the rnnt decoder.
 
 # You may find more detail:
 # FastConformer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#fast-conformer
@@ -103,9 +104,11 @@ model:
       min_pad_duration: 1.0  # minimum duration of pre/post padding in seconds
       max_pad_duration: 10.0  # maximum duration of pre/post padding in seconds
       max_total_duration: 40.0  # maximum total duration of the padded audio in seconds
-      pad_distribution: 'uniform'  # distribution of padding duration, 'uniform' or 'normal'
+      pad_distribution: 'uniform'  # distribution of padding duration, 'uniform' or 'normal' or 'constant'
       normal_mean: 0.5  # mean of normal distribution used when pad_distribution='normal'
       normal_std: 2.0  # standard deviation of normal distribution  used when pad_distribution='normal'
+      pre_pad_duration: 0.2  # amount of pre-padding when pad_distribution='constant'
+      post_pad_duration: 3.0 # amount of post-padding when pad_distribution='constant'
   
     augmentor:
       white_noise:

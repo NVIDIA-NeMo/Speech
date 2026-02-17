@@ -239,6 +239,7 @@ class WER(Metric):
         log_prediction: Whether to log a single decoded sample per call.
         batch_dim_index: Index corresponding to batch dimension. (For RNNT.)
         dist_dync_on_step: Whether to perform reduction on forward pass of metric.
+        return_hypotheses: Whether to return the hypotheses.
 
     Returns:
         res: a tuple of 3 zero dimensional float32 ``torch.Tensor` objects: a WER score, a sum of Levenstein's

@@ -1332,6 +1332,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
                 - compute_wer (bool, default false). Whether to compute WER or not for the fused batch.
 
+                - keep_hypotheses (bool, default false). Whether to keep the hypotheses of the decoded outputs.
+
             Output - instead of the usual `joint` log prob tensor, the following results can be returned.
 
                 - loss (optional). Returned if decoder_outputs, transcripts and transript_lengths are not None.

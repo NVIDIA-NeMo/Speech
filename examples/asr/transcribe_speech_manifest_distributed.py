@@ -24,7 +24,6 @@ from tqdm import tqdm
 from transcribe_speech import TranscriptionConfig as SingleTranscribeConfig
 from transcribe_speech import main as single_transcribe_main
 
-from nemo.collections.asr.modules.conformer_encoder import ConformerChangeConfig
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
@@ -107,15 +106,6 @@ If you use Slurm, you can use this params to configure the script:
 ```
 
 """
-
-
-@dataclass
-class ModelChangeConfig:
-    """
-    Sub-config for changes specific to the Conformer Encoder
-    """
-
-    conformer: ConformerChangeConfig = field(default_factory=ConformerChangeConfig)
 
 
 @dataclass

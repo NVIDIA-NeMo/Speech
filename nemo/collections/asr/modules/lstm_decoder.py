@@ -35,6 +35,7 @@ class LSTMDecoder(NeuralModule, Exportable):
         vocabulary (vocab): The vocabulary
         bidirectional (bool): default is False. Whether LSTMs are bidirectional or not
         num_layers (int): default is 1. Number of LSTM layers stacked
+        add_blank (bool): default is True. Whether to add a blank token to the vocabulary.
     """
 
     @property

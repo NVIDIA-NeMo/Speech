@@ -26,6 +26,7 @@ from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.force_align import ForceAligner
 from nemo.collections.speechlm2.data.s2s_dataset import _strip_timestamps
 from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter
 from nemo.utils import logging
 
 
@@ -96,8 +97,22 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         if self.force_align_user_text:
             self.force_aligner = ForceAligner(device=self.force_align_device, frame_length=self.frame_length)
 
+        self.audio_augmenter = None
+        if cfg is not None and (
+            cfg.get('use_noise_aug', None)
+            or cfg.get('use_room_ir_aug', None)
+            or cfg.get('use_mic_ir_aug', None)
+            or cfg.get('use_codec_aug', None)
+        ):
+            self.audio_augmenter = AudioAugmenter(sample_rate=source_sample_rate)
+
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required."
+
+    def _is_augmentation_task(self, task: str) -> bool:
+        if self.cfg is not None and self.cfg.get('force_use_noise_augmentation', False):
+            return True
+        return task not in ('s2s_duplex_overlap_as_s2s_duplex', 'asr')
 
     def _apply_early_interruption_augmentation(
         self,
@@ -286,14 +301,26 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 prepend_word_space=self.prepend_word_space,
             )
 
+            # Audio augmentation (runs in dataloader workers for performance)
+            source_audio_aug = None
+            if (
+                self.audio_augmenter is not None
+                and torch.is_grad_enabled()
+                and self._is_augmentation_task(getattr(all_cuts_combined[0], 'task', 's2s_duplex'))
+            ):
+                source_audio_aug = self.audio_augmenter.augment_batch(
+                    self.cfg, source_audio.clone(), source_audio_lens
+                )
+
             # Early interruption augmentation
+            ei_audio = source_audio_aug if source_audio_aug is not None else source_audio
             if self.early_interruption_prob > 0 and torch.is_grad_enabled():
                 for batch_idx in range(target_tokens.shape[0]):
                     if random.random() < self.early_interruption_prob:
                         self._apply_early_interruption_augmentation(
                             target_tokens,
                             source_tokens,
-                            source_audio,
+                            ei_audio,
                             source_audio_lens,
                             batch_idx,
                         )
@@ -320,6 +347,9 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             if torch.sum(prompt_token_lens) > 0:
                 audio_data['prompt_tokens'] = prompt_tokens
                 audio_data['prompt_token_lens'] = prompt_token_lens
+
+            if source_audio_aug is not None:
+                audio_data['source_audio_aug'] = source_audio_aug
 
         text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
         text_data = None

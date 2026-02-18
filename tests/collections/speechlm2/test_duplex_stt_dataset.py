@@ -359,3 +359,48 @@ def test_duplex_stt_dataset(cuts, tokenizer):
 
     # no text data (no Formattable cuts)
     assert batch["text_data"] is None
+
+    # no augmented audio when augmentation is not configured
+    assert "source_audio_aug" not in ad
+
+
+def test_duplex_stt_dataset_augmentation(cuts, tokenizer, tmp_path):
+    """Test that audio augmentation produces source_audio_aug when configured."""
+    import numpy as np
+    import soundfile as sf
+
+    # Create dummy noise files for the augmenter
+    noise_dir = tmp_path / "noise" / "all"
+    noise_dir.mkdir(parents=True)
+    for i in range(3):
+        noise = np.random.randn(SR).astype(np.float32) * 0.01
+        sf.write(str(noise_dir / f"noise_{i}.wav"), noise, SR)
+
+    cfg = {
+        "prepend_word_space": False,
+        "use_noise_aug": True,
+        "noise_prob": 1.0,
+        "noise_aug_path": str(tmp_path / "noise"),
+        "noise_min_snr": 20,
+        "noise_max_snr": 20,
+    }
+
+    dataset = DuplexSTTDataset(
+        tokenizer=tokenizer,
+        frame_length=FL,
+        source_sample_rate=SR,
+        input_roles=["user"],
+        output_roles=["assistant"],
+        cfg=cfg,
+        model_cfg={"predict_user_text": True},
+    )
+
+    assert dataset.audio_augmenter is not None
+
+    batch = dataset[cuts]
+    ad = batch["audio_data"]
+
+    # Augmented audio should be present and differ from original
+    assert "source_audio_aug" in ad
+    assert ad["source_audio_aug"].shape == ad["source_audio"].shape
+    assert not torch.equal(ad["source_audio_aug"], ad["source_audio"])

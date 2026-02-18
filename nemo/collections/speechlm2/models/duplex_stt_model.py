@@ -33,7 +33,6 @@ from torch.distributed.tensor.parallel import (
 
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.label_prep import maybe_prepend_prompt_tokens, prepare_text_and_asr_labels
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
@@ -123,15 +122,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # Initialize streaming inference engine
         self.streaming_inference = DuplexSTTStreamingInference(self)
 
-        # Initialize audio augmenter if any augmentation is enabled
-        if (
-            self.cfg.get('use_noise_aug', None)
-            or self.cfg.get('use_room_ir_aug', None)
-            or self.cfg.get('use_mic_ir_aug', None)
-            or self.cfg.get('use_codec_aug', None)
-        ):
-            self.audio_augmenter = AudioAugmenter(sample_rate=self.source_sample_rate)
-
     @property
     def text_vocab_size(self):
         """Return the size of the text tokenizer."""
@@ -213,11 +203,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         return ans
 
-    def _is_augmentation_dataset(self, task: str) -> bool:
-        if self.cfg.get('force_use_noise_augmentation', False):
-            return True
-        return task not in ('s2s_duplex_overlap_as_s2s_duplex', 'asr')
-
     def _maybe_zero_out_scale_for_asr(
         self, loss_scale: torch.Tensor, text_labels: torch.Tensor, batch: dict
     ) -> torch.Tensor:
@@ -234,15 +219,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
     def prepare_inputs(self, batch: dict):
 
-        # Audio data augmentation
-        if hasattr(self, 'audio_augmenter') and self.training and self._is_augmentation_dataset(batch["task"][0]):
-            batch["source_audio"] = self.audio_augmenter.augment_batch(
-                self.cfg, batch["source_audio"], batch["source_audio_lens"]
-            )
+        # Use augmented audio from dataset if available, else original
+        perception_audio = batch.get("source_audio_aug", batch["source_audio"])
 
         # Speech encoder forward pass
         source_encoded, source_encoded_lens, _ = self.perception(
-            input_signal=batch["source_audio"],
+            input_signal=perception_audio,
             input_signal_length=batch["source_audio_lens"],
             return_encoder_emb=True,
         )

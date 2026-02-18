@@ -541,19 +541,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 2.a. Noise mixing.
     if config.noise_path is not None:
         noise = guess_parse_cutset(config.noise_path)
+        # make sure the noise is resampled to the same sample rate as the audio cuts
         noise = noise.resample(config.sample_rate)
-
-        def mark_as_mixed_in_noise(cut):
-            cut.is_mixed_noise = True
-            return cut
-
-        # In current lhotse implementation, if padding is applied before noise augmentation,
-        # and your noise manifest has dummy text field like `"text": "-"`,
-        # the call to MixCut.first_non_padding_cut will return the noise cut
-        # instead of the speech cut. We mark the noise cut with ``is_mixed_noise`` flag
-        # to avoid this issue, and the speech cut can be obtained by:
-        # `cut =[t.cut for t in cut.tracks if len(t.cut.supervisions) > 0 and not t.cut.custom.get("is_mixed_noise", False)][0]`
-        noise = noise.map(mark_as_mixed_in_noise)
         cuts = cuts.mix(
             cuts=noise,
             snr=tuple(config.noise_snr),

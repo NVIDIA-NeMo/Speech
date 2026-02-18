@@ -42,23 +42,6 @@ EOU_LENGTH_PERTURBATION = ['speed', 'time_stretch']
 EOU_PROHIBITED_AUGMENTATIONS = ['random_segment']
 
 
-def first_supervised_cut(maybe_mixed_cut):
-    """
-    Get the first supervised cut from a mixed cut, skip the noise cut in case the noise cut has supervision.
-    Args:
-        maybe_mixed_cut: Cut or MixedCut
-    Returns:
-        Cut: The first supervised cut from the mixed cut
-    """
-    if isinstance(maybe_mixed_cut, MixedCut):
-        return [
-            t.cut
-            for t in maybe_mixed_cut.tracks
-            if len(t.cut.supervisions) > 0 and not t.cut.custom.get("is_mixed_noise", False)
-        ][0]
-    return maybe_mixed_cut
-
-
 @dataclass
 class AudioToTextEOUBatch:
     """

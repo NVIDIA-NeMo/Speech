@@ -25,20 +25,6 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import hydra
 import torch
-
-from nemo.core.classes.module import NeuralModule
-from nemo.utils.msc_utils import import_multistorageclient, is_multistorageclient_url
-
-try:
-    from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
-    from megatron.core.utils import get_model_config
-
-    HAVE_MEGATRON_CORE = True
-
-except (ImportError, ModuleNotFoundError):
-
-    HAVE_MEGATRON_CORE = False
-
 from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.utilities import model_summary, rank_zero_only
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -46,14 +32,16 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from nemo import package_info
 from nemo.core import optim
 from nemo.core.classes.common import Model
+from nemo.core.classes.module import NeuralModule
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
-from nemo.core.optim import McoreDistributedOptimizer, prepare_lr_scheduler
+from nemo.core.optim import prepare_lr_scheduler
 from nemo.lightning.callback_group import CallbackGroup
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
 from nemo.utils.debug_hook import register_debug_hooks
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import get_rank, is_global_rank_zero
+from nemo.utils.msc_utils import import_multistorageclient, is_multistorageclient_url
 
 __all__ = ['ModelPT']
 
@@ -637,33 +625,6 @@ class ModelPT(LightningModule, Model):
             if self._test_dl is not None and type(self._test_dl) in [list, tuple]:
                 self._test_names = ['test_{}_'.format(idx) for idx in range(len(self._test_dl))]
 
-    def setup_megatron_optimization(self, optim_config: Union[Dict[str, Any], DictConfig]):
-        """
-        Setup mcore optimizer config.
-
-        Args:
-            optim_config: Nemo optim args used to set up Mcore optimizer options.
-        """
-
-        config = get_model_config(self.model[0])
-
-        megatron_optim_config = OptimizerConfig(
-            fp16=config.fp16,
-            bf16=config.bf16,
-            params_dtype=config.params_dtype,
-            lr=optim_config['lr'],
-            weight_decay=optim_config['weight_decay'],
-            adam_beta1=optim_config['betas'][0],
-            adam_beta2=optim_config['betas'][1],
-            adam_eps=optim_config.get('eps', OptimizerConfig.adam_eps),
-            clip_grad=self.trainer.gradient_clip_val,
-            use_distributed_optimizer=self.use_mcore_dist_optim,
-            overlap_param_gather_with_optimizer_step=self.cfg.optim.get(
-                'overlap_param_gather_with_optimizer_step', False
-            ),
-        )
-        return megatron_optim_config
-
     def setup_optimization(
         self,
         optim_config: Optional[Union[DictConfig, Dict]] = None,
@@ -815,20 +776,10 @@ class ModelPT(LightningModule, Model):
                     raise e
 
         else:
-            if optimizer_name == 'mcore_distributed_optim':
-                # setup megatron_optim_config and get Mcore based optimizer with the wrapper
-                megatron_optim_config = self.setup_megatron_optimization(optimizer_args)
-                _megatron_optimizer = get_megatron_optimizer(
-                    megatron_optim_config,
-                    self.model,
-                )
-                optimizer = McoreDistributedOptimizer(_megatron_optimizer)
+            optimizer = optim.get_optimizer(optimizer_name)
+            optimizer = optimizer(self._optimizer_param_groups, **optimizer_args)
 
-            else:
-                optimizer = optim.get_optimizer(optimizer_name)
-                optimizer = optimizer(self._optimizer_param_groups, **optimizer_args)
-
-                logging.info("Optimizer config = %s", str(optimizer))
+            logging.info("Optimizer config = %s", str(optimizer))
 
             self._optimizer = optimizer
 

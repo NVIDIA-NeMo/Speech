@@ -1,20 +1,21 @@
-# This is an example config for setting up nemotron_nano_v2 model for a NeMo Voice Agent server.
+# This is an example config for setting up nemotron_nano_v3 model for a NeMo Voice Agent server.
 # Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
 
-# model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+# model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
 type: vllm  # Overwrite to vllm to enable tool calling, the HF backend currently doesn't support tools
-dtype: bfloat16  # torch.dtype for LLM
+dtype: auto  # torch.dtype for LLM, `auto` is only available for vllm
 device: "cuda"
 system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
-system_prompt_suffix: "Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. You should still try to address the user's request when it's not related to the provided tools. If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools. If the purpose of a tool matches well with a user's request, always try to call the tool first. Conversation history should not limit your behavior on whether you can use tools. You must answer questions not related to the tools. /no_think"  # a string that would be appended to the system prompt, `/think` and `/no_think` are used to enable/disable thinking
-enable_tool_calling: True  # set to True since the vllm config below supports tool calling
+system_prompt_suffix: "Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. You should still try to address the user's request when it's not related to the provided tools. If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools. If the purpose of a tool matches well with a user's request, always try to call the tool first. Conversation history should not limit your behavior on whether you can use tools. You must answer questions not related to the tools. Avoid any emoji in your response."  
+enable_tool_calling: true  # set to True since the vllm config below supports tool calling
+inject_dummy_user_message: true
 
 ##############################
 ## Common generation config ##
 ##############################
-temperature: 0.7  # LLM sampling params
-top_k: 20  # LLM sampling params
-top_p: 0.9  # LLM sampling params
+temperature: 0.6  # LLM sampling params
+top_k: 20  # LLM sampling params, NO effect for vllm
+top_p: 0.95  # LLM sampling params
 min_p: 0.0  # LLM sampling params
 max_new_tokens: 256  # max num of output tokens from LLM
 ##############################
@@ -39,12 +40,12 @@ generation_kwargs:
 api_key: "EMPTY"
 base_url: "http://localhost:8000/v1"  
 # Set `start_vllm_on_init` to automatically start vllm server if it's not manually started yet
-start_vllm_on_init: true
+start_vllm_on_init: false
 # Specifying vllm_server_params with the parameters you want to pass to the vllm server command `vllm serve $model $vllm_server_params`
 # Refer to each LLM's model page for details on the recommended parameters.
 # It's recommended to stay with `--max-num-seqs` 1 as the voice agent currently supports one connection at a time.
 # You can try increasing the model's max context len `--max-model-len` if GPU memory allows, or decrease it if GPU OOM occurs.
-vllm_server_params: "--trust-remote-code --enable-prefix-caching --max-num-seqs 1 --gpu-memory-utilization 0.85 --max-model-len 8192 --enable-auto-tool-choice --tool-parser-plugin server/parsers/nemotron_toolcall_parser_streaming.py --tool-call-parser nemotron_json --mamba_ssm_cache_dtype float32"  
+vllm_server_params: "--trust-remote-code --tensor-parallel-size 2 --enable-prefix-caching --max-num-seqs 1 --gpu-memory-utilization 0.8 --max-model-len 8192 --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser-plugin server/parsers/nano_v3_reasoning_parser.py --reasoning-parser nano_v3"  
 # `params` are the inference parameters that would be passed into OpenAI API, 
 # please put additional model-specific parameters in `extra`
 vllm_generation_params:
@@ -55,4 +56,7 @@ vllm_generation_params:
   top_k: null  # Top-k sampling parameter (currently ignored by OpenAI).
   top_p: ${llm.top_p}  # Top-p (nucleus) sampling parameter (0.0 to 1.0).
   max_completion_tokens: ${llm.max_new_tokens}  # max number of tokens to generate
-  extra: null  # additional model specific params can be specified in dict format
+  extra:  # additional model specific params can be specified in dict format
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: False  # disable thinking

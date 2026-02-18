@@ -25,7 +25,6 @@ available_models = [model.pretrained_model_name for model in AlignerModel.list_a
 
 
 @pytest.fixture(params=available_models, ids=available_models)
-@pytest.mark.run_only_on('GPU')
 def pretrained_model(request, get_language_id_from_pretrained_model_name):
     model_name = request.param
     language_id = get_language_id_from_pretrained_model_name(model_name)
@@ -34,7 +33,6 @@ def pretrained_model(request, get_language_id_from_pretrained_model_name):
 
 
 @pytest.mark.nightly
-@pytest.mark.run_only_on('GPU')
 def test_inference(pretrained_model, audio_text_pair_example_english):
     model, _ = pretrained_model
     audio, audio_len, text_raw = audio_text_pair_example_english

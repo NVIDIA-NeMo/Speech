@@ -35,6 +35,9 @@ Example Usage:
     )
     model, checkpoint_name = load_magpie_model(model_config)
 
+    # Log architecture summary and retrieve MoE info + FLOPs metrics
+    moe_info, flops_per_component = log_model_architecture_summary(model)
+
     # Create runner and run inference
     inference_config = InferenceConfig()
     runner = MagpieInferenceRunner(model, inference_config)
@@ -48,13 +51,22 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     evaluate_generated_audio_dir,
 )
 from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
-from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_magpie_model
+from nemo.collections.tts.modules.magpietts_inference.utils import (
+    ModelLoadConfig,
+    compute_ffn_flops_per_token,
+    get_experiment_name_from_checkpoint_path,
+    load_magpie_model,
+    log_model_architecture_summary,
+)
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 
 __all__ = [
     # Utils
     "ModelLoadConfig",
     "load_magpie_model",
+    "compute_ffn_flops_per_token",
+    "get_experiment_name_from_checkpoint_path",
+    "log_model_architecture_summary",
     # Inference
     "InferenceConfig",
     "MagpieInferenceRunner",

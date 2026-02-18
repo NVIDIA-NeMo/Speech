@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import re
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from loguru import logger
 from pipecat.utils.string import match_endofsentence
+from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
 
@@ -151,7 +152,7 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         """
         Args:
             punctuation_marks: The punctuation marks to use for sentence detection.
-            ignore_marks: The marks to ignore in the text.
+            ignore_marks: The strings to ignore in the text (e.g., "*").
             min_sentence_length: The minimum length of a sentence to be considered.
             use_legacy_eos_detection: Whether to use the legacy EOS detection from pipecat.
             **kwargs: Additional arguments to pass to the SimpleTextAggregator constructor.
@@ -159,10 +160,7 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         super().__init__(**kwargs)
         self._use_legacy_eos_detection = use_legacy_eos_detection
         self._min_sentence_length = min_sentence_length
-        if not ignore_marks:
-            self._ignore_marks = set()
-        else:
-            self._ignore_marks = set(ignore_marks)
+        self._ignore_marks = set(["*"] if ignore_marks is None else set(ignore_marks))
         if not punctuation_marks:
             self._punctuation_marks = list()
         else:
@@ -204,7 +202,7 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
                 return idx + 1 + offset
         return None
 
-    async def aggregate(self, text: str) -> Optional[str]:
+    async def aggregate(self, text: str) -> AsyncIterator[Aggregation]:
         """Aggregate the input text and return the first complete sentence in the text.
 
         Args:
@@ -215,9 +213,6 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
         """
         result: Optional[str] = None
         self._text += str(text)
-
-        for ignore_mark in self._ignore_marks:
-            self._text = self._text.replace(ignore_mark, "")
 
         eos_end_index = self._find_segment_end(self._text)
 
@@ -237,4 +232,7 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
                 logger.debug(f"Text Aggregator Result: `{result}`, full text: `{self._text}`, input text: `{text}`")
                 self._text = self._text[eos_end_index:]
 
-        return result
+        if result:
+            for ignore_mark in self._ignore_marks:
+                result = result.replace(ignore_mark, "")
+            yield Aggregation(text=result, type=AggregationType.SENTENCE)

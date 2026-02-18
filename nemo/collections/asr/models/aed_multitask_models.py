@@ -744,7 +744,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 of shape (B, D, T).
             processed_signal_length: Vector of length B, that contains the individual lengths of the
                 processed audio sequences.
-            # TODO: Add support for `transcript` and `transcript_length` in the docstring
+            transcript: Tensor that represents a batch of target transcriptions,
+                of shape [B, T]. Used as decoder input during teacher-forced training.
+            transcript_length: Vector of length B, that contains the individual lengths of the
+                target transcription sequences.
 
         Returns:
             A tuple of 3 elements -

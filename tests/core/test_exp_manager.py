@@ -13,7 +13,6 @@
 # limitations under the License.
 import json
 import math
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,6 @@ from lightning.pytorch.loops import _TrainingEpochLoop
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
-from nemo.collections.common.parts.nlp_overrides import NLPDDPStrategy
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
 from nemo.utils.app_state import AppState
@@ -539,11 +537,11 @@ class TestExpManager:
         assert math.fabs(float(model(torch.tensor([1.0, 1.0], device=model.device))) - 0.03) < 1e-5
 
     @pytest.mark.run_only_on('GPU')
-    @pytest.mark.parametrize('test_dist_ckpt', [False, True])
     @pytest.mark.pleasefixme
-    def test_base_checkpoints_are_not_overwritten(self, tmp_path, test_dist_ckpt):
+    def test_base_checkpoints_are_not_overwritten(self, tmp_path):
         """Simulates already existing checkpoints in the ckpt directory and tests non-nemo ckpt versioning"""
-        strategy = NLPDDPStrategy() if test_dist_ckpt else 'auto'
+        test_dist_ckpt = True
+        strategy = 'auto'
         test_trainer = pl.Trainer(
             accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4, strategy=strategy
         )

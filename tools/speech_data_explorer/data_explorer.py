@@ -585,11 +585,9 @@ def load_audio_from_s3(audio_filepath, tar_base_path=None, shard_index=None, dal
         tuple: (audio_bytes, io.BytesIO) - BytesIO object for librosa to read
     """
     if tar_base_path and is_s3_path(tar_base_path):
-        # Resolve sharded tar pattern to concrete path if needed
-        # Use shard_index + 1 because bucket paths are 1-based (bucket1, bucket2, ...)
         actual_tar_path = tar_base_path
         if is_sharded_path(tar_base_path) and shard_index is not None:
-            actual_tar_path = get_tar_path_for_shard(tar_base_path, shard_index + 1)
+            actual_tar_path = get_tar_path_for_shard(tar_base_path, shard_index)
         logging.debug(f"Loading audio from S3 tar: {actual_tar_path}")
 
         # Audio is inside a tar file on S3

@@ -29,6 +29,8 @@ from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter
 from nemo.utils import logging
 
+MCQ_VAL_PROMPT = "Answer the following multiple choice question with an explanation for the answer."
+
 
 class DuplexSTTDataset(torch.utils.data.Dataset):
     """
@@ -89,6 +91,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
 
         self.prepend_word_space = cfg.get("prepend_word_space", True) if cfg is not None else True
         self.early_interruption_prob = cfg.get("early_interruption_prob", 0.0) if cfg is not None else 0.0
+        self.add_mcq_val_prompt = cfg.get("add_mcq_val_prompt", False) if cfg is not None else False
 
         self.cfg = cfg
         self.model_cfg = model_cfg
@@ -262,7 +265,9 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             else:
                 all_cuts_combined = cuts
 
-            prompt_tokens, prompt_token_lens = collate_system_prompt(all_cuts_combined, self.tokenizer)
+            prompt_tokens, prompt_token_lens = collate_system_prompt(
+                all_cuts_combined, self.tokenizer, add_mcq_val_prompt=self.add_mcq_val_prompt
+            )
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
 
             target_tokens, target_token_lens = collate_token_channel(
@@ -522,6 +527,7 @@ def collate_token_channel(
 def collate_system_prompt(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
+    add_mcq_val_prompt: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Collate system prompts from cuts stored in cut.custom['system_prompt']."""
     pad_id = get_pad_id(tokenizer)
@@ -529,6 +535,12 @@ def collate_system_prompt(
     for c in cuts:
         if c.custom and c.custom.get("system_prompt", None):
             prompt_text = c.custom["system_prompt"]
+        elif add_mcq_val_prompt:
+            prompt_text = MCQ_VAL_PROMPT
+        else:
+            prompt_text = None
+
+        if prompt_text:
             tokens.append(
                 torch.as_tensor(
                     [tokenizer.bos] + tokenizer.text_to_ids(prompt_text) + [tokenizer.eos], dtype=torch.long

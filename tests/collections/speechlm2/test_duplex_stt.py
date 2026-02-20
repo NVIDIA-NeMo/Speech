@@ -40,25 +40,43 @@ def create_model(
 ):
     """Helper function to create a model with configurable settings."""
     cfg = {
-        **resolve_pretrained_models(),
-        "pretrained_weights": False,
-        "audio_loss_weight": 1,
-        "text_loss_weight": 3,
-        "source_sample_rate": 16000,
-        "validation_save_path": "/tmp/test_duplex_stt_logs",
-        "perception": {
-            "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
-            "preprocessor": {"_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor", "features": 80},
-            "encoder": {"_target_": "nemo.collections.asr.modules.ConformerEncoder", "feat_in": 80, "d_model": 512, "n_heads": 8, "n_layers": 1, "subsampling_factor": 8},
-            "modality_adapter": {"_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector", "d_model": 512},
-            "output_dim": 2048,
+        "model": {
+            **resolve_pretrained_models(),
+            "pretrained_weights": False,
+            "freeze_params": ["^audio_codec\\..+$"],
+            "audio_loss_weight": 1,
+            "text_loss_weight": 3,
+            "source_sample_rate": 16000,
+            "validation_save_path": "/tmp/test_duplex_stt_logs",
+            "perception": {
+                "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
+                "preprocessor": {"_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor", "features": 80},
+                "encoder": {"_target_": "nemo.collections.asr.modules.ConformerEncoder", "feat_in": 80, "d_model": 512, "n_heads": 8, "n_layers": 1, "subsampling_factor": 8},
+                "modality_adapter": {"_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector", "d_model": 512},
+                "output_dim": 2048,
+            },
+            "speech_decoder": {
+                "n_layers": 1,
+                "d_model": 768,
+                "d_ffn": 3072,
+                "sa_n_heads": 12,
+                "kernel_size": 3,
+                "is_causal": True,
+            },
+            "predict_user_text": predict_user_text,
+            "force_use_noise_augmentation": force_use_noise_augmentation,
+            "old_noise_prob": old_noise_prob,
+            "old_noise_min_snr": old_noise_min_snr,
+            "old_noise_max_snr": old_noise_max_snr,
+            "optimizer": {"_target_": "torch.optim.AdamW"},
         },
-        "predict_user_text": predict_user_text,
-        "force_use_noise_augmentation": force_use_noise_augmentation,
-        "old_noise_prob": old_noise_prob,
-        "old_noise_min_snr": old_noise_min_snr,
-        "old_noise_max_snr": old_noise_max_snr,
-        "optimizer": {"_target_": "torch.optim.AdamW"},
+        "data": {
+            "target_sample_rate": 22050,
+            "source_sample_rate": 16000,
+        },
+        "exp_manager": {
+            "explicit_log_dir": "/tmp/test_duplex_stt_logs",
+        },
     }
     model = DuplexSTTModel(cfg)
     if torch.cuda.is_available():
@@ -291,13 +309,9 @@ def test_trailing_pad_loss_scale_is_masked(dataset, training_cutset_batch):
     for i in range(target_token_lens.size(0)):
         end_idx = target_token_lens[i]
         # Trailing positions (after target_token_lens) must have loss_scale=0
-        assert (loss_scale[i, end_idx:, :] == 0).all(), (
-            f"Batch {i}: loss_scale not zero after position {end_idx}"
-        )
-        assert (asr_loss_scale[i, end_idx:, :] == 0).all(), (
-            f"Batch {i}: asr_loss_scale not zero after position {end_idx}"
-        )
+        assert (loss_scale[i, end_idx:, :] == 0).all(), f"Batch {i}: loss_scale not zero after position {end_idx}"
+        assert (
+            asr_loss_scale[i, end_idx:, :] == 0
+        ).all(), f"Batch {i}: asr_loss_scale not zero after position {end_idx}"
         # In-sequence positions should have non-zero loss_scale
-        assert (loss_scale[i, :end_idx, :] > 0).any(), (
-            f"Batch {i}: loss_scale all zero before position {end_idx}"
-        )
+        assert (loss_scale[i, :end_idx, :] > 0).any(), f"Batch {i}: loss_scale all zero before position {end_idx}"

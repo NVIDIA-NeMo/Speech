@@ -25,7 +25,7 @@ from threadpoolctl import threadpool_limits
 
 # If UTMOSv2 cache is not set but HF_HOME is, use an area under HF_HOME for the cache location
 # This avoids re-downloading the UTMSOv2 model each time.
-# Note that the second word in "UTMOSV2_CHACHE" is not a typo -- that is the name used in the UTMOSv2 library.
+# Note that "UTMOSV2_CHACHE" is not a typo -- that is the string used in the UTMOSv2 library.
 if "UTMOSV2_CHACHE" not in os.environ and "HF_HOME" in os.environ:
     utmos_cache_dir = os.path.join(os.environ["HF_HOME"], "utmosv2")
     os.makedirs(utmos_cache_dir, exist_ok=True)

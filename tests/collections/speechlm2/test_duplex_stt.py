@@ -43,7 +43,6 @@ def create_model(
         "model": {
             **resolve_pretrained_models(),
             "pretrained_weights": False,
-            "freeze_params": ["^audio_codec\\..+$"],
             "audio_loss_weight": 1,
             "text_loss_weight": 3,
             "source_sample_rate": 16000,
@@ -55,14 +54,6 @@ def create_model(
                 "modality_adapter": {"_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector", "d_model": 512},
                 "output_dim": 2048,
             },
-            "speech_decoder": {
-                "n_layers": 1,
-                "d_model": 768,
-                "d_ffn": 3072,
-                "sa_n_heads": 12,
-                "kernel_size": 3,
-                "is_causal": True,
-            },
             "predict_user_text": predict_user_text,
             "force_use_noise_augmentation": force_use_noise_augmentation,
             "old_noise_prob": old_noise_prob,
@@ -71,14 +62,13 @@ def create_model(
             "optimizer": {"_target_": "torch.optim.AdamW"},
         },
         "data": {
-            "target_sample_rate": 22050,
             "source_sample_rate": 16000,
         },
         "exp_manager": {
             "explicit_log_dir": "/tmp/test_duplex_stt_logs",
         },
     }
-    model = DuplexSTTModel(cfg)
+    model = DuplexSTTModel(cfg["model"])
     if torch.cuda.is_available():
         model.to("cuda")
     return model

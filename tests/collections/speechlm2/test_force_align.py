@@ -48,7 +48,9 @@ def synthesize_speech(text: str, output_path: str, target_sample_rate: int = 160
         audio_np = signal.resample(audio_np, num_samples)
 
     sf.write(output_path, audio_np, target_sample_rate)
-    print(f"Synthesized '{text[:50]}...' -> {len(audio_np)/target_sample_rate:.2f}s ({len(audio_np)} samples @ {target_sample_rate}Hz)")
+    print(
+        f"Synthesized '{text[:50]}...' -> {len(audio_np)/target_sample_rate:.2f}s ({len(audio_np)} samples @ {target_sample_rate}Hz)"
+    )
 
 
 @pytest.fixture(scope="module")

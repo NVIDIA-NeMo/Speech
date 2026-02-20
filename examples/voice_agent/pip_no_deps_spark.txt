@@ -1,0 +1,5 @@
+# Install after: conda env create -f environment_spark.yaml && conda activate nemo-voice
+# These are installed with --no-deps to avoid protobuf version conflict (they require <6, we use 6.33.5 for vllm).
+# Run: pip install -r pip_no_deps_spark.txt --no-deps
+nemo-toolkit==2.6.2
+pipecat-ai==0.0.98

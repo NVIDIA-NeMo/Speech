@@ -79,6 +79,9 @@ Second, create a new conda environment with the dependencies:
 conda env create -f environment.yaml
 ```
 
+For DGX Spark, use `environment_spark.yaml` instead. After creating and activating the env, run once:
+`pip install -r pip_no_deps_spark.txt --no-deps` to install nemo-toolkit and pipecat-ai without triggering a protobuf version conflict. This is because `vllm>=0.15` requires `protobuf>=6.33.5`, but `nemo-toolkit==2.6.2` and `pipecat-ai==0.0.98` requires `protobuf<6.0`.
+
 Then you can activate the environment via `conda activate nemo-voice`.
 
 ### Configure the server

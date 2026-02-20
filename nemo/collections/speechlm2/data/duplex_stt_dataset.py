@@ -304,9 +304,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 and torch.is_grad_enabled()
                 and self._is_augmentation_task(getattr(all_cuts_combined[0], 'task', 's2s_duplex'))
             ):
-                source_audio = self.audio_augmenter.augment_batch(
-                    self.cfg, source_audio, source_audio_lens
-                )
+                source_audio = self.audio_augmenter.augment_batch(self.cfg, source_audio, source_audio_lens)
 
             # Early interruption augmentation
             if self.early_interruption_prob > 0 and torch.is_grad_enabled():
@@ -633,7 +631,11 @@ def _text_to_ids(
 ):
     if not remove_timestamps and re.compile(_TIMESTAMP_PATTERN_STR).search(text):
         text_ids = _text_with_timestamps_to_ids(
-            text, tokenizer, _TIMESTAMP_PATTERN_STR, available_frames_for_text, word_align_position,
+            text,
+            tokenizer,
+            _TIMESTAMP_PATTERN_STR,
+            available_frames_for_text,
+            word_align_position,
             prepend_word_space=prepend_word_space,
         )
     else:
@@ -653,7 +655,10 @@ def _text_with_timestamps_to_ids(
     prepend_word_space=True,
 ) -> list[int]:
     text_ids, start_times, end_times, word_lens = _extract_text_and_time_tokens(
-        text, tokenizer, _TIMESTAMP_PATTERN_STR, prepend_word_space=prepend_word_space,
+        text,
+        tokenizer,
+        _TIMESTAMP_PATTERN_STR,
+        prepend_word_space=prepend_word_space,
     )
     text_ids_with_timestamps = _expand_text_with_timestamps_and_word_lengths(
         text_ids,
@@ -668,7 +673,9 @@ def _text_with_timestamps_to_ids(
     return text_ids_with_timestamps
 
 
-def _extract_text_and_time_tokens(text, tokenizer: TokenizerSpec, _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>", prepend_word_space=True):
+def _extract_text_and_time_tokens(
+    text, tokenizer: TokenizerSpec, _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>", prepend_word_space=True
+):
     time_tokens = re.findall(_TIMESTAMP_PATTERN_STR, text)
     start_time = [int(time_tokens[i]) for i in range(0, len(time_tokens), 2)]
     end_time = [int(time_tokens[i]) for i in range(1, len(time_tokens), 2)]

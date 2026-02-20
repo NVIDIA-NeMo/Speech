@@ -13,21 +13,42 @@
 # limitations under the License.
 
 import os
+import tempfile
 
 import pytest
 import soundfile as sf
 import torch
 from lhotse import CutSet, Recording, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
-from scipy import signal
 
 from nemo.collections.speechlm2.data.force_align import ForceAligner
 
 
-@pytest.fixture(scope="module")
-def test_data_dir():
-    """Get the path to test data directory"""
-    return os.path.join(os.path.dirname(__file__), "data")
+def synthesize_speech(text: str, output_path: str, target_sample_rate: int = 16000):
+    """Synthesize speech from text using NeMo FastPitch + HiFiGAN and save to wav file."""
+    from nemo.collections.tts.models import FastPitchModel, HifiGanModel
+
+    spec_gen = FastPitchModel.from_pretrained("tts_en_fastpitch")
+    vocoder = HifiGanModel.from_pretrained("tts_en_hifigan")
+    spec_gen.eval()
+    vocoder.eval()
+
+    parsed = spec_gen.parse(text)
+    spectrogram = spec_gen.generate_spectrogram(tokens=parsed)
+    audio = vocoder.convert_spectrogram_to_audio(spec=spectrogram)
+
+    audio_np = audio.squeeze().cpu().detach().numpy()
+
+    # FastPitch + HiFiGAN output at 22050 Hz; resample to target sample rate
+    model_sample_rate = 22050
+    if model_sample_rate != target_sample_rate:
+        from scipy import signal
+
+        num_samples = int(len(audio_np) * target_sample_rate / model_sample_rate)
+        audio_np = signal.resample(audio_np, num_samples)
+
+    sf.write(output_path, audio_np, target_sample_rate)
+    print(f"Synthesized '{text[:50]}...' -> {len(audio_np)/target_sample_rate:.2f}s ({len(audio_np)} samples @ {target_sample_rate}Hz)")
 
 
 @pytest.fixture(scope="module")
@@ -38,76 +59,38 @@ def force_aligner():
 
 
 @pytest.fixture(scope="module")
-def test_cutset_synthetic_audio(test_data_dir):
-    """Create a test cutset with TTS-generated synthetic audio files, resampled to 16kHz"""
-    audio1_path = os.path.join(test_data_dir, "1.wav")
-    audio2_path = os.path.join(test_data_dir, "2.wav")
-
-    if not os.path.exists(audio1_path) or not os.path.exists(audio2_path):
-        pytest.skip(f"Test audio files not found in {test_data_dir}")
-
-    # Load and resample audio files to 16kHz
-    target_sample_rate = 16000
-
-    audio1_resampled_path = os.path.join(test_data_dir, "1_16k.wav")
-    audio2_resampled_path = os.path.join(test_data_dir, "2_16k.wav")
-
-    # Resample audio1
-    waveform1, sr1 = sf.read(audio1_path)
-    if sr1 != target_sample_rate:
-        num_samples = int(len(waveform1) * target_sample_rate / sr1)
-        waveform1 = signal.resample(waveform1, num_samples)
-    sf.write(audio1_resampled_path, waveform1, target_sample_rate)
-
-    # Resample audio2
-    waveform2, sr2 = sf.read(audio2_path)
-    if sr2 != target_sample_rate:
-        num_samples = int(len(waveform2) * target_sample_rate / sr2)
-        waveform2 = signal.resample(waveform2, num_samples)
-    sf.write(audio2_resampled_path, waveform2, target_sample_rate)
-
-    # Create recordings from resampled audio files
-    rec1 = Recording.from_file(audio1_resampled_path)
-    rec2 = Recording.from_file(audio2_resampled_path)
-
-    # Create cuts with supervisions
-    cut1 = rec1.to_cut()
-    cut1.supervisions = [
-        SupervisionSegment(
-            id=f"{cut1.id}-0",
-            recording_id=cut1.recording_id,
-            start=0.0,
-            duration=rec1.duration,
-            text='ten companies that let you teach english online without a degree',
-            speaker="user",
-        ),
+def test_cutset_synthetic_audio():
+    """Create a test cutset with on-the-fly TTS-generated audio at 16kHz"""
+    texts = [
+        'ten companies that let you teach english online without a degree',
+        'yeah i really would like to see canada of course their border is not open right now but',
     ]
 
-    cut2 = rec2.to_cut()
-    cut2.supervisions = [
-        SupervisionSegment(
-            id=f"{cut2.id}-0",
-            recording_id=cut2.recording_id,
-            start=0.0,
-            duration=rec2.duration,
-            text='yeah i yeah i really would like to see canada of course their borader is not open right now but',
-            speaker="user",
-        ),
-    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cuts = []
+        for i, text in enumerate(texts):
+            audio_path = os.path.join(tmpdir, f"{i}.wav")
+            synthesize_speech(text, audio_path)
 
-    cutset = CutSet([cut1, cut2])
+            rec = Recording.from_file(audio_path)
+            cut = rec.to_cut()
+            cut.supervisions = [
+                SupervisionSegment(
+                    id=f"{cut.id}-0",
+                    recording_id=cut.recording_id,
+                    start=0.0,
+                    duration=rec.duration,
+                    text=text,
+                    speaker="user",
+                ),
+            ]
+            cuts.append(cut)
 
-    # Clean up resampled files after creating cutset
-    yield cutset
-
-    if os.path.exists(audio1_resampled_path):
-        os.remove(audio1_resampled_path)
-    if os.path.exists(audio2_resampled_path):
-        os.remove(audio2_resampled_path)
+        yield CutSet(cuts)
 
 
 def test_force_align_synthetic_audio(force_aligner, test_cutset_synthetic_audio):
-    """Test force alignment with TTS-generated synthetic audio files from 1.wav and 2.wav"""
+    """Test force alignment with TTS-generated synthetic audio."""
     import re
 
     # Store original texts before alignment

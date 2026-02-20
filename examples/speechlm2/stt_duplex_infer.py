@@ -35,10 +35,6 @@ def inference(cfg):
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
-    with open_dict(cfg.model):
-        cfg.model.source_sample_rate = cfg.data.source_sample_rate
-        cfg.model.validation_save_path = str(log_dir)
-
     with trainer.init_module():
         model = DuplexSTTModel(OmegaConf.to_container(cfg.model, resolve=True))
 
@@ -48,6 +44,7 @@ def inference(cfg):
         source_sample_rate=cfg.data.source_sample_rate,
         input_roles=cfg.data.input_roles,
         output_roles=cfg.data.output_roles,
+        cfg=OmegaConf.to_container(cfg.data, resolve=True),
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

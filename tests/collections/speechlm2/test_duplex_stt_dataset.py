@@ -187,13 +187,17 @@ def test_collate_token_channel_target(cuts, tokenizer):
     # Decode verification
     _verify_supervision_tokens(target_tokens[0], 0.4, 0.3, "hello", tokenizer, pad, bos, eos, total1)
     _verify_supervision_tokens(
-        target_tokens[1], 0.6, 0.5,
+        target_tokens[1],
+        0.6,
+        0.5,
         "<|0|> good <|2|> <|2|> morning <|4|> <|4|> to <|5|> <|5|> you <|6|>",
-        tokenizer, pad, bos, eos, total2,
+        tokenizer,
+        pad,
+        bos,
+        eos,
+        total2,
     )
-    _verify_supervision_tokens(
-        target_tokens[1], 1.6, 0.4, "<|0|> welcome <|4|>", tokenizer, pad, bos, eos, total2
-    )
+    _verify_supervision_tokens(target_tokens[1], 1.6, 0.4, "<|0|> welcome <|4|>", tokenizer, pad, bos, eos, total2)
 
 
 def test_collate_token_channel_source(cuts, tokenizer):
@@ -246,9 +250,7 @@ def test_collate_token_channel_source(cuts, tokenizer):
         eos,
         total2,
     )
-    _verify_supervision_tokens(
-        source_tokens[1], 1.2, 0.3, "<|0|> thanks <|3|>", tokenizer, pad, bos, eos, total2
-    )
+    _verify_supervision_tokens(source_tokens[1], 1.2, 0.3, "<|0|> thanks <|3|>", tokenizer, pad, bos, eos, total2)
 
 
 def test_collate_system_prompt(cuts, tokenizer):

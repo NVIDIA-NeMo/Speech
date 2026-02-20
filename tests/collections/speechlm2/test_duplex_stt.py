@@ -49,9 +49,22 @@ def create_model(
             "validation_save_path": "/tmp/test_duplex_stt_logs",
             "perception": {
                 "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
-                "preprocessor": {"_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor", "features": 80},
-                "encoder": {"_target_": "nemo.collections.asr.modules.ConformerEncoder", "feat_in": 80, "d_model": 512, "n_heads": 8, "n_layers": 1, "subsampling_factor": 8},
-                "modality_adapter": {"_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector", "d_model": 512},
+                "preprocessor": {
+                    "_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
+                    "features": 80,
+                },
+                "encoder": {
+                    "_target_": "nemo.collections.asr.modules.ConformerEncoder",
+                    "feat_in": 80,
+                    "d_model": 512,
+                    "n_heads": 8,
+                    "n_layers": 1,
+                    "subsampling_factor": 8,
+                },
+                "modality_adapter": {
+                    "_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector",
+                    "d_model": 512,
+                },
                 "output_dim": 2048,
             },
             "predict_user_text": predict_user_text,

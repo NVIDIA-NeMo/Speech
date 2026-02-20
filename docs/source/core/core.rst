@@ -24,7 +24,7 @@ The end result of using NeMo, `Pytorch Lightning <https://github.com/PyTorchLigh
 Pretrained
 ----------
 
-NeMo comes with many pretrained models for each of our collections: ASR, NLP, and TTS. Every pretrained NeMo model can be downloaded 
+NeMo comes with many pretrained models for each of our collections: ASR, TTS, Audio, and SpeechLM2. Every pretrained NeMo model can be downloaded 
 and used with the ``from_pretrained()`` method.
 
 As an example, we can instantiate QuartzNet with the following:
@@ -44,7 +44,6 @@ To see all available pretrained models for a specific NeMo model, use the ``list
 For detailed information on the available pretrained models, refer to the collections documentation: 
 
 - :doc:`Automatic Speech Recognition (ASR) <../asr/intro>`
-- :doc:`Natural Language Processing (NLP) <../nlp/models>`
 - :doc:`Text-to-Speech Synthesis (TTS) <../tts/intro>`
 
 Training
@@ -176,7 +175,6 @@ via PyTorch Lightning `hooks <https://pytorch-lightning.readthedocs.io/en/stable
 For more domain-specific information, see:
 
 - :doc:`Automatic Speech Recognition (ASR) <../asr/intro>`
-- :doc:`Natural Language Processing (NLP) <../nlp/models>`
 - :doc:`Text-to-Speech Synthesis (TTS) <../tts/intro>`
 
 PyTorch Lightning Trainer
@@ -684,7 +682,7 @@ Use a Custom Model Card Template for the Hub
 Nested NeMo Models
 ------------------
 
-In some cases, it may be helpful to use NeMo models inside other NeMo models. For example, we can incorporate language models into ASR models to use in a decoding process to improve accuracy or use hybrid ASR-TTS models to generate audio from the text on the fly to train or fine-tune the ASR model.
+In some cases, it may be helpful to use NeMo models inside other NeMo models. For example, we can incorporate language models into ASR models to use in a decoding process to improve accuracy.
 
 There are three ways to instantiate child models inside parent models:
 

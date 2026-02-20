@@ -27,7 +27,9 @@ import sphinx_book_theme
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 
 sys.path.insert(0, os.path.abspath("../.."))
-sys.path.insert(0, os.path.abspath("../../nemo"))
+# Append (not prepend) the nemo/ subdir so package_info is importable,
+# but real third-party packages like `lightning` are found first.
+sys.path.append(os.path.abspath("../../nemo"))
 
 from package_info import __version__
 
@@ -95,6 +97,20 @@ for req_path in sorted(list(glob.glob("../../requirements/*.txt"))):
                 else:
                     print(f"`{req}` already added to autodoc mock requirements (lib {line})")
 
+# Filter out packages that are actually installed and importable.
+# autodoc_mock_imports is designed for packages missing from the build env;
+# mocking installed packages causes issues (e.g., issubclass() fails on mocks).
+import importlib.util
+
+_final_mock_imports = []
+for _mod in autodoc_mock_imports:
+    _top_level = _mod.split('.')[0]
+    if importlib.util.find_spec(_top_level) is not None:
+        print(f"Skipping mock for installed package: `{_mod}` (found `{_top_level}`)")
+    else:
+        _final_mock_imports.append(_mod)
+autodoc_mock_imports = _final_mock_imports
+
 #
 # -- General configuration ------------------------------------------------
 
@@ -125,14 +141,9 @@ extensions = [
 
 bibtex_bibfiles = [
     'asr/asr_all.bib',
-    'nlp/nlp_all.bib',
-    'nlp/text_normalization/tn_itn_all.bib',
     'tools/tools_all.bib',
     'tts/tts_all.bib',
-    'text_processing/text_processing_all.bib',
     'core/adapters/adapter_bib.bib',
-    'multimodal/mm_all.bib',
-    'vision/vision_all.bib',
     'audio/audio_all.bib',
 ]
 
@@ -178,7 +189,7 @@ release = __version__
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = 'en'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
@@ -236,8 +247,6 @@ html_logo = os.path.join('nv_logo.png')
 html_title = 'NVIDIA NeMo'
 
 html_theme_options = {
-    'logo_only': False,
-    'display_version': True,
     # 'prev_next_buttons_location': 'bottom',
     # 'style_external_links': False,
     # 'style_nav_header_background': '#000000',

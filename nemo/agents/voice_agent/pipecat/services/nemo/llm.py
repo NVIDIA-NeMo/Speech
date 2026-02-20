@@ -672,6 +672,8 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
     """Get an LLM service from the configuration."""
     backend = config.type
 
+    logger.info(f"Initializing LLM service from config: {config}")
+
     # If backend is "auto", try to detect the best backend
     if backend == "auto":
         model_name = config.get("model")

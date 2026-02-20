@@ -18,7 +18,6 @@ import os
 import random
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
-import h5py
 import librosa
 import matplotlib.pyplot as plt
 import numpy as np
@@ -40,6 +39,13 @@ try:
     PRA = True
 except ImportError:
     PRA = False
+
+try:
+    import h5py
+
+    HAS_H5PY = True
+except ImportError:
+    HAS_H5PY = False
 
 
 def check_angle(key: str, val: Union[float, Iterable[float]]) -> bool:
@@ -878,6 +884,8 @@ def save_rir_simulation(filepath: str, rir_dataset: Dict[str, List[np.array]], m
         rir_dataset: Dictionary with RIR data. Each item is a set of multi-channel RIRs.
         metadata: Dictionary with related metadata.
     """
+    if not HAS_H5PY:
+        raise ImportError("Install h5py to use save_rir_simulation")
     if os.path.exists(filepath):
         raise RuntimeError(f'Output file exists: {filepath}')
 
@@ -914,6 +922,8 @@ def load_rir_simulation(filepath: str, source: int = 0, rir_key: str = 'rir') ->
     Returns:
         Multichannel RIR as ndarray with shape (num_samples, num_channels) and scalar sample rate.
     """
+    if not HAS_H5PY:
+        raise ImportError("Install h5py to use load_rir_simulation")
     with h5py.File(filepath, 'r') as h5f:
         # Load RIR
         rir = h5f[rir_key][f'{source}'][:]

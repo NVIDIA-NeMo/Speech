@@ -47,6 +47,7 @@ Arabic
    :align: left
    :widths: 50,50
    :header-rows: 1
+
 ------------------------------
 
 Russian
@@ -66,10 +67,11 @@ Portuguese
    :align: left
    :widths: 50,50
    :header-rows: 1
+
 -----------------------------
 
 Belarusian
-^^^^^^^
+^^^^^^^^^^
 .. csv-table::
    :file: data/benchmark_be.csv
    :align: left
@@ -89,7 +91,7 @@ Japanese
 -----------------------------
 
 Armenian
-^^^^^^^
+^^^^^^^^
 .. csv-table::
    :file: data/benchmark_hy.csv
    :align: left

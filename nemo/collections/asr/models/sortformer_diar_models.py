@@ -279,16 +279,14 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         Generate encoder outputs from frontend encoder.
 
         Args:
-            processed_signal (torch.Tensor):
-                tensor containing audio-feature (mel spectrogram, mfcc, etc.).
-            processed_signal_length (torch.Tensor):
-                tensor containing lengths of audio signal in integers.
+            processed_signal (torch.Tensor): tensor containing audio-feature
+                (mel spectrogram, mfcc, etc.).
+            processed_signal_length (torch.Tensor): tensor containing lengths
+                of audio signal in integers.
 
         Returns:
-            emb_seq (torch.Tensor):
-                tensor containing encoder outputs.
-            emb_seq_length (torch.Tensor):
-                tensor containing lengths of encoder outputs.
+            emb_seq (torch.Tensor): tensor containing encoder outputs.
+            emb_seq_length (torch.Tensor): tensor containing lengths of encoder outputs.
         """
         # Spec augment is not applied during evaluation/testing
         if self.spec_augmentation is not None and self.training:
@@ -440,9 +438,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             input_signal_length (torch.Tensor): The lengths of the input audio signals.
 
         Returns:
-            processed_signal (torch.Tensor): The aggregated audio signal.
-                                             The length of this tensor should match the original batch size.
-            processed_signal_length (torch.Tensor): The lengths of the processed audio signals.
+            A tuple of ``(processed_signal, processed_signal_length)`` where
+            ``processed_signal`` is the aggregated audio signal tensor
+            (length matches original batch size) and
+            ``processed_signal_length`` contains the lengths of the processed signals.
         """
         input_signal = input_signal.cpu()
         processed_signal_list, processed_signal_length_list = [], []
@@ -1135,10 +1134,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             override_config: (Optional[DiarizeConfig]) A config to override the default config.
 
         Returns:
-            *if include_tensor_outputs is False: A list of lists of speech segments with a corresponding speaker index,
-                in format "[begin_seconds, end_seconds, speaker_index]".
-            *if include_tensor_outputs is True: A tuple of the above list
-                and list of tensors of raw speaker activity probabilities.
+            If include_tensor_outputs is False: A list of lists of speech segments with a corresponding speaker index,
+            in format "[begin_seconds, end_seconds, speaker_index]".
+            If include_tensor_outputs is True: A tuple of the above list
+            and list of tensors of raw speaker activity probabilities.
         """
         return super().diarize(
             audio=audio,

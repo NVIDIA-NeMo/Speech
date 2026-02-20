@@ -315,6 +315,7 @@ class TestTranscriptionMixin:
 
     pytest.mark.with_downloads()
 
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_transcribe_return_hypothesis(self, test_data_dir, fast_conformer_ctc_model):
         audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
@@ -369,6 +370,7 @@ class TestTranscriptionMixin:
         assert isinstance(outputs[0], Hypothesis)
         assert isinstance(outputs[1], Hypothesis)
 
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_transcribe_return_nbest_rnnt(self, audio_files, fast_conformer_transducer_model):
         fast_conformer_transducer_model.eval()
@@ -394,6 +396,7 @@ class TestTranscriptionMixin:
         # Reset the decoding strategy to original
         fast_conformer_transducer_model.change_decoding_strategy(orig_decoding_config)
 
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_transcribe_return_nbest_canary(self, audio_files, canary_1b_flash):
         canary_1b_flash.eval()
@@ -499,6 +502,7 @@ class TestTranscriptionMixin:
         assert output[0].timestamp['segment'][0]['start'] == pytest.approx(0.32)
         assert output[0].timestamp['segment'][0]['end'] == pytest.approx(0.72)
 
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_transcribe_return_nbest_hybrid_rnnt_ctc_prompt(self, audio_files, hybrid_rnnt_ctc_bpe_model_with_prompt):
         """Test n-best hypothesis return for hybrid RNNT-CTC BPE model with prompts."""
@@ -528,6 +532,7 @@ class TestTranscriptionMixin:
         # Restore original decoding config
         hybrid_rnnt_ctc_bpe_model_with_prompt.change_decoding_strategy(orig_decoding_config)
 
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_timestamps_with_transcribe_hybrid_prompt(self, audio_files, hybrid_rnnt_ctc_bpe_model_with_prompt):
         audio1, audio2 = audio_files
@@ -547,6 +552,7 @@ class TestTranscriptionMixin:
         assert output[0].timestamp['segment'][0]['start'] == pytest.approx(0.16)
         assert output[0].timestamp['segment'][0]['end'] == pytest.approx(0.56)
 
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_transcribe_returns_xattn(self, audio_files, canary_1b_v2):
         canary_1b_v2.eval()

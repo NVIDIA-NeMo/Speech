@@ -239,23 +239,4 @@ class AlignerModel(NeedsNormalizer, ModelPT):
             List of available pre-trained models.
         """
         list_of_models = []
-
-        # en-US, ARPABET-based
-        model = PretrainedModelInfo(
-            pretrained_model_name="tts_en_radtts_aligner",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_radtts_aligner/versions/ARPABET_1.11.0/files/Aligner.nemo",
-            description="This model is trained on LJSpeech sampled at 22050Hz with and can be used to align text and audio.",
-            class_=cls,
-        )
-        list_of_models.append(model)
-
-        # en-US, IPA-based
-        model = PretrainedModelInfo(
-            pretrained_model_name="tts_en_radtts_aligner_ipa",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_radtts_aligner/versions/IPA_1.13.0/files/Aligner.nemo",
-            description="This model is trained on LJSpeech sampled at 22050Hz with and can be used to align text and audio.",
-            class_=cls,
-        )
-        list_of_models.append(model)
-
         return list_of_models

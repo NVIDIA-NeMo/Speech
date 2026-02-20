@@ -38,30 +38,9 @@ def preprocess_ds_for_fastpitch_align(dataloader):
     get_pitch_stats(pitch_list)
 
 
-def preprocess_ds_for_mixer_tts_x(dataloader):
-    pitch_list = []
-    for batch in tqdm(dataloader, total=len(dataloader)):
-        (
-            audios,
-            audio_lengths,
-            tokens,
-            tokens_lengths,
-            align_prior_matrices,
-            pitches,
-            pitches_lengths,
-            lm_tokens,
-        ) = batch
-
-        pitch = pitches.squeeze(0)
-        pitch_list.append(pitch[pitch != 0])
-
-    get_pitch_stats(pitch_list)
-
-
 CFG_NAME2FUNC = {
     "ds_for_fastpitch_align": preprocess_ds_for_fastpitch_align,
     "ds_for_mixer_tts": preprocess_ds_for_fastpitch_align,
-    "ds_for_mixer_tts_x": preprocess_ds_for_mixer_tts_x,
 }
 
 

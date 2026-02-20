@@ -219,12 +219,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
     def prepare_inputs(self, batch: dict):
 
-        # Use augmented audio from dataset if available, else original
-        perception_audio = batch.get("source_audio_aug", batch["source_audio"])
-
-        # Speech encoder forward pass
+        # Speech encoder forward pass (audio is already augmented in the dataloader)
         source_encoded, source_encoded_lens, _ = self.perception(
-            input_signal=perception_audio,
+            input_signal=batch["source_audio"],
             input_signal_length=batch["source_audio_lens"],
             return_encoder_emb=True,
         )

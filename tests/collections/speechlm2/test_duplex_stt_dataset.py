@@ -360,12 +360,11 @@ def test_duplex_stt_dataset(cuts, tokenizer):
     # no text data (no Formattable cuts)
     assert batch["text_data"] is None
 
-    # no augmented audio when augmentation is not configured
-    assert "source_audio_aug" not in ad
+    # source_audio is not augmented when augmenter is not configured (audio is unchanged from collate_audio)
 
 
 def test_duplex_stt_dataset_augmentation(cuts, tokenizer, tmp_path):
-    """Test that audio augmentation produces source_audio_aug when configured."""
+    """Test that audio augmentation modifies source_audio in-place when configured."""
     import numpy as np
     import soundfile as sf
 
@@ -397,10 +396,13 @@ def test_duplex_stt_dataset_augmentation(cuts, tokenizer, tmp_path):
 
     assert dataset.audio_augmenter is not None
 
+    # Get original audio for comparison
+    original_audio, _ = collate_audio(cuts.resample(SR))
+
     batch = dataset[cuts]
     ad = batch["audio_data"]
 
-    # Augmented audio should be present and differ from original
-    assert "source_audio_aug" in ad
-    assert ad["source_audio_aug"].shape == ad["source_audio"].shape
-    assert not torch.equal(ad["source_audio_aug"], ad["source_audio"])
+    # source_audio should be augmented (different from original)
+    assert "source_audio_aug" not in ad
+    assert ad["source_audio"].shape == original_audio.shape
+    assert not torch.equal(ad["source_audio"], original_audio)

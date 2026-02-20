@@ -275,19 +275,11 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 remove_timestamps=True,
             )
 
+            # Force align user text (runs in dataloader worker, overlapped with training)
             if self.force_align_user_text and torch.is_grad_enabled():
-                logging.info(
-                    f"Force aligning user text for {len(all_cuts_combined)} cuts on device {self.force_align_device}"
-                )
                 all_cuts_combined = self.force_aligner.batch_force_align_user_audio(
                     all_cuts_combined, source_sample_rate=self.source_sample_rate
                 )
-
-                if len(all_cuts_combined) == 0:
-                    logging.warning(
-                        "All cuts filtered out due to force alignment failures, returning minimal valid batch."
-                    )
-                    return self._create_minimal_batch()
 
             source_tokens, source_token_lens = collate_token_channel(
                 all_cuts_combined,
@@ -302,25 +294,23 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             )
 
             # Audio augmentation (runs in dataloader workers for performance)
-            source_audio_aug = None
             if (
                 self.audio_augmenter is not None
                 and torch.is_grad_enabled()
                 and self._is_augmentation_task(getattr(all_cuts_combined[0], 'task', 's2s_duplex'))
             ):
-                source_audio_aug = self.audio_augmenter.augment_batch(
-                    self.cfg, source_audio.clone(), source_audio_lens
+                source_audio = self.audio_augmenter.augment_batch(
+                    self.cfg, source_audio, source_audio_lens
                 )
 
             # Early interruption augmentation
-            ei_audio = source_audio_aug if source_audio_aug is not None else source_audio
             if self.early_interruption_prob > 0 and torch.is_grad_enabled():
                 for batch_idx in range(target_tokens.shape[0]):
                     if random.random() < self.early_interruption_prob:
                         self._apply_early_interruption_augmentation(
                             target_tokens,
                             source_tokens,
-                            ei_audio,
+                            source_audio,
                             source_audio_lens,
                             batch_idx,
                         )
@@ -347,9 +337,6 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             if torch.sum(prompt_token_lens) > 0:
                 audio_data['prompt_tokens'] = prompt_tokens
                 audio_data['prompt_token_lens'] = prompt_token_lens
-
-            if source_audio_aug is not None:
-                audio_data['source_audio_aug'] = source_audio_aug
 
         text_cuts = all_cuts.filter(lambda c: isinstance(c, Formattable))
         text_data = None

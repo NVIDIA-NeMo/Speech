@@ -182,7 +182,9 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     body_graph = driver_params.conditional.phGraph_out[0]
 
     # depending on cuda-python version, number of parameters vary
-    num_cuda_stream_update_capture_dependencies_params = len(inspect.signature(cudart.cudaStreamUpdateCaptureDependencies).parameters)
+    num_cuda_stream_update_capture_dependencies_params = len(
+        inspect.signature(cudart.cudaStreamUpdateCaptureDependencies).parameters
+    )
     if num_cuda_stream_update_capture_dependencies_params == 5:
         cu_call(
             cudart.cudaStreamUpdateCaptureDependencies(

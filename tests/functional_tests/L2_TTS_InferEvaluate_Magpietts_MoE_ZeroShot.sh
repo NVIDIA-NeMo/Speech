@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# Copyright (c) 2026, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,21 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
-    --codecmodel_path /home/TestData/tts/AudioCodec_21Hz_no_eliz_without_wavlm_disc.nemo \
-    --datasets_json_path examples/tts/evalset_config.json \
-    --datasets an4_val_ci_longform_tiny \
-    --out_dir ./mplf_zs_0 \
-    --batch_size 6 \
+    --nemo_files "/home/TestData/tts/2602_MoE/moe16_sinkhorn_top1_valLoss5.0469_step2625132_epoch524.nemo" \
+    --codecmodel_path "/home/TestData/tts/21fps_causal_codecmodel.nemo" \
+    --datasets_json_path "examples/tts/evalset_config.json" \
+    --datasets "an4_val_ci" \
+    --out_dir "./mp_moe_zs_0" \
+    --batch_size 4 \
     --use_cfg \
     --cfg_scale 2.5 \
-    --num_repeats 1 \
     --temperature 0.6 \
-    --hparams_files /home/TestData/tts/2506_ZeroShot/lrhm_short_yt_prioralways_alignement_0.002_priorscale_0.1.yaml \
-    --checkpoint_files /home/TestData/tts/2506_ZeroShot/dpo-T5TTS--val_loss=0.4513-epoch=3.ckpt \
-    --legacy_codebooks \
-    --legacy_text_conditioning \
     --apply_attention_prior \
     --run_evaluation \
     --clean_up_disk \
-    --cer_target 0.25 \
-    --ssim_target 0.2
+    --cer_target 0.08 \
+    --ssim_target 0.72

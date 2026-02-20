@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from nemo.agents.voice_agent.utils.tool_calling.base import StandardSchemaTool
+from pipecat.processors.frameworks.rtvi import RTVIProcessor
 
 ALL_SCHEMA_TOOLS_FOR_EVAL: Dict[str, StandardSchemaTool] = {}
-
 
 def register_schema_tool_for_eval(cls):
     """Class decorator that registers a tool class into ALL_STANDARD_SCHEMA_TOOLS.
@@ -37,13 +37,30 @@ def register_schema_tool_for_eval(cls):
     return cls
 
 
-def get_schema_tool_for_eval(name: str, **kwargs) -> StandardSchemaTool:
+from nemo.agents.voice_agent.evaluation.tools.rtvi_control import SendRTVIMessageTool, SendScenarioSummaryTool, SendExitMessageTool
+from nemo.agents.voice_agent.evaluation.tools.basic_tools import GetCityWeatherTool, ReadFileTool
+
+
+
+
+def get_schema_tool_for_eval(name: str, rtvi: Optional[RTVIProcessor] = None, **kwargs) -> StandardSchemaTool:
     """
-    Get a schema tool for evaluation by name.
+    Get a schema tool for evaluation by name, and initialize the tool with the given arguments.
+
+    Args:
+        name: The name of the tool.
+        rtvi: The RTVI processor to use for sending messages to the evaluator.
+        kwargs: The additional keyword arguments to pass to the tool constructor.
+
+    Returns:
+        The schema tool for evaluation.
     """
     if name not in ALL_SCHEMA_TOOLS_FOR_EVAL:
         return None
-    return ALL_SCHEMA_TOOLS_FOR_EVAL[name](**kwargs)
+    tool_class = ALL_SCHEMA_TOOLS_FOR_EVAL[name]
+    if issubclass(tool_class, SendRTVIMessageTool):
+        return tool_class(rtvi=rtvi, **kwargs)
+    return tool_class(**kwargs)
 
 
 def list_schema_tools_for_eval() -> List[StandardSchemaTool]:

@@ -26,7 +26,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from evaluation_bridge import VoiceAgentEvaluationBridge
+from nemo.agents.voice_agent.evaluation.bridge import VoiceAgentEvaluationBridge
 from nemo.agents.voice_agent.utils import FileLogger
 
 

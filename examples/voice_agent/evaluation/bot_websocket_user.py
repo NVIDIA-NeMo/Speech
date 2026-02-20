@@ -529,7 +529,7 @@ if __name__ == "__main__":
     load_dotenv(override=True)
     asyncio.run(
         run_bot_websocket_server(
-            server_config_path=os.getenv("SERVER_CONFIG_PATH", "server_configs/agent.yaml"),
+            server_config_path=os.getenv("SERVER_CONFIG_PATH", "server_configs/user.yaml"),
             host=os.getenv("SERVER_HOST", "0.0.0.0"),
             port=int(os.getenv("WEBSOCKET_PORT", 8765)),
         )

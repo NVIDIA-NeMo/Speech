@@ -52,6 +52,8 @@ class NoiseGenerator:
         sample_rate: int,
         max_duration: Optional[float] = None,
         random_offset: bool = True,
+        random_white_noise: bool = False,
+        white_noise_db: Optional[float] = None,
     ):
         """
         Args:
@@ -59,14 +61,21 @@ class NoiseGenerator:
             sample_rate: Sample rate of the output audio chunks.
             max_duration: Maximum duration of each noise audio file to load.
             random_offset: Whether to randomize the offset of the noise audio if it's longer than the maximum duration.
+            random_white_noise: Whether to generate random white noise.
+            white_noise_db: Loudness of generated white noise in dB relative to full scale (dBFS).
+                None means 0 dBFS (unchanged). Negative values attenuate (e.g. -20 for 20 dB quieter).
         """
         if not isinstance(noise_audio_files, list):
             noise_audio_files = str(noise_audio_files).split(',')
-
+        if random_white_noise and noise_audio_files is not None:
+            logger.info("Generating random white noise, ignoring noise audio files...")
+            noise_audio_files = None
         self.noise_audio_files = noise_audio_files
         self.max_duration = max_duration
         self.sample_rate = sample_rate
         self.random_offset = random_offset
+        self.random_white_noise = random_white_noise
+        self.white_noise_db = white_noise_db
         self.noise_audio_data = self.load_audio_files()
         self.current_position = 0  # Track current position in samples
         if self.random_offset:
@@ -76,6 +85,9 @@ class NoiseGenerator:
         """
         Load the noise audio files.
         """
+        if self.random_white_noise:
+            logger.info("Generating random white noise for noise buffer...")
+            return self.generate_random_white_noise()
         logger.info(f"Loading {len(self.noise_audio_files)} noise audio files...")
         noise_audio_data = []
         for noise_audio_file in self.noise_audio_files:
@@ -91,6 +103,23 @@ class NoiseGenerator:
 
         # concatenate the noise audio data into a single array
         return np.concatenate(noise_audio_data)
+
+    def generate_random_white_noise(self) -> np.ndarray:
+        """
+        Generate random white noise with the given duration and sample rate.
+
+        Returns:
+            np.ndarray: Float32 white noise in [-1.0, 1.0], length max_duration * sample_rate.
+                Scaled by white_noise_db when set (amplitude = 10^(white_noise_db/20)).
+        """
+        max_duration = self.max_duration if self.max_duration is not None else 600.0
+        num_samples = int(max_duration * self.sample_rate)
+        white_noise = np.random.uniform(-1.0, 1.0, size=num_samples).astype(np.float32)
+        if self.white_noise_db is not None:
+            scale = 10.0 ** (self.white_noise_db / 20.0)
+            white_noise = (white_noise * scale).astype(np.float32)
+            white_noise = np.clip(white_noise, -1.0, 1.0)
+        return white_noise
 
     def get_noise_chunk(self, chunk_size_in_seconds: float) -> np.ndarray:
         """
@@ -234,10 +263,12 @@ class NoiseConfig:
     A class that configures the noise for the audio stream.
     """
 
-    noise_files: Union[List[str], str]
+    noise_files: Optional[Union[List[str], str]] = None
     gain_db: float = 0.0
     max_noise_duration: Optional[float] = 600.0
     random_offset: bool = True
+    random_white_noise: bool = False
+    white_noise_db: Optional[float] = -90.0
 
 
 class AudioStream:
@@ -281,6 +312,8 @@ class AudioStream:
                 self.output_sample_rate,
                 max_duration=self.noise_config.max_noise_duration,
                 random_offset=self.noise_config.random_offset,
+                random_white_noise=self.noise_config.random_white_noise,
+                white_noise_db=self.noise_config.white_noise_db,
             )
         else:
             self.gain_db = None

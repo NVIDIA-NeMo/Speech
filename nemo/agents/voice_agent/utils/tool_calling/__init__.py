@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+from typing import List
 from nemo.agents.voice_agent.utils.tool_calling.base import StandardSchemaTool, register_schema_tools_to_llm
 
 ALL_STANDARD_SCHEMA_TOOLS = {}
@@ -34,3 +34,18 @@ def register_standard_schema_tool(cls):
     key = getattr(cls, "name", cls.__name__)
     ALL_STANDARD_SCHEMA_TOOLS[key] = cls
     return cls
+
+def get_standard_schema_tool(name: str, **kwargs) -> StandardSchemaTool:
+    """
+    Get a schema tool for evaluation by name.
+    """
+    if name not in ALL_STANDARD_SCHEMA_TOOLS:
+        return None
+    return ALL_STANDARD_SCHEMA_TOOLS[name](**kwargs)
+
+
+def list_standard_schema_tools() -> List[StandardSchemaTool]:
+    """
+    List all schema tools for evaluation.
+    """
+    return list(ALL_STANDARD_SCHEMA_TOOLS.keys())

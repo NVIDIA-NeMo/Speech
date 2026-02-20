@@ -27,7 +27,7 @@ class StandardSchemaTool:
     Base class for all standard tools with FunctionSchema.
     """
 
-    def __init__(self, description: str, name: Optional[str] = None):
+    def __init__(self, *, description: str, name: Optional[str] = None):
         self.name = name if name is not None else self.__class__.__name__
         self.description = description
         if not self.name:
@@ -73,7 +73,12 @@ class StandardSchemaTool:
         """
         The actual tool calling logic, push back the results to the LLM.
         """
-        results = await self._execute(params)
+        try:
+            results = await self._execute(params)
+        except Exception as e:
+            logger.error(f"Error in tool calling: {e}")
+            await params.result_callback({"error": str(e)})
+            return
         await params.result_callback(results)
 
     @property
@@ -132,9 +137,16 @@ def register_schema_tools_to_llm(
     context: OpenAILLMContext,
     tools: List[StandardSchemaTool],
     cancel_on_interruption: bool = True,
+    keep_existing_tools: bool = True,
 ) -> None:
     """
     Register standard schema tools to the LLM.
+    Args:
+        llm: The LLM service to use.
+        context: The LLM context to use.
+        tools: The list of tools to register.
+        cancel_on_interruption: Whether to cancel the LLM call on interruption.
+        keep_existing_tools: Whether to keep the existing tools in the context.
     """
     all_schemas = []
     for tool in tools:
@@ -148,10 +160,10 @@ def register_schema_tools_to_llm(
             handler=tool,
             cancel_on_interruption=cancel_on_interruption,
         )
-
-    existing_tools = context.tools
-    if not isinstance(existing_tools, list):
-        existing_tools = []
-    all_schemas.extend(existing_tools)
+    if keep_existing_tools:
+        existing_tools = context.tools
+        if not isinstance(existing_tools, list):
+            existing_tools = []
+        all_schemas.extend(existing_tools)
     tools_schema = ToolsSchema(standard_tools=all_schemas)
     context.set_tools(tools_schema)

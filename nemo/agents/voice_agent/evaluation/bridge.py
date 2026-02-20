@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-RTVI Evaluation Bridge
+Voice Agent Evaluation Bridge
 
 Connects two voice agents via WebSocket and provides:
 - Bidirectional audio routing
@@ -355,15 +355,8 @@ class VoiceAgentEvaluationBridge:
         await self.connect()
 
         # Update prompts (handler will automatically reset)
-        await self.update_user_prompt(scenario["user_prompt"], auto_reset=False)
-
-        if "agent_prompt" in scenario:
-            # Note: update_system_prompt handler in bot_websocket.py automatically resets,
-            # so we don't need explicit reset calls here
-            await self.update_agent_prompt(scenario["agent_prompt"], auto_reset=False)
-        else:
-            # reset agent cache
-            await self.reset_agent()
+        await self.update_user_prompt(prompt=scenario["user_prompt"], tools=scenario["user_tools"], auto_reset=False)
+        await self.update_agent_prompt(prompt=scenario["agent_prompt"], tools=scenario["agent_tools"], auto_reset=False)
 
         if "noise_config" in scenario:
             self.set_noise_config(scenario["noise_config"])
@@ -546,16 +539,17 @@ class VoiceAgentEvaluationBridge:
             logger.error(f"Error waiting for bot-ready: {e}")
             return False
 
-    async def update_user_prompt(self, new_prompt: str, auto_reset: bool = False, add_suffix: bool = True):
+    async def update_user_prompt(self, prompt: str, tools: str, auto_reset: bool = False, add_suffix: bool = True):
         """
         Update user's system prompt via RTVI action.
 
         Args:
-            new_prompt: New system prompt text
+            prompt: New system prompt text
+            tools: New tools in json string format
             auto_reset: If True, also sends reset action after updating prompt
             add_suffix: If True, add previously configured system prompt suffix to the new prompt
         """
-        logger.info(f"Updating user prompt: {new_prompt[:100]}...")
+        logger.info(f"Updating user prompt: {prompt[:100]}..., tools: {tools[:100]}...")
 
         # Create RTVI action message
         action_msg = {
@@ -565,7 +559,7 @@ class VoiceAgentEvaluationBridge:
             "data": {
                 "service": "context",
                 "action": "update_system_prompt",
-                "arguments": [{"name": "prompt", "value": new_prompt}, {"name": "add_suffix", "value": add_suffix}],
+                "arguments": [{"name": "prompt", "value": prompt}, {"name": "tools", "value": tools}, {"name": "add_suffix", "value": add_suffix}],
             },
         }
 

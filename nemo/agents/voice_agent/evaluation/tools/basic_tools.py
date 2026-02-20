@@ -12,15 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
-from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.processors.frameworks.rtvi import RTVIProcessor, RTVIServerMessage, RTVITextMessageData
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.services.openai.llm import OpenAILLMService
 
 from nemo.agents.voice_agent.evaluation.tools import register_schema_tool_for_eval
 from nemo.agents.voice_agent.utils.tool_calling import StandardSchemaTool
@@ -65,10 +61,65 @@ class GetCityWeatherTool(StandardSchemaTool):
         Get the weather of a city.
         """
         city_name = params.arguments.get("city_name")
+        logger.debug(f"Getting weather of {city_name}")
         results = {
             "city": city_name,
             "weather": "sunny",
             "temperature": "20 degrees Celsius",
             "uv_index": "low",
+        }
+        await params.result_callback(results)
+
+
+@register_schema_tool_for_eval
+class ReadFileTool(StandardSchemaTool):
+    """
+    Read a file.
+    """
+
+    DESCRIPTION: str = """
+        Read a file from the file system. You need to provide the file path to read the file.
+        """
+
+    def __init__(self):
+        super().__init__(description=self.DESCRIPTION)
+
+    @property
+    def properties(self) -> Dict[str, Any]:
+        """
+        Return the properties for the tool.
+        """
+        return {
+            "file_path": {
+                "type": "string",
+                "description": "The path of the file to read.",
+            },
+        }
+
+    @property
+    def required_properties(self) -> List[str]:
+        """
+        Return the required properties for the tool.
+        """
+        return ["file_path"]
+
+    async def _execute(self, params: FunctionCallParams) -> None:
+        """
+        Read a file from the file system.
+        """
+        file_path = params.arguments.get("file_path")
+        logger.debug(f"Reading file from {file_path}")
+        try:
+            with Path(file_path).open("r") as f:
+                content = f.read()
+        except Exception as e:
+            logger.error(f"Error reading file {file_path}: {e}")
+            await params.result_callback({"error": str(e)})
+            return
+
+        logger.debug(f"Loaded file {file_path} with content: `{content}`")
+        results = {
+            "file_path": file_path,
+            "content": content,
         }
         await params.result_callback(results)

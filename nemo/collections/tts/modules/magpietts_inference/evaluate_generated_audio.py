@@ -57,6 +57,13 @@ def load_evalset_config(config_path: str = None) -> dict:
         return json.load(f)
 
 
+def _resolve_path(audio_dir, path):
+    """Resolve a relative path against audio_dir if both are provided."""
+    if audio_dir is not None and path is not None:
+        return os.path.join(audio_dir, path)
+    return path
+
+
 def find_generated_files(audio_dir, prefix, extension):
     file_list = []
     for f in os.listdir(audio_dir):
@@ -117,7 +124,25 @@ def process_text(input_text):
     return single_space_text
 
 
-def transcribe_with_whisper_batch(whisper_model, whisper_processor, audio_paths, language, device, batch_size=8):
+def transcribe_with_nemo_asr_batched(asr_model, audio_paths, batch_size=8, label=""):
+    """Transcribe multiple audio files with a NeMo ASR model in batches. Returns list of transcriptions (one per path)."""
+    all_transcriptions = []
+    for start in range(0, len(audio_paths), batch_size):
+        batch_paths = audio_paths[start : start + batch_size]
+        try:
+            with torch.inference_mode():
+                batch_results = asr_model.transcribe(batch_paths, batch_size=len(batch_paths), use_lhotse=False)
+            for r in batch_results:
+                all_transcriptions.append(process_text(r.text))
+        except Exception as e:
+            logging.info("Error during batched ASR ({} audio): {}".format(label, e))
+            all_transcriptions.extend([""] * len(batch_paths))
+    return all_transcriptions
+
+
+def transcribe_with_whisper_batched(
+    whisper_model, whisper_processor, audio_paths, language, device, batch_size=8, label=""
+):
     """Transcribe multiple audio files with Whisper in batches. Returns list of transcriptions (one per path)."""
     forced_decoder_ids = (
         whisper_processor.get_decoder_prompt_ids(language=language, task="transcribe") if language else None
@@ -125,15 +150,19 @@ def transcribe_with_whisper_batch(whisper_model, whisper_processor, audio_paths,
     all_transcriptions = []
     for start in range(0, len(audio_paths), batch_size):
         batch_paths = audio_paths[start : start + batch_size]
-        speech_arrays = [librosa.load(p, sr=16000)[0] for p in batch_paths]
-        inputs = whisper_processor(
-            speech_arrays, sampling_rate=16000, return_tensors="pt", padding=True
-        ).input_features
-        inputs = inputs.to(device)
-        with torch.inference_mode():
-            predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
-        transcriptions = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-        all_transcriptions.extend(transcriptions)
+        try:
+            speech_arrays = [librosa.load(p, sr=16000)[0] for p in batch_paths]
+            inputs = whisper_processor(
+                speech_arrays, sampling_rate=16000, return_tensors="pt", padding=True
+            ).input_features
+            inputs = inputs.to(device)
+            with torch.inference_mode():
+                predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
+            transcriptions = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
+            all_transcriptions.extend(process_text(t) for t in transcriptions)
+        except Exception as e:
+            logging.info("Error during batched Whisper ASR ({} audio): {}".format(label, e))
+            all_transcriptions.extend([""] * len(batch_paths))
     return all_transcriptions
 
 
@@ -188,7 +217,78 @@ def compute_utmosv2_scores(audio_dir, device):
     return utmosv2_scores_dict
 
 
-def evaluate(
+def batch_transcribe(
+    audio_paths,
+    language,
+    asr_model,
+    whisper_model,
+    whisper_processor,
+    device,
+    asr_batch_size,
+    label="",
+):
+    """Transcribe a list of audio files using NeMo ASR (English) or Whisper (other languages)."""
+    if language == "en":
+        texts = transcribe_with_nemo_asr_batched(asr_model, audio_paths, batch_size=asr_batch_size, label=label)
+    else:
+        texts = transcribe_with_whisper_batched(
+            whisper_model, whisper_processor, audio_paths, language, device, batch_size=asr_batch_size, label=label
+        )
+    return texts
+
+
+def load_evaluation_models(
+    language="en", sv_model_type="titanet", asr_model_name="stt_en_conformer_transducer_large", device="cuda"
+):
+    """Load ASR and speaker verification models used for evaluation.
+
+    Args:
+        language: Language code. "en" uses a NeMo ASR model; other languages use Whisper.
+        sv_model_type: Speaker verification model type ("wavlm" or "titanet").
+        asr_model_name: Name of the NeMo ASR model (used only when language is "en").
+        device: Device to place models on.
+
+    Returns:
+        Dict with keys: asr_model, whisper_model, whisper_processor, feature_extractor,
+        sv_model, sv_model_alternate.
+    """
+    models = {
+        'asr_model': None,
+        'whisper_model': None,
+        'whisper_processor': None,
+        'feature_extractor': None,
+    }
+
+    if language == "en":
+        if asr_model_name.startswith("nvidia/") or asr_model_name in ["stt_en_conformer_transducer_large"]:
+            models['asr_model'] = nemo_asr.models.ASRModel.from_pretrained(model_name=asr_model_name).to(device).eval()
+        else:
+            raise ValueError(f"ASR model {asr_model_name} not supported")
+    else:
+        models['whisper_processor'] = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
+        models['whisper_model'] = (
+            WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3").to(device).eval()
+        )
+
+    if sv_model_type == "wavlm":
+        models['feature_extractor'] = Wav2Vec2FeatureExtractor.from_pretrained('microsoft/wavlm-base-plus-sv')
+        models['sv_model'] = WavLMForXVector.from_pretrained('microsoft/wavlm-base-plus-sv').to(device).eval()
+    else:
+        models['sv_model'] = (
+            nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name='titanet_large').to(device).eval()
+        )
+
+    logging.info("Loading `titanet_small` model...")
+    with logging.temp_verbosity(logging.ERROR):
+        models['sv_model_alternate'] = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
+            model_name='titanet_small'
+        )
+    models['sv_model_alternate'] = models['sv_model_alternate'].to(device).eval()
+
+    return models
+
+
+def evaluate_dir(
     manifest_path,
     audio_dir,
     generated_audio_dir,
@@ -196,85 +296,48 @@ def evaluate(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
-    with_fcd=True,
-    codec_model_path=None,
     asr_batch_size=32,
 ):
+    """Compute per-file evaluation metrics for a directory of generated audio.
+
+    Evaluates individual files (ASR WER/CER, speaker similarity, UTMOSv2) but
+    does not compute global/aggregate metrics (cumulative WER/CER, FCD). Use
+    compute_global_metrics() to aggregate results from one or more directories.
+
+    External callers (e.g. NeMo Skills) can run evaluate_dir() in parallel across
+    multiple directories (on different workers/GPUs), concatenate the resulting
+    filewise_metrics lists, and call compute_global_metrics() once at the end to
+    accumulate the global metrics.
+
+    Returns:
+        filewise_metrics: List of per-file metric dictionaries.
+    """
     logging.info(f"Evaluating generated audio in {generated_audio_dir}...")
 
-    # Timing collection for profiling
-    from collections import defaultdict
-
-    timing_stats = defaultdict(lambda: {'total': 0.0, 'count': 0})
-
-    def record_time(section_name, elapsed):
-        timing_stats[section_name]['total'] += elapsed
-        timing_stats[section_name]['count'] += 1
-
-    eval_start_time = time.time()
-
-    # Time file discovery and manifest reading
-    t0 = time.time()
+    # 1. Collect files to evaluate
     audio_file_lists = find_generated_audio_files(generated_audio_dir)
     records = read_manifest(manifest_path)
     assert len(audio_file_lists) == len(records)
-    if with_fcd:
-        if codec_model_path is None:
-            raise ValueError("codec_model_path is required when with_fcd is True")
-        codes_file_lists = find_generated_codec_files(generated_audio_dir)
-        assert len(codes_file_lists) == len(records)
-    record_time('file_discovery', time.time() - t0)
+    codes_file_lists = find_generated_codec_files(generated_audio_dir)
+    has_codes = len(codes_file_lists) == len(records)
+    # Resolve ground-truth and context audio paths for all records
+    gt_audio_paths = [_resolve_path(audio_dir, r.get('audio_filepath')) for r in records]
+    context_audio_paths = [_resolve_path(audio_dir, r.get('context_audio_filepath')) for r in records]
 
     device = "cuda"
 
-    # Time model loading
-    t0 = time.time()
-    whisper_processor = None  # Address CodeQL issue even though this variable is only used when language != "en"
-    utmosv2_scores = None  # Address CodeQL issue even though this variable is only used when with_utmosv2 is true
-    if language == "en":
-        if asr_model_name.startswith("nvidia/") or asr_model_name in ["stt_en_conformer_transducer_large"]:
-            asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=asr_model_name)
-        else:
-            raise ValueError(f"ASR model {asr_model_name} not supported")
-        asr_model = asr_model.to(device)
-        asr_model.eval()
-    else:
-        whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-        whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
-        whisper_model = whisper_model.to(device)
-        whisper_model.eval()
-    record_time('load_asr_model', time.time() - t0)
+    # 2. Load models
+    models = load_evaluation_models(language, sv_model_type, asr_model_name, device)
 
-    t0 = time.time()
-    if sv_model_type == "wavlm":
-        feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained('microsoft/wavlm-base-plus-sv')
-        speaker_verification_model = WavLMForXVector.from_pretrained('microsoft/wavlm-base-plus-sv').to(device).eval()
-    else:
-        feature_extractor = None
-        speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
-            model_name='titanet_large'
-        )
-        speaker_verification_model = speaker_verification_model.to(device)
-        speaker_verification_model.eval()
+    asr_model = models['asr_model']
+    whisper_model = models['whisper_model']
+    whisper_processor = models['whisper_processor']
+    feature_extractor = models['feature_extractor']
+    speaker_verification_model = models['sv_model']
+    speaker_verification_model_alternate = models['sv_model_alternate']
 
-    logging.info("Loading `titanet_small` model...")
-    # The model `titanet_small` prints thousands of lines during initialization, so suppress logs temporarily
-    with logging.temp_verbosity(logging.ERROR):
-        speaker_verification_model_alternate = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
-            model_name='titanet_small'
-        )
-    speaker_verification_model_alternate = speaker_verification_model_alternate.to(device)
-    speaker_verification_model_alternate.eval()
-    record_time('load_speaker_models', time.time() - t0)
-
-    t0 = time.time()
-    if with_fcd:
-        fcd_metric = FrechetCodecDistance(codec_name=codec_model_path).to(device)
-    else:
-        fcd_metric = None
-    record_time('load_fcd_model', time.time() - t0)
-
-    t0 = time.time()
+    # 3. Compute UTMOSv2 scores
+    utmosv2_scores = None
     if with_utmosv2:
         if not UTMOSV2_AVAILABLE:
             logging.warning(
@@ -282,89 +345,41 @@ def evaluate(
                 "UTMOSv2 scores will be set to NaN for all files."
             )
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
-    record_time('compute_utmosv2', time.time() - t0)
 
-    # Resolve ground-truth audio paths for all records (for batched ASR)
-    resolved_gt_audio_paths = []
-    for record in records:
-        p = record.get('audio_filepath', None)
-        if audio_dir is not None and p is not None:
-            p = os.path.join(audio_dir, p)
-        resolved_gt_audio_paths.append(p)
-
-    # Batched ASR stage: transcribe all predicted and all gt audios in batches
-    t0 = time.time()
-    pred_texts = []
-    if language == "en":
-        for start in range(0, len(audio_file_lists), asr_batch_size):
-            batch_paths = audio_file_lists[start : start + asr_batch_size]
-            try:
-                with torch.inference_mode():
-                    batch_results = asr_model.transcribe(batch_paths, batch_size=len(batch_paths), use_lhotse=False)
-                for r in batch_results:
-                    pred_texts.append(process_text(r.text))
-            except Exception as e:
-                logging.info("Error during batched ASR (predicted): {}".format(e))
-                pred_texts.extend([""] * len(batch_paths))
+    # 4. ASR transcription in batches
+    logging.info(f"Doing batched ASR transcription with batch size {asr_batch_size}...")
+    # Transcribe predicted audios
+    pred_texts = batch_transcribe(
+        audio_file_lists,
+        language,
+        asr_model,
+        whisper_model,
+        whisper_processor,
+        device,
+        asr_batch_size,
+        label="predicted",
+    )
+    # Transcribe ground truth audios
+    if len(gt_audio_paths) > 0:
+        gt_audio_texts = batch_transcribe(
+            gt_audio_paths,
+            language,
+            asr_model,
+            whisper_model,
+            whisper_processor,
+            device,
+            asr_batch_size,
+            label="ground truth",
+        )
     else:
-        try:
-            raw_pred = transcribe_with_whisper_batch(
-                whisper_model, whisper_processor, audio_file_lists, language, device, batch_size=asr_batch_size
-            )
-            pred_texts = [process_text(t) for t in raw_pred]
-        except Exception as e:
-            logging.info("Error during batched ASR (predicted): {}".format(e))
-            pred_texts = [""] * len(audio_file_lists)
+        gt_audio_texts = [None] * len(records)
 
-    gt_audio_texts = [None] * len(records)
-    gt_indices_and_paths = [(i, p) for i, p in enumerate(resolved_gt_audio_paths) if p is not None]
-    if gt_indices_and_paths:
-        indices, gt_paths = zip(*gt_indices_and_paths)
-        indices, gt_paths = list(indices), list(gt_paths)
-        if language == "en":
-            for start in range(0, len(gt_paths), asr_batch_size):
-                batch_paths = gt_paths[start : start + asr_batch_size]
-                batch_indices = indices[start : start + asr_batch_size]
-                try:
-                    with torch.inference_mode():
-                        batch_results = asr_model.transcribe(
-                            batch_paths, batch_size=len(batch_paths), use_lhotse=False
-                        )
-                    for idx, r in zip(batch_indices, batch_results):
-                        gt_audio_texts[idx] = process_text(r.text)
-                except Exception as e:
-                    logging.info("Error during batched ASR (gt audio): {}".format(e))
-                    for idx in batch_indices:
-                        gt_audio_texts[idx] = ""
-        else:
-            try:
-                raw_gt = transcribe_with_whisper_batch(
-                    whisper_model, whisper_processor, gt_paths, language, device, batch_size=asr_batch_size
-                )
-                for idx, t in zip(indices, raw_gt):
-                    gt_audio_texts[idx] = process_text(t)
-            except Exception as e:
-                logging.info("Error during batched ASR (gt audio): {}".format(e))
-                for idx in indices:
-                    gt_audio_texts[idx] = ""
-    record_time('asr_transcription', time.time() - t0)
-
+    # 5. Compute metrics for each utterance (sequential)
     filewise_metrics = []
-    gt_texts = []
     total_generated_audio_seconds = 0.0
     for ridx, record in enumerate(records):
-        gt_audio_filepath = record.get('audio_filepath', None)
-        context_audio_filepath = record.get('context_audio_filepath', None)
-        if audio_dir is not None and gt_audio_filepath is not None:
-            gt_audio_filepath = os.path.join(audio_dir, gt_audio_filepath)
-            if context_audio_filepath is not None:
-                context_audio_filepath = os.path.join(audio_dir, context_audio_filepath)
-
-        # Update the FCD metric with real (ground truth) codes
-        t0 = time.time()
-        if fcd_metric is not None:
-            fcd_metric.update_from_audio_file(gt_audio_filepath, True)
-        record_time('fcd_update_gt', time.time() - t0)
+        gt_audio_filepath = gt_audio_paths[ridx]
+        context_audio_filepath = context_audio_paths[ridx]
 
         pred_audio_filepath = audio_file_lists[ridx]
         pred_text = pred_texts[ridx]
@@ -382,29 +397,16 @@ def evaluate(
         else:
             gt_text = process_text(record['text'])
 
-        t0 = time.time()
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
-        record_time('wer_cer_computation', time.time() - t0)
 
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")
         # Format cer and wer to 2 decimal places
         logging.info(f"CER: {detailed_cer[0]:.4f} | WER: {detailed_wer[0]:.4f}")
 
-        gt_texts.append(gt_text)
-
-        # Update FCD metric with generated codes
-        t0 = time.time()
-        if fcd_metric is not None:
-            predicted_codes = torch.load(codes_file_lists[ridx]).unsqueeze(0).to(device)  # B, C, T
-            predicted_codes_lens = torch.tensor([predicted_codes.size(-1)], dtype=torch.int, device=device)
-            fcd_metric.update(predicted_codes, predicted_codes_lens, False)
-        record_time('fcd_update_pred', time.time() - t0)
-
         pred_context_ssim = 0.0
         gt_context_ssim = 0.0
-        t0 = time.time()
         with torch.inference_mode():
             extract_embedding_fn = partial(
                 extract_embedding,
@@ -470,7 +472,6 @@ def evaluate(
                     ).item()
             file_duration = get_wav_file_duration(pred_audio_filepath)
             total_generated_audio_seconds += file_duration
-        record_time('speaker_embedding', time.time() - t0)
 
         filewise_metrics.append(
             {
@@ -492,52 +493,69 @@ def evaluate(
                 'context_audio_filepath': context_audio_filepath,
                 'utmosv2': utmosv2_score,
                 'total_gen_audio_seconds': file_duration,
+                'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
             }
         )
 
-    # compute frechet distance for the whole dataset
-    t0 = time.time()
-    if fcd_metric is not None:
-        fcd = fcd_metric.compute().cpu().item()
-        fcd_metric.reset()
-    else:
-        fcd = float('nan')
-    record_time('fcd_compute_final', time.time() - t0)
+    return filewise_metrics
 
-    # Compute global/aggregate metrics using the shared helper (also used by
-    # chunked scoring aggregation). FCD was already computed above, so we pass
-    # it in directly rather than recomputing.
-    t0 = time.time()
-    avg_metrics = compute_global_metrics(filewise_metrics=filewise_metrics)
-    # Override FCD with the value computed inline (more efficient than recomputing)
-    avg_metrics["frechet_codec_distance"] = fcd
-    record_time('metrics_aggregation', time.time() - t0)
 
-    total_eval_time = time.time() - eval_start_time
+def evaluate(
+    manifest_path,
+    audio_dir,
+    generated_audio_dir,
+    language="en",
+    sv_model_type="titanet",
+    asr_model_name="stt_en_conformer_transducer_large",
+    with_utmosv2=True,
+    with_fcd=True,
+    codec_model_path=None,
+    asr_batch_size=32,
+):
+    """Evaluate generated audio, computing both per-file and global metrics.
 
-    # Print timing breakdown
-    logging.info("\n" + "=" * 60)
-    logging.info("EVALUATION TIMING BREAKDOWN")
-    logging.info("=" * 60)
-    logging.info(f"{'Section':<30} {'Total (s)':<12} {'Count':<8} {'Avg (s)':<12} {'% of Total':<10}")
-    logging.info("-" * 60)
+    Convenience wrapper that calls evaluate_dir() for per-file scoring and
+    compute_global_metrics() for aggregation of metrics.
 
-    # Sort by total time descending
-    sorted_stats = sorted(timing_stats.items(), key=lambda x: x[1]['total'], reverse=True)
-    for section, stats in sorted_stats:
-        total_time = stats['total']
-        count = stats['count']
-        avg_time = total_time / count if count > 0 else 0
-        pct = (total_time / total_eval_time * 100) if total_eval_time > 0 else 0
-        logging.info(f"{section:<30} {total_time:<12.2f} {count:<8} {avg_time:<12.4f} {pct:<10.1f}%")
+    External callers (e.g. NeMo Skills) can run evaluate_dir() in parallel across
+    multiple directories (on different workers/GPUs), concatenate the resulting
+    filewise_metrics lists, and call compute_global_metrics() once at the end to
+    aggregate the global metrics.
 
-    logging.info("-" * 60)
-    logging.info(f"{'TOTAL EVALUATION TIME':<30} {total_eval_time:<12.2f}")
-    logging.info("=" * 60 + "\n")
+    Note the FCD computation is deferred to compute_global_metrics() because the
+    metric implementation is stateful and therefore cannot be easily merged across
+    subsets (directories).
 
-    # filewise_metrics is in original manifest order so callers can safely
-    # map filewise_metrics[i] back to input record[i]. Callers that want
-    # sorted output for human readability should sort themselves.
+    Returns:
+        Tuple of (avg_metrics dict, filewise_metrics list).
+    """
+    if with_fcd and codec_model_path is None:
+        raise ValueError("codec_model_path is required when with_fcd is True")
+
+    filewise_metrics = evaluate_dir(
+        manifest_path=manifest_path,
+        audio_dir=audio_dir,
+        generated_audio_dir=generated_audio_dir,
+        language=language,
+        sv_model_type=sv_model_type,
+        asr_model_name=asr_model_name,
+        with_utmosv2=with_utmosv2,
+        asr_batch_size=asr_batch_size,
+    )
+
+    gt_audio_paths = None
+    predicted_codes_paths = None
+    if with_fcd:
+        gt_audio_paths = [m['gt_audio_filepath'] for m in filewise_metrics]
+        predicted_codes_paths = [m['predicted_codes_path'] for m in filewise_metrics]
+
+    avg_metrics = compute_global_metrics(
+        filewise_metrics=filewise_metrics,
+        gt_audio_paths=gt_audio_paths,
+        predicted_codes_paths=predicted_codes_paths,
+        codec_model_path=codec_model_path,
+    )
+
     return avg_metrics, filewise_metrics
 
 
@@ -570,11 +588,7 @@ def compute_global_metrics(
     predicted_codes_paths=None,
     codec_model_path=None,
 ):
-    """Recompute global/aggregate metrics from per-file results.
-
-    Used by the aggregation step after chunked scoring to produce correct
-    global metrics (cumulative WER/CER, FCD) from per-file data collected
-    across all chunks.
+    """Aggregate metrics from per-file results.
 
     Args:
         filewise_metrics: List of per-file metric dicts. Each must contain at least

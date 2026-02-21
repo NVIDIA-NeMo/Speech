@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Used in infer_and_evaluate.py to obtain metrics such as ASR_WER and UTMOSV2 scores.
+Used in inference and evaluation scripts to obtain metrics such as ASR_WER and UTMOSV2 scores.
 """
 import argparse
 import json

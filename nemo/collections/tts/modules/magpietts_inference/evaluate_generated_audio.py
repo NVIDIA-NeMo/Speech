@@ -117,24 +117,6 @@ def process_text(input_text):
     return single_space_text
 
 
-def transcribe_with_whisper(whisper_model, whisper_processor, audio_path, language, device):
-    speech_array, sampling_rate = librosa.load(audio_path, sr=16000)
-    # Set the language task (optional, improves performance for specific languages)
-    forced_decoder_ids = (
-        whisper_processor.get_decoder_prompt_ids(language=language, task="transcribe") if language else None
-    )
-    inputs = whisper_processor(speech_array, sampling_rate=sampling_rate, return_tensors="pt").input_features
-    inputs = inputs.to(device)
-    # Generate transcription
-    with torch.inference_mode():
-        predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
-
-    # Decode transcription
-    transcription = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-    result = transcription[0]
-    return result
-
-
 def transcribe_with_whisper_batch(whisper_model, whisper_processor, audio_paths, language, device, batch_size=8):
     """Transcribe multiple audio files with Whisper in batches. Returns list of transcriptions (one per path)."""
     forced_decoder_ids = (

@@ -13,3 +13,4 @@
 # limitations under the License.
 
 from nemo.agents.voice_agent.evaluation.scenarios.data.fastbite import FastBiteScenario
+from nemo.agents.voice_agent.evaluation.scenarios.data.simple_qa import SimpleQA

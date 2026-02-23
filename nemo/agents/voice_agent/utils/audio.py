@@ -270,6 +270,19 @@ class NoiseConfig:
     random_white_noise: bool = False
     white_noise_db: Optional[float] = -90.0
 
+    def to_dict(self) -> dict:
+        """
+        Convert the noise configuration to a dictionary.
+        """
+        return {
+            "noise_files": self.noise_files,
+            "gain_db": self.gain_db,
+            "max_noise_duration": self.max_noise_duration,
+            "random_offset": self.random_offset,
+            "random_white_noise": self.random_white_noise,
+            "white_noise_db": self.white_noise_db,
+        }
+
 
 class AudioStream:
     """
@@ -347,9 +360,9 @@ class AudioStream:
         # Resample the audio chunk to output sample rate
         await self.audio_cache.put(audio_chunk)
         audio_len_in_seconds = len(audio_chunk) / 2 / self.input_sample_rate
-        logger.debug(
-            f"[{self.tag}] Put {len(audio_chunk)} bytes ({audio_len_in_seconds:.4f} seconds) into AudioStream"
-        )
+        # logger.debug(
+        #     f"[{self.tag}] Put {len(audio_chunk)} bytes ({audio_len_in_seconds:.4f} seconds) into AudioStream"
+        # )
 
     def resample(self, audio_chunk: bytes) -> bytes:
         """
@@ -434,11 +447,11 @@ class AudioStream:
             # Pad or trim noise chunk to the same length as audio chunk
             if len(noise_chunk) < len(audio_chunk):
                 padding_bytes = len(audio_chunk) - len(noise_chunk)
-                logger.debug(f"[{self.tag}] Padding noise chunk with {padding_bytes} bytes")
+                # logger.debug(f"[{self.tag}] Padding noise chunk with {padding_bytes} bytes")
                 noise_chunk = noise_chunk + (b'\x00' * padding_bytes)
             elif len(noise_chunk) > len(audio_chunk):
                 noise_chunk = noise_chunk[: len(audio_chunk)]
-                logger.debug(f"[{self.tag}] Trimming noise chunk to {len(audio_chunk)} bytes")
+                # logger.debug(f"[{self.tag}] Trimming noise chunk to {len(audio_chunk)} bytes")
             # Apply noise augmentation
             try:
                 audio_chunk = self._augment_with_noise(audio_chunk, noise_chunk)
@@ -517,9 +530,9 @@ class AudioStream:
                     chunk = self.audio_cache.get_nowait()
                 chunk = self.resample(chunk)
                 self.output_buffer += chunk
-                logger.debug(
-                    f"[{self.tag}] Added {len(chunk)} bytes ({len(chunk) / 2 / self.output_sample_rate:.4f} seconds) to buffer, current buffer size: {self.current_buffer_size}"
-                )
+                # logger.debug(
+                #     f"[{self.tag}] Added {len(chunk)} bytes ({len(chunk) / 2 / self.output_sample_rate:.4f} seconds) to buffer, current buffer size: {self.current_buffer_size}"
+                # )
                 if self._is_buffer_full() or no_wait:
                     break
             except (asyncio.TimeoutError, asyncio.QueueEmpty):
@@ -547,16 +560,16 @@ class AudioStream:
             noise_chunk = None
 
         if not self._buffer_ready:
-            logger.debug(
-                f"[{self.tag}] Buffer not ready ({self.current_buffer_size}/{self.min_buffer_chunks} chunks), sending silence"
-            )
+            # logger.debug(
+            #     f"[{self.tag}] Buffer not ready ({self.current_buffer_size}/{self.min_buffer_chunks} chunks), sending silence"
+            # )
             # Return the output chunk and a boolean indicating if there's speech in the chunk
             silence_chunk = b'\x00' * self.output_chunk_bytes
             return self.get_output_chunk(silence_chunk, noise_chunk), False
 
-        logger.debug(
-            f"[{self.tag}] Buffer ready ({self.current_buffer_size}/{self.min_buffer_chunks} chunks), sending audio"
-        )
+        # logger.debug(
+        #     f"[{self.tag}] Buffer ready ({self.current_buffer_size}/{self.min_buffer_chunks} chunks), sending audio"
+        # )
         output_chunk = self.output_buffer
         has_speech = True
         # If we have more than needed, split it
@@ -574,7 +587,7 @@ class AudioStream:
             if self._buffer_empty_count > self.drain_threshold:
                 self._buffer_ready = False
                 logger.warning(f"[{self.tag}] Buffer drained, resetting (empty count: {self._buffer_empty_count})")
-            logger.debug(f"[{self.tag}] Buffer partial, returning silence (empty count: {self._buffer_empty_count})")
+            # logger.debug(f"[{self.tag}] Buffer partial, returning silence (empty count: {self._buffer_empty_count})")
             output_audio_chunk = b'\x00' * self.output_chunk_bytes
             has_speech = False
 

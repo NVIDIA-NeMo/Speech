@@ -109,13 +109,13 @@ class HuggingFaceLLMLocalService(LLMUtilsMixin):
         model: str = "meta-llama/Meta-Llama-3-8B-Instruct",
         device: str = "cuda:0",
         dtype: str = "bfloat16",
-        thinking_budget: int = 0,
+        reasoning_budget: int = 0,
         generation_kwargs: dict = None,
         apply_chat_template_kwargs: dict = None,
     ):
         self.device = device
         self.dtype = dtype
-        self.thinking_budget = thinking_budget
+        self.reasoning_budget = reasoning_budget
         self.tokenizer = AutoTokenizer.from_pretrained(model)
         self.model = AutoModelForCausalLM.from_pretrained(
             model, device_map=device, dtype=dtype, trust_remote_code=True
@@ -228,7 +228,7 @@ class HuggingFaceLLMService(OpenAILLMService):
         model: str = "google/gemma-7b-it",
         device: str = "cuda",
         dtype: str = "bfloat16",
-        thinking_budget: int = 0,
+        reasoning_budget: int = 0,
         generation_kwargs: dict = None,
         apply_chat_template_kwargs: dict = None,
         **kwargs,
@@ -236,7 +236,7 @@ class HuggingFaceLLMService(OpenAILLMService):
         self._model_name = model
         self._device = device
         self._dtype = dtype
-        self._thinking_budget = thinking_budget
+        self._reasoning_budget = reasoning_budget
         self._generation_kwargs = generation_kwargs if generation_kwargs is not None else DEFAULT_GENERATION_KWARGS
         self._apply_chat_template_kwargs = apply_chat_template_kwargs if apply_chat_template_kwargs is not None else {}
         super().__init__(model=model, **kwargs)
@@ -249,7 +249,7 @@ class HuggingFaceLLMService(OpenAILLMService):
             model=self._model_name,
             device=self._device,
             dtype=self._dtype,
-            thinking_budget=self._thinking_budget,
+            reasoning_budget=self._reasoning_budget,
             generation_kwargs=self._generation_kwargs,
             apply_chat_template_kwargs=self._apply_chat_template_kwargs,
         )
@@ -318,11 +318,12 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         project="None",
         default_headers: Optional[Mapping[str, str]] = None,
         params: Optional[OpenAILLMService.InputParams] = None,
-        thinking_budget: int = 0,
+        reasoning_budget: int = 0,
         start_vllm_on_init: bool = False,
         vllm_server_params: Optional[str] = None,
         vllm_server_max_wait_time: int = 3600,  # 1 hour max wait time
         vllm_server_check_interval: int = 5,  # check server every 5 seconds
+        enable_reasoning: bool = False,
         **kwargs,
     ):
         self._device = device
@@ -341,14 +342,14 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
             params=params,
             **kwargs,
         )
-        self._thinking_budget = thinking_budget
+        self._reasoning_budget = reasoning_budget
         self._vllm_server_params = vllm_server_params
         self._start_vllm_on_init = start_vllm_on_init
-
+        self._enable_reasoning = enable_reasoning
         # TODO: handle thinking budget
         logger.info(
             f"VLLMService initialized with model: {model}, api_key: {api_key}, base_url: {base_url},"
-            f"params: {params}, thinking_budget: {thinking_budget}"
+            f"params: {params}, reasoning_budget: {reasoning_budget}"
         )
 
     def _start_vllm_server(
@@ -668,6 +669,12 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
 
         return chunks
 
+    async def _get_response_from_client_with_reasoning(
+        self, messages: List[ChatCompletionMessageParam], params: dict
+    ) -> AsyncStream[ChatCompletionChunk]:
+        """Get a response from the client with reasoning."""
+        return await self._get_response_from_client(messages, params)
+
 
 def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
     """Get an LLM service from the configuration."""
@@ -703,14 +710,14 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
         llm_apply_chat_template_kwargs = config.get("apply_chat_template_kwargs", None)
         if llm_apply_chat_template_kwargs is not None:
             llm_apply_chat_template_kwargs = OmegaConf.to_container(llm_apply_chat_template_kwargs, resolve=True)
-        llm_thinking_budget = config.get("thinking_budget", 0)
+        llm_reasoning_budget = config.get("reasoning_budget", 0)
         return HuggingFaceLLMService(
             model=llm_model,
             device=llm_device,
             dtype=llm_dtype,
             generation_kwargs=llm_generation_kwargs,
             apply_chat_template_kwargs=llm_apply_chat_template_kwargs,
-            thinking_budget=llm_thinking_budget,
+            reasoning_budget=llm_reasoning_budget,
         )
     elif backend == "vllm":
         llm_model = config.get("model", "vllm_server")
@@ -740,7 +747,7 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
             llm_params = OpenAILLMService.InputParams(**llm_params)
         else:
             llm_params = OpenAILLMService.InputParams()
-        llm_thinking_budget = config.get("thinking_budget", 0)
+        llm_reasoning_budget = config.get("reasoning_budget", 0)
         return VLLMService(
             model=llm_model,
             api_key=llm_api_key,
@@ -749,9 +756,10 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
             project=llm_project,
             default_headers=llm_default_headers,
             params=llm_params,
-            thinking_budget=llm_thinking_budget,
+            reasoning_budget=llm_reasoning_budget,
             start_vllm_on_init=config.get("start_vllm_on_init", False),
             vllm_server_params=vllm_server_params,
+            enable_reasoning=config.get("enable_reasoning", False),
         )
     elif backend == "nvidia":
         llm_model = config.get("model")

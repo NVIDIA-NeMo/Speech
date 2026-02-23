@@ -26,6 +26,7 @@ FINAL_RESPONSE_END_TAG = "</final_response>"
 EXIT_MESSAGE_START_TAG = "<exit>"
 EXIT_MESSAGE_END_TAG = "</exit>"
 
+
 @register_schema_tool_for_eval
 class SendRTVIMessageTool(StandardSchemaTool):
     """
@@ -33,7 +34,7 @@ class SendRTVIMessageTool(StandardSchemaTool):
     """
 
     DESCRIPTION: str = """
-        Send a message to the RTVI client.
+        Send a message to the orchestrator.
         """
 
     def __init__(self, *, description: Optional[str] = None, rtvi: Optional[RTVIProcessor] = None):
@@ -65,7 +66,7 @@ class SendRTVIMessageTool(StandardSchemaTool):
 
     async def send_rtvi_message(self, message: str) -> None:
         """
-        Send a message to the RTVI client.
+        Send a message.
 
         Args:
             message: The message to be sent.
@@ -75,7 +76,7 @@ class SendRTVIMessageTool(StandardSchemaTool):
 
     async def _execute(self, params: FunctionCallParams) -> None:
         """
-        Send a message to the RTVI client.
+        Send a message.
 
         Args:
             params: The function call parameters.
@@ -88,7 +89,7 @@ class SendRTVIMessageTool(StandardSchemaTool):
 @register_schema_tool_for_eval
 class SendScenarioSummaryTool(SendRTVIMessageTool):
     """
-    Send a "Scnario Summary" message to the RTVI client after the user has no more requests
+    Send a "Scnario Summary" message after the user has no more requests
     and the agent has answered all the user's questions The input message should contain all required information
     in the required format.
     """
@@ -96,15 +97,13 @@ class SendScenarioSummaryTool(SendRTVIMessageTool):
     def __init__(self, *, rtvi: Optional[RTVIProcessor] = None, description: Optional[str] = None):
         if description is None:
             description = """
-            Send a "Scnario Summary" message to the RTVI client after the user has no more requests 
-            and the agent has answered all the user's questions The input message should contain all required information 
-            in the required format.
+            Send a "Task Summary" message to summarize how the agent has helped the user to finish the task.
             """
         super().__init__(description=description, rtvi=rtvi)
 
     async def send_scenario_summary(self, message: str) -> None:
         """
-        Send a "Scnario Summary" message to the RTVI client.
+        Send a "Scnario Summary" message.
 
         Args:
             message: The message to be sent.
@@ -120,25 +119,34 @@ class SendScenarioSummaryTool(SendRTVIMessageTool):
         """
         message = params.arguments.get("message")
         await self.send_scenario_summary(message)
-        await params.result_callback({"success": True, "message": "Scenario summary message sent to the RTVI client."})
+        await params.result_callback({"success": True, "message": "Scenario summary message sent."})
 
 
 @register_schema_tool_for_eval
 class SendExitMessageTool(SendRTVIMessageTool):
     """
-    Send an "Exit" message to the RTVI client to indicate that the scenario is finished.
+    Send an "Exit" message to indicate that the scenario is finished.
     """
 
     def __init__(self, rtvi: RTVIProcessor, description: Optional[str] = None):
         if description is None:
             description = """
-            Send an "Exit" message to the RTVI client to indicate that the scenario is finished.
+            Send an "Exit" message to the orchestrator to indicate that the task is finished, and it's safe to stop the pipeline.
+            This tool should only be used when the user has no more requests and the agent has answered all the user's questions.
             """
         super().__init__(description=description, rtvi=rtvi)
 
-    async def send_exit_message(self, message: str) -> None:
+    @property
+    def properties(self) -> Dict[str, Any]:
+        return {}
+
+    @property
+    def required_properties(self) -> List[str]:
+        return []
+
+    async def send_exit_message(self, message: str = "The task is finished.") -> None:
         """
-        Send an "Exit" message to the RTVI client.
+        Send an "Exit" message.
 
         Args:
             message: The message to be sent.
@@ -149,11 +157,11 @@ class SendExitMessageTool(SendRTVIMessageTool):
 
     async def _execute(self, params: FunctionCallParams) -> None:
         """
-        Send an "Exit" message to the RTVI client.
+        Send an "Exit" message.
 
         Args:
             params: The function call parameters.
         """
-        message = params.arguments.get("message")
+        message = "The task is finished."
         await self.send_exit_message(message)
-        await params.result_callback({"success": True, "message": "Exit message sent to the RTVI client."})
+        await params.result_callback({"success": True, "message": "Exit message sent."})

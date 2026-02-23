@@ -105,6 +105,7 @@ async def run_dynamic_evaluation(
 
         logger.info(f"Preparing for scenario: {scenario.name}...")
         await bridge.prepare_for_scenario(scenario_dict, scenario_dir)
+        scenario.save(os.path.join(scenario_dir, "scenario_config"))
         await asyncio.sleep(pause_between_scenarios)
 
         # Run scenario

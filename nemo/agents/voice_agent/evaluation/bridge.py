@@ -48,7 +48,12 @@ from pipecat.processors.frameworks.rtvi import (
 )
 from pipecat.serializers.protobuf import MessageFrame, ProtobufFrameSerializer
 
-from nemo.agents.voice_agent.evaluation.tools.rtvi_control import FINAL_RESPONSE_END_TAG, FINAL_RESPONSE_START_TAG
+from nemo.agents.voice_agent.evaluation.tools.rtvi_control import (
+    EXIT_MESSAGE_END_TAG,
+    EXIT_MESSAGE_START_TAG,
+    FINAL_RESPONSE_END_TAG,
+    FINAL_RESPONSE_START_TAG,
+)
 from nemo.agents.voice_agent.utils import setup_logging
 
 # Import AudioStream for buffering and resampling
@@ -60,6 +65,9 @@ RTVI_BOT_STARTED_SPEAKING = RTVIBotStartedSpeakingMessage().type
 RTVI_BOT_TRANSCRIPTION = RTVIBotTranscriptionMessage(data=RTVITextMessageData(text="")).type
 RTVI_BOT_TTS_TEXT = RTVIBotTTSTextMessage(data=RTVITextMessageData(text="")).type
 RTVI_BOT_SERVER_MESSAGE = RTVIServerMessage(data=RTVITextMessageData(text="")).type
+
+STOP_REASON_TIMEOUT = "[TIMEOUT]"
+STOP_REASON_EXIT = "[EXIT]"
 
 
 @dataclass
@@ -112,8 +120,8 @@ class EvaluationMetrics:
     current_user_segment: Optional[SegmentEntry] = None
     current_agent_segment: Optional[SegmentEntry] = None
 
-    agent_final_response: str = ""
-    agent_final_response_time: Optional[float] = None
+    agent_final_response: List[str] = field(default_factory=list)
+    agent_final_response_time: List[float] = field(default_factory=list)
 
     def get_latency_stats(self):
         """Calculate latency statistics"""
@@ -164,8 +172,8 @@ class EvaluationMetrics:
         self.current_user_segment = None
         self.current_agent_segment = None
 
-        self.agent_final_response = ""
-        self.agent_final_response_time = None
+        self.agent_final_response = []
+        self.agent_final_response_time = []
 
 
 class VoiceAgentEvaluationBridge:
@@ -196,7 +204,7 @@ class VoiceAgentEvaluationBridge:
         use_burst_mode: bool = False,
         burst_size_range: Tuple[int, int] = (3, 8),
         burst_delay_ms: int = 0,
-        grace_period: float = 5.0,
+        grace_period: float = 1.0,
         turn_start_offset_secs: float = -0.0,
         turn_end_offset_secs: float = -0.3,
         noise_config: Optional[NoiseConfig] = None,
@@ -281,6 +289,7 @@ class VoiceAgentEvaluationBridge:
         # Thread control
         self.stop_event = threading.Event()
         self.threads = []
+        self.stop_reason = STOP_REASON_TIMEOUT
 
         # Bridge resamples at source (like browser client) for better quality
         # This avoids STT having to resample small chunks
@@ -355,8 +364,8 @@ class VoiceAgentEvaluationBridge:
         await self.connect()
 
         # Update prompts (handler will automatically reset)
-        await self.update_user_prompt(prompt=scenario["user_prompt"], tools=scenario["user_tools"], auto_reset=False)
-        await self.update_agent_prompt(prompt=scenario["agent_prompt"], tools=scenario["agent_tools"], auto_reset=False)
+        await self.update_user_prompt(prompt=scenario["user_prompt"], tools=scenario["user_tools"])
+        await self.update_agent_prompt(prompt=scenario["agent_prompt"], tools=scenario["agent_tools"])
 
         if "noise_config" in scenario:
             self.set_noise_config(scenario["noise_config"])
@@ -539,7 +548,7 @@ class VoiceAgentEvaluationBridge:
             logger.error(f"Error waiting for bot-ready: {e}")
             return False
 
-    async def update_user_prompt(self, prompt: str, tools: str, auto_reset: bool = False, add_suffix: bool = True):
+    async def update_user_prompt(self, prompt: str, tools: str, auto_reset: bool = False, add_suffix: bool = False):
         """
         Update user's system prompt via RTVI action.
 
@@ -559,7 +568,11 @@ class VoiceAgentEvaluationBridge:
             "data": {
                 "service": "context",
                 "action": "update_system_prompt",
-                "arguments": [{"name": "prompt", "value": prompt}, {"name": "tools", "value": tools}, {"name": "add_suffix", "value": add_suffix}],
+                "arguments": [
+                    {"name": "prompt", "value": prompt},
+                    {"name": "tools", "value": tools},
+                    {"name": "add_suffix", "value": add_suffix},
+                ],
             },
         }
 
@@ -576,16 +589,17 @@ class VoiceAgentEvaluationBridge:
 
         return True
 
-    async def update_agent_prompt(self, new_prompt: str, auto_reset: bool = True, add_suffix: bool = True):
+    async def update_agent_prompt(self, prompt: str, tools: str, auto_reset: bool = False, add_suffix: bool = False):
         """
         Update agent's system prompt via RTVI action.
 
         Args:
-            new_prompt: New system prompt text
+            prompt: New system prompt text
+            tools: New tools in json string format
             auto_reset: If True, also sends reset action after updating prompt
             add_suffix: If True, add previously configured system prompt suffix to the new prompt
         """
-        logger.info(f"Updating agent prompt: {new_prompt[:100]}...")
+        logger.info(f"Updating agent prompt: {prompt[:100]}..., tools: {tools[:100]}...")
 
         # Create RTVI action message
         action_msg = {
@@ -595,7 +609,11 @@ class VoiceAgentEvaluationBridge:
             "data": {
                 "service": "context",
                 "action": "update_system_prompt",
-                "arguments": [{"name": "prompt", "value": new_prompt}, {"name": "add_suffix", "value": add_suffix}],
+                "arguments": [
+                    {"name": "prompt", "value": prompt},
+                    {"name": "tools", "value": tools},
+                    {"name": "add_suffix", "value": add_suffix},
+                ],
             },
         }
 
@@ -780,7 +798,7 @@ class VoiceAgentEvaluationBridge:
                 # Check if we're past the main duration
                 in_grace_period = elapsed > duration
                 if in_grace_period:
-                    logger.debug(f"[{direction}] In grace period, skip monitoring message: {frame}")
+                    # logger.debug(f"[{direction}] In grace period, skip monitoring message: {frame}")
                     continue
 
                 # Monitor messages
@@ -847,9 +865,10 @@ class VoiceAgentEvaluationBridge:
                     except queue.Empty:
                         break
 
-                logger.debug(f"[{direction}] Retrieved {chunks_retrieved} chunks from queue")
+                if chunks_retrieved > 0:
+                    logger.debug(f"[{direction}] Retrieved {chunks_retrieved} chunks from queue")
                 if in_grace_period:
-                    logger.debug(f"[{direction}] In grace period, skip forwarding audio: {chunks_retrieved} chunks")
+                    # logger.debug(f"[{direction}] In grace period, skip forwarding audio: {chunks_retrieved} chunks")
                     continue
 
                 # Burst sending: send N frames rapidly, then pause
@@ -877,9 +896,10 @@ class VoiceAgentEvaluationBridge:
                     serialized = await self.serializer.serialize(output_frame)
                     await dest_ws.send(serialized)
 
-                    logger.debug(
-                        f"[{direction}] Sent {len(audio_to_send)} bytes ({idx+1}/{burst_size}, has_speech: {has_speech})"
-                    )
+                    # if has_speech:
+                    #     logger.debug(
+                    #         f"[{direction}] Sent {len(audio_to_send)} bytes ({idx+1}/{burst_size}, has_speech: {has_speech})"
+                    #     )
 
                 # Time-based scheduling: increment target time from previous burst
                 # This automatically compensates for processing overhead and is numerically stable
@@ -1103,9 +1123,10 @@ class VoiceAgentEvaluationBridge:
 
         logger.info(f"[RUN SCENARIO] Running scenario for {duration} seconds...")
         self.metrics.start_time = datetime.now()
-
+        self.metrics.end_time = None
         # Clear state for this run
         self.stop_event.clear()
+        self.stop_reason = STOP_REASON_TIMEOUT
         self.sent_to_agent_chunks = []
         self.sent_to_user_chunks = []
 
@@ -1136,7 +1157,7 @@ class VoiceAgentEvaluationBridge:
         await loop.run_in_executor(None, agent_thread.join)
 
         logger.info("[RUN SCENARIO] Both user and agent threads completed")
-
+        self.metrics.end_time = datetime.now()
         # Finalize any in-progress turns at end of scenario
         loop = asyncio.get_event_loop()
         timestamp = loop.time()
@@ -1144,6 +1165,7 @@ class VoiceAgentEvaluationBridge:
         self._finalize_speaker_turn("agent", timestamp)
 
         # Write conversation log with post-hoc latency calculation
+        self._save_final_response()
         self._save_conversation_log()
         self._save_audio_log()
         self._save_seglst()
@@ -1200,6 +1222,10 @@ class VoiceAgentEvaluationBridge:
             with open(self.log_file, "a") as f:
                 for _start_time, log_entry in sorted_entries:
                     f.write(log_entry)
+                f.write("\n\n" + "=" * 80 + "\n")
+                f.write(f"End time: {self.metrics.end_time.isoformat()}\n")
+                f.write(f"Stop reason: {self.stop_reason}\n")
+                f.write("=" * 80 + "\n")
             logger.info(f"[LOG] Wrote {len(sorted_entries)} conversation turns to log file (sorted by time)")
         except Exception as e:
             logger.error(f"[LOG] Error writing sorted log entries: {e}")
@@ -1283,7 +1309,7 @@ class VoiceAgentEvaluationBridge:
         if frame is None:
             return
 
-        logger.debug(f"[USER MONITOR] Frame type: {type(frame).__name__}, has audio: {hasattr(frame, 'audio')}")
+        # logger.debug(f"[USER MONITOR] Frame type: {type(frame).__name__}, has audio: {hasattr(frame, 'audio')}")
 
         # Handle audio frames
         if hasattr(frame, 'audio') and frame.audio:
@@ -1310,12 +1336,13 @@ class VoiceAgentEvaluationBridge:
             logger.debug("[TIMING] User started speaking")
 
         elif message_type == RTVI_BOT_TTS_TEXT:
-            text = data.get("data", {}).get("text", "")
+            text = str(data.get("data", {}).get("text", ""))
+            logger.debug(f"[USER TTS] {text}")
             if text:
                 self.metrics.user_current_transcript += text
-                logger.debug(f"[USER TTS] {text}")
 
         elif message_type == RTVI_BOT_STOPPED_SPEAKING:
+            logger.debug("[USER STOPPED SPEAKING]")
             self.metrics.user_last_audio_time = timestamp
             self.metrics.waiting_for_agent_response = True
 
@@ -1338,7 +1365,7 @@ class VoiceAgentEvaluationBridge:
         if frame is None:
             return
 
-        logger.debug(f"[AGENT MONITOR] Frame type: {type(frame).__name__}, has audio: {hasattr(frame, 'audio')}")
+        # logger.debug(f"[AGENT MONITOR] Frame type: {type(frame).__name__}, has audio: {hasattr(frame, 'audio')}")
 
         # Handle audio frames — measure latency on first agent audio after user stops
         if hasattr(frame, 'audio') and frame.audio:
@@ -1365,6 +1392,7 @@ class VoiceAgentEvaluationBridge:
         message_type = data.get("type", "")
 
         if message_type == RTVI_BOT_STARTED_SPEAKING:
+            logger.debug("[AGENT STARTED SPEAKING]")
             # Defensive: close previous turn if it wasn't properly stopped
             self._finalize_speaker_turn("agent", timestamp)
 
@@ -1374,15 +1402,15 @@ class VoiceAgentEvaluationBridge:
                 start_time=relative_time, end_time=relative_time, speaker="agent", transcript=""
             )
             self.metrics.agent_current_transcript = ""
-            logger.debug("[TIMING] Agent started speaking")
 
         elif message_type == RTVI_BOT_TTS_TEXT:
-            text = data.get("data", {}).get("text", "")
+            text = str(data.get("data", {}).get("text", ""))
+            logger.debug(f"[AGENT TTS] {text}")
             if text:
                 self.metrics.agent_current_transcript += text
-                logger.debug(f"[AGENT TTS] {text}")
 
         elif message_type == RTVI_BOT_STOPPED_SPEAKING:
+            logger.debug("[AGENT STOPPED SPEAKING]")
             segment = self._finalize_speaker_turn("agent", timestamp)
             if segment:
                 # Update the last latency measurement with agent transcript
@@ -1394,32 +1422,39 @@ class VoiceAgentEvaluationBridge:
                 )
 
         elif message_type == RTVI_BOT_SERVER_MESSAGE:
-            text = data.get("data", {}).get("text", "")
+            text = str(data.get("data", {}).get("text", ""))
             if text:
                 logger.info(f"[AGENT SERVER MESSAGE] {text}")
                 if text.startswith(FINAL_RESPONSE_START_TAG) and text.endswith(FINAL_RESPONSE_END_TAG):
                     final_response = text[len(FINAL_RESPONSE_START_TAG) : -len(FINAL_RESPONSE_END_TAG)]
                     logger.info(f"[AGENT FINAL RESPONSE] {final_response}")
-                    self.metrics.agent_final_response = final_response
-                    self.metrics.agent_final_response_time = timestamp
-                    self._save_final_response(final_response)
-                    logger.info("[AGENT] Final response received, signaling early stop")
+                    self.metrics.agent_final_response.append(final_response)
+                    self.metrics.agent_final_response_time.append(timestamp)
+                    logger.info("[AGENT] Final response saved")
+                if text.startswith(EXIT_MESSAGE_START_TAG) and text.endswith(EXIT_MESSAGE_END_TAG):
+                    exit_message = text[len(EXIT_MESSAGE_START_TAG) : -len(EXIT_MESSAGE_END_TAG)]
+                    logger.info(f"[AGENT] Exit message received, signaling early stop. Exit message: {exit_message}")
+                    self.stop_reason = STOP_REASON_EXIT
                     self.stop_event.set()
+                    self.metrics.end_time = datetime.now()
 
-    def _save_final_response(self, final_response: str):
+    def _save_final_response(self):
         """Save the agent's final response to a JSON file under the output directory."""
         if not self.output_dir:
             return
 
-        try:
-            response_obj = json.loads(final_response)
-        except (json.JSONDecodeError, TypeError):
-            response_obj = {"message": final_response}
+        results = []
+        for final_response in self.metrics.agent_final_response:
+            try:
+                response_obj = json.loads(final_response)
+            except (json.JSONDecodeError, TypeError):
+                response_obj = {"message": final_response}
+            results.append(response_obj)
 
         output_path = Path(self.output_dir) / "final_agent_response.json"
         try:
             with open(output_path, "w") as f:
-                json.dump(response_obj, f, indent=2)
+                json.dump(results, f, indent=2)
             logger.info(f"Final agent response saved: {output_path}")
         except Exception as e:
             logger.error(f"Error saving final agent response: {e}")

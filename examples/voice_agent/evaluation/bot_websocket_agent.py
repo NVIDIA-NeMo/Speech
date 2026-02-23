@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,9 +15,10 @@
 
 import asyncio
 import copy
+import json
 import os
 from datetime import datetime
-import json
+
 from dotenv import load_dotenv
 from loguru import logger
 from omegaconf import OmegaConf
@@ -30,8 +31,9 @@ from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
-from nemo.agents.voice_agent.evaluation.tools.rtvi_control import SendScenarioSummaryTool
+from nemo.agents.voice_agent.evaluation.tools import get_schema_tool_for_eval
 from nemo.agents.voice_agent.evaluation.tools.basic_tools import GetCityWeatherTool
+from nemo.agents.voice_agent.evaluation.tools.rtvi_control import SendScenarioSummaryTool
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger, RTVIAudioLoggerObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
@@ -45,7 +47,7 @@ from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import 
 )
 from nemo.agents.voice_agent.utils import ConfigManager, setup_logging
 from nemo.agents.voice_agent.utils.tool_calling import register_schema_tools_to_llm
-from nemo.agents.voice_agent.evaluation.tools import get_schema_tool_for_eval
+
 
 async def run_bot_websocket_server(
     server_base_path: str = os.path.dirname(__file__),
@@ -358,7 +360,9 @@ async def run_bot_websocket_server(
                     keep_existing_tools=False,  # Override existing tools
                 )
             else:
-                logger.info("Tools calling for LLM is disabled by config, or no new tools provided, skipping tool registration...")
+                logger.info(
+                    "Tools calling for LLM is disabled by config, or no new tools provided, skipping tool registration..."
+                )
 
             logger.debug(f"user context tools: {user_context_aggregator._context.tools}")
             logger.debug(f"assistant context tools: {assistant_context_aggregator._context.tools}")

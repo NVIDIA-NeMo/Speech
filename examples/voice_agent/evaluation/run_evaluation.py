@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -48,21 +48,14 @@ Examples:
       --user-url ws://localhost:8765 \\
       --agent-url ws://localhost:8766
 
-  # Run specific scenarios by name
+  # Run specific scenarios by name(s)
   python run_evaluation.py \\
       --user-url ws://localhost:8765 \\
       --agent-url ws://localhost:8766 \\
-      --scenarios fastbite
+      --scenarios fastbite simple_qa_1 simple_qa_3
 
   # List available scenarios
   python run_evaluation.py --list
-
-  # Run with custom duration and output directory
-  python run_evaluation.py \\
-      --user-url ws://localhost:8765 \\
-      --agent-url ws://localhost:8766 \\
-      --duration 120 \\
-      --output-dir ./results
         """,
     )
     parser.add_argument(
@@ -83,11 +76,12 @@ Examples:
         nargs="*",
         help="Scenario names to run (default: all registered scenarios). Use --list to see available names.",
     )
+    parser.add_argument("--list", action="store_true", help="List all available scenarios and exit")
     parser.add_argument(
-        "--list", action="store_true", help="List all available scenarios and exit"
-    )
-    parser.add_argument(
-        "--duration", type=int, default=120, help="Default duration per scenario in seconds (default: 120)"
+        "--duration",
+        type=int,
+        default=120,
+        help="Default duration per scenario in seconds (default: 120), only used when the scenario does not specify a duration.",
     )
     parser.add_argument("--pause", type=float, default=0.5, help="Pause between scenarios in seconds (default: 0.5)")
     parser.add_argument(
@@ -114,10 +108,10 @@ Examples:
         print("No scenarios available. Register scenarios using @register_eval_scenario.", file=sys.stderr)
         return 1
 
-    # Instantiate scenario objects (rtvi=None since the runner uses the bridge for RTVI communication)
+    # Instantiate scenario objects
     scenarios = []
     for name in scenario_names:
-        scenario = get_eval_scenario(name, rtvi=None)
+        scenario = get_eval_scenario(name)
         if scenario is None:
             available = list_eval_scenarios()
             print(f"Unknown scenario: '{name}'. Available: {available}", file=sys.stderr)

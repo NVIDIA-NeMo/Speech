@@ -50,7 +50,7 @@ llm:
   system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user with 'Hi, I'm Lisa, your helpful AI assistant. How can I help you today?'."
 
   system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
-  system_prompt_suffix: "Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words. /no_think"
+  system_prompt_suffix: "Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words."
   enable_tool_calling: false  # set to True since the vllm config below supports tool calling
 
   ##############################
@@ -63,15 +63,16 @@ llm:
   nvidia_generation_params:
     frequency_penalty: 0.0  # Penalty for frequent tokens (-2.0 to 2.0).
     presence_penalty: 0.0  # Penalty for new tokens (-2.0 to 2.0).
-    seed: 42  # Random seed for deterministic outputs.
-    temperature: 0.6  # Sampling temperature (0.0 to 2.0).
+    seed: 123  # Random seed for deterministic outputs.
+    temperature: 0.7  # Sampling temperature (0.0 to 2.0).
     top_k: null  # Top-k sampling parameter (currently ignored by OpenAI).
     top_p: 0.95  # Top-p (nucleus) sampling parameter (0.0 to 1.0).
     max_completion_tokens: 256  # max number of tokens to generate
     extra:  # additional model specific params can be specified in dict format
       extra_body:
         chat_template_kwargs:
-          enable_thinking: False  # disable thinking
+          enable_thinking: false  # disable thinking
+
 
 tts:
   type: nemo

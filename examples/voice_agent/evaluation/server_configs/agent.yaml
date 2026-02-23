@@ -47,8 +47,8 @@ turn_taking:
 
 llm:
   type: vllm  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
-  # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
-  model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+  model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+  # model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
   dtype: bfloat16  # torch.dtype for LLM
   device: "cuda"
   enable_reasoning: false  # it's best to turn-off reasoning for lowest latency, setting it to True will use the same config ending with `_think.yaml` instead
@@ -112,7 +112,7 @@ llm:
     extra:  # additional model specific params can be specified in dict format
       extra_body:
         chat_template_kwargs:
-          enable_thinking: False  # disable thinking
+          enable_thinking: false  # disable thinking
 
 
 tts:

@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 from typing import Dict, List, Optional
 
-from nemo.agents.voice_agent.utils.tool_calling.base import StandardSchemaTool
 from pipecat.processors.frameworks.rtvi import RTVIProcessor
 
+from nemo.agents.voice_agent.utils.tool_calling.base import StandardSchemaTool
+
 ALL_SCHEMA_TOOLS_FOR_EVAL: Dict[str, StandardSchemaTool] = {}
+
 
 def register_schema_tool_for_eval(cls):
     """Class decorator that registers a tool class into ALL_STANDARD_SCHEMA_TOOLS.
@@ -37,12 +40,6 @@ def register_schema_tool_for_eval(cls):
     return cls
 
 
-from nemo.agents.voice_agent.evaluation.tools.rtvi_control import SendRTVIMessageTool, SendScenarioSummaryTool, SendExitMessageTool
-from nemo.agents.voice_agent.evaluation.tools.basic_tools import GetCityWeatherTool, ReadFileTool
-
-
-
-
 def get_schema_tool_for_eval(name: str, rtvi: Optional[RTVIProcessor] = None, **kwargs) -> StandardSchemaTool:
     """
     Get a schema tool for evaluation by name, and initialize the tool with the given arguments.
@@ -58,7 +55,8 @@ def get_schema_tool_for_eval(name: str, rtvi: Optional[RTVIProcessor] = None, **
     if name not in ALL_SCHEMA_TOOLS_FOR_EVAL:
         return None
     tool_class = ALL_SCHEMA_TOOLS_FOR_EVAL[name]
-    if issubclass(tool_class, SendRTVIMessageTool):
+    # if `rtvi` is in class signature, pass it to the tool constructor
+    if "rtvi" in inspect.signature(tool_class).parameters:
         return tool_class(rtvi=rtvi, **kwargs)
     return tool_class(**kwargs)
 
@@ -68,3 +66,10 @@ def list_schema_tools_for_eval() -> List[StandardSchemaTool]:
     List all schema tools for evaluation.
     """
     return list(ALL_SCHEMA_TOOLS_FOR_EVAL.keys())
+
+
+import nemo.agents.voice_agent.evaluation.tools.basic_tools
+
+# Import subpackages to trigger @register_schema_tool_for_eval decorators.
+# Must be at the end to avoid circular imports (data modules import register_schema_tool_for_eval).
+import nemo.agents.voice_agent.evaluation.tools.rtvi_control

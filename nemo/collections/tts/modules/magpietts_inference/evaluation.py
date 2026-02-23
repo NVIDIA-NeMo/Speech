@@ -109,19 +109,16 @@ def compute_mean_with_confidence_interval(
     metric_keys = list(metrics_list[0].keys())
 
     if len(metrics_list) < 2:
+        # Can't compute CI with fewer than 2 samples
         return {key: f"{metrics_list[0].get(key, 0):.4f} (single sample)" for key in metric_keys}
 
     results = {}
     for key in metric_keys:
         measurements = [m[key] for m in metrics_list if key in m]
-        if not measurements:
-            logging.warning(f"Metric '{key}' not found in any measurements")
-            results[key] = "N/A"
-            continue
-
         mean = np.mean(measurements)
         std_err = stats.sem(measurements)
 
+        # t-distribution critical value for confidence interval
         t_critical = stats.t.ppf((1 + confidence) / 2, len(measurements) - 1)
         ci = std_err * t_critical
 

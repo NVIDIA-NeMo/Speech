@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[titanet_large]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[titanet_large]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[titanet_large]" \
+    "tests/functional_tests/test_model_support_titanet_large.py" \
     -v

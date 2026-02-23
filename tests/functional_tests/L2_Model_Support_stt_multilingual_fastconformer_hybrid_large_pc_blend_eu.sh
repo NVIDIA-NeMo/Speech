@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[stt_multilingual_fastconformer_hybrid_large_pc_blend_eu]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[stt_multilingual_fastconformer_hybrid_large_pc_blend_eu]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[stt_multilingual_fastconformer_hybrid_large_pc_blend_eu]" \
+    "tests/functional_tests/test_model_support_stt_multilingual_fastconformer_hybrid_large_pc_blend_eu.py" \
     -v

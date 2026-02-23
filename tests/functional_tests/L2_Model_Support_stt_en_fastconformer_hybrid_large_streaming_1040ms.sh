@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[stt_en_fastconformer_hybrid_large_streaming_1040ms]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[stt_en_fastconformer_hybrid_large_streaming_1040ms]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[stt_en_fastconformer_hybrid_large_streaming_1040ms]" \
+    "tests/functional_tests/test_model_support_stt_en_fastconformer_hybrid_large_streaming_1040ms.py" \
     -v

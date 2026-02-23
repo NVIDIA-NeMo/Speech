@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[nvidia__stt_en_fastconformer_ctc_xlarge]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[nvidia__stt_en_fastconformer_ctc_xlarge]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[nvidia__stt_en_fastconformer_ctc_xlarge]" \
+    "tests/functional_tests/test_model_support_nvidia__stt_en_fastconformer_ctc_xlarge.py" \
     -v

@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[nvidia__Frame_VAD_Multilingual_MarbleNet_v2_0]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[nvidia__Frame_VAD_Multilingual_MarbleNet_v2_0]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[nvidia__Frame_VAD_Multilingual_MarbleNet_v2_0]" \
+    "tests/functional_tests/test_model_support_nvidia__Frame_VAD_Multilingual_MarbleNet_v2_0.py" \
     -v

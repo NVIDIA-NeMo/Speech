@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[nvidia__multitalker_parakeet_streaming_0_6b_v1]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[nvidia__multitalker_parakeet_streaming_0_6b_v1]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[nvidia__multitalker_parakeet_streaming_0_6b_v1]" \
+    "tests/functional_tests/test_model_support_nvidia__multitalker_parakeet_streaming_0_6b_v1.py" \
     -v

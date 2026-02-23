@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[nvidia__se_den_sb_16k_small]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[nvidia__se_den_sb_16k_small]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[nvidia__se_den_sb_16k_small]" \
+    "tests/functional_tests/test_model_support_nvidia__se_den_sb_16k_small.py" \
     -v

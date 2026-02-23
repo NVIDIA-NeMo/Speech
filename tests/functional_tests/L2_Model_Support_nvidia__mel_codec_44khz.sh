@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[nvidia__mel_codec_44khz]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[nvidia__mel_codec_44khz]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[nvidia__mel_codec_44khz]" \
+    "tests/functional_tests/test_model_support_nvidia__mel_codec_44khz.py" \
     -v

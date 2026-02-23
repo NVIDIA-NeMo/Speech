@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[nvidia__ssl_en_nest_xlarge_v1_0]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[nvidia__ssl_en_nest_xlarge_v1_0]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[nvidia__ssl_en_nest_xlarge_v1_0]" \
+    "tests/functional_tests/test_model_support_nvidia__ssl_en_nest_xlarge_v1_0.py" \
     -v

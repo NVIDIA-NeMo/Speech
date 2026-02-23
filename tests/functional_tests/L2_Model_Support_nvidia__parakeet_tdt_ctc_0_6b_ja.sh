@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[nvidia__parakeet_tdt_ctc_0_6b_ja]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[nvidia__parakeet_tdt_ctc_0_6b_ja]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[nvidia__parakeet_tdt_ctc_0_6b_ja]" \
+    "tests/functional_tests/test_model_support_nvidia__parakeet_tdt_ctc_0_6b_ja.py" \
     -v

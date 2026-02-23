@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[mel_codec_22khz_fullband_medium]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[mel_codec_22khz_fullband_medium]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[mel_codec_22khz_fullband_medium]" \
+    "tests/functional_tests/test_model_support_mel_codec_22khz_fullband_medium.py" \
     -v

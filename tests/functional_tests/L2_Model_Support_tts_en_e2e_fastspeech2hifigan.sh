@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[tts_en_e2e_fastspeech2hifigan]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[tts_en_e2e_fastspeech2hifigan]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[tts_en_e2e_fastspeech2hifigan]" \
+    "tests/functional_tests/test_model_support_tts_en_e2e_fastspeech2hifigan.py" \
     -v

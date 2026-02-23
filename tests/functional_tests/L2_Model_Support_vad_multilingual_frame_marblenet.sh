@@ -13,7 +13,5 @@
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
-    "tests/functional_tests/test_model_support.py::test_model_init[vad_multilingual_frame_marblenet]" \
-    "tests/functional_tests/test_model_support.py::test_model_training_step[vad_multilingual_frame_marblenet]" \
-    "tests/functional_tests/test_model_support.py::test_model_inference[vad_multilingual_frame_marblenet]" \
+    "tests/functional_tests/test_model_support_vad_multilingual_frame_marblenet.py" \
     -v

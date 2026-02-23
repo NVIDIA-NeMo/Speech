@@ -102,6 +102,16 @@ class BaseBuilder:
                 asr_class = SALMASRInferenceWrapper
                 # remove decoding_cfg, SALM AED does not use decoding_cfg yet
                 model_params.pop("decoding_cfg")
+            case (ASRDecodingType.STREAMING_SALM, PipelineType.BUFFERED):
+                from nemo.collections.asr.inference.model_wrappers.streaming_salm_inference_wrapper import (
+                    StreamingSALMInferenceWrapper,
+                )
+
+                asr_class = StreamingSALMInferenceWrapper
+                model_params.pop("decoding_cfg")
+                # StreamingSALM wrapper accepts additional latency/context params
+                model_params["latency"] = cfg.streaming.get("latency", 1) if hasattr(cfg, "streaming") else 1
+                model_params["context"] = cfg.streaming.get("context", None) if hasattr(cfg, "streaming") else None
             case (ASRDecodingType.CTC, PipelineType.CACHE_AWARE):
                 asr_class = CacheAwareCTCInferenceWrapper
             case (ASRDecodingType.RNNT, PipelineType.CACHE_AWARE):

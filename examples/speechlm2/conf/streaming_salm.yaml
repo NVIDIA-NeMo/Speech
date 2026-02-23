@@ -1,0 +1,130 @@
+model:
+  pretrained_llm: Qwen/Qwen3-1.7B
+  pretrained_mimi: kyutai/mimi
+  pretrained_forced_aligner: Qwen/Qwen3-ForcedAligner-0.6B
+  forced_aligner_language: English
+
+  pretrained_weights: true
+
+  blank_token: "<blank>"
+  num_codebooks: 8
+
+  # Latency
+  min_latency: 1    # K=1 → 80ms
+  max_latency: 10   # K=10 → 800ms
+
+  # Context biasing
+  context_biasing_prob: 0.2
+
+  # Streaming cache
+  cache_sink_size: 64     # Preserve prompt/initial context
+  cache_window_size: 2048 # Recent context window
+
+  freeze_params:
+    - "^llm\\..+$"
+    - "^embed_tokens\\..+$"
+    - "^mimi\\..+$"
+    - "^forced_aligner\\..+$"
+  prevent_freeze_params:
+    - "^llm\\.lm_head\\..+$"   # Must remain trainable to learn <blank> token prediction
+
+  # Note: Uncomment the block below to enable LoRA on LLM via HuggingFace PEFT library.
+  #   It will automatically freeze LLM parameters even if freeze_params was unused,
+  #   and prevent freezing any parameter that has the string '.lora_' in its name.
+  # lora:
+  #   task_type: CAUSAL_LM
+  #   r: 128
+  #   lora_alpha: 256
+  #   lora_dropout: 0.01
+  #   target_modules: ["q_proj", "v_proj"]
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 5e-4
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+    foreach: true
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
+    warmup_steps: 1000
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: 1
+  precision: bf16-true
+  logger: false
+  enable_checkpointing: false
+  use_distributed_sampler: false
+  max_steps: 100000
+  limit_train_batches: 5000
+  val_check_interval: ${trainer.limit_train_batches}
+  limit_val_batches: 10
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
+    find_unused_parameters: true
+    # For FSDP2, uncomment the following and comment out DDPStrategy:
+    # _target_: lightning.pytorch.strategies.ModelParallelStrategy
+    # tensor_parallel_size: 1
+    # data_parallel_size: 8
+
+data:
+  train_ds:
+    sample_rate: 24000
+    input_cfg:
+      - type: lhotse_as_conversation
+        cuts_path: ???
+        audio_locator_tag: "<|audioplaceholder|>"
+        tags:
+          context: "Transcribe this audio."
+    seed: 42
+    shuffle: true
+    shard_seed: "randomized"
+    num_workers: 1
+    batch_size: 4
+
+  validation_ds:
+    sample_rate: 24000
+    datasets:
+      val_set_0:
+        input_cfg:
+          - type: lhotse_as_conversation
+            cuts_path: ???
+            audio_locator_tag: "<|audioplaceholder|>"
+            tags:
+              context: "Transcribe this audio."
+    batch_size: 1
+    seed: 42
+    shard_seed: "randomized"
+
+exp_manager:
+  exp_dir: null
+  explicit_log_dir: streaming_salm_results/
+  name: streaming_salm
+  create_tensorboard_logger: false
+  create_checkpoint_callback: true
+  use_datetime_version: true
+  max_time_per_run: "00:03:50:00"
+  resume_from_checkpoint: null
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: development-run
+    project: streaming_salm
+    resume: true
+  checkpoint_callback_params:
+    filename: "{step}"
+    monitor: val_loss
+    mode: min
+    every_n_train_steps: null
+    every_n_epochs: 1
+    save_top_k: 1

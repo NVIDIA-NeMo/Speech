@@ -182,6 +182,9 @@ jobs:
             script: SPEECHLM_HF_Training_SALM
             timeout: 20
           - runner: self-hosted-azure
+            script: SPEECHLM_HF_Training_StreamingSALM
+            timeout: 20
+          - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_Magpietts_DecoderContext
           - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_Magpietts_MultiEncoder

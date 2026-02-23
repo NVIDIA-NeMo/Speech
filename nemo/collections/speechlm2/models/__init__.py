@@ -16,6 +16,7 @@ from .duplex_s2s_model import DuplexS2SModel
 from .duplex_s2s_speech_decoder_model import DuplexS2SSpeechDecoderModel
 from .salm import SALM
 from .salm_asr_decoder import SALMWithAsrDecoder
+from .streaming_salm import StreamingSALM
 
 __all__ = [
     'DuplexS2SModel',
@@ -23,4 +24,5 @@ __all__ = [
     'DuplexEARTTS',
     'SALM',
     'SALMWithAsrDecoder',
+    'StreamingSALM',
 ]

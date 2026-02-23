@@ -33,13 +33,15 @@ class BufferedPipelineBuilder(BaseBuilder):
     """
 
     @classmethod
-    def build(cls, cfg: DictConfig) -> BufferedRNNTPipeline | BufferedCTCPipeline | BufferedSALMPipeline:
+    def build(
+        cls, cfg: DictConfig
+    ) -> BufferedRNNTPipeline | BufferedCTCPipeline | BufferedSALMPipeline:
         """
         Build the buffered streaming pipeline based on the config.
         Args:
             cfg: (DictConfig) Config
         Returns:
-            Returns BufferedRNNTPipeline, BufferedCTCPipeline, or BufferedSALMPipeline object
+            Returns BufferedRNNTPipeline, BufferedCTCPipeline, BufferedSALMPipeline, or StreamingSALMPipeline object
         """
         asr_decoding_type = ASRDecodingType.from_str(cfg.asr_decoding_type)
 
@@ -49,8 +51,13 @@ class BufferedPipelineBuilder(BaseBuilder):
             return cls.build_buffered_ctc_pipeline(cfg)
         elif asr_decoding_type is ASRDecodingType.SALM:
             return cls.build_buffered_salm_pipeline(cfg)
+        elif asr_decoding_type is ASRDecodingType.STREAMING_SALM:
+            return cls.build_streaming_salm_pipeline(cfg)
 
-        raise ValueError("Invalid asr decoding type for buffered streaming. Need to be one of ['CTC', 'RNNT', 'SALM']")
+        raise ValueError(
+            "Invalid asr decoding type for buffered streaming. "
+            "Need to be one of ['CTC', 'RNNT', 'SALM', 'STREAMING_SALM']"
+        )
 
     @classmethod
     def get_rnnt_decoding_cfg(cls, cfg: DictConfig) -> RNNTDecodingConfig:
@@ -145,3 +152,21 @@ class BufferedPipelineBuilder(BaseBuilder):
         salm_pipeline = BufferedSALMPipeline(cfg, asr_model, itn_model, nmt_model)
         logging.info(f"`{type(salm_pipeline).__name__}` pipeline loaded")
         return salm_pipeline
+
+    @classmethod
+    def build_streaming_salm_pipeline(cls, cfg: DictConfig):
+        """
+        Build the StreamingSALM streaming pipeline based on the config.
+        Args:
+            cfg: (DictConfig) Config
+        Returns:
+            Returns StreamingSALMPipeline object
+        """
+        from nemo.collections.asr.inference.pipelines.streaming_salm_pipeline import StreamingSALMPipeline
+
+        # building ASR model (latency/context read from cfg.streaming inside _build_asr)
+        asr_model = cls._build_asr(cfg, decoding_cfg=None)
+
+        pipeline = StreamingSALMPipeline(cfg, asr_model)
+        logging.info(f"`{type(pipeline).__name__}` pipeline loaded")
+        return pipeline

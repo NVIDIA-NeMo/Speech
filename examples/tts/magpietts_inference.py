@@ -59,7 +59,6 @@ from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio i
 # Import the modular components
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     DEFAULT_VIOLIN_METRICS,
-    STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_dir,
@@ -308,21 +307,9 @@ def run_inference_and_evaluation(
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
 
-            filewise_metrics_keys_to_save = [
-                'cer',
-                'wer',
-                'pred_context_ssim',
-                'pred_text',
-                'gt_text',
-                'gt_audio_filepath',
-                'pred_audio_filepath',
-                'context_audio_filepath',
-                'utmosv2',
-            ]
-            filtered_filewise = [{k: m[k] for k in filewise_metrics_keys_to_save if k in m} for m in filewise_metrics]
-            filtered_filewise.sort(key=lambda x: x.get('cer', 0), reverse=True)
+            sorted_filewise = sorted(filewise_metrics, key=lambda x: x.get('cer', 0), reverse=True)
             with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
-                json.dump(filtered_filewise, f, indent=4)
+                json.dump(sorted_filewise, f, indent=4)
 
             # Append to per-run CSV
             append_metrics_to_csv(per_run_csv, full_checkpoint_name, dataset, metrics)
@@ -344,7 +331,6 @@ def run_inference_and_evaluation(
         # Compute mean with confidence interval across repeats
         metrics_mean_ci = compute_mean_with_confidence_interval(
             metrics_all_repeats,
-            STANDARD_METRIC_KEYS,
             confidence=confidence_level,
         )
 

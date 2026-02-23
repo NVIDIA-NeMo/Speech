@@ -95,21 +95,20 @@ def evaluate_generated_audio_dir(
 
 def compute_mean_with_confidence_interval(
     metrics_list: List[dict],
-    metric_keys: List[str],
     confidence: float = 0.95,
 ) -> Dict[str, str]:
-    """Compute mean and confidence interval for specified metrics.
+    """Compute mean and confidence interval for all metrics present in the dicts.
 
     Args:
         metrics_list: List of metric dictionaries (one per repeat/run).
-        metric_keys: List of metric names to compute statistics for.
         confidence: Confidence level (default: 0.95 for 95% CI).
 
     Returns:
         Dictionary mapping metric names to [mean, CI].
     """
+    metric_keys = list(metrics_list[0].keys())
+
     if len(metrics_list) < 2:
-        # Can't compute CI with fewer than 2 samples
         return {key: f"{metrics_list[0].get(key, 0):.4f} (single sample)" for key in metric_keys}
 
     results = {}
@@ -123,7 +122,6 @@ def compute_mean_with_confidence_interval(
         mean = np.mean(measurements)
         std_err = stats.sem(measurements)
 
-        # t-distribution critical value for confidence interval
         t_critical = stats.t.ppf((1 + confidence) / 2, len(measurements) - 1)
         ci = std_err * t_critical
 
@@ -132,24 +130,4 @@ def compute_mean_with_confidence_interval(
     return results
 
 
-# Define the standard metric keys used in evaluation
-STANDARD_METRIC_KEYS = [
-    'cer_filewise_avg',
-    'wer_filewise_avg',
-    'cer_cumulative',
-    'wer_cumulative',
-    'ssim_pred_gt_avg',
-    'ssim_pred_context_avg',
-    'ssim_gt_context_avg',
-    'ssim_pred_gt_avg_alternate',
-    'ssim_pred_context_avg_alternate',
-    'ssim_gt_context_avg_alternate',
-    'cer_gt_audio_cumulative',
-    'wer_gt_audio_cumulative',
-    'utmosv2_avg',
-    'total_gen_audio_seconds',
-    'frechet_codec_distance',
-]
-
-# Default metrics to show in violin plots
 DEFAULT_VIOLIN_METRICS = ['cer', 'pred_context_ssim', 'utmosv2']

@@ -48,6 +48,19 @@ except (ImportError, ModuleNotFoundError) as e:
     )
 
 
+FILEWISE_METRICS_TO_SAVE = [
+    'cer',
+    'wer',
+    'pred_context_ssim',
+    'pred_text',
+    'gt_text',
+    'gt_audio_filepath',
+    'pred_audio_filepath',
+    'context_audio_filepath',
+    'utmosv2',
+]
+
+
 def load_evalset_config(config_path: str = None) -> dict:
     """Load dataset meta info from JSON config file."""
     if config_path is None or not os.path.exists(config_path):
@@ -529,6 +542,8 @@ def evaluate(
     Returns:
         Tuple of (avg_metrics dict, filewise_metrics list).
     """
+    start_time = time.time()
+
     if with_fcd and codec_model_path is None:
         raise ValueError("codec_model_path is required when with_fcd is True")
 
@@ -556,7 +571,11 @@ def evaluate(
         codec_model_path=codec_model_path,
     )
 
-    return avg_metrics, filewise_metrics
+    elapsed = time.time() - start_time
+    logging.info(f"evaluate() completed in {elapsed:.1f}s ({elapsed / 60:.1f} min)")
+
+    filtered_filewise = [{k: m[k] for k in FILEWISE_METRICS_TO_SAVE if k in m} for m in filewise_metrics]
+    return avg_metrics, filtered_filewise
 
 
 def compute_fcd(gt_audio_paths, predicted_codes_paths, codec_model_path):

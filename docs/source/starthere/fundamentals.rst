@@ -230,9 +230,9 @@ Here are some options:
   * If you're interested in Automatic Speech Recognition (ASR), explore the :doc:`ASR <../asr/intro>` documentation.
   * For Text-to-Speech (TTS), find details in the :doc:`TTS <../tts/intro>` documentation.
 
-* `NeMo Primer <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/00_NeMo_Primer.ipynb>`__: This tutorial provides a hands-on introduction to NeMo, PyTorch Lightning, and OmegaConf. It covers how to use, modify, save, and restore NeMo models.
+* `NeMo Primer <https://github.com/NVIDIA/NeMo/blob/main/tutorials/00_NeMo_Primer.ipynb>`__: This tutorial provides a hands-on introduction to NeMo, PyTorch Lightning, and OmegaConf. It covers how to use, modify, save, and restore NeMo models.
 
-* `NeMo Models <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/01_NeMo_Models.ipynb>`__: In this tutorial, you'll learn the fundamentals of creating NeMo models.
+* `NeMo Models <https://github.com/NVIDIA/NeMo/blob/main/tutorials/01_NeMo_Models.ipynb>`__: In this tutorial, you'll learn the fundamentals of creating NeMo models.
 
 * NeMo Core Documentation: Explore the :doc:`NeMo Core <../core/core>` documentation for NeMo, which explains the inner workings of NeMo Toolkit.
 

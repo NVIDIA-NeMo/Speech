@@ -119,7 +119,7 @@ The width of the beam search (``--beam_width``) specifies the number of top cand
     and ``pyctcdecode`` via the ``decoding`` subconfig.
 
 To learn more about evaluating the ASR models with N-gram LM, refer to the tutorial here: Offline ASR Inference with Beam Search and External Language Model Rescoring
-`Offline ASR Inference with Beam Search and External Language Model Rescoring <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Offline_ASR.ipynb>`_
+`Offline ASR Inference with Beam Search and External Language Model Rescoring <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/Offline_ASR.ipynb>`_
 
 Beam Search Engines
 -------------------

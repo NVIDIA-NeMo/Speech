@@ -652,6 +652,9 @@ def compute_global_metrics(
     else:
         avg_metrics['cer_gt_audio_cumulative'] = float('NaN')
         avg_metrics['wer_gt_audio_cumulative'] = float('NaN')
+        logging.warning(
+            "Ground truth audio files are missing. Setting cumulative CER and WER for ground truth audio to NaN."
+        )
 
     avg_metrics['utmosv2_avg'] = sum(m['utmosv2'] for m in filewise_metrics) / n
     avg_metrics['total_gen_audio_seconds'] = sum(m['total_gen_audio_seconds'] for m in filewise_metrics)

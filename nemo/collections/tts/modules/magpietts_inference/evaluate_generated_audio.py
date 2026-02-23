@@ -631,21 +631,17 @@ def compute_global_metrics(
     avg_metrics['wer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=False)[
         0
     ]
-    avg_metrics['ssim_pred_gt_avg'] = sum(m.get('pred_gt_ssim', float('nan')) for m in filewise_metrics) / n
-    avg_metrics['ssim_pred_context_avg'] = sum(m.get('pred_context_ssim', float('nan')) for m in filewise_metrics) / n
-    avg_metrics['ssim_gt_context_avg'] = sum(m.get('gt_context_ssim', float('nan')) for m in filewise_metrics) / n
-    avg_metrics['ssim_pred_gt_avg_alternate'] = (
-        sum(m.get('pred_gt_ssim_alternate', float('nan')) for m in filewise_metrics) / n
-    )
+    avg_metrics['ssim_pred_gt_avg'] = sum(m['pred_gt_ssim'] for m in filewise_metrics) / n
+    avg_metrics['ssim_pred_context_avg'] = sum(m['pred_context_ssim'] for m in filewise_metrics) / n
+    avg_metrics['ssim_gt_context_avg'] = sum(m['gt_context_ssim'] for m in filewise_metrics) / n
+    avg_metrics['ssim_pred_gt_avg_alternate'] = sum(m['pred_gt_ssim_alternate'] for m in filewise_metrics) / n
     avg_metrics['ssim_pred_context_avg_alternate'] = (
-        sum(m.get('pred_context_ssim_alternate', float('nan')) for m in filewise_metrics) / n
+        sum(m['pred_context_ssim_alternate'] for m in filewise_metrics) / n
     )
-    avg_metrics['ssim_gt_context_avg_alternate'] = (
-        sum(m.get('gt_context_ssim_alternate', float('nan')) for m in filewise_metrics) / n
-    )
+    avg_metrics['ssim_gt_context_avg_alternate'] = sum(m['gt_context_ssim_alternate'] for m in filewise_metrics) / n
 
     # Cumulative WER/CER on ground-truth audio transcriptions (if available)
-    gt_audio_texts = [m.get('gt_audio_text') for m in filewise_metrics]
+    gt_audio_texts = [m['gt_audio_text'] for m in filewise_metrics]
     if None not in gt_audio_texts:
         avg_metrics['cer_gt_audio_cumulative'] = word_error_rate_detail(
             hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
@@ -657,8 +653,8 @@ def compute_global_metrics(
         avg_metrics['cer_gt_audio_cumulative'] = float('NaN')
         avg_metrics['wer_gt_audio_cumulative'] = float('NaN')
 
-    avg_metrics['utmosv2_avg'] = sum(m.get('utmosv2', float('nan')) for m in filewise_metrics) / n
-    avg_metrics['total_gen_audio_seconds'] = sum(m.get('total_gen_audio_seconds', 0.0) for m in filewise_metrics)
+    avg_metrics['utmosv2_avg'] = sum(m['utmosv2'] for m in filewise_metrics) / n
+    avg_metrics['total_gen_audio_seconds'] = sum(m['total_gen_audio_seconds'] for m in filewise_metrics)
 
     # FCD: compute only if all required paths are provided
     if gt_audio_paths and predicted_codes_paths and codec_model_path:

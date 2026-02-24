@@ -1262,11 +1262,19 @@ class ConformerEncoderAdapter(ConformerEncoder, adapter_mixins.AdapterModuleMixi
 
 
 class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin):
+    """
+    A wrapper module that extracts features from multiple layers of a ConformerEncoder,
+    by reusing existing mechanisim for interctc loss.
+    To use it, set `layer_idx_list` to  specify the indices of layers to extract from.
+    Also, you can specify an `aggretator` module to aggregate the features from different layers,
+    default not aggregating.
+    """
+
     def __init__(
         self,
         encoder: ConformerEncoder,
         layer_idx_list: Optional[List[int]] = None,
-        aggregator: Optional[Callable] = None,
+        aggregator: Optional[NeuralModule] = None,
         detach: bool = False,
         convert_to_cpu: bool = False,
     ):
@@ -1296,12 +1304,12 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         self.detach = detach
         self.convert_to_cpu = convert_to_cpu
         logging.info(f"Extracting features from layers: {self.layer_idx_list}")
-        self.access_cfg = {
+        self.enc_access_cfg = {
             "interctc": {
                 "capture_layers": self.layer_idx_list,
             },
-            "detach": self.detach,
-            "convert_to_cpu": self.convert_to_cpu,
+            "detach": detach,
+            "convert_to_cpu": convert_to_cpu,
         }
         self._is_access_enabled = False
 
@@ -1314,8 +1322,9 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         Returns:
             tuple of aggregated features of shape [B, D, T] and lengths of shape [B]
         """
-        self.encoder.update_access_cfg(self.access_cfg, guid=getattr(self, "model_guid", None))
-        self.encoder.set_access_enabled(access_enabled=True, guid=getattr(self, "model_guid", None))
+        old_access_flag = self.is_access_enabled(guid=getattr(self, "model_guid", None))
+        self.update_access_cfg(self.enc_access_cfg, guid=getattr(self, "model_guid", None))
+        self.set_access_enabled(access_enabled=True, guid=getattr(self, "model_guid", None))
 
         _ = self.encoder(
             audio_signal=audio_signal,
@@ -1326,7 +1335,7 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         )
 
         total_registry = {}
-        for module_registry in self.encoder.get_module_registry(self.encoder).values():
+        for module_registry in self.get_module_registry(self.encoder).values():
             for key in module_registry:
                 if key.startswith("interctc/") and key in total_registry:
                     raise RuntimeError(f"layer {key} has been logged multiple times!")
@@ -1349,9 +1358,13 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
             encoded_len_list.append(layer_lengths[0])  # [B]
 
         self.encoder.reset_registry()
-        if self.aggregator is None:
-            return encoded_list, encoded_len_list
-        return self.aggregator(encoded_list, encoded_len_list)
+        self.set_access_enabled(access_enabled=old_access_flag, guid=getattr(self, "model_guid", None))
+        # End of the adapted chunk
+
+        if self.aggregator is not None:
+            return self.aggregator(encoded_list, encoded_len_list)  # Tensor[B,D*L,T], Tensor[B]
+        else:
+            return encoded_list, encoded_len_list  # List[Tensor[B,D,T]], List[Tensor[B]]
 
 
 # Register any additional information

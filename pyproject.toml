@@ -159,4 +159,6 @@ docs = [
     "sphinx-autodoc2>=0.5.0",
     "sphinx-copybutton>=0.5.2",
     "sphinxcontrib-mermaid",
+    "sphinxcontrib-bibtex",
+    "sphinxext-opengraph"
 ]

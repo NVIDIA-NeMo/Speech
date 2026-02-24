@@ -31,6 +31,7 @@ jobs:
     uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.74.0
     with:
       docs-directory: docs/source
+      sync-all: true
 
   build-docs-summary:
     needs: [pre-flight, build-docs]

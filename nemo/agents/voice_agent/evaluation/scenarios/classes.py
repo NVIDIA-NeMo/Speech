@@ -15,7 +15,7 @@
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from nemo.agents.voice_agent.utils.audio import NoiseConfig
 
@@ -118,12 +118,10 @@ class Task:
         background: The background of the task for user/agent. For example:
             - For user: "You are hungry and just arrived at a pizza restaurant. "
             - For agent: "You are a restaurant assistant who wants to help the user to order food at the restaurant."
-        reference: The reference answer for the task, which is typically a json string. Only used for evaluation and not visible to either the user or the agent.
     """
 
     goal: str
     background: str = field(default="")
-    reference: str = field(default="")
 
     def to_prompt_section(self) -> str:
         prompt = "# Task\n\n"
@@ -193,7 +191,10 @@ class Scenario:
         name: Optional[str] = None,
         description: Optional[str] = None,
         max_duration: Optional[int] = None,
-        reference_answer: Optional[Dict[str, Any]] = None,
+        reference_answer: Optional[Union[List[Dict[str, Any]], Dict[str, Any]]] = None,
+        ignore_capitalization: Optional[bool] = False,
+        ignore_punctuation: Optional[bool] = False,
+        clean_text: Optional[bool] = False,
     ):
         """
         Initialize the scenario.
@@ -204,6 +205,10 @@ class Scenario:
             name: The name of the scenario.
             description: The description of the scenario.
             max_duration: The max duration of the scenario in seconds.
+            reference_answer: The reference answer for the scenario, must be able to be converted to a json string.
+            ignore_capitalization: Whether to ignore capitalization when comparing the reference answer and the final agent response.
+            ignore_punctuation: Whether to ignore punctuation when comparing the reference answer and the final agent response.
+            clean_text: Whether to clean the text when comparing the reference answer and the final agent response.
         """
         if not hasattr(self, "name"):
             self.name = name
@@ -216,6 +221,14 @@ class Scenario:
             self.general_prompt = GENERAL_PROMPT
         if not hasattr(self, "reference_answer"):
             self.reference_answer = reference_answer
+        if not hasattr(self, "reference_file"):
+            self.reference_file = "reference_answer.json"
+        if not hasattr(self, "ignore_capitalization"):
+            self.ignore_capitalization = ignore_capitalization
+        if not hasattr(self, "ignore_punctuation"):
+            self.ignore_punctuation = ignore_punctuation
+        if not hasattr(self, "clean_text"):
+            self.clean_text = clean_text
 
     def get_user_tools(self) -> str:
         """
@@ -340,6 +353,9 @@ class Scenario:
             "description": self.description,
             "max_duration": self.max_duration,
             "noise_config": self.noise_config.to_dict() if self.noise_config else None,
+            "ignore_capitalization": self.ignore_capitalization,
+            "ignore_punctuation": self.ignore_punctuation,
+            "clean_text": self.clean_text,
         }
         with open(output_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=4)
@@ -351,5 +367,5 @@ class Scenario:
                 reference_answer = {"message": self.reference_answer}
             else:
                 reference_answer = self.reference_answer
-            with open(output_dir / "reference_answer.json", "w") as f:
+            with open(output_dir / self.reference_file, "w") as f:
                 json.dump(reference_answer, f, indent=4)

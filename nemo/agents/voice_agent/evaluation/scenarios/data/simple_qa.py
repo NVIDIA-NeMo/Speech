@@ -28,8 +28,15 @@ class SimpleQA(Scenario):
 
     name = "simple_qa_1"
     description = "Simple QA example scenario"
-    reference_answer = {"answer": "The answer is 42."}
+    reference_answer = {
+        "question": "What is the answer to life, the universe, and everything?",
+        "answer": "The answer is 42.",
+    }
     max_duration = 90
+
+    ignore_capitalization = True
+    ignore_punctuation = True
+    clean_text = True
 
     # User section
     @property
@@ -37,14 +44,14 @@ class SimpleQA(Scenario):
         return Persona(
             role="human user",
             name="John",
-            background="You are a curious human who wants to test an AI agent.",
+            background="You are a curious human who wants to ask a question to an AI agent.",
             personality="You are communicative and positive, with clear needs, friendly demeanor, and prompt decision-making.",
         )
 
     @property
     def user_task(self) -> Task:
         return Task(
-            goal="Answer a single question to the AI agent.",
+            goal="Ask a question to the AI agent and wait for the answer.",
             background="You are reading a book about some science fiction story.",
         )
 
@@ -52,7 +59,7 @@ class SimpleQA(Scenario):
     def user_actions(self) -> Actions:
         return Actions(
             instructions=[
-                "Ask the answer to the question: 'What is the answer to life, the universe, and everything?'",
+                "Ask the question: 'What is the answer to life, the universe, and everything?'",
             ],
             guidelines=[
                 "Only ask the designated question to the agent, do not ask any other questions.",
@@ -76,14 +83,13 @@ class SimpleQA(Scenario):
             role="helpful AI agent",
             name="Lisa",
             background="You are a helpful AI agent who can answer questions.",
-            personality="You are friendly and helpful to the user. You are always concise and to the point. You are also very knowledgeable about the book you are reading.",
+            personality="You are friendly and helpful to the user. You are always concise and to the point.",
         )
 
     @property
     def agent_task(self) -> Task:
         return Task(
-            goal="Answer the questions from user'",
-            background="The user is reading a book called 'The Hitchhiker's Guide to the Galaxy' and has some questions about the book.",
+            goal="Answer the questions from user, save the answer to the question to the `SaveQuestionAnswerTool` tool, and end the conversation with the `EndConversationTool` tool.",
         )
 
     @property
@@ -92,6 +98,8 @@ class SimpleQA(Scenario):
             instructions=[
                 "Greet the user by saying 'Hello, I'm Lisa, what can I help you with?', say it only once at the beginning of the conversation.",
                 "Answer a question from the user",
+                "Use the `SaveQuestionAnswerTool` tool to log your answer to the user's question.",
+                "Use the `EndConversationTool` tool to end the conversation when the user says goodbye or has no other questions.",
             ],
             guidelines=[
                 "Always answer the questions from the user",
@@ -122,21 +130,25 @@ class SimpleQA2(SimpleQA):
 
     name = "simple_qa_2"
     description = "Simple QA example scenario with the answer to the question 'What is 1 plus 1?'."
-    reference_answer = {"answer": "The answer is 2."}
+    reference_answer = {"question": "What is 1 plus 1?", "answer": "The answer is 2."}
+
+    ignore_capitalization = True
+    ignore_punctuation = True
+    clean_text = True
 
     @property
     def user_persona(self) -> Persona:
         return Persona(
             role="human user",
             name="John",
-            background="You are a curious human who wants to test an AI agent.",
+            background="You are a curious human who wants to ask a question to an AI agent.",
             personality="You are communicative and positive, with clear needs, friendly demeanor, and prompt decision-making.",
         )
 
     @property
     def user_task(self) -> Task:
         return Task(
-            goal="Answer a single question to the AI agent.",
+            goal="Ask a question to the AI agent and wait for the answer.",
             background="You are reading a book about some science fiction story.",
         )
 
@@ -144,7 +156,7 @@ class SimpleQA2(SimpleQA):
     def user_actions(self) -> Actions:
         return Actions(
             instructions=[
-                "Ask the answer to the question: 'What is 1 plus 1?'",
+                "Ask the question: 'What is the result of 1 plus 1?'",
             ],
             guidelines=[
                 "Only ask the designated question to the agent, do not ask any other questions.",
@@ -163,13 +175,16 @@ class SimpleQA2(SimpleQA):
             role="helpful AI agent",
             name="Lisa",
             background="You are a helpful AI agent who can answer questions.",
-            personality="You are friendly and helpful to the user. You are always concise and to the point. You are also very knowledgeable about the book you are reading.",
+            personality="You are friendly and helpful to the user. You are always concise and to the point.",
         )
 
     @property
-    def agent_task(self) -> Task:
-        return Task(
-            goal="Answer the questions from user'",
+    def agent_resources(self) -> Resources:
+        return Resources(
+            tools={
+                "EndConversationTool": {},
+                "SaveQuestionAnswerTool": {},
+            },
         )
 
 
@@ -177,7 +192,14 @@ class SimpleQA2(SimpleQA):
 class SimpleQA3(SimpleQA2):
     name = "simple_qa_3"
     description = "Simple QA example scenario."
-    reference_answer = {"answer": ""}
+    reference_answer = {
+        "question": "What is the weather in San Francisco?",
+        "answer": "The weather in San Francisco is sunny with a temperature of 20 degrees Celsius and a low UV index.",
+    }
+
+    ignore_capitalization = True
+    ignore_punctuation = True
+    clean_text = True
 
     def get_user_prompt(self) -> str:
         return (

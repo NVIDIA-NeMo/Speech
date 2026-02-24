@@ -98,12 +98,12 @@ class FastBiteScenario(Scenario):
     description = "FastBite example scenario"
     reference_answer = {
         "items": [
-            {"name": "chicken sandwich", "unit_price": "6.49", "quantity": "1"},
-            {"name": "side salad", "unit_price": "2.99", "quantity": "1"},
+            {"name": "Crispy Chicken Sandwich", "unit_price": "6.49", "quantity": "1"},
+            {"name": "Side Salad", "unit_price": "2.99", "quantity": "1"},
         ],
         "customer_name": "John",
         "customer_phone": "123-456-7890",
-        "total_price": "12.98",
+        "total_price": "9.48",
     }
     expected_format = {
         "items": [
@@ -120,6 +120,10 @@ class FastBiteScenario(Scenario):
 
     max_duration = 180
 
+    ignore_capitalization = True
+    ignore_punctuation = True
+    clean_text = False
+
     # User section
     @property
     def user_persona(self) -> Persona:
@@ -135,7 +139,6 @@ class FastBiteScenario(Scenario):
         return Task(
             goal="Order a chicken sandwich and a side salad.",
             background="You are hungry and just arrived at a restaurant called FastBites.",
-            reference=json.dumps(self.reference_answer),
         )
 
     @property
@@ -190,6 +193,7 @@ class FastBiteScenario(Scenario):
             guidelines=[
                 "Do not make up any items not on the menu",
                 "If the customer ask for a sandwich or burger, always ask if they want to make it into a combo deal.",
+                "When asked about what's on the menu, only provide the item names, do not include details unless the customer asks for them.",
                 "Always use the `PlaceOrderTool` tool to place the order.",
                 "Before placing the order, ask for the user's name and associate it with the order.",
                 "Always confirm with the user if the order is correct before placing the order with the `PlaceOrderTool` tool.",

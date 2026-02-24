@@ -32,11 +32,8 @@ from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIProce
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 from nemo.agents.voice_agent.evaluation.tools import get_schema_tool_for_eval
-from nemo.agents.voice_agent.evaluation.tools.basic_tools import GetCityWeatherTool
-from nemo.agents.voice_agent.evaluation.tools.rtvi_control import SendScenarioSummaryTool
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger, RTVIAudioLoggerObserver
-from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
 from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config
 from nemo.agents.voice_agent.pipecat.services.nemo.stt import ASR_EOU_MODELS, NemoSTTService
 from nemo.agents.voice_agent.pipecat.services.nemo.tts import get_tts_service_from_config
@@ -51,10 +48,9 @@ from nemo.agents.voice_agent.utils.tool_calling import register_schema_tools_to_
 
 async def run_bot_websocket_server(
     server_base_path: str = os.path.dirname(__file__),
-    server_config_path: str = "server_configs/default.yaml",
+    server_config_path: str = "server_configs/user.yaml",
     host: str = "0.0.0.0",
-    port: int = 8765,
-    use_fastapi: bool = False,
+    port: int = 8766,
 ):
     """
     Creates a websocket server that runs indefinitely until manually stopped (Ctrl+C)
@@ -62,15 +58,9 @@ async def run_bot_websocket_server(
         server_config_path: Path to the server configuration file, defaults to `server_configs/default.yaml`
         host: Host to bind the server to, defaults to `0.0.0.0`
         port: Port to bind the server to, defaults to `8765`
-        use_fastapi: Whether to use the FastAPI server, defaults to `False`
     """
-    if use_fastapi:
-        logger.info(f"Starting FastAPI server on {host}:{port} with server config path: {server_config_path}")
-        raise NotImplementedError("FastAPI server is not supported yet")  # TODO: [heh] add FastAPI transport support
-    else:
-        logger.info(f"Starting websocket server on {host}:{port} with server config path: {server_config_path}")
 
-    logger.info(f"Server configured to run indefinitely with no timeouts, use Ctrl+C to quit.")
+    logger.info(f"Starting websocket server on {host}:{port} with server config path: {server_config_path}")
 
     config_manager = ConfigManager(
         server_base_path=server_base_path,
@@ -123,11 +113,6 @@ async def run_bot_websocket_server(
     STT_DEVICE = config_manager.STT_DEVICE
     stt_params = config_manager.get_stt_params()
     ignore_eou_eob = server_config.stt.get("ignore_eou_eob", False)
-
-    # Diarization configuration
-    DIAR_MODEL = config_manager.DIAR_MODEL
-    USE_DIAR = config_manager.USE_DIAR
-    diar_params = config_manager.get_diar_params()
 
     # Turn taking configuration
     TURN_TAKING_BACKCHANNEL_PHRASES_PATH = config_manager.TURN_TAKING_BACKCHANNEL_PHRASES_PATH
@@ -196,22 +181,8 @@ async def run_bot_websocket_server(
     )
     logger.info("STT service initialized")
 
-    if USE_DIAR:
-        diar = NemoDiarService(
-            model=DIAR_MODEL,
-            device=STT_DEVICE,
-            params=diar_params,
-            sample_rate=SAMPLE_RATE,
-            backend="legacy",
-            enabled=USE_DIAR,
-        )
-        logger.info("Diarization service initialized")
-    else:
-        diar = None
-
     turn_taking = NeMoTurnTakingService(
         use_vad=True,
-        use_diar=USE_DIAR,
         max_buffer_size=TURN_TAKING_MAX_BUFFER_SIZE,
         bot_stop_delay=TURN_TAKING_BOT_STOP_DELAY,
         backchannel_phrases=TURN_TAKING_BACKCHANNEL_PHRASES_PATH,
@@ -253,21 +224,6 @@ async def run_bot_websocket_server(
     # RTVI events for Pipecat client UI
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
-    send_final_response_tool = SendScenarioSummaryTool(rtvi=rtvi)
-    get_city_weather_tool = GetCityWeatherTool()
-
-    if server_config.llm.get("enable_tool_calling", False):
-        logger.info("Tools calling for LLM is enabled by config, registering tools...")
-        # register_direct_tools_to_llm(llm=llm, context=context, tool_mixins=[tts])
-        register_schema_tools_to_llm(
-            llm=llm,
-            context=context,
-            tools=[send_final_response_tool, get_city_weather_tool],
-            cancel_on_interruption=False,
-        )
-    else:
-        logger.info("Tools calling for LLM is disabled by config, skipping tool registration.")
-
     original_messages = copy.deepcopy(context.get_messages())
     original_context = copy.deepcopy(context)
     original_context.set_llm_adapter(llm.get_llm_adapter())
@@ -291,8 +247,6 @@ async def run_bot_websocket_server(
             tts.reset()
             if turn_taking is not None:
                 turn_taking.reset()
-            if diar is not None:
-                diar.reset()
             logger.info("Conversation context reset successfully")
             return True
         except Exception as e:
@@ -372,8 +326,6 @@ async def run_bot_websocket_server(
             tts.reset()
             if turn_taking is not None:
                 turn_taking.reset()
-            if diar is not None:
-                diar.reset()
 
             logger.info("System prompt updated and context reset successfully")
             return True
@@ -414,19 +366,20 @@ async def run_bot_websocket_server(
         input_transport,
         rtvi,
         stt,
+        turn_taking,
+        user_context_aggregator,
+        llm,
+        tts,
+        output_transport,
+        assistant_context_aggregator,
     ]
-
-    if USE_DIAR:
-        pipeline.append(diar)
-
-    pipeline.extend([turn_taking, user_context_aggregator, llm, tts, output_transport, assistant_context_aggregator])
 
     pipeline = Pipeline(pipeline)
 
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
-            allow_interruptions=server_config.transport.get("allow_interruption", True),
+            allow_interruptions=True,
             enable_metrics=False,
             enable_usage_metrics=False,
             send_initial_empty_metrics=True,
@@ -485,8 +438,6 @@ async def run_bot_websocket_server(
                 tts.reset()
                 if turn_taking is not None:
                     turn_taking.reset()
-                if diar is not None:
-                    diar.reset()
             except Exception as e:
                 # Don't log warnings for normal connection closures
                 if "ConnectionClosedOK" not in str(e) and "1005" not in str(e):

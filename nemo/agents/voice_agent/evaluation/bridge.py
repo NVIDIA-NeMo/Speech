@@ -129,7 +129,7 @@ class EvaluationMetrics:
             return {
                 "count": 0,
                 "mean_ms": 0,
-                "median_ms": 0,
+                "p50_ms": 0,
                 "p95_ms": 0,
                 "min_ms": 0,
                 "max_ms": 0,
@@ -141,7 +141,7 @@ class EvaluationMetrics:
         return {
             "count": count,
             "mean_ms": sum(latencies_sorted) / count,
-            "median_ms": latencies_sorted[count // 2],
+            "p50_ms": latencies_sorted[count // 2],
             "p95_ms": latencies_sorted[int(count * 0.95)] if count > 0 else 0,
             "min_ms": latencies_sorted[0],
             "max_ms": latencies_sorted[-1],
@@ -318,6 +318,7 @@ class VoiceAgentEvaluationBridge:
 
         self.bridge_ready = False
         self.needs_reset = False
+        self.final_response_file = "final_agent_response.json"
 
     def init_output_dir(self, output_dir: str, scenario_name: Optional[str] = None, log_level: str = "DEBUG"):
         """Initialize the output directory and all derived log/audio file paths."""
@@ -1451,7 +1452,7 @@ class VoiceAgentEvaluationBridge:
                 response_obj = {"message": final_response}
             results.append(response_obj)
 
-        output_path = Path(self.output_dir) / "final_agent_response.json"
+        output_path = Path(self.output_dir) / self.final_response_file
         try:
             with open(output_path, "w") as f:
                 json.dump(results, f, indent=2)
@@ -1522,7 +1523,7 @@ class VoiceAgentEvaluationBridge:
                 logger.info(f"\nFinal Latency Statistics:")
                 logger.info(f"  Measurements: {latency_stats['count']}")
                 logger.info(f"  Mean: {latency_stats['mean_ms']:.1f}ms")
-                logger.info(f"  Median: {latency_stats['median_ms']:.1f}ms")
+                logger.info(f"  P50: {latency_stats['p50_ms']:.1f}ms")
                 logger.info(f"  P95: {latency_stats['p95_ms']:.1f}ms")
                 logger.info(f"  Min: {latency_stats['min_ms']:.1f}ms")
                 logger.info(f"  Max: {latency_stats['max_ms']:.1f}ms")

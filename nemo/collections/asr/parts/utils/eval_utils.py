@@ -90,7 +90,7 @@ def remove_punctuations(text: str, punctuations: Optional[Union[list, str]] = No
     return text
 
 
-def clean_label(_str: str, num_to_words: bool = True, langid="en") -> str:
+def clean_label(_str: str, num_to_words: bool = True, langid="en", lowercase: bool = True) -> str:
     """
     Remove unauthorized characters in a string, lower it and remove unneeded spaces
     """
@@ -98,7 +98,8 @@ def clean_label(_str: str, num_to_words: bool = True, langid="en") -> str:
     replace_with_blank = [char for char in '`¨´‘’“”`ʻ‘’“"‘”']
     replace_with_apos = [char for char in '‘’ʻ‘’‘']
     _str = _str.strip()
-    _str = _str.lower()
+    if lowercase:
+        _str = _str.lower()
     for i in replace_with_blank:
         _str = _str.replace(i, "")
     for i in replace_with_space:

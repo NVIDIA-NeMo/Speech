@@ -51,10 +51,9 @@ from nemo.agents.voice_agent.utils.tool_calling import register_schema_tools_to_
 
 async def run_bot_websocket_server(
     server_base_path: str = os.path.dirname(__file__),
-    server_config_path: str = "server_configs/default.yaml",
+    server_config_path: str = "server_configs/agent.yaml",
     host: str = "0.0.0.0",
     port: int = 8765,
-    use_fastapi: bool = False,
 ):
     """
     Creates a websocket server that runs indefinitely until manually stopped (Ctrl+C)
@@ -62,15 +61,8 @@ async def run_bot_websocket_server(
         server_config_path: Path to the server configuration file, defaults to `server_configs/default.yaml`
         host: Host to bind the server to, defaults to `0.0.0.0`
         port: Port to bind the server to, defaults to `8765`
-        use_fastapi: Whether to use the FastAPI server, defaults to `False`
     """
-    if use_fastapi:
-        logger.info(f"Starting FastAPI server on {host}:{port} with server config path: {server_config_path}")
-        raise NotImplementedError("FastAPI server is not supported yet")  # TODO: [heh] add FastAPI transport support
-    else:
-        logger.info(f"Starting websocket server on {host}:{port} with server config path: {server_config_path}")
-
-    logger.info(f"Server configured to run indefinitely with no timeouts, use Ctrl+C to quit.")
+    logger.info(f"Starting websocket server on {host}:{port} with server config path: {server_config_path}")
 
     config_manager = ConfigManager(
         server_base_path=server_base_path,

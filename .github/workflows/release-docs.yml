@@ -13,74 +13,75 @@
 # limitations under the License.
 name: Release docs
 on:
-  workflow_dispatch:
-    inputs:
-      dry-run:
-        description: Whether to run the workflow in dry-run mode
-        required: true
-        type: boolean
-        default: true
-      publish-as-latest:
-        description: Publish as Latest stable version.
-        required: false
-        type: boolean
-        default: true
-      docs-version-override:
-        description: Docs version if commit is not tagged
-        required: false
-        type: string
-        default: ""
-      update-version-picker:
-        description: Update version picker.
-        required: false
-        type: boolean
-        default: true
-      notify-emails:
-        description: Email addresses to send the notification to. Format as "me@me.com,you@you.com".
-        required: false
-        type: string
-      github-ref:
-        description: Github ref to checkout
-        required: false
-        type: string
-        default: ""
-  workflow_call:
-    inputs:
-      dry-run:
-        description: Whether to run the workflow in dry-run mode
-        required: false
-        type: boolean
-        default: true
-      publish-as-latest:
-        description: Publish as Latest stable version.
-        required: false
-        type: boolean
-        default: true
-      docs-version-override:
-        description: Docs version if commit is not tagged
-        required: false
-        type: string
-        default: ""
-      update-version-picker:
-        description: Update version picker.
-        required: false
-        type: boolean
-        default: true
-      notify-emails:
-        description: Email addresses to send the notification to. Format as "me@me.com,you@you.com".
-        required: false
-        type: string
-      github-ref:
-        description: Github ref to checkout
-        required: false
-        type: string
-        default: ""
+  push:
+  # workflow_dispatch:
+  #   inputs:
+  #     dry-run:
+  #       description: Whether to run the workflow in dry-run mode
+  #       required: true
+  #       type: boolean
+  #       default: true
+  #     publish-as-latest:
+  #       description: Publish as Latest stable version.
+  #       required: false
+  #       type: boolean
+  #       default: true
+  #     docs-version-override:
+  #       description: Docs version if commit is not tagged
+  #       required: false
+  #       type: string
+  #       default: ""
+  #     update-version-picker:
+  #       description: Update version picker.
+  #       required: false
+  #       type: boolean
+  #       default: true
+  #     notify-emails:
+  #       description: Email addresses to send the notification to. Format as "me@me.com,you@you.com".
+  #       required: false
+  #       type: string
+  #     github-ref:
+  #       description: Github ref to checkout
+  #       required: false
+  #       type: string
+  #       default: ""
+  # workflow_call:
+  #   inputs:
+  #     dry-run:
+  #       description: Whether to run the workflow in dry-run mode
+  #       required: false
+  #       type: boolean
+  #       default: true
+  #     publish-as-latest:
+  #       description: Publish as Latest stable version.
+  #       required: false
+  #       type: boolean
+  #       default: true
+  #     docs-version-override:
+  #       description: Docs version if commit is not tagged
+  #       required: false
+  #       type: string
+  #       default: ""
+  #     update-version-picker:
+  #       description: Update version picker.
+  #       required: false
+  #       type: boolean
+  #       default: true
+  #     notify-emails:
+  #       description: Email addresses to send the notification to. Format as "me@me.com,you@you.com".
+  #       required: false
+  #       type: string
+  #     github-ref:
+  #       description: Github ref to checkout
+  #       required: false
+  #       type: string
+  #       default: ""
 
 jobs:
   build-docs:
     uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.74.0
     with:
-      ref: ${{ inputs.github-ref }}
+      ref: chtruong/docs-publish
       docs-directory: docs/source
       sync-all: true
 
@@ -101,14 +102,14 @@ jobs:
         # If its on a versioned tag, it will extract the version number from the tag (strip `v` prefix)
         # and publish to the versioned directory in Akamai.
         with:
-          dry-run: ${{ inputs.dry-run }}
+          dry-run: true
           artifacts-name: docs-html
           artifacts-path: _build/html
           emails-csv: ${{ inputs.notify-emails && format('{0},{1}', vars.docs_release_emails, inputs.notify-emails) || vars.docs_release_emails }}
-          overwrite-latest-on-tag: ${{ inputs.publish-as-latest }}
-          docs-version-override: ${{ inputs.docs-version-override }}
-          update-version-picker: ${{ inputs.update-version-picker }}
-          run-on-version-tag-only: ${{ github.ref_name != 'main' }}
+          overwrite-latest-on-tag: false
+          docs-version-override: nightly
+          update-version-picker: true
+          run-on-version-tag-only: false
           request-name: nemo-speech-publish-docs-${{ github.run_id }}
           aws-region: ${{ vars.DOCS_AWS_REGION }}
           aws-role-to-assume: ${{ secrets.AWS_ASSUME_ROLE_ARN }}

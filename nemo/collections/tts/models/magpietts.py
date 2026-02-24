@@ -1394,6 +1394,7 @@ class MagpieTTSModel(ModelPT):
         Uses multinomial sampling with temperature, top-k, and classifier-free guidance (CFG).
 
         Special handling:
+
         * forbids special tokens (like AUDIO_BOS, AUDIO_CONTEXT_EOS, etc.) from being sampled
         * forces / forbids EOS for finished / unfinished items respectively
         * optionally, globally forbids audio EOS for all items in the batch.

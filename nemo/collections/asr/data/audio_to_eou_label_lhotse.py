@@ -37,9 +37,8 @@ EOB_LABEL = 3
 EOU_STRING = '<EOU>'
 EOB_STRING = '<EOB>'
 
-
-EOU_LENGTH_PERTURBATION = ['speed', 'time_stretch']
-EOU_PROHIBITED_AUGMENTATIONS = ['random_segment']
+# These augmentations are not supported yet, since they will need to change the SOU/EOU timestamps
+EOU_INVALID_AUGMENTATIONS = ['random_segment', 'speed', 'time_stretch']
 
 
 @dataclass
@@ -177,26 +176,18 @@ class LhotseSpeechToTextBpeEOUDataset(torch.utils.data.Dataset):
             self.padding_cfg = RandomPaddingConfig(**self.padding_cfg)
         self.ignore_eob_label = self.cfg.get('ignore_eob_label', False)
         self.augmentor = None
-        self.len_augmentor = None
         if self.cfg.get('augmentor', None) is not None:
             augmentor = {}
-            len_augmentor = {}
             aug_cfg = OmegaConf.to_container(self.cfg.augmentor, resolve=True)
             for k, v in aug_cfg.items():
-                if k in EOU_PROHIBITED_AUGMENTATIONS:
-                    logging.warning(f"EOU dataset does not support {k} augmentation, skipping.")
+                if k in EOU_INVALID_AUGMENTATIONS:
+                    logging.warning(f"EOU dataset does not support {k} augmentation yet, skipping.")
                     continue
-                if k in EOU_LENGTH_PERTURBATION:
-                    len_augmentor[k] = v
-                else:
-                    augmentor[k] = v
+                augmentor[k] = v
 
             if len(augmentor) > 0:
                 logging.info(f"EOU dataset will apply augmentations: {augmentor}")
                 self.augmentor = process_augmentations(augmentor)
-            if len(len_augmentor) > 0:
-                logging.info(f"EOU dataset will apply length augmentations: {len_augmentor}")
-                self.len_augmentor = process_augmentations(len_augmentor)
 
     def _check_special_tokens(self, tokenizer: TokenizerSpec):
         """
@@ -232,9 +223,6 @@ class LhotseSpeechToTextBpeEOUDataset(torch.utils.data.Dataset):
 
             audio_i = audio[i]
             audio_len_i = audio_lens[i]
-
-            # Maybe apply speed perturbation, this has to be done before getting the EOU labels
-            audio_i, audio_len_i = self._maybe_augment_length(audio_i, audio_len_i)
 
             # Get EOU labels and text tokens
             eou_targets_i = self._get_frame_labels(c, audio_len_i)
@@ -530,33 +518,6 @@ class LhotseSpeechToTextBpeEOUDataset(torch.utils.data.Dataset):
         )
         # Apply augmentation
         self.augmentor.perturb(audio_segment)
-        audio = torch.from_numpy(audio_segment.samples).float()
-        audio_len = audio.size(0)
-
-        return audio, audio_len
-
-    def _maybe_augment_length(self, audio: torch.Tensor, audio_len: torch.Tensor):
-        """
-        Apply length augmentation (e.g., speed perturb) to the audio signal if augmentor is provided.
-        Args:
-            audio: torch.Tensor of a single audio signal, shape [T]
-            audio_len: torch.Tensor of audio signal length, shape [1]
-        Returns:
-            augmented_audio: torch.Tensor of augmented audio signal, shape [T]
-            augmented_audio_len: torch.Tensor of augmented audio signal length, shape [1]
-        """
-        if self.len_augmentor is None:
-            return audio, audio_len
-
-        # Cast to AudioSegment
-        audio_segment = AudioSegment(
-            samples=audio[:audio_len].numpy(),
-            sample_rate=self.sample_rate,
-            offset=0,
-            duration=audio_len.item() / self.sample_rate,
-        )
-        # Apply augmentation
-        self.len_augmentor.perturb(audio_segment)
         audio = torch.from_numpy(audio_segment.samples).float()
         audio_len = audio.size(0)
 

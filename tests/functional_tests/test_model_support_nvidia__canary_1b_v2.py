@@ -139,17 +139,28 @@ def test_model_training_step():
 
 
 def test_model_inference():
+    """Test full inference pipeline via model.transcribe()."""
+    import numpy as np
+
     model = _load_model()
     model.eval()
-    d = _DEVICE
-    with torch.no_grad():
-        # Without transcript, forward() returns (None, encoded_len, enc_states, enc_mask)
-        transf_log_probs, encoded_len, enc_states, enc_mask = model.forward(
-            input_signal=torch.randn(1, 16000, device=d),
-            input_signal_length=torch.tensor([16000], device=d),
-        )
-    # transf_log_probs is None when no transcript is provided (inference mode)
-    assert transf_log_probs is None
-    assert encoded_len.shape == (1,)
-    assert enc_states.ndim == 3  # [B, T_enc, D]
-    assert enc_mask.ndim == 2  # [B, T_enc]
+
+    from conftest import prepare_for_transcribe
+
+    prepare_for_transcribe(model)
+
+    audio = np.random.randn(16000).astype(np.float32)
+
+    result = model.transcribe(
+        audio=[audio],
+        batch_size=1,
+        source_lang="en",
+        target_lang="en",
+        task="asr",
+        pnc="yes",
+    )
+    assert isinstance(result, list)
+    assert len(result) == 1
+    # transcribe() may return strings or Hypothesis objects
+    text = result[0] if isinstance(result[0], str) else result[0].text
+    assert isinstance(text, str)

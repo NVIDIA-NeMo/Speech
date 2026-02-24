@@ -112,30 +112,27 @@ def test_model_training_step():
 
 
 def test_model_inference():
-    """Run encoder-decoder forward pass and verify output shapes."""
+    """Test full inference pipeline via model.transcribe()."""
+    import numpy as np
+
     model = _load_model()
     model.eval()
-    d = _DEVICE
 
-    B = 1
-    T_audio = 16000  # 1 second at 16 kHz
+    from conftest import prepare_for_transcribe
 
-    # Use a token id that is valid (not pad) for the decoder prompt.
-    tok = 1 if model.tokenizer.pad_id != 1 else 2
-    seq_len = 4
-    transcript = torch.full((B, seq_len), tok, dtype=torch.long, device=d)
-    transcript_length = torch.tensor([seq_len], dtype=torch.long, device=d)
+    prepare_for_transcribe(model)
 
-    with torch.no_grad():
-        transf_log_probs, encoded_len, enc_states, enc_mask = model.forward(
-            input_signal=torch.randn(B, T_audio, device=d),
-            input_signal_length=torch.tensor([T_audio], dtype=torch.long, device=d),
-            transcript=transcript,
-            transcript_length=transcript_length,
-        )
+    audio = np.random.randn(16000).astype(np.float32)
 
-    assert transf_log_probs is not None, "transf_log_probs should not be None when transcript is provided"
-    assert transf_log_probs.ndim == 3, f"Expected 3-D log_probs [B, T, V], got shape {transf_log_probs.shape}"
-    assert transf_log_probs.shape[0] == B
-    assert encoded_len.shape == (B,)
-    assert enc_states.ndim == 3
+    result = model.transcribe(
+        audio=[audio],
+        batch_size=1,
+        source_lang="en",
+        target_lang="en",
+        task="asr",
+    )
+    assert isinstance(result, list)
+    assert len(result) == 1
+    # transcribe() may return strings or Hypothesis objects
+    text = result[0] if isinstance(result[0], str) else result[0].text
+    assert isinstance(text, str)

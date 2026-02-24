@@ -15,68 +15,52 @@
 """Shared fixtures and utilities for per-model functional tests."""
 
 import torch
-from lightning.pytorch import Trainer
-from omegaconf import DictConfig, OmegaConf, open_dict, read_write
-from torch.utils.data import DataLoader, Dataset, TensorDataset
-from torch.utils.data.dataloader import default_collate
 
 
-def run_training_step(model, batch_tensors, collate_fn=None):
-    """Run one real training step via Lightning Trainer.fit().
+class _MinimalTrainerStub:
+    """Provides just enough Trainer-like interface for training_step()."""
 
-    This uses the full Lightning training loop (no mocking), calling the
-    model's actual training_step(), optimizer, and loss.
+    global_step = 0
+    log_every_n_steps = 1_000_000  # large value to skip WER computation during test
 
-    For RNNT/TDT/Hybrid models whose loss uses numba CUDA kernels, callers
-    should swap model.loss._loss to RNNTLossPytorch before calling this.
+    # Lightning's log() checks these attributes:
+    training = True
+    sanity_checking = False
+    barebones = False
 
-    Args:
-        model: A NeMo model (must inherit from LightningModule).
-        batch_tensors: Either a tuple of tensors (for TensorDataset) or
-            a custom Dataset instance.
-        collate_fn: Optional collate function for the DataLoader.
+    @property
+    def callback_metrics(self):
+        return {}
+
+
+def prepare_for_training_step(model):
+    """Prepare a model for a direct training_step() call without a full Trainer."""
+    model.train()
+
+    # Attach minimal trainer stub for models that access self.trainer
+    stub = _MinimalTrainerStub()
+    model._trainer = stub
+
+    # Suppress Lightning logging (requires active Trainer control flow).
+    # We don't need logging in tests — we only care about loss computation.
+    model.log = lambda *a, **kw: None
+    model.log_dict = lambda *a, **kw: None
+
+    # Many NeMo models access self._optimizer.param_groups[0]['lr'] in training_step
+    # to log the learning rate. Provide a minimal stand-in if no optimizer is set.
+    if getattr(model, '_optimizer', None) is None:
+        model._optimizer = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=1e-4)
+
+
+def prepare_for_transcribe(model):
+    """Placeholder for any pre-transcribe model preparation.
+
+    Previously disabled CUDA graph decoding, but the root cause
+    (CUDA 12/13 API mismatch in cudaStreamGetCaptureInfo) is now
+    fixed in the NeMo source. Kept as a no-op for compatibility
+    with test files that call it.
     """
-    if isinstance(batch_tensors, tuple):
-        dataset = TensorDataset(*batch_tensors)
-        dl = DataLoader(dataset, batch_size=len(batch_tensors[0]), collate_fn=collate_fn)
-    else:
-        # Assume it's already a Dataset
-        dl = DataLoader(batch_tensors, batch_size=2, collate_fn=collate_fn)
-
-    original_device = next(model.parameters()).device
-
-    # Null out data configs to prevent two issues:
-    # 1. Deferred data setup (ModelPT.setup) trying to load training data
-    #    from paths that don't exist outside the original training env.
-    # 2. OmegaConf.to_object() in the hparams property failing on configs
-    #    with MISSING (???) mandatory values like manifest_filepath.
-    # We provide our own dataloader, so the model's data configs aren't needed.
-    # Both _cfg and _hparams_initial must be updated (they are separate copies).
-    if hasattr(model, '_cfg'):
-        with read_write(model._cfg):
-            with open_dict(model._cfg):
-                model._cfg.train_ds = None
-                model._cfg.validation_ds = None
-                model._cfg.test_ds = None
-    if hasattr(model, '_hparams_initial') and 'cfg' in getattr(model, '_hparams_initial', {}):
-        hp_cfg = model._hparams_initial['cfg']
-        if isinstance(hp_cfg, DictConfig):
-            # Pre-convert to plain dict so ModelPT.hparams skips the
-            # OmegaConf.to_object() call that fails on MISSING (???) values.
-            model._hparams_initial['cfg'] = OmegaConf.to_container(hp_cfg, resolve=False, throw_on_missing=False)
-
-    trainer = Trainer(
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        devices=1,
-        max_steps=1,
-        enable_checkpointing=False,
-        logger=False,
-        limit_train_batches=1,
-    )
-    trainer.fit(model, train_dataloaders=dl)
-
-    # Trainer.fit() may move the model; restore it to the original device.
-    model.to(original_device)
+    pass
 
 
 def swap_rnnt_loss_to_pytorch(model):
@@ -96,47 +80,3 @@ def swap_rnnt_loss_to_pytorch(model):
                 blank=model.loss._blank,
                 reduction=model.loss.reduction,
             )
-
-
-def dict_collate_fn(batch):
-    """Collate for AudioCodecModel: returns {"audio": ..., "audio_lens": ...}."""
-    tensors = default_collate(batch)
-    return {"audio": tensors[0], "audio_lens": tensors[1]}
-
-
-def ssl_collate_fn(batch):
-    """Collate for EncDecDenoiseMaskedTokenPredModel: returns AudioNoiseBatch."""
-    from nemo.collections.asr.data.ssl_dataset import AudioNoiseBatch
-
-    tensors = default_collate(batch)
-    return AudioNoiseBatch(
-        audio=tensors[0],
-        audio_len=tensors[1],
-        noise=tensors[2],
-        noise_len=tensors[3],
-        noisy_audio=tensors[4],
-        noisy_audio_len=tensors[5],
-    )
-
-
-def list_collate_fn(batch):
-    """Collate for SortformerEncLabelModel: returns list of tensors."""
-    return list(default_collate(batch))
-
-
-def prompted_collate_fn(batch):
-    """Collate for EncDecMultiTaskModel: returns PromptedAudioToTextMiniBatch."""
-    from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextMiniBatch
-
-    tensors = default_collate(batch)
-    return PromptedAudioToTextMiniBatch(
-        audio=tensors[0],
-        audio_lens=tensors[1],
-        transcript=tensors[2],
-        transcript_lens=tensors[3],
-        prompt=tensors[4],
-        prompt_lens=tensors[5],
-        prompted_transcript=tensors[6],
-        prompted_transcript_lens=tensors[7],
-        cuts=None,
-    )

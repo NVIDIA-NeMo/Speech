@@ -50,20 +50,27 @@ def test_model_init():
 
 
 def test_model_training_step():
-    """Run one real training step via Lightning Trainer.fit()."""
-    from conftest import run_training_step, ssl_collate_fn
+    """Run one training step via direct training_step() call."""
+    from conftest import prepare_for_training_step
+
+    from nemo.collections.asr.data.ssl_dataset import AudioNoiseBatch
 
     model = _load_model()
-    # SSL models expect AudioNoiseBatch: (audio, audio_len, noise, noise_len, noisy_audio, noisy_audio_len)
-    batch = (
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
+    prepare_for_training_step(model)
+    d = next(model.parameters()).device
+    torch.manual_seed(0)  # fixed seed to avoid intermittent NaN with random inputs
+    batch = AudioNoiseBatch(
+        audio=torch.randn(2, 16000, device=d),
+        audio_len=torch.tensor([16000, 12000], device=d),
+        noise=torch.randn(2, 16000, device=d),
+        noise_len=torch.tensor([16000, 12000], device=d),
+        noisy_audio=torch.randn(2, 16000, device=d),
+        noisy_audio_len=torch.tensor([16000, 12000], device=d),
     )
-    run_training_step(model, batch, collate_fn=ssl_collate_fn)
+    result = model.training_step(batch, 0)
+    loss = result if isinstance(result, torch.Tensor) else result['loss']
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    loss.backward()
 
 
 def test_model_inference():

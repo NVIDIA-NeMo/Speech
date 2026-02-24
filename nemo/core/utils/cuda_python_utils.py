@@ -125,7 +125,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     from cuda.bindings import driver as cuda
     from cuda.bindings import runtime as cudart
 
-    capture_status, _, graph, _, _, _ = cu_call(
+    capture_status, _, graph, *_ = cu_call(
         cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
     )
     assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
@@ -144,7 +144,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
         0,
     )
 
-    capture_status, _, graph, dependencies, _, _ = cu_call(
+    capture_status, _, graph, dependencies, *_ = cu_call(
         cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
     )
     assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
@@ -168,18 +168,34 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     # Use driver API here because of bug in cuda-python runtime API: https://github.com/NVIDIA/cuda-python/issues/55
     # TODO: Change call to this after fix goes in (and we bump minimum cuda-python version to 12.4.0):
     # node, = cu_call(cudart.cudaGraphAddNode(graph, dependencies, len(dependencies), driver_params))
-    (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
+    # CUDA 13 (cuda-python >= 13.0.0) adds an edgeData parameter to cuGraphAddNode and
+    # cudaStreamUpdateCaptureDependencies; CUDA 12 does not accept it.
+    _cuda13 = Version(cuda_python_version) >= Version("13.0.0")
+    if _cuda13:
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
+    else:
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, len(dependencies), driver_params))
     body_graph = driver_params.conditional.phGraph_out[0]
 
-    cu_call(
-        cudart.cudaStreamUpdateCaptureDependencies(
-            torch.cuda.current_stream(device=device).cuda_stream,
-            [node],
-            None,
-            1,
-            cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+    if _cuda13:
+        cu_call(
+            cudart.cudaStreamUpdateCaptureDependencies(
+                torch.cuda.current_stream(device=device).cuda_stream,
+                [node],
+                None,
+                1,
+                cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+            )
         )
-    )
+    else:
+        cu_call(
+            cudart.cudaStreamUpdateCaptureDependencies(
+                torch.cuda.current_stream(device=device).cuda_stream,
+                [node],
+                1,
+                cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+            )
+        )
     body_stream = torch.cuda.Stream(device)
     previous_stream = torch.cuda.current_stream(device=device)
     cu_call(

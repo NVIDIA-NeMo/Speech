@@ -122,22 +122,28 @@ def test_model_training_step():
 
 
 def test_model_inference():
-    """
-    EncDecMultiTaskModel.forward() with only audio inputs runs the encoder path and
-    returns (None, encoded_len, enc_states, enc_mask).  We verify the encoder states
-    have the expected batch dimension and dtype.
-    """
+    """Test full inference pipeline via model.transcribe()."""
+    import numpy as np
+
     model = _load_model()
     model.eval()
-    d = _DEVICE
-    audio_len = 16000  # 1 second at 16 kHz
-    with torch.no_grad():
-        transf_log_probs, encoded_len, enc_states, enc_mask = model.forward(
-            input_signal=torch.randn(1, audio_len, device=d),
-            input_signal_length=torch.tensor([audio_len], device=d),
-        )
-    # Without a transcript the model skips the decoder; log_probs is None.
-    assert transf_log_probs is None
-    # Encoder states must have batch dimension 1.
-    assert enc_states.shape[0] == 1, f"Expected batch size 1, got {enc_states.shape[0]}"
-    assert encoded_len.shape == (1,), f"Unexpected encoded_len shape: {encoded_len.shape}"
+
+    from conftest import prepare_for_transcribe
+
+    prepare_for_transcribe(model)
+
+    audio = np.random.randn(16000).astype(np.float32)
+
+    result = model.transcribe(
+        audio=[audio],
+        batch_size=1,
+        source_lang="en",
+        target_lang="en",
+        task="asr",
+        pnc="yes",
+    )
+    assert isinstance(result, list)
+    assert len(result) == 1
+    # transcribe() may return strings or Hypothesis objects
+    text = result[0] if isinstance(result[0], str) else result[0].text
+    assert isinstance(text, str)

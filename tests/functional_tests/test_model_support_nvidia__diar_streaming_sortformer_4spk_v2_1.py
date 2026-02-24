@@ -50,11 +50,11 @@ def test_model_init():
 
 
 def test_model_training_step():
-    """Run one real training step via Lightning Trainer.fit()."""
-    from conftest import list_collate_fn, run_training_step
+    """Run one training step via direct training_step() call."""
+    from conftest import prepare_for_training_step
 
     model = _load_model()
-    d = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    d = next(model.parameters()).device
 
     # Discover output frame count and speaker count by running a forward pass.
     num_samples = 64000  # 4 seconds at 16 kHz
@@ -67,14 +67,18 @@ def test_model_training_step():
     num_frames = preds_ref.shape[1]
     num_spks = preds_ref.shape[2]
 
-    # Build batch: [audio_signal, audio_signal_length, targets, target_lens]
-    batch = (
-        torch.randn(1, num_samples),
-        torch.tensor([num_samples], dtype=torch.long),
-        torch.zeros(1, num_frames, num_spks),
-        torch.tensor([num_frames], dtype=torch.long),
-    )
-    run_training_step(model, batch, collate_fn=list_collate_fn)
+    prepare_for_training_step(model)
+    # Build batch as a list: [audio_signal, audio_signal_length, targets, target_lens]
+    batch = [
+        torch.randn(1, num_samples, device=d),
+        torch.tensor([num_samples], dtype=torch.long, device=d),
+        torch.zeros(1, num_frames, num_spks, device=d),
+        torch.tensor([num_frames], dtype=torch.long, device=d),
+    ]
+    result = model.training_step(batch, 0)
+    loss = result if isinstance(result, torch.Tensor) else result['loss']
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    loss.backward()
 
 
 def test_model_inference():

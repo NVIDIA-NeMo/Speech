@@ -16,7 +16,7 @@
 
 import os
 
-import pytest
+import numpy as np
 import torch
 
 MODEL_NAME = "nvidia/stt_en_fastconformer_ctc_large"
@@ -50,38 +50,44 @@ def test_model_init():
 
 
 def test_model_training_step():
-    """Run one real training step via Lightning Trainer.fit()."""
-    from conftest import run_training_step
+    """Run one training step via direct training_step() call."""
+    from conftest import prepare_for_training_step
 
     model = _load_model()
+    prepare_for_training_step(model)
+    d = next(model.parameters()).device
     vocab_size = model.tokenizer.vocab_size
     batch = (
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
-        torch.randint(0, vocab_size, (2, 5), dtype=torch.long),
-        torch.tensor([5, 3], dtype=torch.long),
+        torch.randn(2, 16000, device=d),
+        torch.tensor([16000, 12000], device=d),
+        torch.randint(0, vocab_size, (2, 5), dtype=torch.long, device=d),
+        torch.tensor([5, 3], dtype=torch.long, device=d),
     )
-    run_training_step(model, batch)
+    result = model.training_step(batch, 0)
+    loss = result if isinstance(result, torch.Tensor) else result['loss']
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    loss.backward()
 
 
 def test_model_inference():
+    """Test full inference pipeline via model.transcribe()."""
     model = _load_model()
     model.eval()
-    d = _DEVICE
 
-    signal = torch.randn(1, 16000, device=d)
-    signal_len = torch.tensor([16000], device=d)
+    from conftest import prepare_for_transcribe
 
-    with torch.no_grad():
-        log_probs, encoded_len, greedy_predictions = model.forward(
-            input_signal=signal,
-            input_signal_length=signal_len,
-        )
+    prepare_for_transcribe(model)
 
-    vocab_size = model.tokenizer.vocab_size
-    assert log_probs.ndim == 3, "log_probs should be [B, T, V]"
-    # CTC adds a blank token, so the last dim is vocab_size + 1
-    assert log_probs.shape[0] == 1
-    assert log_probs.shape[2] == vocab_size + 1
-    assert encoded_len.shape == (1,)
-    assert greedy_predictions.shape[0] == 1
+    audio = np.random.randn(16000).astype(np.float32)
+
+    result = model.transcribe(audio=[audio], batch_size=1)
+    assert isinstance(result, list)
+    assert len(result) == 1
+    # transcribe() may return strings or Hypothesis objects
+    text = result[0] if isinstance(result[0], str) else result[0].text
+    assert isinstance(text, str)
+
+    hyps = model.transcribe(audio=[audio], batch_size=1, return_hypotheses=True)
+    assert isinstance(hyps, list)
+    assert len(hyps) == 1
+    assert hasattr(hyps[0], 'text')

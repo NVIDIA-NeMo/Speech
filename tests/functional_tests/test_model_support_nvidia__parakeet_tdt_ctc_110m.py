@@ -50,33 +50,47 @@ def test_model_init():
 
 
 def test_model_training_step():
-    """Run one real training step via Lightning Trainer.fit()."""
-    from conftest import run_training_step, swap_rnnt_loss_to_pytorch
+    """Run one training step via direct training_step() call."""
+    from conftest import prepare_for_training_step, swap_rnnt_loss_to_pytorch
 
     model = _load_model()
     swap_rnnt_loss_to_pytorch(model)
+    prepare_for_training_step(model)
+    d = next(model.parameters()).device
     vocab_size = model.joint.num_classes_with_blank - 1
     batch = (
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
-        torch.randint(0, max(1, vocab_size), (2, 5), dtype=torch.long),
-        torch.tensor([5, 3], dtype=torch.long),
+        torch.randn(2, 16000, device=d),
+        torch.tensor([16000, 12000], device=d),
+        torch.randint(0, max(1, vocab_size), (2, 5), dtype=torch.long, device=d),
+        torch.tensor([5, 3], dtype=torch.long, device=d),
     )
-    run_training_step(model, batch)
+    result = model.training_step(batch, 0)
+    loss = result if isinstance(result, torch.Tensor) else result['loss']
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    loss.backward()
 
 
 def test_model_inference():
-    """Run encoder-only forward pass in eval mode to verify inference shapes."""
+    """Test full inference pipeline via model.transcribe()."""
+    import numpy as np
+
     model = _load_model()
     model.eval()
-    d = _DEVICE
 
-    with torch.no_grad():
-        encoded, encoded_len = model.forward(
-            input_signal=torch.randn(1, 16000, device=d),
-            input_signal_length=torch.tensor([16000], device=d),
-        )
+    from conftest import prepare_for_transcribe
 
-    assert encoded is not None
-    assert encoded.ndim == 3
-    assert encoded_len.shape == (1,)
+    prepare_for_transcribe(model)
+
+    audio = np.random.randn(16000).astype(np.float32)
+
+    result = model.transcribe(audio=[audio], batch_size=1)
+    assert isinstance(result, list)
+    assert len(result) == 1
+    # transcribe() may return strings or Hypothesis objects
+    text = result[0] if isinstance(result[0], str) else result[0].text
+    assert isinstance(text, str)
+
+    hyps = model.transcribe(audio=[audio], batch_size=1, return_hypotheses=True)
+    assert isinstance(hyps, list)
+    assert len(hyps) == 1
+    assert hasattr(hyps[0], 'text')

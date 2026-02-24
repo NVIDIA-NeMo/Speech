@@ -50,12 +50,15 @@ def test_model_init():
 
 
 def test_model_training_step():
-    """Run one real training step via Lightning Trainer.fit()."""
+    """Run one training step via direct training_step() call."""
     import math
-    from conftest import run_training_step, swap_rnnt_loss_to_pytorch
+
+    from conftest import prepare_for_training_step, swap_rnnt_loss_to_pytorch
 
     model = _load_model()
     swap_rnnt_loss_to_pytorch(model)
+    prepare_for_training_step(model)
+    d = next(model.parameters()).device
 
     # Multitalker training_step expects a 6-element batch:
     # (signal, signal_len, transcript, transcript_len, spk_targets, bg_spk_targets)
@@ -63,14 +66,17 @@ def test_model_training_step():
     T_enc = math.ceil(math.ceil(T_audio / 160) / 8)
     vocab_size = model.joint.num_classes_with_blank - 1
     batch = (
-        torch.randn(2, T_audio),
-        torch.tensor([T_audio, 12000]),
-        torch.randint(0, max(1, vocab_size), (2, 5), dtype=torch.long),
-        torch.tensor([5, 3], dtype=torch.long),
-        torch.ones(2, T_enc),
-        torch.zeros(2, T_enc),
+        torch.randn(2, T_audio, device=d),
+        torch.tensor([T_audio, 12000], device=d),
+        torch.randint(0, max(1, vocab_size), (2, 5), dtype=torch.long, device=d),
+        torch.tensor([5, 3], dtype=torch.long, device=d),
+        torch.ones(2, T_enc, device=d),
+        torch.zeros(2, T_enc, device=d),
     )
-    run_training_step(model, batch)
+    result = model.training_step(batch, 0)
+    loss = result if isinstance(result, torch.Tensor) else result['loss']
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    loss.backward()
 
 
 def test_model_inference():

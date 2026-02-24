@@ -28,6 +28,7 @@ Usage:
 
 import argparse
 import gc
+import json
 import os
 import shutil
 import sys
@@ -35,392 +36,15 @@ import sys
 import torch
 
 # ---------------------------------------------------------------------------
-# Registry: model_name -> {category, loader (class name string), file}
+# Registry: loaded from model_registry.json next to this script.
 # ---------------------------------------------------------------------------
-MODEL_REGISTRY = {
-    # -- ASR: FastConformer hybrid -------------------------------------------
-    "nvidia/stt_de_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_de_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_en_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_es_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_es_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_it_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_it_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_ua_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_ua_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_pl_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_pl_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_hr_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_hr_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_be_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_be_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_fr_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_fr_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_ru_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_ru_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_nl_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_nl_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_fa_fastconformer_hybrid_large": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_fa_fastconformer_hybrid_large.nemo",
-    },
-    "nvidia/stt_ka_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_ka_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_kk_ru_fastconformer_hybrid_large": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_kk_ru_fastconformer_hybrid_large.nemo",
-    },
-    "nvidia/stt_ka_fastconformer_hybrid_transducer_ctc_large_streaming_80ms_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_ka_fastconformer_hybrid_transducer_ctc_large_streaming_80ms_pc.nemo",
-    },
-    "nvidia/stt_uz_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_uz_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_ar_fastconformer_hybrid_large_pc_v1.0": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_ar_fastconformer_hybrid_large_pc_v1.0.nemo",
-    },
-    "nvidia/stt_hy_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_hy_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_hybrid_medium_streaming_80ms_pc.nemo",
-    },
-    "nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_hybrid_medium_streaming_80ms.nemo",
-    },
-    "nvidia/stt_pt_fastconformer_hybrid_large_pc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_pt_fastconformer_hybrid_large_pc.nemo",
-    },
-    "nvidia/stt_es_fastconformer_hybrid_large_pc_nc": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_es_fastconformer_hybrid_large_pc_nc.nemo",
-    },
-    "nvidia/stt_ar_fastconformer_hybrid_large_pcd_v1.0": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_ar_fastconformer_hybrid_large_pcd_v1.0.nemo",
-    },
-    "nvidia/stt_en_fastconformer_hybrid_large_streaming_multi": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_hybrid_large_streaming_multi.nemo",
-    },
-    # -- ASR: FastConformer CTC / Transducer / TDT --------------------------
-    "nvidia/stt_en_fastconformer_ctc_large": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_ctc_large.nemo",
-    },
-    "nvidia/stt_en_fastconformer_transducer_large": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_transducer_large.nemo",
-    },
-    "nvidia/stt_en_fastconformer_ctc_xlarge": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_ctc_xlarge.nemo",
-    },
-    "nvidia/stt_en_fastconformer_transducer_xlarge": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_transducer_xlarge.nemo",
-    },
-    "nvidia/stt_en_fastconformer_transducer_xxlarge": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_transducer_xxlarge.nemo",
-    },
-    "nvidia/stt_en_fastconformer_ctc_xxlarge": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_ctc_xxlarge.nemo",
-    },
-    "nvidia/stt_en_fastconformer_tdt_large": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__stt_en_fastconformer_tdt_large.nemo",
-    },
-    # -- ASR: NGC models ----------------------------------------------------
-    "stt_en_fastconformer_hybrid_large_streaming_1040ms": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "stt_en_fastconformer_hybrid_large_streaming_1040ms.nemo",
-    },
-    "stt_multilingual_fastconformer_hybrid_large_pc_blend_eu": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "stt_multilingual_fastconformer_hybrid_large_pc_blend_eu.nemo",
-    },
-    # -- ASR: Parakeet ------------------------------------------------------
-    "nvidia/parakeet-rnnt-1.1b": {"category": "asr", "loader": "ASRModel", "file": "nvidia__parakeet-rnnt-1.1b.nemo"},
-    "nvidia/parakeet-ctc-1.1b": {"category": "asr", "loader": "ASRModel", "file": "nvidia__parakeet-ctc-1.1b.nemo"},
-    "nvidia/parakeet-rnnt-0.6b": {"category": "asr", "loader": "ASRModel", "file": "nvidia__parakeet-rnnt-0.6b.nemo"},
-    "nvidia/parakeet-ctc-0.6b": {"category": "asr", "loader": "ASRModel", "file": "nvidia__parakeet-ctc-0.6b.nemo"},
-    "nvidia/parakeet-tdt-1.1b": {"category": "asr", "loader": "ASRModel", "file": "nvidia__parakeet-tdt-1.1b.nemo"},
-    "nvidia/parakeet-tdt_ctc-1.1b": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__parakeet-tdt_ctc-1.1b.nemo",
-    },
-    "nvidia/parakeet-tdt_ctc-0.6b-ja": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__parakeet-tdt_ctc-0.6b-ja.nemo",
-    },
-    "nvidia/parakeet-tdt_ctc-110m": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__parakeet-tdt_ctc-110m.nemo",
-    },
-    "nvidia/parakeet-tdt-0.6b-v2": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__parakeet-tdt-0.6b-v2.nemo",
-    },
-    "nvidia/parakeet-rnnt-110m-da-dk": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__parakeet-rnnt-110m-da-dk.nemo",
-    },
-    "nvidia/parakeet-tdt-0.6b-v3": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__parakeet-tdt-0.6b-v3.nemo",
-    },
-    "nvidia/parakeet-ctc-0.6b-Vietnamese": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__parakeet-ctc-0.6b-Vietnamese.nemo",
-    },
-    # -- ASR: Canary --------------------------------------------------------
-    "nvidia/canary-1b": {"category": "asr", "loader": "ASRModel", "file": "nvidia__canary-1b.nemo"},
-    "nvidia/canary-1b-flash": {"category": "asr", "loader": "ASRModel", "file": "nvidia__canary-1b-flash.nemo"},
-    "nvidia/canary-180m-flash": {"category": "asr", "loader": "ASRModel", "file": "nvidia__canary-180m-flash.nemo"},
-    "nvidia/canary-1b-v2": {"category": "asr", "loader": "ASRModel", "file": "nvidia__canary-1b-v2.nemo"},
-    # -- ASR: Specialized ---------------------------------------------------
-    "nvidia/parakeet_realtime_eou_120m-v1": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__parakeet_realtime_eou_120m-v1.nemo",
-    },
-    "nvidia/multitalker-parakeet-streaming-0.6b-v1": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__multitalker-parakeet-streaming-0.6b-v1.nemo",
-    },
-    "nvidia/nemotron-speech-streaming-en-0.6b": {
-        "category": "asr",
-        "loader": "ASRModel",
-        "file": "nvidia__nemotron-speech-streaming-en-0.6b.nemo",
-    },
-    # -- SALM ---------------------------------------------------------------
-    "nvidia/canary-qwen-2.5b": {"category": "salm", "loader": "SALM", "file": "nvidia__canary-qwen-2.5b"},
-    # -- Diarization --------------------------------------------------------
-    "nvidia/diar_sortformer_4spk-v1": {
-        "category": "diarization",
-        "loader": "SortformerEncLabelModel",
-        "file": "nvidia__diar_sortformer_4spk-v1.nemo",
-    },
-    "nvidia/diar_streaming_sortformer_4spk-v2": {
-        "category": "diarization",
-        "loader": "SortformerEncLabelModel",
-        "file": "nvidia__diar_streaming_sortformer_4spk-v2.nemo",
-    },
-    "nvidia/diar_streaming_sortformer_4spk-v2.1": {
-        "category": "diarization",
-        "loader": "SortformerEncLabelModel",
-        "file": "nvidia__diar_streaming_sortformer_4spk-v2.1.nemo",
-    },
-    # -- Speaker ID ---------------------------------------------------------
-    "titanet_large": {"category": "speaker", "loader": "EncDecSpeakerLabelModel", "file": "titanet_large.nemo"},
-    "nvidia/speakerverification_en_titanet_large": {
-        "category": "speaker",
-        "loader": "EncDecSpeakerLabelModel",
-        "file": "nvidia__speakerverification_en_titanet_large.nemo",
-    },
-    # -- SSL ----------------------------------------------------------------
-    "nvidia/ssl_en_nest_large_v1.0": {
-        "category": "ssl",
-        "loader": "EncDecDenoiseMaskedTokenPredModel",
-        "file": "nvidia__ssl_en_nest_large_v1.0.nemo",
-    },
-    "nvidia/ssl_en_nest_xlarge_v1.0": {
-        "category": "ssl",
-        "loader": "EncDecDenoiseMaskedTokenPredModel",
-        "file": "nvidia__ssl_en_nest_xlarge_v1.0.nemo",
-    },
-    # -- VAD ----------------------------------------------------------------
-    "vad_multilingual_marblenet": {
-        "category": "vad",
-        "loader": "EncDecClassificationModel",
-        "file": "vad_multilingual_marblenet.nemo",
-    },
-    "vad_multilingual_frame_marblenet": {
-        "category": "vad",
-        "loader": "EncDecFrameClassificationModel",
-        "file": "vad_multilingual_frame_marblenet.nemo",
-    },
-    "nvidia/Frame_VAD_Multilingual_MarbleNet_v2.0": {
-        "category": "vad",
-        "loader": "EncDecClassificationModel",
-        "file": "nvidia__Frame_VAD_Multilingual_MarbleNet_v2.0.nemo",
-    },
-    # -- Audio Enhancement --------------------------------------------------
-    "nvidia/se_den_sb_16k_small": {
-        "category": "audio_enhancement",
-        "loader": "AudioToAudioModel",
-        "file": "nvidia__se_den_sb_16k_small.nemo",
-    },
-    "nvidia/se_der_sb_16k_small": {
-        "category": "audio_enhancement",
-        "loader": "AudioToAudioModel",
-        "file": "nvidia__se_der_sb_16k_small.nemo",
-    },
-    "nvidia/sr_ssl_flowmatching_16k_430m": {
-        "category": "audio_enhancement",
-        "loader": "AudioToAudioModel",
-        "file": "nvidia__sr_ssl_flowmatching_16k_430m.nemo",
-    },
-    # -- Audio Codec --------------------------------------------------------
-    "mel_codec_44khz_medium": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "mel_codec_44khz_medium.nemo",
-    },
-    "mel_codec_22khz_fullband_medium": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "mel_codec_22khz_fullband_medium.nemo",
-    },
-    "nvidia/low-frame-rate-speech-codec-22khz": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "nvidia__low-frame-rate-speech-codec-22khz.nemo",
-    },
-    "nvidia/audio-codec-22khz": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "nvidia__audio-codec-22khz.nemo",
-    },
-    "nvidia/audio-codec-44khz": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "nvidia__audio-codec-44khz.nemo",
-    },
-    "nvidia/mel-codec-22khz": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "nvidia__mel-codec-22khz.nemo",
-    },
-    "nvidia/mel-codec-44khz": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "nvidia__mel-codec-44khz.nemo",
-    },
-    "nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "nvidia__nemo-nano-codec-22khz-1.78kbps-12.5fps.nemo",
-    },
-    "nvidia/nemo-nano-codec-22khz-1.89kbps-21.5fps": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "nvidia__nemo-nano-codec-22khz-1.89kbps-21.5fps.nemo",
-    },
-    "nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps": {
-        "category": "audio_codec",
-        "loader": "AudioCodecModel",
-        "file": "nvidia__nemo-nano-codec-22khz-0.6kbps-12.5fps.nemo",
-    },
-    # -- TTS ----------------------------------------------------------------
-    "nvidia/tts_en_fastpitch": {
-        "category": "tts_fastpitch",
-        "loader": "FastPitchModel",
-        "file": "nvidia__tts_en_fastpitch.nemo",
-    },
-    "nvidia/tts_hifigan": {"category": "tts_hifigan", "loader": "HifiGanModel", "file": "nvidia__tts_hifigan.nemo"},
-    "nvidia/magpie_tts_multilingual_357m": {
-        "category": "tts_magpie",
-        "loader": "MagpieTTSModel",
-        "file": "nvidia__magpie_tts_multilingual_357m.nemo",
-    },
-    # -- TTS: E2E (class removed from codebase) -----------------------------
-    "tts_en_e2e_fastspeech2hifigan": {
-        "category": "tts_e2e",
-        "loader": None,
-        "file": "tts_en_e2e_fastspeech2hifigan.nemo",
-    },
-}
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REGISTRY_PATH = os.path.join(_SCRIPT_DIR, "model_registry.json")
 
-# Some HF models use a filename that differs from "{model_basename}.nemo".
-# Map model_name -> actual filename on HuggingFace Hub.
-HF_FILENAME_OVERRIDES = {
-    "nvidia/parakeet-ctc-0.6b-Vietnamese": "parakeet-ctc-0.6b-vi.nemo",
-    "nvidia/Frame_VAD_Multilingual_MarbleNet_v2.0": "frame_vad_multilingual_marblenet_v2.0.nemo",
-}
+with open(_REGISTRY_PATH) as _f:
+    _registry_list = json.load(_f)
 
-# NGC models absent from list_available_models(): map name -> direct download URL.
-NGC_DIRECT_URLS = {
-    "vad_multilingual_frame_marblenet": (
-        "https://api.ngc.nvidia.com/v2/models/nvidia/nemo/vad_multilingual_frame_marblenet"
-        "/versions/1.20.0/files/vad_multilingual_frame_marblenet.nemo"
-    ),
-}
+MODEL_REGISTRY = {entry["name"]: entry for entry in _registry_list}
 
 
 def _get_loader_class(loader_name: str):
@@ -500,23 +124,23 @@ def download_model(model_name: str, output_dir: str) -> None:
         # SALM uses HFHubMixin: from_pretrained / save_pretrained
         model = loader_cls.from_pretrained(model_name, map_location="cpu")
         model.save_pretrained(output_path)
-    elif model_name in HF_FILENAME_OVERRIDES:
-        # HF model whose .nemo filename differs from "{model_basename}.nemo"
+    elif info.get("source") == "hf_hub":
+        # HF model requiring explicit hf_hub_download (non-standard filename)
         from huggingface_hub import hf_hub_download
 
         hf_path = hf_hub_download(
             repo_id=model_name,
-            filename=HF_FILENAME_OVERRIDES[model_name],
+            filename=info["file"],
             library_name="nemo",
         )
         shutil.copy2(hf_path, output_path)
         print(f"  (copied from HF cache: {hf_path})")
         return
-    elif model_name in NGC_DIRECT_URLS:
+    elif info.get("ngc_url"):
         # NGC model not registered in list_available_models()
         import requests
 
-        url = NGC_DIRECT_URLS[model_name]
+        url = info["ngc_url"]
         r = requests.get(url, stream=True, timeout=120)
         r.raise_for_status()
         with open(output_path, "wb") as f:

@@ -50,17 +50,22 @@ def test_model_init():
 
 
 def test_model_training_step():
-    """Run one real training step via Lightning Trainer.fit()."""
-    from conftest import run_training_step
+    """Run one training step via direct training_step() call."""
+    from conftest import prepare_for_training_step
 
     model = _load_model()
+    prepare_for_training_step(model)
+    d = next(model.parameters()).device
     batch = (
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
-        torch.zeros(2, dtype=torch.long),
-        torch.tensor([1, 1], dtype=torch.long),
+        torch.randn(2, 16000, device=d),
+        torch.tensor([16000, 12000], device=d),
+        torch.zeros(2, dtype=torch.long, device=d),
+        torch.tensor([1, 1], dtype=torch.long, device=d),
     )
-    run_training_step(model, batch)
+    result = model.training_step(batch, 0)
+    loss = result if isinstance(result, torch.Tensor) else result['loss']
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    loss.backward()
 
 
 def test_model_inference():
@@ -73,4 +78,5 @@ def test_model_inference():
             input_signal_length=torch.tensor([16000], device=d),
         )
     assert logits is not None
-    assert logits.ndim >= 1, "forward() must return logits tensor"
+    assert logits.ndim >= 2
+    assert torch.isfinite(logits).all()

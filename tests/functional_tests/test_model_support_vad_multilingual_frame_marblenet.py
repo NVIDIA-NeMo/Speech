@@ -50,28 +50,31 @@ def test_model_init():
 
 
 def test_model_training_step():
-    """Run one real training step via Lightning Trainer.fit()."""
-    from conftest import run_training_step
+    """Run one training step via direct training_step() call."""
+    from conftest import prepare_for_training_step
 
     model = _load_model()
+    d = next(model.parameters()).device
     # Discover output frame count to build matching labels.
     model.eval()
     with torch.no_grad():
         probe = model.forward(
-            input_signal=torch.randn(1, 16000, device=torch.device("cuda" if torch.cuda.is_available() else "cpu")),
-            input_signal_length=torch.tensor(
-                [16000], device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            ),
+            input_signal=torch.randn(1, 16000, device=d),
+            input_signal_length=torch.tensor([16000], device=d),
         )
     n_frames = probe.shape[1]
 
+    prepare_for_training_step(model)
     batch = (
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
-        torch.zeros(2, n_frames, dtype=torch.long),
-        torch.tensor([n_frames, n_frames], dtype=torch.long),
+        torch.randn(2, 16000, device=d),
+        torch.tensor([16000, 12000], device=d),
+        torch.zeros(2, n_frames, dtype=torch.long, device=d),
+        torch.tensor([n_frames, n_frames], dtype=torch.long, device=d),
     )
-    run_training_step(model, batch)
+    result = model.training_step(batch, 0)
+    loss = result if isinstance(result, torch.Tensor) else result['loss']
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    loss.backward()
 
 
 def test_model_inference():

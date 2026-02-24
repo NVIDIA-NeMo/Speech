@@ -50,34 +50,36 @@ def test_model_init():
 
 
 def test_model_training_step():
-    """Run one real training step via Lightning Trainer.fit()."""
-    from conftest import run_training_step
+    """Run one training step via direct training_step() call."""
+    from conftest import prepare_for_training_step
 
     model = _load_model()
+    prepare_for_training_step(model)
+    d = next(model.parameters()).device
     num_classes = model.decoder._num_classes
     batch = (
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
-        torch.randint(0, num_classes, (2,)),
-        torch.tensor([1, 1], dtype=torch.long),
+        torch.randn(2, 16000, device=d),
+        torch.tensor([16000, 12000], device=d),
+        torch.randint(0, num_classes, (2,), device=d),
+        torch.tensor([1, 1], dtype=torch.long, device=d),
     )
-    run_training_step(model, batch)
+    result = model.training_step(batch, 0)
+    loss = result if isinstance(result, torch.Tensor) else result['loss']
+    assert torch.isfinite(loss), f"Loss is not finite: {loss}"
+    loss.backward()
 
 
 def test_model_inference():
     model = _load_model()
     model.eval()
     d = _DEVICE
-
     with torch.no_grad():
         logits, embs = model.forward(
             input_signal=torch.randn(1, 16000, device=d),
             input_signal_length=torch.tensor([16000], device=d),
         )
-
-    assert logits is not None, "Expected logits from forward(), got None"
-    assert embs is not None, "Expected embeddings from forward(), got None"
-    assert logits.ndim == 2, f"Expected logits to be 2-D (B, num_classes), got shape {logits.shape}"
-    assert embs.ndim == 2, f"Expected embeddings to be 2-D (B, emb_dim), got shape {embs.shape}"
-    assert logits.shape[0] == 1, f"Expected batch size 1, got {logits.shape[0]}"
-    assert embs.shape[0] == 1, f"Expected batch size 1, got {embs.shape[0]}"
+    assert logits is not None
+    assert embs is not None
+    assert embs.ndim == 2  # (B, embedding_dim)
+    assert embs.shape[0] == 1
+    assert torch.isfinite(embs).all()

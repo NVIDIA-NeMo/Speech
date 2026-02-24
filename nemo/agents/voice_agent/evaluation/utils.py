@@ -250,20 +250,3 @@ def check_if_task_success(
             break
     logger.debug(f"success: {result}")
     return result
-
-
-if __name__ == "__main__":
-    reference_file = "/home/heh/github/NeMo-main/examples/voice_agent/evaluation/eval_results/eval_20260224_120242/fastbite/scenario_config/reference_answer.json"
-    prediction_file = "/home/heh/github/NeMo-main/examples/voice_agent/evaluation/eval_results/eval_20260224_120242/fastbite/final_agent_response.json"
-
-    is_successful = check_if_task_success(
-        reference=reference_file,
-        prediction=prediction_file,
-        ignore_capitalization=True,
-        ignore_punctuation=True,
-        clean_text=False,
-    )
-    print(f"Is successful: {is_successful}")
-
-    print(convert_num_to_words("123-456-7890", langid="en"))
-    print(convert_num_to_words("1234567890", langid="en"))

@@ -198,6 +198,15 @@ class LhotseDataLoadingConfig:
     rir_enabled: bool = False
     rir_path: str | None = None  # str, must point to a lhotse RecordingSet manifest
     rir_prob: float = 0.5
+    #   g. Speech level augmentation: randomly scale each speech cut to a target RMS level
+    #      (dBFS) sampled uniformly from [speech_level_min_dbfs, speech_level_max_dbfs].
+    #      Applied BEFORE noise mixing so that noise SNR is computed relative to the
+    #      augmented speech level.  Peak clipping is prevented by an internal ceiling.
+    speech_level_aug_enabled: bool = False
+    speech_level_min_dbfs: float = -55.0
+    speech_level_max_dbfs: float = 0.0
+    speech_level_p: float = 1.0
+    speech_level_peak_ceiling_db: float = -1.0
     #   f. Padding to a minimum duration. Examples shorter than this will be padded, others are unaffected.
     pad_min_duration: Optional[float] = None
     pad_direction: str = "right"  # "right" | "left" | "both" | "random"
@@ -664,7 +673,7 @@ def get_lhotse_dataloader_from_multi_config(
             "multi_config",
             "metadata_only",
             "force_finite",
-            "use_stateful_dataloader",
+"use_stateful_dataloader",
             # Indexed dataloading flags must propagate too — otherwise a
             # top-level ``indexed: true`` / ``indexes_root: /tmp/idx`` on the
             # train_ds namespace silently fails to reach sub-configs, and the
@@ -673,6 +682,11 @@ def get_lhotse_dataloader_from_multi_config(
             "indexes_root",
             "index_pack_root",
             "index_pack_max_open_files",
+            "speech_level_aug_enabled",
+            "speech_level_min_dbfs",
+            "speech_level_max_dbfs",
+            "speech_level_p",
+            "speech_level_peak_ceiling_db",
         ]
         defaults = OmegaConf.structured(LhotseDataLoadingConfig)
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])
@@ -849,7 +863,20 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             cuts = cuts.map(partial(tokenize, tokenizer=tokenizer), apply_fn=None)
 
     # 2. Optional augmentations.
-    # 2.a. Noise mixing.
+    # 2.a. Speech level augmentation — applied first so noise SNR is computed against
+    #      the level-adjusted speech.
+    if config.speech_level_aug_enabled:
+        cuts = cuts.map(
+            _SpeechLevelAugmentTransform(
+                min_dbfs=config.speech_level_min_dbfs,
+                max_dbfs=config.speech_level_max_dbfs,
+                p=config.speech_level_p,
+                peak_ceiling_db=config.speech_level_peak_ceiling_db,
+                seed=config.shard_seed,
+            )
+        )
+
+    # 2.b. Noise mixing.
     if config.noise_path is not None:
         noise = guess_parse_cutset(config.noise_path)
         # make sure the noise is resampled to the same sample rate as the audio cuts
@@ -862,7 +889,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             random_mix_offset=True,
         )
 
-    # 2.b. On-the-fly speed perturbation.
+    # 2.c. On-the-fly speed perturbation.
     #    mux here ensures it's uniformly distributed throughout sampling,
     #    and applying it here (before sampler/dataset) ensures optimal
     #    bucket allocation.
@@ -1225,6 +1252,52 @@ def tokenize_with_prompt(example, tokenizer, prompt_format: str | PromptFormatte
 
 def _normalize_loudness(cuts: CutSet, db_norm: float) -> CutSet:
     return cuts.normalize_loudness(target=db_norm, mix_first=False)
+
+
+class _SpeechLevelAugmentTransform:
+    """
+    CutSet-level transform that attaches a :class:`~lhotse.augmentation.SpeechLevelAugment`
+    transform to each cut's recording with probability ``p``.
+
+    The target dBFS is sampled lazily (once per worker process) from
+    ``Uniform(min_dbfs, max_dbfs)`` using a seeded RNG so that results are
+    reproducible given the same ``seed``.
+
+    The transform is *attached* here (cheap, no I/O) and *applied* later when
+    ``cut.load_audio()`` is called during training.  This means noise SNR is
+    correctly computed against the level-adjusted speech.
+    """
+
+    def __init__(
+        self,
+        min_dbfs: float,
+        max_dbfs: float,
+        p: float = 1.0,
+        peak_ceiling_db: float = -1.0,
+        seed: int | str = "trng",
+    ) -> None:
+        self.min_dbfs = min_dbfs
+        self.max_dbfs = max_dbfs
+        self.p = p
+        self.peak_ceiling_db = peak_ceiling_db
+        self._seed = seed
+        self._rng: random.Random | None = None
+
+    def _lazy_rng_init(self) -> None:
+        if self._rng is None:
+            self._rng = random.Random(resolve_seed(self._seed))
+
+    def __call__(self, cut) -> Any:
+        self._lazy_rng_init()
+        if not getattr(cut, "has_recording", False):
+            return cut
+        if self.p < 1.0 and self._rng.random() > self.p:
+            return cut
+        target_dbfs = self._rng.uniform(self.min_dbfs, self.max_dbfs)
+        return cut.with_speech_level_aug(
+            target_dbfs=target_dbfs,
+            peak_ceiling_db=self.peak_ceiling_db,
+        )
 
 
 def _merge_supervisions(cuts: CutSet) -> CutSet:

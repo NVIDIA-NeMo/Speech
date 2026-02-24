@@ -50,10 +50,9 @@ def test_model_init():
 
 def test_model_training_step():
     """Run one training step via direct training_step() call."""
-    from conftest import prepare_for_training_step, swap_rnnt_loss_to_pytorch
+    from conftest import prepare_for_training_step
 
     model = _load_model()
-    swap_rnnt_loss_to_pytorch(model)
     prepare_for_training_step(model)
     d = next(model.parameters()).device
     vocab_size = model.joint.num_classes_with_blank - 1

@@ -61,22 +61,3 @@ def prepare_for_transcribe(model):
     with test files that call it.
     """
     pass
-
-
-def swap_rnnt_loss_to_pytorch(model):
-    """Replace RNNTLossNumba with RNNTLossPytorch for environments where
-    numba CUDA kernels are unavailable.
-
-    This swaps only the backend implementation; the loss function
-    (RNNT/TDT transducer loss) remains mathematically identical.
-    """
-    from nemo.collections.asr.losses.rnnt_pytorch import RNNTLossPytorch
-
-    if hasattr(model, 'loss') and hasattr(model.loss, '_loss'):
-        loss_mod = model.loss._loss
-        cls_name = type(loss_mod).__name__
-        if 'Numba' in cls_name:
-            model.loss._loss = RNNTLossPytorch(
-                blank=model.loss._blank,
-                reduction=model.loss.reduction,
-            )

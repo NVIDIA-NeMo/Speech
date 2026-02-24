@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Add the examples/asr directory to the Python path so that we can import the transcribe_speech.py file
+import sys
+from pathlib import Path
+
+nemo_root = Path(__file__).parent.parent.parent
+asr_examples_dir = nemo_root / "examples" / "asr"
+sys.path.insert(0, str(asr_examples_dir))
+
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
@@ -21,8 +29,8 @@ from typing import List
 
 from omegaconf import ListConfig
 from tqdm import tqdm
-from transcribe_speech import TranscriptionConfig as SingleTranscribeConfig
-from transcribe_speech import main as single_transcribe_main
+from transcribe_speech import TranscriptionConfig as SingleTranscribeConfig  # type: ignore
+from transcribe_speech import main as single_transcribe_main  # type: ignore
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.core.config import hydra_runner

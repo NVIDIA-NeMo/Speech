@@ -13,42 +13,15 @@
 # limitations under the License.
 
 import os
-import tempfile
 
 import pytest
-import soundfile as sf
 import torch
 from lhotse import CutSet, Recording, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.speechlm2.data.force_align import ForceAligner
 
-
-def synthesize_speech(text: str, output_path: str, target_sample_rate: int = 16000):
-    """Synthesize speech from text using NeMo FastPitch + HiFiGAN and save to wav file."""
-    from nemo.collections.tts.models import FastPitchModel, HifiGanModel
-
-    spec_gen = FastPitchModel.from_pretrained("tts_en_fastpitch")
-    vocoder = HifiGanModel.from_pretrained("tts_en_hifigan")
-    spec_gen.eval()
-    vocoder.eval()
-
-    parsed = spec_gen.parse(text)
-    spectrogram = spec_gen.generate_spectrogram(tokens=parsed)
-    audio = vocoder.convert_spectrogram_to_audio(spec=spectrogram)
-
-    audio_np = audio.squeeze().cpu().detach().numpy()
-
-    # FastPitch + HiFiGAN output at 22050 Hz; resample to target sample rate
-    model_sample_rate = 22050
-    if model_sample_rate != target_sample_rate:
-        from scipy import signal
-
-        num_samples = int(len(audio_np) * target_sample_rate / model_sample_rate)
-        audio_np = signal.resample(audio_np, num_samples)
-
-    sf.write(output_path, audio_np, target_sample_rate)
-    print(f"Synthesized '{text[:50]}...' -> {len(audio_np)/target_sample_rate:.2f}s ({len(audio_np)} samples @ {target_sample_rate}Hz)")
+TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), "test_data")
 
 
 @pytest.fixture(scope="module")
@@ -59,51 +32,42 @@ def force_aligner():
 
 
 @pytest.fixture(scope="module")
-def test_cutset_synthetic_audio():
-    """Create a test cutset with on-the-fly TTS-generated audio at 16kHz"""
-    texts = [
-        'ten companies that let you teach english online without a degree',
-        'yeah i really would like to see canada of course their border is not open right now but',
+def test_cutset_from_audio_file():
+    """Create a test cutset from a pre-recorded audio file."""
+    audio_path = os.path.join(TEST_DATA_DIR, "force_align_test.mp3")
+    text = "ten companies that let you teach english"
+
+    rec = Recording.from_file(audio_path)
+    cut = rec.to_cut()
+    cut.supervisions = [
+        SupervisionSegment(
+            id=f"{cut.id}-0",
+            recording_id=cut.recording_id,
+            start=0.0,
+            duration=rec.duration,
+            text=text,
+            speaker="user",
+        ),
     ]
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cuts = []
-        for i, text in enumerate(texts):
-            audio_path = os.path.join(tmpdir, f"{i}.wav")
-            synthesize_speech(text, audio_path)
-
-            rec = Recording.from_file(audio_path)
-            cut = rec.to_cut()
-            cut.supervisions = [
-                SupervisionSegment(
-                    id=f"{cut.id}-0",
-                    recording_id=cut.recording_id,
-                    start=0.0,
-                    duration=rec.duration,
-                    text=text,
-                    speaker="user",
-                ),
-            ]
-            cuts.append(cut)
-
-        yield CutSet(cuts)
+    return CutSet([cut])
 
 
-def test_force_align_synthetic_audio(force_aligner, test_cutset_synthetic_audio):
-    """Test force alignment with TTS-generated synthetic audio."""
+def test_force_align_audio_file(force_aligner, test_cutset_from_audio_file):
+    """Test force alignment with a pre-recorded audio file."""
     import re
 
     # Store original texts before alignment
     original_texts = {}
-    for cut in test_cutset_synthetic_audio:
+    for cut in test_cutset_from_audio_file:
         for sup in cut.supervisions:
             if sup.speaker == "user":
                 original_texts[sup.id] = sup.text
 
-    result_cuts = force_aligner.batch_force_align_user_audio(test_cutset_synthetic_audio, source_sample_rate=16000)
+    result_cuts = force_aligner.batch_force_align_user_audio(test_cutset_from_audio_file, source_sample_rate=24000)
 
-    assert len(result_cuts) == len(test_cutset_synthetic_audio)
-    assert len(result_cuts) == 2
+    assert len(result_cuts) == len(test_cutset_from_audio_file)
+    assert len(result_cuts) == 1
 
     for cut in result_cuts:
         user_supervisions = [s for s in cut.supervisions if s.speaker == "user"]

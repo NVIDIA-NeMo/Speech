@@ -1289,7 +1289,6 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         """
         super().__init__()
         self.encoder = encoder
-        self.aggregator = aggregator
         self.num_layers = len(encoder.layers)
         self.layer_idx_list = []
         if not layer_idx_list:
@@ -1301,9 +1300,7 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
                 lid = self.num_layers + lid
             self.layer_idx_list.append(lid)
         self.layer_idx_list.sort()
-        self.detach = detach
-        self.convert_to_cpu = convert_to_cpu
-        logging.info(f"Extracting features from layers: {self.layer_idx_list}")
+        logging.info(f"Extracting ConformerEncoder features from layers: {self.layer_idx_list}")
         self.enc_access_cfg = {
             "interctc": {
                 "capture_layers": self.layer_idx_list,
@@ -1311,6 +1308,7 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
             "detach": detach,
             "convert_to_cpu": convert_to_cpu,
         }
+        self.aggregator = aggregator
 
     def forward(
         self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None

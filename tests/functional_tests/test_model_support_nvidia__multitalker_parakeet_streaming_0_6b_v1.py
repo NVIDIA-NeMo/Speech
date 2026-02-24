@@ -57,24 +57,20 @@ def test_model_training_step():
     model = _load_model()
     swap_rnnt_loss_to_pytorch(model)
 
-    # Multitalker model needs speaker targets set for training.
+    # Multitalker training_step expects a 6-element batch:
+    # (signal, signal_len, transcript, transcript_len, spk_targets, bg_spk_targets)
     T_audio = 16000
     T_enc = math.ceil(math.ceil(T_audio / 160) / 8)
-    spk_targets = torch.ones(2, T_enc)
-    bg_spk_targets = torch.zeros(2, T_enc)
-    model.set_speaker_targets(spk_targets, bg_spk_targets)
-
     vocab_size = model.joint.num_classes_with_blank - 1
     batch = (
-        torch.randn(2, 16000),
-        torch.tensor([16000, 12000]),
+        torch.randn(2, T_audio),
+        torch.tensor([T_audio, 12000]),
         torch.randint(0, max(1, vocab_size), (2, 5), dtype=torch.long),
         torch.tensor([5, 3], dtype=torch.long),
+        torch.ones(2, T_enc),
+        torch.zeros(2, T_enc),
     )
     run_training_step(model, batch)
-
-    # Clear speaker targets to avoid stale state in subsequent tests.
-    model.clear_speaker_targets()
 
 
 def test_model_inference():

@@ -16,6 +16,7 @@
 
 import torch
 from lightning.pytorch import Trainer
+from omegaconf import DictConfig, OmegaConf, open_dict, read_write
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.dataloader import default_collate
 
@@ -43,6 +44,26 @@ def run_training_step(model, batch_tensors, collate_fn=None):
         dl = DataLoader(batch_tensors, batch_size=2, collate_fn=collate_fn)
 
     original_device = next(model.parameters()).device
+
+    # Null out data configs to prevent two issues:
+    # 1. Deferred data setup (ModelPT.setup) trying to load training data
+    #    from paths that don't exist outside the original training env.
+    # 2. OmegaConf.to_object() in the hparams property failing on configs
+    #    with MISSING (???) mandatory values like manifest_filepath.
+    # We provide our own dataloader, so the model's data configs aren't needed.
+    # Both _cfg and _hparams_initial must be updated (they are separate copies).
+    if hasattr(model, '_cfg'):
+        with read_write(model._cfg):
+            with open_dict(model._cfg):
+                model._cfg.train_ds = None
+                model._cfg.validation_ds = None
+                model._cfg.test_ds = None
+    if hasattr(model, '_hparams_initial') and 'cfg' in getattr(model, '_hparams_initial', {}):
+        hp_cfg = model._hparams_initial['cfg']
+        if isinstance(hp_cfg, DictConfig):
+            # Pre-convert to plain dict so ModelPT.hparams skips the
+            # OmegaConf.to_object() call that fails on MISSING (???) values.
+            model._hparams_initial['cfg'] = OmegaConf.to_container(hp_cfg, resolve=False, throw_on_missing=False)
 
     trainer = Trainer(
         accelerator="gpu" if torch.cuda.is_available() else "cpu",

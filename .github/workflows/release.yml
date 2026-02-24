@@ -29,10 +29,25 @@ on:
         required: true
         default: true
         type: boolean
+      create-gh-release:
+        description: Create a GitHub release
+        required: true
+        default: true
+        type: boolean
+      generate-changelog:
+        description: Generate changelog
+        required: false
+        default: true
+        type: boolean
+      publish-docs:
+        description: Publish docs
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   release:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v0.40.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v0.73.0
     with:
       release-ref: ${{ inputs.release-ref }}
       python-package: nemo
@@ -40,9 +55,15 @@ jobs:
       library-name: Neural Modules
       dry-run: ${{ inputs.dry-run }}
       version-bump-branch: ${{ inputs.version-bump-branch }}
+      create-gh-release: ${{ inputs.create-gh-release }}
+      gh-release-use-changelog-builder: ${{ inputs.generate-changelog }}
+      publish-docs: ${{ inputs.publish-docs }}
     secrets:
       TWINE_USERNAME: ${{ secrets.TWINE_USERNAME }}
       TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
       SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}
       SLACK_WEBHOOK: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
       PAT: ${{ secrets.PAT }}
+      SSH_KEY: ${{ secrets.SSH_KEY }}
+      SSH_PWD: ${{ secrets.SSH_PWD }}
+      BOT_KEY: ${{ secrets.BOT_KEY }}

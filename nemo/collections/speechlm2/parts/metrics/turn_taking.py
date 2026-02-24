@@ -13,7 +13,7 @@
 # limitations under the License.
 from collections import defaultdict
 import torch
-from nemo.utils import logging
+
 
 
 def compute_turn_taking_metrics(

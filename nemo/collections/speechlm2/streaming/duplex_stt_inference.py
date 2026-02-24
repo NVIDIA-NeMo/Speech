@@ -322,6 +322,7 @@ class DuplexSTTStreamingInference:
                 gen_text_trimmed = torch.zeros(
                     B, current_T - max_prompt_len, device=self.model.device, dtype=torch.long
                 )
+                gen_asr_trimmed = None
                 if self.model.predict_user_text:
                     gen_asr_trimmed = torch.zeros(
                         B, current_T - max_prompt_len, device=self.model.device, dtype=torch.long

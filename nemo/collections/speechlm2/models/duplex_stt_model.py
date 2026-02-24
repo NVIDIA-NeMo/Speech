@@ -263,6 +263,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         text_inputs = inputs["text_inputs"]
         text_labels = inputs["text_labels"]
         target_token_lens = inputs["target_token_lens"]  # Use adjusted lengths from label_prep
+        asr_inputs = None
         if self.predict_user_text:
             asr_inputs = inputs["asr_inputs"]
             asr_labels = inputs["asr_labels"]
@@ -349,6 +350,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
             with loss_parallel():
                 text_logits = forward_outputs["text_logits"]
+                asr_logits = None
                 if self.predict_user_text:
                     asr_logits = forward_outputs["asr_logits"]
 
@@ -364,6 +366,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     * inputs["loss_scale"][:, :, 0].flatten(0, 1)
                 ).sum(-1) / num_frames
 
+                asr_loss = None
                 if self.predict_user_text:
                     asr_loss = (
                         torch.nn.functional.cross_entropy(
@@ -720,7 +723,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
     def load_state_dict(self, state_dict, strict: bool = True):
         try:
             return super().load_state_dict(state_dict, strict=strict)
-        except RuntimeError as e:
-            logging.info(f"Error loading model state_dict !! Retrying with partial initialization!")
+        except RuntimeError:
+            logging.info("Error loading model state_dict !! Retrying with partial initialization!")
             model_dict = set_model_dict_for_partial_init(state_dict, self.state_dict())
             return super().load_state_dict(model_dict, strict=False)

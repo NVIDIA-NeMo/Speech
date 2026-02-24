@@ -15,7 +15,18 @@
 name: Build docs
 
 on:
+  pull_request:
+    branches:
+      - main
+      - r**
+    paths:
+      - "docs/**"
   push:
+    branches:
+      - main
+      - r**
+    paths:
+      - "docs/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}-${{ github.event_name }}

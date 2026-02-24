@@ -335,7 +335,11 @@ class TimingCallback(Callback):
             name (_type_): _description_
             pl_module (_type_): _description_
         """
-        self.timer.stop(name)
+        try:
+            self.timer.stop(name)
+        except RuntimeError:
+            logging.warning(f"Missing timer '{name}' in exp_manager's _on_batch_end callback - not logging.")
+            return
         # Set the `batch_size=1` as WAR for `dataloader_iter`, which is not used for any metric
         pl_module.log(
             name + ' in s',

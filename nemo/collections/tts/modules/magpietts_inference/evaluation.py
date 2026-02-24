@@ -41,6 +41,7 @@ class EvaluationConfig:
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
         with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
+        device: Device to use for running models used during evaluation.
     """
 
     sv_model: str = "titanet"
@@ -49,6 +50,7 @@ class EvaluationConfig:
     with_utmosv2: bool = True
     with_fcd: bool = True
     codec_model_path: str = None
+    device: str = "cuda"
 
 
 def evaluate_generated_audio_dir(
@@ -88,6 +90,7 @@ def evaluate_generated_audio_dir(
         with_utmosv2=config.with_utmosv2,
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
+        device=config.device,
     )
 
     return avg_metrics, filewise_metrics

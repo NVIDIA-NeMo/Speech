@@ -310,6 +310,7 @@ def evaluate_dir(
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
     asr_batch_size=32,
+    device="cuda",
 ):
     """Compute per-file evaluation metrics for a directory of generated audio.
 
@@ -336,8 +337,6 @@ def evaluate_dir(
     # Resolve ground-truth and context audio paths for all records
     gt_audio_paths = [_resolve_path(audio_dir, r.get('audio_filepath')) for r in records]
     context_audio_paths = [_resolve_path(audio_dir, r.get('context_audio_filepath')) for r in records]
-
-    device = "cuda"
 
     # 2. Load models
     models = load_evaluation_models(language, sv_model_type, asr_model_name, device)
@@ -524,6 +523,7 @@ def evaluate(
     with_fcd=True,
     codec_model_path=None,
     asr_batch_size=32,
+    device="cuda",
 ):
     """Evaluate generated audio, computing both per-file and global metrics.
 
@@ -556,6 +556,7 @@ def evaluate(
         asr_model_name=asr_model_name,
         with_utmosv2=with_utmosv2,
         asr_batch_size=asr_batch_size,
+        device=device,
     )
 
     gt_audio_paths = None
@@ -569,6 +570,7 @@ def evaluate(
         gt_audio_paths=gt_audio_paths,
         predicted_codes_paths=predicted_codes_paths,
         codec_model_path=codec_model_path,
+        device=device,
     )
 
     elapsed = time.time() - start_time
@@ -578,18 +580,18 @@ def evaluate(
     return avg_metrics, filtered_filewise
 
 
-def compute_fcd(gt_audio_paths, predicted_codes_paths, codec_model_path):
+def compute_fcd(gt_audio_paths, predicted_codes_paths, codec_model_path, device="cuda"):
     """Compute Frechet Codec Distance from ground-truth audio paths and predicted codec codes paths.
 
     Args:
         gt_audio_paths: List of paths to ground-truth audio files.
         predicted_codes_paths: List of paths to predicted codec codes (.pt) files.
         codec_model_path: Path or name of the codec model for FCD computation.
+        device: Device to use for computation.
 
     Returns:
         FCD score (float).
     """
-    device = "cuda"
     fcd_metric = FrechetCodecDistance(codec_name=codec_model_path).to(device)
     for gt_path, codes_path in zip(gt_audio_paths, predicted_codes_paths):
         fcd_metric.update_from_audio_file(gt_path, True)
@@ -606,6 +608,7 @@ def compute_global_metrics(
     gt_audio_paths=None,
     predicted_codes_paths=None,
     codec_model_path=None,
+    device="cuda",
 ):
     """Aggregate metrics from per-file results.
 
@@ -661,7 +664,9 @@ def compute_global_metrics(
 
     # FCD: compute only if all required paths are provided
     if gt_audio_paths and predicted_codes_paths and codec_model_path:
-        avg_metrics['frechet_codec_distance'] = compute_fcd(gt_audio_paths, predicted_codes_paths, codec_model_path)
+        avg_metrics['frechet_codec_distance'] = compute_fcd(
+            gt_audio_paths, predicted_codes_paths, codec_model_path, device=device
+        )
     else:
         avg_metrics['frechet_codec_distance'] = float('nan')
 

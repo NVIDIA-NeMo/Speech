@@ -291,6 +291,7 @@ def run_inference_and_evaluation(
                 with_utmosv2=eval_config.with_utmosv2,
                 with_fcd=eval_config.with_fcd,
                 codec_model_path=eval_config.codec_model_path,
+                device=eval_config.device,
             )
 
             metrics, filewise_metrics = evaluate_generated_audio_dir(

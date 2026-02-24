@@ -38,6 +38,8 @@ llm:
   type: auto  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
   model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
   model_config: "./server_configs/llm_configs/nemotron_nano_v2.yaml"
+  # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+  # model_config: "./server_configs/llm_configs/nemotron_nano_v3.yaml"
   # if `model_config` is not specified, and the llm.model is not in model_registry.yaml, it will use `llm_configs/hf_llm_generic.yaml`
   # model: "Qwen/Qwen2.5-7B-Instruct" 
   # model_config: "./server_configs/llm_configs/qwen2.5-7B.yaml"
@@ -48,10 +50,13 @@ llm:
   enable_reasoning: false  # it's best to turn-off reasoning for lowest latency, setting it to True will use the same config ending with `_think.yaml` instead
   # `system_prompt` is used as the sytem prompt to the LLM, please refer to differnt LLM webpage for spcial functions like enabling/disabling thinking
   # system_prompt: /path/to/prompt.txt  # or use path to a txt file that contains a long prompt, for example in `../example_prompts/fast_bite.txt`
-  system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user warmly and introducing yourself within one sentence. Your answer should be concise and to the point. You might also see speaker tags (<speaker_0>, <speaker_1>, etc.) in the user context. You should respond to the user based on the speaker tag and the context of that speaker. Do not include the speaker tags in your response, use them only to identify the speaker. Avoid using emoji in your response."
+  system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user with 'Hi, I'm Lisa, your helpful AI assistant. How can I help you today?'. Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words. You might also see speaker tags (<speaker_0>, <speaker_1>, etc.) in the user context. You should respond to the user based on the speaker tag and the context of that speaker. Do not include the speaker tags in your response, use them only to identify the speaker. Avoid using emoji in your response."
 
 tts:
-  type: kokoro # choices in ['nemo', 'kokoro']
-  model: "hexgrad/Kokoro-82M"
+  type: nemo
+  model: "kokoro"
   model_config: "./server_configs/tts_configs/kokoro_82M.yaml"
   device: "cuda"
+  ignore_strings:  # strings/characters to ignore in TTS
+    - "*"
+    - "<unk>"

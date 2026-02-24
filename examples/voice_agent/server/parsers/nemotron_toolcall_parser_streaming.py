@@ -33,9 +33,10 @@ from vllm.entrypoints.openai.protocol import (
     FunctionCall,
     ToolCall,
 )
-from vllm.entrypoints.openai.tool_parsers.abstract_tool_parser import ToolParser, ToolParserManager
 from vllm.logger import init_logger
-from vllm.transformers_utils.tokenizer import AnyTokenizer, MistralTokenizer
+from vllm.tokenizers.mistral import MistralTokenizer
+from vllm.tool_parsers.abstract_tool_parser import ToolParser, ToolParserManager
+from vllm.transformers_utils.tokenizer import AnyTokenizer
 
 logger = init_logger(__name__)
 

@@ -14,6 +14,10 @@
 """
 MagpieTTS Inference and Evaluation Script.
 
+Supports both standard and Mixture of Experts (MoE) models with:
+- Automatic MoE detection and FLOPs calculation
+- Comprehensive evaluation metrics (RTF, FLOPs, CER, SSIM, etc.)
+
 This script provides a clean CLI for running MagpieTTS inference with optional evaluation.
 It decouples inference and evaluation into separate modules for better maintainability.
 
@@ -55,7 +59,6 @@ from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio i
 # Import the modular components
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     DEFAULT_VIOLIN_METRICS,
-    STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_dir,
@@ -65,6 +68,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     ModelLoadConfig,
     get_experiment_name_from_checkpoint_path,
     load_magpie_model,
+    log_model_architecture_summary,
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 from nemo.collections.tts.modules.magpietts_modules import EOSDetectionMethod
@@ -184,13 +188,18 @@ def run_inference_and_evaluation(
     # Load model
     model, checkpoint_name = load_magpie_model(model_config)
 
+    # Log architecture summary and get MoE info + FLOPs metrics
+    moe_info, flops_per_component = log_model_architecture_summary(model)
+
     # Add experiment name prefix if requested
     if log_exp_name and model_config.checkpoint_file:
         exp_name = get_experiment_name_from_checkpoint_path(model_config.checkpoint_file)
         checkpoint_name = f"{exp_name}__{checkpoint_name}"
 
-    # Build full checkpoint identifier
-    full_checkpoint_name = f"{checkpoint_name}_{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
+    # Build full checkpoint identifier (include MoE info if present)
+    full_checkpoint_name = (
+        f"{checkpoint_name}_{moe_info}{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
+    )
 
     # Create inference runner (auto-detects longform based on config.longform_mode)
     logging.info(f"Longform mode: {inference_config.longform_mode}")
@@ -260,6 +269,13 @@ def run_inference_and_evaluation(
 
             # Compute mean RTF metrics
             mean_rtf = runner.compute_mean_rtf_metrics(rtf_metrics_list)
+
+            # Add FLOPs metrics per component
+            for component_name, component_flops in flops_per_component.items():
+                for key, value in component_flops.items():
+                    mean_rtf[f"{component_name}_{key}"] = value
+                logging.info(f"{component_name} FLOPs per token: {component_flops['total_flops_per_token']:,}")
+
             with open(os.path.join(eval_dir, f"{dataset}_rtf_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(mean_rtf, f, indent=4)
 
@@ -275,6 +291,7 @@ def run_inference_and_evaluation(
                 with_utmosv2=eval_config.with_utmosv2,
                 with_fcd=eval_config.with_fcd,
                 codec_model_path=eval_config.codec_model_path,
+                device=eval_config.device,
             )
 
             metrics, filewise_metrics = evaluate_generated_audio_dir(
@@ -291,8 +308,9 @@ def run_inference_and_evaluation(
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
 
+            sorted_filewise = sorted(filewise_metrics, key=lambda x: x.get('cer', 0), reverse=True)
             with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
-                json.dump(filewise_metrics, f, indent=4)
+                json.dump(sorted_filewise, f, indent=4)
 
             # Append to per-run CSV
             append_metrics_to_csv(per_run_csv, full_checkpoint_name, dataset, metrics)
@@ -314,7 +332,6 @@ def run_inference_and_evaluation(
         # Compute mean with confidence interval across repeats
         metrics_mean_ci = compute_mean_with_confidence_interval(
             metrics_all_repeats,
-            STANDARD_METRIC_KEYS,
             confidence=confidence_level,
         )
 

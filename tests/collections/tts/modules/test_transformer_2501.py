@@ -19,14 +19,9 @@ import numpy as np
 import pytest
 import torch
 
-from nemo.collections.tts.modules.transformer_2501 import (
-    ConvolutionLayer,
-    CrossAttention,
-    PositionwiseConvFF,
-    SelfAttention,
-    Transformer,
-    TransformerLayer,
-)
+from nemo.collections.tts.modules.ffn_modules import ConvolutionLayer, PositionwiseConvFF
+from nemo.collections.tts.modules.moe_modules import MoERouter, PositionwiseConvFFMoE
+from nemo.collections.tts.modules.transformer_2501 import CrossAttention, SelfAttention, Transformer, TransformerLayer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import beta_binomial_prior_distribution
 
 
@@ -855,3 +850,578 @@ class TestTransformerBatchedInference:
                 assert torch.allclose(
                     output_batched['output'][1][: self.short_length, :], output_bs1_2['output'], atol=1e-4
                 )
+
+
+@pytest.mark.unit
+class TestMoERouter:
+    """Test the MoERouter class for expert selection and auxiliary losses."""
+
+    @classmethod
+    def setup_class(cls):
+        cls.d_model = 8
+        cls.num_experts = 4
+        cls.top_k = 2
+        cls.batch_size = 2
+        cls.seq_len = 5
+
+    def test_router_initialization(self):
+        """Test that router initializes correctly with valid parameters."""
+        router = MoERouter(
+            d_model=self.d_model,
+            num_experts=self.num_experts,
+            top_k=self.top_k,
+        )
+
+        assert router.d_model == self.d_model
+        assert router.num_experts == self.num_experts
+        assert router.top_k == self.top_k
+        assert router.router.in_features == self.d_model
+        assert router.router.out_features == self.num_experts
+
+    def test_router_forward_shape(self):
+        """Test that router output shapes are correct."""
+        set_seed(42)
+        router = MoERouter(
+            d_model=self.d_model,
+            num_experts=self.num_experts,
+            top_k=self.top_k,
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+
+        with torch.no_grad():
+            expert_weights, expert_indices, router_logits, router_probs = router(x, x_mask)
+
+        # Check shapes
+        assert expert_weights.shape == (self.batch_size, self.seq_len, self.top_k)
+        assert expert_indices.shape == (self.batch_size, self.seq_len, self.top_k)
+        assert router_logits.shape == (self.batch_size, self.seq_len, self.num_experts)
+        assert router_probs.shape == (self.batch_size, self.seq_len, self.num_experts)
+
+        # Check that weights sum to 1
+        weight_sums = expert_weights.sum(dim=-1)
+        assert torch.allclose(weight_sums, torch.ones_like(weight_sums), atol=1e-5)
+
+        # Check that expert indices are valid (all valid tokens)
+        assert expert_indices.min() >= 0
+        assert expert_indices.max() < self.num_experts
+
+    def test_router_returns_logits_and_probs(self):
+        """Test that router returns logits and probs for loss computation."""
+        set_seed(42)
+        router = MoERouter(
+            d_model=self.d_model,
+            num_experts=self.num_experts,
+            top_k=self.top_k,
+        )
+        router.train()
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+
+        expert_weights, expert_indices, router_logits, router_probs = router(x, x_mask)
+
+        # Check that logits and probs are returned for loss computation
+        assert router_logits.shape == (self.batch_size, self.seq_len, self.num_experts)
+        assert router_probs.shape == (self.batch_size, self.seq_len, self.num_experts)
+
+        # Probs should sum to 1 for valid tokens
+        assert torch.allclose(router_probs.sum(dim=-1), x_mask, atol=1e-5)
+
+    def test_router_top_k_selection(self):
+        """Test that exactly top_k experts are selected."""
+        set_seed(42)
+        for top_k in [1, 2, 3]:
+            router = MoERouter(
+                d_model=self.d_model,
+                num_experts=self.num_experts,
+                top_k=top_k,
+            )
+
+            x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+            x_mask = torch.ones(self.batch_size, self.seq_len)
+
+            with torch.no_grad():
+                expert_weights, expert_indices, _, _ = router(x, x_mask)
+
+            assert expert_weights.shape[-1] == top_k
+            assert expert_indices.shape[-1] == top_k
+
+    def test_router_sinkhorn_strategy(self):
+        """Test that Sinkhorn routing works."""
+        set_seed(42)
+        router = MoERouter(
+            d_model=self.d_model,
+            num_experts=self.num_experts,
+            top_k=self.top_k,
+            routing_strategy="sinkhorn",
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+
+        with torch.no_grad():
+            expert_weights, expert_indices, _, _ = router(x, x_mask)
+
+        # Just check it runs and produces valid outputs
+        assert expert_weights.shape == (self.batch_size, self.seq_len, self.top_k)
+        assert torch.allclose(expert_weights.sum(dim=-1), torch.ones(self.batch_size, self.seq_len), atol=1e-5)
+
+    def test_router_jitter_noise(self):
+        """Test that jitter noise affects routing during training."""
+        set_seed(42)
+        router_with_noise = MoERouter(
+            d_model=self.d_model,
+            num_experts=self.num_experts,
+            top_k=self.top_k,
+            router_jitter_noise=0.1,
+        )
+        router_with_noise.train()
+
+        router_no_noise = MoERouter(
+            d_model=self.d_model,
+            num_experts=self.num_experts,
+            top_k=self.top_k,
+            router_jitter_noise=0.0,
+        )
+        router_no_noise.train()
+
+        # Copy weights to make them identical
+        router_no_noise.router.weight.data = router_with_noise.router.weight.data.clone()
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+
+        # Get outputs with different random seeds to ensure noise causes differences
+        set_seed(100)
+        _, indices_with_noise, logits_with, probs_with = router_with_noise(x, x_mask)
+        set_seed(101)  # Different seed
+        _, indices_no_noise, logits_no, probs_no = router_no_noise(x, x_mask)
+
+        # Shapes should match
+        assert indices_with_noise.shape == indices_no_noise.shape
+
+        # With noise, routing decisions or probabilities should differ
+        # (Noise is added to logits, which affects probs and potentially indices)
+        # At least one should be different due to noise
+        indices_differ = not torch.all(indices_with_noise == indices_no_noise)
+        probs_differ = not torch.allclose(probs_with, probs_no, atol=1e-5)
+
+        assert indices_differ or probs_differ, "Jitter noise should cause different routing decisions or probabilities"
+
+    def test_router_padding_masking(self):
+        """Test that padded positions are properly masked with expert_indices=-1."""
+        set_seed(42)
+        router = MoERouter(
+            d_model=self.d_model,
+            num_experts=self.num_experts,
+            top_k=self.top_k,
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+
+        # Mask out last 2 positions of first batch
+        x_mask[0, 3:] = 0
+
+        with torch.no_grad():
+            expert_weights, expert_indices, router_logits, router_probs = router(x, x_mask)
+
+        # Check that padded positions have expert_indices = -1
+        assert torch.all(expert_indices[0, 3:, :] == -1), "Padded positions should have expert_indices=-1"
+
+        # Check that padded positions have zero weights
+        assert torch.allclose(expert_weights[0, 3:, :], torch.zeros_like(expert_weights[0, 3:, :]))
+
+        # Check that valid positions have valid expert indices (0 to num_experts-1)
+        assert torch.all(expert_indices[0, :3, :] >= 0), "Valid positions should have expert_indices >= 0"
+        assert torch.all(
+            expert_indices[0, :3, :] < self.num_experts
+        ), "Valid positions should have valid expert indices"
+
+        # Check that router_logits are zero at padded positions
+        assert torch.allclose(router_logits[0, 3:, :], torch.zeros_like(router_logits[0, 3:, :]))
+
+        # Check that router_probs are zero at padded positions
+        assert torch.allclose(router_probs[0, 3:, :], torch.zeros_like(router_probs[0, 3:, :]))
+
+
+@pytest.mark.unit
+class TestPositionwiseConvFFMoE:
+    """Test the PositionwiseConvFFMoE class."""
+
+    @classmethod
+    def setup_class(cls):
+        cls.d_model = 8
+        cls.d_ffn = 32
+        cls.p_dropout = 0.0
+        cls.num_experts = 4
+        cls.top_k_experts = 2
+        cls.kernel_size = 1  # MoE requires kernel_size=1
+        cls.batch_size = 2
+        cls.seq_len = 10
+
+    def test_moe_ffn_initialization(self):
+        """Test that MoE FFN initializes correctly."""
+        set_seed(42)
+        moe_ffn = PositionwiseConvFFMoE(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            p_dropout=self.p_dropout,
+            num_experts=self.num_experts,
+            top_k_experts=self.top_k_experts,
+            kernel_size=self.kernel_size,
+        )
+
+        assert moe_ffn.d_model == self.d_model
+        assert moe_ffn.d_ffn == self.d_ffn
+        assert moe_ffn.num_experts == self.num_experts
+        assert moe_ffn.top_k_experts == self.top_k_experts
+        assert len(moe_ffn.experts) == self.num_experts
+
+    def test_moe_ffn_forward_shape(self):
+        """Test that MoE FFN produces correct output shape."""
+        set_seed(42)
+        moe_ffn = PositionwiseConvFFMoE(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            p_dropout=self.p_dropout,
+            num_experts=self.num_experts,
+            top_k_experts=self.top_k_experts,
+            kernel_size=self.kernel_size,
+            is_causal=True,
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+
+        with torch.no_grad():
+            output, router_logits, router_probs, expert_indices = moe_ffn(x, x_mask)
+
+        # Check output shape
+        assert output.shape == x.shape
+
+        # Check routing info is returned
+        assert router_logits.shape == (self.batch_size, self.seq_len, self.num_experts)
+        assert router_probs.shape == (self.batch_size, self.seq_len, self.num_experts)
+        assert expert_indices.shape == (self.batch_size, self.seq_len, self.top_k_experts)
+
+    def test_moe_ffn_masking(self):
+        """Test that masking works correctly and padded outputs are zero."""
+        set_seed(42)
+        moe_ffn = PositionwiseConvFFMoE(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            p_dropout=self.p_dropout,
+            num_experts=self.num_experts,
+            top_k_experts=self.top_k_experts,
+            kernel_size=1,
+            is_causal=False,
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+
+        # Create a mask that zeros out some positions
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+        x_mask[0, 5:] = 0  # Mask out last 5 positions of first sample
+
+        with torch.no_grad():
+            output, router_logits, router_probs, expert_indices = moe_ffn(x, x_mask)
+
+        # Check that output shape is correct
+        assert output.shape == x.shape
+
+        # Check that padded positions in output are zero (not processed by any expert)
+        assert torch.allclose(output[0, 5:, :], torch.zeros_like(output[0, 5:, :]))
+
+        # Check that router_logits and router_probs are zero at padded positions
+        assert torch.allclose(router_logits[0, 5:, :], torch.zeros_like(router_logits[0, 5:, :]))
+        assert torch.allclose(router_probs[0, 5:, :], torch.zeros_like(router_probs[0, 5:, :]))
+
+        # Check that expert_indices are -1 at padded positions
+        assert torch.all(expert_indices[0, 5:, :] == -1)
+
+    def test_moe_ffn_different_expert_counts(self):
+        """Test that different numbers of experts work."""
+        set_seed(42)
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+
+        for num_experts in [2, 4, 8]:
+            for top_k in [1, 2]:
+                if top_k <= num_experts:
+                    moe_ffn = PositionwiseConvFFMoE(
+                        d_model=self.d_model,
+                        d_ffn=self.d_ffn,
+                        p_dropout=self.p_dropout,
+                        num_experts=num_experts,
+                        top_k_experts=top_k,
+                        kernel_size=1,
+                    )
+
+                    with torch.no_grad():
+                        output, router_logits, router_probs, expert_indices = moe_ffn(x, x_mask)
+
+                    assert output.shape == x.shape
+
+
+@pytest.mark.unit
+class TestTransformerLayerWithMoE:
+    """Test TransformerLayer with MoE enabled."""
+
+    @classmethod
+    def setup_class(cls):
+        cls.d_model = 8
+        cls.d_ffn = 32
+        cls.sa_n_heads = 2
+        cls.kernel_size = 1  # MoE requires kernel_size=1
+        cls.p_dropout = 0.0
+        cls.max_length_causal_mask = 20
+        cls.batch_size = 2
+        cls.seq_len = 10
+
+    def test_transformer_layer_moe_initialization(self):
+        """Test that TransformerLayer initializes with MoE correctly."""
+        set_seed(42)
+        layer = TransformerLayer(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            sa_n_heads=self.sa_n_heads,
+            kernel_size=self.kernel_size,
+            p_dropout=self.p_dropout,
+            has_xattn=False,
+            is_causal=True,
+            max_length_causal_mask=self.max_length_causal_mask,
+            use_moe=True,
+            num_experts=4,
+            top_k_experts=2,
+        )
+
+        assert layer.use_moe is True
+        assert isinstance(layer.pos_ff, PositionwiseConvFFMoE)
+
+    def test_transformer_layer_without_moe(self):
+        """Test that TransformerLayer without MoE still works."""
+        set_seed(42)
+        layer = TransformerLayer(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            sa_n_heads=self.sa_n_heads,
+            kernel_size=self.kernel_size,
+            p_dropout=self.p_dropout,
+            has_xattn=False,
+            is_causal=True,
+            max_length_causal_mask=self.max_length_causal_mask,
+            use_moe=False,
+        )
+
+        assert layer.use_moe is False
+        assert isinstance(layer.pos_ff, PositionwiseConvFF)
+
+    def test_transformer_layer_moe_forward(self):
+        """Test forward pass of TransformerLayer with MoE."""
+        set_seed(42)
+        layer = TransformerLayer(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            sa_n_heads=self.sa_n_heads,
+            kernel_size=self.kernel_size,
+            p_dropout=self.p_dropout,
+            has_xattn=False,
+            is_causal=True,
+            max_length_causal_mask=self.max_length_causal_mask,
+            use_moe=True,
+            num_experts=4,
+            top_k_experts=2,
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len).bool()
+
+        with torch.no_grad():
+            output_dict = layer(x, x_mask)
+
+        # Check output
+        assert 'output' in output_dict
+        assert output_dict['output'].shape == x.shape
+
+        # Check MoE routing info is present
+        assert 'moe_routing_info' in output_dict
+        if output_dict['moe_routing_info'] is not None:
+            assert 'router_logits' in output_dict['moe_routing_info']
+            assert 'router_probs' in output_dict['moe_routing_info']
+            assert 'expert_indices' in output_dict['moe_routing_info']
+
+    def test_transformer_layer_moe_with_xattn(self):
+        """Test TransformerLayer with both MoE and cross-attention."""
+        set_seed(42)
+        layer = TransformerLayer(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            sa_n_heads=self.sa_n_heads,
+            kernel_size=self.kernel_size,
+            p_dropout=self.p_dropout,
+            has_xattn=True,
+            xa_d_memory=self.d_model,
+            xa_n_heads=2,
+            is_causal=True,
+            max_length_causal_mask=self.max_length_causal_mask,
+            use_moe=True,
+            num_experts=4,
+            top_k_experts=2,
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len).bool()
+        cond = torch.randn(self.batch_size, 5, self.d_model)
+        cond_mask = torch.ones(self.batch_size, 5).bool()
+
+        with torch.no_grad():
+            output_dict = layer(x, x_mask, cond, cond_mask)
+
+        assert output_dict['output'].shape == x.shape
+        assert 'moe_routing_info' in output_dict
+
+
+@pytest.mark.unit
+class TestTransformerWithMoE:
+    """Test full Transformer with MoE."""
+
+    @classmethod
+    def setup_class(cls):
+        cls.n_layers = 2
+        cls.d_model = 8
+        cls.d_ffn = 32
+        cls.sa_n_heads = 2
+        cls.kernel_size = 1  # MoE requires kernel_size=1
+        cls.p_dropout = 0.0
+        cls.batch_size = 2
+        cls.seq_len = 10
+        cls.max_length_causal_mask = 20
+
+    def test_transformer_moe_initialization(self):
+        """Test that Transformer initializes with MoE correctly."""
+        set_seed(42)
+        model = Transformer(
+            n_layers=self.n_layers,
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            sa_n_heads=self.sa_n_heads,
+            kernel_size=self.kernel_size,
+            p_dropout=self.p_dropout,
+            has_xattn=False,
+            is_causal=True,
+            max_length_causal_mask=self.max_length_causal_mask,
+            use_moe=True,
+            num_experts=4,
+            top_k_experts=2,
+        )
+
+        assert model.use_moe is True
+        assert len(model.layers) == self.n_layers
+        for layer in model.layers:
+            assert isinstance(layer.pos_ff, PositionwiseConvFFMoE)
+
+    def test_transformer_moe_forward(self):
+        """Test forward pass of Transformer with MoE."""
+        set_seed(42)
+        model = Transformer(
+            n_layers=self.n_layers,
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            sa_n_heads=self.sa_n_heads,
+            kernel_size=self.kernel_size,
+            p_dropout=self.p_dropout,
+            has_xattn=False,
+            is_causal=True,
+            max_length_causal_mask=self.max_length_causal_mask,
+            use_moe=True,
+            num_experts=4,
+            top_k_experts=2,
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len).bool()
+
+        with torch.no_grad():
+            output_dict = model(x, x_mask)
+
+        # Check output
+        assert 'output' in output_dict
+        assert output_dict['output'].shape == x.shape
+
+        # Check MoE routing info is collected from all layers
+        assert 'moe_routing_info' in output_dict
+        assert output_dict['moe_routing_info'] is not None
+        assert len(output_dict['moe_routing_info']) == self.n_layers
+
+        # Each layer should have logits, probs, and indices
+        for layer_routing in output_dict['moe_routing_info']:
+            assert 'router_logits' in layer_routing
+            assert 'router_probs' in layer_routing
+            assert 'expert_indices' in layer_routing
+
+    def test_transformer_moe_with_cross_attention(self):
+        """Test Transformer with both MoE and cross-attention."""
+        set_seed(42)
+        model = Transformer(
+            n_layers=self.n_layers,
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            sa_n_heads=self.sa_n_heads,
+            kernel_size=self.kernel_size,
+            p_dropout=self.p_dropout,
+            has_xattn=True,
+            xa_d_memory=self.d_model,
+            xa_n_heads=2,
+            is_causal=True,
+            max_length_causal_mask=self.max_length_causal_mask,
+            use_moe=True,
+            num_experts=4,
+            top_k_experts=2,
+        )
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len).bool()
+        cond = torch.randn(self.batch_size, 5, self.d_model)
+        cond_mask = torch.ones(self.batch_size, 5).bool()
+
+        with torch.no_grad():
+            output_dict = model(x, x_mask, cond, cond_mask)
+
+        assert output_dict['output'].shape == x.shape
+        assert 'moe_routing_info' in output_dict
+
+    def test_transformer_moe_different_configurations(self):
+        """Test various MoE configurations."""
+        set_seed(42)
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len).bool()
+
+        configs = [
+            {'num_experts': 2, 'top_k_experts': 1},
+            {'num_experts': 4, 'top_k_experts': 2},
+            {'num_experts': 8, 'top_k_experts': 2},
+            {'num_experts': 4, 'top_k_experts': 1, 'routing_strategy': 'sinkhorn'},
+        ]
+
+        for config in configs:
+            model = Transformer(
+                n_layers=self.n_layers,
+                d_model=self.d_model,
+                d_ffn=self.d_ffn,
+                sa_n_heads=self.sa_n_heads,
+                kernel_size=self.kernel_size,
+                p_dropout=self.p_dropout,
+                has_xattn=False,
+                is_causal=True,
+                max_length_causal_mask=self.max_length_causal_mask,
+                use_moe=True,
+                **config,
+            )
+
+            with torch.no_grad():
+                output_dict = model(x, x_mask)
+
+            assert output_dict['output'].shape == x.shape

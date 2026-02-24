@@ -36,7 +36,7 @@ model:
 
   decoder:
     _target_: nemo.collections.audio.modules.transforms.SpectrogramToAudio
-    fft_length: ${model.encoder.fft_length} 
+    fft_length: ${model.encoder.fft_length}
     hop_length: ${model.encoder.hop_length}
     magnitude_power: ${model.encoder.magnitude_power}
     scale: ${model.encoder.scale}
@@ -58,15 +58,15 @@ model:
     causal_downsampling: False
     att_context_size: [-1, -1]
     att_context_style: 'regular'
-    
+
   loss:
-    _target_: nemo.collections.audio.losses.MSELoss # computed in the time domain
+    _target_: nemo.collections.audio.losses.audio.MSELoss # computed in the time domain
 
   metrics:
     val:
       sisdr: # output SI-SDR
         _target_: torchmetrics.audio.ScaleInvariantSignalDistortionRatio
-    
+
   optim:
     name: adamw
     lr: 1e-3

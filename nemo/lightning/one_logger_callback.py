@@ -202,48 +202,6 @@ def get_nemo_v1_callback_config(trainer: Any) -> Dict[str, Any]:
     return config
 
 
-def get_nemo_v2_callback_config(
-    trainer: Any,
-    data: Any,
-) -> Dict[str, Any]:
-    """Generate NeMo v2 specific configuration for the OneLogger training callback.
-
-    This function extracts the global batch size and sequence length from the provided NeMo v2 data module,
-    and uses them to construct the configuration dictionary for the OneLogger training callback.
-
-    Args:
-        trainer: PyTorch Lightning trainer instance.
-        data: NeMo v2 data module (required).
-
-    Returns:
-        Dictionary containing the NeMo v2 training callback configuration.
-    """
-    # NeMo v2: Extract batch size and sequence length from data module (most reliable source)
-    global_batch_size = 1  # Default fallback
-    seq_length = 1  # Default fallback
-
-    if data is not None:
-        seq_length = data.seq_length
-        # Prefer explicit global_batch_size if provided by the data module
-        if hasattr(data, 'global_batch_size') and getattr(data, 'global_batch_size') is not None:
-            global_batch_size = int(getattr(data, 'global_batch_size'))
-        else:
-            # Fall back to micro_batch_size multiplied by WORLD_SIZE when global_batch_size is unavailable
-            micro_batch_size = getattr(data, 'micro_batch_size', None)
-            if micro_batch_size is not None:
-                world_size = int(os.environ.get('WORLD_SIZE', 1))
-                global_batch_size = int(micro_batch_size) * world_size
-
-    # Get base configuration with calculated values
-    config = _get_base_callback_config(
-        trainer=trainer,
-        global_batch_size=global_batch_size,
-        seq_length=seq_length,
-    )
-
-    return config
-
-
 def _should_enable_for_current_rank() -> bool:
     """Determine if OneLogger should be enabled for the current rank.
 
@@ -290,12 +248,6 @@ class OneLoggerNeMoCallback(OneLoggerPTLCallback, BaseCallback):
         # Avoid this function being called multiple times
         if TrainingTelemetryProvider.instance().config.telemetry_config is not None:
             return
-        if nemo_version == 'v1':
-            config = get_nemo_v1_callback_config(trainer=trainer)
-        elif nemo_version == 'v2':
-            # v2 expects data module in kwargs
-            data = kwargs.get('data', None)
-            config = get_nemo_v2_callback_config(trainer=trainer, data=data)
         else:
             config = get_nemo_v1_callback_config(trainer=trainer)
         training_telemetry_config = TrainingTelemetryConfig(**config)

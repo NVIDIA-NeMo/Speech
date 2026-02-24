@@ -15,7 +15,6 @@ from collections import defaultdict
 import torch
 
 
-
 def compute_turn_taking_metrics(
     source_tokens, pred_tokens, eos_token_id, bos_token_id, tolerance=13, latency_multiplier=0.08
 ):

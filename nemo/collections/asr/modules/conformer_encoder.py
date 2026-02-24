@@ -1311,7 +1311,6 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
             "detach": detach,
             "convert_to_cpu": convert_to_cpu,
         }
-        self._is_access_enabled = False
 
     def forward(
         self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
@@ -1320,7 +1319,8 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         Args:
             same interface as ConformerEncoder.forward()
         Returns:
-            tuple of aggregated features of shape [B, D, T] and lengths of shape [B]
+            - Tuple[List[Tensor[B,D,T]], List[Tensor[B]]] if aggregator is None
+            - Tuple[Tensor[B,H,T], Tensor[B]] if aggregator is not None, where H is the hidden size of the aggregator
         """
         old_access_flag = self.is_access_enabled(guid=getattr(self, "model_guid", None))
         self.update_access_cfg(self.enc_access_cfg, guid=getattr(self, "model_guid", None))
@@ -1334,6 +1334,7 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
             cache_last_channel_len=cache_last_channel_len,
         )
 
+        # Chunk of code adapted from ConformerEncoder.forward_internal()
         total_registry = {}
         for module_registry in self.get_module_registry(self.encoder).values():
             for key in module_registry:
@@ -1349,8 +1350,8 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
                 layer_lengths = total_registry[f"interctc/layer_length_{layer_idx}"]
             except KeyError:
                 raise RuntimeError(
-                    f"Intermediate layer {layer_idx} was not captured! Check the layer index and the number of "
-                    "ConformerEncoder layers."
+                    f"Intermediate layer {layer_idx} was not captured! "
+                    "Check the layer index and the number of ConformerEncoder layers."
                 )
             if len(layer_outputs) > 1 or len(layer_lengths) > 1:
                 raise RuntimeError("Make sure encoder.forward is called exactly one time")
@@ -1362,7 +1363,7 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         # End of the adapted chunk
 
         if self.aggregator is not None:
-            return self.aggregator(encoded_list, encoded_len_list)  # Tensor[B,D*L,T], Tensor[B]
+            return self.aggregator(encoded_list, encoded_len_list)  # Tensor[B,H,T], Tensor[B]
         else:
             return encoded_list, encoded_len_list  # List[Tensor[B,D,T]], List[Tensor[B]]
 

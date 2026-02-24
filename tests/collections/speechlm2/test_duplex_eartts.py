@@ -277,7 +277,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         "target_texts",
         "audio_prompt",
         "audio_prompt_lens",
-        "formatter",
+        "task",
     }
 
     for key in expected_keys:
@@ -416,8 +416,8 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         ]
     ]
 
-    # Check formatter
-    assert batch["formatter"] == ["s2s_duplex"]
+    # Check task
+    assert batch["task"] == ["s2s_duplex"]
 
 
 # test extra functions inside of eartts dataset

@@ -729,7 +729,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         ]
 
         cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
-        cut.formatter = "s2s_duplex_overlap_as_s2s_duplex"
+        cut.task = "s2s_duplex_overlap_as_s2s_duplex"
         return cut
 
     cuts = cuts.map(convert_overlap_cut_fn)
@@ -830,7 +830,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         cut_source.target_audio = cut_target.recording
         cut_source.duration = cut_target.duration
         cut_source.context_audio = cut.context_audio
-        cut_source.formatter = "lhotse_magpietts_data_as_continuation"
+        cut_source.task = "lhotse_magpietts_data_as_continuation"
 
         return cut_source
 
@@ -1432,7 +1432,7 @@ def _convert_tarred_to_duplex(cut, agent_silence_duration):
 
     # Replace the single supervision with user and agent supervisions
     cut.supervisions = [user_sup, agent_sup]
-    cut.formatter = "nemo_tarred_to_duplex"
+    cut.task = "asr"
 
     # Add target_audio to cut.custom
     if cut.custom is None:

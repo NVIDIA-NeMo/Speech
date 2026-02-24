@@ -21,6 +21,7 @@ from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.speechlm2.data.force_align import ForceAligner
 
+
 TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), "test_data")
 
 

@@ -1265,15 +1265,19 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
     def __init__(
         self,
         encoder: ConformerEncoder,
-        aggregator: Optional[Callable] = None,
         layer_idx_list: Optional[List[int]] = None,
+        aggregator: Optional[Callable] = None,
+        detach: bool = False,
+        convert_to_cpu: bool = False,
     ):
         """
         This class is used to extract features from different layers of the ConformerEncoder.
         Args:
             encoder: ConformerEncoder instance.
-            aggregator: Aggregator instance. If None, the features are returned as a list.
             layer_idx_list: List of layer indices to extract features from. If None, all layers are extracted.
+            aggregator: Aggregator instance. If None, the features are returned as a list.
+            detach: If True, the features are detached from the graph.
+            convert_to_cpu: If True, the features are converted to CPU.
         """
         super().__init__()
         self.encoder = encoder
@@ -1289,13 +1293,15 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
                 lid = self.num_layers + lid
             self.layer_idx_list.append(lid)
         self.layer_idx_list.sort()
+        self.detach = detach
+        self.convert_to_cpu = convert_to_cpu
         logging.info(f"Extracting features from layers: {self.layer_idx_list}")
         self.access_cfg = {
             "interctc": {
                 "capture_layers": self.layer_idx_list,
             },
-            "detach": False,
-            "convert_to_cpu": False,
+            "detach": self.detach,
+            "convert_to_cpu": self.convert_to_cpu,
         }
         self._is_access_enabled = False
 

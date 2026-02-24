@@ -176,7 +176,6 @@ Now we can update the model config to use the prepared training and evaluation d
 ```yaml
 model:
   train_ds:
-    rain_ds:
     input_cfg: /path/to/train_input_config.yaml
     manifest_filepath: null
     tarred_audio_filepaths: null

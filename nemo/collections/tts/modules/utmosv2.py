@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+
 try:
     import utmosv2
 except ImportError:
@@ -20,6 +22,14 @@ except ImportError:
 from typing import Optional
 import torch
 from threadpoolctl import threadpool_limits
+
+# If UTMOSv2 cache is not set but HF_HOME is, use an area under HF_HOME for the cache location
+# This avoids re-downloading the UTMSOv2 model each time.
+# Note that "UTMOSV2_CHACHE" is not a typo -- that is the string used in the UTMOSv2 library.
+if "UTMOSV2_CHACHE" not in os.environ and "HF_HOME" in os.environ:
+    utmos_cache_dir = os.path.join(os.environ["HF_HOME"], "utmosv2")
+    os.makedirs(utmos_cache_dir, exist_ok=True)
+    os.environ["UTMOSV2_CHACHE"] = utmos_cache_dir
 
 """
 Uses the UTMOSv2 model to estimate the MOS of a speech audio file.

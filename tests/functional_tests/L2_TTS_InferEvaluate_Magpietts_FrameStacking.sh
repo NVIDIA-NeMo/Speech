@@ -26,7 +26,6 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --temperature 0.6 \
     --hparams_files /home/TestData/tts/2602_FrameStacking4x/hparams.yaml \
     --checkpoint_files /home/TestData/tts/2602_FrameStacking4x/frame-stacking-4x-english-nanocodec.ckpt \
-    --apply_attention_prior \
     --run_evaluation \
     --clean_up_disk \
     --cer_target 0.1 \

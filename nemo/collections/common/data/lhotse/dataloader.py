@@ -1368,6 +1368,13 @@ class _ConcatenateSpeakersTransform:
         combined_duration = cut.duration + self.gap_seconds + second.duration
         if combined_duration > self.max_duration_seconds:
             return cut
+        # Drop dataloading_info from the appended cut so the resulting MixedCut
+        # has only one non-padding cut with that attribute (Lhotse requires this).
+        # Use fastcopy to avoid mutating the original cut (it may still be used
+        # as a primary cut for another sample in the same batch).
+        if hasattr(second, "custom") and second.custom and "dataloading_info" in second.custom:
+            new_custom = {k: v for k, v in second.custom.items() if k != "dataloading_info"}
+            second = fastcopy(second, custom=new_custom if new_custom else None)
         return cut.pad(cut.duration + self.gap_seconds).append(second)
 
 

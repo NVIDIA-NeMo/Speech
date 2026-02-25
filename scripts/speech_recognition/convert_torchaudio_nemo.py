@@ -81,6 +81,7 @@ def migrate_config(cfg: dict) -> bool:
 def convert_nemo_file(nemo_path: str, output_path: str) -> None:
     """Extract, migrate, and repack a .nemo archive."""
     with tempfile.TemporaryDirectory() as tmpdir:
+
         def _safe_extract_all(tar_obj: tarfile.TarFile, dest_dir: str) -> None:
             """Safely extract all members of a tar file into dest_dir.
 

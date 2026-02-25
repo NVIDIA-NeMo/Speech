@@ -203,8 +203,8 @@ linkcheck_ignore = [
     ".*github\\.com.*",
     ".*githubusercontent\\.com.*",
 ]
-linkcheck_retries = 5
-linkcheck_rate_limit_timeout = 300
+linkcheck_retries = 10
+linkcheck_rate_limit_timeout = 600
 
 ### Previous NeMo theme
 # # NVIDIA theme settings.

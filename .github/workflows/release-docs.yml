@@ -102,7 +102,7 @@ jobs:
         # If its on a versioned tag, it will extract the version number from the tag (strip `v` prefix)
         # and publish to the versioned directory in Akamai.
         with:
-          dry-run: true
+          dry-run: false
           artifacts-name: docs-html
           artifacts-path: _build/html
           emails-csv: ${{ inputs.notify-emails && format('{0},{1}', vars.docs_release_emails, inputs.notify-emails) || vars.docs_release_emails }}

@@ -16,7 +16,7 @@ import math
 import random
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 import torch
 import torch.distributed

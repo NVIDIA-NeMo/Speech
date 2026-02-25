@@ -24,7 +24,6 @@ import numpy as np
 import torch
 from lhotse import CutSet, RecordingSet
 from lhotse.cut import Cut
-from lhotse.cut.mixed import MixedCut, MixTrack
 from lhotse.dataset import (
     ClippingTransform,
     Compress,
@@ -1369,33 +1368,7 @@ class _ConcatenateSpeakersTransform:
         combined_duration = cut.duration + self.gap_seconds + second.duration
         if combined_duration > self.max_duration_seconds:
             return cut
-        # We must copy the second cut so that it does not share any MonoCut
-        # objects with the original still sitting in the batch.  Without this,
-        # attach_dataloading_info() — which runs *after* sampler transforms
-        # and mutates cuts in-place — would set dataloading_info on the shared
-        # MonoCut, giving the concatenated MixedCut two non-padding cuts with
-        # the same custom attribute (which Lhotse forbids).
-        second = self._detach_cut(second)
         return cut.pad(cut.duration + self.gap_seconds).append(second)
-
-    @staticmethod
-    def _detach_cut(cut):
-        """Return a copy of *cut* whose MonoCut objects are not shared
-        with the original, preventing in-place mutation leaks."""
-        if isinstance(cut, MixedCut):
-            new_tracks = []
-            for t in cut.tracks:
-                inner = t.cut
-                if getattr(inner, "custom", None) is not None:
-                    inner = fastcopy(inner, custom=dict(inner.custom))
-                else:
-                    inner = fastcopy(inner)
-                new_tracks.append(MixTrack(cut=inner, type=t.type, offset=t.offset, snr=t.snr))
-            return fastcopy(cut, tracks=new_tracks)
-        else:
-            if getattr(cut, "custom", None) is not None:
-                return fastcopy(cut, custom=dict(cut.custom))
-            return fastcopy(cut)
 
 
 def _merge_supervisions(cuts: CutSet) -> CutSet:

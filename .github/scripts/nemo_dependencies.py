@@ -294,46 +294,17 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
             if (
                 "nemo.collections.asr" in dep
                 or "nemo.collections.tts" in dep
-                or "nemo.collections.speechlm" in dep
+                or "nemo.collections.speechlm2" in dep
                 or "nemo.collections.audio" in dep
                 or "tests.collections.asr" in dep
                 or "tests.collections.tts" in dep
-                or "tests.collections.speechlm" in dep
+                or "tests.collections.speechlm2" in dep
                 or "tests.collections.audio" in dep
             ):
                 new_deps.append("speech")
                 new_deps.append("unit-tests")
 
-            if "nemo.export" in dep or "nemo.deploy" in dep or "tests.export" in dep or "tests.deploy" in dep:
-                new_deps.append("export-deploy")
-                new_deps.append("unit-tests")
-
-            if (
-                "nemo.collections.llm" in dep
-                or "nemo.collections.vlm" in dep
-                or "nemo.automodel" in dep
-                or "tests.collections.llm" in dep
-                or "tests.collections.vlm" in dep
-                or "tests.automodel" in dep
-            ):
-                new_deps.append("automodel")
-                new_deps.append("unit-tests")
-
             if "tests" in dep and "tests.functional_tests" not in dep:
-                new_deps.append("unit-tests")
-
-            if (
-                "nemo.collections" in dep
-                and "nemo.collections.asr" not in dep
-                and "nemo.collections.tts" not in dep
-                and "nemo.collections.speechlm" not in dep
-                and "nemo.collections.audio" not in dep
-                and "tests.collections.asr" not in dep
-                and "tests.collections.tts" not in dep
-                and "tests.collections.speechlm" not in dep
-                and "tests.collections.audio" not in dep
-            ):
-                new_deps.append("nemo2")
                 new_deps.append("unit-tests")
 
         bucket_deps[package] = sorted(list(set(new_deps)))
@@ -349,11 +320,8 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
             relative_path = os.path.relpath(filepath, nemo_root)
 
             dependencies[relative_path] = [
-                "nemo2",
                 "unit-tests",
                 "speech",
-                "automodel",
-                "export-deploy",
             ]
 
     # Add all Dockerfile files
@@ -362,18 +330,12 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
             full_path = os.path.join(root, file_path)
             relative_path = os.path.relpath(full_path, nemo_root)
 
-            if "cicd-main-export-deploy" in file_path:
-                dependencies[relative_path] = ["export-deploy"]
-            if "cicd-main-nemo2" in file_path:
-                dependencies[relative_path] = ["nemo2"]
             if "cicd-main-speech" in file_path:
                 dependencies[relative_path] = ["speech"]
-            if "cicd-main-automodel" in file_path:
-                dependencies[relative_path] = ["automodel"]
             if "cicd-main-unit-tests" in file_path:
                 dependencies[relative_path] = ["unit-tests"]
             if "Dockerfile" in file_path:
-                dependencies[relative_path] = ["nemo2", "unit-tests", "speech", "automodel", "export-deploy"]
+                dependencies[relative_path] = ["unit-tests", "speech"]
 
     # Sort dependencies by length of values (number of dependencies)
     dependencies = dict(sorted(dependencies.items(), key=lambda x: len(x[1]), reverse=True))

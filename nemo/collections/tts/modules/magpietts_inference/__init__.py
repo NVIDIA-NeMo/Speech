@@ -45,7 +45,6 @@ Example Usage:
 
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     DEFAULT_VIOLIN_METRICS,
-    STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_dir,
@@ -74,7 +73,6 @@ __all__ = [
     "EvaluationConfig",
     "evaluate_generated_audio_dir",
     "compute_mean_with_confidence_interval",
-    "STANDARD_METRIC_KEYS",
     "DEFAULT_VIOLIN_METRICS",
     # Visualization
     "create_violin_plot",

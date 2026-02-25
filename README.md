@@ -18,11 +18,11 @@
 
 
 <details open>
-  <summary><b>⚠️ Pivot notice: This repo will pivot to focus on speech models collections only. Please refer to <a href=https://github.com/NVIDIA-NeMo>NeMo Framework Github Org</a> for the complete list of repos under NeMo Framework</b></summary>
+  <summary><b>⚠️ Pivot notice: This repo has pivoted to focus on audio, speech, and multimodal LLM only. Please refer to <a href=https://github.com/NVIDIA-NeMo>NeMo Framework Github Org</a> for the complete list of repos under NeMo Framework</b></summary>
   <blockquote>
-    NeMo 2.0, with its support for LLMs and VLMs will be deprecated by 25.11, and replaced by <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge>NeMo Megatron-Bridge</a> and <a href=https://github.com/NVIDIA-NeMo/AutoModel>NeMo AutoModel</a>. More details can be found in the <a href=https://github.com/NVIDIA-NeMo>NeMo Framework GitHub org readme</a>. (2025-10-10)
+    NeMo 2.0, with its support for Megatron Core, LLMs, and VLMs became deprecated in 25.11, and replaced by <a href=https://github.com/NVIDIA-NeMo/Megatron-Bridge>NeMo Megatron-Bridge</a> and <a href=https://github.com/NVIDIA-NeMo/AutoModel>NeMo AutoModel</a>. More details can be found in the <a href=https://github.com/NVIDIA-NeMo>NeMo Framework GitHub org readme</a>. (2025-10-10)
     <br><br>
-    <b>Deprecated collections</b> (will be removed in a later release):<br>
+    <b>The following collections are no longer available</b><br>
     <code>avlm</code> · <code>diffusion</code> · <code>llm</code> · <code>multimodal</code> · <code>multimodal-autoregressive</code> · <code>nlp</code> · <code>speechlm</code> · <code>vision</code> · <code>vlm</code>
   </blockquote>
 </details>
@@ -372,7 +372,6 @@ following domain-specific commands:
 pip install nemo_toolkit['all'] # or pip install "nemo_toolkit['all']@git+https://github.com/NVIDIA/NeMo@${REF:-'main'}"
 pip install nemo_toolkit['asr'] # or pip install "nemo_toolkit['asr']@git+https://github.com/NVIDIA/NeMo@$REF:-'main'}"
 pip install nemo_toolkit['tts'] # or pip install "nemo_toolkit['tts']@git+https://github.com/NVIDIA/NeMo@${REF:-'main'}"
-pip install nemo_toolkit['multimodal'] # or pip install "nemo_toolkit['multimodal']@git+https://github.com/NVIDIA/NeMo@${REF:-'main'}"
 ```
 
 ### NGC PyTorch container
@@ -404,7 +403,6 @@ cd /opt
 git clone https://github.com/NVIDIA/NeMo
 cd NeMo
 git checkout ${REF:-'main'}
-bash docker/common/install_dep.sh --library all
 pip install ".[all]"
 ```
 

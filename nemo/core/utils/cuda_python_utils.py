@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import contextlib
-import inspect
 
 import numpy as np
 import torch

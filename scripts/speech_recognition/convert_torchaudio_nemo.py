@@ -81,13 +81,26 @@ def migrate_config(cfg: dict) -> bool:
 def convert_nemo_file(nemo_path: str, output_path: str) -> None:
     """Extract, migrate, and repack a .nemo archive."""
     with tempfile.TemporaryDirectory() as tmpdir:
+        def _safe_extract_all(tar_obj: tarfile.TarFile, dest_dir: str) -> None:
+            """Safely extract all members of a tar file into dest_dir.
+
+            Ensures that no member escapes dest_dir via absolute paths or '..' components.
+            """
+            dest_dir_abs = os.path.abspath(dest_dir)
+            for member in tar_obj.getmembers():
+                member_path = os.path.join(dest_dir_abs, member.name)
+                member_path_abs = os.path.abspath(member_path)
+                if os.path.commonpath([dest_dir_abs, member_path_abs]) != dest_dir_abs:
+                    raise ValueError(f"Illegal tar archive entry path: {member.name!r}")
+                tar_obj.extract(member, path=dest_dir_abs)
+
         # --- Unpack --------------------------------------------------------
         # Older checkpoints may be gzipped; newer ones are plain tar.
         try:
             tar = tarfile.open(nemo_path, "r:")
         except tarfile.ReadError:
             tar = tarfile.open(nemo_path, "r:gz")
-        tar.extractall(tmpdir)
+        _safe_extract_all(tar, tmpdir)
         tar.close()
 
         # --- Migrate state dict --------------------------------------------

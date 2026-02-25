@@ -68,7 +68,7 @@ This model is particularly useful for:
 * Applications requiring natural-sounding spoken responses
 
 DuplexS2SSpeechDecoderModel
-=======
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This model focuses on the speech generation aspect of the duplex system, optimizing the decoder for high-quality speech output.
 

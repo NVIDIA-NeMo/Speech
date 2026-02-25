@@ -178,6 +178,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         B, T = input_embeds.shape[:2]
         text_logits = self.lm_head(out['last_hidden_state'])
 
+        asr_logits = None
         if self.predict_user_text:
             asr_in = out['last_hidden_state']
             asr_logits = self.asr_head(asr_in)  # (B, T, asr_vocab_size)

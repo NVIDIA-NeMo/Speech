@@ -198,6 +198,14 @@ class LhotseDataLoadingConfig:
     rir_enabled: bool = False
     rir_path: str | None = None  # str, must point to a lhotse RecordingSet manifest
     rir_prob: float = 0.5
+    #   h. Speaker concatenation: randomly append a second cut after the current one
+    #      to simulate multi-speaker segments.  Applied at the sampler level (after RIR)
+    #      so each cut has independent augmentations.  The collator naturally concatenates
+    #      tokens from all supervisions in the resulting MixedCut.
+    concat_speakers_enabled: bool = False
+    concat_speakers_prob: float = 0.1
+    concat_speakers_gap_seconds: float = 0.3
+    concat_speakers_max_duration: float = 40.0  # skip concatenation if result would exceed this
     #   g. Speech level augmentation: randomly scale each speech cut to a target RMS level
     #      (dBFS) sampled uniformly from [speech_level_min_dbfs, speech_level_max_dbfs].
     #      Applied BEFORE noise mixing so that noise SNR is computed relative to the
@@ -1060,6 +1068,17 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             )
         )
 
+    if config.concat_speakers_enabled:
+        sampler = sampler.map(
+            _ConcatenateSpeakersTransform(
+                pool_cuts=cuts,
+                prob=config.concat_speakers_prob,
+                gap_seconds=config.concat_speakers_gap_seconds,
+                max_duration_seconds=config.concat_speakers_max_duration,
+                seed=config.shard_seed,
+            )
+        )
+
     return sampler, use_iterable_dataset
 
 
@@ -1298,6 +1317,57 @@ class _SpeechLevelAugmentTransform:
             target_dbfs=target_dbfs,
             peak_ceiling_db=self.peak_ceiling_db,
         )
+
+
+class _ConcatenateSpeakersTransform:
+    """
+    Sampler-level batch transform that randomly appends a second cut to each cut
+    in the batch to simulate multi-speaker segments.
+
+    Applied after RIR so that each cut has independent room acoustics.
+    The resulting :class:`~lhotse.cut.mixed.MixedCut` preserves supervisions
+    from both tracks, and the NeMo collator concatenates their tokens in order.
+
+    A silence gap of ``gap_seconds`` is inserted between the two cuts.
+    Concatenation is skipped if the resulting duration would exceed
+    ``max_duration_seconds``.
+    """
+
+    def __init__(
+        self,
+        pool_cuts: CutSet,
+        prob: float = 0.1,
+        gap_seconds: float = 0.3,
+        max_duration_seconds: float = 40.0,
+        seed: int | str = "trng",
+    ) -> None:
+        self.pool_cuts = pool_cuts
+        self.prob = prob
+        self.gap_seconds = gap_seconds
+        self.max_duration_seconds = max_duration_seconds
+        self._seed = seed
+        self._rng: random.Random | None = None
+        self._pool_iter = None
+
+    def _lazy_init(self) -> None:
+        if self._rng is not None:
+            return
+        self._rng = random.Random(resolve_seed(self._seed))
+        # Infinite shuffled iterator over the pool.
+        self._pool_iter = iter(self.pool_cuts.shuffle(seed=resolve_seed(self._seed)).repeat())
+
+    def __call__(self, cuts: CutSet) -> CutSet:
+        self._lazy_init()
+        return CutSet.from_cuts(self._maybe_concat(cut) for cut in cuts)
+
+    def _maybe_concat(self, cut) -> Cut:
+        if self._rng.random() > self.prob:
+            return cut
+        second = next(self._pool_iter)
+        combined_duration = cut.duration + self.gap_seconds + second.duration
+        if combined_duration > self.max_duration_seconds:
+            return cut
+        return cut.pad(cut.duration + self.gap_seconds).append(second)
 
 
 def _merge_supervisions(cuts: CutSet) -> CutSet:

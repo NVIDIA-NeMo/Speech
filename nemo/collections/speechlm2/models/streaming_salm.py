@@ -121,13 +121,8 @@ class StreamingSALM(LightningModule, HFHubMixin):
             ]
         )
 
-        # --- Forced Aligner (frozen, training only) ---
-        self.forced_aligner = QwenForcedAligner(
-            pretrained_model=self.cfg.get(
-                "pretrained_forced_aligner", "Qwen/Qwen3-ForcedAligner-0.6B"
-            ),
-            language=self.cfg.get("forced_aligner_language", "English"),
-        )
+        # --- Forced Aligner (frozen, training only, late-initialized) ---
+        self.forced_aligner = None
 
         # --- Latency and context biasing config ---
         self.min_latency = self.cfg.get("min_latency", 1)
@@ -143,6 +138,10 @@ class StreamingSALM(LightningModule, HFHubMixin):
         self._use_tp = False
 
         maybe_install_lora(self)
+
+    @property
+    def sample_rate(self) -> int:
+        return MimiEncoder.SAMPLE_RATE
 
     @property
     def blank_token_id(self) -> int:
@@ -172,6 +171,16 @@ class StreamingSALM(LightningModule, HFHubMixin):
             )
             pad_id = 0
         return pad_id
+
+    def on_fit_start(self) -> None:
+        """Late-initialize the forced aligner (0.6B model) before fit (incl. sanity check)."""
+        if self.forced_aligner is None:
+            self.forced_aligner = QwenForcedAligner(
+                pretrained_model=self.cfg.get(
+                    "pretrained_forced_aligner", "Qwen/Qwen3-ForcedAligner-0.6B"
+                ),
+                language=self.cfg.get("forced_aligner_language", "English"),
+            )
 
     def embed_audio_codes(self, delayed_codes: Tensor) -> Tensor:
         """
@@ -224,22 +233,34 @@ class StreamingSALM(LightningModule, HFHubMixin):
                 "Resample your data to 24 kHz or set data.train_ds.sample_rate=24000."
             )
 
+        audio_lens = batch["audio_lens"]
+        # Cast audio to model dtype for Mimi (e.g. bfloat16 when trainer.precision=bf16-true)
+        audios_for_mimi = batch["audios"].to(dtype=next(self.mimi.parameters()).dtype)
+
         # 1-2. Audio encoding + delay pattern (audio already at 24 kHz)
         with torch.no_grad():
-            codes, code_lens = self.mimi.encode(batch["audios"], batch["audio_lens"])
+            codes, code_lens = self.mimi.encode(audios_for_mimi, audio_lens)
         delayed_codes = MimiEncoder.apply_delay_pattern(codes, code_lens)
 
         # 3. Audio frame embeddings
         audio_embeds = self.embed_audio_codes(delayed_codes)
 
-        # 4. Forced alignment (QFA resamples 24 kHz → 16 kHz internally)
+        # 4. Forced alignment
         with torch.no_grad():
-            alignments = self.forced_aligner.align(
-                batch["audios"],
-                batch["audio_lens"],
-                batch["transcripts"],
-                source_sample_rate=MimiEncoder.SAMPLE_RATE,
-            )
+            if "audios_16k" in batch:
+                # Fast path: dataloader already resampled to 16 kHz numpy arrays
+                alignments = self.forced_aligner.align_numpy(
+                    batch["audios_16k"],
+                    batch["transcripts"],
+                )
+            else:
+                # Legacy path: resample on GPU + GPU→CPU transfer
+                alignments = self.forced_aligner.align(
+                    batch["audios"],
+                    audio_lens,
+                    batch["transcripts"],
+                    source_sample_rate=MimiEncoder.SAMPLE_RATE,
+                )
 
         # 5-6. Build interleaved sequences per example
         all_input_embeds = []

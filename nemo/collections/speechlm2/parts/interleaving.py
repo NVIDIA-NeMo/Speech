@@ -66,9 +66,12 @@ def build_interleaved_sequence(
 
     # Prepare ordered list of (ready_frame, token_id) from alignment
     ready_tokens: list[tuple[int, int]] = []
-    for word in alignment:
+    for word_idx, word in enumerate(alignment):
         start_frame = round(word.start_time / frame_shift)
-        subword_ids = tokenizer.text_to_ids(word.text)
+        # Prepend space for non-first words so BPE tokenizer produces
+        # space-prefixed subword tokens (e.g. " the" not "the").
+        word_text = word.text if word_idx == 0 else " " + word.text
+        subword_ids = tokenizer.text_to_ids(word_text)
         for j, tok_id in enumerate(subword_ids):
             ready_frame = start_frame + latency - 1 + j
             ready_tokens.append((ready_frame, tok_id))

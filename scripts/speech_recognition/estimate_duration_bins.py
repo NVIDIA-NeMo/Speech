@@ -104,6 +104,10 @@ def main():
     if (N := args.num_examples) > 0:
         cuts = islice(cuts, N)
     duration_bins = estimate_duration_buckets(cuts, num_buckets=args.buckets)
+    # Append the observed max duration as the upper bound of the last bucket.
+    # Without this, utterances longer than the last bin boundary are discarded.
+    if observed_max_dur > duration_bins[-1]:
+        duration_bins.append(round(observed_max_dur, ndigits=5))
     duration_bins = f"[{','.join(str(round(b, ndigits=5)) for b in duration_bins)}]"
     if args.quiet:
         print(duration_bins)

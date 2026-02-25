@@ -29,6 +29,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
 from nemo.collections.speechlm2 import SALM, SALMWithAsrDecoder
+from nemo.collections.speechlm2.models.streaming_salm import StreamingSALM
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 from nemo.utils.trainer_utils import resolve_trainer_cfg
@@ -389,6 +390,8 @@ def oomptimizer(
 
     if isinstance(model, (SALM, SALMWithAsrDecoder)):
         model.prepare_inputs = partial(_override_prepare_inputs, model)
+    elif isinstance(model, StreamingSALM):
+        model.prepare_inputs = partial(_override_streaming_salm_prepare_inputs, model)
 
     if not hasattr(model, "oomptimizer_schema"):
         click.secho(
@@ -563,6 +566,55 @@ def oomptimizer(
     click.secho("The final profile is:", bold=True)
     click.secho("\tbucket_duration_bins=[" + ",".join(str(seqlen) for seqlen, bs in final_profile) + "]", bold=True)
     click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)
+
+
+def _override_streaming_salm_prepare_inputs(self, batch: dict) -> dict:
+    """
+    OOMptimizer override for StreamingSALM.prepare_inputs.
+
+    Skips forced alignment (CPU-bound, not GPU-memory-relevant) and interleaving
+    logic, but preserves Mimi encode + audio embeddings + LLM forward shape.
+    """
+    from nemo.collections.speechlm2.modules.mimi_encoder import MimiEncoder
+
+    device = batch["audios"].device
+    audio_lens = batch["audio_lens"]
+    audios = batch["audios"].to(dtype=next(self.mimi.parameters()).dtype)
+
+    # Run Mimi encode — this IS memory-consuming and must be profiled.
+    with torch.no_grad():
+        codes, code_lens = self.mimi.encode(audios, audio_lens)
+    delayed_codes = MimiEncoder.apply_delay_pattern(codes, code_lens)
+    audio_embeds = self.embed_audio_codes(delayed_codes)
+
+    # Estimate total interleaved sequence length:
+    # audio_frames + ~12 text_tokens/sec + ~10 prompt tokens
+    B = audio_embeds.shape[0]
+    max_T = audio_embeds.shape[1]
+    frame_shift = 0.08
+    est_text_tokens = int(max_T * frame_shift * 12)  # ~12 tokens/sec for English
+    prompt_len = 10
+    total_text = est_text_tokens + prompt_len
+
+    # Create fake text embeddings (runs through embed_tokens for accurate profiling)
+    vocab_size = self.embed_tokens.num_embeddings
+    fake_text_ids = torch.randint(0, vocab_size, (B, total_text), device=device)
+    text_embeds = self.embed_tokens(fake_text_ids)
+
+    # Concat audio + text embeddings (approximate interleaving)
+    input_embeds = torch.cat([audio_embeds[:, :max_T], text_embeds], dim=1)
+    seq_len = input_embeds.shape[1]
+    attention_mask = torch.ones(B, seq_len, dtype=torch.bool, device=device)
+
+    # Labels: -100 for audio frames (ignored), random ids for text (contributes to loss)
+    labels = torch.full((B, seq_len), -100, dtype=torch.long, device=device)
+    labels[:, max_T:] = fake_text_ids
+
+    return {
+        "input_embeds": input_embeds,
+        "attention_mask": attention_mask,
+        "labels": labels,
+    }
 
 
 def _override_prepare_inputs(self, batch: dict) -> dict:

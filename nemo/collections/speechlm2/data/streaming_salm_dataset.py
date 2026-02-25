@@ -18,12 +18,9 @@ import logging
 import torch
 import torch.utils.data
 from lhotse import CutSet
+from lhotse.dataset.collation import collate_audio
 
-from nemo.collections.common.data.lhotse.text_adapters import (
-    TextTurn,
-    collate_conversation_audio_fault_tolerant,
-)
-from nemo.collections.speechlm2.data.salm_dataset import drop_in_memory_data
+from nemo.collections.audio.parts.utils.transforms import Resample
 
 
 class StreamingSALMDataset(torch.utils.data.Dataset):
@@ -31,39 +28,48 @@ class StreamingSALMDataset(torch.utils.data.Dataset):
     Dataset for StreamingSALM. Returns raw audio and transcript text.
     All sequence construction (Mimi encoding, forced alignment, interleaving)
     happens in the model's prepare_inputs method.
+
+    Operates directly on Lhotse Cuts (no NeMoMultimodalConversation wrapper).
+
+    Produces both 24 kHz audio (for Mimi) and 16 kHz numpy arrays
+    (for QwenForcedAligner) so that resampling runs in dataloader workers
+    and overlaps with GPU training.
     """
 
     EXPECTED_SAMPLE_RATE = 24000  # Mimi native sample rate
+    ALIGNER_SAMPLE_RATE = 16000  # QwenForcedAligner expects 16 kHz
 
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
+        self._resample_to_16k = Resample(
+            orig_freq=self.EXPECTED_SAMPLE_RATE,
+            new_freq=self.ALIGNER_SAMPLE_RATE,
+        )
 
-    def __getitem__(self, conversations: CutSet) -> dict | None:
+    def __getitem__(self, cuts: CutSet) -> dict | None:
         try:
-            audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(conversations)
+            audios, audio_lens, cuts = collate_audio(cuts, fault_tolerant=True)
         except Exception as e:
-            logging.warning(f"Error collating conversations: {e}")
+            logging.warning(f"Error collating audio from cuts: {e}")
             return None
-        if not conversations:
+        if len(cuts) == 0:
             return None
 
-        transcripts = extract_transcripts(conversations)
+        # Resample to 16 kHz for forced aligner (CPU, in dataloader workers).
+        # Store as list of per-utterance numpy arrays to avoid GPU→CPU transfer later.
+        # Uses cached Resample transform with precompiled kernels for speed.
+        audios_16k_np = []
+        for i in range(audios.shape[0]):
+            utt = audios[i, : audio_lens[i]]
+            utt_16k = self._resample_to_16k(utt)
+            audios_16k_np.append(utt_16k.numpy())
+
+        transcripts = [cut.supervisions[0].text for cut in cuts]
         return {
             "audios": audios,
             "audio_lens": audio_lens,
+            "audios_16k": audios_16k_np,
             "transcripts": transcripts,
-            "conversations": drop_in_memory_data(conversations),
+            "cuts": cuts.drop_in_memory_data(),
             "sample_rate": self.EXPECTED_SAMPLE_RATE,
         }
-
-
-def extract_transcripts(conversations: CutSet) -> list[str]:
-    """Extract the assistant/target text from each conversation."""
-    transcripts = []
-    for conv in conversations:
-        text_parts = []
-        for turn in conv.turns:
-            if isinstance(turn, TextTurn) and turn.role == "assistant":
-                text_parts.append(turn.value)
-        transcripts.append(" ".join(text_parts))
-    return transcripts

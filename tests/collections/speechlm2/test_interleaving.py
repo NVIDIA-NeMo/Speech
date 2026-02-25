@@ -20,7 +20,27 @@ from nemo.collections.speechlm2.parts.interleaving import WordAlignment, build_i
 
 
 class MockTokenizer:
-    """Simple mock tokenizer that maps each character to its ord() value."""
+    """Simple mock tokenizer that maps each character to its ord() value.
+    Strips leading spaces to keep existing tests unchanged (they predate the
+    space-prefix fix in build_interleaved_sequence)."""
+
+    def text_to_ids(self, text):
+        return [ord(c) for c in text.lstrip(" ")]
+
+
+class SpacePrefixTokenizer:
+    """
+    Mock tokenizer that mimics BPE space-prefix behavior.
+
+    A leading space is encoded as a separate token (ID=32 for ' '),
+    so " hello" -> [32, ...] while "hello" -> [...] without the space token.
+    This simulates the real behavior of Qwen/GPT-style tokenizers where
+    word boundaries are encoded via leading spaces in subword tokens.
+    """
+
+    def __init__(self):
+        # Vocab: each character maps to its ord(), space = 32
+        pass
 
     def text_to_ids(self, text):
         return [ord(c) for c in text]
@@ -268,3 +288,53 @@ class TestBuildInterleavedSequence:
                 assert len(input_parts) == len(label_parts), (
                     f"Mismatch at T={T}, K={K}: {len(input_parts)} vs {len(label_parts)}"
                 )
+
+    def test_non_first_words_get_space_prefix(self, blank_id, frame_shift):
+        """
+        Regression test: non-first words must be tokenized with a leading space
+        so BPE tokenizers produce space-prefixed subword IDs.
+
+        Without the fix, each word was tokenized in isolation (no leading space),
+        causing the model to learn tokens without spaces and produce concatenated
+        output like "hisambitionwas" instead of "his ambition was".
+        """
+        T = 20
+        H = 4
+        audio_embs = torch.randn(T, H)
+        alignment = [
+            WordAlignment(text="his", start_time=0.0, end_time=0.16),
+            WordAlignment(text="cat", start_time=0.24, end_time=0.40),
+            WordAlignment(text="sat", start_time=0.56, end_time=0.72),
+        ]
+        K = 2
+
+        # SpacePrefixTokenizer uses ord() per char, so " cat" -> [32, 99, 97, 116]
+        # while "cat" -> [99, 97, 116]. The space char (ord 32) is the marker.
+        input_parts, label_parts = build_interleaved_sequence(
+            audio_embs=audio_embs,
+            alignment=alignment,
+            latency=K,
+            blank_id=blank_id,
+            tokenizer=SpacePrefixTokenizer(),
+            embed_text_fn=mock_embed,
+            frame_shift=frame_shift,
+        )
+
+        text_labels = [l for l in label_parts if l != blank_id]
+
+        # First word "his" should NOT have a leading space
+        assert text_labels[0] == ord("h")
+        assert text_labels[1] == ord("i")
+        assert text_labels[2] == ord("s")
+
+        # Second word " cat" SHOULD have a leading space (ord 32)
+        assert text_labels[3] == ord(" "), (
+            f"Second word should start with space token (32), got {text_labels[3]}"
+        )
+        assert text_labels[4] == ord("c")
+
+        # Third word " sat" SHOULD also have a leading space
+        sat_start = text_labels.index(ord(" "), 4)  # find second space
+        assert text_labels[sat_start] == ord(" "), (
+            f"Third word should start with space token (32), got {text_labels[sat_start]}"
+        )

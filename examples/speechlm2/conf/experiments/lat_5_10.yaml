@@ -1,3 +1,7 @@
+# StreamingSALM Latency Ablation: K=[5,10]
+# High-latency only training
+# Hardware: 2x RTX 6000 Ada (48GB each)
+
 model:
   pretrained_llm: Qwen/Qwen3-1.7B
   pretrained_mimi: kyutai/mimi
@@ -9,34 +13,22 @@ model:
   blank_token: "<blank>"
   num_codebooks: 8
 
-  # Latency
-  min_latency: 1    # K=1 → 80ms
-  max_latency: 10   # K=10 → 800ms
+  # Latency — ABLATION: high-latency K=[5,10]
+  min_latency: 5
+  max_latency: 10
 
   # Context biasing
   context_biasing_prob: 0.2
 
   # Streaming cache
-  cache_sink_size: 64     # Preserve prompt/initial context
-  cache_window_size: 2048 # Recent context window
+  cache_sink_size: 64
+  cache_window_size: 2048
 
+  # Full LLM fine-tuning: only freeze Mimi and forced aligner
   freeze_params:
-    - "^llm\\..+$"
-    - "^embed_tokens\\..+$"
     - "^mimi\\..+$"
     - "^forced_aligner\\..+$"
-  prevent_freeze_params:
-    - "^llm\\.lm_head\\..+$"   # Must remain trainable to learn <blank> token prediction
-
-  # Note: Uncomment the block below to enable LoRA on LLM via HuggingFace PEFT library.
-  #   It will automatically freeze LLM parameters even if freeze_params was unused,
-  #   and prevent freezing any parameter that has the string '.lora_' in its name.
-  # lora:
-  #   task_type: CAUSAL_LM
-  #   r: 128
-  #   lora_alpha: 256
-  #   lora_dropout: 0.01
-  #   target_modules: ["q_proj", "v_proj"]
+  prevent_freeze_params: []
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -52,7 +44,7 @@ model:
     max_steps: ${trainer.max_steps}
 
 trainer:
-  devices: -1
+  devices: 2
   accelerator: gpu
   num_nodes: 1
   precision: bf16-true
@@ -71,10 +63,6 @@ trainer:
     _target_: lightning.pytorch.strategies.DDPStrategy
     gradient_as_bucket_view: true
     find_unused_parameters: true
-    # For FSDP2, uncomment the following and comment out DDPStrategy:
-    # _target_: lightning.pytorch.strategies.ModelParallelStrategy
-    # tensor_parallel_size: 1
-    # data_parallel_size: 8
 
 data:
   train_ds:
@@ -82,12 +70,15 @@ data:
     pretokenize: false
     input_cfg:
       - type: lhotse
-        cuts_path: ???
+        cuts_path: /data/librispeech/lhotse/librispeech_cuts_lower_train-960h.jsonl.gz
     seed: 42
     shuffle: true
     shard_seed: "randomized"
-    num_workers: 1
-    batch_size: 4
+    num_workers: 4
+    batch_size: null
+    use_bucketing: true
+    bucket_duration_bins: [8.895, 11.82, 13.055, 14.745, 15.14, 15.905, 27.92]
+    bucket_batch_size: [38, 30, 28, 26, 24, 22, 13]
 
   validation_ds:
     sample_rate: 24000
@@ -96,25 +87,25 @@ data:
       val_set_0:
         input_cfg:
           - type: lhotse
-            cuts_path: ???
+            cuts_path: /data/librispeech/lhotse/librispeech_cuts_lower_dev-clean.jsonl.gz
     batch_size: 1
     seed: 42
     shard_seed: "randomized"
 
 exp_manager:
   exp_dir: null
-  explicit_log_dir: streaming_salm_results/
-  name: streaming_salm
+  explicit_log_dir: results/lat_5_10/
+  name: streaming_salm_lat_5_10
   create_tensorboard_logger: false
   create_checkpoint_callback: true
   use_datetime_version: true
-  max_time_per_run: "00:03:50:00"
+  max_time_per_run: null
   resume_from_checkpoint: null
   resume_if_exists: true
   resume_ignore_no_checkpoint: true
   create_wandb_logger: false
   wandb_logger_kwargs:
-    name: development-run
+    name: lat_5_10
     project: streaming_salm
     resume: true
   checkpoint_callback_params:

@@ -695,6 +695,10 @@ def get_lhotse_dataloader_from_multi_config(
             "speech_level_max_dbfs",
             "speech_level_p",
             "speech_level_peak_ceiling_db",
+            "concat_speakers_enabled",
+            "concat_speakers_prob",
+            "concat_speakers_gap_seconds",
+            "concat_speakers_max_duration",
         ]
         defaults = OmegaConf.structured(LhotseDataLoadingConfig)
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])

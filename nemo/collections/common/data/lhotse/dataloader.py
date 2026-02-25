@@ -1075,7 +1075,6 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     if config.concat_speakers_enabled:
         sampler = sampler.map(
             _ConcatenateSpeakersTransform(
-                pool_cuts=cuts,
                 prob=config.concat_speakers_prob,
                 gap_seconds=config.concat_speakers_gap_seconds,
                 max_duration_seconds=config.concat_speakers_max_duration,
@@ -1325,8 +1324,8 @@ class _SpeechLevelAugmentTransform:
 
 class _ConcatenateSpeakersTransform:
     """
-    Sampler-level batch transform that randomly appends a second cut to each cut
-    in the batch to simulate multi-speaker segments.
+    Sampler-level batch transform that randomly appends a second cut from the
+    same batch to simulate multi-speaker segments.
 
     Applied after RIR so that each cut has independent room acoustics.
     The resulting :class:`~lhotse.cut.mixed.MixedCut` preserves supervisions
@@ -1339,36 +1338,33 @@ class _ConcatenateSpeakersTransform:
 
     def __init__(
         self,
-        pool_cuts: CutSet,
         prob: float = 0.1,
         gap_seconds: float = 0.3,
         max_duration_seconds: float = 40.0,
         seed: int | str = "trng",
     ) -> None:
-        self.pool_cuts = pool_cuts
         self.prob = prob
         self.gap_seconds = gap_seconds
         self.max_duration_seconds = max_duration_seconds
         self._seed = seed
         self._rng: random.Random | None = None
-        self._pool_iter = None
 
     def _lazy_init(self) -> None:
         if self._rng is not None:
             return
         self._rng = random.Random(resolve_seed(self._seed))
-        # Infinite shuffled iterator over the pool.
-        pool_rng = random.Random(resolve_seed(self._seed))
-        self._pool_iter = iter(self.pool_cuts.shuffle(rng=pool_rng).repeat())
 
     def __call__(self, cuts: CutSet) -> CutSet:
         self._lazy_init()
-        return CutSet.from_cuts(self._maybe_concat(cut) for cut in cuts)
+        cuts_list = list(cuts)
+        if len(cuts_list) < 2:
+            return CutSet.from_cuts(cuts_list)
+        return CutSet.from_cuts(self._maybe_concat(cut, cuts_list) for cut in cuts_list)
 
-    def _maybe_concat(self, cut) -> Cut:
+    def _maybe_concat(self, cut, batch: list) -> Cut:
         if self._rng.random() > self.prob:
             return cut
-        second = next(self._pool_iter)
+        second = batch[self._rng.randint(0, len(batch) - 1)]
         combined_duration = cut.duration + self.gap_seconds + second.duration
         if combined_duration > self.max_duration_seconds:
             return cut

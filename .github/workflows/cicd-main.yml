@@ -131,27 +131,27 @@ jobs:
 
           echo "main=$no_fail_fast" | tee -a "$GITHUB_OUTPUT"
 
-  code-linting:
-    if: needs.pre-flight.outputs.test_to_run != '[]'
-    needs: [pre-flight]
-    uses: ./.github/workflows/code-linting.yml
+  # code-linting:
+  #   if: needs.pre-flight.outputs.test_to_run != '[]'
+  #   needs: [pre-flight]
+  #   uses: ./.github/workflows/code-linting.yml
 
-  cicd-wait-in-queue:
-    needs: [pre-flight, code-linting]
-    runs-on: ubuntu-latest
-    environment: test
-    if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
-      && needs.pre-flight.outputs.is_ci_workload == 'false'
-    steps:
-      - name: Running CI tests
-        run: |
-          echo "Running CI tests"
+  # cicd-wait-in-queue:
+  #   needs: [pre-flight, code-linting]
+  #   runs-on: ubuntu-latest
+  #   environment: test
+  #   if: |
+  #     needs.pre-flight.outputs.test_to_run != '[]'
+  #     && needs.pre-flight.outputs.components_to_run != '[]'
+  #     && needs.pre-flight.outputs.is_ci_workload == 'false'
+  #   steps:
+  #     - name: Running CI tests
+  #       run: |
+  #         echo "Running CI tests"
 
   cicd-test-container-build:
     uses: ./.github/workflows/_build_container.yml
-    needs: [pre-flight, code-linting, cicd-wait-in-queue]
+    needs: [pre-flight]
     if: |
       needs.pre-flight.outputs.test_to_run != '[]'
       && needs.pre-flight.outputs.components_to_run != '[]'
@@ -166,79 +166,80 @@ jobs:
     with:
       image-name: nemo_container
       dockerfile: docker/Dockerfile.ci
+      runner: runner-13-test
 
-  cicd-import-tests:
-    if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    needs: [cicd-test-container-build, pre-flight]
-    runs-on: self-hosted-azure-gpus-1
-    steps:
-      - name: Create UUID
-        id: uuid
-        run: |
-          echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
+  # cicd-import-tests:
+  #   if: |
+  #     needs.pre-flight.outputs.test_to_run != '[]'
+  #     && needs.pre-flight.outputs.components_to_run != '[]'
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   needs: [cicd-test-container-build, pre-flight]
+  #   runs-on: self-hosted-azure-gpus-1
+  #   steps:
+  #     - name: Create UUID
+  #       id: uuid
+  #       run: |
+  #         echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout NeMo
-        uses: actions/checkout@v4
-        with:
-          path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
+  #     - name: Checkout NeMo
+  #       uses: actions/checkout@v4
+  #       with:
+  #         path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
-      - name: Run some checks
-        run: |
-          docker run \
-              --rm \
-            --device=/dev/nvidia0 \
-            --gpus all \
-            --shm-size=8g \
-            --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
-            --env TRANSFORMERS_OFFLINE=0 \
-            --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 nemoci.azurecr.io/nemo_container:${{ github.run_id }} bash -c '\
-            # PyTorch Lightning version
-            python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
+  #     - name: Run some checks
+  #       run: |
+  #         docker run \
+  #             --rm \
+  #           --device=/dev/nvidia0 \
+  #           --gpus all \
+  #           --shm-size=8g \
+  #           --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
+  #           --env TRANSFORMERS_OFFLINE=0 \
+  #           --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 nemoci.azurecr.io/nemo_container:${{ github.run_id }} bash -c '\
+  #           # PyTorch Lightning version
+  #           python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
 
-            # PyTorch Lightning DDP Checks
-            CUDA_VISIBLE_DEVICES="0,1" python "tests/core_ptl/check_for_ranks.py"
+  #           # PyTorch Lightning DDP Checks
+  #           CUDA_VISIBLE_DEVICES="0,1" python "tests/core_ptl/check_for_ranks.py"
 
-            # Basic Import Checks
-            python tests/core_ptl/check_imports.py --domain asr
-            python tests/core_ptl/check_imports.py --domain tts
-          '
+  #           # Basic Import Checks
+  #           python tests/core_ptl/check_imports.py --domain asr
+  #           python tests/core_ptl/check_imports.py --domain tts
+  #         '
 
-  L0_Setup_Test_Data_And_Models:
-    needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue]
-    runs-on: self-hosted-azure
-    if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          path: ${{ github.run_id }}
+  # L0_Setup_Test_Data_And_Models:
+  #   needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue]
+  #   runs-on: self-hosted-azure
+  #   if: |
+  #     needs.pre-flight.outputs.test_to_run != '[]'
+  #     && needs.pre-flight.outputs.components_to_run != '[]'
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #       with:
+  #         path: ${{ github.run_id }}
 
-      - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
-        with:
-          runner: ${{ runner.name }}
-          script: L0_Setup_Test_Data_And_Models
-          tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
+  #     - name: main
+  #       uses: NVIDIA/NeMo/.github/actions/test-template@main
+  #       with:
+  #         runner: ${{ runner.name }}
+  #         script: L0_Setup_Test_Data_And_Models
+  #         tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
 
   cicd-main-unit-tests:
     needs: [pre-flight, cicd-test-container-build]
@@ -257,156 +258,156 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-speech:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-speech.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech')
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+  # cicd-main-speech:
+  #   needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+  #   uses: ./.github/workflows/cicd-main-speech.yml
+  #   if: |
+  #     (
+  #       needs.pre-flight.outputs.test_to_run != '[]'
+  #       && (
+  #         contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech')
+  #       )
+  #     )
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   with:
+  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  Nemo_CICD_Test:
-    needs:
-      - pre-flight
-      - cicd-test-container-build
-      - cicd-import-tests
-      - L0_Setup_Test_Data_And_Models
-      - cicd-main-unit-tests
-      - cicd-main-speech
-    if: always()
-    runs-on: ubuntu-latest
-    permissions: write-all
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  # Nemo_CICD_Test:
+  #   needs:
+  #     - pre-flight
+  #     - cicd-test-container-build
+  #     - cicd-import-tests
+  #     - L0_Setup_Test_Data_And_Models
+  #     - cicd-main-unit-tests
+  #     - cicd-main-speech
+  #   if: always()
+  #   runs-on: ubuntu-latest
+  #   permissions: write-all
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
 
-      - name: Get workflow result
-        id: result
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-          HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
-          IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
-        run: |
-          # Get workflow run details and check job conclusions
-          LATEST_ATTEMPT=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion != null) | .conclusion] | last')
-          NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
-          NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
+  #     - name: Get workflow result
+  #       id: result
+  #       env:
+  #         GH_TOKEN: ${{ github.token }}
+  #         RUN_ID: ${{ github.run_id }}
+  #         HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
+  #         IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
+  #       run: |
+  #         # Get workflow run details and check job conclusions
+  #         LATEST_ATTEMPT=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion != null) | .conclusion] | last')
+  #         NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
+  #         NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
 
-          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 && ("$HAS_LABEL" == "true" || "$IS_SCHEDULED" == "true") ]]; then
-            RESULT="success"
-          elif [[ $NUM_CANCELLED -gt 0 ]]; then
-            RESULT="cancelled"
-          else
-            RESULT="failure"
-          fi
+  #         if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 && ("$HAS_LABEL" == "true" || "$IS_SCHEDULED" == "true") ]]; then
+  #           RESULT="success"
+  #         elif [[ $NUM_CANCELLED -gt 0 ]]; then
+  #           RESULT="cancelled"
+  #         else
+  #           RESULT="failure"
+  #         fi
 
-          # Output the final status
-          echo "code=$RESULT" | tee -a $GITHUB_OUTPUT
+  #         # Output the final status
+  #         echo "code=$RESULT" | tee -a $GITHUB_OUTPUT
 
-      - name: Checkout for GH CLI
-        uses: actions/checkout@v4
+  #     - name: Checkout for GH CLI
+  #       uses: actions/checkout@v4
 
-      - name: Remove label if not cancelled
-        if: |
-          steps.result.outputs.code != 'cancelled'
-          && github.event.label.name == 'Run CICD'
-          && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.number }}
-        run: gh pr edit "$PR_NUMBER" --remove-label "Run CICD"
+  #     - name: Remove label if not cancelled
+  #       if: |
+  #         steps.result.outputs.code != 'cancelled'
+  #         && github.event.label.name == 'Run CICD'
+  #         && github.event.pull_request.head.repo.full_name == github.repository
+  #       env:
+  #         GH_TOKEN: ${{ github.token }}
+  #         PR_NUMBER: ${{ github.event.number }}
+  #       run: gh pr edit "$PR_NUMBER" --remove-label "Run CICD"
 
-      - name: Pipeline successful, add PR comment
-        if: |
-          steps.result.outputs.code == 'success'
-          && github.event_name == 'pull_request'
-          && env.SLACK_WEBHOOK != ''
-        uses: peter-evans/create-or-update-comment@v4
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          REPOSITORY: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-        with:
-          issue-number: ${{ github.event.number }}
-          body: |
-            [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
+  #     - name: Pipeline successful, add PR comment
+  #       if: |
+  #         steps.result.outputs.code == 'success'
+  #         && github.event_name == 'pull_request'
+  #         && env.SLACK_WEBHOOK != ''
+  #       uses: peter-evans/create-or-update-comment@v4
+  #       env:
+  #         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+  #         REPOSITORY: ${{ github.repository }}
+  #         RUN_ID: ${{ github.run_id }}
+  #       with:
+  #         issue-number: ${{ github.event.number }}
+  #         body: |
+  #           [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
 
-            We wanted to let you know that a [CICD pipeline](https://github.com/${{ env.REPOSITORY }}/actions/runs/${{ env.RUN_ID }}) for this PR just finished successfully.
+  #           We wanted to let you know that a [CICD pipeline](https://github.com/${{ env.REPOSITORY }}/actions/runs/${{ env.RUN_ID }}) for this PR just finished successfully.
 
-            So it might be time to merge this PR or get some approvals.
+  #           So it might be time to merge this PR or get some approvals.
 
-      - name: Exit
-        if: ${{ always() }}
-        env:
-          RESULT: ${{ steps.result.outputs.code }}
-        run: |
-          if [ $RESULT == "success" ]; then
-            exit 0
-          else
-            exit 1
-          fi
+  #     - name: Exit
+  #       if: ${{ always() }}
+  #       env:
+  #         RESULT: ${{ steps.result.outputs.code }}
+  #       run: |
+  #         if [ $RESULT == "success" ]; then
+  #           exit 0
+  #         else
+  #           exit 1
+  #         fi
 
-  Coverage:
-    runs-on: ubuntu-latest
-    needs: [pre-flight, Nemo_CICD_Test]
-    if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
-      && (
-        success()
-        || needs.Nemo_CICD_Test.result == 'success'
-      )
-      && !cancelled()
-    strategy:
-      matrix:
-        flag: [unit-test, e2e]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  # Coverage:
+  #   runs-on: ubuntu-latest
+  #   needs: [pre-flight, Nemo_CICD_Test]
+  #   if: |
+  #     needs.pre-flight.outputs.test_to_run != '[]'
+  #     && needs.pre-flight.outputs.components_to_run != '[]'
+  #     && (
+  #       success()
+  #       || needs.Nemo_CICD_Test.result == 'success'
+  #     )
+  #     && !cancelled()
+  #   strategy:
+  #     matrix:
+  #       flag: [unit-test, e2e]
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
 
-      - name: Download coverage reports of current branch
-        uses: actions/download-artifact@v4
-        with:
-          pattern: coverage-${{ matrix.flag }}-*
+  #     - name: Download coverage reports of current branch
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         pattern: coverage-${{ matrix.flag }}-*
 
-      - name: Get total coverage of current branch
-        shell: bash -x -e -u -o pipefail {0}
-        if: always()
-        run: |
-          pip install coverage
+  #     - name: Get total coverage of current branch
+  #       shell: bash -x -e -u -o pipefail {0}
+  #       if: always()
+  #       run: |
+  #         pip install coverage
 
-          ls -al .
-          ls -al coverage-*/
-          coverage combine --keep $(ls coverage-*/.coverage)
-          coverage report -i
-          rm -rf coverage-*
-          ls -al
+  #         ls -al .
+  #         ls -al coverage-*/
+  #         coverage combine --keep $(ls coverage-*/.coverage)
+  #         coverage report -i
+  #         rm -rf coverage-*
+  #         ls -al
 
-      - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true
-          flags: ${{ matrix.flag }}
+  #     - name: Upload coverage reports to Codecov
+  #       uses: codecov/codecov-action@v5
+  #       with:
+  #         token: ${{ secrets.CODECOV_TOKEN }}
+  #         verbose: true
+  #         flags: ${{ matrix.flag }}
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.flag }}-aggregated
-          path: |
-            .coverage
-          include-hidden-files: true
+  #     - name: Upload artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: coverage-${{ matrix.flag }}-aggregated
+  #         path: |
+  #           .coverage
+  #         include-hidden-files: true

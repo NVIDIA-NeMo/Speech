@@ -37,6 +37,7 @@ from nemo.collections.common.data.lhotse.indexed_adapters import (
     IndexedJSONLReader,
     IndexedTarSampleReader,
     LazyShuffledRange,
+    TarSample,
     _split_json_audio_pair,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
@@ -694,16 +695,20 @@ def _transform_sharegpt(placeholders: list[str], data: dict, audio_path_fallback
             parts = turn["value"].split(found)
             if parts[0].strip():
                 conversations.append({"type": "text", "from": role.title(), "value": parts[0].strip()})
-            if audio_path:
-                conversations.append(
-                    {
-                        "type": "audio",
-                        "from": role.title(),
-                        "value": audio_path,
-                        "duration": turn.get("duration", None),
-                        "offset": turn.get("offset", 0.0),
-                    }
+            if not audio_path:
+                raise ValueError(
+                    f"Conversation turn contains audio placeholder '{found}' but no audio path "
+                    f"was found in 'sound', 'ori_sound' fields or fallback for sample id={data.get('id', '?')}"
                 )
+            conversations.append(
+                {
+                    "type": "audio",
+                    "from": role.title(),
+                    "value": audio_path,
+                    "duration": turn.get("duration", None),
+                    "offset": turn.get("offset", 0.0),
+                }
+            )
             if len(parts) > 1 and parts[1].strip():
                 conversations.append({"type": "text", "from": role.title(), "value": parts[1].strip()})
         else:
@@ -739,7 +744,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter:
     We expect the following ShareGPT schema (contained in a single line per example)::
 
         {
-            "id": str,  # not optional, but we will tolerate if it's missing
+            "id": str,  # not optional, but we fall back to "missing-example-id" if absent (see data.get("id", ...) below)
             "sound": str,  # path to audio file
             "conversations": [
                 {

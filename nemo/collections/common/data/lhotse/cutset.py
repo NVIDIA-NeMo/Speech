@@ -350,6 +350,8 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             shard_seed=config.shard_seed,
         )
     )
+    # When force_finite is False (default), repeat the dataset infinitely so that
+    # the dataloader never runs out of data; the trainer controls epoch boundaries.
     if not config.get("force_finite", False):
         cuts = cuts.repeat(preserve_id=True)
     return cuts, True

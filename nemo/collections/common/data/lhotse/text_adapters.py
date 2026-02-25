@@ -37,7 +37,6 @@ from nemo.collections.common.data.lhotse.indexed_adapters import (
     IndexedJSONLReader,
     IndexedTarSampleReader,
     LazyShuffledRange,
-    TarSample,
     _split_json_audio_pair,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths

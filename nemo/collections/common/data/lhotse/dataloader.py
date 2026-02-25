@@ -1354,7 +1354,8 @@ class _ConcatenateSpeakersTransform:
             return
         self._rng = random.Random(resolve_seed(self._seed))
         # Infinite shuffled iterator over the pool.
-        self._pool_iter = iter(self.pool_cuts.shuffle(seed=resolve_seed(self._seed)).repeat())
+        pool_rng = random.Random(resolve_seed(self._seed))
+        self._pool_iter = iter(self.pool_cuts.shuffle(rng=pool_rng).repeat())
 
     def __call__(self, cuts: CutSet) -> CutSet:
         self._lazy_init()

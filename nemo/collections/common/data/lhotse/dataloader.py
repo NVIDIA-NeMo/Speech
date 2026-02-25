@@ -1369,40 +1369,33 @@ class _ConcatenateSpeakersTransform:
         combined_duration = cut.duration + self.gap_seconds + second.duration
         if combined_duration > self.max_duration_seconds:
             return cut
-        second = self._strip_dataloading_info(second)
+        # We must copy the second cut so that it does not share any MonoCut
+        # objects with the original still sitting in the batch.  Without this,
+        # attach_dataloading_info() — which runs *after* sampler transforms
+        # and mutates cuts in-place — would set dataloading_info on the shared
+        # MonoCut, giving the concatenated MixedCut two non-padding cuts with
+        # the same custom attribute (which Lhotse forbids).
+        second = self._detach_cut(second)
         return cut.pad(cut.duration + self.gap_seconds).append(second)
 
     @staticmethod
-    def _strip_dataloading_info(cut):
-        """Remove ``dataloading_info`` from *cut* so that the resulting
-        MixedCut has only one non-padding cut carrying the attribute
-        (Lhotse's ``MixedCut.__getattr__`` requires this).
-
-        The cut may be a plain MonoCut **or** an already-mixed MixedCut
-        (e.g. after noise mixing / RIR).  We must strip the attribute
-        from every inner track in the latter case.
-
-        We always copy before mutating to avoid side-effects on other
-        samples in the same batch that may reference the same object.
-        """
+    def _detach_cut(cut):
+        """Return a copy of *cut* whose MonoCut objects are not shared
+        with the original, preventing in-place mutation leaks."""
         if isinstance(cut, MixedCut):
             new_tracks = []
-            changed = False
-            for track in cut.tracks:
-                inner = track.cut
-                if getattr(inner, "custom", None) and "dataloading_info" in inner.custom:
-                    new_custom = {k: v for k, v in inner.custom.items() if k != "dataloading_info"}
-                    inner = fastcopy(inner, custom=new_custom or None)
-                    track = MixTrack(cut=inner, type=track.type, offset=track.offset, snr=track.snr)
-                    changed = True
-                new_tracks.append(track)
-            if changed:
-                cut = fastcopy(cut, tracks=new_tracks)
+            for t in cut.tracks:
+                inner = t.cut
+                if getattr(inner, "custom", None) is not None:
+                    inner = fastcopy(inner, custom=dict(inner.custom))
+                else:
+                    inner = fastcopy(inner)
+                new_tracks.append(MixTrack(cut=inner, type=t.type, offset=t.offset, snr=t.snr))
+            return fastcopy(cut, tracks=new_tracks)
         else:
-            if getattr(cut, "custom", None) and "dataloading_info" in cut.custom:
-                new_custom = {k: v for k, v in cut.custom.items() if k != "dataloading_info"}
-                cut = fastcopy(cut, custom=new_custom or None)
-        return cut
+            if getattr(cut, "custom", None) is not None:
+                return fastcopy(cut, custom=dict(cut.custom))
+            return fastcopy(cut)
 
 
 def _merge_supervisions(cuts: CutSet) -> CutSet:

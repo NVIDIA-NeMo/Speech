@@ -27,8 +27,9 @@ TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), "test_data")
 
 @pytest.fixture(scope="module")
 def force_aligner():
-    """Create a ForceAligner instance with CPU device for testing"""
-    aligner = ForceAligner(device='cpu', frame_length=0.08)
+    """Create a ForceAligner instance for testing"""
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    aligner = ForceAligner(device=device, frame_length=0.08)
     return aligner
 
 

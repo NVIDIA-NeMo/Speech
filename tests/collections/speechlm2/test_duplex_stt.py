@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
@@ -26,6 +28,10 @@ if torch.cuda.is_available():
 
 
 def resolve_pretrained_models():
+    if os.path.exists("/home/TestData/speechlm/pretrained_models"):
+        return {
+            "pretrained_llm": "/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1",
+        }
     return {
         "pretrained_llm": "TinyLlama/TinyLlama_v1.1",
     }

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import re
 
 import pytest
@@ -85,7 +86,11 @@ def _verify_supervision_tokens(tokens_1d, start, duration, raw_text, tokenizer, 
 
 @pytest.fixture(scope="session")
 def tokenizer():
-    return AutoTokenizer("TinyLlama/TinyLlama_v1.1", use_fast=True)
+    if os.path.exists("/home/TestData/speechlm/pretrained_models"):
+        model_path = "/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1"
+    else:
+        model_path = "TinyLlama/TinyLlama_v1.1"
+    return AutoTokenizer(model_path, use_fast=True)
 
 
 @pytest.fixture(scope="session")

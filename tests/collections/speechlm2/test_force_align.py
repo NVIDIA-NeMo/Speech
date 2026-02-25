@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import multiprocessing as mp
 import os
 
 import pytest
@@ -21,6 +22,9 @@ from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.speechlm2.data.force_align import ForceAligner
 
+# Set spawn method to avoid fork+CUDA conflicts that cause ForceAligner to fall back to CPU
+if mp.get_start_method(allow_none=True) != 'spawn':
+    mp.set_start_method('spawn', force=True)
 
 TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), "test_data")
 

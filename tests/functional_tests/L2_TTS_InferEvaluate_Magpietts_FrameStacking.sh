@@ -31,8 +31,4 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --cer_target 0.11 \
     --ssim_target 0.6 \
     --use_local_transformer \
-    --longform_mode never \
-    --apply_attention_prior \
-    --attention_prior_epsilon 0.1 \
-    --attention_prior_lookahead_window 10 \
-    --estimate_alignment_from_layers 4
+    --longform_mode never 

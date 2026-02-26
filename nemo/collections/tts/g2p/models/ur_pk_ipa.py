@@ -9,10 +9,9 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.utils import logging
 
-_URDU_CHAR_PATTERN = re.compile(
-    r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+"
-)
+_URDU_CHAR_PATTERN = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+")
 _WHITESPACE = re.compile(r"\s+")
+
 
 def urdu_word_tokenize(text):
     tokens = _WHITESPACE.split(text.strip())
@@ -26,12 +25,21 @@ def urdu_word_tokenize(text):
             result.append(([token], True))
     return result
 
+
 class UrduIpaG2p(BaseG2p):
     STRESS_SYMBOLS = ["\u02c8", "\u02cc"]
 
-    def __init__(self, phoneme_dict, apply_to_oov_word=None, ignore_ambiguous_words=True,
-                 heteronyms=None, use_stresses=True, phoneme_probability=None,
-                 max_phrase_len=4, mapping_file=None):
+    def __init__(
+        self,
+        phoneme_dict,
+        apply_to_oov_word=None,
+        ignore_ambiguous_words=True,
+        heteronyms=None,
+        use_stresses=True,
+        phoneme_probability=None,
+        max_phrase_len=4,
+        mapping_file=None,
+    ):
         self.use_stresses = use_stresses
         self.ignore_ambiguous_words = ignore_ambiguous_words
         self.phoneme_probability = phoneme_probability
@@ -86,9 +94,7 @@ class UrduIpaG2p(BaseG2p):
             return list(word), True
         if self.heteronyms and word in self.heteronyms:
             return list(word), True
-        if word in self.phoneme_dict and (
-            not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word)
-        ):
+        if word in self.phoneme_dict and (not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word)):
             return self.phoneme_dict[word][0], True
         if self.apply_to_oov_word is not None:
             return self.apply_to_oov_word(word), True
@@ -111,7 +117,7 @@ class UrduIpaG2p(BaseG2p):
                 continue
             matched = False
             for phrase_len in range(min(self.max_phrase_len, len(words) - i), 0, -1):
-                phrase = " ".join(words[i: i + phrase_len])
+                phrase = " ".join(words[i : i + phrase_len])
                 if phrase in self.phoneme_dict and (
                     not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(phrase)
                 ):

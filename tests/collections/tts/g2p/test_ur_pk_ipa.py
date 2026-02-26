@@ -28,12 +28,12 @@ from nemo.collections.tts.g2p.models.ur_pk_ipa import UrduIpaG2p, urdu_word_toke
 # ---------------------------------------------------------------------------
 
 SAMPLE_DICT = {
-    "غیر حاضری":    "ɣɛːr hɑːzriː",
+    "غیر حاضری": "ɣɛːr hɑːzriː",
     "شوکت خانم ليب": "ʃoːˈkət̪ xɑːˈnəm leːb",
-    "مختار احمد":   "mʊxˈt̪aːr ˈæhməd",
-    "افسوس ناک":    "əfˈsoːs naːk",
-    "پانی":         "pɑːniː",
-    "آم":           "ɑːm",
+    "مختار احمد": "mʊxˈt̪aːr ˈæhməd",
+    "افسوس ناک": "əfˈsoːs naːk",
+    "پانی": "pɑːniː",
+    "آم": "ɑːm",
 }
 
 
@@ -53,6 +53,7 @@ def g2p(dict_file):
 # ---------------------------------------------------------------------------
 # urdu_word_tokenize
 # ---------------------------------------------------------------------------
+
 
 class TestUrduWordTokenize:
     def test_pure_urdu_tokens_are_not_unchanged(self):
@@ -88,6 +89,7 @@ class TestUrduWordTokenize:
 # ---------------------------------------------------------------------------
 # UrduIpaG2p — initialisation
 # ---------------------------------------------------------------------------
+
 
 class TestUrduIpaG2pInit:
     def test_load_from_json_file(self, dict_file):
@@ -126,6 +128,7 @@ class TestUrduIpaG2pInit:
 # UrduIpaG2p — single word lookup
 # ---------------------------------------------------------------------------
 
+
 class TestParseOneWord:
     def test_known_word(self, g2p):
         pron, handled = g2p.parse_one_word("پانی")
@@ -156,6 +159,7 @@ class TestParseOneWord:
 # ---------------------------------------------------------------------------
 # UrduIpaG2p — __call__ (full inference)
 # ---------------------------------------------------------------------------
+
 
 class TestCall:
     def test_single_word(self, g2p):
@@ -189,6 +193,7 @@ class TestCall:
     def test_nfc_normalisation(self, g2p):
         # Compose پانی using NFD (decomposed) form — should still match
         import unicodedata
+
         nfd = unicodedata.normalize("NFD", "پانی")
         result = g2p(nfd)
         assert result == ["pɑːniː"]

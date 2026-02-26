@@ -258,6 +258,7 @@ class WER(Metric):
         dist_sync_on_step=False,
         sync_on_compute=True,
         return_hypotheses=False,
+        **kwargs,
     ):
         super().__init__(dist_sync_on_step=dist_sync_on_step, sync_on_compute=sync_on_compute)
 

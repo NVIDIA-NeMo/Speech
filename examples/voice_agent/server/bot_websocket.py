@@ -85,7 +85,7 @@ async def run_bot_websocket_server(
                 logger.info(f"Removed existing log file: {log_file}")
             else:
                 # Rename the existing log file to the current timestamp
-                new_log_file = f"{log_file}.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                new_log_file = log_file.replace(".log", f".{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
                 os.rename(log_file, new_log_file)
                 logger.info(f"Renamed existing log file: {log_file} to {new_log_file}")
 

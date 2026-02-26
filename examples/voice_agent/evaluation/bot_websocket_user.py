@@ -79,7 +79,7 @@ async def run_bot_websocket_server(
                 logger.info(f"Removed existing log file: {log_file}")
             else:
                 # Rename the existing log file to the current timestamp
-                new_log_file = f"{log_file}.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                new_log_file = log_file.replace(".log", f".{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
                 os.rename(log_file, new_log_file)
                 logger.info(f"Renamed existing log file: {log_file} to {new_log_file}")
 
@@ -270,6 +270,15 @@ async def run_bot_websocket_server(
         try:
             if task_running:
                 await task.queue_frames([EndTaskFrame()])
+
+            # save previous log file by renaming it to a new file with the current timestamp if it exists
+            # so that new logs will be written to a new file.
+            if os.path.exists(log_file):
+                new_log_file = log_file.replace(".log", f".{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+                os.rename(log_file, new_log_file)
+                logger.info(f"Renamed existing log file: {log_file} to {new_log_file}")
+            setup_logging(log_file=log_file, log_level=log_level)
+
             new_prompt = arguments.get("prompt", "")
             new_tools = arguments.get("tools", "{}")
             if not new_prompt:
@@ -359,6 +368,34 @@ async def run_bot_websocket_server(
         handler=update_system_prompt_handler,
     )
     rtvi.register_action(update_prompt_action)
+
+    # Add get_context_history action for retrieving LLM context and server logs
+    async def get_context_history_handler(
+        rtvi_processor: RTVIProcessor, service: str, arguments: dict[str, any]
+    ) -> dict:
+        """Return the current LLM context history and server log contents."""
+        if task_running:
+            await task.queue_frames([EndTaskFrame()])
+        try:
+            messages = assistant_context_aggregator._context.get_messages()
+            log_content = ""
+            if os.path.exists(log_file):
+                with open(log_file, "r") as f:
+                    log_content = f.read()
+            logger.debug(f"Returning context history: {len(messages)} messages, {len(log_content)} log characters")
+            return {"context": str(messages), "logs": log_content}
+        except Exception as e:
+            logger.error(f"Error getting context history: {e}")
+            return {"context": [], "logs": ""}
+
+    get_context_history_action = RTVIAction(
+        service="context",
+        action="get_context_history",
+        result="object",
+        arguments=[],
+        handler=get_context_history_handler,
+    )
+    rtvi.register_action(get_context_history_action)
 
     logger.info("Setting up pipeline...")
 

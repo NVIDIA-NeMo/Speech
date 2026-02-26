@@ -319,6 +319,8 @@ class VoiceAgentEvaluationBridge:
         self.bridge_ready = False
         self.needs_reset = False
         self.final_response_file = "final_agent_response.json"
+        self.user_context_history = None
+        self.agent_context_history = None
 
     def init_output_dir(self, output_dir: str, scenario_name: Optional[str] = None, log_level: str = "DEBUG"):
         """Initialize the output directory and all derived log/audio file paths."""
@@ -984,6 +986,9 @@ class VoiceAgentEvaluationBridge:
                     except asyncio.TimeoutError:
                         logger.info("[USER THREAD] Overall timeout reached, stopping receive loop")
 
+                    # at the end, send an RTVI message to the user to tell it to return the context history
+                    self.user_context_history = await self._retrieve_context_history(user_ws)
+
             except Exception as e:
                 logger.error(f"[USER THREAD] Error: {e}", exc_info=True)
             finally:
@@ -1055,6 +1060,9 @@ class VoiceAgentEvaluationBridge:
                     except asyncio.TimeoutError:
                         logger.info("[AGENT THREAD] Overall timeout reached, stopping receive loop")
 
+                    # at the end, send an RTVI message to the agent to tell it to return the context history
+                    self.agent_context_history = await self._retrieve_context_history(agent_ws)
+
             except Exception as e:
                 logger.error(f"[AGENT THREAD] Error: {e}", exc_info=True)
             finally:
@@ -1064,6 +1072,74 @@ class VoiceAgentEvaluationBridge:
             loop.run_until_complete(agent_loop())
         finally:
             loop.close()
+
+    async def _retrieve_context_history(self, ws) -> dict:
+        """
+        Retrieve the context history from the WebSocket. First send a message to the ws to trigger the
+        `get_context_history` RTVI action, then wait for the response.
+        Args:
+            ws: WebSocket connection
+        Returns:
+            context_history: context history as a dictionary with two keys: `context` and `logs`,
+                where `context` the LLM context history, and `logs` is the bot server logs.
+        """
+        if not ws:
+            logger.warning("[CONTEXT HISTORY] WebSocket is not connected, skipping context history retrieval")
+            return {}
+
+        try:
+            action_msg = {
+                "label": "rtvi-ai",
+                "type": "action",
+                "id": f"get_context_history_{datetime.now().timestamp()}",
+                "data": {
+                    "service": "context",
+                    "action": "get_context_history",
+                    "arguments": [],
+                },
+            }
+
+            # Serialize as MessageFrame and send
+            msg_frame = MessageFrame(data=json.dumps(action_msg))
+            serialized = await self.serializer.serialize(msg_frame)
+            await ws.send(serialized)
+
+            logger.info("[CONTEXT HISTORY] Sent get_context_history action, waiting for response...")
+
+            # Wait for the action-response with a longer timeout since log content can be large
+            timeout = 15.0
+            start_time = asyncio.get_event_loop().time()
+            while asyncio.get_event_loop().time() - start_time < timeout:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+
+                    # Deserialize the protobuf frame
+                    frame = await self.serializer.deserialize(msg)
+                    if frame is None:
+                        continue
+
+                    # Extract message data from the frame
+                    if not (hasattr(frame, 'message') and frame.message):
+                        continue
+
+                    data = json.loads(frame.message) if isinstance(frame.message, str) else frame.message
+
+                    if data.get("type") == "action-response":
+                        result = data.get("data", {}).get("result", {})
+                        logger.info(
+                            f"[CONTEXT HISTORY] Received context history "
+                            f"(context: {len(result.get('context', []))} messages, "
+                            f"logs: {len(result.get('logs', ''))} chars)"
+                        )
+                        return result
+                except asyncio.TimeoutError:
+                    continue
+
+            logger.warning("[CONTEXT HISTORY] Timeout waiting for context history response")
+            return {}
+        except Exception as e:
+            logger.warning(f"[CONTEXT HISTORY] Error retrieving context history: {e}")
+            return {}
 
     async def _receive_user_to_queue(self, user_ws, duration: float):
         """Receive audio from user WebSocket and put into queue for agent thread."""
@@ -1130,6 +1206,8 @@ class VoiceAgentEvaluationBridge:
         self.stop_reason = STOP_REASON_TIMEOUT
         self.sent_to_agent_chunks = []
         self.sent_to_user_chunks = []
+        self.user_context_history = None
+        self.agent_context_history = None
 
         # Clear thread-safe queues
         self.user_to_agent_queue = queue.Queue()
@@ -1170,6 +1248,7 @@ class VoiceAgentEvaluationBridge:
         self._save_conversation_log()
         self._save_audio_log()
         self._save_seglst()
+        self._save_user_agent_history()
         logger.info(f"[RUN SCENARIO] Saved audio and logs to: {Path(self.log_file).parent}")
         self.needs_reset = True
         self.bridge_ready = False
@@ -1298,6 +1377,40 @@ class VoiceAgentEvaluationBridge:
         logger.info(f"        Left (USER→AGENT): {len(self.sent_to_agent_chunks)} chunks")
         logger.info(f"        Right (AGENT→USER): {len(self.sent_to_user_chunks)} chunks")
         logger.info(f"        Duration: {duration:.2f}s, Sample rate: {target_rate}Hz")
+
+    def _save_bot_server_history(self, output_dir: Union[str, Path], context_history: dict):
+        """Save the bot server context history to a JSON file under the output directory."""
+        if not output_dir:
+            return
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        context = eval(context_history.get("context", "[]"))
+        if isinstance(context, str):
+            try:
+                context = json.loads(context)
+            except Exception as e:
+                logger.error(f"Error loading context into json object: {e}. Context: {context}")
+        else:
+            context = context
+        logs = context_history.get("logs", "")
+        context_file = output_dir / "context.json"
+        log_file = output_dir / "logs.txt"
+        with open(context_file, "w") as f:
+            json.dump(context, f, indent=2)
+        with open(log_file, "w") as f:
+            f.write(logs)
+
+    def _save_user_agent_history(self):
+        """Save the user and agent context history to a JSON file under the output directory."""
+        if not self.output_dir:
+            return
+
+        output_dir_user = Path(self.output_dir) / "bot_logs_user"
+        output_dir_agent = Path(self.output_dir) / "bot_logs_agent"
+        self._save_bot_server_history(output_dir_user, self.user_context_history)
+        self._save_bot_server_history(output_dir_agent, self.agent_context_history)
 
     async def _monitor_user_message(self, frame):
         """

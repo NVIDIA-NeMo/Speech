@@ -3867,6 +3867,10 @@ class MagpieTTSModel(ModelPT):
             raise ValueError(
                 "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
             )
+        # Workaround for bug in Ja normalizer, Ja normalizer does not work well with spaces.
+        if language == "ja":
+            transcript = transcript.replace(" ", "")
+        
         # Apply text normalization if requested
         normalized_text = (
             self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript

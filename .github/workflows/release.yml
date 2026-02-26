@@ -44,7 +44,11 @@ on:
         required: false
         default: false
         type: boolean
-
+      gh-release-from-tag:
+        description: Tag of previous release for changelog builder
+        required: false
+        type: string
+        default: ""
 jobs:
   release:
     uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v0.76.1
@@ -58,6 +62,7 @@ jobs:
       create-gh-release: ${{ inputs.create-gh-release }}
       gh-release-use-changelog-builder: ${{ inputs.generate-changelog }}
       publish-docs: ${{ inputs.publish-docs }}
+      gh-release-from-tag: ${{ inputs.gh-release-from-tag }}
     secrets:
       TWINE_USERNAME: ${{ secrets.TWINE_USERNAME }}
       TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}

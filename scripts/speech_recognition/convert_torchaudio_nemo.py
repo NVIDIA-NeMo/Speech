@@ -63,7 +63,7 @@ def migrate_state_dict(state_dict: dict) -> tuple[dict, list[tuple[str, str]]]:
         for old_suffix, new_suffix in KEY_MIGRATION.items():
             if key.endswith(old_suffix):
                 new_key = key[: -len(old_suffix)] + new_suffix
-               if "featurizer.fb" in new_suffix:
+                if "featurizer.fb" in new_suffix:
                     state_dict[new_key] = state_dict.pop(key).T.unsqueeze(0)
                 else:
                     state_dict[new_key] = state_dict.pop(key)

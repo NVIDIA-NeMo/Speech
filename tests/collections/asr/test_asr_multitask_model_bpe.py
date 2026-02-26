@@ -319,6 +319,7 @@ class TestEncDecMultiTaskModel:
 
             assert len(new_model.tokenizer.tokenizer.get_vocab()) == 32 + 128 + 128
 
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_restore_with_timestamps_asr_model(self, canary_1b_v2):
         assert canary_1b_v2.timestamps_asr_model is not None
@@ -482,6 +483,7 @@ class TestEncDecMultiTaskModel:
         assert hyp.alignments is None
 
     # test transcribe with canary2 model with torch tensor input
+    @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_transcribe_with_canary2_model_with_torch_tensor_input(self, canary_1b_v2, test_data_dir):
         import soundfile as sf
@@ -913,6 +915,7 @@ def test_aed_timestamp_processing():
     assert processed[0].timestamp['segment'] == []
 
 
+@pytest.mark.with_downloads()
 @pytest.mark.unit
 def test_aed_forced_aligned_timestamps(canary_1b_v2):
 
@@ -963,6 +966,7 @@ def test_aed_forced_aligned_timestamps(canary_1b_v2):
     )
 
 
+@pytest.mark.with_downloads()
 @pytest.mark.unit
 def test_aed_forced_aligned_timestamps_audio_tensor(canary_1b_v2):
     import librosa
@@ -1018,6 +1022,7 @@ def test_aed_forced_aligned_timestamps_audio_tensor(canary_1b_v2):
     )
 
 
+@pytest.mark.with_downloads()
 @pytest.mark.unit
 def test_aed_parallel_chunking(canary_1b_v2):
 

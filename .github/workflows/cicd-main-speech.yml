@@ -168,8 +168,6 @@ jobs:
             script: L2_Speaker_dev_run_Neural_Diarizer_Inference
           - runner: self-hosted-azure
             script: L2_Speaker_dev_run_Multispeaker_ASR_Data_Simulation
-          - script: L2_SpeechLM_LoRA_TP1PP1_MBS2
-            runner: self-hosted-azure
           - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_1_FastPitch
           - runner: self-hosted-azure

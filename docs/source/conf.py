@@ -244,6 +244,7 @@ htmlhelp_basename = "nemodoc"
 html_theme = "nvidia_sphinx_theme"
 html_theme_options = {
     "switcher": {"json_url": "../versions1.json", "version_match": release},
+    "public_docs_features": True,
     "icon_links": [
         {
             "name": "GitHub",

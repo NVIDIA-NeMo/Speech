@@ -60,6 +60,7 @@ jobs:
       dry-run: ${{ inputs.dry-run }}
       version-bump-branch: ${{ inputs.version-bump-branch }}
       create-gh-release: ${{ inputs.create-gh-release }}
+      app-id: ${{ vars.BOT_ID }}
       gh-release-use-changelog-builder: ${{ inputs.generate-changelog }}
       publish-docs: ${{ inputs.publish-docs }}
       gh-release-from-tag: ${{ inputs.gh-release-from-tag }}

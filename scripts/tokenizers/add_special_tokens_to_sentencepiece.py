@@ -48,16 +48,28 @@ python edit_spt_model.py \
 def edit_spt_model():
     parser = ArgumentParser()
     parser.add_argument(
-        "--input_file", type=str, required=True, help="Path to sentencepiece model file",
+        "--input_file",
+        type=str,
+        required=True,
+        help="Path to sentencepiece model file",
     )
     parser.add_argument(
-        "--output_file", type=str, required=True, help="Path to sentencepiece model file",
+        "--output_file",
+        type=str,
+        required=True,
+        help="Path to sentencepiece model file",
     )
     parser.add_argument(
-        "--tokens", type=str, nargs='+', required=True, help="Special tokens to add to tokenizer",
+        "--tokens",
+        type=str,
+        nargs='+',
+        required=True,
+        help="Special tokens to add to tokenizer",
     )
     parser.add_argument(
-        "--is_userdefined", action="store_true", help="When set, the new tokens are set as user_defined tokens",
+        "--is_userdefined",
+        action="store_true",
+        help="When set, the new tokens are set as user_defined tokens",
     )
     args = parser.parse_args()
 

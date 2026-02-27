@@ -1422,11 +1422,8 @@ class _ConcatenateSpeakersTransform:
                 sampling_rate=cut.sampling_rate,
                 noise_dbfs=self._estimate_noise_floor(cut),
             )
-            # Use the noise cut's actual sample-rounded duration so the
-            # second speaker offset never exceeds result.duration.
-            actual_offset = cut.duration + noise_cut.duration
-            result = cut.mix(noise_cut, offset_other_by=cut.duration)
-            return result.mix(second, offset_other_by=actual_offset)
+            result = cut.mix(noise_cut, offset_other_by=cut.duration, allow_padding=True)
+            return result.mix(second, offset_other_by=cut.duration + noise_cut.duration, allow_padding=True)
 
     def _estimate_noise_floor(self, cut) -> float:
         """Best-effort noise floor from SpeechLevelAugment, else default."""

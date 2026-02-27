@@ -484,7 +484,7 @@ def read_manifest(manifest: Union[Path, str]) -> List[dict]:
     data = []
     try:
         f = open(manifest.get(), 'r', encoding='utf-8')
-    except:
+    except Exception:
         raise Exception(f"Manifest file could not be opened: {manifest}")
 
     errors = []

@@ -122,7 +122,7 @@ if __name__ == "__main__":
         if args.not_filter_speech_first:
             params['filter_speech_first'] = False
 
-    except:
+    except Exception:
         raise ValueError(
             "Theshold input is invalid! Please enter it as a 'START,STOP,STEP' for onset, offset, min_duration_on and min_duration_off, and enter True/False for filter_speech_first"
         )

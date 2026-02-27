@@ -358,7 +358,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                     dist_ckpt = ckpt_to_dir(filepath)
                     shutil.rmtree(dist_ckpt, ignore_errors=True)
                     logging.info(f"Removed distributed checkpoint: {dist_ckpt}")
-                except:
+                except Exception:
                     logging.info(f"Tried to remove distributed checkpoint: {dist_ckpt} but failed.")
 
         else:
@@ -376,7 +376,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 try:
                     self._fs.rm(filepath)
                     logging.info(f"Removed checkpoint: {filepath}")
-                except:
+                except Exception:
                     logging.info(f"Tried to remove checkpoint: {filepath} but failed.")
 
     def _ema_callback(self, trainer: 'lightning.pytorch.Trainer') -> Optional[EMA]:  # noqa: F821
@@ -525,7 +525,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(checkpoint_path)
                 if marker_path.exists():
                     marker_path.unlink()
-        except:
+        except Exception:
             return
 
     def file_exists(

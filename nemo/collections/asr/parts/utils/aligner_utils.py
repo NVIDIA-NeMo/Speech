@@ -914,7 +914,7 @@ def get_batch_variables(
                 f"`output_timestep_duration` is not provided, so we calculated that the model output_timestep_duration is {output_timestep_duration} ms."
                 " -- will use this for all batches"
             )
-        except:
+        except Exception:
             raise ValueError("output_timestep_duration is not provided and cannot be calculated from the model.")
 
     if simulate_cache_aware_streaming or use_buffered_chunked_streaming:

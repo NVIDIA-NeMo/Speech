@@ -59,7 +59,7 @@ def get_rank():
             return torch.distributed.get_rank()
         else:
             return 0
-    except:
+    except Exception:
         return 0
 
 
@@ -70,7 +70,7 @@ def get_world_size():
             return torch.distributed.get_world_size()
         else:
             return 1
-    except:
+    except Exception:
         return 1
 
 

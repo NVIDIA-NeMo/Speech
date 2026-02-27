@@ -64,7 +64,7 @@ def teardown(trainer: Trainer, model: Optional[nn.Module] = None) -> None:
             try:
                 if torch.is_tensor(obj) and obj.is_cuda:
                     del obj
-            except:
+            except Exception:
                 pass
 
     gc.collect()

@@ -82,7 +82,7 @@ def edit_spt_model():
             id = sp.piece_to_id(token)
             logging.info(f"Created token '{token}' at ID {id}")
         logging.info(f"New tokenizer vocab size: {sp.get_piece_size()}")
-    except:
+    except Exception:
         logging.error("Could not appropriately configure new tokenizer. Verify if the special tokens already exist.")
         sys.exit(1)
 

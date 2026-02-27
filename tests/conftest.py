@@ -231,7 +231,7 @@ def pytest_configure(config):
     # Get size of local test_data archive.
     try:
         test_data_local_size = getsize(test_data_archive)
-    except:
+    except Exception:
         # File does not exist.
         test_data_local_size = -1
 
@@ -251,7 +251,7 @@ def pytest_configure(config):
         try:
             url = __TEST_DATA_URL + __TEST_DATA_FILENAME
             u = urllib.request.urlopen(url)
-        except:
+        except Exception:
             # Couldn't access remote archive.
             if test_data_local_size == -1:
                 pytest.exit("Test data not present in the system and cannot access the '{}' URL".format(url))

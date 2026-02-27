@@ -77,7 +77,7 @@ def maybe_download_from_cloud(url, filename, subfolder=None, cache_dir=None, ref
                 return destination_file
             else:
                 return ""
-        except:
+        except Exception:
             logging.info(f"Download from cloud failed. Attempt {i} of {max_attempts}")
             sleep(0.05)
             continue

@@ -159,7 +159,7 @@ class S3CheckpointIO(CheckpointIO):
             # If the future is complete, we can remove the temp file since we choose to clear the temp file when uploading.
             try:
                 self._temp_files.remove(item[2])
-            except:
+            except Exception:
                 pass  # When not using shared memory, we do not append anything to the temp_files list, so remove will do nothing.
         self._futures = in_progress_futures
         logging.debug(

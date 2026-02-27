@@ -73,7 +73,7 @@ def add_port_docs(wrapped=None, instance=None, value=''):
     decorated = wrapper(wrapped)
     try:
         port_2_ntype = decorated(instance)
-    except:
+    except Exception:
         port_2_ntype = None
 
     port_description = ""

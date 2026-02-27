@@ -146,12 +146,12 @@ class TestASRSamplers:
 
                     try:
                         list(dataloader_with_ssb)
-                    except:
+                    except Exception:
                         dataloader_with_ssb_exception = True
 
                     try:
                         list(dataloader)
-                    except:
+                    except Exception:
                         dataloader_exception = True
 
                     assert dataloader_with_ssb_exception == dataloader_exception

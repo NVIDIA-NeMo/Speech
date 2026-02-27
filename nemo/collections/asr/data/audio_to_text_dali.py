@@ -261,7 +261,7 @@ class _AudioTextDALIDataset(Iterator):
             else:
                 try:
                     window_fn = torch_windows.get(window_name, None)
-                except:
+                except Exception:
                     raise ValueError(
                         f"{self} received '{window_name}' for the window parameter."
                         f" It must be one of: ('hann', 'ones', 'hamming', 'blackman', 'bartlett', None)."

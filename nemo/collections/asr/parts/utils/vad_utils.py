@@ -901,7 +901,7 @@ def vad_tune_threshold_on_dev(
     all_perf = {}
     try:
         check_if_param_valid(params)
-    except:
+    except Exception:
         raise ValueError("Please check if the parameters are valid")
 
     paired_filenames, groundtruth_RTTM_dict, vad_pred_dict = pred_rttm_map(vad_pred, groundtruth_RTTM, vad_pred_method)

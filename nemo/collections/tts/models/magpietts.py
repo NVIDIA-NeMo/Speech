@@ -3870,7 +3870,7 @@ class MagpieTTSModel(ModelPT):
         # Workaround for bug in Ja normalizer, Ja normalizer does not work well with spaces.
         if language == "ja":
             transcript = transcript.replace(" ", "")
-        
+
         # Apply text normalization if requested
         normalized_text = (
             self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript

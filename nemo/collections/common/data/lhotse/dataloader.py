@@ -202,9 +202,13 @@ class LhotseDataLoadingConfig:
     #      to simulate multi-speaker segments.  Applied at the sampler level (after RIR)
     #      so each cut has independent augmentations.  The collator naturally concatenates
     #      tokens from all supervisions in the resulting MixedCut.
+    #      Gap is sampled uniformly from [gap_min, gap_max].  Negative values create
+    #      speaker overlap.  Positive gaps are filled with low-level white noise
+    #      matched to the estimated noise floor of the first cut.
     concat_speakers_enabled: bool = False
     concat_speakers_prob: float = 0.1
-    concat_speakers_gap_seconds: float = 0.3
+    concat_speakers_gap_min_seconds: float = -0.5
+    concat_speakers_gap_max_seconds: float = 1.0
     concat_speakers_max_duration: float = 40.0  # skip concatenation if result would exceed this
     #   g. Speech level augmentation: randomly scale each speech cut to a target RMS level
     #      (dBFS) sampled uniformly from [speech_level_min_dbfs, speech_level_max_dbfs].
@@ -697,7 +701,8 @@ def get_lhotse_dataloader_from_multi_config(
             "speech_level_peak_ceiling_db",
             "concat_speakers_enabled",
             "concat_speakers_prob",
-            "concat_speakers_gap_seconds",
+            "concat_speakers_gap_min_seconds",
+            "concat_speakers_gap_max_seconds",
             "concat_speakers_max_duration",
         ]
         defaults = OmegaConf.structured(LhotseDataLoadingConfig)
@@ -1076,7 +1081,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         sampler = sampler.map(
             _ConcatenateSpeakersTransform(
                 prob=config.concat_speakers_prob,
-                gap_seconds=config.concat_speakers_gap_seconds,
+                gap_min_seconds=config.concat_speakers_gap_min_seconds,
+                gap_max_seconds=config.concat_speakers_gap_max_seconds,
                 max_duration_seconds=config.concat_speakers_max_duration,
                 seed=config.shard_seed,
             )
@@ -1331,28 +1337,61 @@ class _ConcatenateSpeakersTransform:
     The resulting :class:`~lhotse.cut.mixed.MixedCut` preserves supervisions
     from both tracks, and the NeMo collator concatenates their tokens in order.
 
-    A silence gap of ``gap_seconds`` is inserted between the two cuts.
+    The gap between cuts is sampled uniformly from
+    ``[gap_min_seconds, gap_max_seconds]``.  Negative values create speaker
+    overlap.  Positive gaps are filled with low-level white noise whose
+    amplitude is estimated from the first cut's speech-level augment (if
+    present), otherwise defaults to -50 dBFS.
+
     Concatenation is skipped if the resulting duration would exceed
     ``max_duration_seconds``.
     """
 
+    _NOISE_FLOOR_OFFSET_DB = -30.0  # dB below speech level
+    _NOISE_FLOOR_DEFAULT_DBFS = -50.0
+
     def __init__(
         self,
         prob: float = 0.1,
-        gap_seconds: float = 0.3,
+        gap_min_seconds: float = -0.5,
+        gap_max_seconds: float = 1.0,
         max_duration_seconds: float = 40.0,
         seed: int | str = "trng",
     ) -> None:
         self.prob = prob
-        self.gap_seconds = gap_seconds
+        self.gap_min = gap_min_seconds
+        self.gap_max = gap_max_seconds
         self.max_duration_seconds = max_duration_seconds
         self._seed = seed
         self._rng: random.Random | None = None
+        self._np_rng: np.random.RandomState | None = None
 
     def _lazy_init(self) -> None:
         if self._rng is not None:
             return
-        self._rng = random.Random(resolve_seed(self._seed))
+        seed = resolve_seed(self._seed)
+        self._rng = random.Random(seed)
+        self._np_rng = np.random.RandomState(seed)
+        self._lazy_init_imports()
+
+    def _lazy_init_imports(self) -> None:
+        if hasattr(self, "_sf"):
+            return
+        import io
+        import soundfile as sf
+        from lhotse.audio.recording import Recording
+        from lhotse.audio.source import AudioSource
+        from lhotse.cut.mixed import MixedCut
+        from lhotse.cut.mono import MonoCut
+        from lhotse.utils import uuid4
+
+        self._io = io
+        self._sf = sf
+        self._Recording = Recording
+        self._AudioSource = AudioSource
+        self._MixedCut = MixedCut
+        self._MonoCut = MonoCut
+        self._uuid4 = uuid4
 
     def __call__(self, cuts: CutSet) -> CutSet:
         self._lazy_init()
@@ -1365,10 +1404,78 @@ class _ConcatenateSpeakersTransform:
         if self._rng.random() > self.prob:
             return cut
         second = batch[self._rng.randint(0, len(batch) - 1)]
-        combined_duration = cut.duration + self.gap_seconds + second.duration
+        gap = self._rng.uniform(self.gap_min, self.gap_max)
+        combined_duration = cut.duration + gap + second.duration
         if combined_duration > self.max_duration_seconds:
             return cut
-        return cut.pad(cut.duration + self.gap_seconds).append(second)
+        offset = cut.duration + gap
+        # Ensure the second cut doesn't start before t=0
+        if offset < 0:
+            return cut
+        if gap <= 0:
+            # Overlap: mix second speaker starting before the first ends
+            return cut.mix(second, offset_other_by=offset)
+        else:
+            # Positive gap: fill with white noise, then append second speaker
+            noise_cut = self._make_noise_cut(
+                duration=gap,
+                sampling_rate=cut.sampling_rate,
+                noise_dbfs=self._estimate_noise_floor(cut),
+            )
+            result = cut.mix(noise_cut, offset_other_by=cut.duration)
+            return result.mix(second, offset_other_by=offset)
+
+    def _estimate_noise_floor(self, cut) -> float:
+        """Best-effort noise floor from SpeechLevelAugment, else default."""
+        try:
+            MixedCut = self._MixedCut
+            inner = cut
+            # Unwrap up to 2 layers of MixedCut to find a MonoCut
+            for _ in range(2):
+                if hasattr(inner, "recording"):
+                    break
+                if isinstance(inner, MixedCut):
+                    inner = inner.first_non_padding_cut
+            if hasattr(inner, "recording") and inner.recording and inner.recording.transforms:
+                for t in inner.recording.transforms:
+                    if hasattr(t, "target_dbfs"):
+                        return t.target_dbfs + self._NOISE_FLOOR_OFFSET_DB
+        except Exception:
+            pass
+        return self._NOISE_FLOOR_DEFAULT_DBFS
+
+    def _make_noise_cut(self, duration: float, sampling_rate: int, noise_dbfs: float):
+        """Create a MonoCut containing white noise at the given level."""
+        io, sf = self._io, self._sf
+        Recording, AudioSource = self._Recording, self._AudioSource
+        MonoCut, uuid4 = self._MonoCut, self._uuid4
+
+        num_samples = int(duration * sampling_rate)
+        rms = 10.0 ** (noise_dbfs / 20.0)
+        samples = self._np_rng.randn(num_samples).astype(np.float32) * rms
+
+        # Encode as WAV bytes (required by Lhotse memory AudioSource)
+        buf = io.BytesIO()
+        sf.write(buf, samples, sampling_rate, format="WAV", subtype="FLOAT")
+        wav_bytes = buf.getvalue()
+
+        rec_id = str(uuid4())
+        recording = Recording(
+            id=rec_id,
+            sources=[AudioSource(type="memory", channels=[0], source=wav_bytes)],
+            sampling_rate=sampling_rate,
+            num_samples=num_samples,
+            duration=num_samples / sampling_rate,
+            channel_ids=[0],
+        )
+        return MonoCut(
+            id=str(uuid4()),
+            start=0.0,
+            duration=num_samples / sampling_rate,
+            channel=0,
+            recording=recording,
+            supervisions=[],
+        )
 
 
 def _merge_supervisions(cuts: CutSet) -> CutSet:

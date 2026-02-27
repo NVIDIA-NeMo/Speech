@@ -75,6 +75,7 @@ def canary_tokenizer(bpe_tokenizer, tmp_path_factory):
         }
     )
 
+
 @pytest.fixture(scope="session")
 def canary2_tokenizer(bpe_tokenizer, tmp_path_factory):
     tmpdir = tmp_path_factory.mktemp("spl_tokens_canary2")

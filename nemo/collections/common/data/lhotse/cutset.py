@@ -591,7 +591,7 @@ def read_lhotse_concat(config: DictConfig) -> tuple[CutSet, bool]:
     max_duration = config.max_duration
     gap = config.get("gap", 0.0)
 
-    cuts, is_tarred = read_dataset_config(config)
+    cuts, is_tarred = read_cutset_from_config(config)
 
     cuts = CutSet(LazyConcatCuts(source=cuts, max_duration=max_duration, gap=gap))
     return cuts, is_tarred

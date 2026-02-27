@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from lhotse import CutSet, MonoCut, Recording, SupervisionSegment
 from lhotse.cut import MixedCut
-from lhotse.testing.dummies import DummyManifest
+from lhotse.testing.dummies import DummyManifest, dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse.cutset import LazyConcatCuts, read_cutset_from_config
@@ -177,6 +177,111 @@ class TestLazyConcatCuts:
         wrapped = CutSet(LazyConcatCuts(source, max_duration=2.5))
         result = list(wrapped)
         assert len(result) == 2
+
+    def test_cuts_with_target_audio(self):
+        """Concatenation works when cuts carry a custom target_audio Recording."""
+        cuts = []
+        for i in range(3):
+            c = dummy_cut(i, recording=dummy_recording(i, with_data=True))
+            c.target_audio = dummy_recording(100 + i, with_data=True)
+            c.supervisions = [
+                SupervisionSegment(id=f"sup-{i}", recording_id=c.recording_id, start=0, duration=c.duration)
+            ]
+            cuts.append(c)
+        source = CutSet.from_cuts(cuts)
+
+        result = list(LazyConcatCuts(source, max_duration=2.5))
+
+        # 3 cuts of 1s each -> [1+1=2.0, 1.0]
+        assert len(result) == 2
+
+        # The concatenated cut is a MixedCut; each track still has its own target_audio.
+        concat_cut = result[0]
+        assert isinstance(concat_cut, MixedCut)
+        for track in concat_cut.tracks:
+            assert hasattr(track.cut, "target_audio"), "target_audio lost after append"
+            assert isinstance(track.cut.target_audio, Recording)
+            assert track.cut.target_audio.duration == pytest.approx(1.0, abs=0.01)
+
+        # Source audio is still loadable on the concatenated cut.
+        audio = concat_cut.load_audio()
+        assert audio.shape[0] == 1
+        assert audio.shape[1] == pytest.approx(2 * 16000, abs=16)
+
+        # target_audio is loadable on the concatenated MixedCut directly.
+        ta = concat_cut.load_target_audio()
+        assert ta.shape == (1, 2 * 16000)
+
+        # target_audio is also loadable on individual tracks.
+        for track in concat_cut.tracks:
+            ta = track.cut.load_target_audio()
+            assert ta.shape == (1, 16000)
+
+        # The non-concatenated (single) cut keeps load_target_audio() working directly.
+        single_cut = result[1]
+        ta = single_cut.load_target_audio()
+        assert ta.shape == (1, 16000)
+
+    def test_cuts_with_target_audio_different_sr(self):
+        """Concatenation works when source is 16kHz and target_audio is 24kHz."""
+        cuts = []
+        for i in range(2):
+            c = dummy_cut(i, recording=dummy_recording(i, with_data=True, sampling_rate=16000))
+            c.target_audio = dummy_recording(100 + i, with_data=True, sampling_rate=24000)
+            c.supervisions = [
+                SupervisionSegment(id=f"sup-{i}", recording_id=c.recording_id, start=0, duration=c.duration)
+            ]
+            cuts.append(c)
+        source = CutSet.from_cuts(cuts)
+
+        result = list(LazyConcatCuts(source, max_duration=5.0))
+
+        # Both cuts fit within 5.0s -> single concatenated MixedCut
+        assert len(result) == 1
+        concat_cut = result[0]
+        assert isinstance(concat_cut, MixedCut)
+
+        # Source audio is 16kHz.
+        audio = concat_cut.load_audio()
+        assert audio.shape == (1, 2 * 16000)
+
+        # target_audio is loadable on the concatenated MixedCut at 24kHz.
+        ta = concat_cut.load_target_audio()
+        assert ta.shape == (1, 2 * 24000)
+
+        # Each track's target_audio retains its 24kHz sampling rate.
+        for track in concat_cut.tracks:
+            assert track.cut.target_audio.sampling_rate == 24000
+            ta = track.cut.load_target_audio()
+            assert ta.shape == (1, 24000)
+
+    def test_cuts_with_target_audio_and_gap(self):
+        """load_target_audio() works on MixedCut with gap (PaddingCut between data cuts)."""
+        cuts = []
+        for i in range(2):
+            c = dummy_cut(i, recording=dummy_recording(i, with_data=True, sampling_rate=16000))
+            c.target_audio = dummy_recording(100 + i, with_data=True, sampling_rate=24000)
+            c.supervisions = [
+                SupervisionSegment(id=f"sup-{i}", recording_id=c.recording_id, start=0, duration=c.duration)
+            ]
+            cuts.append(c)
+        source = CutSet.from_cuts(cuts)
+
+        result = list(LazyConcatCuts(source, max_duration=5.0, gap=0.5))
+
+        assert len(result) == 1
+        concat_cut = result[0]
+        assert isinstance(concat_cut, MixedCut)
+        # 1.0 + 0.5 gap + 1.0 = 2.5s
+        assert concat_cut.duration == pytest.approx(2.5, abs=0.01)
+
+        # Source audio: 2.5s at 16kHz
+        audio = concat_cut.load_audio()
+        assert audio.shape == (1, int(2.5 * 16000))
+
+        # Target audio: 2.5s at 24kHz (gap filled with silence)
+        ta = concat_cut.load_target_audio()
+        assert ta.shape == (1, int(2.5 * 24000))
 
     def test_varying_durations(self):
         """Greedy packing with varying-length cuts."""

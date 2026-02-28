@@ -29,5 +29,5 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --use_local_transformer \
     --run_evaluation \
     --clean_up_disk \
-    --cer_target 0.25 \
-    --ssim_target 0.2
+    --cer_target 0.2 \
+    --ssim_target 0.5

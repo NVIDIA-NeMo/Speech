@@ -423,11 +423,9 @@ class MagpieInferenceRunner:
 
             # Clear stale KV cache from prior inference calls (e.g., the previous batch or dataset
             # may have left with populated tensors).
-            print(f"Resetting KV cache for decoder: {self.model.use_kv_cache_for_inference}")
+            logging.info(f"Resetting KV cache for decoder: {self.model.use_kv_cache_for_inference}")
             use_kv_cache_for_this_batch = self.model.use_kv_cache_for_inference if max_num_chunks == 1 else False
             self.model.decoder.reset_cache(use_cache=use_kv_cache_for_this_batch)
-            if hasattr(self.model, 'local_transformer'):
-                self.model.local_transformer.reset_cache(use_cache=use_kv_cache_for_this_batch)
 
             # Create chunk state for this batch
             chunk_state = self.model.create_chunk_state(batch_size=batch_size)

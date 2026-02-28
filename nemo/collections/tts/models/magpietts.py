@@ -4678,11 +4678,7 @@ class MagpieTTSModel(ModelPT):
                         if beginning_of_text
                         else self.chunked_inference_config.finished_limit_with_eot
                     )
-                    finished_items = {
-                        k: v
-                        for k, v in state.finished_texts_counter.items()
-                        if v >= finished_threshold
-                    }
+                    finished_items = {k: v for k, v in state.finished_texts_counter.items() if v >= finished_threshold}
                     unfinished_items = {k: v for k, v in state.unfinished_texts.items() if v}
 
                 all_code_logits_t = all_code_logits[:, -1, :]  # (B, num_codebooks * num_tokens_per_codebook)

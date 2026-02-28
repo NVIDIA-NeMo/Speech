@@ -180,8 +180,10 @@ class ChunkedInferenceConfig:
         history_len_heuristic: Maximum history tokens to retain across chunks.
         prior_weights_init: Attention prior weights for chunk initialization.
         prior_weights: Attention prior weights during generation (history, current, +1, +2, +3, +4).
-        finished_limit_with_eot: Steps after text end before allowing EOS.
-        finished_limit_without_eot: Steps after chunk end before allowing EOS.
+        finished_limit_with_eot: Steps after text end before allowing EOS (multi-chunk).
+        finished_limit_without_eot: Steps after chunk end before allowing EOS (multi-chunk).
+        finished_limit_first_chunk: Steps near text end before forcing EOS for first/single chunk.
+            Matches the threshold used in infer_batch() for consistent single-chunk behavior.
         forceful_chunk_end_threshold: Threshold for forceful chunk termination.
         argmax_temperature: Temperature for argmax sampling in EOS detection.
         short_sentence_threshold: Sentences shorter than this skip attention prior.
@@ -194,6 +196,7 @@ class ChunkedInferenceConfig:
     prior_weights: Tuple[float, ...] = (0.2, 1.0, 0.6, 0.4, 0.2, 0.2)
     finished_limit_with_eot: int = 5
     finished_limit_without_eot: int = 1
+    finished_limit_first_chunk: int = 20
     forceful_chunk_end_threshold: int = 3
     argmax_temperature: float = 0.01
     short_sentence_threshold: int = 35
@@ -4552,6 +4555,8 @@ class MagpieTTSModel(ModelPT):
                 if idx % 30 == 0:
                     logging.info(f"Decoding timestep {idx}")
 
+                forbid_audio_eos = idx * self.frame_stacking_factor < self.inference_parameters.min_generated_frames
+
                 # Embed audio codes and concatenate with additional decoder input
                 audio_codes_embedded, audio_codes_lens = self.embed_audio_tokens(
                     state.audio_codes_input, audio_tokens_lens=audio_codes_lens
@@ -4651,25 +4656,32 @@ class MagpieTTSModel(ModelPT):
                             )
                         )
 
-                for key in state.finished_texts_counter:
-                    state.finished_texts_counter[key] += 1
-                    limit = (
-                        self.chunked_inference_config.finished_limit_with_eot
-                        if end_of_text[key]
-                        else self.chunked_inference_config.finished_limit_without_eot
-                    )
-                    if state.finished_texts_counter[key] > limit:
-                        # We should allow EOS to be predicted now.
-                        state.unfinished_texts[key] = False
+                if not beginning_of_text:
+                    # Only increment here for multi-chunk path; construct_inference_prior
+                    # (used when beginning_of_text=True) already increments internally.
+                    for key in state.finished_texts_counter:
+                        state.finished_texts_counter[key] += 1
+                        limit = (
+                            self.chunked_inference_config.finished_limit_with_eot
+                            if end_of_text[key]
+                            else self.chunked_inference_config.finished_limit_without_eot
+                        )
+                        if state.finished_texts_counter[key] > limit:
+                            state.unfinished_texts[key] = False
 
                 if self.inference_parameters.ignore_finished_sentence_tracking:
                     finished_items = {}
                     unfinished_items = {}
                 else:
+                    finished_threshold = (
+                        self.chunked_inference_config.finished_limit_first_chunk
+                        if beginning_of_text
+                        else self.chunked_inference_config.finished_limit_with_eot
+                    )
                     finished_items = {
                         k: v
                         for k, v in state.finished_texts_counter.items()
-                        if v >= self.chunked_inference_config.finished_limit_with_eot
+                        if v >= finished_threshold
                     }
                     unfinished_items = {k: v for k, v in state.unfinished_texts.items() if v}
 
@@ -4687,6 +4699,7 @@ class MagpieTTSModel(ModelPT):
                             use_cfg=use_cfg,
                             cfg_scale=cfg_scale,
                             use_kv_cache=self.inference_parameters.use_LT_kv_cache,
+                            forbid_audio_eos=forbid_audio_eos,
                         )
                     elif self.local_transformer_type == LocalTransformerType.MASKGIT:
                         audio_codes_next = self.local_transformer_sample_maskgit(
@@ -4702,6 +4715,7 @@ class MagpieTTSModel(ModelPT):
                             fixed_schedule=maskgit_fixed_schedule,
                             dynamic_cfg_scale=maskgit_dynamic_cfg_scale,
                             sampling_type=maskgit_sampling_type,
+                            forbid_audio_eos=forbid_audio_eos,
                         )
                     else:
                         raise ValueError(
@@ -4714,6 +4728,7 @@ class MagpieTTSModel(ModelPT):
                         topk=self.inference_parameters.topk,
                         unfinished_items=unfinished_items,
                         finished_items=finished_items,
+                        forbid_audio_eos=forbid_audio_eos,
                     )  # (B, num_codebooks)
                 all_codes_next_argmax = self.sample_codes_from_logits(
                     all_code_logits_t,
@@ -4721,6 +4736,7 @@ class MagpieTTSModel(ModelPT):
                     topk=1,
                     unfinished_items=unfinished_items,
                     finished_items=finished_items,
+                    forbid_audio_eos=forbid_audio_eos,
                 )  # (B, num_codebooks)
 
                 # Check for EOS and update state

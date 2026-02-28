@@ -848,7 +848,7 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
             **kwargs,
         )
 
-    def _get_tokenizer_name(self, data, language: str) -> str:
+    def _get_tokenizer_name(self, data, language: str = "en") -> str:
         """Get tokenizer name for a sample, from tokenizer_names or language mapping.
 
         Args:

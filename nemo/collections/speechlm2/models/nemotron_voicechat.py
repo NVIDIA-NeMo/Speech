@@ -279,8 +279,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             self.load_state_dict(checkpoint_state, strict=True)
 
     def training_step(self, batch: dict, batch_idx: int):
-
-        return None
+        raise NotImplementedError("training_step is not implemented on this class !!")
 
     def on_train_epoch_start(self) -> None:
         self.tts_model.on_train_epoch_start()
@@ -364,6 +363,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         force_bos_positions=None,
         decode_audio: bool = True,
         incremental_audio_decoding: bool = False,
+        generation_config: dict = None, 
+        guidance_enabled: bool = True,
     ) -> dict[str, torch.Tensor]:
         """
         Autoregressive prediction.
@@ -391,10 +392,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         B = inference_state["B"]
         T = inference_state["T"]
-
-        # Init external Duplex TTS model
-        generation_config = None
-        guidance_enabled = True
 
         # create speaker audio for init
         speaker_audio, sr = torchaudio.load(self.cfg.inference_speaker_reference)

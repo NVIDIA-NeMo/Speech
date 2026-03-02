@@ -908,12 +908,15 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
     def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs (e.g., for decoding in training)"""
         if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            return self._decoding_computer.disable_cuda_graphs()
+            result = self._decoding_computer.disable_cuda_graphs()
+            self._cuda_graphs_disabled = True  # Track disabled state so change_decoding_strategy() can restore it
+            return result
         return False
 
     def maybe_enable_cuda_graphs(self) -> bool:
         """Enable CUDA graphs (if allowed)"""
         if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
+            self._cuda_graphs_disabled = False  # Clear disabled state when re-enabling
             return self._decoding_computer.maybe_enable_cuda_graphs()
         return False
 

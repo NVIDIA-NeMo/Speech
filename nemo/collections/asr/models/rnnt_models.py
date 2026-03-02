@@ -441,12 +441,35 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
         decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
+        # Preserve cuda_graphs disabled state before the decoding object is replaced.
+        # Fixes: https://github.com/NVIDIA/NeMo/issues/15423
+        # change_decoding_strategy() creates a brand new decoding_computer with CUDA graphs
+        # re-enabled by default, silently discarding any prior disable_cuda_graphs() call.
+        _cuda_graphs_disabled = False
+        try:
+            computer = self.decoding.decoding.decoding_computer
+            _cuda_graphs_disabled = getattr(computer, '_cuda_graphs_disabled', False)
+        except AttributeError:
+            pass
+
         self.decoding = RNNTDecoding(
             decoding_cfg=decoding_cfg,
             decoder=self.decoder,
             joint=self.joint,
             vocabulary=self.joint.vocabulary,
         )
+
+        # Restore cuda_graphs disabled state on the newly created decoding_computer.
+        # Without this, transcribe(timestamps=True) silently re-enables CUDA graphs
+        # even when the user previously called disable_cuda_graphs().
+        if _cuda_graphs_disabled:
+            try:
+                computer = self.decoding.decoding.decoding_computer
+                if hasattr(computer, 'disable_cuda_graphs'):
+                    computer.disable_cuda_graphs()
+                    computer._cuda_graphs_disabled = True
+            except AttributeError:
+                pass
 
         self.wer = WER(
             decoding=self.decoding,

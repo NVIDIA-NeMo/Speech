@@ -694,8 +694,11 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 raise NotImplementedError("Per-stream biasing is not implemented with `blank_as_pad=False`")
             self._greedy_decode = self._greedy_decode_masked
 
+        self._cuda_graphs_disabled = False  # Initialize flag; set True by disable_cuda_graphs()
+
     def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs (e.g., for decoding in training)"""
+        self._cuda_graphs_disabled = True  # Track disabled state so change_decoding_strategy() can restore it
         if not self.use_cuda_graph_decoder:
             # CUDA graphs not allowed, nothing to do
             return False
@@ -714,6 +717,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
 
     def maybe_enable_cuda_graphs(self) -> bool:
         """Enable CUDA graphs (if allowed)"""
+        self._cuda_graphs_disabled = False  # Clear disabled state when re-enabling
         if not self.use_cuda_graph_decoder:
             # CUDA graphs not allowed, nothing to do
             return False
@@ -2890,6 +2894,8 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 raise NotImplementedError("Per-stream biasing is not implemented with `blank_as_pad=False`")
             self._greedy_decode = self._greedy_decode_masked
 
+        self._cuda_graphs_disabled = False  # Initialize flag; set True by disable_cuda_graphs()
+
     @typecheck()
     def forward(
         self,
@@ -2999,12 +3005,14 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
 
     def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs (e.g., for decoding in training)"""
+        self._cuda_graphs_disabled = True  # Track disabled state so change_decoding_strategy() can restore it
         if self.decoding_computer is not None:
             return self.decoding_computer.disable_cuda_graphs()
         return False
 
     def maybe_enable_cuda_graphs(self) -> bool:
         """Enable CUDA graphs (if allowed)"""
+        self._cuda_graphs_disabled = False  # Clear disabled state when re-enabling
         if self.decoding_computer is not None:
             return self.decoding_computer.maybe_enable_cuda_graphs()
         return False

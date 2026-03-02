@@ -905,6 +905,8 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         else:
             raise Exception(f"Decoding strategy {search_type} nor implemented.")
 
+        self._cuda_graphs_disabled = False  # Initialize flag; set True by disable_cuda_graphs()
+
     def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs (e.g., for decoding in training)"""
         if isinstance(self._decoding_computer, WithOptionalCudaGraphs):

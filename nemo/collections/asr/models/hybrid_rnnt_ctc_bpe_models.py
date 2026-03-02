@@ -446,12 +446,30 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
             decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
+            # Preserve cuda_graphs disabled state before the decoding object is replaced.
+            # Fixes: https://github.com/NVIDIA/NeMo/issues/15423
+            _cuda_graphs_disabled = False
+            try:
+                _cuda_graphs_disabled = getattr(self.decoding.decoding, '_cuda_graphs_disabled', False)
+            except AttributeError:
+                pass
+
             self.decoding = RNNTBPEDecoding(
                 decoding_cfg=decoding_cfg,
                 decoder=self.decoder,
                 joint=self.joint,
                 tokenizer=self.tokenizer,
             )
+
+            # Restore cuda_graphs disabled state on the newly created decoding object.
+            # Without this, transcribe(timestamps=True) silently re-enables CUDA graphs
+            # even when the user previously called disable_cuda_graphs().
+            if _cuda_graphs_disabled:
+                try:
+                    if hasattr(self.decoding.decoding, 'disable_cuda_graphs'):
+                        self.decoding.decoding.disable_cuda_graphs()
+                except AttributeError:
+                    pass
 
             self.wer = WER(
                 decoding=self.decoding,

@@ -443,12 +443,11 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # Preserve cuda_graphs disabled state before the decoding object is replaced.
         # Fixes: https://github.com/NVIDIA/NeMo/issues/15423
-        # change_decoding_strategy() creates a brand new decoding_computer with CUDA graphs
+        # change_decoding_strategy() creates a brand new decoding object with CUDA graphs
         # re-enabled by default, silently discarding any prior disable_cuda_graphs() call.
         _cuda_graphs_disabled = False
         try:
-            computer = self.decoding.decoding.decoding_computer
-            _cuda_graphs_disabled = getattr(computer, '_cuda_graphs_disabled', False)
+            _cuda_graphs_disabled = getattr(self.decoding.decoding, '_cuda_graphs_disabled', False)
         except AttributeError:
             pass
 
@@ -459,15 +458,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             vocabulary=self.joint.vocabulary,
         )
 
-        # Restore cuda_graphs disabled state on the newly created decoding_computer.
+        # Restore cuda_graphs disabled state on the newly created decoding object.
         # Without this, transcribe(timestamps=True) silently re-enables CUDA graphs
         # even when the user previously called disable_cuda_graphs().
         if _cuda_graphs_disabled:
             try:
-                computer = self.decoding.decoding.decoding_computer
-                if hasattr(computer, 'disable_cuda_graphs'):
-                    computer.disable_cuda_graphs()
-                    computer._cuda_graphs_disabled = True
+                if hasattr(self.decoding.decoding, 'disable_cuda_graphs'):
+                    self.decoding.decoding.disable_cuda_graphs()
             except AttributeError:
                 pass
 

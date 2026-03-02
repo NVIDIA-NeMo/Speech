@@ -66,9 +66,13 @@ _stub_class_cache: dict[str, type] = {}
 def _stub_class(name: str) -> type:
     """Return a reusable, ABCMeta-compatible stub class for `name`."""
     if name not in _stub_class_cache:
-        _stub_class_cache[name] = _StubMeta(name, (), {
-            "__init__": lambda self, *a, **kw: None,
-        })
+        _stub_class_cache[name] = _StubMeta(
+            name,
+            (),
+            {
+                "__init__": lambda self, *a, **kw: None,
+            },
+        )
     return _stub_class_cache[name]
 
 
@@ -117,13 +121,8 @@ class _OptionalDepFinder(importlib.abc.MetaPathFinder):
     _INTERCEPT_PREFIXES = ("lightning", "nv_one_logger", "nemo.lightning", "nemo.core.classes.modelPT")
 
     def find_spec(self, fullname, path, target=None):
-        if any(
-            fullname == p or fullname.startswith(p + ".")
-            for p in self._INTERCEPT_PREFIXES
-        ):
-            return importlib.machinery.ModuleSpec(
-                fullname, _loader_singleton, is_package=True
-            )
+        if any(fullname == p or fullname.startswith(p + ".") for p in self._INTERCEPT_PREFIXES):
+            return importlib.machinery.ModuleSpec(fullname, _loader_singleton, is_package=True)
         return None
 
 
@@ -144,9 +143,7 @@ def _make_beam_batched_tdt_infer():
     decoder = MagicMock()
     joint = MagicMock()
 
-    patch_target = (
-        "nemo.collections.asr.parts.submodules.tdt_beam_decoding.ModifiedALSDBatchedTDTComputer"
-    )
+    patch_target = "nemo.collections.asr.parts.submodules.tdt_beam_decoding.ModifiedALSDBatchedTDTComputer"
     with patch(patch_target) as MockComputer:
         mock_computer = MagicMock()
         MockComputer.return_value = mock_computer

@@ -15,6 +15,7 @@ import copy
 import json
 import os
 import random
+import re
 import time
 from dataclasses import dataclass, field, fields
 from functools import partial
@@ -3869,7 +3870,7 @@ class MagpieTTSModel(ModelPT):
             )
         # Workaround for bug in Ja normalizer, Ja normalizer does not work well with spaces.
         if language == "ja":
-            transcript = transcript.replace(" ", "")
+            transcript = re.sub(r'\s+', '', transcript)
 
         # Apply text normalization if requested
         normalized_text = (

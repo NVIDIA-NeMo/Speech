@@ -62,6 +62,7 @@ from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
 
 from nemo.collections.speechlm2.models.duplex_stt_model import DuplexSTTModel
 
+
 def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
     """
     Delays each EOS token by `shift` steps forward. Replaces original EOS with PAD.
@@ -84,7 +85,7 @@ def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
     new_pos = eos_pos + shift  # [N]
 
     # Filter: new position must be in bounds and not overwrite EOS or PAD
-    valid = (new_pos < T)
+    valid = new_pos < T
     if valid.any():
         b_idx = b_idx[valid]
         old_pos = eos_pos[valid]
@@ -92,7 +93,7 @@ def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
 
         # Now, check overwrite safety in new positions
         target_vals = tokens[b_idx, new_pos]
-        safe = (target_vals != eos_token_id)
+        safe = target_vals != eos_token_id
 
         if safe.any():
             b_idx = b_idx[safe]
@@ -227,13 +228,15 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 # Hugging Face format
                 from safetensors import safe_open
                 import gc
-                
+
                 # Load tensors incrementally to avoid OOM
                 model_state_dict = self.state_dict()
                 loaded_keys = []
                 missing_keys = []
-                
-                with safe_open(os.path.join(self.cfg.pretrained_s2s_model, "model.safetensors"), framework="pt", device="cpu") as f:
+
+                with safe_open(
+                    os.path.join(self.cfg.pretrained_s2s_model, "model.safetensors"), framework="pt", device="cpu"
+                ) as f:
                     available_keys = f.keys()
                     for key in available_keys:
                         if key in model_state_dict:
@@ -244,7 +247,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                             del tensor  # Free memory immediately
                         else:
                             missing_keys.append(key)
-                        
+
                         # Periodic garbage collection for very large models
                         if len(loaded_keys) % 100 == 0:
                             gc.collect()
@@ -252,7 +255,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
                 if missing_keys:
                     logging.warning(f"Keys in checkpoint but not in model: {len(missing_keys)} keys")
-                
+
                 del model_state_dict
                 gc.collect()
             else:
@@ -333,11 +336,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     pred_audio_sr=self.target_sample_rate,
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
-                    eou_pred=(
-                        results["gen_eou"]
-                        if "gen_eou" in results
-                        else None
-                    ),
+                    eou_pred=(results["gen_eou"] if "gen_eou" in results else None),
                     fps=self.source_fps,
                     results=results if self.cfg.get("dump_tokens_text", False) else None,
                     tokenizer=self.stt_model.tokenizer,
@@ -385,8 +384,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         """
 
         inference_state = self.stt_model._init_inference(
-            input_signal, input_signal_lens, input_pad_len,
-            force_bos_positions, prompt_tokens, prompt_token_lens
+            input_signal, input_signal_lens, input_pad_len, force_bos_positions, prompt_tokens, prompt_token_lens
         )
 
         ans, inference_state = self.stt_model._step_zero(inference_state)
@@ -404,7 +402,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
 
         # lengths -> [B]
-        speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device) 
+        speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device)
 
         #  init tts_model
         self.tts_model.set_init_inputs(
@@ -422,7 +420,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         code = init_inputs["code"][:, -1:]
 
         past_key_values = outputs.past_key_values
-        gen_codes = torch.zeros(B, T, self.tts_model.tts_model.config.num_quantizers, device=self.device, dtype=torch.long)
+        gen_codes = torch.zeros(
+            B, T, self.tts_model.tts_model.config.num_quantizers, device=self.device, dtype=torch.long
+        )
         first_context_subword_id = init_inputs["subword_ids"][:, -1].unsqueeze(-1)
         subword_mask = torch.ones(B, T, device=self.device, dtype=torch.bool)
 
@@ -433,7 +433,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Autoregressive loop
         for t in range(1, T):
             # do one step inference on Duplex STT model
-            _  = self.stt_model._step_inference(t, inference_state, ans, force_bos_positions)
+            _ = self.stt_model._step_inference(t, inference_state, ans, force_bos_positions)
 
             # do one step inference on Duplex TTS model
             # current subword id is always seem
@@ -474,12 +474,12 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         # Trim back to local length if padded
         if self._use_fsdp and T > inference_state["T_local"]:
-            gen_codes = gen_codes[:, :inference_state["T_local"]]
+            gen_codes = gen_codes[:, : inference_state["T_local"]]
 
         ans = self.stt_model._post_inference(inference_state, prompt_token_lens)
 
         if decode_audio:
-            gen_codes = gen_codes[:, :inference_state["T_local"]]
+            gen_codes = gen_codes[:, : inference_state["T_local"]]
             if not incremental_audio_decoding:
                 gen_audio_codes_lens = torch.tensor([gen_codes.shape[1]] * gen_codes.shape[0]).to(self.device)
                 gen_audio_codes = gen_codes

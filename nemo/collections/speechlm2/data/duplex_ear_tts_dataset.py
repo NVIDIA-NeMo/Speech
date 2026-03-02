@@ -200,7 +200,9 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                 )
 
             if self.add_system_prompt:
-                system_prompts, system_prompts_lens, system_prompts_raw = collate_system_prompt(cuts, self.tokenizer, ignore_data_system_prompt=self.ignore_data_system_prompt)
+                system_prompts, system_prompts_lens, system_prompts_raw = collate_system_prompt(
+                    cuts, self.tokenizer, ignore_data_system_prompt=self.ignore_data_system_prompt
+                )
             else:
                 system_prompts = None
                 system_prompts_lens = None
@@ -232,7 +234,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                 audio_prompt,
                 audio_prompt_lens,
                 system_prompts,
-                system_prompts_lens
+                system_prompts_lens,
             )
 
             # create non_prompt_mask that should mask desc plus audio prompt if used
@@ -245,7 +247,9 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             # Segment IDs per sequence (padded)
             aligned_segment_ids = torch.stack(
                 [
-                    torch.nn.functional.pad(torch.full((seq_len,), i), (0, max_len - seq_len), value=-1)  # -1 for padding
+                    torch.nn.functional.pad(
+                        torch.full((seq_len,), i), (0, max_len - seq_len), value=-1
+                    )  # -1 for padding
                     for i, seq_len in enumerate(target_token_lens)
                 ],
                 dim=0,
@@ -388,7 +392,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         prompt_lens = []
         for i in range(target_text_tokens.size(0)):
             if system_prompts is not None:
-                text_prompt = system_prompts[i][:system_prompts_lens[i]]
+                text_prompt = system_prompts[i][: system_prompts_lens[i]]
             else:
                 text_prompt = torch.tensor(
                     [self.tokenizer.eos],
@@ -600,7 +604,9 @@ def collate_system_prompt(
                 )
                 system_prompts_raw.append(prompt_text)
             else:
-                logging.warning("No system prompt or dataset type defined on the config! Using a eos token as system prompt!")
+                logging.warning(
+                    "No system prompt or dataset type defined on the config! Using a eos token as system prompt!"
+                )
                 # No system prompt for this cut, add just a eos that indicates that the prompt is finished
                 tokens.append(torch.as_tensor([tokenizer.eos], dtype=torch.long))
                 system_prompts_raw.append("")
@@ -681,7 +687,7 @@ def get_audio_prompt(
 def sanitize_cuts(cuts: CutSet) -> CutSet:
     """
     Adjusts supervisions to fit within the cut's truncated duration.
-    
+
     - If a supervision extends beyond the cut end, it is TRUNCATED (using deepcopy).
     - If a supervision starts after the cut end, it is DROPPED.
 
@@ -692,19 +698,19 @@ def sanitize_cuts(cuts: CutSet) -> CutSet:
         CutSet: A new CutSet with valid, potentially truncated supervisions.
     """
     sanitized_list = []
-    
+
     for cut in cuts:
         valid_supervisions = []
         for sup in cut.supervisions:
             # Case 1: Supervision starts after the audio ends -> Drop
             if sup.start >= cut.duration:
                 continue
-            
+
             # Case 2: Supervision starts inside but ends after the audio -> Truncate
             if sup.end > cut.duration:
                 # Calculate the remaining duration available in the audio
                 new_duration = cut.duration - sup.start
-                
+
                 if new_duration <= 0:
                     continue
 
@@ -712,7 +718,7 @@ def sanitize_cuts(cuts: CutSet) -> CutSet:
                 new_sup = deepcopy(sup)
                 new_sup.duration = new_duration
                 valid_supervisions.append(new_sup)
-                
+
             # Case 3: Supervision is fully inside -> Keep
             else:
                 valid_supervisions.append(sup)
@@ -770,7 +776,9 @@ def collate_random_turn_audio(
             silence_tensor = torch.zeros(num_samples, dtype=torch.float32)
             selected_turn_audios.append(silence_tensor)
             selected_turn_audios_lens.append(num_samples)
-            logging.warning("There is no target speaker supervision available on this sample! Using a silence audio as audio prompt!")
+            logging.warning(
+                "There is no target speaker supervision available on this sample! Using a silence audio as audio prompt!"
+            )
         else:
             # Randomly select one supervision
             selected_supervision = random.choice(matching_supervisions)

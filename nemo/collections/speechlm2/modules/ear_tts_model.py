@@ -1116,16 +1116,15 @@ class RVQEARTTSModel(nn.Module):
                 self.hidden_size, self.hidden_size, self.hidden_size, self.config.num_quantizers
             )
 
-
         if self.config.get("use_audio_prompt_frozen_projection", False):
             with fp32_precision():
-                U, _ = torch.linalg.qr(torch.randn(self.hidden_size, self.hidden_size)) 
-                V, _ = torch.linalg.qr(torch.randn(self.hidden_size, self.hidden_size)) 
+                U, _ = torch.linalg.qr(torch.randn(self.hidden_size, self.hidden_size))
+                V, _ = torch.linalg.qr(torch.randn(self.hidden_size, self.hidden_size))
                 smin, smax = 0.4, 2.5
-                s = (smin + (smax - smin) * torch.rand(self.hidden_size)) 
+                s = smin + (smax - smin) * torch.rand(self.hidden_size)
                 W = U @ torch.diag(s) @ V.T
-                self.register_buffer("audio_prompt_projection_W", W) # register as buffer to avoid weight update
-    
+                self.register_buffer("audio_prompt_projection_W", W)  # register as buffer to avoid weight update
+
         # Prediction Heads
         if not self.config.disable_eos_prediction:
             self.lm_head = nn.Linear(self.hidden_size, 2, bias=False)
@@ -1262,7 +1261,9 @@ class RVQEARTTSModel(nn.Module):
             mog_logs = mog_logs.float()
             with fp32_precision():
                 # Log probability of the true code under each Gaussian component
-                logp_code = (-0.5 * math.log(2 * math.pi) - mog_logs) * self.config.latent_size - 0.5 * self.mog_head.dist(
+                logp_code = (
+                    -0.5 * math.log(2 * math.pi) - mog_logs
+                ) * self.config.latent_size - 0.5 * self.mog_head.dist(
                     mog_mus, (cont_code_target - mog_mu_res) * torch.exp(-mog_logs)
                 )
 
@@ -1357,9 +1358,9 @@ class RVQEARTTSModel(nn.Module):
             bos_mask = bos_mask.unsqueeze(-1)  # [B, T, 1]
 
             # Mask for tokens BEFORE BOS
-            pre_bos_mask = (bos_mask.cumsum(dim=1) == 0)  # [B, T, 1]
+            pre_bos_mask = bos_mask.cumsum(dim=1) == 0  # [B, T, 1]
 
-            # Apply projection to model size 
+            # Apply projection to model size
             code_embed = self.embed_code(code_embed)
             # audio frozen projection
             if self.config.get("use_audio_prompt_frozen_projection", False):
@@ -1371,7 +1372,11 @@ class RVQEARTTSModel(nn.Module):
                         and len(dataset_type) == code_embed.size(0)
                         and all(str(p).strip().lower() == "tts" for p in dataset_type)
                     )
-                    if self.config.get("force_no_audio_cond_latent_on_prompt", False) and all_tts and torch.rand(1, device=code_embed.device).item() < 0.3:
+                    if (
+                        self.config.get("force_no_audio_cond_latent_on_prompt", False)
+                        and all_tts
+                        and torch.rand(1, device=code_embed.device).item() < 0.3
+                    ):
                         perm = torch.randperm(code_embed.size(0), device=code_embed.device)
                         audio_prompt_lantent = code_embed[perm]
                     else:

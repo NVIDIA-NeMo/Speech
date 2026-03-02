@@ -435,14 +435,14 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # BOS dropout to make the model more robust
         if self.training and self.cfg.get("text_bos_dropout_prob", 0.0) > 0:
             prob = self.cfg.text_bos_dropout_prob  # e.g., 0.5
-            
+
             # Identify all BOS positions [B, T]
-            bos_mask = (target_text_tokens == self.text_bos_id)
-            
+            bos_mask = target_text_tokens == self.text_bos_id
+
             # Get indices of sequences that actually have a BOS token
             # We need to know *where* the BOS tokens are to drop them.
             # tensor of coordinates: [[batch_idx, seq_idx], ...]
-            bos_indices = torch.nonzero(bos_mask) 
+            bos_indices = torch.nonzero(bos_mask)
             num_bos = bos_indices.shape[0]
 
             if num_bos > 0:
@@ -459,7 +459,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 # We need to map the decisions back to the full tensor
                 # Create a mask of the same shape as target_text_tokens
                 full_dropout_mask = torch.zeros_like(target_text_tokens, dtype=torch.bool)
-                
+
                 # Set True only at the specific (batch, seq) coordinates we chose to drop
                 # bos_indices[:, 0] are batch indices, bos_indices[:, 1] are seq indices
                 full_dropout_mask[bos_indices[:, 0], bos_indices[:, 1]] = drop_decisions
@@ -696,7 +696,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             self.set_init_inputs(
                 speaker_audio=dataset_batch["audio_prompt"],
                 speaker_audio_lens=dataset_batch["audio_prompt_lens"],
-                system_prompt=system_prompt, # use the first position of the batch as system prompt
+                system_prompt=system_prompt,  # use the first position of the batch as system prompt
             )
             init_inputs = self.get_init_inputs(B=inputs["subword_ids"].size(0))
 
@@ -944,9 +944,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 If `name` does not exist in `self.audio_prompt_latents`.
         """
         if not hasattr(self, "audio_prompt_latents") or name not in self.audio_prompt_latents:
-            raise KeyError(
-                f"Unknown audio prompt latent '{name}'. Call set_audio_prompt_lantent(...) first."
-            )
+            raise KeyError(f"Unknown audio prompt latent '{name}'. Call set_audio_prompt_lantent(...) first.")
 
         audio_prompt_latent = self.audio_prompt_latents[name]  # cached on CPU
 
@@ -981,9 +979,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     dtype=torch.float32,
                 )
 
-                speaker_audio_lens = torch.LongTensor(
-                    [speaker_audio.shape[1]]
-                ).to(self.device)
+                speaker_audio_lens = torch.LongTensor([speaker_audio.shape[1]]).to(self.device)
 
             B, T = speaker_audio.shape
             device = speaker_audio.device
@@ -1022,8 +1018,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # create a eos token id
         if system_prompt is not None and self.cfg.get("use_system_prompt", None) and system_prompt != "":
             text_prompt = torch.as_tensor(
-                    [self.tokenizer.bos] + self.tokenizer.text_to_ids(system_prompt) + [self.tokenizer.eos], dtype=torch.long, device=self.device
-                )
+                [self.tokenizer.bos] + self.tokenizer.text_to_ids(system_prompt) + [self.tokenizer.eos],
+                dtype=torch.long,
+                device=self.device,
+            )
         else:
             text_prompt = torch.tensor([self.tokenizer.eos], dtype=torch.long, device=self.device)
 
@@ -1093,7 +1091,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "context_hidden_state": context_hidden_state[:, :-1] if context_hidden_state is not None else None,
             "subword_ids": subword_ids[:, :-1],
             "subword_mask": subword_mask.bool()[:, :-1],
-            "non_prompt_mask": non_prompt_mask.bool()[:, :-1]
+            "non_prompt_mask": non_prompt_mask.bool()[:, :-1],
         }
 
         if speaker_name is not None:
@@ -1376,7 +1374,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
             # create subword_mask
             current_subword_mask = subword_mask[:, i].unsqueeze(-1)
-    
+
             code, past_key_values = self.infer_codes_one_step(
                 current_subword_id=current_subword_id,
                 prev_subword_id=prev_subword_id,
@@ -1433,7 +1431,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
             # Identify layers for Weight Decay exclusion
             no_decay_keywords = ["bias", "norm", "layernorm"]
-            
+
             decay_group = []
             no_decay_group = []
             no_decay_names = []
@@ -1452,9 +1450,13 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             logging.info("OPTIMIZER STRATEGY: Mixed Precision Stability")
             logging.info(f"Total Trainable Layers: {total_trainable_layers}")
             logging.info("-" * 70)
-            logging.info(f"REGULARIZATION: Applying weight_decay={self.cfg.optimizer.get('weight_decay', 0.1)} to {len(decay_group)} weight layers.")
-            logging.info(f"STABILITY: Excluding {len(no_decay_names)} Normalization and Bias layers from weight decay.")
-            
+            logging.info(
+                f"REGULARIZATION: Applying weight_decay={self.cfg.optimizer.get('weight_decay', 0.1)} to {len(decay_group)} weight layers."
+            )
+            logging.info(
+                f"STABILITY: Excluding {len(no_decay_names)} Normalization and Bias layers from weight decay."
+            )
+
             # Audit trail for the excluded layers
             for n in no_decay_names[:10]:
                 logging.info(f"  [WD=0.0] -> {n}")
@@ -1470,7 +1472,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
             # 4. Instantiate via Hydra
             optimizer = hydra.utils.instantiate(self.cfg.optimizer, optim_groups, _convert_='all')
-            
+
             ans = {"optimizer": optimizer}
             if "lr_scheduler" in self.cfg:
                 lr_scheduler = hydra.utils.instantiate(self.cfg.lr_scheduler, optimizer)

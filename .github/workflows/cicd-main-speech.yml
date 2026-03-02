@@ -199,6 +199,8 @@ jobs:
             script: L2_TTS_InferEvaluate_Magpietts_MoE_ZeroShot
           - runner: self-hosted-azure
             script: L2_TTS_InferEvaluatelongform_Magpietts_MoE_ZeroShot
+          - runner: self-hosted-azure
+            script: L2_TTS_InferEvaluate_Magpietts_FrameStacking
           # Model support functional tests
           - runner: self-hosted-azure
             script: L2_Model_Support_nvidia__stt_de_fastconformer_hybrid_large_pc

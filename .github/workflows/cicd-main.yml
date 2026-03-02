@@ -349,27 +349,6 @@ jobs:
 
             So it might be time to merge this PR or get some approvals.
 
-            //cc @chtruong814 @ko3n1g @pablo-garay @thomasdhc
-
-      - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"
-        if: |
-          steps.result.outputs.code == 'failure'
-          && github.event.label.name == 'Run CICD'
-          && env.SLACK_WEBHOOK != ''
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPOSITORY: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          PR_NUMBER: ${{ github.event.number }}
-          SERVER_URL: ${{ github.server_url }}
-        run: |
-          set -x
-          pip install PyGithub
-          export BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
-
-          python .github/scripts/notify.py
-
       - name: Exit
         if: ${{ always() }}
         env:

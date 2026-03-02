@@ -468,7 +468,6 @@ def build_vocabs(
     return subword_id_to_char_ids, char_vocab, subword_padding_idx
 
 
-# @torch.compile
 @torch._dynamo.disable
 def depthsum_encoding_step(
     embs: Tensor,
@@ -1117,12 +1116,6 @@ class RVQEARTTSModel(nn.Module):
                 self.hidden_size, self.hidden_size, self.hidden_size, self.config.num_quantizers
             )
 
-        if self.config.get("audio_prompt_encoder_config", None):
-            # Dedicated projection for audio prompt (pre-BOS)
-            ape_cfg = OmegaConf.to_container(self.config.audio_prompt_encoder_config, resolve=True)
-            model_type = ape_cfg.pop("type")  # remove "type" from kwargs
-            ape_cfg = AutoConfig.for_model(model_type, **ape_cfg)
-            self.audio_prompt_encoder = AutoModel.from_config(ape_cfg)
 
         if self.config.get("use_audio_prompt_frozen_projection", False):
             with fp32_precision():
@@ -1207,7 +1200,8 @@ class RVQEARTTSModel(nn.Module):
         context_hidden_state: Tensor | None,
         subword_ids: Tensor | None,
         subword_mask: Tensor | None,
-        uncond_dec_flag: Tensor
+        uncond_dec_flag: Tensor,
+        asr_speech_tokens_emb: Tensor | None,
     ) -> Tensor:
         """Computes the final conditioning tensor by combining all sources."""
         cond = torch.zeros((1, 1, self.hidden_size), device=uncond_dec_flag.device)
@@ -1222,6 +1216,9 @@ class RVQEARTTSModel(nn.Module):
             # at least one value should be true, otherwise we can completly skip it to avoid errors
             if subword_mask is not None and subword_mask.any():
                 cond = cond + self.embed_subword(subword_ids, subword_mask)
+
+        if asr_speech_tokens_emb is not None:
+            cond = cond + asr_speech_tokens_emb
 
         # Replace with null embedding for unconditional generation
         cond = torch.where(uncond_dec_flag, self.null_emb, cond)
@@ -1309,6 +1306,7 @@ class RVQEARTTSModel(nn.Module):
         ignore_eos_flag_stop: bool = False,
         asr_speech_tokens_emb: Tensor | None = None,
         audio_prompt_lantent: Tensor | None = None,
+        dataset_type: list[str] | None = None,
     ) -> RVQEARTTSOutput:
         """
         Performs a forward pass handling training, generation, or single-step inference.
@@ -1348,11 +1346,6 @@ class RVQEARTTSModel(nn.Module):
                 dropped_code = code
                 uncond_dec_flag = torch.zeros(code.size(0), 1, 1, device=code.device, dtype=torch.bool)
 
-            # code_embeds = (
-            #     self.embed_code(self.depthsum_embedding(F.pad(dropped_code[:, :-1], [0, 0, 1, 0])))
-            #     + (audio_mask & (~F.pad(audio_mask[:, :-1], [1, 0]))).unsqueeze(-1) * self.bos_emb
-            # )
-
             # Shifted code
             shifted_code = F.pad(dropped_code[:, :-1], [0, 0, 1, 0])
 
@@ -1368,28 +1361,22 @@ class RVQEARTTSModel(nn.Module):
 
             # Apply projection to model size 
             code_embed = self.embed_code(code_embed)
-
-            # Choose projection
-            if self.config.get("audio_prompt_encoder_config", None):
-                # Dedicated projection for audio prompt (pre-BOS)
-                if audio_prompt_lantent is None:
-                    prompt_attn_mask = pre_bos_mask.squeeze(-1).long()
-                    audio_prompt_lantent = self.audio_prompt_encoder(
-                        inputs_embeds=code_embed,
-                        attention_mask=prompt_attn_mask,
-                        return_dict=True,
-                    ).last_hidden_state
-
-                code_embed = torch.where(
-                    pre_bos_mask,
-                    audio_prompt_lantent,
-                    code_embed,
-                )
-
+            # audio frozen projection
             if self.config.get("use_audio_prompt_frozen_projection", False):
                 if audio_prompt_lantent is None:
-                    W = self.audio_prompt_projection_W.to(code_embed.device, code_embed.dtype)
-                    audio_prompt_lantent = torch.nn.functional.linear(code_embed, W.T)
+                    # Training-only anti-cloning augmentation for pure TTS batches.
+                    all_tts = (
+                        training
+                        and dataset_type is not None
+                        and len(dataset_type) == code_embed.size(0)
+                        and all(str(p).strip().lower() == "tts" for p in dataset_type)
+                    )
+                    if self.config.get("force_no_audio_cond_latent_on_prompt", False) and all_tts and torch.rand(1, device=code_embed.device).item() < 0.3:
+                        perm = torch.randperm(code_embed.size(0), device=code_embed.device)
+                        audio_prompt_lantent = code_embed[perm]
+                    else:
+                        W = self.audio_prompt_projection_W.to(code_embed.device, code_embed.dtype)
+                        audio_prompt_lantent = torch.nn.functional.linear(code_embed, W.T)
 
                 code_embed = torch.where(
                     pre_bos_mask,
@@ -1427,11 +1414,9 @@ class RVQEARTTSModel(nn.Module):
             context_hidden_state,
             subword_ids,
             subword_mask,
-            uncond_dec_flag
+            uncond_dec_flag,
+            asr_speech_tokens_emb=asr_speech_tokens_emb,
         )
-
-        if asr_speech_tokens_emb is not None:
-            cond = cond + asr_speech_tokens_emb
 
         if self.config.use_gated_fusion_for_text_audio:
             inputs_embeds = self.gated_fusion_audio_text(code_embeds, cond)

@@ -409,7 +409,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     t_idx = valid_positions[:, 1] - 1
 
                     # Replace token before EOS with an EOS
-                    target_text_tokens[b_idx, t_idx] = self.text_eos_id  
+                    target_text_tokens[b_idx, t_idx] = self.text_eos_id
 
         # BOS dropout to make the model more robust
         if self.training and self.cfg.get("text_bos_dropout_prob", 0.0) > 0:
@@ -501,7 +501,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "context_hidden_state": context_hidden_state,
             "output_lens": target_codes_lens,
             "non_prompt_mask": non_prompt_mask,
-            "target_text_tokens": target_text_tokens
+            "target_text_tokens": target_text_tokens,
         }
 
     def training_step(self, batch: dict, batch_idx: int):
@@ -643,7 +643,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             audio_pred, audio_len = self.audio_codec.decode(tf_audio_codes_pred, inputs["output_lens"])
 
-        return audio_pred.squeeze(1), audio_len, tts_output
+        return audio_pred.squeeze(1), audio_len
 
     def _get_generation_config(self, guidance_enabled: bool = False):
         """Get default generation config for EAR-TTS."""
@@ -671,7 +671,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         results = {}
         inputs = self.prepare_inputs(dataset_batch)
 
-        results["audio_tf"], results["audio_tf_len"], tts_output = self.get_teacher_force_inference_audio(dataset_batch)
+        results["audio_tf"], results["audio_tf_len"] = self.get_teacher_force_inference_audio(dataset_batch)
 
         if use_dataloader_init:
             # cut it on prompt
@@ -1157,13 +1157,13 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 init_inputs[name] = None
                 continue
 
-            # Batch already matches
+            # Use as-is if batch matches
             if buf.shape[0] == B:
                 init_inputs[name] = buf
             elif buf.shape[0] >= B:
                 init_inputs[name] = buf[:B]
             else:
-                # assume batch=1 warmup → expand
+                # Otherwise, assume batch=1 and expand to target B
                 init_inputs[name] = buf[:1].expand(B, *buf.shape[1:])
 
         return init_inputs
@@ -1178,7 +1178,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         past_key_values,
         guidance_enabled=True,
         generation_config=None,
-        ignore_eos_flag_stop=True
+        ignore_eos_flag_stop=True,
     ):
         """
         Runs a single autoregressive prediction step to infer audio codec codes.

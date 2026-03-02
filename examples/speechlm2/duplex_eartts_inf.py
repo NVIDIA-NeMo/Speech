@@ -92,8 +92,6 @@ def read_jsonl_batches(
                 yield batch
                 batch = []
                 num_batches += 1
-
-                # --- DEBUG STOP ---
                 if max_batches is not None and num_batches >= max_batches:
                     return
 
@@ -232,7 +230,6 @@ def collate_and_tokenize_custom(
     padded_audio = padded_audio.to(model.device)
     audio_lengths = torch.tensor(audio_lengths, dtype=torch.long)
 
-    # --- RESIZE INPUT_IDS TO MATCH TARGET DURATION ---
     # Expand text length to match expected output speech duration
     B, L = input_ids.shape
     target_len = int(max(target_num_frames))
@@ -350,7 +347,6 @@ def inference(cfg):
 
         for i in range(audio.size(0)):
             wav = audio[i, : audio_len[i]].numpy()
-            #wav = audio[i, : wav_dur].numpy() # use precomputed estimated duration to avoid longer audios
             # Use original target audio filename
             target_path = inputs["target_audio_paths"][i]
             base_name = os.path.basename(target_path)

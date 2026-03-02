@@ -13,19 +13,19 @@
 # limitations under the License.
 import random
 import re
+from copy import deepcopy
 
 import torch
 import torch.nn.functional as F
 import torch.utils.data
-from copy import deepcopy
 from lhotse import CutSet, Seconds, compute_num_frames
 from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_audio, collate_vectors
 from lhotse.utils import ifnone
-from nemo.collections.speechlm2.parts.precision import fp32_precision
 
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.utils import logging
 

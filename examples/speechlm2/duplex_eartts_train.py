@@ -11,8 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 import datetime
+import os
+
 import torch
 from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
@@ -23,6 +24,7 @@ from nemo.collections.speechlm2.parts.pretrained import load_checkpoint, set_mod
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
+
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
@@ -30,8 +32,7 @@ torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 def train(cfg):
     OmegaConf.resolve(cfg)
     torch.distributed.init_process_group(
-        backend="nccl", 
-        timeout=datetime.timedelta(seconds=int(cfg.trainer.strategy.get("timeout", 3600)))
+        backend="nccl", timeout=datetime.timedelta(seconds=int(cfg.trainer.strategy.get("timeout", 3600)))
     )
     torch.set_float32_matmul_precision("medium")
     torch.backends.cudnn.allow_tf32 = True
@@ -64,7 +65,7 @@ def train(cfg):
         audio_prompt_duration=cfg.data.get("audio_prompt_duration", 3),
         num_delay_speech_tokens=cfg.model.get("num_delay_speech_tokens", 2),
         add_system_prompt=cfg.model.get("use_system_prompt", False),
-        ignore_data_system_prompt=cfg.model.get("ignore_data_system_prompt", False)
+        ignore_data_system_prompt=cfg.model.get("ignore_data_system_prompt", False),
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
     trainer.fit(model, datamodule)

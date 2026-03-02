@@ -54,7 +54,7 @@ def inference(cfg):
         source_sample_rate=cfg.data.source_sample_rate,
         target_sample_rate=cfg.data.target_sample_rate,
         input_roles=cfg.data.input_roles,
-        output_roles=cfg.data.output_roles
+        output_roles=cfg.data.output_roles,
     )
     datamodule = DataModule(cfg.data, tokenizer=model.stt_model.tokenizer, dataset=dataset)
     # export file to huggingface

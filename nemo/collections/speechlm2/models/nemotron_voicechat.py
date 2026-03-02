@@ -21,6 +21,8 @@ from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
+from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
+from nemo.collections.speechlm2.models.duplex_stt_model import DuplexSTTModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
@@ -28,11 +30,6 @@ from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogge
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
-
-
-from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
-
-from nemo.collections.speechlm2.models.duplex_stt_model import DuplexSTTModel
 
 
 class NemotronVoiceChat(LightningModule, HFHubMixin):
@@ -79,8 +76,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             logging.info(f"Loading pretrained s2s model from {self.cfg.pretrained_s2s_model}")
             if os.path.isdir(self.cfg.pretrained_s2s_model):
                 # Hugging Face format
-                from safetensors import safe_open
                 import gc
+
+                from safetensors import safe_open
 
                 # Load tensors incrementally to avoid OOM
                 model_state_dict = self.state_dict()

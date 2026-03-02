@@ -18,8 +18,8 @@ from .models import (
     DuplexS2SModel,
     DuplexS2SSpeechDecoderModel,
     DuplexSTTModel,
-    SALMWithAsrDecoder,
     NemotronVoiceChat,
+    SALMWithAsrDecoder,
 )
 
 __all__ = [

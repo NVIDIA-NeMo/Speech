@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Evaluation script for Duplex EARTTS models.
+Evaluation script for Duplex EARTTS models following MagpieTTS evaluation recipe. 
 
 Args:
     config-path (str): Path to the directory containing the YAML configuration file.
@@ -33,6 +33,9 @@ import os
 import soundfile as sf
 from nemo.collections.audio.parts.utils.resampling import resample
 import torch
+import json
+import librosa
+from torch.nn.utils.rnn import pad_sequence
 torch.set_float32_matmul_precision("medium")
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -47,11 +50,9 @@ from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 from nemo.collections.speechlm2.parts.metrics.asr_cer_wer import Intelligibility
+from contextlib import nullcontext
 
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-
-import json
-
 
 def read_jsonl_batches(
     file_path,
@@ -99,11 +100,6 @@ def read_jsonl_batches(
     if batch and not drop_last:
         yield batch
 
-import os
-import torch
-import librosa
-from torch.nn.utils.rnn import pad_sequence
-
 def collate_and_tokenize_custom(
     batch,
     model,
@@ -132,10 +128,10 @@ def collate_and_tokenize_custom(
                 seg_ids = seg_ids + model.tokenizer.text_to_ids(segment)
                 seg_len = len(seg_ids)
 
-                # Calculate pad length (4x the size of the text)
+                # Calculate pad length (10x the size of the text)
                 pad_len = seg_len * 10
 
-                # Construct: text + 4x pads
+                # Construct: text + 10x pads
                 # We extend the list with the tokens and then the pad tokens
                 full_ids.extend(seg_ids)
                 full_ids.extend([model.text_pad_id] * pad_len)
@@ -213,7 +209,7 @@ def collate_and_tokenize_custom(
             current_text_len = len(tokenized_list[i])
             
             if isinstance(s["text"], list):
-                # The text tokens are already physically padded 4x. 
+                # The text tokens are already physically padded 10x. 
                 # Target frames should match this structure exactly.
                 target_num_frames.append(current_text_len)
             else:
@@ -251,7 +247,7 @@ def collate_and_tokenize_custom(
         dtype=input_ids.dtype,
         device=input_ids.device
     )
-    
+
     # Copy the actual tokens (which might already contain list-based padding)
     padded_input_ids[:, :L] = input_ids
 
@@ -308,36 +304,26 @@ def inference(cfg):
             inputs["context_audio"] = inputs["context_audio"].to(model.device)
             inputs["context_audio_lengths"] = inputs["context_audio_lengths"].to(model.device).long()
 
-        if target_dtype == torch.float32:
-            with torch.no_grad():
-                model.set_init_inputs(
-                    speaker_audio=inputs["context_audio"],
-                    speaker_audio_lens=inputs["context_audio_lengths"],
-                    system_prompt=cfg.get("inference_system_prompt", None)
-                )
-                init_inputs = model.get_init_inputs(B=inputs["input_ids"].size(0))
+        use_autocast = target_dtype != torch.float32
+        autocast_ctx = (
+            torch.amp.autocast(device_type="cuda", dtype=target_dtype)
+            if use_autocast
+            else nullcontext()
+        )
 
-                audio, audio_len = model.offline_inference(
-                    next_subword_ids=inputs["input_ids"],
-                    formatter="custom",
-                    init_inputs=init_inputs,
-                )
-        else:
-            with torch.no_grad():
-                with torch.amp.autocast('cuda', dtype=target_dtype):
-                    model.set_init_inputs(
-                        speaker_audio=inputs["context_audio"],
-                        speaker_audio_lens=inputs["context_audio_lengths"],
-                        system_prompt=cfg.get("inference_system_prompt", None)
-                    )
-                    init_inputs = model.get_init_inputs(B=inputs["input_ids"].size(0))
+        with torch.no_grad(), autocast_ctx:
+            model.set_init_inputs(
+                speaker_audio=inputs["context_audio"],
+                speaker_audio_lens=inputs["context_audio_lengths"],
+                system_prompt=cfg.get("inference_system_prompt", None)
+            )
+            init_inputs = model.get_init_inputs(B=inputs["input_ids"].size(0))
 
-                    audio, audio_len = model.offline_inference(
-                        next_subword_ids=inputs["input_ids"],
-                        formatter="custom",
-                        init_inputs=init_inputs,
-                    )
-
+            audio, audio_len = model.offline_inference(
+                next_subword_ids=inputs["input_ids"],
+                formatter="custom",
+                init_inputs=init_inputs,
+            )
     
         audio = audio.float()
         # wav_dur = int(inputs["target_num_frames"][i] * model.target_samples_per_frame)

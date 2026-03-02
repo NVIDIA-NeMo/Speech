@@ -298,7 +298,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
             ready_state_ids: (set) Set of ready state IDs.
             keep_all_outputs: (bool) Whether to keep all outputs or not.
         """
-
+        # DEBUG: First chunk from simulstream can be all LOG_MEL_ZERO (-16.635) if the
+        # bufferer received a frame with wrong length/valid_size or zeros. Inspect features[0].
+        # import pdb; pdb.set_trace()
         feature_buffers, feature_buffer_lens = self.preprocess(features, right_paddings)
         states, stream_ids, eos_flags = [], [], []
         for request in requests:

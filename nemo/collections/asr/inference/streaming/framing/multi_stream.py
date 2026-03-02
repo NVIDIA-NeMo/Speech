@@ -177,7 +177,7 @@ class ContinuousBatchedFrameStreamer:
         stream = MonoStream(
             self.sample_rate, self.frame_size_in_secs, stream_id=self.stream_id, pad_last_frame=self.pad_last_frame
         )
-        # Load the next audio file
+        # Load the next audio file from disk (-> read_audio -> stream.samples); then __next__ slices into chunks
         audio_filepath = self.audio_filepaths[self.stream_id]
         options = self.options[self.stream_id]
         self.sid2filepath[self.stream_id] = audio_filepath

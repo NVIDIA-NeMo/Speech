@@ -240,7 +240,7 @@ class BasePipeline(PipelineInterface):
 
         if len(states_to_translate) == 0:
             return
-
+        # import pdb; pdb.set_trace()
         translations = self.nmt_model.translate(
             asr_transcripts, current_prefixes, src_langs, tgt_langs, src_contexts, tgt_contexts
         )

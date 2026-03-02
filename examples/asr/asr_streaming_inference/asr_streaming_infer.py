@@ -72,8 +72,10 @@ def main(cfg):
     if cfg.run_steps < 1:
         raise ValueError("run_steps must be at least 1")
 
-    # Reading audio filepaths
-    audio_filepaths, manifest, options, filepath_order = prepare_audio_data(cfg.audio_file, sort_by_duration=True)
+    # Reading audio filepaths (sort_by_duration=True reorders by duration so first decoded is shortest; False preserves manifest order)
+    audio_filepaths, manifest, options, filepath_order = prepare_audio_data(
+        cfg.audio_file, sort_by_duration=cfg.get("sort_by_duration", True)
+    )
     logging.info(f"Found {len(audio_filepaths)} audio files")
     if manifest:
         keys = list(manifest[0].keys())

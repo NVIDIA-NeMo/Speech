@@ -206,6 +206,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame
         from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 
+        # import pdb; pdb.set_trace()
         if audio.ndim > 1:
             raise ValueError("Simulstream processes only one audio at a time (batch size 1).")
 
@@ -215,9 +216,13 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             audio = np.concatenate([audio, np.zeros(expected_chunk_size - audio_length)])
         # Convert audio to torch tensor
         audio_tensor = torch.from_numpy(audio).float().to(self.pipeline.device)
-        
-        # Get actual audio length (valid samples without padding)
-        
+
+        # DEBUG: First chunk difference vs regular cache_aware script.
+        # Simulstream uses speech_chunk_size (may differ from pipeline chunk_size_in_secs).
+        # Frame length=audio_length, size=expected_chunk_size; bufferer gets [zeros, this chunk]
+        # and uses valid_size for preprocess. If length/valid_size are wrong you can get
+        # all LOG_MEL_ZERO (-16.635) in the first feature chunk.
+
         # Create request based on config's request_type
         if self.request_type == "feature_buffer":
             # Extract features first, then create FeatureBuffer

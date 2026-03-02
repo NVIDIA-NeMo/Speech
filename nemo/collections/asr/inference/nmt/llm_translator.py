@@ -26,6 +26,8 @@ try:
 except ImportError as e:
     raise ImportError("Failed to import vLLM.") from e
 
+from huggingface_hub import snapshot_download
+from huggingface_hub.utils import LocalEntryNotFoundError
 from nemo.utils import logging
 
 EURO_LLM_INSTRUCT_SMALL = "utter-project/EuroLLM-1.7B-Instruct"
@@ -164,10 +166,23 @@ class LLMTranslator:
         """
         try:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device_id)
-            model = LLM(model=self.model_name, **llm_params)
+            local_path=self.get_local_model_path(self.model_name)
+            if local_path is not None:
+                model = LLM(model=local_path, **llm_params)
+            else:
+                model = LLM(model=self.model_name, **llm_params)
             return model
         except Exception as e:
             raise RuntimeError(f"Model loading failed: {str(e)}")
+        
+    def get_local_model_path(self, repo_id):
+        try:
+            return snapshot_download(
+                repo_id=repo_id,
+                local_files_only=True,
+            )
+        except LocalEntryNotFoundError:
+            return None
 
     def translate_batch(
         self,

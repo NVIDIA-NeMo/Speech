@@ -63,125 +63,6 @@ from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
 from nemo.collections.speechlm2.models.duplex_stt_model import DuplexSTTModel
 
 
-def delay_eos(tokens, eos_token_id, pad_token_id, shift=10):
-    """
-    Delays each EOS token by `shift` steps forward. Replaces original EOS with PAD.
-    Skips move if it would go out of bounds or overwrite another EOS/PAD.
-    Safe for GPU execution.
-    """
-    B, T = tokens.shape
-    tokens = tokens.clone()
-    device = tokens.device
-
-    # Find all EOS positions
-    eos_mask = tokens == eos_token_id
-    if not eos_mask.any():
-        return tokens
-
-    # Flattened indices of EOS tokens
-    eos_indices = eos_mask.nonzero(as_tuple=False)  # [N, 2]
-    b_idx = eos_indices[:, 0]  # [N]
-    eos_pos = eos_indices[:, 1]  # [N]
-    new_pos = eos_pos + shift  # [N]
-
-    # Filter: new position must be in bounds and not overwrite EOS or PAD
-    valid = new_pos < T
-    if valid.any():
-        b_idx = b_idx[valid]
-        old_pos = eos_pos[valid]
-        new_pos = new_pos[valid]
-
-        # Now, check overwrite safety in new positions
-        target_vals = tokens[b_idx, new_pos]
-        safe = target_vals != eos_token_id
-
-        if safe.any():
-            b_idx = b_idx[safe]
-            old_pos = old_pos[safe]
-            new_pos = new_pos[safe]
-            # Move EOS token: clear original, set new
-            tokens[b_idx, old_pos] = pad_token_id
-            tokens[b_idx, new_pos] = eos_token_id
-    return tokens
-
-
-def generate_multiturn_speaking_mask(input_ids: torch.Tensor, bos_token_id: int = 0, eos_token_id: int = 1):
-    """
-    Efficient, batched speaking mask generator that marks 1 between <bos> and <eos> pairs.
-    If <eos> is missing after a <bos>, mask continues to end. Handles multiple turns.
-
-    Args:
-        input_ids (torch.Tensor): LongTensor of shape (B, T)
-        bos_token_id (int): Token ID for <bos>
-        eos_token_id (int): Token ID for <eos>
-
-    Returns:
-        torch.Tensor: FloatTensor of shape (B, T), with 1.0 for speaking, 0.0 for silence.
-
-    Note BOS is considered as speaking (1) and EOS as non speaking 0
-    """
-    B, T = input_ids.shape
-    device = input_ids.device
-    bos_mask = (input_ids == bos_token_id).to(torch.int32).to(device)
-    eos_mask = (input_ids == eos_token_id).to(torch.int32).to(device)
-    bos_cumsum = torch.cumsum(bos_mask, dim=1)
-    eos_cumsum = torch.cumsum(eos_mask, dim=1)
-    speaking_mask = (bos_cumsum > eos_cumsum).to(torch.float32)
-    return speaking_mask.long()
-
-
-def add_structured_noise_preserve_tail(
-    mask: torch.Tensor,
-    span_prob: float = 0.05,
-    min_len: int = 2,
-    max_len: int = 3,
-    min_preserve: int = 4,
-):
-    """
-    Adds structured noise to a binary mask by flipping random spans (2–3 tokens at a time),
-    while preserving the last `min_preserve` tokens of each speaking region (1s).
-
-    Args:
-        mask (torch.Tensor): Binary mask of shape (B, T), values in {0, 1}
-        span_prob (float): Probability of inserting a noisy span per token
-        min_len (int): Minimum span length to flip
-        max_len (int): Maximum span length to flip
-        min_preserve (int): Number of 1s at the end of each span to protect from flipping
-
-    Returns:
-        torch.Tensor: Noised mask (same shape)
-    """
-    B, T = mask.shape
-    noised_mask = mask.clone()
-
-    for b in range(B):
-        i = 0
-        while i < T:
-            if mask[b, i] == 1:
-                # Start of a speaking region
-                start = i
-                while i < T and mask[b, i] == 1:
-                    i += 1
-                end = i  # exclusive
-                span_len = end - start
-
-                if span_len > min_preserve:
-                    allowed_start = start
-                    allowed_end = end - min_preserve
-                    j = allowed_start
-                    while j < allowed_end:
-                        if random.random() < span_prob:
-                            flip_len = random.randint(min_len, max_len)
-                            flip_end = min(j + flip_len, allowed_end)
-                            noised_mask[b, j:flip_end] = (noised_mask[b, j:flip_end] + 1) % 2
-                            j = flip_end
-                        else:
-                            j += 1
-            else:
-                i += 1
-    return noised_mask
-
-
 class NemotronVoiceChat(LightningModule, HFHubMixin):
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (
@@ -363,7 +244,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         force_bos_positions=None,
         decode_audio: bool = True,
         incremental_audio_decoding: bool = False,
-        generation_config: dict = None, 
+        generation_config: dict = None,
         guidance_enabled: bool = True,
     ) -> dict[str, torch.Tensor]:
         """

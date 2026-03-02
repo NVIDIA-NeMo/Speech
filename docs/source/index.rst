@@ -1,7 +1,7 @@
-NVIDIA NeMo Toolkit Developer Docs
-===================================
+NVIDIA NeMo Speech Developer Docs
+=================================
 
-`NVIDIA NeMo Toolkit <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
+`NVIDIA NeMo Speech <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
 
 Models
 ------

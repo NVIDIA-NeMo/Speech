@@ -12,49 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-import random
 import tempfile
 
 import torch
-import torch.distributed as dist
-import torch.nn.functional as F
 import torchaudio
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
-from peft import PeftModel
-from torch import Tensor, nn
-from torch.distributed.fsdp import fully_shard
-from torch.distributed.tensor import Replicate, Shard
-from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
-    PrepareModuleInput,
-    RowwiseParallel,
-    SequenceParallel,
-    loss_parallel,
-    parallelize_module,
-)
-from transformers import DynamicCache
 
 from nemo.collections.audio.parts.utils.transforms import resample
-from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
-from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.collections.speechlm2.models.duplex_s2s_model import replace_control_speech_codes, tokens_to_str
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
-from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
-from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
-from safetensors.torch import load_file
-from nemo.collections.speechlm2.parts.pretrained import (
-    load_pretrained_hf,
-    set_model_dict_for_partial_init,
-    setup_audio_codec,
-    setup_speech_encoder,
-)
-from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
+from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
 
 

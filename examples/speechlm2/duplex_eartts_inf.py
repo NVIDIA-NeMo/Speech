@@ -39,15 +39,10 @@ from torch.nn.utils.rnn import pad_sequence
 torch.set_float32_matmul_precision("medium")
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cuda.matmul.allow_tf32 = True
-from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
-
-from nemo.collections.speechlm2 import DataModule, DuplexEARTTSDataset
 
 from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
 from nemo.core.config import hydra_runner
-from nemo.utils.exp_manager import exp_manager
-from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 from nemo.collections.speechlm2.parts.metrics.asr_cer_wer import Intelligibility
 from contextlib import nullcontext

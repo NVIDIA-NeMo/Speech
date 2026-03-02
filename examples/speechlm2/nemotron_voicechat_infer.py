@@ -23,7 +23,10 @@ from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceCh
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
-
+import torch
+torch.set_float32_matmul_precision("medium")
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 

@@ -949,7 +949,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.audio_prompt_latents[name] = cached
         return cached
 
-    def get_audio_prompt_lantent(self, name, B):
+    def get_audio_prompt_lantent(self, name):
         """
         Retrieve a cached audio prompt latent and adapt it to the requested batch size.
 
@@ -962,13 +962,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         Args:
             name (str):
                 Key of the cached audio prompt latent to retrieve.
-            B (int):
-                Desired batch size.
 
         Returns:
             Tensor:
-                Audio prompt latent with batch dimension equal to `B`, moved to `self.device`.
-                Shape: [B, ..., D]
+                Audio prompt latent moved to `self.device`.
+                Shape: [1, ..., D]
 
         Raises:
             KeyError:
@@ -981,16 +979,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         audio_prompt_latent = self.audio_prompt_latents[name]  # cached on CPU
 
-        if audio_prompt_latent.shape[0] == B:
-            out = audio_prompt_latent
-        elif audio_prompt_latent.shape[0] >= B:
-            out = audio_prompt_latent[:B]
-        else:
-            out = audio_prompt_latent[:1].expand(B, *audio_prompt_latent.shape[1:])
+        return audio_prompt_latent.to(self.device)
 
-        return out.to(self.device)
-
-    def set_init_inputs(self, speaker_audio, speaker_audio_lens, system_prompt=None):
+    def set_init_inputs(self, speaker_audio=None, speaker_audio_lens=None, system_prompt=None, speaker_name=None):
         """
         Registers and prepares initial input buffers for text/audio prompt and context, to warm up AR inference.
 
@@ -998,10 +989,12 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             speaker_audio (torch.Tensor): Batch of prompt audio, (B, T).
             speaker_audio_lens (torch.Tensor): Lengths for each sample in speaker_audio, (B,).
             system_prompt (str, optional): System prompt for context.
+            speaker_name (str, optional): Speaker name.
 
         Returns:
             dict: Dictionary of input tensors to be passed to inference, with registered buffers.
         """
+
         # compute prompt audio size and slice it
         with fp32_precision():
             # compute the exact number of samples for the prompt duration
@@ -1009,6 +1002,17 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 ((self.data_cfg.audio_prompt_duration * self.target_sample_rate) // self.target_samples_per_frame)
                 * self.target_samples_per_frame
             )
+            # if a speaker name exists, use the cached latent
+            if speaker_name is not None:
+                speaker_audio = torch.zeros(
+                    (1, prompt_audio_size),
+                    device=self.device,
+                    dtype=torch.float32,
+                )
+
+                speaker_audio_lens = torch.LongTensor(
+                    [speaker_audio.shape[1]]
+                ).to(self.device)
 
             B, T = speaker_audio.shape
             device = speaker_audio.device
@@ -1118,8 +1122,12 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "context_hidden_state": context_hidden_state[:, :-1] if context_hidden_state is not None else None,
             "subword_ids": subword_ids[:, :-1],
             "subword_mask": subword_mask.bool()[:, :-1],
-            "non_prompt_mask": non_prompt_mask.bool()[:, :-1],
+            "non_prompt_mask": non_prompt_mask.bool()[:, :-1]
         }
+
+        if speaker_name is not None:
+            init_inputs["audio_prompt_lantent"] = self.get_audio_prompt_lantent(speaker_name)
+
         self._init_input_cache = {}
         for k, v in init_inputs.items():
             if v is None:
@@ -1165,6 +1173,10 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 "subword_mask",
                 "non_prompt_mask",
             ]
+
+        # if audio_prompt_lantent available use it
+        if self._init_input_cache.get("audio_prompt_lantent", None):
+            init_inputs_names.append("audio_prompt_lantent")
 
         init_inputs = {}
         for name in init_inputs_names:

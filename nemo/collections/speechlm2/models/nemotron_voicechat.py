@@ -20,7 +20,6 @@ from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.audio.parts.utils.transforms import resample
-from nemo.collections.common.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
 from nemo.collections.speechlm2.models.duplex_stt_model import DuplexSTTModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
@@ -117,13 +116,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
     def init_from_model_from_ckpt(self, checkpoint_path):
         if checkpoint_path is not None:
-            if '.nemo' in checkpoint_path:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    NLPSaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
-                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
-                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
-            else:
-                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+            checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
 
             # partial initialization support
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())

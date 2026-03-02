@@ -18,7 +18,7 @@ Training, validation, and test parameters are specified using the ``model.train_
 
 Any initialization parameter that is accepted for the class `nemo.collections.tts.data.dataset.TTSDataset
 <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/data/dataset.py>`_  can be set in the config
-file. Refer to the `Dataset Processing Classes <./api.html#Datasets>`__ section of the API for a list of datasets classes and their respective parameters. An example TTS train and validation configuration should look similar to the following:
+file. Refer to the `Dataset Processing Classes <./api.html#datasets>`__ section of the API for a list of datasets classes and their respective parameters. An example TTS train and validation configuration should look similar to the following:
 
 .. code-block:: yaml
 

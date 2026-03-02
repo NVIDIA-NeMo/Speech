@@ -16,7 +16,7 @@ import functools
 import math
 from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Any, Concatenate
+from typing import Any
 
 import librosa
 import torch
@@ -111,7 +111,7 @@ def spectrogram(
     n_fft: int,
     hop_length: int,
     win_length: int,
-    window_fn: Callable[Concatenate[int, ...], Tensor] = torch.hann_window,
+    window_fn: Callable = torch.hann_window,
 ) -> Tensor:
     """
     Computes the Short-Time Fourier Transform (STFT) of a waveform with manual padding.
@@ -167,7 +167,7 @@ def spec_to_wav(
     n_fft: int,
     hop_length: int,
     win_length: int,
-    window_fn: Callable[Concatenate[int, ...], Tensor] = torch.hann_window,
+    window_fn: Callable = torch.hann_window,
     constrain_value_range: bool = False,
 ) -> Tensor:
     """
@@ -255,7 +255,7 @@ def spectrogram_mag(
     n_fft: int,
     hop_length: int,
     win_length: int,
-    window_fn: Callable[Concatenate[int, ...], Tensor] = torch.hann_window,
+    window_fn: Callable = torch.hann_window,
     power: float = 1.0,
 ) -> Tensor:
     """
@@ -355,7 +355,7 @@ def mel_spectrogram(
     n_mels: int,
     f_min: float,
     f_max: float | None = None,
-    window_fn: Callable[Concatenate[int, ...], Tensor] = torch.hann_window,
+    window_fn: Callable = torch.hann_window,
     power: float = 1.0,
     log_scale: str | None = "natural",
 ) -> Tensor:

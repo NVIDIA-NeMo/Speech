@@ -84,6 +84,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         input_signal_length=None,
         processed_signal=None,
         processed_signal_length=None,
+        return_encoder_emb=False,
     ):
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
             input_signal, input_signal_length, processed_signal, processed_signal_length
@@ -93,13 +94,16 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
-        encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
-        encoded, encoded_len = self.modality_adapter(audio_signal=encoded, length=encoded_len)
+        encoder_emb, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
+
+        encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
 
         # b, c, t -> b, t, c
         encoded = self.proj(encoded.transpose(1, 2))
-
-        return encoded, encoded_len
+        if return_encoder_emb:
+            return encoded, encoded_len, encoder_emb.transpose(1, 2)
+        else:
+            return encoded, encoded_len
 
 
 class IdentityConnector(nn.Module):

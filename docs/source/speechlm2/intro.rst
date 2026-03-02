@@ -9,10 +9,11 @@ SpeechLM2 refers to a collection that augments pre-trained Large Language Models
 This collection is designed to be compact, efficient, and to support easy swapping of different LLMs backed by HuggingFace AutoModel. 
 It has a first-class support for using dynamic batch sizes via Lhotse and various model parallelism techniques (e.g., FSDP2, Tensor Parallel, Sequence Parallel) via PyTorch DTensor API.
 
-We currently support three main model types:
+We currently support four main model types:
 * SALM (Speech-Augmented Language Model) - a simple but effective approach to augmenting pre-trained LLMs with speech understanding capabilities.
 * DuplexS2SModel - a full-duplex speech-to-speech model with an ASR encoder, directly predicting discrete audio codes.
 * DuplexS2SSpeechDecoderModel - a variant of DuplexS2SModel with a separate transformer decoder for speech generation.
+* DuplexSTTModel - a decoder model to generate agent text in duplex, in response to both user speech and text inputs.
 
 Using Pretrained Models
 -----------------------
@@ -111,6 +112,42 @@ You can run inference using the loaded pretrained DuplexS2SModel:
     transcription = results["text"][0]
     audio = results["audio"][0]
 
+DuplexSTTModel
+**************
+
+You can run inference using the loaded pretrained DuplexSTTModel:
+
+.. code-block:: python
+
+    import torch
+    import torchaudio
+    import nemo.collections.speechlm2 as slm
+
+    model = slm.models.DuplexSTTModel.from_pretrained("path/to/pretrained_checkpoint").eval()
+
+    # Load audio file
+    audio_path = "path/to/audio.wav"
+    audio_signal, sample_rate = torchaudio.load(audio_path)
+
+    # Resample if needed
+    if sample_rate != 16000:
+        audio_signal = torchaudio.functional.resample(audio_signal, sample_rate, 16000)
+        sample_rate = 16000
+
+    # Prepare audio for model
+    audio_signal = audio_signal.to(model.device)
+    audio_len = torch.tensor([audio_signal.shape[1]], device=model.device)
+
+    # Run offline inference - generates text output only
+    results = model.offline_inference(
+        input_signal=audio_signal,
+        input_signal_lens=audio_len
+    )
+
+    # Decode text tokens
+    transcription = results["text"][0]
+    print(f"Transcription: {transcription}")
+
 Training a Model
 ----------------
 
@@ -185,7 +222,7 @@ Collection Structure
 
 The speechlm2 collection is organized into the following key components:
 
-- **Models**: Contains implementations of DuplexS2SModel, DuplexS2SSpeechDecoderModel, and SALM
+- **Models**: Contains implementations of DuplexS2SModel, DuplexS2SSpeechDecoderModel, DuplexSTTModel, and SALM
 - **Modules**: Contains audio perception and speech generation modules
 - **Data**: Includes dataset classes and data loading utilities
 

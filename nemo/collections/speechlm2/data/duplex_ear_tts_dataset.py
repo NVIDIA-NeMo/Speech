@@ -206,6 +206,9 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
                 system_prompts_lens = None
                 system_prompts_raw = None
 
+            # get dataset name/type
+            dataset_type = [getattr(c, "type", "") for c in cuts]
+
             # add audio prompt if needed
             (
                 target_text_tokens,
@@ -288,7 +291,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             "audio_prompt": audio_prompt,
             "audio_prompt_lens": audio_prompt_lens,
             "system_prompts_raw": system_prompts_raw,
-            "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in cuts],
+            "dataset_type": dataset_type,
             "task": [getattr(cut, "task", "s2s_duplex") for cut in cuts],
         }
 

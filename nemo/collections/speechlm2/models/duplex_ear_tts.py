@@ -382,6 +382,34 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 full_dropout_mask, torch.full_like(target_text_tokens, self.text_pad_id), target_text_tokens
             )
 
+        if self.training and self.cfg.get("text_eos_duplicate_prob", 0.0) > 0:
+            p = self.cfg.text_eos_duplicate_prob
+
+            # [B, T] mask of EOS positions
+            eos_mask = target_text_tokens == self.text_eos_id
+
+            # Flatten EOS positions: tensor of shape [N, 2] where each row = (batch_idx, time_idx)
+            eos_positions = eos_mask.nonzero(as_tuple=False)  # [N, 2]
+
+            if eos_positions.numel() > 0:
+                N = eos_positions.shape[0]
+
+                # One random decision per EOS occurrence
+                duplicate_decision = torch.rand(N, device=target_text_tokens.device) < p  # [N]
+
+                # Filter only EOS tokens that will be duplicated and are not at position t=0
+                valid = (eos_positions[:, 1] > 0) & duplicate_decision  # [N]
+
+                if valid.any():
+                    # Select only valid EOS positions
+                    valid_positions = eos_positions[valid]  # [M, 2]
+
+                    # Indices for the token BEFORE the EOS (t-1)
+                    b_idx = valid_positions[:, 0]
+                    t_idx = valid_positions[:, 1] - 1
+
+                    # Replace token before EOS with an EOS
+                    target_text_tokens[b_idx, t_idx] = self.text_eos_id  
 
         # BOS dropout to make the model more robust
         if self.training and self.cfg.get("text_bos_dropout_prob", 0.0) > 0:
@@ -492,6 +520,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             subword_ids=inputs["subword_ids"],
             subword_mask=inputs["subword_mask"],
             non_prompt_mask=inputs["non_prompt_mask"],
+            dataset_type=batch.get("dataset_type", None),
         )
         loss_dict = {"lm_loss": tts_output.lm_loss, "c_loss": tts_output.c_loss, "k_loss": tts_output.k_loss}
         loss = sum(loss_dict.values())
@@ -652,7 +681,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 "non_prompt_mask": inputs["non_prompt_mask"],
                 "context_hidden_state": inputs["context_hidden_state"],
                 "subword_ids": inputs["subword_ids"],
-                "subword_mask": inputs["subword_mask"]
+                "subword_mask": inputs["subword_mask"],
             }
             # cut init_inputs to consider only the prompt
             for key in init_inputs:
@@ -661,73 +690,15 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                         [init_inputs[key][i, :plen] for i, plen in enumerate(dataset_batch["prompt_lens"])]
                     )
         else:
-            """
-            def compare_init_inputs(dl_inputs, model_inputs):
-                all_keys = set(dl_inputs.keys()) | set(model_inputs.keys())
-                
-                print(f"{'Key':<25} | {'Match?':<8} | {'Details'}")
-                print("-" * 60)
-                
-                for key in all_keys:
-                    if key not in dl_inputs:
-                        print(f"{key:<25} | MISSING  | Key not in dataloader_init_inputs")
-                        continue
-                    if key not in model_inputs:
-                        print(f"{key:<25} | MISSING  | Key not in model.get_init_inputs")
-                        continue
-                        
-                    t1 = dl_inputs[key]
-                    t2 = model_inputs[key]
-                    
-                    # Handle NoneTypes
-                    if t1 is None or t2 is None:
-                        if t1 == t2:
-                            print(f"{key:<25} | OK       | Both are None")
-                        else:
-                            print(f"{key:<25} | FAIL     | One is None, other is {type(t1 or t2)}")
-                        continue
-
-                    # Compare Shapes
-                    if t1.shape != t2.shape:
-                        print(f"{key:<25} | FAIL     | Shape mismatch: {list(t1.shape)} vs {list(t2.shape)}")
-                        continue
-                        
-                    # Compare Values
-                    if torch.allclose(t1.to(t2.device), t2, atol=1e-6):
-                        print(f"{key:<25} | OK       | Exact/Close match")
-                    else:
-                        diff = (t1.to(t2.device) - t2).abs().max()
-                        print(f"{key:<25} | FAIL     | Value mismatch (Max Diff: {diff:.6f})")
-
-            # cut it on prompt
-            init_inputs = {
-                "code": inputs["code"],
-                "audio_mask": inputs["audio_mask"],
-                "non_prompt_mask": inputs["non_prompt_mask"],
-                "context_hidden_state": inputs["context_hidden_state"],
-                "subword_ids": inputs["subword_ids"],
-                "subword_mask": inputs["subword_mask"]
-            }
-            # cut init_inputs to consider only the prompt
-            for key in init_inputs:
-                if init_inputs[key] is not None:
-                    init_inputs[key] = torch.stack(
-                        [init_inputs[key][i, :plen] for i, plen in enumerate(dataset_batch["prompt_lens"])]
-                    )
-            
-            dataloader_init_inputs = copy.deepcopy(init_inputs)
-            """
-
+            sp = dataset_batch.get("system_prompts_raw")
+            system_prompt = sp[0] if sp else None
             # set init inputs and get it
             self.set_init_inputs(
                 speaker_audio=dataset_batch["audio_prompt"],
                 speaker_audio_lens=dataset_batch["audio_prompt_lens"],
-                system_prompt=dataset_batch["system_prompts_raw"][0], # use the first position of the batch as system prompt
+                system_prompt=system_prompt, # use the first position of the batch as system prompt
             )
             init_inputs = self.get_init_inputs(B=inputs["subword_ids"].size(0))
-
-            # Run the comparison
-            # compare_init_inputs(dataloader_init_inputs, init_inputs)
 
         # remove the prompt from the target_text_tokens to emulate S2S connected inference
         next_subword_ids = torch.stack(
@@ -1148,7 +1119,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "context_hidden_state",
             "subword_ids",
             "subword_mask",
-            "non_prompt_mask"
+            "non_prompt_mask",
         ],
     ):
         """
@@ -1254,7 +1225,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             "use_cache": True,
             "guidance_enabled": guidance_enabled,
             "generation_config": generation_config,
-            "ignore_eos_flag_stop": ignore_eos_flag_stop
+            "ignore_eos_flag_stop": ignore_eos_flag_stop,
         }
 
         outputs = self.tts_model(**inputs)

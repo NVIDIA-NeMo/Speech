@@ -47,7 +47,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         self.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
 
         # Load Duplex STT model
-        self.stt_model = DuplexSTTModel(OmegaConf.to_container(self.cfg.stt, resolve=True))
+        self.stt_model = DuplexSTTModel(OmegaConf.to_container(self.cfg.stt.model, resolve=True))
 
         # Load Duplex TTS model
         # delete old config name for old version compatibility
@@ -142,7 +142,13 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         for k, m in bleu.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
 
-    def validation_step(self, batch: dict, batch_idx: int):
+    def validation_step(
+        self,
+        batch: dict,
+        batch_idx: int,
+        speaker_audio: torch.Tensor = None,
+        speaker_audio_lens: torch.Tensor = None,
+    ):
 
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
@@ -158,6 +164,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 dataset_batch["source_audio_lens"],
                 prompt_tokens=prompt_tokens,
                 prompt_token_lens=prompt_token_lens,
+                speaker_audio=speaker_audio,
+                speaker_audio_lens=speaker_audio_lens,
             )
 
             with fp32_precision():  # resample is fragile to bfloat16 default dtype
@@ -202,8 +210,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         input_signal_lens: torch.Tensor,
         prompt_tokens: torch.Tensor = None,
         prompt_token_lens: torch.Tensor = None,
+        speaker_audio: torch.Tensor = None,
+        speaker_audio_lens: torch.Tensor = None,
         input_pad_len: int = 0,
-        force_bos_positions=None,
         decode_audio: bool = True,
         incremental_audio_decoding: bool = False,
         generation_config: dict = None,
@@ -227,27 +236,34 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 * "audio_len" output lengths as number of waveform samples of shape (B,) (when `decode_audio=True`).
         """
 
-        inference_state = self.stt_model._init_inference(
-            input_signal, input_signal_lens, input_pad_len, force_bos_positions, prompt_tokens, prompt_token_lens
+        inference_state = self.stt_model.streaming_inference._init_inference(
+            input_signal, input_signal_lens, input_pad_len, prompt_tokens, prompt_token_lens
         )
 
-        ans, inference_state = self.stt_model._step_zero(inference_state)
+        ans, inference_state = self.stt_model.streaming_inference._step_zero(inference_state)
 
         B = inference_state["B"]
         T = inference_state["T"]
 
-        # create speaker audio for init
-        speaker_audio, sr = torchaudio.load(self.cfg.inference_speaker_reference)
-        speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
-        speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
+        # if speaker_name is provided uses it, if not uses the speaker_audio provided, if speaker_audio is None load it from inference_speaker_reference
+        speaker_name = self.cfg.get("inference_speaker_name", None)
+        if speaker_name is not None:
+            speaker_audio = None
+            speaker_audio_lens = None
+        elif speaker_audio is None:
+            # create speaker audio for init
+            speaker_audio, sr = torchaudio.load(self.cfg.inference_speaker_reference)
+            speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
+            speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
 
-        # lengths -> [B]
-        speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device)
+            # lengths -> [B]
+            speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device)
 
         #  init tts_model
         self.tts_model.set_init_inputs(
             speaker_audio=speaker_audio,
             speaker_audio_lens=speaker_audio_lens,
+            speaker_name=speaker_name,
         )
         init_inputs = self.tts_model.get_init_inputs(B=B)
 
@@ -273,7 +289,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Autoregressive loop
         for t in range(1, T):
             # do one step inference on Duplex STT model
-            _ = self.stt_model._step_inference(t, inference_state, ans, force_bos_positions)
+            _ = self.stt_model.streaming_inference._step_inference(t, inference_state, ans)
 
             # do one step inference on Duplex TTS model
             # current subword id is always seem
@@ -316,7 +332,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         if self._use_fsdp and T > inference_state["T_local"]:
             gen_codes = gen_codes[:, : inference_state["T_local"]]
 
-        ans = self.stt_model._post_inference(inference_state, prompt_token_lens)
+        ans = self.stt_model.streaming_inference._post_inference(inference_state, prompt_token_lens)
 
         if decode_audio:
             gen_codes = gen_codes[:, : inference_state["T_local"]]

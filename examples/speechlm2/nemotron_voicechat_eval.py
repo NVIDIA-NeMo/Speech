@@ -17,7 +17,7 @@ import torch
 from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
 
-from nemo.collections.speechlm2 import DataModule, DuplexS2SDataset
+from nemo.collections.speechlm2 import DataModule, DuplexSTTDataset
 
 from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
 from nemo.core.config import hydra_runner
@@ -48,7 +48,7 @@ def inference(cfg):
         if model.tts_model.cfg.get("pretrained_model", None):
             model.tts_model.restore_from_pretrained_checkpoint(model.tts_model.cfg.pretrained_model)
 
-    dataset = DuplexS2SDataset(
+    dataset = DuplexSTTDataset(
         tokenizer=model.stt_model.tokenizer,
         frame_length=cfg.data.frame_length,
         source_sample_rate=cfg.data.source_sample_rate,

@@ -58,7 +58,7 @@ model:
       max_num_speakers: 1  # max num of extra speakers to add
 
   validation_ds:
-    manifest_filepath: ???
+    manifest_filepath: null
     noise_manifest: null
     sample_rate: ${model.sample_rate}
     batch_size: 8 # you may increase batch_size if your memory allows

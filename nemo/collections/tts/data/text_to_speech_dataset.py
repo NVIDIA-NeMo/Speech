@@ -30,7 +30,6 @@ from nemo.collections.tts.parts.preprocessing.features import Featurizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _read_audio,
     beta_binomial_prior_distribution,
-    chunk_and_tokenize_text_by_sentence,
     chunk_text_for_inference,
     filter_dataset_by_duration,
     get_tokenizer_for_language,
@@ -849,11 +848,19 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
         )
 
     def _get_tokenizer_name(self, data, language: str = "en") -> str:
-        """Get tokenizer name for a sample, from tokenizer_names or language mapping.
+        """Resolve the tokenizer name for a single sample.
+
+        Resolution order:
+        1. ``data.tokenizer_names[0]`` — explicit per-sample list from the
+           dataset config (first entry chosen for determinism).
+        2. Language-based lookup via ``get_tokenizer_for_language(language,
+           available)`` using the keys registered in ``self.text_tokenizer``.
+        3. Hard-coded fallback ``"english_phoneme"`` when no tokenizer object
+           is available at all.
 
         Args:
             data: DatasetSample with optional tokenizer_names field.
-            language: Language code from manifest.
+            language: Language code from the manifest entry (e.g. ``"en"``).
 
         Returns:
             Tokenizer name to use for encoding.

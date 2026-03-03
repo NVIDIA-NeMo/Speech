@@ -26,7 +26,7 @@ import os
 import shutil
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import soundfile as sf
 import torch

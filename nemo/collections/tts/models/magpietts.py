@@ -25,7 +25,6 @@ import soundfile as sf
 import torch
 import wandb
 from hydra.utils import instantiate
-from lhotse.serialization import load_yaml
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
 from omegaconf import DictConfig, OmegaConf, open_dict

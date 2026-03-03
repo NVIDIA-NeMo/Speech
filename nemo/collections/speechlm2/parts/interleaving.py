@@ -36,6 +36,7 @@ def build_interleaved_sequence(
     blank_id: int,
     tokenizer,
     frame_shift: float,
+    pad_embed: Tensor | None = None,
 ) -> tuple[list[Tensor | None], list[int], list[int]]:
     """
     Build the interleaved audio+text sequence structure and labels.
@@ -51,6 +52,8 @@ def build_interleaved_sequence(
     - When a text token is ready, its label goes at the audio frame position,
       and a None marker is inserted as input (to be filled with the embedding later)
     - When no text is ready, label = blank
+    - After all audio frames, remaining ready tokens are emitted during a
+      "flush" phase using ``pad_embed`` as the audio input (matching inference).
 
     Args:
         audio_embs: (T, H) per-frame audio embeddings
@@ -59,6 +62,9 @@ def build_interleaved_sequence(
         blank_id: token ID for blank/no-emission
         tokenizer: tokenizer with text_to_ids(text) -> list[int]
         frame_shift: duration of one audio frame in seconds
+        pad_embed: (H,) padding audio embedding for flush frames.
+            When provided, tokens with ``ready_frame >= T`` are emitted
+            using this embedding instead of being silently dropped.
 
     Returns:
         input_parts: list of (H,) tensors at audio positions, None at text positions
@@ -104,5 +110,20 @@ def build_interleaved_sequence(
             next_ready = next(ready_iter, None)
         else:
             label_parts.append(blank_id)
+
+    # Flush: emit remaining tokens that weren't ready before the audio ended.
+    # This matches the flush phase in generate() which sends exactly ``latency``
+    # padding audio frames, so we cap at ``latency`` tokens to keep consistency.
+    if pad_embed is not None:
+        flush_emitted = 0
+        while next_ready is not None and flush_emitted < latency:
+            tok_id = next_ready[1]
+            input_parts.append(pad_embed)
+            label_parts.append(tok_id)
+            input_parts.append(None)
+            text_token_ids.append(tok_id)
+            label_parts.append(blank_id)
+            next_ready = next(ready_iter, None)
+            flush_emitted += 1
 
     return input_parts, label_parts, text_token_ids

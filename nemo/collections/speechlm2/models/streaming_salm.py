@@ -121,6 +121,11 @@ class StreamingSALM(LightningModule, HFHubMixin):
             ]
         )
 
+        # --- Learned padding audio embedding for flush phase ---
+        # Used when audio has ended but text tokens remain to be emitted.
+        # Learned (not zero) so the model can distinguish flush from batch-padding.
+        self.pad_audio_embed = nn.Parameter(torch.zeros(llm_hidden))
+
         # --- Forced Aligner (frozen, training only, late-initialized) ---
         self.forced_aligner = None
 
@@ -135,6 +140,9 @@ class StreamingSALM(LightningModule, HFHubMixin):
         # --- Streaming cache config ---
         self.cache_sink_size = self.cfg.get("cache_sink_size", 64)
         self.cache_window_size = self.cfg.get("cache_window_size", 2048)
+
+        # --- Offline mode (no forced aligner, all audio before text) ---
+        self.offline = self.cfg.get("offline", False)
 
         # --- FSDP / TP flags ---
         self._use_fsdp = False
@@ -177,6 +185,8 @@ class StreamingSALM(LightningModule, HFHubMixin):
 
     def on_fit_start(self) -> None:
         """Late-initialize the forced aligner (0.6B model) before fit (incl. sanity check)."""
+        if self.offline:
+            return
         if self.forced_aligner is None:
             self.forced_aligner = QwenForcedAligner(
                 pretrained_model=self.cfg.get(
@@ -250,6 +260,9 @@ class StreamingSALM(LightningModule, HFHubMixin):
             # 3. Audio frame embeddings
             audio_embeds = self.embed_audio_codes(codes)
 
+        if self.offline:
+            return self._prepare_inputs_offline(batch, audio_embeds, code_lens)
+
         # 4. Forced alignment
         with torch.cuda.nvtx.range("qfa_align"):
             with torch.no_grad():
@@ -271,6 +284,8 @@ class StreamingSALM(LightningModule, HFHubMixin):
         # 5-6. Build interleaved sequences per example (batched embedding)
         with torch.cuda.nvtx.range("interleaving"):
             frame_shift = self.mimi.token_equivalent_duration
+
+            pad_embed = self.pad_audio_embed
 
             # --- Phase 1: Build sequences, collect ALL text token IDs ---
             all_token_ids: list[int] = []  # flat list of ALL token IDs to embed
@@ -305,6 +320,7 @@ class StreamingSALM(LightningModule, HFHubMixin):
                     self.blank_token_id,
                     self.tokenizer,
                     frame_shift,
+                    pad_embed=pad_embed,
                 )
 
                 # Accumulate token IDs: prompt first, then interleaved text
@@ -364,6 +380,58 @@ class StreamingSALM(LightningModule, HFHubMixin):
             "attention_mask": attention_mask,
             "labels": labels,
         }
+
+    def _prepare_inputs_offline(
+        self, batch: dict, audio_embeds: Tensor, code_lens: Tensor
+    ) -> dict:
+        """
+        Offline mode: ``[audio_0 ... audio_{T-1} | text_0 ... text_{N-2}]``
+        with labels ``[-100*(T-1) | text_0 ... text_{N-1}]`` (unshifted loss).
+
+        ``text_ids`` includes EOS so the last predicted label is EOS.
+        """
+        device = audio_embeds.device
+        all_token_ids: list[int] = []
+        per_sample: list[tuple[int, int]] = []  # (T, num_text)
+
+        for i, transcript in enumerate(batch["transcripts"]):
+            T = code_lens[i].item()
+            text_ids = self.tokenizer.text_to_ids(transcript) + [self.text_eos_id]
+            all_token_ids.extend(text_ids)
+            per_sample.append((T, len(text_ids)))
+
+        if all_token_ids:
+            all_embeds = self.embed_tokens(
+                torch.tensor(all_token_ids, dtype=torch.long, device=device)
+            )
+        else:
+            all_embeds = torch.empty(
+                0, audio_embeds.shape[-1], dtype=audio_embeds.dtype, device=device
+            )
+
+        all_input_embeds: list[Tensor] = []
+        all_labels: list[Tensor] = []
+        idx = 0
+
+        for i, (T, num_text) in enumerate(per_sample):
+            audio_embs_i = audio_embeds[i, :T]
+            text_embeds = all_embeds[idx : idx + num_text]
+            text_ids = all_token_ids[idx : idx + num_text]
+            idx += num_text
+
+            # Input: [audio_0..audio_{T-1} | text_0..text_{N-2}]  (drop EOS embed from input)
+            # Labels: [-100 * (T-1) | text_0 | text_1 | ... | text_{N-1}=EOS]
+            input_embs = torch.cat([audio_embs_i, text_embeds[:-1]])
+            labels = torch.cat([
+                torch.full((T - 1,), -100, dtype=torch.long, device=device),
+                torch.tensor(text_ids, dtype=torch.long, device=device),
+            ])
+            all_input_embeds.append(input_embs)
+            all_labels.append(labels)
+
+        input_embeds, attention_mask = _left_pad_embeds(all_input_embeds)
+        labels = left_collate_vectors(all_labels, padding_value=-100)
+        return {"input_embeds": input_embeds, "attention_mask": attention_mask, "labels": labels}
 
     def training_step(self, batch: dict, batch_idx: int):
         # Freeze modules
@@ -528,16 +596,12 @@ class StreamingSALM(LightningModule, HFHubMixin):
             codes = MimiEncoder.apply_delay_pattern(codes, code_lens)
         audio_embeds = self.embed_audio_codes(codes)  # (B, T_max, H)
 
+        if self.offline:
+            return self._generate_offline(audio_embeds, code_lens)
+
         T = [code_lens[b].item() for b in range(B)]
 
-        # --- Padding audio embedding for flush phase ---
-        pad_codes = torch.full(
-            (1, self.num_codebooks, 1),
-            self.audio_codebook_size,
-            dtype=torch.long,
-            device=device,
-        )
-        pad_embed = self.embed_audio_codes(pad_codes).squeeze(0).squeeze(0)  # (H,)
+        pad_embed = self.pad_audio_embed
 
         # --- Build per-sample prompts ---
         # Normalise context to a list of B items (None or str each).
@@ -602,6 +666,7 @@ class StreamingSALM(LightningModule, HFHubMixin):
 
             # --- Build (B, 1, H) input for this step ---
             step_embeds = []
+            is_feedback_step = [False] * B
             for b in range(B):
                 if done[b]:
                     step_embeds.append(pad_embed)
@@ -610,6 +675,7 @@ class StreamingSALM(LightningModule, HFHubMixin):
                         self.embed_tokens(pending_text[b : b + 1]).squeeze(0)
                     )
                     need_text_feedback[b] = False
+                    is_feedback_step[b] = True
                 elif audio_ptr[b] < T[b]:
                     step_embeds.append(audio_embeds[b, audio_ptr[b]])
                     audio_ptr[b] += 1
@@ -654,18 +720,89 @@ class StreamingSALM(LightningModule, HFHubMixin):
                 )
 
             # --- Decode predictions per sample ---
+            # Only check predictions from audio/flush steps, not text-feedback
+            # steps.  In training, text-feedback labels are always blank; the
+            # model's output there is not an emission signal.  Matching this
+            # in inference avoids (a) premature flush termination and (b)
+            # hallucination cascades from text-feedback logits.
             pred_ids = out["logits"][:, -1, :].argmax(dim=-1)  # (B,)
             for b in range(B):
-                if done[b]:
+                if done[b] or is_feedback_step[b]:
                     continue
                 pred_id = pred_ids[b].item()
                 if pred_id != self.blank_token_id and pred_id != self.text_eos_id:
                     generated[b].append(pred_id)
                     need_text_feedback[b] = True
                     pending_text[b] = pred_id
-                elif audio_ptr[b] >= T[b] and not need_text_feedback[b]:
-                    # In flush phase and got blank/EOS → done
+                elif audio_ptr[b] >= T[b]:
+                    # In flush phase and got blank/EOS from pad frame → done
                     done[b] = True
+
+        return [self.tokenizer.ids_to_text(g) for g in generated]
+
+    def _generate_offline(
+        self, audio_embeds: Tensor, code_lens: Tensor
+    ) -> list[str]:
+        """Offline generation: process all audio, then greedy-decode text."""
+        B = audio_embeds.shape[0]
+        device = audio_embeds.device
+
+        # Left-pad audio to match training convention (_left_pad_embeds).
+        # This ensures position -1 is always the last valid audio frame.
+        max_T = code_lens.max().item()
+        padded_audio = torch.zeros(B, max_T, audio_embeds.shape[-1], dtype=audio_embeds.dtype, device=device)
+        attn_mask = torch.zeros(B, max_T, dtype=torch.long, device=device)
+        for b in range(B):
+            T = code_lens[b].item()
+            padded_audio[b, max_T - T :] = audio_embeds[b, :T]
+            attn_mask[b, max_T - T :] = 1
+
+        # Prefill: process all audio frames at once
+        positions = torch.arange(max_T, device=device)
+        out = self.llm(
+            inputs_embeds=padded_audio,
+            attention_mask=attn_mask,
+            cache_position=positions,
+            use_cache=True,
+            return_dict=True,
+        )
+        cache = out["past_key_values"]
+        abs_pos = max_T
+
+        # Greedy autoregressive text decode
+        generated: list[list[int]] = [[] for _ in range(B)]
+        done = [False] * B
+        max_new_tokens = 512
+
+        pred_ids = out["logits"][:, -1, :].argmax(dim=-1)  # (B,)
+        for _step in range(max_new_tokens):
+            for b in range(B):
+                if done[b]:
+                    continue
+                pid = pred_ids[b].item()
+                if pid == self.text_eos_id:
+                    done[b] = True
+                else:
+                    generated[b].append(pid)
+            if all(done):
+                break
+
+            next_embeds = self.embed_tokens(pred_ids).unsqueeze(1)  # (B, 1, H)
+            attn_mask = torch.cat(
+                [attn_mask, torch.ones(B, 1, dtype=torch.long, device=device)], dim=1
+            )
+            cur_pos = torch.tensor([abs_pos], device=device)
+            out = self.llm(
+                inputs_embeds=next_embeds,
+                attention_mask=attn_mask,
+                past_key_values=cache,
+                cache_position=cur_pos,
+                use_cache=True,
+                return_dict=True,
+            )
+            cache = out["past_key_values"]
+            abs_pos += 1
+            pred_ids = out["logits"][:, -1, :].argmax(dim=-1)
 
         return [self.tokenizer.ids_to_text(g) for g in generated]
 
@@ -738,12 +875,8 @@ class StreamingSALM(LightningModule, HFHubMixin):
             cache_pos = state.cache_length
             abs_pos = state.abs_position
             for _ in range(state.latency):
-                # Feed a padding audio embedding (zeros) to trigger pending text
-                pad_codes = torch.full(
-                    (1, self.num_codebooks, 1), self.audio_codebook_size,
-                    dtype=torch.long, device=device,
-                )
-                pad_emb = self.embed_audio_codes(pad_codes)  # (1, 1, H)
+                # Feed the learned padding audio embedding to trigger pending text
+                pad_emb = self.pad_audio_embed.unsqueeze(0).unsqueeze(0)  # (1, 1, H)
                 cur_pos = torch.tensor([abs_pos], device=device)
                 out = self.llm(
                     inputs_embeds=pad_emb,
@@ -820,9 +953,12 @@ class StreamingSALM(LightningModule, HFHubMixin):
             # Only embed the NEW frames (skip the overlap prefix)
             audio_embeds = self.embed_audio_codes(delayed[:, :, overlap:])
 
-            # Save last (num_codebooks - 1) raw code frames for the next chunk
-            buffer_size = min(self.num_codebooks - 1, raw_codes.shape[2])
-            new_raw_code_buffer = raw_codes[:, :, -buffer_size:] if buffer_size > 0 else None
+            # Save last (num_codebooks - 1) raw code frames for the next chunk.
+            # Use ``combined`` (buffer + current chunk) rather than ``raw_codes``
+            # alone so the buffer accumulates enough context for higher codebooks
+            # when individual chunks are smaller than num_codebooks - 1 frames.
+            buffer_size = min(self.num_codebooks - 1, combined.shape[2])
+            new_raw_code_buffer = combined[:, :, -buffer_size:] if buffer_size > 0 else None
         else:
             # No delay pattern — embed raw codes directly, no cross-chunk buffer needed.
             audio_embeds = self.embed_audio_codes(audio_codes)

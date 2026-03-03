@@ -256,7 +256,7 @@ class TestBuildInterleavedSequence:
         assert torch.allclose(input_parts[1], expected_text_emb)
 
     def test_multiword_subword_overflow(self, blank_id, frame_shift):
-        """Word with more subword tokens than remaining frames: tokens are clipped."""
+        """Word with more subword tokens than remaining frames: tokens are clipped (no pad_embed)."""
         T = 3
         H = 4
         audio_embs = torch.randn(T, H)
@@ -279,6 +279,91 @@ class TestBuildInterleavedSequence:
         # First tokens should be in order
         assert text_labels == [ord("a"), ord("b"), ord("c")]
         assert text_token_ids == [ord("a"), ord("b"), ord("c")]
+
+    def test_flush_basic(self, blank_id, frame_shift):
+        """With pad_embed, overflow tokens are flushed after audio ends."""
+        T = 3
+        H = 4
+        audio_embs = torch.randn(T, H)
+        pad_embed = torch.zeros(H)
+        # K=4 with word at frame 0: ready_frame = 0+4-1+j = 3+j
+        # For "ab" -> ready at frames 3, 4 — both beyond T=3
+        alignment = [WordAlignment(text="ab", start_time=0.0, end_time=0.16)]
+        K = 4
+
+        input_parts, label_parts, text_token_ids = build_interleaved_sequence(
+            audio_embs=audio_embs,
+            alignment=alignment,
+            latency=K,
+            blank_id=blank_id,
+            tokenizer=MockTokenizer(),
+            frame_shift=frame_shift,
+            pad_embed=pad_embed,
+        )
+
+        # Audio phase: 3 frames, all blank (no token ready yet)
+        # Flush phase: 2 tokens flushed (both fit within latency=4)
+        # Each flush token takes 2 positions: [pad_embed, text_placeholder]
+        assert text_token_ids == [ord("a"), ord("b")]
+        text_labels = [l for l in label_parts if l != blank_id]
+        assert text_labels == [ord("a"), ord("b")]
+        # Total: 3 audio + 2*(pad + text) = 7
+        assert len(input_parts) == 7
+        assert len(label_parts) == 7
+
+    def test_flush_limited_by_latency(self, blank_id, frame_shift):
+        """Flush emits at most `latency` tokens to match inference behavior."""
+        T = 2
+        H = 4
+        audio_embs = torch.randn(T, H)
+        pad_embed = torch.zeros(H)
+        # "abcde" -> 5 tokens with K=1: ready at frames 0,1,2,3,4
+        # Audio T=2 can emit tokens at frames 0,1 (2 tokens)
+        # Remaining: 3 tokens overflow, but flush limited to K=1
+        alignment = [WordAlignment(text="abcde", start_time=0.0, end_time=0.16)]
+        K = 1
+
+        input_parts, label_parts, text_token_ids = build_interleaved_sequence(
+            audio_embs=audio_embs,
+            alignment=alignment,
+            latency=K,
+            blank_id=blank_id,
+            tokenizer=MockTokenizer(),
+            frame_shift=frame_shift,
+            pad_embed=pad_embed,
+        )
+
+        # Audio: frame 0 emits 'a', frame 1 emits 'b'
+        # Flush: K=1 so only 1 more token ('c') flushed
+        # 'd' and 'e' are dropped
+        assert text_token_ids == [ord("a"), ord("b"), ord("c")]
+        text_labels = [l for l in label_parts if l != blank_id]
+        assert text_labels == [ord("a"), ord("b"), ord("c")]
+
+    def test_flush_preserves_input_label_consistency(self, blank_id, frame_shift):
+        """len(input_parts) == len(label_parts) with pad_embed across configurations."""
+        H = 4
+        pad_embed = torch.zeros(H)
+        for T in range(1, 8):
+            for K in range(1, 6):
+                audio_embs = torch.randn(T, H)
+                alignment = [WordAlignment(text="ab", start_time=0.0, end_time=0.16)]
+                input_parts, label_parts, text_token_ids = build_interleaved_sequence(
+                    audio_embs=audio_embs,
+                    alignment=alignment,
+                    latency=K,
+                    blank_id=blank_id,
+                    tokenizer=MockTokenizer(),
+                    frame_shift=frame_shift,
+                    pad_embed=pad_embed,
+                )
+                assert len(input_parts) == len(label_parts), (
+                    f"Mismatch at T={T}, K={K}: {len(input_parts)} vs {len(label_parts)}"
+                )
+                none_count = sum(1 for p in input_parts if p is None)
+                assert none_count == len(text_token_ids), (
+                    f"None count mismatch at T={T}, K={K}: {none_count} vs {len(text_token_ids)}"
+                )
 
     def test_input_and_label_length_consistency(self, blank_id, frame_shift):
         """len(input_parts) == len(label_parts) always."""

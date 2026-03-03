@@ -27,6 +27,20 @@ from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 
 SR = 16000
 
+# Spelling patterns at end of a word that produce sibilant fricatives
+# (/s/, /z/, /ʃ/, /tʃ/) whose noise-like energy extends past the
+# forced-alignment boundary.
+_SIBILANT_ENDINGS = ("sh", "ch", "s", "z", "x", "ce", "se", "ze")
+
+
+def _ends_with_sibilant(text: str) -> bool:
+    """Return True if the last word in *text* ends with a sibilant sound."""
+    words = text.strip().rstrip(".,!?;:\"'").split()
+    if not words:
+        return False
+    last_word = words[-1].lower()
+    return last_word.endswith(_SIBILANT_ENDINGS)
+
 
 class EoUType(StrEnum):
     GOOD = "good"  # natural ending
@@ -218,7 +232,7 @@ class EoUClassifier:
 
         speech_end = info["speech_end"]
         trailing = audio_dur - speech_end
-        last_letter_pad = 0.15
+        last_letter_pad = 0.15 if _ends_with_sibilant(text) else 0.1
         trail_start = int((speech_end + last_letter_pad) * self.sr)
         trailing_audio = samples[trail_start:]
         if len(trailing_audio) > 0:
@@ -245,7 +259,7 @@ class EoUClassifier:
             # speech ends abruptly, with a very short last token or low confidence --> cutoff
             eou_type = EoUType.CUTOFF
         # long noisy tail OR odd gap --> noisy
-        elif (trailing > 0.25 and trail_rms_ratio > 0.3) or (last_gap > 0.4 and last_conf < conf_threshold):
+        elif (trailing > 0.15 and trail_rms_ratio > 0.4) or (last_gap > 0.4 and last_conf < 0.15):
             # significant trailing region with high energy relative to speech --> noise
             eou_type = EoUType.NOISE
         # very long trailing region with near-zero energy --> silence

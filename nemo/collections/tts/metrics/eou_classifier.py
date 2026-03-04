@@ -17,12 +17,11 @@ Classify the end-of-utterance (EoU) audio as: good (natural ending), cutoff (abr
 ending), silence (long trailing region that is quiet), or noise (significant trailing
 region with high energy).
 
-Uses Wav2Vec2 forced alignment against the known target text to find the end of the
-speech, then applies simple threshold rules based on the trailing duration, last token
-duration and confidence, and relative RMS energy.
+Uses NeMo Forced Aligner's viterbi_decoding() for CTC forced alignment of audio to
+transcript text with a Wav2Vec2 acoustic model.
 
 Usage:
-    from eou_classifier import EoUClassifier
+    from nemo.collections.tts.metrics.eou_classifier import EoUClassifier
 
     classifier = EoUClassifier()  # loads model once
     result = classifier.classify("output.wav", "Hello world.")
@@ -37,8 +36,9 @@ from typing import Union
 import librosa
 import numpy as np
 import torch
-import torchaudio.functional as taf
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+
+from nemo.collections.asr.parts.utils.aligner_utils import viterbi_decoding
 
 SR = 16000
 
@@ -137,17 +137,31 @@ class EoUClassifier:
         log_probs = torch.log_softmax(logits, dim=-1)
         frame_duration = self.frame_duration
 
-        # Convert target text to CTC token IDs and run torchaudio forced alignment
+        # Convert target text to CTC token IDs
         target_tokens = self._text_to_tokens(text)
-        fa_ids, fa_scores = taf.forced_align(
+
+        # Build interleaved-blank sequence: [blank, T1, blank, T2, blank, ...]
+        token_ids_with_blanks = [self.blank_id]
+        for tok in target_tokens:
+            token_ids_with_blanks.extend([tok, self.blank_id])
+
+        T = log_probs.shape[0]
+        y = torch.tensor([token_ids_with_blanks], dtype=torch.int64)
+
+        alignment = viterbi_decoding(
             log_probs.unsqueeze(0),
-            torch.tensor([target_tokens]),
-            blank=self.blank_id,
+            y,
+            torch.tensor([T]),
+            torch.tensor([len(token_ids_with_blanks)]),
         )
-        # fa_ids: per-frame aligned token IDs (blank or target token)
-        # fa_scores: per-frame log-prob scores; convert to probabilities for confidence
-        aligned_ids = fa_ids[0].numpy()
-        scores = torch.exp(fa_scores[0]).numpy()
+        alignment_path = alignment[0]
+
+        # Reconstruct per-frame token IDs and confidence scores from the
+        # alignment path, matching the format that torchaudio.forced_align returns.
+        aligned_ids = np.array([token_ids_with_blanks[s] for s in alignment_path])
+        scores = torch.exp(
+            log_probs[torch.arange(T), torch.tensor([token_ids_with_blanks[s] for s in alignment_path])]
+        ).numpy()
 
         # Walk through the frame-level alignment and merge consecutive
         # frames of the same token into TokenSegment objects.

@@ -109,6 +109,10 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('utmosv2_avg', ''),
         metrics.get('total_gen_audio_seconds', ''),
         metrics.get('frechet_codec_distance', ''),
+        metrics.get('eou_cutoff_rate', ''),
+        metrics.get('eou_silence_rate', ''),
+        metrics.get('eou_noise_rate', ''),
+        metrics.get('eou_error_rate', ''),
     ]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")

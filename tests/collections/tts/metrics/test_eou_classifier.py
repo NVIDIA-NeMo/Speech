@@ -81,7 +81,7 @@ def test_classification_matches_expected_class(classifier, eou_type, audio_path,
 @pytest.mark.unit
 def test_classify_accepts_numpy_array(classifier):
     """Classifier should accept a pre-loaded numpy array instead of a path."""
-    _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[0] == EoUType.GOOD)
+    _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
     samples, _ = librosa.load(audio_path, sr=16000)
 
     result_from_path = classifier.classify(audio_path, text)
@@ -97,7 +97,7 @@ def test_classify_accepts_numpy_array(classifier):
 @pytest.mark.unit
 def test_classification_result_structure(classifier):
     """Verify the returned dataclass fields have correct types and reasonable ranges."""
-    _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[0] == EoUType.GOOD)
+    _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
     result = classifier.classify(audio_path, text)
 
     assert isinstance(result.eou_type, EoUType)

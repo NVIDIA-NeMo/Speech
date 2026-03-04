@@ -269,7 +269,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         gc.collect()
 
     def training_step(self, batch: dict, batch_idx: int):
-        raise NotImplementedError("training_step is not implemented on this class !!")
+        raise NotImplementedError("NemotronVoiceChat.training_step is not implemented yet - for now, this class is inference-only.")
 
     def on_train_epoch_start(self) -> None:
         self.tts_model.on_train_epoch_start()

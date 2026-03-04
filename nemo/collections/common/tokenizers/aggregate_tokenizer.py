@@ -257,31 +257,12 @@ class TokenizerWrapper:
     def __call__(self, text: str, lang: str | None = None):
         return self._impl(text, lang)
 
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        """
-        Normalize text before tokenization to prevent invalid token sequences.
-
-        This strips leading/trailing whitespace and collapses multiple internal spaces
-        to prevent SentencePiece from creating multiple consecutive ▁ (word boundary) tokens,
-        which would be invalid tokenization (e.g., "  hello" -> [▁, ▁, ▁hello] is invalid).
-        """
-        import re
-
-        text = text.strip()
-        # Collapse multiple internal spaces to single space
-        text = re.sub(r' +', ' ', text)
-        return text
-
     def _call_agg_tokenizer(self, text: str, lang: str | None = None):
         assert lang is not None, "Expected 'lang' to be set for AggregateTokenizer."
-        text = self._normalize_text(text)
         return self._tokenizer.text_to_ids(text, lang)
 
     def _call_tokenizer(self, text: str, lang: str | None = None):
-        text = self._normalize_text(text)
         return self._tokenizer.text_to_ids(text)
 
     def _call_parser(self, text: str, lang: str | None = None):
-        # Parser typically handles its own normalization (e.g., CharParser.strip())
         return self._tokenizer(text)

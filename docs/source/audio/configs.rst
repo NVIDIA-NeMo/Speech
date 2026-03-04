@@ -16,7 +16,7 @@ NeMo Dataset Configuration
 
 Training, validation, and test parameters are specified using the ``model.train_ds``, ``model.validation_ds``, and ``model.test_ds`` sections in the configuration file, respectively.
 Depending on the task, there may be arguments specifying the sample rate or duration of the loaded audio examples. Some fields can be left out and specified via the command-line at runtime.
-Refer to the `Dataset Processing Classes <./api.html#Datasets>`__ section of the API for a list of datasets classes and their respective parameters.
+Refer to the `Dataset Processing Classes <./api.html#datasets>`__ section of the API for a list of datasets classes and their respective parameters.
 An example train, validation and test datasets can be configured as follows:
 
 .. code-block:: yaml
@@ -172,7 +172,7 @@ An example of a simple predictive model configuration is shown below:
 
     decoder:
       _target_: nemo.collections.audio.modules.transforms.SpectrogramToAudio
-      fft_length: ${model.encoder.fft_length} 
+      fft_length: ${model.encoder.fft_length}
       hop_length: ${model.encoder.hop_length}
       magnitude_power: ${model.encoder.magnitude_power}
       scale: ${model.encoder.scale}
@@ -184,7 +184,7 @@ An example of a simple predictive model configuration is shown below:
       num_res_blocks: 3 # increased number of res blocks
       pad_time_to: 64 # pad to 64 frames for the time dimension
       pad_dimension_to: 0 # no padding in the frequency dimension
-      
+
     loss:
       _target_: nemo.collections.audio.losses.MSELoss # computed in the time domain
 
@@ -192,7 +192,7 @@ An example of a simple predictive model configuration is shown below:
       val:
         sisdr: # output SI-SDR
           _target_: torchmetrics.audio.ScaleInvariantSignalDistortionRatio
-      
+
     optim:
       name: adam
       lr: 1e-4

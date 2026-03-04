@@ -29,11 +29,14 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
-from omegaconf import DictConfig
+import torch.nn as nn
+import torch.nn.functional as F
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.submodules import stateless_net
 from nemo.collections.asr.parts.utils import adapter_utils, rnnt_utils
+from nemo.collections.asr.parts.utils.chunking_utils import chunk_concat_audio
 from nemo.collections.common.parts import rnn
 from nemo.core.classes import adapter_mixins, typecheck
 from nemo.core.classes.exportable import Exportable
@@ -1652,7 +1655,631 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         return self.pred(prednet_output)
 
-    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def joint_after_projection(
+        self, f: torch.Tensor, g: torch.Tensor, f_len: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        r"""
+        Compute the joint step of the network after projection.
+
+        Here,
+        B = Batch size
+        T = Acoustic model timesteps
+        U = Target sequence length
+        H1, H2 = Hidden dimensions of the Encoder / Decoder respectively
+        H = Hidden dimension of the Joint hidden step.
+        V = Vocabulary size of the Decoder (excluding the RNNT blank token).
+
+        NOTE:
+            The implementation of this model is slightly modified from the original paper.
+            The original paper proposes the following steps :
+            (enc, dec) -> Expand + Concat + Sum [B, T, U, H1+H2] -> Forward through joint hidden [B, T, U, H] -- \*1
+            \*1 -> Forward through joint final [B, T, U, V + 1].
+
+            We instead split the joint hidden into joint_hidden_enc and joint_hidden_dec and act as follows:
+            enc -> Forward through joint_hidden_enc -> Expand [B, T, 1, H] -- \*1
+            dec -> Forward through joint_hidden_dec -> Expand [B, 1, U, H] -- \*2
+            (\*1, \*2) -> Sum [B, T, U, H] -> Forward through joint final [B, T, U, V + 1].
+
+        Args:
+            f: Output of the Encoder model. A torch.Tensor of shape [B, T, H1]
+            g: Output of the Decoder model. A torch.Tensor of shape [B, U, H2]
+            f_len: Optional tensor of encoder output lengths. Not used in standard RNNT,
+                but required for CHAT models with cross-attention.
+
+        Returns:
+            Logits / log softmaxed tensor of shape (B, T, U, V + 1).
+        """
+        f = f.unsqueeze(dim=2)  # (B, T, 1, H)
+        g = g.unsqueeze(dim=1)  # (B, 1, U, H)
+
+        if self.training and self.masking_prob > 0:
+            [B, _, U, _] = g.shape
+            rand = torch.rand([B, 1, U, 1]).to(g.device)
+            rand = torch.gt(rand, self.masking_prob)
+            g = g * rand
+
+        inp = f + g  # [B, T, U, H]
+
+        del f, g
+
+        # Forward adapter modules on joint hidden
+        if self.is_adapter_available():
+            inp = self.forward_enabled_adapters(inp)
+
+        res = self.joint_net(inp)  # [B, T, U, V + 1]
+
+        del inp
+
+        if self.preserve_memory:
+            torch.cuda.empty_cache()
+
+        # If log_softmax is automatic
+        if self.log_softmax is None:
+            if not res.is_cuda:  # Use log softmax only if on CPU
+                if self.temperature != 1.0:
+                    res = (res / self.temperature).log_softmax(dim=-1)
+                else:
+                    res = res.log_softmax(dim=-1)
+        else:
+            if self.log_softmax:
+                if self.temperature != 1.0:
+                    res = (res / self.temperature).log_softmax(dim=-1)
+                else:
+                    res = res.log_softmax(dim=-1)
+
+        return res
+
+    def _joint_net_modules(self, num_classes, pred_n_hidden, enc_n_hidden, joint_n_hidden, activation, dropout):
+        """
+        Prepare the trainable modules of the Joint Network
+
+        Args:
+            num_classes: Number of output classes (vocab size) excluding the RNNT blank token.
+            pred_n_hidden: Hidden size of the prediction network.
+            enc_n_hidden: Hidden size of the encoder network.
+            joint_n_hidden: Hidden size of the joint network.
+            activation: Activation of the joint. Can be one of [relu, tanh, sigmoid]
+            dropout: Dropout value to apply to joint.
+        """
+        pred = torch.nn.Linear(pred_n_hidden, joint_n_hidden)
+        enc = torch.nn.Linear(enc_n_hidden, joint_n_hidden)
+
+        if activation not in ['relu', 'sigmoid', 'tanh']:
+            raise ValueError("Unsupported activation for joint step - please pass one of " "[relu, sigmoid, tanh]")
+
+        activation = activation.lower()
+
+        if activation == 'relu':
+            activation = torch.nn.ReLU(inplace=True)
+        elif activation == 'sigmoid':
+            activation = torch.nn.Sigmoid()
+        elif activation == 'tanh':
+            activation = torch.nn.Tanh()
+
+        layers = (
+            [activation]
+            + ([torch.nn.Dropout(p=dropout)] if dropout else [])
+            + [torch.nn.Linear(joint_n_hidden, num_classes)]
+        )
+        return pred, enc, torch.nn.Sequential(*layers)
+
+    # Adapter method overrides
+    def add_adapter(self, name: str, cfg: DictConfig):
+        # Update the config with correct input dim
+        cfg = self._update_adapter_cfg_input_dim(cfg)
+        # Add the adapter
+        super().add_adapter(name=name, cfg=cfg)
+
+    def _update_adapter_cfg_input_dim(self, cfg: DictConfig):
+        cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self.joint_hidden)
+        return cfg
+
+    @property
+    def num_classes_with_blank(self):
+        return self._num_classes
+
+    @property
+    def num_extra_outputs(self):
+        return self._num_extra_outputs
+
+    @property
+    def loss(self):
+        return self._loss
+
+    def set_loss(self, loss):
+        if not self._fuse_loss_wer:
+            raise ValueError("Attempting to set loss module even though `fuse_loss_wer` is not set!")
+
+        self._loss = loss
+
+    @property
+    def wer(self):
+        return self._wer
+
+    def set_wer(self, wer):
+        if not self._fuse_loss_wer:
+            raise ValueError("Attempting to set WER module even though `fuse_loss_wer` is not set!")
+
+        self._wer = wer
+
+    @property
+    def fuse_loss_wer(self):
+        return self._fuse_loss_wer
+
+    def set_fuse_loss_wer(self, fuse_loss_wer, loss=None, metric=None):
+        self._fuse_loss_wer = fuse_loss_wer
+
+        self._loss = loss
+        self._wer = metric
+
+    @property
+    def fused_batch_size(self):
+        return self._fused_batch_size
+
+    def set_fused_batch_size(self, fused_batch_size):
+        self._fused_batch_size = fused_batch_size
+
+
+class RNNTAttJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin):
+
+    @property
+    def input_types(self):
+        """Returns definitions of module input ports."""
+        return {
+            "encoder_outputs": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+            "decoder_outputs": NeuralType(('B', 'D', 'T'), EmbeddedTextType()),
+            "encoder_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "transcripts": NeuralType(('B', 'T'), LabelsType(), optional=True),
+            "transcript_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "compute_wer": NeuralType(optional=True),
+        }
+
+    @property
+    def output_types(self):
+        """Returns definitions of module output ports."""
+        if not self._fuse_loss_wer:
+            return {
+                "outputs": NeuralType(('B', 'T', 'T', 'D'), LogprobsType()),
+            }
+
+        else:
+            return {
+                "loss": NeuralType(elements_type=LossType(), optional=True),
+                "wer": NeuralType(elements_type=ElementType(), optional=True),
+                "wer_numer": NeuralType(elements_type=ElementType(), optional=True),
+                "wer_denom": NeuralType(elements_type=ElementType(), optional=True),
+            }
+
+    def _prepare_for_export(self, **kwargs):
+        self._fuse_loss_wer = False
+        self.log_softmax = False
+        super()._prepare_for_export(**kwargs)
+
+    def input_example(self, max_batch=1, max_dim=8192):
+        """
+        Generates input examples for tracing etc.
+        Returns:
+            A tuple of input examples.
+        """
+        B, T, U = max_batch, max_dim, max_batch
+        encoder_outputs = torch.randn(B, self.encoder_hidden, T).to(next(self.parameters()).device)
+        decoder_outputs = torch.randn(B, self.pred_hidden, U).to(next(self.parameters()).device)
+        return (encoder_outputs, decoder_outputs)
+
+    @property
+    def disabled_deployment_input_names(self):
+        """Implement this method to return a set of input names disabled for export"""
+        return set(["encoder_lengths", "transcripts", "transcript_lengths", "compute_wer"])
+
+    def __init__(
+        self,
+        jointnet: Dict[str, Any],
+        num_classes: int,
+        num_extra_outputs: int = 0,
+        vocabulary: Optional[List] = None,
+        log_softmax: Optional[bool] = None,
+        preserve_memory: bool = False,
+        fuse_loss_wer: bool = False,
+        fused_batch_size: Optional[int] = None,
+        experimental_fuse_loss_wer: Any = None,
+        masking_prob: float = -1.0,
+        chunk_size: int = -1,
+    ):
+        super().__init__()
+
+        self.vocabulary = vocabulary
+        self.chunk_size = chunk_size
+
+        self._vocab_size = num_classes
+        self._num_extra_outputs = num_extra_outputs
+        self._num_classes = num_classes + 1 + num_extra_outputs  # 1 is for blank
+
+        self.masking_prob = masking_prob
+        if self.masking_prob > 0.0:
+            assert self.masking_prob < 1.0, "masking_prob must be between 0 and 1"
+
+        if experimental_fuse_loss_wer is not None:
+            # Override fuse_loss_wer from deprecated argument
+            fuse_loss_wer = experimental_fuse_loss_wer
+
+        self._fuse_loss_wer = fuse_loss_wer
+        self._fused_batch_size = fused_batch_size
+
+        if fuse_loss_wer and (fused_batch_size is None):
+            raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
+
+        self._loss = None
+        self._wer = None
+
+        # Log softmax should be applied explicitly only for CPU
+        self.log_softmax = log_softmax
+        self.preserve_memory = preserve_memory
+
+        if preserve_memory:
+            logging.warning(
+                "`preserve_memory` was set for the Joint Model. Please be aware this will severely impact "
+                "the forward-backward step time. It also might not solve OOM issues if the GPU simply "
+                "does not have enough memory to compute the joint."
+            )
+
+        # Required arguments
+        self.encoder_hidden = jointnet['encoder_hidden']
+        self.pred_hidden = jointnet['pred_hidden']
+        self.joint_hidden = jointnet['joint_hidden']
+        self.activation = jointnet['activation']
+
+        D = self.joint_hidden
+        self.Q = nn.Linear(D, D, bias=True)
+        self.K = nn.Linear(D, D, bias=True)
+        self.V = nn.Linear(D, D, bias=True)
+
+        # Optional arguments
+        dropout = jointnet.get('dropout', 0.0)
+
+        self.pred, self.enc, self.joint_net = self._joint_net_modules(
+            num_classes=self._num_classes,  # add 1 for blank symbol
+            pred_n_hidden=self.pred_hidden,
+            enc_n_hidden=self.encoder_hidden,
+            joint_n_hidden=self.joint_hidden,
+            activation=self.activation,
+            dropout=dropout,
+        )
+
+        self.output_dropout = nn.Dropout(0.1)
+        self.attention_dropout = nn.Dropout(0.1)
+
+        # Flag needed for RNNT export support
+        self._rnnt_export = False
+
+        # to change, requires running ``model.temperature = T`` explicitly
+        self.temperature = 1.0
+
+    def joint(self, f: torch.Tensor, g: torch.Tensor, f_len: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Override the base joint() to handle chunking internally.
+
+        When called from training/validation (encoder_lengths is 1D with shape [B]),
+        this method chunks the encoder output using chunk_concat_audio before projecting.
+        The effective input lengths (number of valid chunks per utterance) are stored in
+        self.num_chunks_per_utterance so the caller can use them for loss computation.
+
+        When called from decoding (encoder_lengths is 2D with shape [B, T], i.e.,
+        chunk_frame_lengths), the data is already chunked and is passed through directly.
+        """
+        if f_len is not None and f_len.dim() == 1 and self.chunk_size > 0:
+            chunked, chunk_lengths = chunk_concat_audio(f, f_len, self.chunk_size)
+            self.num_chunks_per_utterance = (chunk_lengths != 0).sum(dim=1)
+            return self.joint_after_projection(self.project_encoder(chunked), self.project_prednet(g), chunk_lengths)
+        self.num_chunks_per_utterance = None
+        return self.joint_after_projection(self.project_encoder(f), self.project_prednet(g), f_len)
+
+    def chunk_encoder_for_decoding(
+        self, encoded: torch.Tensor, encoded_len: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Chunk encoder output for use in the decoding pipeline.
+
+        The decoding pipeline iterates over time steps and calls joint_after_projection
+        directly, so it needs pre-chunked encoder output with chunk_frame_lengths.
+
+        Args:
+            encoded: Encoder output of shape [B, D, T] (channel-first, as from the encoder).
+            encoded_len: Encoder output lengths of shape [B].
+
+        Returns:
+            Tuple of (chunked_encoded, num_chunks, chunk_frame_lengths):
+                - chunked_encoded: [B, D', num_chunks] where D' = chunk_size * D
+                - num_chunks: [B] number of valid chunks per utterance
+                - chunk_frame_lengths: [B, num_chunks] valid frames per chunk
+        """
+        chunked, chunk_lengths = chunk_concat_audio(encoded.transpose(1, 2), encoded_len, self.chunk_size)
+        num_chunks = (chunk_lengths != 0).sum(dim=1)
+        return chunked.transpose(1, 2), num_chunks, chunk_lengths
+
+    def cross_attention(self, f, g, sizes, num_heads=4):
+        """
+        Multi-head cross-attention function
+
+        f: [B, T, C, D] - input features
+        g: [B, U, D] - input queries
+        num_heads: number of attention heads
+
+        Assumes:
+        - self.Q: nn.Linear(D, D) - query projection layer
+        - self.K: nn.Linear(D, D) - key projection layer
+        - self.V: nn.Linear(D, D) - value projection layer
+        - self.attention_dropout: dropout layer
+
+        Returns: [B, T, U, D] - cross-attended output
+        """
+
+        # Append zero frame (same as original)
+        zeros = torch.zeros_like(f[:, :, :1, :])  # [B, T, 1, D]
+        f = torch.cat([f, zeros], dim=2)  # [B, T, C+1, D]
+
+        B, T, C, D = f.shape
+        B, U, D = g.shape
+
+        # Check that D is divisible by num_heads
+        assert D % num_heads == 0, f"D ({D}) must be divisible by num_heads ({num_heads})"
+        head_dim = D // num_heads
+
+        # Project using Linear layers
+        queries = self.Q(g)  # [B, U, D]
+        keys = self.K(f)  # [B, T, C, D]
+        values = self.V(f)  # [B, T, C, D]
+
+        # Reshape for multi-head attention
+        # queries: [B, U, D] -> [B, U, num_heads, head_dim] -> [B, num_heads, U, head_dim]
+        queries = queries.view(B, U, num_heads, head_dim).transpose(1, 2)
+
+        # keys: [B, T, C, D] -> [B, T, C, num_heads, head_dim] -> [B, T, num_heads, C, head_dim]
+        keys = keys.view(B, T, C, num_heads, head_dim).transpose(2, 3)
+
+        # values: [B, T, C, D] -> [B, T, C, num_heads, head_dim] -> [B, T, num_heads, C, head_dim]
+        values = values.view(B, T, C, num_heads, head_dim).transpose(2, 3)
+
+        # Reshape for batch matrix multiplication
+        # queries: [B, num_heads, U, head_dim] -> [B*T*num_heads, U, head_dim]
+        queries_expanded = queries.unsqueeze(1).expand(B, T, num_heads, U, head_dim)
+        queries_reshaped = queries_expanded.reshape(B * T * num_heads, U, head_dim)
+
+        # keys: [B, T, num_heads, C, head_dim] -> [B*T*num_heads, C, head_dim]
+        keys_reshaped = keys.reshape(B * T * num_heads, C, head_dim)
+
+        # values: [B, T, num_heads, C, head_dim] -> [B*T*num_heads, C, head_dim]
+        values_reshaped = values.reshape(B * T * num_heads, C, head_dim)
+
+        # Compute attention scores
+        attention_scores = torch.bmm(queries_reshaped, keys_reshaped.transpose(1, 2)).view(B, T, -1, U, C)
+
+        B, T, H, U, C = attention_scores.shape
+
+        # Apply masking only if sizes is provided (CHAT mode with valid frame counts)
+        if sizes is not None:
+            sizes_expanded = sizes.view(B, T, 1, 1, 1)
+
+            # Create indices: [1, 1, 1, 1, C]
+            indices = torch.arange(C, device=attention_scores.device).view(1, 1, 1, 1, C)
+
+            # Create mask: mask out frames beyond valid size (except last zero frame)
+            mask = torch.logical_and(indices >= (sizes_expanded), indices != C - 1)
+
+            # Apply mask
+            attention_scores = attention_scores.masked_fill(mask, -19999)
+
+        attention_scores = attention_scores.view(-1, C)
+
+        # Apply softmax and dropout
+        attention_weights = F.softmax(attention_scores / (head_dim**0.5), dim=-1)
+        attention_weights = self.attention_dropout(attention_weights).view(-1, U, C)
+
+        # Apply attention to values
+        attended = torch.bmm(attention_weights, values_reshaped)
+        # attended: [B*T*num_heads, U, head_dim]
+
+        # Reshape back to multi-head format
+        attended = attended.view(B, T, num_heads, U, head_dim)
+
+        # Concatenate heads: [B, T, num_heads, U, head_dim] -> [B, T, U, D]
+        attended = attended.transpose(2, 3).reshape(B, T, U, D)
+
+        # Add residual connection (same as original)
+        return attended + g.view(B, 1, U, D)
+
+    @typecheck()
+    def forward(
+        self,
+        encoder_outputs: torch.Tensor,
+        decoder_outputs: Optional[torch.Tensor],
+        encoder_lengths: Optional[torch.Tensor] = None,
+        transcripts: Optional[torch.Tensor] = None,
+        transcript_lengths: Optional[torch.Tensor] = None,
+        compute_wer: bool = False,
+    ) -> Union[torch.Tensor, List[Optional[torch.Tensor]]]:
+        # encoder = (B, D, T)
+        # decoder = (B, D, U) if passed, else None
+        encoder_outputs = encoder_outputs.transpose(1, 2)  # (B, T, D)
+
+        if decoder_outputs is not None:
+            decoder_outputs = decoder_outputs.transpose(1, 2)  # (B, U, D)
+
+        if not self._fuse_loss_wer:
+            if decoder_outputs is None:
+                raise ValueError(
+                    "decoder_outputs passed is None, and `fuse_loss_wer` is not set. "
+                    "decoder_outputs can only be None for fused step!"
+                )
+
+            out = self.joint(encoder_outputs, decoder_outputs, encoder_lengths)  # [B, T, U, V + 1]
+            return out
+
+        else:
+            # At least the loss module must be supplied during fused joint
+            if self._loss is None or self._wer is None:
+                raise ValueError("`fuse_loss_wer` flag is set, but `loss` and `wer` modules were not provided! ")
+
+            # If fused joint step is required, fused batch size is required as well
+            if self._fused_batch_size is None:
+                raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
+
+            # When using fused joint step, both encoder and transcript lengths must be provided
+            if (encoder_lengths is None) or (transcript_lengths is None):
+                raise ValueError(
+                    "`fuse_loss_wer` is set, therefore encoder and target lengths " "must be provided as well!"
+                )
+
+            losses = []
+            wers, wer_nums, wer_denoms = [], [], []
+            target_lengths = []
+            batch_size = int(encoder_outputs.size(0))  # actual batch size
+
+            # Iterate over batch using fused_batch_size steps
+            for batch_idx in range(0, batch_size, self._fused_batch_size):
+                begin = batch_idx
+                end = min(begin + self._fused_batch_size, batch_size)
+
+                # Extract the sub batch inputs
+                # sub_enc = encoder_outputs[begin:end, ...]
+                # sub_transcripts = transcripts[begin:end, ...]
+                sub_enc = encoder_outputs.narrow(dim=0, start=begin, length=int(end - begin))
+                sub_transcripts = transcripts.narrow(dim=0, start=begin, length=int(end - begin))
+
+                sub_enc_lens = encoder_lengths[begin:end]
+                sub_transcript_lens = transcript_lengths[begin:end]
+
+                # Sub transcripts does not need the full padding of the entire batch
+                # Therefore reduce the decoder time steps to match
+                max_sub_enc_length = sub_enc_lens.max()
+                max_sub_transcript_length = sub_transcript_lens.max()
+
+                if decoder_outputs is not None:
+                    # Reduce encoder length to preserve computation
+                    # Encoder: [sub-batch, T, D] -> [sub-batch, T', D]; T' < T
+                    if sub_enc.shape[1] != max_sub_enc_length:
+                        sub_enc = sub_enc.narrow(dim=1, start=0, length=int(max_sub_enc_length))
+
+                    # sub_dec = decoder_outputs[begin:end, ...]  # [sub-batch, U, D]
+                    sub_dec = decoder_outputs.narrow(dim=0, start=begin, length=int(end - begin))  # [sub-batch, U, D]
+
+                    # Reduce decoder length to preserve computation
+                    # Decoder: [sub-batch, U, D] -> [sub-batch, U', D]; U' < U
+                    if sub_dec.shape[1] != max_sub_transcript_length + 1:
+                        sub_dec = sub_dec.narrow(dim=1, start=0, length=int(max_sub_transcript_length + 1))
+
+                    # Perform joint => [sub-batch, T', U', V + 1]
+                    sub_joint = self.joint(sub_enc, sub_dec)
+
+                    del sub_dec
+
+                    # Reduce transcript length to correct alignment
+                    # Transcript: [sub-batch, L] -> [sub-batch, L']; L' <= L
+                    if sub_transcripts.shape[1] != max_sub_transcript_length:
+                        sub_transcripts = sub_transcripts.narrow(dim=1, start=0, length=int(max_sub_transcript_length))
+
+                    # Compute sub batch loss
+                    # preserve loss reduction type
+                    loss_reduction = self.loss.reduction
+
+                    # override loss reduction to sum
+                    self.loss.reduction = None
+
+                    # compute and preserve loss
+                    loss_batch = self.loss(
+                        log_probs=sub_joint,
+                        targets=sub_transcripts,
+                        input_lengths=sub_enc_lens,
+                        target_lengths=sub_transcript_lens,
+                    )
+                    losses.append(loss_batch)
+                    target_lengths.append(sub_transcript_lens)
+
+                    # reset loss reduction type
+                    self.loss.reduction = loss_reduction
+
+                else:
+                    losses = None
+
+                # Update WER for sub batch
+                if compute_wer:
+                    sub_enc = sub_enc.transpose(1, 2)  # [B, T, D] -> [B, D, T]
+                    sub_enc = sub_enc.detach()
+                    sub_transcripts = sub_transcripts.detach()
+
+                    # Update WER on each process without syncing
+                    if self.training:
+                        original_sync = self.wer._to_sync
+                        self.wer._to_sync = False
+
+                    self.wer.update(
+                        predictions=sub_enc,
+                        predictions_lengths=sub_enc_lens,
+                        targets=sub_transcripts,
+                        targets_lengths=sub_transcript_lens,
+                    )
+                    # Sync and all_reduce on all processes, compute global WER
+                    wer, wer_num, wer_denom = self.wer.compute()
+                    self.wer.reset()
+
+                    if self.training:
+                        self.wer._to_sync = original_sync
+
+                    wers.append(wer)
+                    wer_nums.append(wer_num)
+                    wer_denoms.append(wer_denom)
+
+                del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
+
+            # Reduce over sub batches
+            if losses is not None:
+                losses = self.loss.reduce(losses, target_lengths)
+
+            # Collect sub batch wer results
+            if compute_wer:
+                wer = sum(wers) / len(wers)
+                wer_num = sum(wer_nums)
+                wer_denom = sum(wer_denoms)
+            else:
+                wer = None
+                wer_num = None
+                wer_denom = None
+
+            return losses, wer, wer_num, wer_denom
+
+    def project_encoder(self, encoder_output: torch.Tensor) -> torch.Tensor:
+        """
+        Project the encoder output to the joint hidden dimension.
+
+        For CHAT mode, encoder_output has shape [B, T, chunk_size * encoder_hidden]
+        which is reshaped to [B, T, chunk_size, encoder_hidden] before projection,
+        then flattened back to [B, T, chunk_size * joint_hidden].
+
+        Args:
+            encoder_output: A torch.Tensor of shape [B, T, D]
+
+        Returns:
+            A torch.Tensor of shape [B, T, H]
+        """
+        B, T, D = encoder_output.shape
+        encoder_output = torch.reshape(encoder_output, [B, T, -1, self.encoder_hidden])
+        ret = self.enc(encoder_output)
+        return torch.reshape(ret, [B, T, -1])
+
+    def project_prednet(self, prednet_output: torch.Tensor) -> torch.Tensor:
+        """
+        Project the Prediction Network (Decoder) output to the joint hidden dimension.
+
+        Args:
+            prednet_output: A torch.Tensor of shape [B, U, D]
+
+        Returns:
+            A torch.Tensor of shape [B, U, H]
+        """
+        return self.pred(prednet_output)
+
+    def joint_after_projection(
+        self, f: torch.Tensor, g: torch.Tensor, f_len: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         r"""
         Compute the joint step of the network after projection.
 
@@ -1682,22 +2309,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         Returns:
             Logits / log softmaxed tensor of shape (B, T, U, V + 1).
         """
-        f = f.unsqueeze(dim=2)  # (B, T, 1, H)
-        g = g.unsqueeze(dim=1)  # (B, 1, U, H)
 
-        if self.training and self.masking_prob > 0:
-            [B, _, U, _] = g.shape
-            rand = torch.rand([B, 1, U, 1]).to(g.device)
-            rand = torch.gt(rand, self.masking_prob)
-            g = g * rand
-
-        inp = f + g  # [B, T, U, H]
-
-        del f, g
-
-        # Forward adapter modules on joint hidden
-        if self.is_adapter_available():
-            inp = self.forward_enabled_adapters(inp)
+        B, T, D = f.shape
+        f = torch.reshape(f, [B, T, -1, self.joint_hidden])
+        inp = self.cross_attention(f, g, f_len)
 
         res = self.joint_net(inp)  # [B, T, U, V + 1]
 
@@ -2346,6 +2961,6 @@ class SampledRNNTJoint(RNNTJoint):
 
 
 # Add the adapter compatible modules to the registry
-for cls in [RNNTDecoder, RNNTJoint, SampledRNNTJoint]:
+for cls in [RNNTDecoder, RNNTJoint, SampledRNNTJoint, RNNTAttJoint]:
     if adapter_mixins.get_registered_adapter(cls) is None:
         adapter_mixins.register_adapter(cls, cls)  # base class is adapter compatible itself

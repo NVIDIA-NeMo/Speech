@@ -135,13 +135,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             self.source_sample_rate * cfg.data.frame_length
         )  # conver frame rate in fps
 
-        if self.cfg.get("pretrained_s2s_model", None):
-            logging.info(f"Loading pretrained s2s model from {self.cfg.pretrained_s2s_model}")
-            if os.path.isdir(self.cfg.pretrained_s2s_model):
-                self.init_from_safetensors_ckpt(self.cfg.pretrained_s2s_model)
-            else:
-                self.init_from_model_from_ckpt(self.cfg.pretrained_s2s_model)
-
         self._use_fsdp = False
         self._use_tp = False
 

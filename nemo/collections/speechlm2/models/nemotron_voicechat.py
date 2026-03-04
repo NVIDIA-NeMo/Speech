@@ -115,16 +115,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         self.stt_model = DuplexSTTModel(OmegaConf.to_container(self.cfg.stt.model, resolve=True))
 
         # Load Duplex TTS model
-        # delete old config name for old version compatibility
-        if (
-            hasattr(self.cfg, "speech_generation")
-            and hasattr(self.cfg.speech_generation, "model")
-            and hasattr(self.cfg.speech_generation.model, "tts_config")
-            and hasattr(self.cfg.speech_generation.model.tts_config, "cas_config")
-            and hasattr(self.cfg.speech_generation.model.tts_config.cas_config, "pretrained_tokenizer_name")
-        ):
-            del self.cfg.speech_generation.model.tts_config.cas_config.pretrained_tokenizer_name
-
         self.tts_model = DuplexEARTTS(OmegaConf.to_container(self.cfg.speech_generation, resolve=True))
 
         # reset silence tokens to avoid inference issues
@@ -269,7 +259,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         gc.collect()
 
     def training_step(self, batch: dict, batch_idx: int):
-        raise NotImplementedError("NemotronVoiceChat.training_step is not implemented yet - for now, this class is inference-only.")
+        raise NotImplementedError("training_step is not implemented on this class !!")
 
     def on_train_epoch_start(self) -> None:
         self.tts_model.on_train_epoch_start()

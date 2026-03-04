@@ -199,6 +199,8 @@ jobs:
             script: L2_TTS_InferEvaluate_Magpietts_MoE_ZeroShot
           - runner: self-hosted-azure
             script: L2_TTS_InferEvaluatelongform_Magpietts_MoE_ZeroShot
+          - runner: self-hosted-azure
+            script: L2_TTS_InferEvaluate_Magpietts_FrameStacking
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}

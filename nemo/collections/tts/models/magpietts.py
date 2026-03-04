@@ -15,6 +15,7 @@ import copy
 import json
 import os
 import random
+import re
 import time
 from dataclasses import dataclass, field, fields
 from functools import partial
@@ -312,17 +313,17 @@ class MagpieTTSModel(ModelPT):
     Supports multiple model types:
 
     - multi_encoder_context_tts: Transcript and context audio go to different encoders. Transcript encoding feeds to
-    layers given by cfg.model.transcript_decoder_layers and the context encoding feeds into the layers given by
-    context_decoder_layers .Also supports text context which gets encoded by the same encoder as context audio.
-    Only one of context audio or contex text is supported.
+      layers given by cfg.model.transcript_decoder_layers and the context encoding feeds into the layers given by
+      context_decoder_layers .Also supports text context which gets encoded by the same encoder as context audio.
+      Only one of context audio or contex text is supported.
 
     - decoder_context_tts: Text goes into the encoder; context & target audio go to the decoder. Also supports text
-    context. Supports fixed sized context so we set context_duration_min and context_duration_max to the same
-    value (5 seconds). Text context, which is usually shorter than number of codec frames of 5 second of audio, is
-    padded to the max context duration in this model.
+      context. Supports fixed sized context so we set context_duration_min and context_duration_max to the same
+      value (5 seconds). Text context, which is usually shorter than number of codec frames of 5 second of audio, is
+      padded to the max context duration in this model.
 
     - decoder_ce: Same as decoder_context_tts except there is a small neural network between the context tensors and
-    the decoder input.
+      the decoder input.
     """
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
@@ -1106,10 +1107,11 @@ class MagpieTTSModel(ModelPT):
         | seq. index |    0    |    1    |    2    |    3    |    4    |    5    |    6    |    7    |    8    |
         +------------+---------+---------+---------+---------+---------+---------+---------+---------+---------+
 
-        dec_out: (B, T', E)
-        audio_codes_target: (B, C, T')
-        targets_offset_by_one: bool, if False, the target for index 0 is codebook 0, for index 1 is codebook 1, etc. (autoregressive)
-                                     if True,  the target for index 1 is codebook 0, for index 2 is codebook 1, etc. (MaskGit)
+        Args:
+            dec_out: (B, T', E)
+            audio_codes_target: (B, C, T')
+            targets_offset_by_one: bool, if False, the target for index 0 is codebook 0, for index 1 is codebook 1, etc. (autoregressive)
+                if True,  the target for index 1 is codebook 0, for index 2 is codebook 1, etc. (MaskGit)
         """
         C = self.num_audio_codebooks
         dec_out_all = dec_out.reshape(-1, dec_out.size(-1))  # (B*T', E)
@@ -1198,16 +1200,18 @@ class MagpieTTSModel(ModelPT):
 
     def compute_loss(self, logits, audio_codes, audio_codes_lens, mask_tokens_mask=None, frame_stacking_factor=1):
         """
-        Computes the audio codebook loss. Used by
+        Computes the audio codebook loss. Used by:
+
         (1) The main Magpie-TTS transformer
         (2) The local transformer, for both autoregressive and MaskGit methods
 
-        logits: (B, T', num_codebooks * num_tokens_per_codebook)
-        audio_codes: (B, C, T')
-        audio_codes_lens: (B,)
-        mask_tokens_mask: (B, C, T') True for tokens that were replaced with the MASK_TOKEN and should
-                                     therefore be the only ones included in the loss computation (for MaskGit).
-        frame_stacking_factor: int, the stacking factor used in the model
+        Args:
+            logits: (B, T', num_codebooks * num_tokens_per_codebook)
+            audio_codes: (B, C, T')
+            audio_codes_lens: (B,)
+            mask_tokens_mask: (B, C, T') True for tokens that were replaced with the MASK_TOKEN and should
+                therefore be the only ones included in the loss computation (for MaskGit).
+            frame_stacking_factor: int, the stacking factor used in the model
         """
         loss_mask = get_mask_from_lengths(audio_codes_lens, pad_to_factor=frame_stacking_factor)
         if mask_tokens_mask is not None:
@@ -1262,14 +1266,16 @@ class MagpieTTSModel(ModelPT):
 
         Returns:
             Tuple of:
-                all_code_logits (torch.Tensor): Logits of shape (B, T', num_codebooks * num_tokens_per_codebook).
-                attn_probabilities (list): Attention probabilities from each decoder layer.
-                dec_output (torch.Tensor): Raw decoder output of shape (B, T', d_model).
-                moe_routing_info (list or None): None if MoE is disabled. If MoE is enabled,
-                    a list of dicts (one per layer) each containing:
-                    - 'router_logits' (torch.Tensor): Raw router logits (B, T, num_experts).
-                    - 'router_probs' (torch.Tensor): Router probabilities (B, T, num_experts).
-                    - 'expert_indices' (torch.Tensor): Selected expert indices (B, T, top_k).
+
+            - all_code_logits (torch.Tensor): Logits of shape (B, T', num_codebooks * num_tokens_per_codebook).
+            - attn_probabilities (list): Attention probabilities from each decoder layer.
+            - dec_output (torch.Tensor): Raw decoder output of shape (B, T', d_model).
+            - moe_routing_info (list or None): None if MoE is disabled. If MoE is enabled,
+              a list of dicts (one per layer) each containing:
+
+              - 'router_logits' (torch.Tensor): Raw router logits (B, T, num_experts).
+              - 'router_probs' (torch.Tensor): Router probabilities (B, T, num_experts).
+              - 'expert_indices' (torch.Tensor): Selected expert indices (B, T, top_k).
         """
         decoder_out = self.decoder(
             dec_input_embedded,
@@ -1342,10 +1348,11 @@ class MagpieTTSModel(ModelPT):
         Sets logits of forbidden tokens to `-inf` so they will never be sampled.
         Specifically, we forbid sampling of all special tokens except AUDIO_EOS
         which is allowed by default.
+
         Args:
             logits: (B, C, num_audio_tokens_per_codebook)
             forbid_audio_eos (bool, optional): If True, also forbid AUDIO_EOS tokens
-                                               from being sampled. Default: False.
+                from being sampled. Default: False.
         """
         logits[
             :,
@@ -1388,6 +1395,7 @@ class MagpieTTSModel(ModelPT):
         Uses multinomial sampling with temperature, top-k, and classifier-free guidance (CFG).
 
         Special handling:
+
         * forbids special tokens (like AUDIO_BOS, AUDIO_CONTEXT_EOS, etc.) from being sampled
         * forces / forbids EOS for finished / unfinished items respectively
         * optionally, globally forbids audio EOS for all items in the batch.
@@ -1416,12 +1424,13 @@ class MagpieTTSModel(ModelPT):
             dynamic_cfg_scale (bool, optional): Whether to dynamically adjust CFG scale during
                 sampling (experimental).
             sampling_type (str, optional): Type of sampling strategy. Options are:
-             ["default", "causal", "purity_causal", "purity_default"].
-             * Purity refers to "purity sampling" from https://arxiv.org/abs/2304.01515. If "purity"
-               is not specified, confidence sampling is used as in the original MaskGit paper.
-             * "default"/"causal": Controls the order of unmasking across frames when frame-stacking is enabled.
-                                   If "causal" is specified, frames are unmasked in causal order. "default"
-                                   doesn't impose any constraints on the unmasking order.
+                ["default", "causal", "purity_causal", "purity_default"].
+
+                * Purity refers to "purity sampling" from https://arxiv.org/abs/2304.01515. If "purity"
+                  is not specified, confidence sampling is used as in the original MaskGit paper.
+                * "default"/"causal": Controls the order of unmasking across frames when frame-stacking is enabled.
+                  If "causal" is specified, frames are unmasked in causal order. "default"
+                  doesn't impose any constraints on the unmasking order.
             forbid_audio_eos (bool, optional): Whether to globally forbid audio EOS for the entire
                 batch.
 
@@ -3867,6 +3876,10 @@ class MagpieTTSModel(ModelPT):
             raise ValueError(
                 "Model does not have a baked context embedding. Please use a checkpoint with a baked context embedding."
             )
+        # Workaround for bug in Ja normalizer, Ja normalizer does not work well with spaces.
+        if language == "ja":
+            transcript = re.sub(r'\s+', '', transcript)
+
         # Apply text normalization if requested
         normalized_text = (
             self._get_normalized_text(transcript=transcript, language=language) if apply_TN else transcript

@@ -107,7 +107,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             - audio_prompt: Tensor of optional speaker reference waveform samples [B, T]
             - audio_prompt_lens: Tensor of speaker reference audio lengths [B]
 
-            - formatter: List indicating the formatter to use for each cut (default "s2s_duplex") [B]
+            - task: List indicating the task to use for each cut (default "s2s_duplex") [B]
 
     Notes:
         - The dataset ensures frame-level alignment between audio and text by inserting tokens at
@@ -269,7 +269,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
             ],
             "audio_prompt": audio_prompt,
             "audio_prompt_lens": audio_prompt_lens,
-            "formatter": [getattr(cut, "formatter", "s2s_duplex") for cut in cuts],
+            "task": [getattr(cut, "task", "s2s_duplex") for cut in cuts],
         }
 
     def maybe_add_audio_prompt(

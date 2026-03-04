@@ -1256,7 +1256,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
 
         Note that the codebook entries are implicitly defined by the number of levels.
         """
-        indices = torch.arange(self.codebook_size)
+        indices = torch.arange(self.codebook_size, device=self.dim_base_index.device)
         # [D, B, T]
         indices = rearrange(indices, 'B -> 1 B 1')
         # [B, D, T]

@@ -112,6 +112,8 @@ model:
       use_bucketing: false
       force_finite: true
       force_map_dataset: true
+      seed: 42
+      shard_seed: "randomized"
       drop_last: false
       shuffle: false
       num_workers: 2

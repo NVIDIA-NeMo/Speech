@@ -293,7 +293,7 @@ def collate_and_tokenize_custom(
             current_text_len = len(tokenized_list[i])
 
             if isinstance(s["text"], list):
-                # The text tokens are already physically padded 4x.
+                # The text tokens are already physically padded 10x.
                 # Target frames should match this structure exactly.
                 target_num_frames.append(current_text_len)
             else:
@@ -301,7 +301,7 @@ def collate_and_tokenize_custom(
                 # we simulate the 4x duration expansion (1 part text, 4 parts silence = 5x total).
                 target_num_frames.append(current_text_len * 5)
 
-    # --- BATCH PADDING (AUDIO) ---
+    # audio padding
     max_audio_len = max(audio_lengths)
     B = len(audio_lengths)
 
@@ -313,7 +313,6 @@ def collate_and_tokenize_custom(
     padded_audio = padded_audio.to(model.device)
     audio_lengths = torch.tensor(audio_lengths, dtype=torch.long)
 
-    # --- RESIZE INPUT_IDS TO MATCH TARGET DURATION ---
     # Expand text length to match expected output speech duration
     B, L = input_ids.shape
     target_len = int(max(target_num_frames))
@@ -349,8 +348,6 @@ def inference(cfg):
     distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
     if distributed and not torch.distributed.is_initialized():
         torch.distributed.init_process_group(backend="nccl")
-    rank = torch.distributed.get_rank() if distributed else 0
-    world = torch.distributed.get_world_size() if distributed else 1
 
     torch.set_float32_matmul_precision("medium")
     torch.backends.cudnn.allow_tf32 = True
@@ -368,18 +365,6 @@ def inference(cfg):
     # Move and cast
     if target_dtype != torch.float32:
         model.to(dtype=target_dtype)
-
-    if cfg.get("reinit_audio_prompt_frozen_projection", False):
-        D = model.tts_model.hidden_size
-        Q, _ = torch.linalg.qr(
-            torch.randn(
-                D,
-                D,
-                device=model.tts_model.audio_prompt_projection_W.device,
-                dtype=model.tts_model.audio_prompt_projection_W.dtype,
-            )
-        )
-        model.tts_model.audio_prompt_projection_W.copy_(Q)
 
     intelligibility = Intelligibility("stt_en_fastconformer_transducer_large", reuse_asr_hyps=False).reset()
 

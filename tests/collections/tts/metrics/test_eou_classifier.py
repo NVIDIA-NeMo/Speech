@@ -16,13 +16,7 @@ import librosa
 import numpy as np
 import pytest
 
-from nemo.collections.tts.metrics.eou_classifier import (
-    EoUClassification,
-    EoUClassifier,
-    EoUType,
-    TokenSegment,
-    _ends_with_sibilant,
-)
+from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType, TokenSegment
 
 # ---------------------------------------------------------------------------
 # TODO: Fill in (audio_path, text) pairs per EoU class.

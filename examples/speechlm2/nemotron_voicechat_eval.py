@@ -17,15 +17,14 @@ import torch
 from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
 
-from nemo.collections.speechlm2 import DataModule, DuplexSTTDataset
 from nemo.collections.audio.parts.utils.transforms import resample
-
-from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
+from nemo.collections.speechlm2 import DataModule, DuplexSTTDataset
 from nemo.collections.speechlm2.models.duplex_ear_tts import load_audio_librosa
+from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
 from nemo.core.config import hydra_runner
+from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
-from nemo.utils import logging
 
 torch.set_float32_matmul_precision("medium")
 torch.backends.cudnn.allow_tf32 = True
@@ -68,7 +67,9 @@ def inference(cfg):
             for speaker_name in speaker_dict:
                 speaker_audio, sr = load_audio_librosa(speaker_dict[speaker_name])
                 speaker_audio = resample(speaker_audio, sr, model.tts_model.target_sample_rate).to(model.device)
-                speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(speaker_audio.size(0)).to(model.device)
+                speaker_audio_lens = (
+                    torch.tensor([speaker_audio.size(1)]).long().repeat(speaker_audio.size(0)).to(model.device)
+                )
                 model.tts_model.set_audio_prompt_lantent(
                     speaker_audio,
                     speaker_audio_lens,
@@ -94,7 +95,7 @@ def inference(cfg):
         for k in model.state_dict().keys():
             if "audio_prompt" in k:
                 print(k)
-                
+
         model.save_pretrained(hf_export_dir, config=model_config)
         logging.info("Hugging face compatible checkpoint saved at:", hf_export_dir)
 

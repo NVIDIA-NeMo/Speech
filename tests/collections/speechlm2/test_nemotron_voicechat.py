@@ -29,12 +29,13 @@ if torch.cuda.is_available():
 
 pretrained_llm = "TinyLlama/TinyLlama_v1.1"
 if os.path.exists("/home/TestData/speechlm/pretrained_models"):
-    pretrained_llm = "/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1",
+    pretrained_llm = ("/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1",)
 
 # STT sampling rate
-source_sample_rate=16000
+source_sample_rate = 16000
 # TTS sampling rate
-target_sample_rate=22050
+target_sample_rate = 22050
+
 
 def create_model(
     predict_user_text=False,
@@ -45,46 +46,46 @@ def create_model(
 ):
     """Helper function to create a model with configurable settings."""
     test_stt_cfg = {
-            "model": {
-                "pretrained_llm": pretrained_llm,
-                "pretrained_weights": False,
-                "audio_loss_weight": 1,
-                "text_loss_weight": 3,
-                "source_sample_rate": source_sample_rate,
-                "validation_save_path": "/tmp/test_duplex_stt_logs",
-                "perception": {
-                    "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
-                    "preprocessor": {
-                        "_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
-                        "features": 80,
-                    },
-                    "encoder": {
-                        "_target_": "nemo.collections.asr.modules.ConformerEncoder",
-                        "feat_in": 80,
-                        "d_model": 512,
-                        "n_heads": 8,
-                        "n_layers": 1,
-                        "subsampling_factor": 8,
-                    },
-                    "modality_adapter": {
-                        "_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector",
-                        "d_model": 512,
-                    },
-                    "output_dim": 2048,
+        "model": {
+            "pretrained_llm": pretrained_llm,
+            "pretrained_weights": False,
+            "audio_loss_weight": 1,
+            "text_loss_weight": 3,
+            "source_sample_rate": source_sample_rate,
+            "validation_save_path": "/tmp/test_duplex_stt_logs",
+            "perception": {
+                "_target_": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
+                "preprocessor": {
+                    "_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
+                    "features": 80,
                 },
-                "predict_user_text": predict_user_text,
-                "force_use_noise_augmentation": force_use_noise_augmentation,
-                "old_noise_prob": old_noise_prob,
-                "old_noise_min_snr": old_noise_min_snr,
-                "old_noise_max_snr": old_noise_max_snr,
-                "optimizer": {"_target_": "torch.optim.AdamW"},
+                "encoder": {
+                    "_target_": "nemo.collections.asr.modules.ConformerEncoder",
+                    "feat_in": 80,
+                    "d_model": 512,
+                    "n_heads": 8,
+                    "n_layers": 1,
+                    "subsampling_factor": 8,
+                },
+                "modality_adapter": {
+                    "_target_": "nemo.collections.speechlm2.modules.perception.IdentityConnector",
+                    "d_model": 512,
+                },
+                "output_dim": 2048,
             },
-            "data": {
-                "source_sample_rate": 16000,
-            },
-            "exp_manager": {
-                "explicit_log_dir": "/tmp/test_duplex_stt_logs",
-            },
+            "predict_user_text": predict_user_text,
+            "force_use_noise_augmentation": force_use_noise_augmentation,
+            "old_noise_prob": old_noise_prob,
+            "old_noise_min_snr": old_noise_min_snr,
+            "old_noise_max_snr": old_noise_max_snr,
+            "optimizer": {"_target_": "torch.optim.AdamW"},
+        },
+        "data": {
+            "source_sample_rate": 16000,
+        },
+        "exp_manager": {
+            "explicit_log_dir": "/tmp/test_duplex_stt_logs",
+        },
     }
 
     test_tts_config = {
@@ -283,6 +284,7 @@ def dataset(model):
         output_roles=["assistant"],
     )
 
+
 @pytest.fixture(scope="session")
 def training_cutset_batch():
     cut = dummy_cut(0, recording=dummy_recording(0, with_data=True, duration=1.0, sampling_rate=22050))
@@ -322,6 +324,7 @@ def training_cutset_batch():
         ),
     ]
     return CutSet([cut])
+
 
 def test_e2e_validation_step(model, dataset, training_cutset_batch):
     model.eval()

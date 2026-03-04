@@ -257,14 +257,8 @@ class TestRNNTAttJoint:
         dec = torch.randn(B, joint_config['pred_hidden'], U)
 
         with torch.no_grad():
-            out_exact = joint(
-                encoder_outputs=enc_exact, decoder_outputs=dec,
-                encoder_lengths=torch.tensor([4])
-            )
-            out_extra = joint(
-                encoder_outputs=enc_extra, decoder_outputs=dec,
-                encoder_lengths=torch.tensor([5])
-            )
+            out_exact = joint(encoder_outputs=enc_exact, decoder_outputs=dec, encoder_lengths=torch.tensor([4]))
+            out_extra = joint(encoder_outputs=enc_extra, decoder_outputs=dec, encoder_lengths=torch.tensor([5]))
 
         # Exact: 1 chunk. Extra: 2 chunks (second has only 1 valid frame out of 4).
         assert out_exact.shape[1] == 1

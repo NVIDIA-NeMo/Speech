@@ -247,9 +247,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         # Segment IDs per sequence (padded)
         aligned_segment_ids = torch.stack(
             [
-                torch.nn.functional.pad(
-                    torch.full((seq_len,), i), (0, max_len - seq_len), value=-1
-                )  # -1 for padding
+                torch.nn.functional.pad(torch.full((seq_len,), i), (0, max_len - seq_len), value=-1)  # -1 for padding
                 for i, seq_len in enumerate(target_token_lens)
             ],
             dim=0,

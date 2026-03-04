@@ -23,17 +23,24 @@ from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUCl
 # Paths are relative to the repo root. Multiple examples per class are supported.
 # ---------------------------------------------------------------------------
 DATA_PATH = "/home/TestData/tts/eou_classifier_unit_test"
-_CLASSIFICATION_CASES: list[tuple[EoUType, str, str]] = [
-    (EoUType.GOOD, f"{DATA_PATH}/rodney.wav", "Yes, it is quite amazing to watch and I love all of it."),
+# TEST_NAME, EoU_TYPE, AUDIO_PATH, TEXT
+_CLASSIFICATION_CASES: list[tuple[str, EoUType, str, str]] = [
     (
+        "good ending",
+        EoUType.GOOD,
+        f"{DATA_PATH}/rodney.wav",
+        "Yes, it is quite amazing to watch and I love all of it.",
+    ),
+    (
+        "cut-off ending",
         EoUType.CUTOFF,
         f"{DATA_PATH}/libritts_test_clean_1320_122612_000056_000003.wav",
         "Having reached within a few yards of the latter, he arose to his feet, silently and slowly.",
     ),
-    (EoUType.SILENCE, f"{DATA_PATH}/magpie_silence_wood.wav", "w o o d"),
-    (EoUType.NOISE, f"{DATA_PATH}/magpie_noisy_yes.wav", "yes"),
-    # this one starts looping the text at the end, should be detected as noise
+    ("silence tail", EoUType.SILENCE, f"{DATA_PATH}/magpie_silence_wood.wav", "w o o d"),
+    ("noise tail", EoUType.NOISE, f"{DATA_PATH}/magpie_noisy_yes.wav", "yes"),
     (
+        "noise tail with looping end",
         EoUType.NOISE,
         f"{DATA_PATH}/magpie_repeated_tail.wav",
         "Put them away quick before Andella and Rosalie see them.",
@@ -52,7 +59,9 @@ def classifier():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "eou_type, audio_path, text", _CLASSIFICATION_CASES, ids=[p for _, p, _ in _CLASSIFICATION_CASES]
+    "eou_type, audio_path, text",
+    [(t, a, tx) for _, t, a, tx in _CLASSIFICATION_CASES],
+    ids=[p for p, _, _, _ in _CLASSIFICATION_CASES],
 )
 def test_classification_matches_expected_class(classifier, eou_type, audio_path, text):
     """Each sample should be classified as its expected EoU type."""

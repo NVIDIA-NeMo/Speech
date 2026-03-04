@@ -11,11 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import gc
+import json
 import os
 
 import torch
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
+from safetensors import safe_open
 
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS, load_audio_librosa
@@ -27,9 +30,6 @@ from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogge
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
-import json
-import gc
-from safetensors import safe_open
 
 
 class NemotronVoiceChat(LightningModule, HFHubMixin):
@@ -95,6 +95,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
     • Supports both standard checkpoints and HuggingFace safetensors format.
 
     """
+
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (
             "You must pass the config to DuplexS2SModel as a Python dict to support hyperparameter serialization "
@@ -194,9 +195,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
                 # recreates the audio_prompt_latents if needed
                 if "audio_prompt_latents." in key:
-                    self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure(
-                        {key: tensor}
-                    )
+                    self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure({key: tensor})
 
                     # refresh param dict since new param may exist now
                     param_dict = dict(self.named_parameters())
@@ -205,10 +204,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     target = param_dict[key]
 
                     if target.shape != tensor.shape:
-                        logging.warning(
-                            f"Shape mismatch for {key}: "
-                            f"model {target.shape} vs ckpt {tensor.shape}"
-                        )
+                        logging.warning(f"Shape mismatch for {key}: " f"model {target.shape} vs ckpt {tensor.shape}")
                     else:
                         target.data.copy_(tensor)
 
@@ -219,8 +215,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
                     if target.shape != tensor.shape:
                         logging.warning(
-                            f"Buffer shape mismatch for {key}: "
-                            f"model {target.shape} vs ckpt {tensor.shape}"
+                            f"Buffer shape mismatch for {key}: " f"model {target.shape} vs ckpt {tensor.shape}"
                         )
                     else:
                         target.data.copy_(tensor)
@@ -238,9 +233,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
 
         if missing_keys:
-            logging.warning(
-                f"{len(missing_keys)} keys in checkpoint not found in model"
-            )
+            logging.warning(f"{len(missing_keys)} keys in checkpoint not found in model")
 
         gc.collect()
 
@@ -250,11 +243,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         loaded_keys = []
         missing_keys = []
 
-        with safe_open(
-            os.path.join(ckpt_path, "model.safetensors"),
-            framework="pt",
-            device="cpu"
-        ) as f:
+        with safe_open(os.path.join(ckpt_path, "model.safetensors"), framework="pt", device="cpu") as f:
 
             # get checkpoint keys
             ckpt_keys = list(f.keys())
@@ -266,14 +255,12 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     del tensor
                     loaded_keys.append(key)
                 elif "audio_prompt_latents." in key:
-                        tensor = f.get_tensor(key)
-                        # create the key if needed
-                        self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure(
-                            {key: tensor}
-                        )
-                        model_state_dict[key].copy_(tensor)
-                        del tensor
-                        loaded_keys.append(key)
+                    tensor = f.get_tensor(key)
+                    # create the key if needed
+                    self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure({key: tensor})
+                    model_state_dict[key].copy_(tensor)
+                    del tensor
+                    loaded_keys.append(key)
                 else:
                     missing_keys.append(key)
 
@@ -283,9 +270,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
 
         if missing_keys:
-            logging.warning(
-                f"Keys in checkpoint but not in model: {len(missing_keys)} keys"
-            )
+            logging.warning(f"Keys in checkpoint but not in model: {len(missing_keys)} keys")
 
         del model_state_dict
         gc.collect()

@@ -146,7 +146,7 @@ def inference(cfg):
 
         # if available load directly from huggingface like path
         if cfg.get("checkpoint_path", None):
-            # instanciate and load the model using from_pretrained 
+            # instanciate and load the model using from_pretrained
             model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path)
         else:
             # load from individual STT and TTS checkpoints

@@ -353,7 +353,7 @@ def evaluate_dir(
     speaker_verification_model_alternate = models['sv_model_alternate']
 
     # 3. EoU classifier (support for English only)
-    eou_classifier = None  # EoUClassifier() if language == "en" else None
+    eou_classifier = EoUClassifier() if language == "en" else None
 
     # 4. Compute UTMOSv2 scores
     utmosv2_scores = None

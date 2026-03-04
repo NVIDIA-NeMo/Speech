@@ -13,19 +13,82 @@
 # limitations under the License.
 
 """
-Evaluation script for Duplex EARTTS models following MagpieTTS evaluation recipe. 
+Evaluation script for Duplex EARTTS models following MagpieTTS evaluation recipe.
 
 Args:
-    config-path (str): Path to the directory containing the YAML configuration file.
-    config-name (str): Name of the YAML configuration file.
-    checkpoint_path (str): Path to the Duplex EARTTS checkpoint file.
+    config-path (str):
+        Path to the directory containing the YAML configuration file.
+
+    config-name (str):
+        Name of the YAML configuration file.
+
+    checkpoint_path (str):
+        Path to the Duplex EARTTS checkpoint file.
+
+    datasets_json_path (str):
+        Path to a JSONL (JSON Lines) file describing the evaluation dataset.
+        Each line must be a valid JSON object representing one sample.
+
+        Supported formats:
+
+        ----------------------------------------------------------------------
+        1) SINGLE-TURN FORMAT
+        ----------------------------------------------------------------------
+        "text" is a string.
+
+        Example:
+        {"text": "Like really quickly and they go haha and then they run off.",
+         "context_audio_filepath": "speaker_1.wav",
+         "audio_filepath": "audio_1.wav"}
+
+        {"text": "Mm hmm. Okay.",
+         "context_audio_filepath": "speaker_2.wav",
+         "audio_filepath": "audio_2.wav"}
+
+        ----------------------------------------------------------------------
+        2) MULTI-TURN FORMAT
+        ----------------------------------------------------------------------
+        "text" is a list of utterances (List[str]).
+        Each element represents one conversational turn. The model will
+        tokenize and pad each segment sequentially.
+
+        Example:
+        {"text": ["Mm-hmm.", "Yeah.", "Right.", "I get what you’re saying.", "That makes sense."],
+         "context_audio_filepath": "speaker_1.wav",
+         "audio_filepath": "dummy_blank_audio_mt_0001.wav"}
+
+        {"text": ["Oh.", "Really?", "Yeah, okay.", "I didn’t know that.", "That’s interesting."],
+         "context_audio_filepath": "speaker_2.wav",
+         "audio_filepath": "audio_2.wav"}
+
+        ----------------------------------------------------------------------
+        FIELD DESCRIPTIONS
+        ----------------------------------------------------------------------
+
+        text:
+            Either:
+                - str (single-turn)
+                - List[str] (multi-turn)
+
+        context_audio_filepath:
+            Path to the reference speaker audio used for conditioning.
+            This can be overridden by setting:
+                ++user_custom_speaker_reference=<path>
+
+        audio_filepath:
+            Output audio file name.
+            This is used only as the base filename for saving generated audio
+            inside `out_dir`. The file does NOT need to exist beforehand.
+
+    out_dir (str):
+        Directory where generated audio samples will be saved.
 
 Usage:
     python duplex_eartts_eval.py \
         --config-path=conf/ \
         --config-name=duplex_eartts.yaml \
         ++checkpoint_path=duplex_eartts_results/duplex_eartts/model.ckpt \
-        ++datasets_json_path=/path/to/evalset_config.json \
+        ++datasets_json_path=/path/to/evalset_config.jsonl \
         ++out_dir=duplex_eartts_results/duplex_eartts/audio_samples/dummy_dataset
 """
 

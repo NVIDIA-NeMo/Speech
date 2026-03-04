@@ -843,21 +843,55 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
         valid_mask = torch.arange(T, device=_tokens.device, dtype=encoded_len.dtype).unsqueeze(
             0
         ) < encoded_len.unsqueeze(1)
+
+        # Initialize cumulative token count if it doesn't exist, it's okay that each training job will reset it,
+        # as long as the curve for each job is showing increasing cumulative coverage.
+        if getattr(self, 'cumulative_token_count', None) is None:
+            self.cumulative_token_count = torch.zeros(
+                [N, int(self.cfg.num_classes)], device=_tokens.device, dtype=torch.long
+            )
+
+        # This batch's token counts per codebook [N, num_classes]; will be summed across ranks then added to cumulative
+        batch_token_count = torch.zeros([N, int(self.cfg.num_classes)], device=_tokens.device, dtype=torch.long)
         num_unique_tokens = torch.zeros(N, device=_tokens.device, dtype=torch.long)
         for n in range(N):
             valid_tokens = _tokens[valid_mask][:, n]  # all valid token values for codebook n across batch and time
-            num_unique_tokens[n] = valid_tokens.unique().numel() if valid_tokens.numel() > 0 else 0
+            unique_tokens = valid_tokens.unique()
+            num_unique_tokens[n] = unique_tokens.numel() if unique_tokens.numel() > 0 else 0
+            if valid_tokens.numel() > 0:
+                counts = torch.bincount(
+                    valid_tokens.long(), minlength=int(self.cfg.num_classes), device=_tokens.device
+                )
+                batch_token_count[n] = counts
 
-        # Get the maximum number of unique tokens for each codebookacross all ranks
+        # Sync batch counts across ranks (SUM) so cumulative is global
+        if torch.distributed.is_initialized():
+            torch.distributed.all_reduce(batch_token_count, op=torch.distributed.ReduceOp.SUM)
+        self.cumulative_token_count += batch_token_count
+
+        # Get the maximum number of unique tokens for each codebook across all ranks
         if torch.distributed.is_initialized():
             torch.distributed.all_reduce(num_unique_tokens, op=torch.distributed.ReduceOp.MAX)
 
         # coverage = fraction of codebook entries used
         codebook_coverage = num_unique_tokens / float(self.cfg.num_classes)
-
+        cumulative_codebook_coverage = torch.count_nonzero(self.cumulative_token_count, dim=1) / float(
+            self.cfg.num_classes
+        )
+        cumulative_token_prob = self.cumulative_token_count / self.cumulative_token_count.sum(
+            dim=1, keepdim=True
+        )  # shape [N, num_classes]
+        # Entropy H = -sum(p * log(p)) per codebook; use clamp to avoid log(0)
+        cumulative_codebook_entropy = -(cumulative_token_prob * torch.log(cumulative_token_prob.clamp(min=1e-10))).sum(
+            dim=1
+        )
         for n in range(N):
             self.log(f"codebook_coverage_cb{n}", codebook_coverage[n].float())
+            self.log(f"cumul_codebook_coverage_cb{n}", cumulative_codebook_coverage[n].float())
+            self.log(f"cumul_codebook_entropy_cb{n}", cumulative_codebook_entropy[n].float())
         self.log(f"codebook_coverage_avg", codebook_coverage.mean().float())
+        self.log(f"cumul_codebook_coverage_avg", cumulative_codebook_coverage.mean().float())
+        self.log(f"cumul_codebook_entropy_avg", cumulative_codebook_entropy.mean().float())
 
 
 class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):

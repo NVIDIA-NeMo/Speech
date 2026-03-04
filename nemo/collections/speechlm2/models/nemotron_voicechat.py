@@ -27,6 +27,9 @@ from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogge
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
+import json
+import gc
+from safetensors import safe_open
 
 
 class NemotronVoiceChat(LightningModule, HFHubMixin):
@@ -53,16 +56,20 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
     The class required config fields:
             model:
+                scoring_asr: str
                 stt:
                     model: ...
                 speech_generation:
                     model: ...
-                scoring_asr: str
 
             data:
                 target_sample_rate: int
                 source_sample_rate: int
                 frame_length: float
+                validation_ds:
+                    datasets:
+                        evaluation_set:
+                        shar_path: ...
 
             exp_manager:
                 explicit_log_dir: str
@@ -130,40 +137,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         if self.cfg.get("pretrained_s2s_model", None):
             logging.info(f"Loading pretrained s2s model from {self.cfg.pretrained_s2s_model}")
             if os.path.isdir(self.cfg.pretrained_s2s_model):
-                # Hugging Face format
-                import gc
-
-                from safetensors import safe_open
-
-                # Load tensors incrementally to avoid OOM
-                model_state_dict = self.state_dict()
-                loaded_keys = []
-                missing_keys = []
-
-                with safe_open(
-                    os.path.join(self.cfg.pretrained_s2s_model, "model.safetensors"), framework="pt", device="cpu"
-                ) as f:
-                    available_keys = f.keys()
-                    for key in available_keys:
-                        if key in model_state_dict:
-                            # Load tensor and copy to model parameter
-                            tensor = f.get_tensor(key)
-                            model_state_dict[key].copy_(tensor)
-                            loaded_keys.append(key)
-                            del tensor  # Free memory immediately
-                        else:
-                            missing_keys.append(key)
-
-                        # Periodic garbage collection for very large models
-                        if len(loaded_keys) % 100 == 0:
-                            gc.collect()
-
-                logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
-                if missing_keys:
-                    logging.warning(f"Keys in checkpoint but not in model: {len(missing_keys)} keys")
-
-                del model_state_dict
-                gc.collect()
+                self.init_from_safetensors_ckpt(self.cfg.pretrained_s2s_model)
             else:
                 self.init_from_model_from_ckpt(self.cfg.pretrained_s2s_model)
 
@@ -177,6 +151,144 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             # partial initialization support
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())
             self.load_state_dict(checkpoint_state, strict=True)
+
+    @classmethod
+    def from_pretrained(cls, ckpt_path):
+        pretrained_config = os.path.join(ckpt_path, "config.json")
+        logging.info(f" Loading pretrained model config: {pretrained_config}")
+        with open(pretrained_config, 'r') as f:
+            pretrained_model_cfg_dict = json.load(f)
+        model_cfg = DictConfig(pretrained_model_cfg_dict)
+        model = cls(OmegaConf.to_container(model_cfg, resolve=True))
+        model.init_from_safetensors_ckpt(ckpt_path)
+        return model
+
+    def init_from_safetensors_ckpt(self, ckpt_path):
+        """
+        Memory-efficient streaming safetensors loader with dynamic
+        audio_prompt_latents recreation support.
+
+        Safe for large models and distributed training (if called before DDP/FSDP wrap).
+        """
+
+        loaded_keys = []
+        missing_keys = []
+
+        # Build fast lookup tables once
+        param_dict = dict(self.named_parameters())
+        buffer_dict = dict(self.named_buffers())
+
+        with safe_open(
+            os.path.join(ckpt_path, "model.safetensors"),
+            framework="pt",
+            device="cpu",
+        ) as f:
+
+            for key in f.keys():
+
+                try:
+                    tensor = f.get_tensor(key)
+                except Exception as e:
+                    logging.warning(f"Failed loading tensor {key}: {e}")
+                    continue
+
+                # recreates the audio_prompt_latents if needed
+                if "audio_prompt_latents." in key:
+                    self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure(
+                        {key: tensor}
+                    )
+
+                    # refresh param dict since new param may exist now
+                    param_dict = dict(self.named_parameters())
+
+                if key in param_dict:
+                    target = param_dict[key]
+
+                    if target.shape != tensor.shape:
+                        logging.warning(
+                            f"Shape mismatch for {key}: "
+                            f"model {target.shape} vs ckpt {tensor.shape}"
+                        )
+                    else:
+                        target.data.copy_(tensor)
+
+                    loaded_keys.append(key)
+
+                elif key in buffer_dict:
+                    target = buffer_dict[key]
+
+                    if target.shape != tensor.shape:
+                        logging.warning(
+                            f"Buffer shape mismatch for {key}: "
+                            f"model {target.shape} vs ckpt {tensor.shape}"
+                        )
+                    else:
+                        target.data.copy_(tensor)
+
+                    loaded_keys.append(key)
+
+                else:
+                    missing_keys.append(key)
+
+                del tensor
+
+                if len(loaded_keys) % 100 == 0:
+                    gc.collect()
+
+        logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
+
+        if missing_keys:
+            logging.warning(
+                f"{len(missing_keys)} keys in checkpoint not found in model"
+            )
+
+        gc.collect()
+
+    def init_from_safetensors_ckpt_old(self, ckpt_path):
+        model_state_dict = self.state_dict()
+
+        loaded_keys = []
+        missing_keys = []
+
+        with safe_open(
+            os.path.join(ckpt_path, "model.safetensors"),
+            framework="pt",
+            device="cpu"
+        ) as f:
+
+            # get checkpoint keys
+            ckpt_keys = list(f.keys())
+
+            for key in ckpt_keys:
+                if key in model_state_dict:
+                    tensor = f.get_tensor(key)
+                    model_state_dict[key].copy_(tensor)
+                    del tensor
+                    loaded_keys.append(key)
+                elif "audio_prompt_latents." in key:
+                        tensor = f.get_tensor(key)
+                        # create the key if needed
+                        self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure(
+                            {key: tensor}
+                        )
+                        model_state_dict[key].copy_(tensor)
+                        del tensor
+                        loaded_keys.append(key)
+                else:
+                    missing_keys.append(key)
+
+                if len(loaded_keys) % 100 == 0:
+                    gc.collect()
+
+        logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
+
+        if missing_keys:
+            logging.warning(
+                f"Keys in checkpoint but not in model: {len(missing_keys)} keys"
+            )
+
+        del model_state_dict
+        gc.collect()
 
     def training_step(self, batch: dict, batch_idx: int):
         raise NotImplementedError("training_step is not implemented on this class !!")
@@ -338,7 +450,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             2. Autoregressive text generation
             3. Autoregressive audio codec generation
             4. Optional incremental waveform decoding
-            5. Final waveform decoding
 
         Args:
             input_signal (torch.Tensor):

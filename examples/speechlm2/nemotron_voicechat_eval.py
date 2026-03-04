@@ -140,15 +140,26 @@ def inference(cfg):
     torch.backends.cudnn.allow_tf32 = True
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
-    OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     with trainer.init_module():
         model_config = OmegaConf.to_container(cfg, resolve=True)
-        model = NemotronVoiceChat(model_config)
 
-        # load pretrained checkpoint and rescale the weights if needed
-        if model.tts_model.cfg.get("pretrained_model", None):
-            model.tts_model.restore_from_pretrained_checkpoint(model.tts_model.cfg.pretrained_model)
+        # if available load directly from huggingface like path
+        if cfg.get("checkpoint_path", None):
+            # instanciate and load the model using from_pretrained 
+            model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path)
+        else:
+            # load from individual STT and TTS checkpoints
+            model = NemotronVoiceChat(model_config)
+            # load pretrained checkpoint and rescale the weights if needed
+            if model.tts_model.cfg.get("pretrained_model", None):
+                model.tts_model.restore_from_pretrained_checkpoint(model.tts_model.cfg.pretrained_model)
+
+    # update model internal configs using the new configs
+    model.full_cfg.merge_with(cfg)
+    model.cfg.merge_with(cfg.model)
+    OmegaConf.save(model.full_cfg, log_dir / "exp_config.yaml")
+    model.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
 
     dataset = DuplexSTTDataset(
         tokenizer=model.stt_model.tokenizer,

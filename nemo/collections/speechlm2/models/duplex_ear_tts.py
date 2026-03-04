@@ -900,8 +900,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         Retrieve a cached audio prompt latent stored as a buffer.
         """
 
-        buffer_name = f"audio_prompt_latent_{name}"
-
         if name not in self.audio_prompt_latents:
             raise KeyError(f"Unknown audio prompt latent '{name}'. " "Call set_audio_prompt_lantent(...) first.")
 

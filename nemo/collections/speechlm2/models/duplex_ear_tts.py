@@ -1566,6 +1566,26 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                     )
 
     def load_state_dict(self, state_dict, strict: bool = True):
+        """
+        Loads model weights with audio prompt latent compatibility.
+
+        This method:
+
+            1. Recreates cached audio prompt latent structures if required
+            2. Attempts strict loading
+            3. Falls back to partial initialization if necessary
+
+        Args:
+            state_dict (dict):
+                Model state dictionary.
+
+            strict (bool, optional):
+                Whether to enforce strict key matching.
+
+        Returns:
+            IncompatibleKeys:
+                As returned by LightningModule.load_state_dict.
+        """
         # recreate audio prompt latent entries if needed
         self.maybe_recreate_cached_audio_prompt_latents_structure(state_dict)
         try:

@@ -30,6 +30,64 @@ from nemo.utils import logging
 
 
 class NemotronVoiceChat(LightningModule, HFHubMixin):
+    """
+    NemotronVoiceChat: End-to-End Duplex Speech-to-Speech Model.
+
+    This class integrates:
+
+        • DuplexSTTModel  — Duplex speech-to-text (STT) model
+        • DuplexEARTTS    — autoregressive speech decoder (TTS)
+
+    The module is evaluation-oriented (no training_step implemented) and
+    supports:
+
+        • BLEU computation (text vs reference)
+        • ASR-BLEU computation (ASR transcription of generated speech vs reference)
+        • Audio + text result logging
+        • HuggingFace-compatible checkpoint loading/saving
+        • Partial checkpoint initialization
+        • Speaker prompt conditioning
+
+    Configuration
+    -------------
+
+    The class required config fields:
+            model:
+                stt:
+                    model: ...
+                speech_generation:
+                    model: ...
+                scoring_asr: str
+
+            data:
+                target_sample_rate: int
+                source_sample_rate: int
+                frame_length: float
+
+            exp_manager:
+                explicit_log_dir: str
+
+    Validation artifacts are stored under:
+        cfg.exp_manager.explicit_log_dir + "/validation_logs"
+
+    Metrics
+    -------
+
+    During validation/test:
+
+        • BLEU
+        • ASRBLEU (using model.scoring_asr from config)
+
+    Results are logged via:
+
+        ResultsLogger
+
+    Notes
+    -----
+    • Designed for inference, validation, and model export workflows.
+    • Supports both standard checkpoints and HuggingFace safetensors format.
+
+    """
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (
             "You must pass the config to DuplexS2SModel as a Python dict to support hyperparameter serialization "
@@ -128,6 +186,21 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         self.stt_model.on_train_epoch_start()
 
     def on_validation_epoch_start(self) -> None:
+        """
+        Initializes evaluation metrics and result buffers.
+
+        This method:
+
+            • Resets ResultsLogger
+            • Initializes ASRBLEU using config parameter:
+                model.scoring_asr
+            • Resets BLEU metric
+
+        All validation artifacts are saved under:
+
+            self.validation_save_path
+            = cfg.exp_manager.explicit_log_dir + "/validation_logs"
+        """
         self.on_train_epoch_start()
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
@@ -148,7 +221,46 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         speaker_audio: torch.Tensor = None,
         speaker_audio_lens: torch.Tensor = None,
     ):
+        """
+        Runs one validation step for NemotronVoiceChat.
 
+        This method performs:
+
+            1. Offline speech-to-speech inference
+            2. ASR transcription of generated audio
+            3. BLEU and ASR-BLEU metric updates
+            4. Audio and text logging to JSON
+
+        Args:
+            batch (dict):
+                Dictionary of dataset batches.
+                Each entry contains an "audio_data" field with:
+
+                    • "source_audio"        — user waveform (B, T)
+                    • "source_audio_lens"   — lengths (B,)
+                    • "target_texts"        — reference text
+                    • "sample_id"           — unique sample identifier
+                    • optional prompt tokens
+
+            batch_idx (int):
+                Batch index.
+
+            speaker_audio (torch.Tensor, optional):
+                Explicit speaker reference waveform (B, T_ref).
+
+            speaker_audio_lens (torch.Tensor, optional):
+                Lengths of speaker reference audio.
+
+        Behavior:
+            • Calls offline_inference()
+            • Resamples generated speech to 16kHz for ASR scoring
+            • Updates ASRBLEU using model.scoring_asr
+            • Logs per-sample JSON entries
+            • Updates text BLEU
+
+        Returns:
+            None. Metrics are accumulated and logged on epoch end.
+        """
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
                 continue  # some dataset is exhausted
@@ -171,8 +283,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 asr_hyps = self.asr_bleu.update(
                     name=name,
                     refs=dataset_batch["target_texts"],
-                    pred_audio=resample(results["audio"], 22050, 16000),
-                    pred_audio_lens=(results["audio_len"] / 22050 * 16000).to(torch.long),
+                    pred_audio=resample(results["audio"], self.target_sample_rate, 16000),
+                    pred_audio_lens=(results["audio_len"] / self.target_sample_rate * 16000).to(torch.long),
                 )
 
                 self.results_logger.update(
@@ -218,21 +330,82 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         guidance_enabled: bool = True,
     ) -> dict[str, torch.Tensor]:
         """
-        Autoregressive prediction.
+        Runs full offline duplex speech-to-speech inference.
+
+        This method performs:
+
+            1. Streaming STT inference
+            2. Autoregressive text generation
+            3. Autoregressive audio codec generation
+            4. Optional incremental waveform decoding
+            5. Final waveform decoding
 
         Args:
-            input_signal: a batch of waveforms with shape (B, T) with source sampling rate.
-            input_signal_lens: example lengths as number of samples of shape (B,).
-            decode_audio: bool, whether to decode audio codes to waveform.
+            input_signal (torch.Tensor):
+                Input user waveform of shape (B, T_source),
+                sampled at self.source_sample_rate.
+
+            input_signal_lens (torch.Tensor):
+                Lengths of input waveforms in samples, shape (B,).
+
+            prompt_tokens (torch.Tensor, optional):
+                Optional text prompt tokens.
+
+            prompt_token_lens (torch.Tensor, optional):
+                Lengths of prompt tokens.
+
+            speaker_audio (torch.Tensor, optional):
+                Explicit speaker reference waveform.
+
+            speaker_audio_lens (torch.Tensor, optional):
+                Lengths of speaker reference audio.
+
+            input_pad_len (int, optional):
+                Padding length used during streaming inference.
+
+            decode_audio (bool, optional):
+                Whether to decode codec tokens into waveform.
+
+            incremental_audio_decoding (bool, optional):
+                If True, waveform decoding happens during generation.
+                If False, decoding occurs after all tokens are generated.
+
+            generation_config (dict, optional):
+                Generation parameters (sampling, noise, EOS rules).
+                If None, defaults are obtained from TTS model.
+
+            guidance_enabled (bool, optional):
+                Enables classifier-free guidance.
 
         Returns:
-            A dict with keys:
-                * "text": generated text, de-tokenized to strings, properly skipping text_pad_id; list of length B.
-                * "tokens_text": generated text tokens of shape (B, T2).
-                * "tokens_audio": generated audio codes of shape (B, T2, K) where `K=num_codebooks`.
-                * "tokens_len" output lengths as number of tokens of shape (B,).
-                * "audio": generated waveform of shape (B, T3) (`decode_audio=True`).
-                * "audio_len" output lengths as number of waveform samples of shape (B,) (when `decode_audio=True`).
+            dict[str, torch.Tensor]:
+
+                • "text":
+                    List[str] — generated text per sample.
+
+                • "tokens_text":
+                    Tensor (B, T_text) — generated text tokens.
+
+                • "tokens_audio":
+                    Tensor (B, T_audio, K) — audio codec tokens.
+
+                • "tokens_len":
+                    Tensor (B,) — number of generated tokens.
+
+                • "audio":
+                    Tensor (B, T_wave) — generated waveform
+                    (if decode_audio=True).
+
+                • "audio_len":
+                    Tensor (B,) — waveform lengths in samples
+                    (if decode_audio=True).
+
+        Notes:
+            • Uses streaming inference backend of DuplexSTTModel.
+            • Uses autoregressive codec generation from DuplexEARTTS.
+            • Speaker reference may be loaded automatically from:
+                cfg.inference_speaker_reference
+            • Supports cached audio prompt latents.
         """
 
         inference_state = self.stt_model.streaming_inference._init_inference(
@@ -348,6 +521,26 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         return ans
 
     def load_state_dict(self, state_dict, strict: bool = True):
+        """
+        Loads model weights with audio prompt latent compatibility.
+
+        This method:
+
+            1. Recreates cached audio prompt latent structures if required
+            2. Attempts strict loading
+            3. Falls back to partial initialization if necessary
+
+        Args:
+            state_dict (dict):
+                Model state dictionary.
+
+            strict (bool, optional):
+                Whether to enforce strict key matching.
+
+        Returns:
+            IncompatibleKeys:
+                As returned by LightningModule.load_state_dict.
+        """
         # recreate audio prompt latent entries if needed
         self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure(state_dict)
         try:

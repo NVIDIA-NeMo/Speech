@@ -11,6 +11,106 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""
+Evaluation and export script for NemotronVoiceChat models.
+
+This script runs validation for a NemotronVoiceChat checkpoint using a
+Duplex S2S/STT-style Lhotse dataset. It evaluates the full speech-to-speech
+pipeline, including both Duplex STT and duplex TTS model.
+
+Metrics
+-------
+
+During validation, the script computes:
+
+- Text BLEU score (reference text vs predicted text)
+- ASR BLEU score (reference text vs ASR-transcribed generated speech)
+
+The ASR model used for scoring is defined by the configuration parameter:
+    model.scoring_asr
+
+This model is used to transcribe generated speech and compute BLEU-based
+speech consistency metrics. The specific ASR checkpoint is fully controlled
+via config, in the same way as other parameters such as:
+
+    exp_manager.explicit_log_dir
+
+Outputs
+-------
+
+All generated artifacts are saved under:
+
+    exp_manager.explicit_log_dir + "/validation_logs"
+
+The script:
+
+- Saves generated audio files (e.g., under "pred_wavs/")
+- Saves per-utterance logs in JSON format
+- Saves predicted text, target text, and ASR-transcribed speech
+
+Each validation example is exported as a JSON entry with the following format:
+
+{
+    "target_text": "...",
+    "pred_text": "...",
+    "speech_pred_transcribed": "...",
+    "audio_path": "pred_wavs/example.wav"
+}
+
+Where:
+    target_text:
+        Ground-truth target text.
+
+    pred_text:
+        Text predicted by the STT/S2S model.
+
+    speech_pred_transcribed:
+        Transcription of the generated speech using the ASR model
+        defined by ``model.scoring_asr``.
+
+    audio_path:
+        Relative path to the generated waveform inside
+        exp_manager.explicit_log_dir.
+
+Hugging Face Export
+-------------------
+
+If ``hf_export_dir`` is provided, the script exports a Hugging Face–compatible
+checkpoint containing BOTH:
+
+- The STT model (``model.stt.model.pretrained_s2s_model``)
+- The TTS model (``model.speech_generation.model.pretrained_model``)
+
+Before export, the script can:
+
+- Register multiple speaker reference audios via ``register_speaker_dict``
+- Reinitialize the frozen audio prompt projection matrix if
+  ``reinit_audio_prompt_frozen_projection=True``
+
+This produces a single HF-style checkpoint directory containing the full
+NemotronVoiceChat pipeline (STT + TTS).
+
+Key Config Overrides (commonly used)
+-------------------------------------
+
+STT:
+    ++model.stt.model.pretrained_s2s_model=...
+    ++model.stt.model.pretrained_asr=...
+
+TTS:
+    ++model.speech_generation.model.pretrained_model=...
+    ++model.speech_generation.model.inference_guidance_enabled=True
+    ++model.speech_generation.model.inference_guidance_scale=0.2
+    ++model.speech_generation.model.inference_top_p_or_k=0.95
+    ++model.speech_generation.model.inference_noise_scale=0.001
+
+Note:
+    For export-only runs, it is common to set:
+        ++trainer.limit_val_batches=0.0
+        ++trainer.max_steps=1
+
+"""
 import os
 
 import torch
@@ -91,10 +191,6 @@ def inference(cfg):
             )
             model.tts_model.tts_model.audio_prompt_projection_W.copy_(Q)
             logging.info("Audio frozen projection reinited !")
-
-        for k in model.state_dict().keys():
-            if "audio_prompt" in k:
-                print(k)
 
         model.save_pretrained(hf_export_dir, config=model_config)
         logging.info("Hugging face compatible checkpoint saved at:", hf_export_dir)

@@ -12,17 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import librosa
 
 import torch
 from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2 import DataModule, DuplexSTTDataset
+from nemo.collections.audio.parts.utils.transforms import resample
 
 from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
+from nemo.collections.speechlm2.models.duplex_ear_tts import load_audio_librosa
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
+from nemo.utils import logging
 
 torch.set_float32_matmul_precision("medium")
 torch.backends.cudnn.allow_tf32 = True
@@ -59,8 +63,41 @@ def inference(cfg):
     # export file to huggingface
     hf_export_dir = model_config.get("hf_export_dir", None)
     if hf_export_dir:
+        if model_config.get("register_speaker_dict", None):
+            model.tts_model.to(model.device)
+            speaker_dict = model_config.get("register_speaker_dict", None)
+            for speaker_name in speaker_dict:
+                speaker_audio, sr = load_audio_librosa(speaker_dict[speaker_name])
+                speaker_audio = resample(speaker_audio, sr, model.tts_model.target_sample_rate).to(model.device)
+                speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(speaker_audio.size(0)).to(model.device)
+                model.tts_model.set_audio_prompt_lantent(
+                    speaker_audio,
+                    speaker_audio_lens,
+                    system_prompt=None,
+                    batch_size=1,
+                    name=speaker_name,
+                )
+                logging.info(f"Speaker {speaker_name} registered !")
+
+        if cfg.get("reinit_audio_prompt_frozen_projection", False):
+            D = model.tts_model.tts_model.hidden_size
+            Q, _ = torch.linalg.qr(
+                torch.randn(
+                    D,
+                    D,
+                    device=model.tts_model.tts_model.audio_prompt_projection_W.device,
+                    dtype=model.tts_model.tts_model.audio_prompt_projection_W.dtype,
+                )
+            )
+            model.tts_model.tts_model.audio_prompt_projection_W.copy_(Q)
+            logging.info("Audio frozen projection reinited !")
+
+        for k in model.state_dict().keys():
+            if "audio_prompt" in k:
+                print(k)
+                
         model.save_pretrained(hf_export_dir, config=model_config)
-        print("Hugging face compatible checkpoint saved at:", hf_export_dir)
+        logging.info("Hugging face compatible checkpoint saved at:", hf_export_dir)
 
     trainer.validate(model, datamodule)
 

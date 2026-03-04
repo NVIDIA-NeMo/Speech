@@ -1457,7 +1457,12 @@ class RVQEARTTSModel(nn.Module):
             total_loss = lm_loss + c_loss + k_loss
 
             return RVQEARTTSOutput(
-                loss=total_loss, lm_loss=lm_loss, c_loss=c_loss, k_loss=k_loss, hidden_states=hidden_states
+                loss=total_loss,
+                lm_loss=lm_loss,
+                c_loss=c_loss,
+                k_loss=k_loss,
+                hidden_states=hidden_states,
+                audio_prompt_lantent=audio_prompt_lantent,
             )
         else:  # Inference
             if not generation_config:

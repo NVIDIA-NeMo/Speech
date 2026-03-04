@@ -200,7 +200,7 @@ def collate_and_tokenize_custom(
                 # we simulate the 4x duration expansion (1 part text, 4 parts silence = 5x total).
                 target_num_frames.append(current_text_len * 5)
 
-    # --- BATCH PADDING (AUDIO) ---
+    # audio padding
     max_audio_len = max(audio_lengths)
     B = len(audio_lengths)
 
@@ -261,18 +261,6 @@ def inference(cfg):
     if target_dtype != torch.float32:
         model.to(dtype=target_dtype)
 
-    if cfg.get("reinit_audio_prompt_frozen_projection", False):
-        D = model.tts_model.hidden_size
-        Q, _ = torch.linalg.qr(
-            torch.randn(
-                D,
-                D,
-                device=model.tts_model.audio_prompt_projection_W.device,
-                dtype=model.tts_model.audio_prompt_projection_W.dtype,
-            )
-        )
-        model.tts_model.audio_prompt_projection_W.copy_(Q)
-
     intelligibility = Intelligibility("stt_en_fastconformer_transducer_large", reuse_asr_hyps=False).reset()
 
     for batch_id, batch in enumerate(read_jsonl_batches(cfg.datasets_json_path, cfg.batch_size, max_batches=None)):
@@ -310,7 +298,6 @@ def inference(cfg):
             )
 
         audio = audio.float()
-        # wav_dur = int(inputs["target_num_frames"][i] * model.target_samples_per_frame)
         # reset audio len to the actual size removing extra long audio padding
         audio_len = (torch.tensor(inputs["target_num_frames"]) * model.target_samples_per_frame).int()
 

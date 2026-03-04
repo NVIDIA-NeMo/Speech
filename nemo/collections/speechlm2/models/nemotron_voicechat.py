@@ -14,12 +14,11 @@
 import os
 
 import torch
-import torchaudio
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.audio.parts.utils.transforms import resample
-from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
+from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS, load_audio_librosa
 from nemo.collections.speechlm2.models.duplex_stt_model import DuplexSTTModel
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
@@ -61,9 +60,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             del self.cfg.speech_generation.model.tts_config.cas_config.pretrained_tokenizer_name
 
         self.tts_model = DuplexEARTTS(OmegaConf.to_container(self.cfg.speech_generation, resolve=True))
+
         # reset silence tokens to avoid inference issues
         self.tts_model.codec_silence_tokens = self.tts_model.get_codec_silence_frame()
-
         self.target_fps = self.tts_model.target_fps
         # compute source fps
         self.source_fps = self.source_sample_rate / (
@@ -252,7 +251,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             speaker_audio_lens = None
         elif speaker_audio is None:
             # create speaker audio for init
-            speaker_audio, sr = torchaudio.load(self.cfg.inference_speaker_reference)
+            speaker_audio, sr = load_audio_librosa(self.cfg.inference_speaker_reference)
             speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
             speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
 
@@ -349,6 +348,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         return ans
 
     def load_state_dict(self, state_dict, strict: bool = True):
+        # recreate audio prompt latent entries if needed
+        self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure(state_dict)
         try:
             return super().load_state_dict(state_dict, strict=strict)
         except RuntimeError:

@@ -160,120 +160,120 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
     def __getitem__(self, cuts: CutSet) -> dict:
+        cuts = cuts.transform_text(_strip_timestamps)
         # ensures fp32 audio load to avoid issues of duration mistakes on fp16 training
         with fp32_precision():
-            cuts = cuts.transform_text(_strip_timestamps)
-
             source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
                 cuts.resample(self.target_sample_rate), recording_field="target_audio"
             )
-            target_text_tokens, target_token_lens = collate_token_channel(
-                cuts,
-                self.tokenizer,
-                self.frame_length,
-                roles=self.output_roles,
-                add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
-            )
-            source_tokens, source_token_lens = collate_token_channel(
-                cuts,
-                self.tokenizer,
-                self.frame_length,
-                roles=self.input_roles,
-                add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
-            )
-
+        target_text_tokens, target_token_lens = collate_token_channel(
+            cuts,
+            self.tokenizer,
+            self.frame_length,
+            roles=self.output_roles,
+            add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
+        )
+        source_tokens, source_token_lens = collate_token_channel(
+            cuts,
+            self.tokenizer,
+            self.frame_length,
+            roles=self.input_roles,
+            add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
+        )
+        with fp32_precision():
             audio_prompt, audio_prompt_lens = get_audio_prompt(
                 cuts, self.target_sample_rate, roles=self.output_roles, recording_field="target_audio"
             )
 
-            # add speech channel delay if needed
-            if self.num_delay_speech_tokens:
-                source_audio, source_audio_lens, target_audio, target_audio_lens = add_speech_delay(
-                    source_audio,
-                    source_audio_lens,
-                    target_audio,
-                    target_audio_lens,
-                    self.num_delay_speech_tokens,
-                    self.target_samples_per_frame,
-                    self.source_samples_per_frame,
-                )
+        # add speech channel delay if needed
+        if self.num_delay_speech_tokens:
+            source_audio, source_audio_lens, target_audio, target_audio_lens = add_speech_delay(
+                source_audio,
+                source_audio_lens,
+                target_audio,
+                target_audio_lens,
+                self.num_delay_speech_tokens,
+                self.target_samples_per_frame,
+                self.source_samples_per_frame,
+            )
 
-            if self.add_system_prompt:
+        if self.add_system_prompt:
+            with fp32_precision():
                 system_prompts, system_prompts_lens, system_prompts_raw = collate_system_prompt(
                     cuts, self.tokenizer, ignore_data_system_prompt=self.ignore_data_system_prompt
                 )
-            else:
-                system_prompts = None
-                system_prompts_lens = None
-                system_prompts_raw = None
+        else:
+            system_prompts = None
+            system_prompts_lens = None
+            system_prompts_raw = None
 
-            # get dataset name/type
-            dataset_type = [getattr(c, "type", "") for c in cuts]
+        # get dataset name/type
+        dataset_type = [getattr(c, "type", "") for c in cuts]
 
-            # add audio prompt if needed
-            (
-                target_text_tokens,
-                target_token_lens,
-                source_tokens,
-                source_token_lens,
-                source_audio,
-                source_audio_lens,
-                target_audio,
-                target_audio_lens,
-                prompt_lens,
-            ) = self.maybe_add_audio_prompt(
-                target_text_tokens,
-                target_token_lens,
-                source_tokens,
-                source_token_lens,
-                target_audio,
-                target_audio_lens,
-                source_audio,
-                source_audio_lens,
-                audio_prompt,
-                audio_prompt_lens,
-                system_prompts,
-                system_prompts_lens,
-            )
+        # add audio prompt if needed
+        (
+            target_text_tokens,
+            target_token_lens,
+            source_tokens,
+            source_token_lens,
+            source_audio,
+            source_audio_lens,
+            target_audio,
+            target_audio_lens,
+            prompt_lens,
+        ) = self.maybe_add_audio_prompt(
+            target_text_tokens,
+            target_token_lens,
+            source_tokens,
+            source_token_lens,
+            target_audio,
+            target_audio_lens,
+            source_audio,
+            source_audio_lens,
+            audio_prompt,
+            audio_prompt_lens,
+            system_prompts,
+            system_prompts_lens,
+        )
 
-            # create non_prompt_mask that should mask desc plus audio prompt if used
-            non_prompt_mask = get_mask_from_lengths(target_token_lens)
-            for i, frame in enumerate(prompt_lens):
-                non_prompt_mask[i, : frame - 1] = 0.0
+        # create non_prompt_mask that should mask desc plus audio prompt if used
+        non_prompt_mask = get_mask_from_lengths(target_token_lens)
+        for i, frame in enumerate(prompt_lens):
+            non_prompt_mask[i, : frame - 1] = 0.0
 
-            max_len = max(target_token_lens)
+        max_len = max(target_token_lens)
 
-            # Segment IDs per sequence (padded)
-            aligned_segment_ids = torch.stack(
-                [
-                    torch.nn.functional.pad(
-                        torch.full((seq_len,), i), (0, max_len - seq_len), value=-1
-                    )  # -1 for padding
-                    for i, seq_len in enumerate(target_token_lens)
-                ],
-                dim=0,
-            )  # [B, max_len]
+        # Segment IDs per sequence (padded)
+        aligned_segment_ids = torch.stack(
+            [
+                torch.nn.functional.pad(
+                    torch.full((seq_len,), i), (0, max_len - seq_len), value=-1
+                )  # -1 for padding
+                for i, seq_len in enumerate(target_token_lens)
+            ],
+            dim=0,
+        )  # [B, max_len]
 
-            # Attention mask: same-segment & causal
-            aligned_attention_mask = (
-                aligned_segment_ids.unsqueeze(-2) == aligned_segment_ids.unsqueeze(-1)
-            ) & (  # [B, max_len, max_len]
-                torch.arange(max_len).unsqueeze(0).unsqueeze(1) <= torch.arange(max_len).unsqueeze(0).unsqueeze(-1)
-            )  # causal tril
+        # Attention mask: same-segment & causal
+        aligned_attention_mask = (
+            aligned_segment_ids.unsqueeze(-2) == aligned_segment_ids.unsqueeze(-1)
+        ) & (  # [B, max_len, max_len]
+            torch.arange(max_len).unsqueeze(0).unsqueeze(1) <= torch.arange(max_len).unsqueeze(0).unsqueeze(-1)
+        )  # causal tril
 
-            aligned_attention_mask = aligned_attention_mask.unsqueeze(1)  # [B, 1, max_len, max_len]
+        aligned_attention_mask = aligned_attention_mask.unsqueeze(1)  # [B, 1, max_len, max_len]
 
-            # create position IDs from the aligned length
-            aligned_position_ids = torch.stack(
-                [
-                    torch.nn.functional.pad(
-                        torch.arange(seq_len), (0, max(target_token_lens) - seq_len), value=0
-                    )  # value=0 is safe for padding
-                    for seq_len in target_token_lens
-                ],
-                dim=0,
-            )
+        # create position IDs from the aligned length
+        aligned_position_ids = torch.stack(
+            [
+                torch.nn.functional.pad(
+                    torch.arange(seq_len), (0, max(target_token_lens) - seq_len), value=0
+                )  # value=0 is safe for padding
+                for seq_len in target_token_lens
+            ],
+            dim=0,
+        )
 
         return {
             "sample_id": [str(cut.id) for cut in cuts],

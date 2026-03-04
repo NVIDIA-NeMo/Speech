@@ -17,6 +17,7 @@ import base64
 import csv
 import datetime
 import difflib
+import gzip
 import io
 import json
 import logging
@@ -145,10 +146,11 @@ def expand_sharded_path(path_pattern):
     Supports patterns like:
         s3://ASR/sharded_manifests/manifest__OP_0..255_CL_.json
     which expands to:
-        s3://ASR/sharded_manifests/manifest_0.json
-        s3://ASR/sharded_manifests/manifest_1.json
-        ...
-        s3://ASR/sharded_manifests/manifest_255.json
+        s3://ASR/sharded_manifests/manifest_0.json, manifest_1.json, ..., manifest_255.json
+
+    Zero-padding: the replacement uses the same digit width as in the pattern (e.g.
+        cuts._OP_000000..000098_CL_.jsonl.gz → cuts.000000.jsonl.gz, ..., cuts.000098.jsonl.gz),
+    so Lhotse-style shard names (000000, 000001, ...) are correct.
 
     Args:
         path_pattern: Path string containing _OP_start..end_CL_ pattern
@@ -164,12 +166,17 @@ def expand_sharded_path(path_pattern):
     if not match:
         return [str(path_pattern)]
 
-    start = int(match.group(1))
-    end = int(match.group(2))
+    start_str = match.group(1)
+    end_str = match.group(2)
+    start = int(start_str)
+    end = int(end_str)
+    # Use the max width of start/end for zero-padding (e.g. 000000..000098 → width 6)
+    width = max(len(start_str), len(end_str))
 
     paths = []
     for i in range(start, end + 1):
-        expanded_path = re.sub(pattern, str(i), str(path_pattern))
+        replacement = str(i).zfill(width)
+        expanded_path = re.sub(pattern, replacement, str(path_pattern))
         paths.append(expanded_path)
 
     return paths
@@ -603,6 +610,7 @@ def load_audio_from_s3(audio_filepath, tar_base_path=None, shard_index=None, dal
 
 def open_manifest_file(manifest_path):
     """Open a manifest file, supporting both local and S3 paths.
+    Supports plain text and gzip-compressed (.gz) manifests, including .jsonl.gz.
 
     Args:
         manifest_path: Path to the manifest file (local or S3 URL)
@@ -610,14 +618,25 @@ def open_manifest_file(manifest_path):
     Yields:
         str: Lines from the manifest file
     """
+    is_gz = str(manifest_path).endswith('.gz')
     if is_s3_path(manifest_path):
-        content = read_s3_file(manifest_path)
+        print("manifest_path", manifest_path)
+        raw = read_s3_file_bytes(manifest_path)
+        if is_gz:
+            content = gzip.decompress(raw).decode('utf-8')
+        else:
+            content = raw.decode('utf-8')
         for line in content.splitlines():
             yield line
     else:
-        with open(manifest_path, 'r', encoding='utf8') as f:
-            for line in f:
-                yield line.rstrip('\n')
+        if is_gz:
+            with gzip.open(manifest_path, 'rt', encoding='utf-8') as f:
+                for line in f:
+                    yield line.rstrip('\n')
+        else:
+            with open(manifest_path, 'r', encoding='utf8') as f:
+                for line in f:
+                    yield line.rstrip('\n')
 
 
 # operators for filtering items
@@ -877,23 +896,117 @@ def load_data(
             desc = f"Shard {shard_index}" if shard_index is not None else manifest_path
             for line in tqdm.tqdm(manifest_lines, desc=desc):
                 item = json.loads(line)
-                if not isinstance(item['text'], str):
+                # Lhotse shards: cuts manifest with "supervisions" and cut "id", "duration"
+                is_lhotse_cut = (
+                    isinstance(item.get('supervisions'), list)
+                    and 'id' in item
+                    and 'duration' in item
+                )
+                if is_lhotse_cut:
+                    # Build entry from cut: use cut id as audio lookup, duration from cut
+                    cut_duration = item['duration']
+                    cut_id = item['id']
+                    supervisions = item['supervisions']
+                    sup = supervisions[0] if supervisions else {}
+                    text = sup.get('text') or item.get('text') or ''
+                    if not isinstance(text, str):
+                        text = ''
+                    num_chars = len(text)
+                    orig = text.split()
+                    num_words = len(orig)
+                    for word in orig:
+                        vocabulary[word] += 1
+                    for char in text:
+                        alphabet.add(char)
+                    num_hours += cut_duration
+
+                    entry = {
+                        'audio_filepath': cut_id,
+                        'id': cut_id,
+                        'duration': round(cut_duration, 2),
+                        'num_words': num_words,
+                        'num_chars': num_chars,
+                        'word_rate': round(num_words / cut_duration, 2) if cut_duration else 0,
+                        'char_rate': round(num_chars / cut_duration, 2) if cut_duration else 0,
+                        'text': text,
+                    }
+                    if item.get('start') is not None:
+                        entry['offset'] = item['start']
+                    # Add all supervision fields except 'alignment'
+                    for k, v in sup.items():
+                        if k == 'alignment':
+                            continue
+                        if k == 'duration':
+                            entry['supervision_duration'] = v
+                            continue
+                        if k not in entry:
+                            entry[k] = v
+                    item_shard_index = shard_index
+                    if item_shard_index is None and 'shard_id' in item:
+                        item_shard_index = item['shard_id']
+                    if item_shard_index is not None:
+                        entry['_shard_index'] = item_shard_index
+                    data.append(entry)
+                    if field_name in item:
+                        metrics_available = True
+                        pred = item[field_name].split()
+                        measures = jiwer.compute_measures(text, item[field_name])
+                        word_dist = measures['substitutions'] + measures['insertions'] + measures['deletions']
+                        char_dist = editdistance.eval(text, item[field_name])
+                        wer_dist += word_dist
+                        cer_dist += char_dist
+                        wer_count += num_words
+                        cer_count += num_chars
+                        sm.set_seqs(orig, pred)
+                        for m in sm.get_matching_blocks():
+                            for word_idx in range(m[0], m[0] + m[2]):
+                                match_vocab[orig[word_idx]] += 1
+                        wmr_count += measures['hits']
+                        nw, nc = max(num_words, 1e-9), max(num_chars, 1e-9)
+                        data[-1][field_name] = item[field_name]
+                        data[-1]['WER'] = round(word_dist / nw * 100.0, 2)
+                        data[-1]['CER'] = round(char_dist / nc * 100.0, 2)
+                        data[-1]['WMR'] = round(measures['hits'] / nw * 100.0, 2)
+                        data[-1]['I'] = measures['insertions']
+                        data[-1]['D'] = measures['deletions']
+                        data[-1]['D-I'] = measures['deletions'] - measures['insertions']
+                    if estimate_audio:
+                        signal, sr = load_audio_data(
+                            cut_id, audio_base_path, tar_base_path, shard_index, dali_index_base
+                        )
+                        if 'offset' in data[-1]:
+                            offset = data[-1]['offset']
+                            dur = data[-1]['duration']
+                            signal = signal[
+                                int(offset * sr) : int((offset + dur) * sr)
+                            ]
+                        bw = eval_bandwidth(signal, sr)
+                        data[-1]['freq_bandwidth'] = int(bw)
+                        data[-1]['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
+                    for k in item:
+                        if k not in data[-1] and k != 'supervisions':
+                            data[-1][k] = item[k]
+                    continue
+
+                # NeMo-style manifest: audio_filepath, text, duration
+                if not isinstance(item.get('text', ''), str):
                     item['text'] = ''
-                num_chars = len(item['text'])
-                orig = item['text'].split()
+                item_text = item['text']
+                num_chars = len(item_text)
+                orig = item_text.split()
                 num_words = len(orig)
                 for word in orig:
                     vocabulary[word] += 1
-                for char in item['text']:
+                for char in item_text:
                     alphabet.add(char)
                 num_hours += item['duration']
 
                 if field_name in item:
                     metrics_available = True
                     pred = item[field_name].split()
-                    measures = jiwer.compute_measures(item['text'], item[field_name])
+                    measures = jiwer.compute_measures(item_text, item[field_name])
                     word_dist = measures['substitutions'] + measures['insertions'] + measures['deletions']
-                    char_dist = editdistance.eval(item['text'], item[field_name])
+                    char_dist = editdistance.eval(item_text, item[field_name])
                     wer_dist += word_dist
                     cer_dist += char_dist
                     wer_count += num_words
@@ -920,7 +1033,7 @@ def load_data(
                     'num_chars': num_chars,
                     'word_rate': round(num_words / item['duration'], 2),
                     'char_rate': round(num_chars / item['duration'], 2),
-                    'text': item['text'],
+                    'text': item_text,
                 }
                 # Store shard index for sharded datasets (needed for tar file lookup)
                 # Priority: 1) shard_index from manifest path, 2) shard_id from manifest entry

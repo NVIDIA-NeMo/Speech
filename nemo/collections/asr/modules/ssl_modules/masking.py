@@ -97,41 +97,36 @@ class RandomBlockMasking(NeuralModule):
             masked_feats (Tensor): masked features, shape=(batch, features, time)
             masks (Tensor): the generated masks, shape=(batch, features, time)
         """
-        batch_size = input_feats.size(0)
-        masks = torch.zeros_like(input_feats)
-        masked_feats = input_feats
-        indices = []
-        for i in range(batch_size):
-            if self.block_size >= input_lengths[i] * self.max_mask_ratio:
-                # handle case where audio is too short
+        B, D, T = input_feats.shape
+        device = input_feats.device
+
+        mask = torch.zeros(B, T, dtype=torch.bool, device=device)
+
+        for i in range(B):
+            length = input_lengths[i]
+            if self.block_size >= length * self.max_mask_ratio:
                 block_size = 8
                 num_patches = 1
-                patch_indices = torch.tensor([0])
+                patch_indices = torch.zeros(1, dtype=torch.long, device=device)
                 offset = 0
             else:
-                num_patches = torch.ceil(input_lengths[i] * self.mask_prob / self.block_size).int()
-                offset = torch.randint(0, self.block_size, (1,))[0]
+                num_patches = int(torch.ceil(length * self.mask_prob / self.block_size).item())
+                offset = torch.randint(0, self.block_size, (1,)).item()
                 block_size = self.block_size
-                if (num_patches + 1) * self.block_size > input_lengths[i]:
-                    block_size = torch.div(input_lengths[i], (num_patches + 1), rounding_mode='trunc')
-                max_num_patches = torch.div(input_lengths[i], block_size, rounding_mode='trunc')
-                patch_indices = torch.randperm(max_num_patches - 1)[:num_patches]
+                if (num_patches + 1) * self.block_size > length:
+                    block_size = int(length // (num_patches + 1))
+                max_num_patches = int(length // block_size)
+                patch_indices = torch.randperm(max_num_patches - 1, device=device)[:num_patches]
 
             if num_patches:
                 starts = patch_indices * block_size + offset
-                ends = starts + block_size
-                positions = torch.cat([torch.arange(s, e) for s, e in zip(starts, ends)]).reshape(-1, 1)
-                batch_index = torch.full((positions.shape[0], 1), i, dtype=positions.dtype)
-                positions = torch.cat([batch_index, positions], dim=1)
-                indices.append(positions.unique(dim=0))
+                positions = starts.unsqueeze(1) + torch.arange(block_size, device=device).unsqueeze(0)
+                positions = positions.reshape(-1).clamp(0, T - 1)
+                mask[i, positions] = True
 
-        if indices:
-            indices = torch.cat(indices, dim=0).unbind(1)
-            masks = masks.permute(0, 2, 1)
-            masked_feats = masked_feats.permute(0, 2, 1)
-
-            masks = masks.index_put(indices, values=torch.tensor(1.0)).permute(0, 2, 1)
-            masked_feats = masked_feats.index_put(indices, values=self.mask_embedding).permute(0, 2, 1)
+        mask_3d = mask.unsqueeze(1)
+        masks = mask_3d.float().expand_as(input_feats)
+        masked_feats = torch.where(mask_3d, self.mask_embedding.view(1, -1, 1), input_feats)
 
         return masked_feats, masks
 
@@ -144,38 +139,35 @@ class RandomBlockMasking(NeuralModule):
             masked_feats (Tensor): masked features, shape=(batch, features, time)
             masks (Tensor): the generated masks, shape=(batch, features, time)
         """
-        batch_size = input_feats.size(0)
-        masks = torch.zeros_like(input_feats)
-        masked_feats = input_feats
+        B, D, T = input_feats.shape
+        device = input_feats.device
+
+        mask = torch.zeros(B, T, dtype=torch.bool, device=device)
         mask_prob = torch.tensor(self.mask_prob)
-        indices = []
-        for i in range(batch_size):
+        block_offsets = torch.arange(self.block_size, device=device)
+
+        for i in range(B):
             input_length = input_lengths[i].item()
             if self.block_size >= input_length * self.max_mask_ratio:
-                # handle case where audio is too short
                 block_size = 8
                 num_patches = 1
-                patch_indices = torch.tensor([0])
+                patch_indices = torch.zeros(1, dtype=torch.long, device=device)
             else:
                 block_size = self.block_size
                 count = max(0, input_length - self.block_size)
                 num_patches = torch.binomial(torch.tensor(count).float(), mask_prob).long()
-                patch_indices = torch.randperm(count)
-                patch_indices = patch_indices[:num_patches]
+                patch_indices = torch.randperm(count, device=device)[:num_patches]
             if num_patches:
-                ends = torch.clamp(patch_indices + block_size, max=input_length)
-                positions = torch.cat([torch.arange(s, e) for s, e in zip(patch_indices, ends)]).reshape(-1, 1)
-                batch_index = torch.full((positions.shape[0], 1), i, dtype=positions.dtype)
-                positions = torch.cat([batch_index, positions], dim=1)
-                indices.append(positions.unique(dim=0))
+                if block_size == self.block_size:
+                    positions = patch_indices.unsqueeze(1) + block_offsets.unsqueeze(0)
+                else:
+                    positions = patch_indices.unsqueeze(1) + torch.arange(block_size, device=device).unsqueeze(0)
+                positions = positions.reshape(-1).clamp(0, T - 1)
+                mask[i, positions] = True
 
-        if indices:
-            indices = torch.cat(indices, dim=0).unbind(1)
-            masks = masks.permute(0, 2, 1)
-            masked_feats = masked_feats.permute(0, 2, 1)
-
-            masks = masks.index_put(indices, values=torch.tensor(1.0)).permute(0, 2, 1)
-            masked_feats = masked_feats.index_put(indices, values=self.mask_embedding).permute(0, 2, 1)
+        mask_3d = mask.unsqueeze(1)
+        masks = mask_3d.float().expand_as(input_feats)
+        masked_feats = torch.where(mask_3d, self.mask_embedding.view(1, -1, 1), input_feats)
 
         return masked_feats, masks
 

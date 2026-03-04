@@ -1,3 +1,17 @@
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Classify the end-of-utterance (EoU) audio as: good (natural ending), cutoff (abrupt
 ending), silence (long trailing region that is quiet), or noise (significant trailing
@@ -15,6 +29,7 @@ Usage:
     print(result.eou_type, result.trailing_duration)
 """
 
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Union
@@ -47,6 +62,11 @@ class EoUType(StrEnum):
     CUTOFF = "cutoff"  # speech ends abruptly
     SILENCE = "silence"  # long trailing region with near-zero energy
     NOISE = "noise"  # significant trailing region with high energy relative to speech
+
+    @classmethod
+    def error_types(cls) -> tuple["EoUType", ...]:
+        """All types that represent an error (everything except GOOD)."""
+        return tuple(t for t in cls if t != cls.GOOD)
 
 
 @dataclass
@@ -89,44 +109,57 @@ class EoUClassifier:
         self.blank_id = self.processor.tokenizer.pad_token_id
         self.vocab = self.processor.tokenizer.get_vocab()
         self.id_to_token = {v: k for k, v in self.vocab.items()}
+        self.frame_duration = math.prod(self.model.config.conv_stride) / self.sr
 
     def _text_to_tokens(self, text: str) -> list[int]:
+        # Wav2Vec2 uses uppercase characters; normalize to match its vocabulary
         text = text.upper().strip()
         tokens = []
         for i, word in enumerate(text.split()):
+            # "|" is the word-boundary token in Wav2Vec2's CTC vocabulary
             if i > 0:
                 tokens.append(self.vocab["|"])
             for char in word:
+                # Skip characters not in vocab (punctuation, accents, etc.)
                 if char in self.vocab:
                     tokens.append(self.vocab[char])
         return tokens
 
-    def _find_speech_end(self, audio: np.ndarray, text: str) -> dict:
+    def _forced_align(self, audio: np.ndarray, text: str) -> dict:
         """Run forced alignment and return speech boundary info."""
+        # Tokenize audio into Wav2Vec2 input features
         input_values = self.processor(audio, return_tensors="pt", sampling_rate=self.sr).input_values
 
+        # Forward pass through the CTC model to get per-frame logits
         with torch.no_grad():
             logits = self.model(input_values).logits[0]
 
         log_probs = torch.log_softmax(logits, dim=-1)
-        n_frames = len(logits)
-        frame_duration = len(audio) / n_frames / self.sr
+        frame_duration = self.frame_duration
 
+        # Convert target text to CTC token IDs and run torchaudio forced alignment
         target_tokens = self._text_to_tokens(text)
         fa_ids, fa_scores = taf.forced_align(
             log_probs.unsqueeze(0),
             torch.tensor([target_tokens]),
             blank=self.blank_id,
         )
+        # fa_ids: per-frame aligned token IDs (blank or target token)
+        # fa_scores: per-frame log-prob scores; convert to probabilities for confidence
         aligned_ids = fa_ids[0].numpy()
         scores = torch.exp(fa_scores[0]).numpy()
 
+        # Walk through the frame-level alignment and merge consecutive
+        # frames of the same token into TokenSegment objects.
+        # Transitions: blank-to-token (start new segment), token-to-blank (end segment),
+        # token-to-different token (end old, start new).
         segments: list[TokenSegment] = []
-        cur_id = -1
+        cur_id = -1  # indicates that no segment is open
         seg_start = 0
         for i, aid in enumerate(aligned_ids):
             tid = int(aid)
             if tid == self.blank_id:
+                # Blank frame: close the current segment if one is open
                 if cur_id != -1:
                     seg_scores = scores[seg_start:i]
                     segments.append(
@@ -140,6 +173,7 @@ class EoUClassifier:
                     )
                     cur_id = -1
             elif tid != cur_id:
+                # New non-blank token: close previous segment (if any) and start a new one
                 if cur_id != -1:
                     seg_scores = scores[seg_start:i]
                     segments.append(
@@ -153,7 +187,8 @@ class EoUClassifier:
                     )
                 cur_id = tid
                 seg_start = i
-            # else: same non-blank token continues
+            # else: same non-blank token continues — keep extending the segment
+        # Flush the last open segment if the alignment ends on a non-blank token
         if cur_id != -1:
             seg_scores = scores[seg_start : len(aligned_ids)]
             segments.append(
@@ -166,6 +201,7 @@ class EoUClassifier:
                 )
             )
 
+        # No tokens were aligned — return zeroed-out defaults
         if not segments:
             return {
                 "speech_end": 0.0,
@@ -188,17 +224,22 @@ class EoUClassifier:
                 last_speech = seg
                 break
 
+        # Measure the blank gap between the last speech token and its predecessor.
+        # A large gap can indicate noise or misalignment before the final sound.
         last_idx = segments.index(last_speech)
         if last_idx > 0:
             last_token_gap = last_speech.start - segments[last_idx - 1].end
         else:
+            # First (and only) token — gap is measured from audio start
             last_token_gap = last_speech.start
 
+        # Average confidence of the last two alphanumeric tokens;
+        # used as a fallback when the single last-token confidence is near zero.
         last_two_alnum = [s for s in segments if s.token.isalnum()][-2:]
         last_two_avg = float(np.mean([s.confidence for s in last_two_alnum]))
 
         return {
-            "speech_end": last.end,  # + 0.05, # add 50ms of tolerance
+            "speech_end": last.end,
             "last_token_duration": last_speech.duration,
             "last_token_confidence": last_speech.confidence,
             "last_token": last_speech.token,
@@ -213,7 +254,7 @@ class EoUClassifier:
         text: str,
     ) -> EoUClassification:
         """
-        Classify the end-of-utterance quality of a TTS audio sample.
+        Classify the end-of-utterance quality of utterance audio.
 
         Args:
             audio: Path to a WAV file, or a numpy array of audio samples at self.sr.
@@ -222,19 +263,24 @@ class EoUClassifier:
         Returns:
             EoUClassification with the predicted eou_type and supporting features.
         """
+        # Accept either a file path or a pre-loaded numpy array
         if isinstance(audio, np.ndarray):
             samples = audio
         else:
             samples, _ = librosa.load(audio, sr=self.sr)
 
         audio_dur = len(samples) / self.sr
-        info = self._find_speech_end(samples, text)
+        # Run forced alignment and collect information about speech segments
+        info = self._forced_align(samples, text)
 
         speech_end = info["speech_end"]
         trailing = audio_dur - speech_end
         last_letter_pad = 0.15 if _ends_with_sibilant(text) else 0.1
         trail_start = int((speech_end + last_letter_pad) * self.sr)
         trailing_audio = samples[trail_start:]
+
+        # Compute RMS energy ratio between the trailing region and the full
+        # utterance — a high ratio means the tail is loud
         if len(trailing_audio) > 0:
             rms_trail = np.sqrt(np.mean(trailing_audio**2))
             rms_full = np.sqrt(np.mean(samples**2))
@@ -251,22 +297,19 @@ class EoUClassifier:
         last_two_avg = info["last_two_phoneme_avg_confidence"]
         token_segments = info["token_segments"]
 
-        # if trailing < 0.06 and (last_dur < 0.025 and last_conf < 0.15):
-        # if trailing < 0.06 and (last_gap < 0.1 and last_conf < 0.15): short trail and not due to gap
+        # --- Decision tree for EoU classification ---
         conf_threshold = 0.07
-        # short tail with low confidence and not due to gap (which could indicate noise) --> cutoff
+        # Short tail with low confidence and not due to gap (which could indicate noise) --> cutoff
         if trailing < 0.1 and last_conf < conf_threshold and not last_gap > 0.4:
-            # speech ends abruptly, with a very short last token or low confidence --> cutoff
             eou_type = EoUType.CUTOFF
-        # long noisy tail OR odd gap --> noisy
+        # Long noisy tail OR a gap between last two segements and low confidence --> noisy
         elif (trailing > 0.15 and trail_rms_ratio > 0.4) or (last_gap > 0.4 and last_conf < 0.15):
-            # significant trailing region with high energy relative to speech --> noise
             eou_type = EoUType.NOISE
-        # very long trailing region with near-zero energy --> silence
-        elif trailing > 1.0:  # and trail_rms_ratio < 0.10:
+        # Long tail without much energy (or it would captured by the previous condition) --> silence
+        elif trailing > 1.0:
             eou_type = EoUType.SILENCE
         else:
-            # everything else (moderate trailing, natural energy decay) --> good
+            # everything else --> good
             eou_type = EoUType.GOOD
 
         return EoUClassification(

@@ -41,7 +41,7 @@ Args:
          "context_audio_filepath": "speaker_1.wav",
          "audio_filepath": "audio_1.wav"}
 
-        {"text": "Mm hmm. Okay.",
+        {"text": "Sure. Okay.",
          "context_audio_filepath": "speaker_2.wav",
          "audio_filepath": "audio_2.wav"}
 
@@ -53,11 +53,11 @@ Args:
         tokenize and pad each segment sequentially.
 
         Example:
-        {"text": ["Mm-hmm.", "Yeah.", "Right.", "I get what you’re saying.", "That makes sense."],
+        {"text": ["Okay yeah.", "Yeah.", "Right.", "I get what you’re saying.", "That makes sense."],
          "context_audio_filepath": "speaker_1.wav",
          "audio_filepath": "dummy_blank_audio_mt_0001.wav"}
 
-        {"text": ["Oh.", "Really?", "Yeah, okay.", "I didn’t know that.", "That’s interesting."],
+        {"text": ["Okay.", "Really?", "Yeah, okay.", "I didn’t know that.", "That’s interesting."],
          "context_audio_filepath": "speaker_2.wav",
          "audio_filepath": "audio_2.wav"}
 

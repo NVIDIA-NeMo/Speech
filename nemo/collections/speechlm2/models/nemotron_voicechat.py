@@ -258,6 +258,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         for k, m in bleu.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
 
+        self.results_logger.compute_and_save()
+
     def validation_step(
         self,
         batch: dict,
@@ -461,18 +463,21 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         T = inference_state["T"]
 
         # if speaker_name is provided uses it, if not uses the speaker_audio provided, if speaker_audio is None load it from inference_speaker_reference
-        speaker_name = self.cfg.get("inference_speaker_name", None)
-        if speaker_name is not None:
-            speaker_audio = None
-            speaker_audio_lens = None
-        elif speaker_audio is None:
-            # create speaker audio for init
-            speaker_audio, sr = load_audio_librosa(self.cfg.inference_speaker_reference)
-            speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
-            speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
+        if speaker_audio is None:
+            speaker_name = self.cfg.get("inference_speaker_name", None)
+            if speaker_name is not None:
+                speaker_audio = None
+                speaker_audio_lens = None
+            else:
+                # create speaker audio for init
+                speaker_audio, sr = load_audio_librosa(self.cfg.inference_speaker_reference)
+                speaker_audio = resample(speaker_audio, sr, self.tts_model.target_sample_rate)
+                speaker_audio = speaker_audio.repeat(B, 1).to(self.device)
 
-            # lengths -> [B]
-            speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device)
+                # lengths -> [B]
+                speaker_audio_lens = torch.tensor([speaker_audio.size(1)]).long().repeat(B).to(self.device)
+        else:
+            speaker_name = None
 
         #  init tts_model
         self.tts_model.set_init_inputs(

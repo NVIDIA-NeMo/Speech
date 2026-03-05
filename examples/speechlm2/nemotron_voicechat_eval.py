@@ -151,7 +151,7 @@ def inference(cfg):
 
     with trainer.init_module():
         # instanciate and load the model using from_pretrained
-        model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path)
+        model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path).eval()
 
     # update model internal configs using the new configs
     model.full_cfg.merge_with(cfg)

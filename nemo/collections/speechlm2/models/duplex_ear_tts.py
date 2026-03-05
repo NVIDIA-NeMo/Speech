@@ -607,8 +607,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.secs = SECS(self.cfg.get("scoring_se", "titanet_large")).reset()
 
     def on_validation_epoch_end(self, prefix="val") -> None:
-        if torch.distributed.is_initialized():
-            self.trainer.strategy.model.require_backward_grad_sync = True
         asr_bleu = self.asr_bleu.compute()
         for k, m in asr_bleu.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
@@ -618,6 +616,12 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         secs = self.secs.compute()
         for k, m in secs.items():
             self.log(f"{prefix}_{k}", m.to(self.device), on_epoch=True, sync_dist=True)
+
+        self.results_logger.compute_and_save()
+
+        if torch.distributed.is_initialized():
+            self.trainer.strategy.model.require_backward_grad_sync = True
+
 
     def get_teacher_force_inference_audio(self, batch, guidance_enabled=True):
         inputs = self.prepare_inputs(batch)

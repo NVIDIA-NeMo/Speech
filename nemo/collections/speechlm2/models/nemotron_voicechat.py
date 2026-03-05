@@ -147,7 +147,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         model.init_from_safetensors_ckpt(ckpt_path)
         return model
 
-    def init_from_safetensors_ckpt(self, ckpt_path):
+    def init_from_safetensors_ckpt(self, ckpt_path, prefix=""):
         """
         Memory-efficient streaming safetensors loader with dynamic
         audio_prompt_latents recreation support.
@@ -183,8 +183,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     # refresh param dict since new param may exist now
                     param_dict = dict(self.named_parameters())
 
-                if key in param_dict:
-                    target = param_dict[key]
+                if prefix + key in param_dict:
+                    target = param_dict[prefix + key]
 
                     if target.shape != tensor.shape:
                         logging.warning(f"Shape mismatch for {key}: " f"model {target.shape} vs ckpt {tensor.shape}")
@@ -193,8 +193,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
                     loaded_keys.append(key)
 
-                elif key in buffer_dict:
-                    target = buffer_dict[key]
+                elif prefix + key in buffer_dict:
+                    target = buffer_dict[prefix + key]
 
                     if target.shape != tensor.shape:
                         logging.warning(
@@ -218,44 +218,6 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         if missing_keys:
             logging.warning(f"{len(missing_keys)} keys in checkpoint not found in model")
 
-        gc.collect()
-
-    def init_from_safetensors_ckpt_old(self, ckpt_path):
-        model_state_dict = self.state_dict()
-
-        loaded_keys = []
-        missing_keys = []
-
-        with safe_open(os.path.join(ckpt_path, "model.safetensors"), framework="pt", device="cpu") as f:
-
-            # get checkpoint keys
-            ckpt_keys = list(f.keys())
-
-            for key in ckpt_keys:
-                if key in model_state_dict:
-                    tensor = f.get_tensor(key)
-                    model_state_dict[key].copy_(tensor)
-                    del tensor
-                    loaded_keys.append(key)
-                elif "audio_prompt_latents." in key:
-                    tensor = f.get_tensor(key)
-                    # create the key if needed
-                    self.tts_model.maybe_recreate_cached_audio_prompt_latents_structure({key: tensor})
-                    model_state_dict[key].copy_(tensor)
-                    del tensor
-                    loaded_keys.append(key)
-                else:
-                    missing_keys.append(key)
-
-                if len(loaded_keys) % 100 == 0:
-                    gc.collect()
-
-        logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
-
-        if missing_keys:
-            logging.warning(f"Keys in checkpoint but not in model: {len(missing_keys)} keys")
-
-        del model_state_dict
         gc.collect()
 
     def training_step(self, batch: dict, batch_idx: int):

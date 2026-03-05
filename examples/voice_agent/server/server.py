@@ -41,7 +41,7 @@ from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObser
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger, RTVIAudioLoggerObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
 from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config
-from nemo.agents.voice_agent.pipecat.services.nemo.stt import ASR_EOU_MODELS, NemoSTTService
+from nemo.agents.voice_agent.pipecat.services.nemo.stt import NemoSTTService
 from nemo.agents.voice_agent.pipecat.services.nemo.tts import get_tts_service_from_config
 from nemo.agents.voice_agent.pipecat.services.nemo.turn_taking import NeMoTurnTakingService
 from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import (

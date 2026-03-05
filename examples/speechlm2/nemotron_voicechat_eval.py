@@ -13,44 +13,98 @@
 # limitations under the License.
 
 """
-Evaluation and export script for NemotronVoiceChat models.
+Evaluation script for NemotronVoiceChat models.
 
-This script runs validation for a NemotronVoiceChat checkpoint using a
-Duplex S2S/STT-style Lhotse dataset. It evaluates the full speech-to-speech
-pipeline, including both Duplex STT and duplex TTS model.
+This script runs validation for a NemotronVoiceChat checkpoint using a 
+Duplex S2S/STT-style Lhotse dataset. It evaluates the full speech-to-speech 
+pipeline, including both the Duplex STT and Duplex TTS models.
 
 Metrics
 -------
-
 During validation, the script computes:
-
 - Text BLEU score (reference text vs predicted text)
 - ASR BLEU score (reference text vs ASR-transcribed generated speech)
 
 The ASR model used for scoring is defined by the configuration parameter:
     model.scoring_asr
-
-This model is used to transcribe generated speech and compute BLEU-based
-speech consistency metrics. The specific ASR checkpoint is fully controlled
+This model is used to transcribe generated speech and compute BLEU-based 
+speech consistency metrics. The specific ASR checkpoint is fully controlled 
 via config, in the same way as other parameters such as:
-
     exp_manager.explicit_log_dir
+
+Arguments
+---------
+For a complete configuration reference, please look at the example config located at:
+    examples/speechlm2/conf/nemotron_voicechat.yaml
+
+cfg : omegaconf.DictConfig
+    The main Hydra configuration object defining the evaluation parameters. 
+    It is expected to contain the following top-level configurations:
+    
+    checkpoint_path (str | null)
+        Path to the pre-trained NemotronVoiceChat checkpoint for evaluation.
+
+    model (DictConfig)
+        Model-specific settings encompassing both STT and TTS subsystems. Key parameters include:
+        * scoring_asr (str): The ASR model name/path used to evaluate generated speech (e.g., 'stt_en_fastconformer_transducer_large').
+        * inference_speaker_reference (str | null): Path to the reference audio used to condition the speaker's voice. Set to `null` if using `inference_speaker_name`.
+        * inference_speaker_name (str): Named speaker identifier (e.g., 'Megan'); overrides `inference_speaker_reference`.
+        * stt (DictConfig): Sub-config for the `DuplexSTTModel` (e.g., `eval_text_turn_taking`).
+        * speech_generation (DictConfig): Sub-config for the `DuplexEARTTS` model. Includes codec configs, EAR-TTS backbone, and inference behavior like `inference_guidance_scale` (CFG) and `inference_noise_scale` (sampling temperature for the MoG head).
+
+    data (DictConfig)
+        Configuration for the data pipelines, datasets, and DataModule. Key parameters include:
+        * source_sample_rate (int): Sample rate of the input/user audio (e.g., 16000).
+        * target_sample_rate (int): Sample rate of the generated output audio (e.g., 22050).
+        * frame_length (float): Duration of audio frames in seconds (e.g., 0.08).
+        * input_roles (list): Conversation roles mapped to the input prompt (e.g., ["user", "User"]).
+        * output_roles (list): Conversation roles targeted for model generation (e.g., ["agent", "Assistant"]).
+        * validation_ds (DictConfig): Paths and settings for the Lhotse validation shards (e.g., `shar_path`, `batch_size`).
+
+    exp_manager (DictConfig)
+        Experiment manager configurations for logging. Must include:
+        * name (str): Experiment name (e.g., 'nemotron-voicechat-eval').
+        * explicit_log_dir (str): The root directory where output artifacts and metric logs are saved.
+
+    trainer (DictConfig)
+        PyTorch Lightning Trainer parameters dictating hardware usage. Key settings include `devices`, `num_nodes`, `limit_val_batches` (fraction of dataset to evaluate), and `precision` (e.g., 32).
+
+Example Run
+-----------
+You can run the evaluation script and override parameters dynamically using Hydra command-line flags. 
+Here is an example execution using dummy paths:
+
+    python /path/to/nemo/examples/speechlm2/nemotron_voicechat_eval.py \
+        --config-path=examples/speechlm2/conf/ \
+        --config-name=nemotron_voicechat.yaml \
+        exp_manager.name="Nemotron_VoiceChat_Eval" \
+        ++model.stt.model.eval_text_turn_taking=True \
+        ++checkpoint_path="/path/to/nemotron_voicechat_ckpt/" \
+        ++model.inference_speaker_reference=null \
+        ++model.inference_speaker_name="Megan" \
+        ++model.speech_generation.model.inference_guidance_scale=0.2 \
+        ++model.speech_generation.model.inference_guidance_enabled=True \
+        ++model.speech_generation.model.inference_top_p_or_k=0.95 \
+        ++model.speech_generation.model.inference_noise_scale=0.001 \
+        trainer.num_nodes=1 \
+        exp_manager.explicit_log_dir="/path/to/results_dir/Nemotron_VoiceChat_Eval/" \
+        data.validation_ds.batch_size=2 \
+        data.validation_ds.datasets.evaluation_set.shar_path="/path/to/validation_dataset/" \
+        ++trainer.limit_val_batches=1.0 \
+        ++trainer.precision=32 \
+        data.validation_ds.seed=42
 
 Outputs
 -------
-
 All generated artifacts are saved under:
-
     exp_manager.explicit_log_dir + "/validation_logs"
 
 The script:
-
-- Saves generated audio files (e.g., under "pred_wavs/")
-- Saves per-utterance logs in JSON format
+- Saves generated audio files
+- Saves per-utterance logs in JSON format via `ResultsLogger`
 - Saves predicted text, target text, and ASR-transcribed speech
 
 Each validation example is exported as a JSON entry with the following format:
-
 {
     "target_text": "...",
     "pred_text": "...",
@@ -59,58 +113,12 @@ Each validation example is exported as a JSON entry with the following format:
 }
 
 Where:
-    target_text:
-        Ground-truth target text.
-
-    pred_text:
-        Text predicted by the STT/S2S model.
-
-    speech_pred_transcribed:
-        Transcription of the generated speech using the ASR model
-        defined by ``model.scoring_asr``.
-
-    audio_path:
-        Relative path to the generated waveform inside
-        exp_manager.explicit_log_dir.
-
-Hugging Face Export
--------------------
-
-If ``hf_export_dir`` is provided, the script exports a Hugging Face–compatible
-checkpoint containing BOTH:
-
-- The STT model (``model.stt.model.pretrained_s2s_model``)
-- The TTS model (``model.speech_generation.model.pretrained_model``)
-
-Before export, the script can:
-
-- Register multiple speaker reference audios via ``register_speaker_dict``
-- Reinitialize the frozen audio prompt projection matrix if
-  ``reinit_audio_prompt_frozen_projection=True``
-
-This produces a single HF-style checkpoint directory containing the full
-NemotronVoiceChat pipeline (STT + TTS).
-
-Key Config Overrides (commonly used)
--------------------------------------
-
-STT:
-    ++model.stt.model.pretrained_s2s_model=...
-    ++model.stt.model.pretrained_asr=...
-
-TTS:
-    ++model.speech_generation.model.pretrained_model=...
-    ++model.speech_generation.model.inference_guidance_enabled=True
-    ++model.speech_generation.model.inference_guidance_scale=0.2
-    ++model.speech_generation.model.inference_top_p_or_k=0.95
-    ++model.speech_generation.model.inference_noise_scale=0.001
-
-Note:
-    For export-only runs, it is common to set:
-        ++trainer.limit_val_batches=0.0
-        ++trainer.max_steps=1
-
+    target_text: Ground-truth target text.
+    pred_text: Text predicted by the STT/S2S model.
+    speech_pred_transcribed: Transcription of the generated speech using the ASR model defined by `model.scoring_asr`.
+    audio_path: Relative path to the generated waveform inside exp_manager.explicit_log_dir.
 """
+
 import os
 
 import torch
@@ -142,24 +150,14 @@ def inference(cfg):
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
 
     with trainer.init_module():
-        model_config = OmegaConf.to_container(cfg, resolve=True)
-
-        # if available load directly from huggingface like path
-        if cfg.get("checkpoint_path", None):
-            # instanciate and load the model using from_pretrained
-            model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path)
-        else:
-            # load from individual STT and TTS checkpoints
-            model = NemotronVoiceChat(model_config)
-            # load pretrained checkpoint and rescale the weights if needed
-            if model.tts_model.cfg.get("pretrained_model", None):
-                model.tts_model.restore_from_pretrained_checkpoint(model.tts_model.cfg.pretrained_model)
+        # instanciate and load the model using from_pretrained
+        model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path)
 
     # update model internal configs using the new configs
     model.full_cfg.merge_with(cfg)
     model.cfg.merge_with(cfg.model)
     OmegaConf.save(model.full_cfg, log_dir / "exp_config.yaml")
-    model.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
+    model.validation_save_path = os.path.join(log_dir, "validation_logs")
 
     dataset = DuplexSTTDataset(
         tokenizer=model.stt_model.tokenizer,
@@ -169,43 +167,6 @@ def inference(cfg):
         output_roles=cfg.data.output_roles,
     )
     datamodule = DataModule(cfg.data, tokenizer=model.stt_model.tokenizer, dataset=dataset)
-    # export file to huggingface
-    hf_export_dir = model_config.get("hf_export_dir", None)
-    if hf_export_dir:
-        if model_config.get("register_speaker_dict", None):
-            model.tts_model.to(model.device)
-            speaker_dict = model_config.get("register_speaker_dict", None)
-            for speaker_name in speaker_dict:
-                speaker_audio, sr = load_audio_librosa(speaker_dict[speaker_name])
-                speaker_audio = resample(speaker_audio, sr, model.tts_model.target_sample_rate).to(model.device)
-                speaker_audio_lens = (
-                    torch.tensor([speaker_audio.size(1)]).long().repeat(speaker_audio.size(0)).to(model.device)
-                )
-                model.tts_model.set_audio_prompt_lantent(
-                    speaker_audio,
-                    speaker_audio_lens,
-                    system_prompt=None,
-                    batch_size=1,
-                    name=speaker_name,
-                )
-                logging.info(f"Speaker {speaker_name} registered !")
-
-        if cfg.get("reinit_audio_prompt_frozen_projection", False):
-            D = model.tts_model.tts_model.hidden_size
-            Q, _ = torch.linalg.qr(
-                torch.randn(
-                    D,
-                    D,
-                    device=model.tts_model.tts_model.audio_prompt_projection_W.device,
-                    dtype=model.tts_model.tts_model.audio_prompt_projection_W.dtype,
-                )
-            )
-            model.tts_model.tts_model.audio_prompt_projection_W.copy_(Q)
-            logging.info("Audio frozen projection reinited !")
-
-        model.save_pretrained(hf_export_dir, config=model_config)
-        logging.info("Hugging face compatible checkpoint saved at:", hf_export_dir)
-
     trainer.validate(model, datamodule)
 
 

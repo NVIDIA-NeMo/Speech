@@ -210,13 +210,27 @@ def main(cfg: HfExportConfig):
             Hydra configuration object containing export parameters.
     """
 
-    # Load experiment configs
+    # Load STT configuration
     stt_model_cfg = OmegaConf.load(cfg.stt_ckpt_config)
-    stt_model_cfg.model.pretrained_perception_from_s2s = None
-    stt_model_cfg.model.pretrained_s2s_model = None
 
+    # Prevent model from reloading pretrained perception module during export.
+    # Some STT configs define these fields.
+    # If it exists, we set it to None so the exporter uses the checkpoint weights only.
+    if hasattr(stt_model_cfg.model, "pretrained_perception_from_s2s"):
+        stt_model_cfg.model.pretrained_perception_from_s2s = None
+    if hasattr(stt_model_cfg.model, "pretrained_s2s_model"):
+        stt_model_cfg.model.pretrained_s2s_model = None
+
+
+    # Load TTS experiment configuration
     tts_model_cfg = OmegaConf.load(cfg.tts_ckpt_config)
-    tts_model_cfg.model.pretrained_codec_model = None
+
+    # Disable codec model reloading during export.
+    # Some recipes reference an external pretrained codec.
+    # Setting this to None forces the exporter to use checkpoint weights only,
+    # avoiding additional model downloads or initialization.
+    if hasattr(tts_model_cfg.model, "pretrained_codec_model"):
+        tts_model_cfg.model.pretrained_codec_model = None
 
     # Joint model configuration
     model_cfg = {

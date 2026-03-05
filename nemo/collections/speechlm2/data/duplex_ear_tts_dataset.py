@@ -13,6 +13,7 @@
 # limitations under the License.
 import random
 import re
+from copy import deepcopy
 
 import torch
 import torch.nn.functional as F
@@ -670,7 +671,7 @@ def get_audio_prompt(
     else:
         # Sanitize cuts to remove out-of-bounds supervisions
         # this prevents crashes when sampling from truncated audio.
-        cuts = cuts.truncate(keep_excessive_supervisions=False)
+        cuts = sanitize_cuts(cuts)
         # sample a reference turn from the target-role speakers
         audio_prompt, audio_prompt_lens = collate_random_turn_audio(
             cuts.resample(target_sample_rate),
@@ -679,6 +680,52 @@ def get_audio_prompt(
         )
 
     return audio_prompt, audio_prompt_lens
+
+
+def sanitize_cuts(cuts: CutSet) -> CutSet:
+    """
+    Adjusts supervisions to fit within the cut's truncated duration.
+
+    - If a supervision extends beyond the cut end, it is TRUNCATED (using deepcopy).
+    - If a supervision starts after the cut end, it is DROPPED.
+
+    Args:
+        cuts (CutSet): The batch of cuts to sanitize.
+
+    Returns:
+        CutSet: A new CutSet with valid, potentially truncated supervisions.
+    """
+    sanitized_list = []
+
+    for cut in cuts:
+        valid_supervisions = []
+        for sup in cut.supervisions:
+            # Case 1: Supervision starts after the audio ends -> Drop
+            if sup.start >= cut.duration:
+                continue
+
+            # Case 2: Supervision starts inside but ends after the audio -> Truncate
+            if sup.end > cut.duration:
+                # Calculate the remaining duration available in the audio
+                new_duration = cut.duration - sup.start
+
+                if new_duration <= 0:
+                    continue
+
+                # Create a deepcopy and update duration
+                new_sup = deepcopy(sup)
+                new_sup.duration = new_duration
+                valid_supervisions.append(new_sup)
+
+            # Case 3: Supervision is fully inside -> Keep
+            else:
+                valid_supervisions.append(sup)
+
+        # Update the cut with the cleaned list
+        cut.supervisions = valid_supervisions
+        sanitized_list.append(cut)
+
+    return cuts.from_cuts(sanitized_list)
 
 
 def collate_random_turn_audio(

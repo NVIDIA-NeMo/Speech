@@ -412,7 +412,8 @@ class SaveRestoreConnector:
         # this is the case when artifact must be retried from the nemo file
         # we are assuming that the location of the right nemo file is available from _MODEL_RESTORE_PATH
         elif src.startswith("nemo:"):
-            return_path = os.path.abspath(os.path.join(app_state.nemo_file_folder, src[5:]))
+            nemo_file_folder = os.path.realpath(app_state.nemo_file_folder)
+            return_path = os.path.abspath(os.path.join(nemo_file_folder, src[5:]))
             artifact_item.path_type = model_utils.ArtifactPathType.TAR_PATH
 
         # backward compatibility implementation
@@ -433,7 +434,16 @@ class SaveRestoreConnector:
                 )
                 return None
 
-        assert os.path.exists(return_path)
+        if not os.path.exists(return_path):
+            nemo_folder = app_state.nemo_file_folder
+            existing_files = os.listdir(nemo_folder) if nemo_folder and os.path.isdir(nemo_folder) else []
+            raise FileNotFoundError(
+                f"Artifact not found at expected path: {return_path}\n"
+                f"  src: {src}\n"
+                f"  nemo_file_folder: {nemo_folder}\n"
+                f"  nemo_file_folder (realpath): {os.path.realpath(nemo_folder) if nemo_folder else None}\n"
+                f"  Files in nemo_file_folder: {existing_files}"
+            )
 
         artifact_item.path = os.path.abspath(src)
         model.artifacts[config_path] = artifact_item

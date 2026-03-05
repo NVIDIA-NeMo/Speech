@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 MODEL_NAME = "nvidia/parakeet-ctc-0.6b-Vietnamese"
-NEMO_FILE = "parakeet-ctc-0.6b-vi.nemo"
+NEMO_FILE = "nvidia__parakeet-ctc-0.6b-Vietnamese.nemo"
 
 MODEL_DIR = os.environ.get(
     "NEMO_MODEL_SUPPORT_DIR",

@@ -20,7 +20,7 @@ import pytest
 import torch
 
 MODEL_NAME = "nvidia/Frame_VAD_Multilingual_MarbleNet_v2.0"
-NEMO_FILE = "frame_vad_multilingual_marblenet_v2.0.nemo"
+NEMO_FILE = "nvidia__Frame_VAD_Multilingual_MarbleNet_v2.0.nemo"
 
 MODEL_DIR = os.environ.get(
     "NEMO_MODEL_SUPPORT_DIR",

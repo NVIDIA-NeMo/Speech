@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from nemo.agents.voice_agent.utils.audio import NoiseConfig
 
-GENERAL_PROMPT = "Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words."
+GENERAL_PROMPT = "Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words. Avoid using emojis."
 
 
 @dataclass
@@ -55,7 +55,7 @@ class Persona:
 
     def to_prompt_section(self) -> str:
         lines = [f"You are a {self.role} named {self.name}."]
-        task_prompt = f"You need to stick to your designated role and complete your task by following the information below. {GENERAL_PROMPT}"
+        general_prompt = f"You need to stick to your designated role and complete your task by following the information below. {GENERAL_PROMPT}"
         if self.background:
             lines.append(self.background)
         if self.personality:
@@ -66,7 +66,7 @@ class Persona:
             lines.append(f"You speak {self.language}.")
         elif self.accent:
             lines.append(f"You speak with a {self.accent} accent.")
-        lines.append(task_prompt)
+        lines.append(general_prompt)
         return "\n".join(lines)
 
 
@@ -171,7 +171,7 @@ class Actions:
     def to_prompt_section(self) -> str:
         sections = ["# Actions"]
         if self.instructions:
-            header = "You must follow the following instructions step by step to complete the given task:\n"
+            header = "You must follow the following instructions one by one in the given order to complete the task, do not perform multiple instructions in a single turn:\n"
             numbered = "\n".join(f"{i+1}. {inst}" for i, inst in enumerate(self.instructions))
             sections.append(f"## Instructions\n{header}{numbered}")
         if self.guidelines:

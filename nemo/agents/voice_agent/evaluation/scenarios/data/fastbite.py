@@ -101,7 +101,7 @@ class FastBiteScenario(Scenario):
             {"name": "Crispy Chicken Sandwich", "unit_price": "6.49", "quantity": "1"},
             {"name": "Side Salad", "unit_price": "2.99", "quantity": "1"},
         ],
-        "customer_name": "John",
+        "customer_name": "Bob",
         "customer_phone": "123-456-7890",
         "total_price": "9.48",
     }
@@ -116,7 +116,7 @@ class FastBiteScenario(Scenario):
         "total_price": "???",
     }
 
-    noise_config = NoiseConfig(random_white_noise=True, white_noise_db=-40.0)
+    noise_config = NoiseConfig(random_white_noise=True, white_noise_db=-20.0)
 
     max_duration = 180
 
@@ -129,7 +129,7 @@ class FastBiteScenario(Scenario):
     def user_persona(self) -> Persona:
         return Persona(
             role="human user",
-            name="John",
+            name="Bob",
             background="You work at NVIDIA as a software engineer. Your phone number is 123-456-7890.",
             personality="You are communicative and positive, with clear needs, friendly demeanor, and prompt decision-making.",
         )
@@ -186,7 +186,7 @@ class FastBiteScenario(Scenario):
                 "Greet the user by saying 'Welcome to FastBites! I'm Lisa, what can I help you with?'.",
                 "Ask the user for what they would like to order and help them make the order.",
                 "Summarize the order and confirm with the user if the order is correct.",
-                "Ask the user for their name and associate it with the order.",
+                "Ask the user for their name and phone number, and associate them with the order.",
                 "Place the order using the `PlaceOrderTool` tool, and confirm with the user if the order is placed successfully.",
                 "Thank the user for their order and say goodbye, and use the `EndConversationTool` tool to end the conversation.",
             ],
@@ -194,10 +194,10 @@ class FastBiteScenario(Scenario):
                 "Do not make up any items not on the menu",
                 "If the customer ask for a sandwich or burger, always ask if they want to make it into a combo deal.",
                 "When asked about what's on the menu, only provide the item names, do not include details unless the customer asks for them.",
-                "Always use the `PlaceOrderTool` tool to place the order.",
-                "Before placing the order, ask for the user's name and associate it with the order.",
                 "Always confirm with the user if the order is correct before placing the order with the `PlaceOrderTool` tool.",
-                "After you have successfully placed the order, use the `EndConversationTool` tool to end the conversation.",
+                "Always use the `PlaceOrderTool` tool to place the final confirmed order.",
+                "Before placing the order, ask for the user's name and phone number, and associate them with the order.",
+                "After you have successfully placed the order and thanked the user, use the `EndConversationTool` tool to end the conversation.",
             ],
         )
 
@@ -208,7 +208,7 @@ class FastBiteScenario(Scenario):
                 "EndConversationTool": {},
                 "PlaceOrderTool": {
                     "auto_validate": "False"
-                },  # Don't let agent correct itself if the order is incorrect
+                },  # Don't let agent correct itself if the order has incorrect format
             },
             information=[
                 f"The menu of the restaurant is:\n{FASTBITE_MENU}",

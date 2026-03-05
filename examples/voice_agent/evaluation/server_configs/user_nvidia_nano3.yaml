@@ -4,7 +4,7 @@
 # Specify the type and an a model identifier to automatically configure the model.
 
 server:
-  log_file: "bot_agent_server_nvidia.log"
+  log_file: "bot_user_server_nvidia.log"
   log_level: "DEBUG"
   create_new_log: true
   overwrite_existing_log: true
@@ -13,14 +13,14 @@ server:
 
 transport:
   audio_out_10ms_chunks: 10
-  record_audio_data: false
-  audio_log_dir: "./audio_logs_agent"
+  record_audio_data: true
+  audio_log_dir: "./audio_logs_user"
 
 vad:
   type: silero
   confidence: 0.6  # VAD threshold for detecting speech versus non-speech
   start_secs: 0.1  # min amount of speech to trigger UserStartSpeaking
-  stop_secs: 1.2  # min amount of silence to trigger UserStopSpeaking
+  stop_secs: 2.0  # min amount of silence to trigger UserStopSpeaking
   min_volume: 0.2  # Microphone volumn threshold for VAD
 
 stt:
@@ -30,7 +30,7 @@ stt:
   device: "cuda"
   att_context_size: [70,1] # left and right attention context sizes for streaming ASR
   frame_len_in_secs: 0.08  # default for FastConformer, do not change unless using other architechtures
-  ignore_eou_eob: true
+  ignore_eou_eob: true  # Use VAD to detect EOU so that user doesn't interrupt agent
 
 diar:
   type: nemo
@@ -41,21 +41,20 @@ diar:
   frame_len_in_secs: 0.08  # default for Sortformer, do not change unless using other architechtures
 
 turn_taking:
-  backchannel_phrases_path: 
-    - "wow"
-    - "uhuh"
-  max_buffer_size: 1  # num of words more than this amount will interrupt the LLM immediately if not backchannel phrases
+  backchannel_phrases_path: null
+  max_buffer_size: 0  # num of words more than this amount will interrupt the LLM immediately if not backchannel phrases
   bot_stop_delay: 0.0  # a delay in seconds allowed between server and client audio output, so that the BotStopSpeaking signal is handled not too far away from the actual time that the user hears all audio output
 
 llm:
   type: nvidia
   model: "nvidia/nvidia/Nemotron-3-Nano-30B-A3B"
   # model: "aws/anthropic/bedrock-claude-opus-4-6"
+
   system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user with 'Hi, I'm Lisa, your helpful AI assistant. How can I help you today?'."
 
   system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
-  system_prompt_suffix: "Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words. Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. You should still try to address the user's request when it's not related to the provided tools. If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools. If the purpose of a tool matches well with a user's request, always try to call the tool first. Conversation history should not limit your behavior on whether you can use tools. You must answer questions not related to the tools. Avoid any emoji in your response. After you have addressed all the user's request, use the `SendScenarioSummaryTool` to send your final response in the requested FINAL_RESPONSE_FORMAT. If FINAL_RESPONSE_FORMAT is not specified, send the whole conversation context history as it is."
-  enable_tool_calling: true  # set to True since the vllm config below supports tool calling
+  system_prompt_suffix: "Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words."
+  enable_tool_calling: false  # set to True since the vllm config below supports tool calling
 
   ##############################
   #### Generation config #######
@@ -68,7 +67,7 @@ llm:
     frequency_penalty: 0.0  # Penalty for frequent tokens (-2.0 to 2.0).
     presence_penalty: 0.0  # Penalty for new tokens (-2.0 to 2.0).
     seed: 123  # Random seed for deterministic outputs.
-    temperature: 0.6  # Sampling temperature (0.0 to 2.0).
+    temperature: 0.7  # Sampling temperature (0.0 to 2.0).
     top_k: null  # Top-k sampling parameter (currently ignored by OpenAI).
     top_p: 0.95  # Top-p (nucleus) sampling parameter (0.0 to 1.0).
     max_completion_tokens: 256  # max number of tokens to generate
@@ -83,15 +82,12 @@ tts:
   model: "kokoro"
   device: "cuda"
   main_model_id: "hexgrad/Kokoro-82M"
-  sub_model_id: "af_heart" # "af_heart" "af_bella" "am_fenrir" "am_michael"
+  sub_model_id: "am_michael" # "af_heart" "af_bella" "am_fenrir" "am_michael"
   speed: 1.25 # Speaking rate
   extra_separator:  # a list of additional punctuations to chunk LLM response into segments for faster TTS output, e.g., ",". Set to `null` to use default behavior 
-    - ','
-    - '\n'
     - "."
     - "?"
     - "!"
-    - ";"
   think_tokens: ["<think>", "</think>"]  # specify them to avoid TTS for thinking process, set to `null` to allow thinking out loud
   ignore_strings:  # strings/characters to ignore in TTS
     - "*"

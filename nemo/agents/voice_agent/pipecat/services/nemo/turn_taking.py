@@ -54,6 +54,7 @@ class NeMoTurnTakingService(FrameProcessor):
         max_buffer_size: int = 3,
         bot_stop_delay: float = 0.5,
         audio_logger: Optional[AudioLogger] = None,
+        can_create_user_frames: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -63,6 +64,7 @@ class NeMoTurnTakingService(FrameProcessor):
         self.use_vad = use_vad
         self.use_diar = use_diar
         self.max_buffer_size = max_buffer_size
+        self.can_create_user_frames = can_create_user_frames
 
         self.backchannel_phrases = self._load_backchannel_phrases(backchannel_phrases)
         self.backchannel_phrases_nopc = set([self.clean_text(phrase) for phrase in self.backchannel_phrases])
@@ -385,8 +387,10 @@ class NeMoTurnTakingService(FrameProcessor):
         # Adapted from BaseInputTransport._handle_user_interruption
         if isinstance(frame, UserStartedSpeakingFrame):
             logger.debug("User started speaking")
-            await self.push_frame(frame)
-            await self.push_frame(StartInterruptionFrame(), direction=FrameDirection.DOWNSTREAM)
+            if self.can_create_user_frames:
+                logger.debug("Pushing UserStartedSpeakingFrame and StartInterruptionFrame")
+                await self.push_frame(frame)
+                await self.push_frame(StartInterruptionFrame(), direction=FrameDirection.DOWNSTREAM)
             # Record cutoff time for agent audio when TTS is interrupted
             if self._audio_logger and self._bot_speaking:
                 self._audio_logger.set_agent_cutoff_time()
@@ -395,7 +399,9 @@ class NeMoTurnTakingService(FrameProcessor):
                 self._audio_logger.increment_turn_index(speaker="user")
         elif isinstance(frame, UserStoppedSpeakingFrame):
             logger.debug("User stopped speaking")
-            await self.push_frame(frame)
+            if self.can_create_user_frames:
+                logger.debug("Pushing UserStoppedSpeakingFrame")
+                await self.push_frame(frame)
         else:
             logger.debug(f"Unknown frame type for _handle_user_interruption: {type(frame)}")
 

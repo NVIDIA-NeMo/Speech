@@ -193,11 +193,11 @@ async def run_dynamic_evaluation(
     all_latencies.sort()
     overall_latency_stats = {
         "count": len(all_latencies),
-        "mean_ms": sum(all_latencies) / len(all_latencies),
-        "p50_ms": all_latencies[len(all_latencies) // 2],
-        "p95_ms": all_latencies[int(len(all_latencies) * 0.95)],
-        "min_ms": all_latencies[0],
-        "max_ms": all_latencies[-1],
+        "mean_ms": sum(all_latencies) / len(all_latencies) if len(all_latencies) > 0 else -1,
+        "p50_ms": all_latencies[len(all_latencies) // 2] if len(all_latencies) > 0 else -1,
+        "p95_ms": all_latencies[int(len(all_latencies) * 0.95)] if len(all_latencies) > 0 else -1,
+        "min_ms": all_latencies[0] if len(all_latencies) > 0 else -1,
+        "max_ms": all_latencies[-1] if len(all_latencies) > 0 else -1,
     }
     with open(summary_file, "w") as f:
         f.write("EVALUATION SUMMARY\n")

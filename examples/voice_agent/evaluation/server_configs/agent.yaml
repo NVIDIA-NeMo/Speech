@@ -25,10 +25,12 @@ vad:
 
 stt:
   type: nemo # choices in ['nemo'] currently only NeMo is supported
-  model: "nvidia/parakeet_realtime_eou_120m-v1"
+  # model: "nvidia/parakeet_realtime_eou_120m-v1"
+  model: "nvidia/nemotron-speech-streaming-en-0.6b"
   device: "cuda"
   att_context_size: [70,1] # left and right attention context sizes for streaming ASR
   frame_len_in_secs: 0.08  # default for FastConformer, do not change unless using other architechtures
+  ignore_eou_eob: true
 
 diar:
   type: nemo
@@ -42,7 +44,7 @@ turn_taking:
   backchannel_phrases_path: 
     - "wow"
     - "uhuh"
-  max_buffer_size: 2  # num of words more than this amount will interrupt the LLM immediately if not backchannel phrases
+  max_buffer_size: 1  # num of words more than this amount will interrupt the LLM immediately if not backchannel phrases
   bot_stop_delay: 0.0  # a delay in seconds allowed between server and client audio output, so that the BotStopSpeaking signal is handled not too far away from the actual time that the user hears all audio output
 
 llm:

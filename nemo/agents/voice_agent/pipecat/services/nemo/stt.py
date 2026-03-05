@@ -245,7 +245,7 @@ class NemoSTTService(STTService):
             if audio_frame and hasattr(audio_frame, 'timestamp'):
                 self._audio_timestamps.append(audio_frame.timestamp)
             else:
-                self._audio_timestamps.append(timestamp_now)
+                self._audio_timestamps.append(asyncio.get_event_loop().time())
 
             if not self._has_logged_audio_chunk:
                 # convert bytes to seconds
@@ -268,15 +268,17 @@ class NemoSTTService(STTService):
                     self._audio_logger.append_continuous_user_audio(audio_chunk_bytes)
 
                 # Run ASR inference in thread pool to avoid blocking event loop
-                start_time = time.time()
+                start_time = asyncio.get_event_loop().time()
                 asr_result = await asyncio.to_thread(self._model.transcribe, audio_chunk_bytes)
-                end_time = time.time()
+                end_time = asyncio.get_event_loop().time()
                 transcription = asr_result.text
                 is_final = asr_result.is_final
-                delay = datetime.now() - last_audio_timestamp
-                # logger.debug(
-                #     f"ASR inference time: {end_time - start_time} seconds, delay: {delay}, transcription: {transcription}, audio timestamp: {last_audio_timestamp},"
-                # )
+                delay = asyncio.get_event_loop().time() - last_audio_timestamp
+
+                if transcription:
+                    logger.debug(
+                        f"ASR inference time: {end_time - start_time} seconds, delay: {delay}, transcription: `{transcription}`"
+                    )
 
                 if self._audio_logger is not None:
                     if self._is_vad_active:

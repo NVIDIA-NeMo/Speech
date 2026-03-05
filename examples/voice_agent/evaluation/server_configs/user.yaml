@@ -25,7 +25,8 @@ vad:
 
 stt:
   type: nemo # choices in ['nemo'] currently only NeMo is supported
-  model: "nvidia/parakeet_realtime_eou_120m-v1"
+  # model: "nvidia/parakeet_realtime_eou_120m-v1"
+  model: "nvidia/nemotron-speech-streaming-en-0.6b"
   device: "cuda"
   att_context_size: [70,1] # left and right attention context sizes for streaming ASR
   frame_len_in_secs: 0.08  # default for FastConformer, do not change unless using other architechtures
@@ -48,6 +49,7 @@ llm:
   type: vllm  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
   model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
   # model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+  # model: Qwen/Qwen2.5-7B-Instruct
   dtype: bfloat16  # torch.dtype for LLM
   device: "cuda"
   enable_reasoning: false  # it's best to turn-off reasoning for lowest latency, setting it to True will use the same config ending with `_think.yaml` instead

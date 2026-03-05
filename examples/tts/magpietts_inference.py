@@ -313,6 +313,18 @@ def run_inference_and_evaluation(
                 json.dump(metrics, f, indent=4)
 
             sorted_filewise = sorted(filewise_metrics, key=lambda x: x.get('cer', 0), reverse=True)
+            # DEBUG ###
+            logging.warning(
+                "sorted_filewise field types: %s", {k: type(v).__name__ for k, v in sorted_filewise[0].items()}
+            )
+            # log the cer and wer elements types
+            logging.warning(
+                "detailed_wer element types: %s", [type(v).__name__ for v in sorted_filewise[0]['detailed_wer']]
+            )
+            logging.warning(
+                "detailed_cer element types: %s", [type(v).__name__ for v in sorted_filewise[0]['detailed_cer']]
+            )
+
             with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(sorted_filewise, f, indent=4)
 

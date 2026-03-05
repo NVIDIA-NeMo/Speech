@@ -59,7 +59,7 @@ cfg : omegaconf.DictConfig
         * frame_length (float): Duration of audio frames in seconds (e.g., 0.08).
         * input_roles (list): Conversation roles mapped to the input prompt (e.g., ["user", "User"]).
         * output_roles (list): Conversation roles targeted for model generation (e.g., ["agent", "Assistant"]).
-        * validation_ds (DictConfig): Paths and settings for the Lhotse validation shards (e.g., `shar_path`, `batch_size`).
+        * validation_ds (DictConfig): Paths and settings for the Lhotse validation shards (e.g., `shar_path`, `batch_size`). Note that the data format for `data.validation_ds.evaluation_set` must follow the `duplexs2s-dataset-structure`. For detailed specifications, see: https://docs.nvidia.com/nemo/speech/nightly/speechlm2/datasets.html#duplexs2s-dataset-structure
 
     exp_manager (DictConfig)
         Experiment manager configurations for logging. Must include:

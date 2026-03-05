@@ -103,7 +103,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
     def __init__(self, cfg: dict) -> None:
         assert isinstance(cfg, dict), (
-            "You must pass the config to DuplexS2SModel as a Python dict to support hyperparameter serialization "
+            "You must pass the config to NemotronVoiceChat as a Python dict to support hyperparameter serialization "
             f"in PTL checkpoints (we got: '{type(cfg)=}')."
         )
         super().__init__()

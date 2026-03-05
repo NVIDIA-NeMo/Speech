@@ -137,7 +137,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-@hydra_runner(config_path="conf", config_name="s2s_duplex_speech_decoder")
+@hydra_runner(config_path="conf", config_name="nemotron_voicechat")
 def inference(cfg):
     OmegaConf.resolve(cfg)
     torch.distributed.init_process_group(backend="nccl")
@@ -148,7 +148,7 @@ def inference(cfg):
 
     with trainer.init_module():
         # instanciate and load the model using from_pretrained
-        model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path).eval()
+        model = NemotronVoiceChat.from_pretrained(cfg.checkpoint_path, map_location="cpu").eval()
 
     # update model internal configs using the new configs
     model.full_cfg.merge_with(cfg)

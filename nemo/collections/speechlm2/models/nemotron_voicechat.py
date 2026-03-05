@@ -30,6 +30,11 @@ from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogge
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
+from transformers.utils import cached_file
+
+from typing import Optional, Union
+from pathlib import Path
+from huggingface_hub import CONFIG_NAME
 
 
 class NemotronVoiceChat(LightningModule, HFHubMixin):
@@ -137,14 +142,74 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             self.load_state_dict(checkpoint_state, strict=True)
 
     @classmethod
-    def from_pretrained(cls, ckpt_path):
-        pretrained_config = os.path.join(ckpt_path, "config.json")
-        logging.info(f" Loading pretrained model config: {pretrained_config}")
-        with open(pretrained_config, 'r') as f:
-            pretrained_model_cfg_dict = json.load(f)
-        model_cfg = DictConfig(pretrained_model_cfg_dict)
-        model = cls(OmegaConf.to_container(model_cfg, resolve=True))
-        model.init_from_safetensors_ckpt(ckpt_path)
+    def _from_pretrained(
+        cls,
+        *,
+        model_id: str,
+        revision: Optional[str],
+        cache_dir: Optional[Union[str, Path]],
+        force_download: bool,
+        proxies: Optional[dict],
+        resume_download: Optional[bool],
+        local_files_only: bool,
+        token: Union[str, bool, None],
+        map_location: str = "cpu",
+        strict: bool = False,
+        **model_kwargs,
+    ):
+        """
+        Load Pytorch pretrained weights and return the loaded model.
+        Wrapper over PyTorchModelHubMixin that auto-handles config and uses our
+        custom memory-efficient safetensors streaming loader to prevent OOM.
+        """
+        # 1. Fetch the Config
+        resolved_config_file = cached_file(
+            model_id,
+            CONFIG_NAME,  # Ensure CONFIG_NAME is defined in your file (e.g., "config.yaml" or "config.json")
+            cache_dir=cache_dir,
+            force_download=force_download,
+            resume_download=resume_download,
+            proxies=proxies,
+            local_files_only=local_files_only,
+            token=token,
+            revision=revision,
+            _raise_exceptions_for_gated_repo=False,
+            _raise_exceptions_for_missing_entries=False,
+            _raise_exceptions_for_connection_errors=False,
+        )
+        if resolved_config_file is None:
+            raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
+
+        model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
+
+        # Skip loading child module weights natively
+        model_kwargs['cfg']['pretrained_weights'] = False
+
+        # 2. Instantiate the empty model skeleton
+        model = cls(model_kwargs['cfg'])
+
+        # 3. Fetch the Safetensors weights
+        resolved_weights_file = cached_file(
+            model_id,
+            "model.safetensors",
+            cache_dir=cache_dir,
+            force_download=force_download,
+            resume_download=resume_download,
+            proxies=proxies,
+            local_files_only=local_files_only,
+            token=token,
+            revision=revision,
+            _raise_exceptions_for_gated_repo=False,
+            _raise_exceptions_for_missing_entries=False,
+            _raise_exceptions_for_connection_errors=False,
+        )
+        if resolved_weights_file is None:
+            raise RuntimeError(f"Missing model.safetensors file for {model_id=}")
+
+        # 4. Stream the weights safely using your custom memory-efficient loader!
+        ckpt_dir = os.path.dirname(resolved_weights_file)
+        model.init_from_safetensors_ckpt(ckpt_dir)
+
         return model
 
     def init_from_safetensors_ckpt(self, ckpt_path, prefix=""):

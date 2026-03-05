@@ -23,7 +23,7 @@ The script loads STT and TTS checkpoints, constructs a joint NemotronVoiceChat
 model instance, and saves a HuggingFace-compatible checkpoint that can be
 loaded via:
 
-    ModelClass.from_pretrained(path)
+    NemotronVoiceChat.from_pretrained(path)
 
 Arguments
 ---------
@@ -52,7 +52,7 @@ output_dir : str
     Directory where the HuggingFace-compatible checkpoint will be stored.
     After export, the model can be loaded via:
 
-        ModelClass.from_pretrained(output_dir)
+        NemotronVoiceChat.from_pretrained(output_dir)
 
 dtype : str (optional, default="float32")
     Target dtype for storing parameters.

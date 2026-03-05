@@ -13,11 +13,15 @@
 # limitations under the License.
 import gc
 import os
+from pathlib import Path
+from typing import Optional, Union
 
 import torch
+from huggingface_hub import CONFIG_NAME
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from safetensors import safe_open
+from transformers.utils import cached_file
 
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS, load_audio_librosa
@@ -29,11 +33,6 @@ from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogge
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.utils import logging
-from transformers.utils import cached_file
-
-from typing import Optional, Union
-from pathlib import Path
-from huggingface_hub import CONFIG_NAME
 
 
 class NemotronVoiceChat(LightningModule, HFHubMixin):

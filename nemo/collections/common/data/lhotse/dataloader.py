@@ -505,6 +505,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
 
+    _auto_detect_bucketing_and_validate_batch_size(config)
+
     # Apply channel selector
     if config.channel_selector is not None:
         logging.info('Using channel selector %s.', config.channel_selector)
@@ -788,6 +790,35 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 quadratic_duration=config.quadratic_duration,
             )
     return cuts, constraint
+
+
+def _auto_detect_bucketing_and_validate_batch_size(config) -> None:
+    """
+    Auto-enable ``use_bucketing`` when bucketing params are set, and validate
+    that at least one valid batch size combination is configured.
+    """
+    # Auto-detect use_bucketing when bucketing params are set.
+    if not config.use_bucketing:
+        if config.bucket_batch_size is not None:
+            logging.info("Auto-enabling use_bucketing=True because bucket_batch_size is set.")
+            config.use_bucketing = True
+        elif config.bucket_duration_bins is not None:
+            logging.info("Auto-enabling use_bucketing=True because bucket_duration_bins is set.")
+            config.use_bucketing = True
+
+    # Validate that at least one valid batch size combination is configured.
+    has_batch_size = config.batch_size is not None
+    has_batch_duration = not config.use_multimodal_sampling and config.batch_duration is not None
+    has_bucket_config = config.bucket_duration_bins is not None and config.bucket_batch_size is not None
+    has_batch_tokens = config.use_multimodal_sampling and config.batch_tokens is not None
+    if not (has_batch_size or has_batch_duration or has_bucket_config or has_batch_tokens):
+        raise ValueError(
+            "Batch size is not configured. Please set one of the following:\n"
+            "  1. batch_size\n"
+            "  2. batch_duration (when use_multimodal_sampling=False)\n"
+            "  3. bucket_duration_bins and bucket_batch_size (enables bucketing)\n"
+            "  4. batch_tokens (when use_multimodal_sampling=True)"
+        )
 
 
 def determine_bucket_duration_bins(config):

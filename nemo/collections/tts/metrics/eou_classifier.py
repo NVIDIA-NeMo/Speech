@@ -298,7 +298,7 @@ class EoUClassifier:
         if len(trailing_audio) > 0:
             rms_trail = np.sqrt(np.mean(trailing_audio**2))
             rms_full = np.sqrt(np.mean(samples**2))
-            trail_rms_ratio = rms_trail / (rms_full + 1e-10)
+            trail_rms_ratio = float(rms_trail / (rms_full + 1e-10))
         else:
             trail_rms_ratio = 0.0
 

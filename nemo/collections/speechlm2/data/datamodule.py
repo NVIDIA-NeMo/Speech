@@ -92,6 +92,23 @@ class DataModule(LightningDataModule):
         cfg = self.cfg.test_ds
         return self._build_test_dataloader(cfg)
 
+    def predict_dataloader(self):
+        if "predict_ds" not in self.cfg:
+            return None
+        cfg = self.cfg.predict_ds
+
+        base_cfg = cfg.copy()
+        with open_dict(base_cfg):
+            del base_cfg.datasets
+        dloaders = {}
+        for name, item in cfg.datasets.items():
+            with open_dict(base_cfg):
+                item = OmegaConf.merge(base_cfg, item)
+            dloaders[name] = self._build_test_dataloader(item)
+        # NOTE(yifan): `trainer.predict()` only supports the `CombinedLoader(mode="sequential")` mode
+        # so we cannot reuse the `_build_test_dataloader` function here
+        return CombinedLoader(dloaders, mode="sequential")
+
     def _build_test_dataloader(self, cfg: DictConfig) -> torch.utils.data.DataLoader | CombinedLoader:
         # Single validation/test dataloader.
         # This is internal-only: the config has to specify multiple dataloaders via "datasets" key,

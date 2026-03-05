@@ -43,10 +43,12 @@ from nemo.collections.common.data.lhotse.nemo_adapters import (
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     LhotseTextAdapter,
+    LhotseTextJsonlAdapter,
     LhotseTextPairAdapter,
     NeMoMultimodalConversation,
     NeMoMultimodalConversationJsonlAdapter,
     NeMoMultimodalConversationShareGPTJsonlAdapter,
+    NeMoMultimodalConversationShareGPTWebdatasetAdapter,
     NeMoSFTJsonlAdapter,
     TextTurn,
 )
@@ -215,7 +217,11 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
         "slice_length": config.get("slice_length", None),
     }
-    cuts, is_tarred = parse_and_combine_datasets(config.input_cfg, propagate_attrs=propagate_attrs)
+    input_cfg = config.input_cfg
+    if isinstance(input_cfg, (str, Path)):
+        # Resolve /path/to/input_cfg.yaml into config contents if needed.
+        input_cfg = OmegaConf.load(input_cfg)
+    cuts, is_tarred = parse_and_combine_datasets(input_cfg, propagate_attrs=propagate_attrs)
     return cuts, is_tarred
 
 
@@ -249,6 +255,27 @@ def read_txt_paths(config: DictConfig) -> tuple[CutSet, bool]:
         LhotseTextAdapter(
             paths=config.paths,
             language=config.language,
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
+@data_type_parser("txt_jsonl")
+def read_txt_jsonl_paths(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read paths to text files in JSONL format and create a CutSet.
+
+    This parser reads JSONL files where each line contains a JSON object with text fields.
+    The text_field parameter specifies which field in the JSON object contains the text to be used.
+    """
+    cuts = CutSet(
+        LhotseTextJsonlAdapter(
+            paths=config.paths,
+            language=config.language,
+            text_field=config.text_field,
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
         )
@@ -324,12 +351,33 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             tarred_audio_filepaths=config.get("tarred_audio_filepaths"),
             audio_locator_tag=config.audio_locator_tag,
             audio_placeholders=config.audio_placeholders,
+            audio_root=config.get("audio_root"),
             token_equivalent_duration=config.get("token_equivalent_duration"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             slice_length=config.get("slice_length"),
         )
     )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
+@data_type_parser(["share_gpt_webdataset"])
+def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
+    """Read ShareGPT conversations from WebDataset tar archives."""
+    cuts = CutSet(
+        NeMoMultimodalConversationShareGPTWebdatasetAdapter(
+            data_dir=config.data_dir,
+            audio_locator_tag=config.audio_locator_tag,
+            audio_placeholders=config.get("audio_placeholders"),
+            token_equivalent_duration=config.get("token_equivalent_duration"),
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+        )
+    )
+    # When force_finite is False (default), repeat the dataset infinitely so that
+    # the dataloader never runs out of data; the trainer controls epoch boundaries.
     if not config.get("force_finite", False):
         cuts = cuts.repeat(preserve_id=True)
     return cuts, True
@@ -611,14 +659,53 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     """
     Convert a CutSet with overlapping agent/user segments into a standard S2S duplex format.
 
+    Use Case:
+        This parser is designed for conversational data where agent and user speech can overlap
+        in time (e.g., natural turn-taking with interruptions or backchanneling). The input
+        format stores agent and user segments separately as `agent_segments` and `user_segments`
+        attributes on each cut. This function converts them into a unified timeline of sequential
+        SupervisionSegments, which is the standard format expected by DuplexS2S models.
+
+    Expected Input Data Format:
+        Each cut should have:
+        - cut.agent_segments: List[Dict] with keys:
+            - "start" (float): Start time in seconds
+            - "end" (float): End time in seconds
+            - "text" (str): Agent's transcription
+        - cut.user_segments: List[Dict] with keys:
+            - "start" (float): Start time in seconds
+            - "end" (float): End time in seconds
+            - "text" (str): User's transcription
+
+    Example:
+        Input cut with overlapping segments:
+            cut.agent_segments = [
+                {"start": 0.5, "end": 2.0, "text": "Hello, how can I help?"},
+                {"start": 3.0, "end": 4.5, "text": "Sure, I can do that."}
+            ]
+            cut.user_segments = [
+                {"start": 1.8, "end": 3.2, "text": "I need assistance"},
+                {"start": 4.0, "end": 5.5, "text": "Thank you"}
+            ]
+
+        Output cut.supervisions (sorted by start time):
+            [
+                SupervisionSegment(start=0.5, duration=1.5, text="Hello, how can I help?", speaker="agent"),
+                SupervisionSegment(start=1.8, duration=1.4, text="I need assistance", speaker="user"),
+                SupervisionSegment(start=3.0, duration=1.5, text="Sure, I can do that.", speaker="agent"),
+                SupervisionSegment(start=4.0, duration=1.5, "Thank you", speaker="user")
+            ]
+
     Args:
         config: Dictionary containing parser options:
-            - move_agent_text_back_by (float): Time offset to shift agent text back.
-            - filter_samples_starting_with_agent (bool): Whether to remove samples starting with agent.
-            - agent_roles (List[str]): Roles considered as agent.
+            - move_agent_text_back_by (float): Time offset to shift agent text back (default: 0).
+                Useful for aligning agent text with earlier audio timing.
+            - filter_samples_starting_with_agent (bool): Whether to remove samples starting with agent (default: False).
+                When True, only keeps samples where the first speaker is a user.
+            - agent_roles (List[str]): Roles considered as agent (default: ["agent", "Assistant", "assistant"]).
 
     Returns:
-        Tuple[CutSet, bool]: Converted cuts and a flag indicating if the data was tarred.
+        Tuple[CutSet, bool]: Converted cuts with unified supervisions, and a flag indicating if the data was tarred.
     """
     move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
     filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
@@ -664,7 +751,7 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         ]
 
         cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
-        cut.formatter = "s2s_duplex_overlap_as_s2s_duplex"
+        cut.task = "s2s_duplex_overlap_as_s2s_duplex"
         return cut
 
     cuts = cuts.map(convert_overlap_cut_fn)
@@ -765,7 +852,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         cut_source.target_audio = cut_target.recording
         cut_source.duration = cut_target.duration
         cut_source.context_audio = cut.context_audio
-        cut_source.formatter = "lhotse_magpietts_data_as_continuation"
+        cut_source.task = "lhotse_magpietts_data_as_continuation"
 
         return cut_source
 
@@ -1052,6 +1139,13 @@ def read_s2s_as_conversation(config) -> tuple[CutSet, bool]:
     return cuts, is_tarred
 
 
+def create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
+    with io.BytesIO() as buffer:
+        sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
+        buffer.seek(0)
+        return Recording.from_bytes(buffer.read(), recording_id=recording_id)
+
+
 def resolve_relative_paths(cut: Cut, manifest_path: str) -> Cut:
     """Resolve relative paths in a Cut object to their full paths."""
     if isinstance(cut, PaddingCut):
@@ -1293,3 +1387,124 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
         return cuts
     else:
         raise RuntimeError(f'Unsupported input type: {type(inp)} (expected a dict or a string)')
+
+
+def _convert_tarred_to_duplex(cut, agent_silence_duration):
+    """Helper function to convert single supervision to duplex format.
+
+    This is a module-level function (not nested) so it can be pickled for multiprocessing.
+    """
+    if len(cut.supervisions) != 1:
+        # Skip cuts that don't have exactly one supervision
+        return cut
+
+    original_sup = cut.supervisions[0]
+    orig_user_duration = cut.duration
+
+    # Note here we use the last part of the audio as agent silence, which may cut user text, but this avoid using synthetic silence
+    # TODO(kevinhu): Evaluate how this impacts user EOU
+
+    # Append agent_silence_duration of silence to the original recording
+    if agent_silence_duration > 0:
+        sr = cut.recording.sampling_rate
+        user_sil_samples = int(agent_silence_duration * sr)
+        silence_audio = np.zeros((1, user_sil_samples), dtype=np.float32)
+        # Concatenate silence to the end of the original audio
+        orig_audio = cut.recording.load_audio()
+        if orig_audio.ndim == 1:
+            orig_audio = orig_audio[None, :]
+        new_audio = np.concatenate([orig_audio, silence_audio], axis=1)
+        # Create a new Recording with the extended audio
+        new_recording = create_recording_from_array(new_audio, sr, cut.recording.id)
+        cut.recording = new_recording
+        cut.duration = new_audio.shape[1] / sr
+
+    # Create user supervision (original speech)
+    user_dur = orig_user_duration
+    user_sup = SupervisionSegment(
+        id=f"{cut.id}_user",
+        recording_id=cut.recording_id,
+        start=0.0,
+        duration=user_dur,
+        text=original_sup.text,
+        language=original_sup.language,
+        speaker="user",
+    )
+
+    # Create agent supervision (silence with configurable duration)
+    agent_start = orig_user_duration + agent_silence_duration if agent_silence_duration < 0 else orig_user_duration
+    agent_dur = abs(agent_silence_duration)
+    agent_sup = SupervisionSegment(
+        id=f"{cut.id}_agent",
+        recording_id=cut.recording_id,
+        start=agent_start,
+        duration=agent_dur,
+        text="",  # Empty text for silence
+        language=original_sup.language,
+        speaker="agent",
+    )
+
+    # Create target_audio with all zeros (silence)
+    sr = cut.recording.sampling_rate
+    num_samples = int(cut.duration * sr)
+    silence_audio = np.zeros((1, num_samples), dtype=np.float32)
+
+    # Create a Recording from the silence audio
+    silence_recording = create_recording_from_array(silence_audio, sr, f"{cut.id}_target")
+
+    # Replace the single supervision with user and agent supervisions
+    cut.supervisions = [user_sup, agent_sup]
+    cut.task = "asr"
+
+    # Add target_audio to cut.custom
+    if cut.custom is None:
+        cut.custom = {}
+    cut.custom["target_audio"] = silence_recording
+
+    return cut
+
+
+@data_type_parser(["nemo_tarred_to_duplex"])
+def read_nemo_tarred_to_duplex(config) -> tuple[CutSet, bool]:
+    """Convert single-supervision NeMo tarred data to duplex format with user speech and agent silence.
+
+    This parser wraps ``nemo_tarred`` and converts each single-supervision cut
+    into a two-supervision (user + agent) duplex cut.  The user supervision
+    keeps the original audio and text, while the agent supervision is silence
+    with empty text.  A silent ``target_audio`` recording (all zeros, same
+    length as the source) is attached via ``cut.custom["target_audio"]``.
+
+    Input config YAML example (used inside an ``input_cfg`` list)::
+
+        - manifest_filepath: /path/to/manifest__OP_0..63_CL_.json
+          tarred_audio_filepaths: /path/to/audio__OP_0..63_CL_.tar
+          type: nemo_tarred_to_duplex
+          agent_silence_duration: 2.0   # optional, default -0.08
+          weight: 1.0
+
+    Each line in the NeMo manifest JSON is the standard NeMo format::
+
+        {"audio_filepath": "relative/path.wav", "text": "transcript", "duration": 4.5}
+
+    ``agent_silence_duration`` controls how much silence is used for the agent
+    turn.  A positive value appends that many seconds of silence after the
+    user audio.  A negative value (the default, ``-0.08``) re-uses the last
+    ``abs(value)`` seconds of the user audio as the agent region instead of
+    appending new silence.
+    """
+
+    # by default, use the last part of user audio as agent silence duration
+    agent_silence_duration = config.get("agent_silence_duration", -0.08)
+
+    # Reuse the existing nemo_tarred parser by creating a config with type: nemo_tarred
+    nemo_config = DictConfig(config)
+    nemo_config.type = "nemo_tarred"
+
+    # Load the cuts using the original parser
+    cuts, is_tarred = read_nemo_manifest(nemo_config)
+
+    # Apply the conversion using functools.partial to make it picklable
+    convert_fn = partial(_convert_tarred_to_duplex, agent_silence_duration=agent_silence_duration)
+    cuts = cuts.map(convert_fn)
+
+    return cuts, is_tarred

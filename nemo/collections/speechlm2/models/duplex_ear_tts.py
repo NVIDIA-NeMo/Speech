@@ -46,7 +46,11 @@ from nemo.collections.speechlm2.parts.metrics.asr_bleu import ASRBLEU
 from nemo.collections.speechlm2.parts.metrics.asr_cer_wer import Intelligibility
 from nemo.collections.speechlm2.parts.metrics.results_logger import ResultsLogger
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
-from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, configure_optimizers_exclude_norm_from_wd, is_frozen
+from nemo.collections.speechlm2.parts.optim_setup import (
+    configure_optimizers,
+    configure_optimizers_exclude_norm_from_wd,
+    is_frozen,
+)
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import (
     load_checkpoint,

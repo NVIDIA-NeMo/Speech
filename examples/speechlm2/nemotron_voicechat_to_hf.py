@@ -103,10 +103,10 @@ from typing import Dict
 import torch
 from omegaconf import OmegaConf
 
-from nemo.core.config import hydra_runner
-from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2.models.duplex_ear_tts import load_audio_librosa
+from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
+from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
 

@@ -24,11 +24,20 @@ Usage:
     from nemo.collections.tts.metrics.eou_classifier import EoUClassifier
 
     classifier = EoUClassifier()  # loads model once
+
+    # Single-sample inference
     result = classifier.classify("output.wav", "Hello world.")
     print(result.eou_type, result.trailing_duration)
+
+    # Batched inference (same outputs, better throughput)
+    results = classifier.classify_batch([
+        ("output1.wav", "Hello world."),
+        ("output2.wav", "Goodbye."),
+    ])
 """
 
 import math
+import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Union
@@ -39,6 +48,7 @@ import torch
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 
 from nemo.collections.asr.parts.utils.aligner_utils import viterbi_decoding
+from nemo.utils import logging
 
 SR = 16000
 
@@ -98,7 +108,8 @@ class EoUClassifier:
     Classifies end-of-utterance (EoU) audio as good (natural ending), cutoff, silence, or noise.
 
     The model is loaded once at construction time. Call `classify()`
-    repeatedly to process files without reloading.
+    repeatedly to process files without reloading, or `classify_batch()`
+    for batched inference with better throughput.
     """
 
     def __init__(self, model_name: str = "facebook/wav2vec2-base-960h", sr: int = SR, device: str | None = None):
@@ -128,36 +139,24 @@ class EoUClassifier:
                     tokens.append(self.vocab[char])
         return tokens
 
-    def _forced_align(self, audio: np.ndarray, text: str) -> dict:
-        """Run forced alignment and return speech boundary info."""
-        # Tokenize audio into Wav2Vec2 input features
-        input_values = self.processor(audio, return_tensors="pt", sampling_rate=self.sr).input_values.to(self.device)
+    def _build_alignment_info(
+        self,
+        log_probs: torch.Tensor,
+        token_ids_with_blanks: list[int],
+        alignment_path: list[int],
+    ) -> dict:
+        """Build alignment info dict from per-frame log_probs and a Viterbi alignment path.
 
-        # Forward pass through the CTC model to get per-frame logits
-        with torch.no_grad():
-            logits = self.model(input_values).logits[0]
+        Args:
+            log_probs: (T, V) log-probability tensor for a single sample.
+            token_ids_with_blanks: Interleaved-blank token sequence.
+            alignment_path: Viterbi path indices into token_ids_with_blanks.
 
-        log_probs = torch.log_softmax(logits, dim=-1)
-        frame_duration = self.frame_duration
-
-        # Convert target text to CTC token IDs
-        target_tokens = self._text_to_tokens(text)
-
-        # Build interleaved-blank sequence: [blank, T1, blank, T2, blank, ...]
-        token_ids_with_blanks = [self.blank_id]
-        for tok in target_tokens:
-            token_ids_with_blanks.extend([tok, self.blank_id])
-
+        Returns:
+            Dict with speech_end, last_token_*, token_segments, etc.
+        """
         T = log_probs.shape[0]
-        y = torch.tensor([token_ids_with_blanks], dtype=torch.int64, device=self.device)
-
-        alignment = viterbi_decoding(
-            log_probs.unsqueeze(0),
-            y,
-            torch.tensor([T], device=self.device),
-            torch.tensor([len(token_ids_with_blanks)], device=self.device),
-        )
-        alignment_path = alignment[0]
+        frame_duration = self.frame_duration
 
         # Reconstruct per-frame token IDs and confidence scores from the
         # alignment path, matching the format that torchaudio.forced_align returns.
@@ -165,8 +164,8 @@ class EoUClassifier:
         scores = (
             torch.exp(
                 log_probs[
-                    torch.arange(T, device=self.device),
-                    torch.tensor([token_ids_with_blanks[s] for s in alignment_path], device=self.device),
+                    torch.arange(T, device=log_probs.device),
+                    torch.tensor([token_ids_with_blanks[s] for s in alignment_path], device=log_probs.device),
                 ]
             )
             .cpu()
@@ -272,31 +271,39 @@ class EoUClassifier:
             "token_segments": segments,
         }
 
-    def classify(
-        self,
-        audio: Union[str, np.ndarray],
-        text: str,
-    ) -> EoUClassification:
-        """
-        Classify the end-of-utterance quality of utterance audio.
+    def _forced_align(self, audio: np.ndarray, text: str) -> dict:
+        """Run forced alignment and return speech boundary info."""
+        # Tokenize audio into Wav2Vec2 input features
+        input_values = self.processor(audio, return_tensors="pt", sampling_rate=self.sr).input_values.to(self.device)
 
-        Args:
-            audio: Path to a WAV file, or a numpy array of audio samples at self.sr.
-            text: The target text that was supposed to be spoken.
+        # Forward pass through the CTC model to get per-frame logits
+        with torch.no_grad():
+            logits = self.model(input_values).logits[0]
 
-        Returns:
-            EoUClassification with the predicted eou_type and supporting features.
-        """
-        # Accept either a file path or a pre-loaded numpy array
-        if isinstance(audio, np.ndarray):
-            samples = audio
-        else:
-            samples, _ = librosa.load(audio, sr=self.sr)
+        log_probs = torch.log_softmax(logits, dim=-1)
 
+        # Convert target text to CTC token IDs
+        target_tokens = self._text_to_tokens(text)
+        # Build interleaved-blank sequence: [blank, T1, blank, T2, blank, ...]
+        token_ids_with_blanks = [self.blank_id]
+        for tok in target_tokens:
+            token_ids_with_blanks.extend([tok, self.blank_id])
+
+        T = log_probs.shape[0]
+        y = torch.tensor([token_ids_with_blanks], dtype=torch.int64, device=self.device)
+
+        alignment = viterbi_decoding(
+            log_probs.unsqueeze(0),
+            y,
+            torch.tensor([T], device=self.device),
+            torch.tensor([len(token_ids_with_blanks)], device=self.device),
+        )
+
+        return self._build_alignment_info(log_probs, token_ids_with_blanks, alignment[0])
+
+    def _classify_from_alignment(self, samples: np.ndarray, text: str, info: dict) -> EoUClassification:
+        """Apply the EoU decision tree given audio samples and forced-alignment info."""
         audio_dur = len(samples) / self.sr
-        # Run forced alignment and collect information about speech segments
-        info = self._forced_align(samples, text)
-
         speech_end = info["speech_end"]
         trailing = audio_dur - speech_end
         last_letter_pad = 0.15 if _ends_with_sibilant(text) else 0.1
@@ -326,10 +333,10 @@ class EoUClassifier:
         # Short tail with low confidence and not due to gap (which could indicate noise) --> cutoff
         if trailing < 0.1 and last_conf < conf_threshold and not last_gap > 0.4:
             eou_type = EoUType.CUTOFF
-        # Long noisy tail OR a gap between last two segements and low confidence --> noisy
+        # Long noisy tail OR a gap between last two segments and low confidence --> noisy
         elif (trailing > 0.15 and trail_rms_ratio > 0.4) or (last_gap > 0.4 and last_conf < 0.15):
             eou_type = EoUType.NOISE
-        # Long tail without much energy (or it would captured by the previous condition) --> silence
+        # Long tail without much energy (or it would be captured by the previous condition) --> silence
         elif trailing > 1.0:
             eou_type = EoUType.SILENCE
         else:
@@ -349,6 +356,284 @@ class EoUClassifier:
             last_two_phoneme_avg_confidence=last_two_avg,
             token_segments=token_segments,
         )
+
+    def classify(
+        self,
+        audio: Union[str, np.ndarray],
+        text: str,
+    ) -> EoUClassification:
+        """
+        Classify the end-of-utterance quality of utterance audio.
+
+        Args:
+            audio: Path to a WAV file, or a numpy array of audio samples at self.sr.
+            text: The target text that was supposed to be spoken.
+
+        Returns:
+            EoUClassification with the predicted eou_type and supporting features.
+        """
+        # Accept either a file path or a pre-loaded numpy array
+        if isinstance(audio, np.ndarray):
+            samples = audio
+        else:
+            samples, _ = librosa.load(audio, sr=self.sr)
+
+        # Run forced alignment and collect information about speech segments
+        info = self._forced_align(samples, text)
+        return self._classify_from_alignment(samples, text, info)
+
+    def _forced_align_batch(
+        self, audios: list[np.ndarray], texts: list[str], timings: dict | None = None
+    ) -> list[dict]:
+        """Run forced alignment on a batch.
+
+        The Wav2Vec2 CNN feature extractor is run per-sample to avoid GroupNorm
+        padding artifacts. The transformer encoder, LM head, and Viterbi
+        decoding are batched for throughput.
+
+        Args:
+            audios: List of 1-D numpy audio arrays at self.sr.
+            texts: Corresponding transcripts.
+            timings: If not None, populated with per-stage wall-clock seconds.
+
+        Returns:
+            List of alignment-info dicts (same format as _forced_align).
+        """
+        B = len(audios)
+
+        # --- CNN feature extraction (per-sample to avoid GroupNorm padding artifacts) ---
+        t0 = time.perf_counter()
+        cnn_outputs: list[torch.Tensor] = []
+        for audio in audios:
+            iv = self.processor(audio, return_tensors="pt", sampling_rate=self.sr).input_values.to(self.device)
+            with torch.no_grad():
+                feat = self.model.wav2vec2.feature_extractor(iv)  # (1, C, T_i)
+                cnn_outputs.append(feat.squeeze(0))  # (C, T_i)
+        if timings is not None:
+            timings["cnn"] = time.perf_counter() - t0
+
+        # --- Pad CNN outputs and build attention mask ---
+        t0 = time.perf_counter()
+        feat_lengths = [f.shape[1] for f in cnn_outputs]
+        max_feat_len = max(feat_lengths)
+        C = cnn_outputs[0].shape[0]
+
+        padded = torch.zeros(B, C, max_feat_len, device=self.device)
+        attention_mask = torch.zeros(B, max_feat_len, dtype=torch.bool, device=self.device)
+        for i, f in enumerate(cnn_outputs):
+            padded[i, :, : feat_lengths[i]] = f
+            attention_mask[i, : feat_lengths[i]] = True
+        padded = padded.transpose(1, 2)  # (B, T_max, C)
+        if timings is not None:
+            timings["pad"] = time.perf_counter() - t0
+
+        # --- Feature projection + transformer encoder + LM head (batched) ---
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            hidden, _ = self.model.wav2vec2.feature_projection(padded)
+            encoder_out = self.model.wav2vec2.encoder(hidden, attention_mask=attention_mask)
+            hidden = encoder_out[0]
+            hidden = self.model.dropout(hidden)
+            logits = self.model.lm_head(hidden)  # (B, T_max, V)
+
+        log_probs_all = torch.log_softmax(logits, dim=-1)
+        if timings is not None:
+            timings["encoder"] = time.perf_counter() - t0
+
+        # --- Batched Viterbi decoding ---
+        t0 = time.perf_counter()
+        V = log_probs_all.shape[-1]
+        VITERBI_PAD = -3.4e38
+
+        all_token_ids_with_blanks: list[list[int]] = []
+        for text in texts:
+            target_tokens = self._text_to_tokens(text)
+            tids = [self.blank_id]
+            for tok in target_tokens:
+                tids.extend([tok, self.blank_id])
+            all_token_ids_with_blanks.append(tids)
+
+        U_lengths = [len(tids) for tids in all_token_ids_with_blanks]
+        U_max = max(U_lengths)
+
+        log_probs_padded = log_probs_all.clone()
+        for i in range(B):
+            if feat_lengths[i] < max_feat_len:
+                log_probs_padded[i, feat_lengths[i] :, :] = VITERBI_PAD
+
+        y_batch = torch.full((B, U_max), V, dtype=torch.int64, device=self.device)
+        for i, tids in enumerate(all_token_ids_with_blanks):
+            y_batch[i, : len(tids)] = torch.tensor(tids, dtype=torch.int64, device=self.device)
+
+        T_batch = torch.tensor(feat_lengths, device=self.device)
+        U_batch = torch.tensor(U_lengths, device=self.device)
+
+        alignments = viterbi_decoding(log_probs_padded, y_batch, T_batch, U_batch)
+        if timings is not None:
+            timings["viterbi"] = time.perf_counter() - t0
+
+        # --- Per-sample: build alignment info from Viterbi paths ---
+        t0 = time.perf_counter()
+        results: list[dict] = []
+        for i in range(B):
+            sample_log_probs = log_probs_all[i, : feat_lengths[i]]
+            info = self._build_alignment_info(sample_log_probs, all_token_ids_with_blanks[i], alignments[i])
+            results.append(info)
+        if timings is not None:
+            timings["post_align"] = time.perf_counter() - t0
+
+        return results
+
+    def _forced_align_batch_naive(
+        self, audios: list[np.ndarray], texts: list[str], timings: dict | None = None
+    ) -> list[dict]:
+        """Run forced alignment with fully-batched model (CNN included).
+
+        Unlike _forced_align_batch, this pads the raw waveforms and runs the
+        entire Wav2Vec2 model (CNN + transformer) as a single batched forward
+        pass.  This is simpler but may produce different outputs due to
+        GroupNorm in the CNN operating on padded zeros.
+
+        Args:
+            audios: List of 1-D numpy audio arrays at self.sr.
+            texts: Corresponding transcripts.
+            timings: If not None, populated with per-stage wall-clock seconds.
+
+        Returns:
+            List of alignment-info dicts (same format as _forced_align).
+        """
+        B = len(audios)
+
+        # --- Pad waveforms and build waveform-level attention mask ---
+        t0 = time.perf_counter()
+        wav_lengths = [len(a) for a in audios]
+        max_wav_len = max(wav_lengths)
+
+        input_values = torch.zeros(B, max_wav_len, device=self.device)
+        wav_attention_mask = torch.zeros(B, max_wav_len, dtype=torch.long, device=self.device)
+        for i, audio in enumerate(audios):
+            iv = self.processor(audio, return_tensors="pt", sampling_rate=self.sr).input_values[0]
+            input_values[i, : len(iv)] = iv.to(self.device)
+            wav_attention_mask[i, : len(iv)] = 1
+        if timings is not None:
+            timings["pad"] = time.perf_counter() - t0
+
+        # --- Full model forward (CNN + transformer) ---
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            outputs = self.model(input_values, attention_mask=wav_attention_mask)
+            logits = outputs.logits  # (B, T_max, V)
+
+        # Compute feature-level lengths via the same formula the model uses
+        feat_lengths_t = self.model.wav2vec2._get_feat_extract_output_lengths(
+            torch.tensor(wav_lengths, device=self.device)
+        )
+        feat_lengths = feat_lengths_t.tolist()
+        max_feat_len = logits.shape[1]
+
+        log_probs_all = torch.log_softmax(logits, dim=-1)
+        if timings is not None:
+            timings["encoder"] = time.perf_counter() - t0
+
+        # --- Batched Viterbi decoding (same as _forced_align_batch) ---
+        t0 = time.perf_counter()
+        V = log_probs_all.shape[-1]
+        VITERBI_PAD = -3.4e38
+
+        all_token_ids_with_blanks: list[list[int]] = []
+        for text in texts:
+            target_tokens = self._text_to_tokens(text)
+            tids = [self.blank_id]
+            for tok in target_tokens:
+                tids.extend([tok, self.blank_id])
+            all_token_ids_with_blanks.append(tids)
+
+        U_lengths = [len(tids) for tids in all_token_ids_with_blanks]
+        U_max = max(U_lengths)
+
+        log_probs_padded = log_probs_all.clone()
+        for i in range(B):
+            if feat_lengths[i] < max_feat_len:
+                log_probs_padded[i, feat_lengths[i] :, :] = VITERBI_PAD
+
+        y_batch = torch.full((B, U_max), V, dtype=torch.int64, device=self.device)
+        for i, tids in enumerate(all_token_ids_with_blanks):
+            y_batch[i, : len(tids)] = torch.tensor(tids, dtype=torch.int64, device=self.device)
+
+        T_batch = torch.tensor(feat_lengths, device=self.device)
+        U_batch = torch.tensor(U_lengths, device=self.device)
+
+        alignments = viterbi_decoding(log_probs_padded, y_batch, T_batch, U_batch)
+        if timings is not None:
+            timings["viterbi"] = time.perf_counter() - t0
+
+        # --- Per-sample: build alignment info ---
+        t0 = time.perf_counter()
+        results: list[dict] = []
+        for i in range(B):
+            sample_log_probs = log_probs_all[i, : feat_lengths[i]]
+            info = self._build_alignment_info(sample_log_probs, all_token_ids_with_blanks[i], alignments[i])
+            results.append(info)
+        if timings is not None:
+            timings["post_align"] = time.perf_counter() - t0
+
+        return results
+
+    def classify_batch(
+        self,
+        items: list[tuple[Union[str, np.ndarray], str]],
+        log_timing: bool = False,
+    ) -> list[EoUClassification]:
+        """
+        Classify a batch of utterances.
+
+        Produces identical results to calling classify() on each item
+        individually, but with better throughput by batching the
+        transformer encoder.
+
+        Args:
+            items: List of (audio, text) pairs. Audio can be a file path or numpy array.
+            log_timing: If True, log per-stage timing breakdown.
+
+        Returns:
+            List of EoUClassification results, one per input item.
+        """
+        t_total = time.perf_counter()
+
+        # --- Load audio ---
+        t0 = time.perf_counter()
+        audios: list[np.ndarray] = []
+        for audio, _text in items:
+            if isinstance(audio, np.ndarray):
+                audios.append(audio)
+            else:
+                samples, _ = librosa.load(audio, sr=self.sr)
+                audios.append(samples)
+        texts = [text for _, text in items]
+        t_load = time.perf_counter() - t0
+
+        # --- Batched forced alignment ---
+        timings: dict[str, float] = {}
+        infos = self._forced_align_batch(audios, texts, timings=timings if log_timing else None)
+
+        # --- Per-sample classification ---
+        t0 = time.perf_counter()
+        results: list[EoUClassification] = []
+        for i in range(len(audios)):
+            results.append(self._classify_from_alignment(audios[i], texts[i], infos[i]))
+        t_classify = time.perf_counter() - t0
+
+        t_total = time.perf_counter() - t_total
+
+        if log_timing:
+            logging.info(
+                f"[EoUClassifier] batch_size={len(audios)} | load={t_load * 1000:.1f}ms | "
+                f"cnn={timings['cnn'] * 1000:.1f}ms | pad={timings['pad'] * 1000:.1f}ms | "
+                f"encoder={timings['encoder'] * 1000:.1f}ms | viterbi={timings['viterbi'] * 1000:.1f}ms | "
+                f"post={t_classify * 1000:.1f}ms | total={t_total * 1000:.1f}ms"
+            )
+
+        return results
 
 
 if __name__ == "__main__":

@@ -311,6 +311,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                     if hyp.xatt_scores is not None:
                         hyp.xatt_scores = [xatt_layer[:, : pos + 1, :] for xatt_layer in hyp.xatt_scores]
 
+
 @dataclass
 class AEDBeamInferConfig:
     beam_size: int = 1

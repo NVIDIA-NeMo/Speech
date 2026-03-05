@@ -293,6 +293,7 @@ def test_transformer_aed_greedy_infer_strips_prompt(prompted_inputs, decoder_nm,
         untrimmed[decoder_input_ids.shape[1] :], best_path
     )  # stripped the prompt from the beggining
 
+
 def test_transformer_aed_beam_infer_trims_xatt_scores(prompted_inputs, decoder_nm, nnet, tokenizer):
     decoder_input_ids, encoder_hidden_states, encoder_input_mask = prompted_inputs
     *_, classifier = nnet

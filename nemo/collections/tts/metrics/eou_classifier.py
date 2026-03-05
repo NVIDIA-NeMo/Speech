@@ -101,10 +101,13 @@ class EoUClassifier:
     repeatedly to process files without reloading.
     """
 
-    def __init__(self, model_name: str = "facebook/wav2vec2-base-960h", sr: int = SR):
+    def __init__(self, model_name: str = "facebook/wav2vec2-base-960h", sr: int = SR, device: str | None = None):
         self.sr = sr
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
         self.processor = Wav2Vec2Processor.from_pretrained(model_name)
-        self.model = Wav2Vec2ForCTC.from_pretrained(model_name)
+        self.model = Wav2Vec2ForCTC.from_pretrained(model_name).to(self.device)
         self.model.eval()
         self.blank_id = self.processor.tokenizer.pad_token_id
         self.vocab = self.processor.tokenizer.get_vocab()
@@ -128,7 +131,7 @@ class EoUClassifier:
     def _forced_align(self, audio: np.ndarray, text: str) -> dict:
         """Run forced alignment and return speech boundary info."""
         # Tokenize audio into Wav2Vec2 input features
-        input_values = self.processor(audio, return_tensors="pt", sampling_rate=self.sr).input_values
+        input_values = self.processor(audio, return_tensors="pt", sampling_rate=self.sr).input_values.to(self.device)
 
         # Forward pass through the CTC model to get per-frame logits
         with torch.no_grad():
@@ -146,22 +149,29 @@ class EoUClassifier:
             token_ids_with_blanks.extend([tok, self.blank_id])
 
         T = log_probs.shape[0]
-        y = torch.tensor([token_ids_with_blanks], dtype=torch.int64)
+        y = torch.tensor([token_ids_with_blanks], dtype=torch.int64, device=self.device)
 
         alignment = viterbi_decoding(
             log_probs.unsqueeze(0),
             y,
-            torch.tensor([T]),
-            torch.tensor([len(token_ids_with_blanks)]),
+            torch.tensor([T], device=self.device),
+            torch.tensor([len(token_ids_with_blanks)], device=self.device),
         )
         alignment_path = alignment[0]
 
         # Reconstruct per-frame token IDs and confidence scores from the
         # alignment path, matching the format that torchaudio.forced_align returns.
         aligned_ids = np.array([token_ids_with_blanks[s] for s in alignment_path])
-        scores = torch.exp(
-            log_probs[torch.arange(T), torch.tensor([token_ids_with_blanks[s] for s in alignment_path])]
-        ).numpy()
+        scores = (
+            torch.exp(
+                log_probs[
+                    torch.arange(T, device=self.device),
+                    torch.tensor([token_ids_with_blanks[s] for s in alignment_path], device=self.device),
+                ]
+            )
+            .cpu()
+            .numpy()
+        )
 
         # Walk through the frame-level alignment and merge consecutive
         # frames of the same token into TokenSegment objects.

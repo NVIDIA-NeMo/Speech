@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import librosa
-import numpy as np
 import pytest
 
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType, TokenSegment
@@ -49,9 +48,10 @@ _CLASSIFICATION_CASES: list[tuple[str, EoUType, str, str]] = [
 
 
 @pytest.fixture(scope="module")
-def classifier():
+def classifier(request):
     """Load the Wav2Vec2 model once for the entire test module."""
-    return EoUClassifier()
+    device = "cpu" if request.config.getoption("--cpu") else "cuda"
+    return EoUClassifier(device=device)
 
 
 # ── classification tests (one per class) ──────────────────────────────────

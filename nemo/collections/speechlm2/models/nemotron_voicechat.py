@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import gc
-import json
 import os
 
 import torch
@@ -162,7 +161,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         Wrapper over PyTorchModelHubMixin that auto-handles config and uses our
         custom memory-efficient safetensors streaming loader to prevent OOM.
         """
-        # 1. Fetch the Config
+        # Fetch the Config
         resolved_config_file = cached_file(
             model_id,
             CONFIG_NAME,  # Ensure CONFIG_NAME is defined in your file (e.g., "config.yaml" or "config.json")
@@ -185,10 +184,10 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Skip loading child module weights natively
         model_kwargs['cfg']['pretrained_weights'] = False
 
-        # 2. Instantiate the empty model skeleton
+        # Instantiate the empty model skeleton
         model = cls(model_kwargs['cfg'])
 
-        # 3. Fetch the Safetensors weights
+        # Fetch the Safetensors weights
         resolved_weights_file = cached_file(
             model_id,
             "model.safetensors",
@@ -206,7 +205,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         if resolved_weights_file is None:
             raise RuntimeError(f"Missing model.safetensors file for {model_id=}")
 
-        # 4. Stream the weights safely using your custom memory-efficient loader!
+        # Stream the weights safely using your custom memory-efficient loader!
         ckpt_dir = os.path.dirname(resolved_weights_file)
         model.init_from_safetensors_ckpt(ckpt_dir)
 

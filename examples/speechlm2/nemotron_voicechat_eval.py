@@ -125,12 +125,9 @@ import torch
 from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
 
-from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2 import DataModule, DuplexSTTDataset
-from nemo.collections.speechlm2.models.duplex_ear_tts import load_audio_librosa
 from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
 from nemo.core.config import hydra_runner
-from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 

@@ -622,7 +622,6 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         if torch.distributed.is_initialized():
             self.trainer.strategy.model.require_backward_grad_sync = True
 
-
     def get_teacher_force_inference_audio(self, batch, guidance_enabled=True):
         inputs = self.prepare_inputs(batch)
 

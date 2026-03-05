@@ -221,7 +221,6 @@ def main(cfg: HfExportConfig):
     if hasattr(stt_model_cfg.model, "pretrained_s2s_model"):
         stt_model_cfg.model.pretrained_s2s_model = None
 
-
     # Load TTS experiment configuration
     tts_model_cfg = OmegaConf.load(cfg.tts_ckpt_config)
 

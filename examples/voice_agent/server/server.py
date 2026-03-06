@@ -271,6 +271,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = None):
             tts.reset()
             if diar is not None:
                 diar.reset()
+            turn_taking.reset()
             logger.info("Conversation context reset successfully")
             return True
         except Exception as e:

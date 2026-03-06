@@ -137,7 +137,7 @@ class EoUClassifier:
                     tokens.append(self.vocab[char])
         return tokens
 
-    def _extract_eou_features(
+    def extract_eou_features(
         self,
         log_probs: torch.Tensor,
         token_ids_with_blanks: list[int],
@@ -151,7 +151,8 @@ class EoUClassifier:
             alignment_path: Viterbi path indices into token_ids_with_blanks.
 
         Returns:
-            Dict with speech_end, last_token_*, token_segments, etc.
+            Dict with information about when the speech ended, what the last token was,
+            what its confidence was, and detailed per-segment information.
         """
         T = log_probs.shape[0]
         frame_duration = self.frame_duration
@@ -171,9 +172,7 @@ class EoUClassifier:
         )
 
         # Walk through the frame-level alignment and merge consecutive frames of the
-        # same token into TokenSegment objects. Transitions: blank-to-token (start new
-        # segment), token-to-blank (end segment), token-to-different token (end old,
-        # start new).
+        # same token into TokenSegment objects.
         segments: list[TokenSegment] = []
         cur_id = -1  # indicates that no segment is open
         seg_start = 0
@@ -236,17 +235,18 @@ class EoUClassifier:
 
         last = segments[-1]
 
-        # Skip trailing punctuation/non-letter tokens for cutoff analysis,
-        # since they don't correspond to real speech sounds and get
-        # unreliably short durations from forced alignment.
+        # Skip trailing punctuation/non-letter tokens for cutoff analysis, since they
+        # don't correspond to real speech sounds and get unreliably short durations from
+        # forced alignment.
         last_speech = last
         for seg in reversed(segments):
             if seg.token.isalnum():
                 last_speech = seg
                 break
 
-        # Measure the blank gap between the last speech token and its predecessor.
-        # A large gap can indicate noise or misalignment before the final sound.
+        # Measure the blank gap between the last speech token and the preceding token. A
+        # large gap (especially with low final token  confidence) tends to indicate a
+        # noisy ending where alignment has broken down.
         last_idx = segments.index(last_speech)
         if last_idx > 0:
             last_token_gap = last_speech.start - segments[last_idx - 1].end
@@ -269,7 +269,7 @@ class EoUClassifier:
             "token_segments": segments,
         }
 
-    def _classify_from_alignment(self, samples: np.ndarray, text: str, info: dict) -> EoUClassification:
+    def classify_from_features(self, samples: np.ndarray, text: str, info: dict) -> EoUClassification:
         """Apply the EoU decision tree given audio samples and forced-alignment info."""
         audio_dur = len(samples) / self.sr
         speech_end = info["speech_end"]
@@ -420,7 +420,7 @@ class EoUClassifier:
         results: list[dict] = []
         for i in range(B):
             sample_log_probs = log_probs_all[i, : feat_lengths[i]]
-            info = self._extract_eou_features(sample_log_probs, all_token_ids_with_blanks[i], alignments[i])
+            info = self.extract_eou_features(sample_log_probs, all_token_ids_with_blanks[i], alignments[i])
             results.append(info)
 
         return results
@@ -451,7 +451,7 @@ class EoUClassifier:
 
         results: list[EoUClassification] = []
         for i in range(len(audios)):
-            results.append(self._classify_from_alignment(audios[i], texts[i], infos[i]))
+            results.append(self.classify_from_features(audios[i], texts[i], infos[i]))
 
         return results
 

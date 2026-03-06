@@ -29,7 +29,7 @@ if torch.cuda.is_available():
 
 pretrained_llm = "TinyLlama/TinyLlama_v1.1"
 if os.path.exists("/home/TestData/speechlm/pretrained_models"):
-    pretrained_llm = ("/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1",)
+    pretrained_llm = "/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1"
 
 # STT sampling rate
 source_sample_rate = 16000

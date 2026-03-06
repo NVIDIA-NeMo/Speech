@@ -721,7 +721,7 @@ def compute_global_metrics(
     avg_metrics['utmosv2_avg'] = sum(m['utmosv2'] for m in filewise_metrics) / n
     avg_metrics['total_gen_audio_seconds'] = sum(m['total_gen_audio_seconds'] for m in filewise_metrics)
 
-    # EoU classification rates (populated only for English)
+    # EoU classification rates
     eou_types = [m.get('eou_type') for m in filewise_metrics]
     if eou_types[0] is not None:
         from collections import Counter

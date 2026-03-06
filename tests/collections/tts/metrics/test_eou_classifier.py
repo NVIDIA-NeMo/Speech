@@ -148,45 +148,10 @@ def test_batch_matches_unbatched(classifier):
 
 
 @pytest.mark.unit
-def test_batch_naive_matches_unbatched(classifier):
-    """Naive batched inference (full model including CNN) vs single-sample.
-
-    Tests whether the GroupNorm-in-CNN concern actually causes divergence
-    once the attention mask dtype bug is fixed.
-    """
-    audios = []
-    texts = []
-    for _, _, audio_path, text in _CLASSIFICATION_CASES:
-        samples, _ = librosa.load(audio_path, sr=16000)
-        audios.append(samples)
-        texts.append(text)
-
-    naive_infos = classifier._forced_align_batch_naive(audios, texts)
-
-    mismatches = []
-    for i, (name, expected_type, audio_path, text) in enumerate(_CLASSIFICATION_CASES):
-        naive_result = classifier._classify_from_alignment(audios[i], texts[i], naive_infos[i])
-        single_result = classifier.classify(audio_path, text)
-
-        type_match = naive_result.eou_type == single_result.eou_type
-        trailing_delta = abs(naive_result.trailing_duration - single_result.trailing_duration)
-        speech_end_delta = abs(naive_result.speech_end - single_result.speech_end)
-
-        if not type_match or trailing_delta > 1e-4 or speech_end_delta > 1e-4:
-            mismatches.append(
-                f"  {name!r}: type={naive_result.eou_type}(expected {single_result.eou_type}), "
-                f"trailing_delta={trailing_delta:.6f}, speech_end_delta={speech_end_delta:.6f}"
-            )
-
-    if mismatches:
-        pytest.fail("Naive batched (full-model) vs unbatched mismatches:\n" + "\n".join(mismatches))
-
-
-@pytest.mark.unit
-def test_batch_with_timing(classifier):
-    """Smoke-test that log_timing=True doesn't crash."""
+def test_batch_basic(classifier):
+    """Smoke-test that classify_batch returns the right number of results."""
     items = [(a, tx) for _, _, a, tx in _CLASSIFICATION_CASES[:2]]
-    results = classifier.classify_batch(items, log_timing=True)
+    results = classifier.classify_batch(items)
     assert len(results) == 2
     for r in results:
         assert isinstance(r, EoUClassification)

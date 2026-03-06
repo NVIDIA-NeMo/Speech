@@ -100,6 +100,22 @@ class NeMoTurnTakingService(FrameProcessor):
             raise ValueError(f"Invalid backchannel phrases: {backchannel_phrases}")
         return backchannel_phrases
 
+    def reset(self):
+        """
+        Reset the turn-taking service.
+        """
+        self._current_speaker_id = None
+        self._prev_speaker_id = None
+        self._bot_stop_time = None
+        self._bot_speaking = False
+        self._vad_user_speaking = False
+        self._have_sent_user_started_speaking = False
+        self._user_speaking_buffer = ""
+        if not self.use_vad:
+            # if vad is not used, we assume the user is always speaking
+            self._vad_user_speaking = True
+        logger.debug("TurnTaking service reset complete")
+
     def clean_text(self, text: str) -> str:
         """
         Clean the text so that it can be used for backchannel detection.

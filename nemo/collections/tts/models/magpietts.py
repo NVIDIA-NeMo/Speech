@@ -4512,9 +4512,17 @@ class MagpieTTSModel(ModelPT):
             )
 
             audio_codes_input = (
-                torch.full((batch_size, self.num_audio_codebooks, 1), self.audio_bos_id).long().to(device)
+                torch.full(
+                    (batch_size, self.num_audio_codebooks, self.frame_stacking_factor),
+                    self.audio_bos_id,
+                )
+                .long()
+                .to(device)
             )
-            audio_codes_lens = torch.full((batch_size,), audio_codes_input.size(2), device=device).long().to(device)
+            audio_codes_frame_lens = torch.full(
+                (batch_size,), self.frame_stacking_factor, device=device, dtype=torch.long
+            )
+            audio_codes_lens = torch.full((batch_size,), 1, device=device, dtype=torch.long)
             audio_codes_mask = get_mask_from_lengths(audio_codes_lens)
 
             # Initialize dummy variables for CFG
@@ -4565,9 +4573,10 @@ class MagpieTTSModel(ModelPT):
                 forbid_audio_eos = idx * self.frame_stacking_factor < self.inference_parameters.min_generated_frames
 
                 # Embed audio codes and concatenate with additional decoder input
-                audio_codes_embedded, audio_codes_lens = self.embed_audio_tokens(
-                    state.audio_codes_input, audio_tokens_lens=audio_codes_lens
+                audio_codes_embedded, audio_codes_embedded_lens = self.embed_audio_tokens(
+                    state.audio_codes_input, audio_tokens_lens=audio_codes_frame_lens
                 )
+                state.audio_codes_mask = get_mask_from_lengths(audio_codes_embedded_lens)
                 if context_tensors.additional_decoder_input is not None:
                     _audio_codes_embedded = torch.cat(
                         [context_tensors.additional_decoder_input, audio_codes_embedded], dim=1
@@ -4758,8 +4767,7 @@ class MagpieTTSModel(ModelPT):
                 state.all_predictions.append(audio_codes_next)
 
                 state.audio_codes_input = torch.cat([state.audio_codes_input, audio_codes_next], dim=-1)  # (B, C, T')
-                state.audio_codes_lens = state.audio_codes_lens + 1
-                state.audio_codes_mask = get_mask_from_lengths(state.audio_codes_lens)
+                audio_codes_frame_lens = audio_codes_frame_lens + self.frame_stacking_factor
 
                 # Check termination condition
                 if self._should_terminate_loop(chunk_state, state.chunk_end_dict, end_of_text, batch_size):
@@ -4767,10 +4775,13 @@ class MagpieTTSModel(ModelPT):
 
                 chunk_state.overall_idx += 1
 
-            predicted_codes = torch.stack(state.all_predictions, dim=-1)
-            predicted_codes = predicted_codes.squeeze(2)
+            predicted_codes = torch.cat(state.all_predictions, dim=-1)  # (B, C, F*T_steps)
+            num_steps = len(state.all_predictions)
             predicted_codes_lens = torch.tensor(
-                [state.chunk_end_dict.get(item_idx, predicted_codes.size(-1)) for item_idx in range(batch_size)],
+                [
+                    state.chunk_end_dict.get(item_idx, num_steps) * self.frame_stacking_factor
+                    for item_idx in range(batch_size)
+                ],
                 device=device,
             )
 

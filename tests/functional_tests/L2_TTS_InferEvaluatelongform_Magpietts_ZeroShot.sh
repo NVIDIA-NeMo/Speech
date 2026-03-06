@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
+TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/NeMo examples/tts/magpietts_inference.py \
     --codecmodel_path /home/TestData/tts/21fps_causal_codecmodel.nemo \
     --datasets_json_path examples/tts/evalset_config.json \
     --datasets an4_val_ci_longform_tiny \
-    --out_dir ./mplf_zs_0 \
+    --out_dir /workspace/NeMo/mplf_zs_0 \
     --batch_size 6 \
     --use_cfg \
     --cfg_scale 2.5 \

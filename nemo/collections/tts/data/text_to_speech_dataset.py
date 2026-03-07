@@ -30,8 +30,9 @@ from nemo.collections.tts.parts.preprocessing.features import Featurizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _read_audio,
     beta_binomial_prior_distribution,
-    chunk_and_tokenize_text_by_sentence,
+    chunk_text_for_inference,
     filter_dataset_by_duration,
+    get_tokenizer_for_language,
     get_weighted_sampler,
     load_audio,
     stack_tensors,
@@ -785,23 +786,25 @@ class MagpieTTSDatasetDPO(MagpieTTSDataset):
         return {"chosen": chosen_collated, "rejected": rejected_collated}
 
 
-class LongFormTTSInferenceDataset(MagpieTTSDataset):
+class ChunkedTTSInferenceDataset(MagpieTTSDataset):
     """
-    Dataset for longform TTS inference with sentence-level text chunking.
+    Unified dataset for TTS inference with automatic text chunking.
 
     Inherits from MagpieTTSDataset to reuse context audio loading, text conditioning,
-    and other preprocessing logic. Adds sentence-level text chunking on top.
+    and other preprocessing logic. Uses language-aware chunking to automatically
+    decide whether to split text into sentences:
+    - Short text (below language threshold): returns single chunk
+    - Long text (above language threshold): returns multiple sentence chunks (multi-chunk)
+
+    Both language (for threshold) and tokenizer are determined per-sample:
+    - Language from manifest's 'language' field
+    - Tokenizer from sample's tokenizer_names or mapped from language
 
     Args:
         dataset_meta: Dataset metadata dictionary (same format as MagpieTTSDataset).
         sample_rate: Audio sample rate.
-        tokenizer_name: Name of the tokenizer to use for sentence chunking.
         codec_model_samples_per_frame: Samples per codec frame.
         eos_id: End-of-sequence token ID.
-        audio_bos_id: Audio BOS token ID (for target audio).
-        audio_eos_id: Audio EOS token ID (for target audio).
-        context_audio_bos_id: Context audio BOS token ID.
-        context_audio_eos_id: Context audio EOS token ID.
         num_audio_codebooks: Number of audio codebooks.
         context_duration_min: Minimum context duration in seconds.
         context_duration_max: Maximum context duration in seconds.
@@ -815,7 +818,6 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
         self,
         dataset_meta: Dict[str, Any],
         sample_rate: int,
-        tokenizer_name: str,
         codec_model_samples_per_frame: int,
         eos_id: int,
         num_audio_codebooks: int,
@@ -844,33 +846,71 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
             dataset_type='test',
             **kwargs,
         )
-        self.tokenizer_name = tokenizer_name
+
+    def _get_tokenizer_name(self, data, language: str = "en") -> str:
+        """Resolve the tokenizer name for a single sample.
+
+        Resolution order:
+        1. ``data.tokenizer_names[0]`` — explicit per-sample list from the
+           dataset config (first entry chosen for determinism).
+        2. Language-based lookup via ``get_tokenizer_for_language(language,
+           available)`` using the keys registered in ``self.text_tokenizer``.
+        3. Hard-coded fallback ``"english_phoneme"`` when no tokenizer object
+           is available at all.
+
+        Args:
+            data: DatasetSample with optional tokenizer_names field.
+            language: Language code from the manifest entry (e.g. ``"en"``).
+
+        Returns:
+            Tokenizer name to use for encoding.
+        """
+        # First try sample's tokenizer_names (from dataset config)
+        if data.tokenizer_names is not None:
+            return data.tokenizer_names[0]  # Use first (deterministic for inference)
+
+        # Fall back to centralized language-based mapping
+        if self.text_tokenizer is not None:
+            available = list(self.text_tokenizer.tokenizers.keys())
+            return get_tokenizer_for_language(language, available)
+
+        return "english_phoneme"
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        Add sentence chunking on top of parent's __getitem__.
+        Add automatic text chunking on top of parent's __getitem__.
+
+        Uses language-aware chunking that automatically decides whether to split:
+        - Short text (below threshold): returns as single chunk
+        - Long text (above threshold): returns as multiple sentence chunks
+
+        Both tokenizer and chunking threshold are determined per-sample based on
+        language and tokenizer configuration.
 
         Returns:
             Dictionary containing all parent fields plus:
                 - idx: Sample index
-                - chunked_tokens: List of tokenized text chunks (per sentence)
+                - chunked_tokens: List of tokenized text chunks (1 for short, N for long)
                 - chunked_tokens_len: List of token lengths
-                - entry: Original manifest entry
         """
-        # Get text for sentence chunking
+        # Get data sample for text and tokenizer info
         data = self.data_samples[idx]
-        text = data.text  # entry.get("normalized_text", entry.get("text", ""))
+        text = data.text
 
         # Call parent to get ALL the context audio, text conditioning, etc.
         example = super().__getitem__(idx)
 
-        # Sentence chunking (longform-specific)
-        chunked_tokens, chunked_tokens_len, _ = chunk_and_tokenize_text_by_sentence(
-            text,
-            self.tokenizer_name,
-            self.text_tokenizer,
-            self.eos_id,
-            language=example['language'],
+        # Get language and tokenizer per-sample
+        language = example["language"]
+        tokenizer_name = self._get_tokenizer_name(data, language)
+
+        # Unified chunking: automatically decides whether to split based on language threshold
+        chunked_tokens, chunked_tokens_len, _ = chunk_text_for_inference(
+            text=text,
+            language=language,
+            tokenizer_name=tokenizer_name,
+            text_tokenizer=self.text_tokenizer,
+            eos_token_id=self.eos_id,
         )
 
         # Handle empty text edge case
@@ -878,7 +918,7 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
             chunked_tokens = [torch.tensor([self.eos_id], dtype=torch.int32)]
             chunked_tokens_len = [1]
 
-        # Add longform-specific fields
+        # Add chunking-related fields
         example['idx'] = idx
         example['chunked_tokens'] = chunked_tokens
         example['chunked_tokens_len'] = chunked_tokens_len
@@ -887,15 +927,18 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
 
     def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Collate function for batching longform samples.
+        Collate function for batching unified inference samples.
 
         Calls parent's collate_fn to handle context audio, text conditioning, etc.,
-        then adds longform-specific fields (chunked_tokens).
+        then adds chunking-related fields (chunked_tokens).
+
+        Handles mixed batches where samples have different numbers of chunks by
+        padding shorter samples with EOS tokens.
         """
         # Call parent's collate_fn to handle all standard fields
         batch_dict = super().collate_fn(batch)
 
-        # Add longform-specific fields
+        # Add chunking-related fields
         indices = []
         chunked_tokens_list = []
         chunked_tokens_lens_list = []
@@ -916,7 +959,7 @@ class LongFormTTSInferenceDataset(MagpieTTSDataset):
             chunked_tokens_list.append(padded_tokens)
             chunked_tokens_lens_list.append(padded_lens)
 
-        # Add longform-specific fields to batch_dict
+        # Add chunking-related fields to batch_dict
         batch_dict['idx'] = indices
         batch_dict['chunked_tokens'] = chunked_tokens_list
         batch_dict['chunked_tokens_lens'] = chunked_tokens_lens_list

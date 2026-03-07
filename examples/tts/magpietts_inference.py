@@ -156,9 +156,9 @@ def run_inference_and_evaluation(
 ) -> Tuple[Optional[float], Optional[float]]:
     """Run inference and optional evaluation on specified datasets.
 
-    Longform inference is automatically detected based on text characteristics
-    when longform_mode="auto" (default). Use longform_mode="always" or "never"
-    for explicit control.
+    Uses unified inference path with automatic text chunking based on
+    per-sample language thresholds. Short texts are processed as single chunks,
+    long texts are automatically split into sentences.
 
     Args:
         model_config: Configuration for loading the model.
@@ -201,8 +201,8 @@ def run_inference_and_evaluation(
         f"{checkpoint_name}_{moe_info}{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
     )
 
-    # Create inference runner (auto-detects longform based on config.longform_mode)
-    logging.info(f"Longform mode: {inference_config.longform_mode}")
+    # Create inference runner (uses unified path with automatic text chunking)
+    logging.info("Using unified inference with automatic text chunking based on language thresholds")
     runner = MagpieInferenceRunner(model, inference_config)
 
     # Tracking metrics across datasets
@@ -462,25 +462,6 @@ def create_argument_parser() -> argparse.ArgumentParser:
         infer_group.add_argument(f"--{field.name}", **extra_args)
     infer_group.add_argument('--batch_size', type=int, default=32)
     infer_group.add_argument('--use_cfg', action='store_true', help='Enable classifier-free guidance')
-    infer_group.add_argument(
-        '--longform_mode',
-        type=str,
-        default='auto',
-        choices=['auto', 'always', 'never'],
-        help='Longform inference mode: auto (detect from text), always, or never',
-    )
-    infer_group.add_argument(
-        '--longform_word_threshold',
-        type=int,
-        default=40,
-        help='Word threshold for auto-detection of longform text',
-    )
-    infer_group.add_argument(
-        '--longform_max_decoder_steps',
-        type=int,
-        default=50000,
-        help='Maximum decoder steps for longform inference',
-    )
 
     # Local transformer / MaskGit arguments
     infer_group.add_argument('--use_local_transformer', action='store_true')
@@ -548,26 +529,15 @@ def main(argv=None):
         parser.error("You must provide either:\n 1. --hparams_files and --checkpoint_files\n 2. --nemo_files")
 
     # Build configurations
-    # Use higher max_decoder_steps for longform inference when mode is 'always'
-    if args.longform_mode == 'always':
-        max_decoder_steps = args.longform_max_decoder_steps
-    elif args.longform_mode == 'auto':
-        # Use longform steps if any text appears long (will be checked in runner)
-        max_decoder_steps = args.longform_max_decoder_steps
-    else:  # 'never'
-        max_decoder_steps = 440
     model_inference_parameters = {}
     for field in fields(ModelInferenceParameters):
-        field = field.name
-        if field == "max_decoder_steps":
-            model_inference_parameters[field] = max_decoder_steps
-            continue
-        arg_from_cmdline = vars(args)[field]
+        field_name = field.name
+        arg_from_cmdline = vars(args)[field_name]
         if arg_from_cmdline is not None:
-            if field in ["estimate_alignment_from_layers", "apply_prior_to_layers"]:
-                model_inference_parameters[field] = parse_layer_list(vars(args)[field])
+            if field_name in ["estimate_alignment_from_layers", "apply_prior_to_layers"]:
+                model_inference_parameters[field_name] = parse_layer_list(arg_from_cmdline)
             else:
-                model_inference_parameters[field] = vars(args)[field]
+                model_inference_parameters[field_name] = arg_from_cmdline
 
     inference_config = InferenceConfig(
         model_inference_parameters=ModelInferenceParameters.from_dict(model_inference_parameters),
@@ -579,8 +549,6 @@ def main(argv=None):
         maskgit_noise_scale=args.maskgit_noise_scale,
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,
-        longform_mode=args.longform_mode,
-        longform_word_threshold=args.longform_word_threshold,
     )
 
     eval_config = EvaluationConfig(

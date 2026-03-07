@@ -253,7 +253,6 @@ class TranscriptionMixin(ABC):
 
                 - Dict[str, List[str/Hypothesis]]
         """
-
         if override_config is None:
             transcribe_cfg = TranscribeConfig(
                 use_lhotse=use_lhotse,
@@ -348,7 +347,6 @@ class TranscriptionMixin(ABC):
         """
         A generator version of `transcribe` function.
         """
-
         if override_config is None:
             override_config = TranscribeConfig()
 

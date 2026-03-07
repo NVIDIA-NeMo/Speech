@@ -569,7 +569,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                     f"but got {type(override_config)}"
                 )
             trcfg = override_config
-            trcfg.timestamps = timestamps
+            if timestamps is not None:
+                trcfg.timestamps = timestamps
 
         if trcfg.enable_chunking:
             # Check if only one audio is provided with string

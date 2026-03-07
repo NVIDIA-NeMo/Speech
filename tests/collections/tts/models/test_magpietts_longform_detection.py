@@ -13,233 +13,183 @@
 # limitations under the License.
 
 """
-Unit tests for MagpieTTSModel longform inference detection.
-"""
+Unit tests for language-aware threshold detection (when to split text for inference).
 
-from unittest.mock import MagicMock
+Uses LanguageThresholds.exceeds_threshold from tts_dataset_utils, which drives
+unified inference chunking (short text = single chunk, long text = sentence chunks).
+"""
 
 import pytest
 
-from nemo.collections.tts.models.magpietts import MagpieTTSModel
+from nemo.collections.tts.parts.utils.tts_dataset_utils import LanguageThresholds
 
-# Get the method once at module level
-_needs_longform_inference = MagpieTTSModel._needs_longform_inference
+
+@pytest.fixture
+def language_thresholds():
+    """Return default LanguageThresholds instance."""
+    return LanguageThresholds()
 
 
 class TestNeedsLongformInference:
-    """Test cases for MagpieTTSModel._needs_longform_inference method."""
-
-    @pytest.fixture
-    def mock_model(self):
-        """Return the _needs_longform_inference method for testing."""
-        return _needs_longform_inference
+    """Test cases for exceeds_threshold (language-aware split decision)."""
 
     # --- English tests (threshold: 45 words) ---
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_english_below_threshold(self, mock_model):
+    def test_english_below_threshold(self, language_thresholds):
         """English text with < 45 words should not trigger longform."""
         text = "Hello world. This is a short sentence."  # 7 words
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is False
+        assert language_thresholds.exceeds_threshold(text, "en") is False
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_english_at_threshold(self, mock_model):
+    def test_english_at_threshold(self, language_thresholds):
         """English text with exactly 45 words should trigger longform."""
-        # Generate exactly 45 words
         text = " ".join(["word"] * 45)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is True
+        assert language_thresholds.exceeds_threshold(text, "en") is True
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_english_above_threshold(self, mock_model):
+    def test_english_above_threshold(self, language_thresholds):
         """English text with > 45 words should trigger longform."""
         text = " ".join(["word"] * 50)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is True
+        assert language_thresholds.exceeds_threshold(text, "en") is True
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_english_boundary_44_words(self, mock_model):
+    def test_english_boundary_44_words(self, language_thresholds):
         """English text with 44 words (one below threshold) should not trigger longform."""
         text = " ".join(["word"] * 44)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is False
+        assert language_thresholds.exceeds_threshold(text, "en") is False
 
     # --- Spanish tests (threshold: 73 words) ---
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_spanish_below_threshold(self, mock_model):
+    def test_spanish_below_threshold(self, language_thresholds):
         """Spanish text with < 73 words should not trigger longform."""
         text = " ".join(["palabra"] * 72)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "es")
-        assert result is False
+        assert language_thresholds.exceeds_threshold(text, "es") is False
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_spanish_at_threshold(self, mock_model):
-        """Spanish text with >= 73 words should trigger longform with warning."""
+    def test_spanish_at_threshold(self, language_thresholds):
+        """Spanish text with >= 73 words should trigger longform."""
         text = " ".join(["palabra"] * 73)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "es")
-        assert result is True
+        assert language_thresholds.exceeds_threshold(text, "es") is True
 
     # --- French tests (threshold: 69 words) ---
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_french_at_threshold(self, mock_model):
+    def test_french_at_threshold(self, language_thresholds):
         """French text with >= 69 words should trigger longform."""
         text = " ".join(["mot"] * 69)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "fr")
-        assert result is True
+        assert language_thresholds.exceeds_threshold(text, "fr") is True
 
     # --- German tests (threshold: 50 words) ---
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_german_at_threshold(self, mock_model):
+    def test_german_at_threshold(self, language_thresholds):
         """German text with >= 50 words should trigger longform."""
         text = " ".join(["wort"] * 50)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "de")
-        assert result is True
+        assert language_thresholds.exceeds_threshold(text, "de") is True
 
     # --- Italian tests (threshold: 53 words) ---
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_italian_at_threshold(self, mock_model):
+    def test_italian_at_threshold(self, language_thresholds):
         """Italian text with >= 53 words should trigger longform."""
         text = " ".join(["parola"] * 53)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "it")
-        assert result is True
+        assert language_thresholds.exceeds_threshold(text, "it") is True
 
     # --- Vietnamese tests (threshold: 50 words) ---
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_vietnamese_at_threshold(self, mock_model):
+    def test_vietnamese_at_threshold(self, language_thresholds):
         """Vietnamese text with >= 50 words should trigger longform."""
         text = " ".join(["từ"] * 50)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "vi")
-        assert result is True
+        assert language_thresholds.exceeds_threshold(text, "vi") is True
 
-    # --- Mandarin tests (threshold: 100 characters, but always returns False) ---
+    # --- Mandarin tests (threshold: 100 characters) ---
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_mandarin_below_threshold(self, mock_model):
-        """Mandarin text below character threshold should not trigger longform."""
+    def test_mandarin_below_threshold(self, language_thresholds):
+        """Mandarin text below character threshold should not trigger split."""
         text = "你" * 99  # 99 characters
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "zh")
-        assert result is False
+        assert language_thresholds.exceeds_threshold(text, "zh") is False
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_mandarin_at_threshold_returns_false(self, mock_model):
-        """Mandarin text at/above threshold should still return False (not supported)."""
-        text = "你" * 100  # 100 characters - at threshold
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "zh")
-        # Mandarin longform is not supported, should return False with warning
-        assert result is False
+    def test_mandarin_at_threshold(self, language_thresholds):
+        """Mandarin text at threshold (100 chars) should trigger split."""
+        text = "你" * 100
+        assert language_thresholds.exceeds_threshold(text, "zh") is True
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_mandarin_above_threshold_returns_false(self, mock_model):
-        """Mandarin text above threshold should still return False (not supported)."""
-        text = "你" * 150  # 150 characters - above threshold
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "zh")
-        # Mandarin longform is not supported, should return False
-        assert result is False
+    def test_mandarin_above_threshold(self, language_thresholds):
+        """Mandarin text above threshold should trigger split."""
+        text = "你" * 150
+        assert language_thresholds.exceeds_threshold(text, "zh") is True
 
     # --- Edge cases ---
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_empty_text(self, mock_model):
+    def test_empty_text(self, language_thresholds):
         """Empty text should not trigger longform."""
-        text = ""
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is False
+        assert language_thresholds.exceeds_threshold("", "en") is False
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_whitespace_only(self, mock_model):
+    def test_whitespace_only(self, language_thresholds):
         """Whitespace-only text should not trigger longform."""
-        text = "   \t\n  "
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is False
+        assert language_thresholds.exceeds_threshold("   \t\n  ", "en") is False
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_single_long_word(self, mock_model):
+    def test_single_long_word(self, language_thresholds):
         """Single very long word should count as 1 word."""
         text = "supercalifragilisticexpialidocious"  # 1 word
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is False
+        assert language_thresholds.exceeds_threshold(text, "en") is False
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_text_with_punctuation(self, mock_model):
+    def test_text_with_punctuation(self, language_thresholds):
         """Words with punctuation should be counted correctly."""
-        # 45 "word." entries - split() will treat "word." as one word
-        text = "word. " * 45
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is True
+        text = "word. " * 45  # 45 "word." tokens
+        assert language_thresholds.exceeds_threshold(text, "en") is True
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_text_with_multiple_spaces(self, mock_model):
+    def test_text_with_multiple_spaces(self, language_thresholds):
         """Multiple spaces between words should not affect word count."""
-        # 10 words with multiple spaces
         text = "one  two   three    four     five      six       seven        eight         nine          ten"
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is False  # 10 words < 45 threshold
+        assert language_thresholds.exceeds_threshold(text, "en") is False  # 10 words < 45
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_realistic_english_long_text(self, mock_model):
+    def test_realistic_english_long_text(self, language_thresholds):
         """Test with realistic long English text that should trigger longform."""
         text = """
-        The quick brown fox jumps over the lazy dog. This sentence contains every 
-        letter of the alphabet. Sphinx of black quartz, judge my vow. Pack my box 
-        with five dozen liquor jugs. How vexingly quick daft zebras jump. The five 
+        The quick brown fox jumps over the lazy dog. This sentence contains every
+        letter of the alphabet. Sphinx of black quartz, judge my vow. Pack my box
+        with five dozen liquor jugs. How vexingly quick daft zebras jump. The five
         boxing wizards jump quickly. Jackdaws love my big sphinx of quartz. The job
         requires extra pluck and zeal from every young wage earner. A wizard's job
         is to vex chumps quickly in fog.
         """
-        # Count: ~75 words (above threshold)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is True
+        assert language_thresholds.exceeds_threshold(text, "en") is True
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_realistic_english_short_text(self, mock_model):
+    def test_realistic_english_short_text(self, language_thresholds):
         """Test with realistic short English text that should not trigger longform."""
         text = "Hello, how are you today? I hope you're having a great day."
-        # Count: ~12 words (below threshold)
-        mock_self = MagicMock()
-        result = mock_model(mock_self, text, "en")
-        assert result is False
+        assert language_thresholds.exceeds_threshold(text, "en") is False

@@ -28,6 +28,6 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --checkpoint_files /home/TestData/tts/2602_FrameStacking4x/frame-stacking-4x-english-nanocodec.ckpt \
     --run_evaluation \
     --clean_up_disk \
-    --cer_target 0.12 \
+    --cer_target 0.11 \
     --ssim_target 0.6 \
     --use_local_transformer

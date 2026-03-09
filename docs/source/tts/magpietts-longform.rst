@@ -211,24 +211,24 @@ Configuration Dataclasses
 #########################
 
 
-``LongformConfig``
-------------------
+``ChunkedInferenceConfig``
+------------------------
 
 Immutable tuning parameters (set in model):
 
 .. literalinclude:: ../../../nemo/collections/tts/models/magpietts.py
    :language: python
-   :pyobject: LongformConfig
+   :pyobject: ChunkedInferenceConfig
 
 
-``LongformChunkState``
+``ChunkState``
 ----------------------
 
 Mutable state passed between chunk iterations:
 
 .. literalinclude:: ../../../nemo/collections/tts/models/magpietts.py
    :language: python
-   :pyobject: LongformChunkState
+   :pyobject: ChunkState
 
 
 Best Practices

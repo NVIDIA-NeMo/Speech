@@ -3,6 +3,8 @@ NVIDIA NeMo Speech Developer Docs
 
 `NVIDIA NeMo Speech <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
 
+.. raw:: html
+
    <style>
    .task-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin: 24px 0; }
    .task-card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; text-decoration: none !important; color: inherit !important; transition: box-shadow 0.2s; }

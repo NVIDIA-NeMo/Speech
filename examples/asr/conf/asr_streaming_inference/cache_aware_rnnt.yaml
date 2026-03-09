@@ -47,7 +47,8 @@ itn:
 # Neural Machine Translation Configuration
 # ================================
 nmt:
-  model_name: "utter-project/EuroLLM-1.7B-Instruct"  # vLLM-supported model name
+  # model_name: "utter-project/EuroLLM-1.7B-Instruct"  # vLLM-supported model name
+  model_name: "Qwen/Qwen3-8B"  # vLLM-supported model name
   source_language: "English"                         # Source language code
   target_language: "Russian"                         # Target language code
   waitk: -1                                          # Max allowed lag (in words) between ASR transcript and translation; -1 disables it and uses only the longest common prefix between current and previous translations.
@@ -57,13 +58,23 @@ nmt:
   llm_params:                                        # See https://docs.vllm.ai/en/v0.8.1/api/offline_inference/llm.html for more details
     dtype: "auto"                                    # Compute precision
     seed: 42                                         # The seed to initialize the random number generator for sampling
-    gpu_memory_utilization: 0.7
+    gpu_memory_utilization: 0.75
+  # sampling_params:                                   # See https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html for more details
+  #   max_tokens: 100                                  # Maximum number of tokens to generate with LLM
+  #   temperature: 0.0                                 # LLM sampling temperature, default for translation is 0 (greedy)
+  #   top_p: 0.9                                       # The cumulative probability threshold for nucleus sampling
+    # seed: 42                                         # The seed to initialize the random number generator for sampling
   sampling_params:                                   # See https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html for more details
     max_tokens: 100                                  # Maximum number of tokens to generate with LLM
-    temperature: 0.0                                 # LLM sampling temperature, default for translation is 0 (greedy)
-    top_p: 0.9                                       # The cumulative probability threshold for nucleus sampling
+    temperature: 0.7                                 # LLM sampling temperature, default for translation is 0 (greedy)
+    top_p: 0.8                                       # The cumulative probability threshold for nucleus sampling
+    top_k: 20                                       # The number of top tokens to sample from
+    min_p: 0                                        # The minimum probability threshold for sampling
+    presence_penalty: 1.5                           # The presence penalty for sampling
     seed: 42                                         # The seed to initialize the random number generator for sampling
-
+    stop:
+      - "<|im_end|>"
+      - "\u200d"
 
 # ========================
 # Confidence estimation

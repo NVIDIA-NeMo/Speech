@@ -289,6 +289,8 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             current_partial = step_output.partial_translation
         else:
             current_partial = ""
+
+        print(f"Current partial: {current_partial}")
         
         # Tokenize by whitespace (word-level tokens)
         prev_tokens = prev_partial.split() if prev_partial else []

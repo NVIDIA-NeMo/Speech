@@ -470,7 +470,13 @@ class MagpieTTSModel(ModelPT):
 
         if self.legacy_text_conditioning:
             tc_tokenizer = self.tokenizer.tokenizers[self.text_conditioning_tokenizer_name]
-            self.context_text_embedding = nn.Embedding(tc_tokenizer.vocab_size, cfg.embedding_dim)
+            tc_vocab_size = tc_tokenizer.vocab_size
+            # In transformers v5+, T5Tokenizer is a fast tokenizer whose vocab_size includes
+            # extra_id sentinel tokens (e.g. 32100 = 32000 + 100). Subtract them to match
+            # the vocab size used when training legacy checkpoints.
+            if hasattr(tc_tokenizer, '_extra_ids'):
+                tc_vocab_size -= tc_tokenizer._extra_ids
+            self.context_text_embedding = nn.Embedding(tc_vocab_size, cfg.embedding_dim)
 
         # This needs to happen after super().__init__()
         self._codec_model = codec_model

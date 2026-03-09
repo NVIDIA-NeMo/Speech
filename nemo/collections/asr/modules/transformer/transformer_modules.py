@@ -18,12 +18,12 @@ import math
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
-from torch.nn.functional import gelu
 
 from nemo.collections.common.parts import form_attention_mask
 
-__all__ = ["TransformerEmbedding", "AttentionBridge"]
+__all__ = ["TransformerEmbedding", "AttentionBridge", "PositionWiseFF"]
 
 
 class FixedPositionalEncoding(nn.Module):
@@ -231,15 +231,19 @@ class PositionWiseFF(nn.Module):
             net, usually is (4-8 x hidden_size) in the papers
         ffn_dropout: probability of dropout applied to net output
         hidden_act: activation function used between two linear layers
+        use_bias: whether to use bias in the linear layers
     """
 
-    def __init__(self, hidden_size, inner_size, ffn_dropout=0.0, hidden_act="relu"):
+    def __init__(self, hidden_size, inner_size, ffn_dropout=0.0, hidden_act="relu", use_bias=True):
         super().__init__()
-        self.dense_in = nn.Linear(hidden_size, inner_size)
-        self.dense_out = nn.Linear(inner_size, hidden_size)
+        self.dense_in = nn.Linear(hidden_size, inner_size, bias=use_bias)
+        self.dense_out = nn.Linear(inner_size, hidden_size, bias=use_bias)
         self.layer_dropout = nn.Dropout(ffn_dropout)
-        ACT2FN = {"gelu": gelu, "relu": torch.relu}
-        self.act_fn = ACT2FN[hidden_act]
+        if isinstance(hidden_act, str):
+            if not hasattr(F, hidden_act):
+                raise ValueError(f"Activation function {hidden_act} not found in torch.nn.functional")
+            act_fn = getattr(F, hidden_act)
+        self.act_fn = act_fn
 
     def forward(self, hidden_states):
         output_states = self.dense_in(hidden_states)

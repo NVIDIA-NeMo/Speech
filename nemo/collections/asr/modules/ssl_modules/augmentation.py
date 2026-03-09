@@ -239,7 +239,7 @@ class MultiSpeakerNoiseAugmentation(SpeakerNoiseAugmentation):
             noisy_audio_len=noise_len,
         )
 
-    def get_noise_segments(self, batch_idx, batch, segment_lens, num_speakers, mode):
+    def get_noise_segments(self, batch_idx, batch: AudioNoiseBatch, segment_lens, num_speakers, mode):
         audio_signal = batch.audio
         audio_lengths = batch.audio_len
         noise = batch.noise

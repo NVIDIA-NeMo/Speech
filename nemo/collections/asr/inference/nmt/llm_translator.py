@@ -19,7 +19,11 @@ import string
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplate, PromptTemplate
+from nemo.collections.asr.inference.nmt.prompts import (
+    EuroLLMTranslatorPromptTemplate,
+    PromptTemplate,
+    Qwen3TranslatorPromptTemplate,
+)
 
 try:
     from vllm import LLM, SamplingParams
@@ -32,7 +36,10 @@ from nemo.utils import logging
 
 EURO_LLM_INSTRUCT_SMALL = "utter-project/EuroLLM-1.7B-Instruct"
 EURO_LLM_INSTRUCT_LARGE = "utter-project/EuroLLM-9B-Instruct"
-SUPPORTED_TRANSLATION_MODELS = [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]
+QWEN_3_5_9B = "Qwen/Qwen3.5-9B"
+QWEN_3_8B = "Qwen/Qwen3-8B"
+QWEN_3_4B = "Qwen/Qwen3-4B-Instruct-2507"
+SUPPORTED_TRANSLATION_MODELS = [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE, QWEN_3_5_9B, QWEN_3_8B, QWEN_3_4B]
 
 
 class LLMTranslator:
@@ -137,19 +144,23 @@ class LLMTranslator:
         raise ValueError(f"Unsupported device: {device}")
 
     @staticmethod
-    def get_prompt_template(model_name: str) -> PromptTemplate:
+    def get_prompt_template(model_name: str) -> type[PromptTemplate]:
         """
         Returns prompt template for the LLM model.
         Args:
             model_name: (str) name of the model to get prompt template for
         Returns:
-            PromptTemplate: prompt template for the LLM model
+            PromptTemplate: prompt template class for the LLM model
         Raises:
             ValueError: if model is not supported for translation
         """
-        if model_name in [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]:
+        name = str(model_name).strip()
+        # Qwen3 models: use template with think-disabled suffix (<think>\\n\\n</think>\\n\\n)
+        if "Qwen3" in name or "Qwen/Qwen3" in name and not "Instruct" in name:
+            logging.info(f"Using Qwen3TranslatorPromptTemplate for model: {name}")
+            return Qwen3TranslatorPromptTemplate
+        if name in [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE, QWEN_3_4B]:
             return EuroLLMTranslatorPromptTemplate
-
         raise ValueError(
             f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}"
         )

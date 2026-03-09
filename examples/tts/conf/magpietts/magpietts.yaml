@@ -80,7 +80,7 @@ model:
     #     pretrained_model: "google/byt5-small"
 
   train_ds:
-    dataset:
+    datasets:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDataset
       dataset_meta: ${train_ds_meta}
       weighted_sampling_steps_per_epoch: ${weighted_sampling_steps_per_epoch}
@@ -93,8 +93,11 @@ model:
       drop_last: true
       pin_memory: true
 
+  # Non-lhotse validation uses a single dataloader. All dataset_meta entries are mixed
+  # together, so validation metrics are logged jointly. For per-dataset validation
+  # metrics, use the lhotse config (magpietts_lhotse.yaml) with separate datasets entries.
   validation_ds:
-    dataset:
+    datasets:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDataset
       dataset_meta: ${val_ds_meta}
       min_duration: 0.2

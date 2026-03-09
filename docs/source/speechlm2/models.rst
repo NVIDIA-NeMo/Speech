@@ -99,6 +99,24 @@ This model is particularly useful for:
 * Duplex systems where text responses are needed instead of speech
 * Applications requiring transcript generation from spoken dialogue
 
+
+NemotronVoiceChat
+^^^^^^^^^^^^^^^^^
+
+NemotronVoiceChat is an **inference-only**, end-to-end Duplex Speech-to-Speech pipeline. It achieves full-duplex conversational capabilities by seamlessly merging the `DuplexSTTModel` with the `DuplexEARTTS` model. 
+
+Because it is designed exclusively for evaluation, offline inference, and validation workflows (no training step is implemented), it is highly optimized for executing the full perception-generation-synthesis loop.
+
+Key components:
+
+* **DuplexSTTModel**: Handles the streaming audio perception and text response generation.
+* **DuplexEARTTS**: Serves as the autoregressive speech decoder, generating high-fidelity audio from the STT model's text tokens in a streamable fashion.
+
+This model is particularly useful for:
+* End-to-end evaluation of the complete speech-to-speech pipeline.
+* Offline speech-to-speech inference workflows.
+
+
 Model Components
 ----------------
 
@@ -246,6 +264,9 @@ All models in the speechlm2 collection can be instantiated from pretrained check
 
     # Load DuplexEARTTS
     ear_tts_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
+
+    # Load NemotronVoiceChat (Inference Only)
+    voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("path/to/checkpoint")
 
 Model Configuration
 -------------------

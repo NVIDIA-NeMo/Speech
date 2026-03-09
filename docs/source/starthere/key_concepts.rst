@@ -49,9 +49,9 @@ NeMo supports several speech AI tasks, each solving a different problem:
    * - **Speech Enhancement**
      - Improves audio quality (removes noise)
      - Preprocessing noisy recordings
-   * - **SpeechLM2**
-     - Augments LLMs with speech understanding
-     - Audio-aware chatbots, speech translation
+   * - **SpeechLM**
+     - Augments LLMs with audio understanding
+     - Audio-aware agents, speech translation, reasoning about audio
 
 
 Encoder Architectures

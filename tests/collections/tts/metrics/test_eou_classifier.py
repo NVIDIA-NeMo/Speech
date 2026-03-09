@@ -71,7 +71,7 @@ def test_classification_matches_expected_class(classifier, eou_type, audio_path,
     assert result.eou_type == eou_type, (
         f"Expected {eou_type.value!r} but got {result.eou_type.value!r} "
         f"(trailing={result.trailing_duration:.3f}s, rms_ratio={result.trail_rms_ratio:.4f}, "
-        f"last_conf={result.last_token_confidence:.3f})"
+        f"last_conf={result.alignment.last_token_confidence:.3f})"
     )
 
 
@@ -101,20 +101,20 @@ def test_classification_result_structure(classifier):
     result = classifier.classify(audio_path, text)
 
     assert isinstance(result.eou_type, EoUType)
-    assert result.speech_end >= 0.0
+    assert result.alignment.speech_end >= 0.0
     assert result.audio_duration > 0.0
     assert result.trailing_duration >= 0.0
-    assert result.speech_end <= result.audio_duration + 0.5  # small tolerance for frame rounding
+    assert result.alignment.speech_end <= result.audio_duration + 0.5  # small tolerance for frame rounding
     assert 0.0 <= result.trail_rms_ratio
-    assert result.last_token_duration >= 0.0
-    assert 0.0 <= result.last_token_confidence <= 1.0
-    assert isinstance(result.last_token, str)
-    assert result.last_token_gap >= 0.0
-    assert 0.0 <= result.last_two_phoneme_avg_confidence <= 1.0
+    assert result.alignment.last_token_duration >= 0.0
+    assert 0.0 <= result.alignment.last_token_confidence <= 1.0
+    assert isinstance(result.alignment.last_token, str)
+    assert result.alignment.last_token_gap >= 0.0
+    assert 0.0 <= result.alignment.last_two_token_avg_confidence <= 1.0
 
-    assert isinstance(result.token_segments, list)
-    assert len(result.token_segments) > 0
-    for seg in result.token_segments:
+    assert isinstance(result.alignment.token_segments, list)
+    assert len(result.alignment.token_segments) > 0
+    for seg in result.alignment.token_segments:
         assert isinstance(seg, TokenSegment)
         assert seg.end >= seg.start
         assert seg.duration >= 0.0
@@ -141,9 +141,9 @@ def test_batch_matches_unbatched(classifier):
             f"trailing_duration mismatch for {name!r}: "
             f"batch={batch_results[i].trailing_duration:.6f}, single={single_result.trailing_duration:.6f}"
         )
-        assert abs(batch_results[i].speech_end - single_result.speech_end) < 1e-4, (
+        assert abs(batch_results[i].alignment.speech_end - single_result.alignment.speech_end) < 1e-4, (
             f"speech_end mismatch for {name!r}: "
-            f"batch={batch_results[i].speech_end:.6f}, single={single_result.speech_end:.6f}"
+            f"batch={batch_results[i].alignment.speech_end:.6f}, single={single_result.alignment.speech_end:.6f}"
         )
 
 

@@ -21,6 +21,7 @@ import pprint
 import string
 import tempfile
 import time
+from collections import Counter
 from functools import partial
 from typing import Union
 
@@ -724,8 +725,6 @@ def compute_global_metrics(
     # EoU classification rates
     eou_types = [m.get('eou_type') for m in filewise_metrics]
     if eou_types[0] is not None:
-        from collections import Counter
-
         eou_counts = Counter(eou_types)
         for label in EoUType.error_types():
             avg_metrics[f'eou_{label}_rate'] = eou_counts.get(label, 0) / n

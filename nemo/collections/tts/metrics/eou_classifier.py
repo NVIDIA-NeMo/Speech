@@ -48,8 +48,6 @@ from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 
 from nemo.collections.asr.parts.utils.aligner_utils import viterbi_decoding
 
-SR = 16000
-
 # Spelling patterns at end of a word that produce sibilant fricatives
 # (/s/, /z/, /ʃ/, /tʃ/) whose noise-like energy tends to extend past the
 # forced-alignment boundary.
@@ -87,18 +85,27 @@ class TokenSegment:
 
 
 @dataclass
-class EoUClassification:
-    eou_type: EoUType
-    speech_end: float  # seconds
-    audio_duration: float  # seconds
-    trailing_duration: float  # seconds
-    trail_rms_ratio: float
-    last_token_duration: float
+class AlignmentFeatures:
+    """Information about the end of the utterance, derived from forced alignment."""
+
+    speech_end: float  # seconds — end of the last aligned token
+    last_token_duration: float  # seconds
     last_token_confidence: float
     last_token: str
     last_token_gap: float  # blank gap (seconds) between last and second-to-last speech token
-    last_two_phoneme_avg_confidence: float  # average confidence of last two alphanumeric tokens
+    last_two_token_avg_confidence: float  # average confidence of last two alphanumeric tokens
     token_segments: list[TokenSegment] = field(default_factory=list)
+
+
+@dataclass
+class EoUClassification:
+    """Classification of the end of the utterance along with associated metadata."""
+
+    eou_type: EoUType
+    alignment: AlignmentFeatures
+    audio_duration: float  # seconds
+    trailing_duration: float  # seconds
+    trail_rms_ratio: float
 
 
 class EoUClassifier:
@@ -110,7 +117,7 @@ class EoUClassifier:
     for batched inference with better throughput.
     """
 
-    def __init__(self, model_name: str = "facebook/wav2vec2-base-960h", sr: int = SR, device: str | None = None):
+    def __init__(self, model_name: str = "facebook/wav2vec2-base-960h", sr: int = 16000, device: str | None = None):
         self.sr = sr
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -137,13 +144,13 @@ class EoUClassifier:
                     tokens.append(self.vocab[char])
         return tokens
 
-    def extract_eou_features(
+    def extract_alignment_features(
         self,
         log_probs: torch.Tensor,
         token_ids_with_blanks: list[int],
         alignment_path: list[int],
-    ) -> dict:
-        """Extract end-of-utterance features from per-frame log_probs and a Viterbi alignment path.
+    ) -> AlignmentFeatures:
+        """Extract alignment-derived end-of-utterance features from per-frame log_probs and a Viterbi alignment path.
 
         Args:
             log_probs: (T, V) log-probability tensor for a single sample.
@@ -151,7 +158,7 @@ class EoUClassifier:
             alignment_path: Viterbi path indices into token_ids_with_blanks.
 
         Returns:
-            Dict with information about when the speech ended, what the last token was,
+            AlignmentFeatures with information about when the speech ended, what the last token was,
             what its confidence was, and detailed per-segment information.
         """
         T = log_probs.shape[0]
@@ -223,15 +230,14 @@ class EoUClassifier:
 
         # No tokens were aligned — return zeroed-out defaults
         if not segments:
-            return {
-                "speech_end": 0.0,
-                "last_token_duration": 0.0,
-                "last_token_confidence": 0.0,
-                "last_token": "",
-                "last_token_gap": 0.0,
-                "last_two_phoneme_avg_confidence": 0.0,
-                "token_segments": [],
-            }
+            return AlignmentFeatures(
+                speech_end=0.0,
+                last_token_duration=0.0,
+                last_token_confidence=0.0,
+                last_token="",
+                last_token_gap=0.0,
+                last_two_token_avg_confidence=0.0,
+            )
 
         last = segments[-1]
 
@@ -245,7 +251,7 @@ class EoUClassifier:
                 break
 
         # Measure the blank gap between the last speech token and the preceding token. A
-        # large gap (especially with low final token  confidence) tends to indicate a
+        # large gap (especially with low final token confidence) tends to indicate a
         # noisy ending where alignment has broken down.
         last_idx = segments.index(last_speech)
         if last_idx > 0:
@@ -259,27 +265,26 @@ class EoUClassifier:
         last_two_alnum = [s for s in segments if s.token.isalnum()][-2:]
         last_two_avg = float(np.mean([s.confidence for s in last_two_alnum]))
 
-        return {
-            "speech_end": last.end,
-            "last_token_duration": last_speech.duration,
-            "last_token_confidence": last_speech.confidence,
-            "last_token": last_speech.token,
-            "last_token_gap": last_token_gap,
-            "last_two_phoneme_avg_confidence": last_two_avg,
-            "token_segments": segments,
-        }
+        return AlignmentFeatures(
+            speech_end=last.end,
+            last_token_duration=last_speech.duration,
+            last_token_confidence=last_speech.confidence,
+            last_token=last_speech.token,
+            last_token_gap=last_token_gap,
+            last_two_token_avg_confidence=last_two_avg,
+            token_segments=segments,
+        )
 
-    def classify_from_features(self, samples: np.ndarray, text: str, info: dict) -> EoUClassification:
-        """Apply the EoU decision tree given audio samples and forced-alignment info."""
+    def classify_from_alignment(
+        self, samples: np.ndarray, text: str, features: AlignmentFeatures
+    ) -> EoUClassification:
+        """Apply the EoU decision tree given audio samples and forced-alignment features."""
         audio_dur = len(samples) / self.sr
-        speech_end = info["speech_end"]
-        trailing = audio_dur - speech_end
+        trailing = audio_dur - features.speech_end
         last_letter_pad = 0.15 if _ends_with_sibilant(text) else 0.1
-        trail_start = int((speech_end + last_letter_pad) * self.sr)
+        trail_start = int((features.speech_end + last_letter_pad) * self.sr)
         trailing_audio = samples[trail_start:]
 
-        # Compute RMS energy ratio between the trailing region and the full
-        # utterance — a high ratio means the tail is loud
         if len(trailing_audio) > 0:
             rms_trail = np.sqrt(np.mean(trailing_audio**2))
             rms_full = np.sqrt(np.mean(samples**2))
@@ -287,42 +292,27 @@ class EoUClassifier:
         else:
             trail_rms_ratio = 0.0
 
-        last_dur = info["last_token_duration"]
-        last_conf = info["last_token_confidence"]
+        last_conf = features.last_token_confidence
         if last_conf < 0.01:
-            last_conf = info["last_two_phoneme_avg_confidence"]
-        last_tok = info["last_token"]
-        last_gap = info["last_token_gap"]
-        last_two_avg = info["last_two_phoneme_avg_confidence"]
-        token_segments = info["token_segments"]
+            last_conf = features.last_two_token_avg_confidence
 
         # --- Decision tree for EoU classification ---
         conf_threshold = 0.07
-        # Short tail with low confidence and not due to gap (which could indicate noise) --> cutoff
-        if trailing < 0.1 and last_conf < conf_threshold and not last_gap > 0.4:
+        if trailing < 0.1 and last_conf < conf_threshold and features.last_token_gap <= 0.4:
             eou_type = EoUType.CUTOFF
-        # Long noisy tail OR a gap between last two segments and low confidence --> noisy
-        elif (trailing > 0.15 and trail_rms_ratio > 0.4) or (last_gap > 0.4 and last_conf < 0.15):
+        elif (trailing > 0.2 and trail_rms_ratio > 0.4) or (features.last_token_gap > 0.4 and last_conf < 0.15):
             eou_type = EoUType.NOISE
-        # Long tail without much energy (or it would be captured by the previous condition) --> silence
         elif trailing > 1.4:
             eou_type = EoUType.SILENCE
         else:
-            # everything else --> good
             eou_type = EoUType.GOOD
 
         return EoUClassification(
             eou_type=eou_type,
-            speech_end=speech_end,
+            alignment=features,
             audio_duration=audio_dur,
             trailing_duration=trailing,
             trail_rms_ratio=trail_rms_ratio,
-            last_token_duration=last_dur,
-            last_token_confidence=last_conf,
-            last_token=last_tok,
-            last_token_gap=last_gap,
-            last_two_phoneme_avg_confidence=last_two_avg,
-            token_segments=token_segments,
         )
 
     def classify(
@@ -342,7 +332,7 @@ class EoUClassifier:
         """
         return self.classify_batch([(audio, text)])[0]
 
-    def _forced_align_batch(self, audios: list[np.ndarray], texts: list[str]) -> list[dict]:
+    def _forced_align_batch(self, audios: list[np.ndarray], texts: list[str]) -> list[AlignmentFeatures]:
         """Run forced alignment on a batch.
 
         Args:
@@ -350,7 +340,7 @@ class EoUClassifier:
             texts: Corresponding transcripts.
 
         Returns:
-            List of alignment-info dicts (same format as _forced_align).
+            List of AlignmentFeatures, one per input audio.
         """
         B = len(audios)
 
@@ -416,12 +406,14 @@ class EoUClassifier:
 
         alignments = viterbi_decoding(log_probs_padded, y_batch, T_batch, U_batch)
 
-        # --- Extract EoU features ---
-        results: list[dict] = []
+        # --- Extract alignment features ---
+        results: list[AlignmentFeatures] = []
         for i in range(B):
             sample_log_probs = log_probs_all[i, : feat_lengths[i]]
-            info = self.extract_eou_features(sample_log_probs, all_token_ids_with_blanks[i], alignments[i])
-            results.append(info)
+            alignment_info = self.extract_alignment_features(
+                sample_log_probs, all_token_ids_with_blanks[i], alignments[i]
+            )
+            results.append(alignment_info)
 
         return results
 
@@ -451,31 +443,6 @@ class EoUClassifier:
 
         results: list[EoUClassification] = []
         for i in range(len(audios)):
-            results.append(self.classify_from_features(audios[i], texts[i], infos[i]))
+            results.append(self.classify_from_alignment(audios[i], texts[i], infos[i]))
 
         return results
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Classify end-of-utterance audio quality")
-    parser.add_argument("audio", help="Path to audio file")
-    parser.add_argument("text", help="Target text")
-    args = parser.parse_args()
-
-    classifier = EoUClassifier()
-    result = classifier.classify(args.audio, args.text)
-    print(f"eou_type:           {result.eou_type}")
-    print(f"speech_end:         {result.speech_end:.3f}s")
-    print(f"audio_duration:     {result.audio_duration:.3f}s")
-    print(f"trailing_duration:  {result.trailing_duration:.3f}s")
-    print(f"trail_rms_ratio:    {result.trail_rms_ratio:.4f}")
-    print(f"last_token_dur:     {result.last_token_duration:.3f}s")
-    print(f"last_token_conf:    {result.last_token_confidence:.3f}")
-    print(f"last_token_gap:     {result.last_token_gap:.3f}s")
-    print(f"last_2_ph_avg_conf: {result.last_two_phoneme_avg_confidence:.3f}")
-    print(f"last_token:         {result.last_token!r}")
-    print(f"\nToken segments ({len(result.token_segments)}):")
-    for seg in result.token_segments:
-        print(f"  {seg.token!r:<6} {seg.start:.3f}-{seg.end:.3f}s  dur={seg.duration:.3f}s  conf={seg.confidence:.3f}")

@@ -14,7 +14,9 @@
 
 import os
 import tempfile
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 from lhotse import CutSet, MonoCut, SupervisionSegment
@@ -567,6 +569,94 @@ class TestEncDecMultiTaskModel:
         model.read_audio_file(audio_file, delay=0.0, model_stride_in_secs=40.0, meta_data=meta)
         outputs = model.transcribe()
         assert isinstance(outputs, Hypothesis)
+
+    @pytest.mark.unit
+    def test_FrameBatchMultiTaskAED_skips_too_short_tail_chunk(self, monkeypatch):
+        class DummyPreprocessor:
+            def __init__(self):
+                self._cfg = {'window_stride': 0.01}
+
+            def to(self, device):
+                return self
+
+        class DummyPrompt:
+            PROMPT_LANGUAGE_SLOT = "prompt_language"
+
+            def encode_dialog(self, turns):
+                return {"context_ids": [1, 2, 3]}
+
+        class DummyTokenizer:
+            vocabulary = ["a", "b"]
+
+        class DummyEncoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.probe = torch.nn.Parameter(torch.zeros(1))
+
+            def forward(self, audio_signal, length):
+                return audio_signal, length
+
+        class DummyModel:
+            def __init__(self):
+                self.timestamps_asr_model = None
+                self.device = torch.device("cpu")
+                self.decoder = None
+                self.tokenizer = DummyTokenizer()
+                self.prompt_format = "canary"
+                self.prompt = DummyPrompt()
+                self.preprocessor = SimpleNamespace(log=False)
+                self.encoder = DummyEncoder()
+                self._cfg = DictConfig(
+                    {
+                        'sample_rate': 16000,
+                        'preprocessor': {'window_stride': 0.01, 'features': 4},
+                        'encoder': {'subsampling_factor': 2},
+                    }
+                )
+
+            def predict_step(self, batch_input, has_processed_signal=True, timestamps=False):
+                raise NotImplementedError
+
+        monkeypatch.setattr(
+            "nemo.collections.asr.parts.utils.streaming_utils.ASRModel.from_config_dict",
+            lambda cfg: DummyPreprocessor(),
+        )
+
+        asr_model = DummyModel()
+        model = FrameBatchMultiTaskAED(asr_model, batch_size=2)
+        model.min_input_frames = 3
+        model.input_tokens = model.get_input_tokens(
+            {
+                'audio_filepath': 'unused.wav',
+                'duration': 100000,
+                'source_lang': 'en',
+                'taskname': 'asr',
+                'target_lang': 'en',
+                'pnc': 'yes',
+                'answer': 'nothing',
+            }
+        )
+
+        valid_chunk = np.zeros((asr_model._cfg.preprocessor.features, 4), dtype=np.float32)
+        short_tail_chunk = np.zeros((asr_model._cfg.preprocessor.features, 2), dtype=np.float32)
+        chunk_batches = [[valid_chunk, short_tail_chunk], []]
+        predict_calls = []
+
+        def fake_get_buffers_batch():
+            return chunk_batches.pop(0)
+
+        def fake_predict_step(batch_input, has_processed_signal=True, timestamps=False):
+            predict_calls.append(batch_input.audio_lens.tolist())
+            return [Hypothesis(score=0.0, y_sequence=torch.tensor([]), text="ok")]
+
+        monkeypatch.setattr(model.frame_bufferer, "get_buffers_batch", fake_get_buffers_batch)
+        monkeypatch.setattr(asr_model, "predict_step", fake_predict_step)
+
+        outputs = model.transcribe()
+
+        assert predict_calls == [[4]]
+        assert outputs.text == "ok"
+        assert model.chunk_offsets == [0, 4]
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit

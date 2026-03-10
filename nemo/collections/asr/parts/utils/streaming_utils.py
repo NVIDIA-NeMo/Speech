@@ -504,13 +504,14 @@ class StreamingFeatureBufferer:
 
 
 class AudioFeatureIterator(IterableDataset):
-    def __init__(self, samples, frame_len, preprocessor, device, pad_to_frame_len=True):
+    def __init__(self, samples, frame_len, preprocessor, device, pad_to_frame_len=True, min_frame_len=1):
         self._samples = samples
         self._frame_len = frame_len
         self._start = 0
         self.output = True
         self.count = 0
         self.pad_to_frame_len = pad_to_frame_len
+        self.min_frame_len = min_frame_len
         timestep_duration = preprocessor._cfg['window_stride']
         self._feature_frame_len = frame_len / timestep_duration
         audio_signal = torch.from_numpy(self._samples).unsqueeze_(0).to(device)
@@ -532,13 +533,15 @@ class AudioFeatureIterator(IterableDataset):
             frame = self._features[:, self._start : last].cpu()
             self._start = last
         else:
+            self.output = False
+            segment = self._features[:, self._start : self._features_len[0]].cpu()
+            if segment.shape[1] < self.min_frame_len:
+                raise StopIteration
             if not self.pad_to_frame_len:
-                frame = self._features[:, self._start : self._features_len[0]].cpu()
+                frame = segment
             else:
                 frame = np.zeros([self._features.shape[0], int(self._feature_frame_len)], dtype='float32')
-                segment = self._features[:, self._start : self._features_len[0]].cpu()
                 frame[:, : segment.shape[1]] = segment
-            self.output = False
         self.count += 1
         return frame
 
@@ -1811,6 +1814,8 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         super().__init__(asr_model, frame_len, total_buffer, batch_size, pad_to_buffer_len=False)
         self.window_stride = asr_model._cfg.preprocessor.window_stride
         self.subsampling_factor = asr_model._cfg.encoder.subsampling_factor
+        self.min_input_frames = None
+        self.timestamps_min_input_frames = None
         self.chunk_offsets = [
             0,
         ]  # chunk offsets in terms of num frames before subsampling
@@ -1883,9 +1888,17 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         self.input_tokens = self.get_input_tokens(meta_data)
         samples = get_samples(audio_filepath)
         padded_samples = np.pad(samples, (0, int(delay * model_stride_in_secs * self.asr_model._cfg.sample_rate)))
+        min_frame_len = self._get_min_input_frames()
+        if timestamps and self.timestamps_asr_model is not None:
+            min_frame_len = max(min_frame_len, self._get_timestamps_min_input_frames())
 
         frame_reader = AudioFeatureIterator(
-            padded_samples, self.frame_len, self.raw_preprocessor, self.asr_model.device, pad_to_frame_len=False
+            padded_samples,
+            self.frame_len,
+            self.raw_preprocessor,
+            self.asr_model.device,
+            pad_to_frame_len=False,
+            min_frame_len=min_frame_len,
         )
         self.set_frame_reader(frame_reader)
         if timestamps and self.timestamps_asr_model is not None:
@@ -1901,6 +1914,7 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
                 self.frame_len,
                 self.timestamps_frame_asr.raw_preprocessor,
                 self.timestamps_frame_asr.asr_model.device,
+                min_frame_len=min_frame_len,
             )
             self.timestamps_frame_asr.set_frame_reader(ts_model_frame_reader)
 
@@ -1909,6 +1923,20 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         device = self.asr_model.device
         for batch in iter(self.data_loader):
             feat_signal, feat_signal_len = batch
+            min_input_frames = self._get_min_input_frames()
+            valid_chunk_mask = feat_signal_len >= min_input_frames
+            if not valid_chunk_mask.all():
+                skipped_chunk_lengths = feat_signal_len[~valid_chunk_mask].tolist()
+                logging.warning(
+                    "Skipping %d chunk(s) shorter than the minimum encoder input length (%d frames): %s",
+                    len(skipped_chunk_lengths),
+                    min_input_frames,
+                    skipped_chunk_lengths,
+                )
+                if not valid_chunk_mask.any():
+                    continue
+                feat_signal = feat_signal[valid_chunk_mask]
+                feat_signal_len = feat_signal_len[valid_chunk_mask]
             # keep track of chunk offsets
             self.chunk_offsets.extend(feat_signal_len.tolist())
             feat_signal, feat_signal_len = feat_signal.to(device), feat_signal_len.to(device)
@@ -1929,6 +1957,42 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
 
             self.all_preds.extend(predictions)
             del predictions
+
+    def _get_min_input_frames(self):
+        if self.min_input_frames is None:
+            self.min_input_frames = self._estimate_min_input_frames(self.asr_model)
+        return self.min_input_frames
+
+    def _get_timestamps_min_input_frames(self):
+        if self.timestamps_min_input_frames is None:
+            self.timestamps_min_input_frames = self._estimate_min_input_frames(self.timestamps_asr_model)
+        return self.timestamps_min_input_frames
+
+    @staticmethod
+    def _estimate_min_input_frames(asr_model, max_candidate_frames=64):
+        encoder = asr_model.encoder
+        feat_in = asr_model._cfg.preprocessor.features
+        encoder_dtype = next(encoder.parameters()).dtype
+        encoder_device = asr_model.device
+        encoder_was_training = encoder.training
+
+        try:
+            encoder.eval()
+            for candidate_frames in range(1, max_candidate_frames + 1):
+                test_signal = torch.zeros(
+                    1, feat_in, candidate_frames, device=encoder_device, dtype=encoder_dtype
+                )
+                test_signal_len = torch.tensor([candidate_frames], device=encoder_device)
+                try:
+                    encoder(audio_signal=test_signal, length=test_signal_len)
+                    return candidate_frames
+                except RuntimeError as error:
+                    if "Kernel size can't be greater than actual input size" not in str(error):
+                        raise
+        finally:
+            encoder.train(encoder_was_training)
+
+        return max_candidate_frames
 
     def transcribe(
         self,

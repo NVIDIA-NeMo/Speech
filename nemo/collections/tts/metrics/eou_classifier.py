@@ -375,7 +375,7 @@ class EoUClassifier:
             hidden = self.model.dropout(hidden)
             logits = self.model.lm_head(hidden)  # (B, T_max, V)
 
-        log_probs_all = torch.log_softmax(logits, dim=-1)
+        log_probs_all = torch.log_softmax(logits, dim=-1)  # (B, T_max, V)
 
         # --- Batched Viterbi decoding ---
         V = log_probs_all.shape[-1]
@@ -392,11 +392,13 @@ class EoUClassifier:
         U_lengths = [len(tids) for tids in all_token_ids_with_blanks]
         U_max = max(U_lengths)
 
+        # Pad log probabilities with VITERBI_PAD to match max_feat_len
         log_probs_padded = log_probs_all.clone()
         for i in range(B):
             if feat_lengths[i] < max_feat_len:
                 log_probs_padded[i, feat_lengths[i] :, :] = VITERBI_PAD
 
+        # Pad y_batch with V to match U_max
         y_batch = torch.full((B, U_max), V, dtype=torch.int64, device=self.device)
         for i, tids in enumerate(all_token_ids_with_blanks):
             y_batch[i, : len(tids)] = torch.tensor(tids, dtype=torch.int64, device=self.device)

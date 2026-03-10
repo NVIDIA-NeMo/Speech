@@ -88,7 +88,7 @@ model:
     #     pretrained_model: "google/byt5-small"
 
   test_ds:
-    dataset:
+    datasets:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDataset
       dataset_meta: ${test_ds_meta}
       min_duration: 0.2

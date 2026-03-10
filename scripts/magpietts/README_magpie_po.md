@@ -78,8 +78,8 @@ batch_size=4 \
 max_epochs=10 \
 exp_manager.exp_dir=<PO_EXP_DIR> \
 exp_manager.checkpoint_callback_params.always_save_nemo=false \
-model.train_ds.dataset._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
-model.validation_ds.dataset._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
+model.train_ds.datasets._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
+model.validation_ds.datasets._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
 +train_ds_meta.dpopreftrain.manifest_path="<PO_EXP_DIR>/MagpieTTS-PO-Infer/version_0/manifests/" \
 +train_ds_meta.dpopreftrain.audio_dir="/" \
 +train_ds_meta.dpopreftrain.feature_dir="/" \
@@ -105,8 +105,8 @@ Note the following overrides in the above command:
 
 ```
 +mode="dpo_train" \
-model.train_ds.dataset._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
-model.validation_ds.dataset._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
+model.train_ds.datasets._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
+model.validation_ds.datasets._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
 ```
 
 Again, our manifest contain absolute paths so we specify `audio_dir="/"` .

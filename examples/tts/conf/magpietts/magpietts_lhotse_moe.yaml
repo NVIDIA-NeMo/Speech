@@ -74,57 +74,60 @@ model:
   train_ds:
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
+    min_duration: 0.2
+    min_context_speaker_similarity: 0.6
+    max_cer: 0.03
+    batch_duration: ???  # in seconds. Adjust based on your GPU memory.
+    quadratic_duration: ${quadratic_duration}
+    use_bucketing: true
+    num_buckets: 20
+    bucket_buffer_size: 20_000
+    shuffle_buffer_size: 20_000
+    num_cuts_for_bins_estimate: 20_000
+    shard_seed: "trng"
+    drop_last: true
+    shuffle: true
+    num_workers: 6
+    pin_memory: true
 
-    dataset:
-      min_duration: 0.2
-      min_context_speaker_similarity: 0.6
-      max_cer: 0.03
-      batch_duration : ???  # in seconds. Adjust based on your GPU memory.
-      quadratic_duration: ${quadratic_duration}
-      use_bucketing: true
-      num_buckets: 20
-      bucket_buffer_size: 20_000
-      shuffle_buffer_size: 20_000
-      num_cuts_for_bins_estimate: 20_000
-      shard_seed: "trng"
-      drop_last: true
-      shuffle: true
-      num_workers: 6
-      pin_memory: true
-
-      input_cfg:
-      - type: lhotse_shar
-        shar_path: ???
-        weight: 1.0
-        tags:
-          tokenizer_names: ["english_phoneme"]
+    input_cfg:
+    - type: lhotse_shar
+      shar_path: ???
+      weight: 1.0
+      tags:
+        tokenizer_names: ["english_phoneme"]
 
   validation_ds:
+    # the entries under 'datasets' are a list of separate dataloaders.
+    # The structure is:
+    # - name: '<dataset-name>'
+    #   <dataloader-dict-config>
+    # They inherit all settings from validation_ds, but can individually override them.
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
+    min_duration: 0.2
+    min_context_speaker_similarity: 0.6
+    max_cer: 0.03
+    batch_duration: ???   # recommend to use smaller batch_duration for validation dataset than training dataset.
+    quadratic_duration: ${quadratic_duration}
+    use_bucketing: false
+    force_finite: true
+    force_map_dataset: true
+    seed: 42
+    shard_seed: "randomized"
+    drop_last: false
+    shuffle: false
+    num_workers: 2
+    pin_memory: true
 
-    dataset:
-      min_duration: 0.2
-      min_context_speaker_similarity: 0.6
-      max_cer: 0.03
-      batch_duration: ???   # recommend to use smaller batch_duration for validation dataset than training dataset.
-      quadratic_duration: ${quadratic_duration}
-      use_bucketing: false
-      force_finite: true
-      force_map_dataset: true
-      seed: 42
-      shard_seed: "randomized"
-      drop_last: false
-      shuffle: false
-      num_workers: 2
-      pin_memory: true
-
-      input_cfg:
-      - type: lhotse_shar
-        shar_path: ???
-        weight: 1.0
-        tags:
-          tokenizer_names: ["english_phoneme"]
+    datasets:
+      - name: "val_set_0"  # rename to your dataset name, add more as needed
+        input_cfg:
+        - type: lhotse_shar
+          shar_path: ???
+          weight: 1.0
+          tags:
+            tokenizer_names: ["english_phoneme"]
 
   encoder:
     n_layers: 6

@@ -16,6 +16,7 @@ import functools
 import os
 import random
 import traceback
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -402,21 +403,17 @@ def split_by_sentence(
     """
     Split a paragraph into sentences based on sentence-ending punctuation.
 
-    Handles multiple languages with appropriate splitting behavior:
-    - Special language punctuation (ja/zh: 。？！…, hi: ।॥): splits regardless of
-      following whitespace, since these languages typically don't use spaces.
-    - Western punctuation (. ? !): splits only when followed by whitespace or
-      end-of-string, to avoid false splits on abbreviations.
-    - Title abbreviations (Dr., Mr., Mrs., Prof., etc.): never splits on these
-      since they are always followed by names.
-
+    Sentence separators are chosen from the given language (e.g. ".", "?", "!"
+    for English; "。", "？", "！" plus Western punctuation for Japanese/Chinese).
+    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by
+    requiring a space after the separator before splitting for Western punctuation;
+    for languages like ja/zh/hi, native punctuation splits without requiring a space.
     Sentence-ending punctuation is preserved with each sentence.
 
     Args:
         paragraph: The input text paragraph to split into sentences.
-        language: Language code (e.g., "en", "ja", "hi", "zh"). Defaults to "en".
-            Special languages (ja, zh, hi) use their native punctuation that
-            splits regardless of following whitespace.
+        language: Language code (e.g. "en", "ja", "zh", "hi"). Determines which
+            sentence-ending characters are used. Defaults to "en".
 
     Returns:
         List of sentence strings with punctuation preserved.
@@ -454,9 +451,9 @@ def split_by_sentence(
     for i, char in enumerate(paragraph):
         if char not in sentence_separators:
             continue
-
+        # Check if current char is a separator and next char is a space
+        # This avoids splitting abbreviations like "Dr." or "a.m."
         next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
-
         # Determine if we should split at this position
         # Special language punctuation: split regardless of following character (no spaces in these languages)
         # Western punctuation: require whitespace or end-of-string
@@ -522,46 +519,6 @@ def _get_sentence_separators_for_language(language: str) -> List[str]:
     return _SENTENCE_ENDINGS.get(language, _DEFAULT_SENTENCE_ENDINGS)
 
 
-def get_word_count(text: str, language: str = "en") -> int:
-    """
-    Get word count for text in a language-aware manner.
-
-    For Japanese, uses pyopenjtalk morphological analysis for accurate word segmentation.
-    Falls back to character count if pyopenjtalk is unavailable or returns no words.
-    For Chinese, counts characters (as words are not space-separated).
-    For other languages, uses whitespace splitting.
-
-    Args:
-        text: Input text to count words for.
-        language: Language code (e.g., "en", "ja", "zh", "hi").
-
-    Returns:
-        Number of words (or characters for Chinese/Japanese fallback) in the text.
-    """
-    if not text or not text.strip():
-        return 0
-
-    if language == "zh":
-        # Chinese: count characters (no word boundaries)
-        return len([c for c in text if not c.isspace()])
-
-    if language == "ja":
-        try:
-            import pyopenjtalk
-
-            # run_frontend returns list of word dictionaries (NJD format)
-            njd = pyopenjtalk.run_frontend(text)
-            # Filter out None/invalid entries and count words
-            word_count = sum(1 for word in njd if isinstance(word, dict) and word.get('string', '').strip())
-            return word_count if word_count > 0 else len([c for c in text if not c.isspace()])
-        except ImportError:
-            # Fallback: use character count for Japanese if pyopenjtalk not available
-            return len([c for c in text if not c.isspace()])
-
-    # Default: whitespace splitting for English, Hindi, and other languages
-    return len(text.split())
-
-
 def chunk_and_tokenize_text_by_sentence(
     text: str,
     tokenizer_name: str,
@@ -603,3 +560,199 @@ def chunk_and_tokenize_text_by_sentence(
         chunked_tokens_len.append(tokens_len)
 
     return chunked_tokens, chunked_tokens_len, chunked_text
+
+
+@dataclass
+class LanguageThresholds:
+    """Language-specific word/character thresholds for determining when to split text.
+
+    Text exceeding the threshold for its language will be split into sentences.
+    Text below the threshold will be processed as a single chunk.
+
+    The thresholds approximate ~20 seconds of audio per language.
+
+    Attributes:
+        thresholds: Dict mapping language code to word count threshold.
+            For character-based languages (like Chinese, Japanese), this is character count;
+            see get_word_count() for which languages use character vs word count.
+    """
+
+    thresholds: Dict[str, int] = field(
+        default_factory=lambda: {
+            "en": 45,  # English: ~20 seconds of audio
+            "es": 73,  # Spanish
+            "fr": 69,  # French
+            "de": 50,  # German
+            "it": 53,  # Italian
+            "vi": 50,  # Vietnamese
+            "zh": 100,  # Chinese (character count)
+            "hi": 50,  # Hindi
+            "ja": 80,  # Japanese (character count)
+        }
+    )
+
+    def get_word_count(self, text: str, language: str) -> int:
+        """Get word/character count for text based on language.
+
+        Args:
+            text: Input text to count.
+            language: Language code (e.g., "en", "zh").
+
+        Returns:
+            Word count for most languages, character count for character-based languages.
+        """
+        if not text or not text.strip():
+            return 0
+
+        if language == "zh":
+            # Chinese: count characters (no word boundaries)
+            return len([c for c in text if not c.isspace()])
+
+        if language == "ja":
+            try:
+                import pyopenjtalk
+
+                # run_frontend returns list of word dictionaries (NJD format)
+                njd = pyopenjtalk.run_frontend(text)
+                # Filter out None/invalid entries and count words
+                word_count = sum(1 for word in njd if isinstance(word, dict) and word.get('string', '').strip())
+                return word_count if word_count > 0 else len([c for c in text if not c.isspace()])
+            except ImportError:
+                # Fallback: use character count for Japanese if pyopenjtalk not available
+                return len([c for c in text if not c.isspace()])
+
+        # Default: whitespace splitting for English, Hindi, and other languages
+        return len(text.split())
+
+    def exceeds_threshold(self, text: str, language: str) -> bool:
+        """Check if text exceeds the threshold for the given language.
+
+        Args:
+            text: Input text to check.
+            language: Language code.
+
+        Returns:
+            True if text should be split into sentences, False for single chunk.
+        """
+        threshold = self.thresholds.get(language, self.thresholds.get("en", 45))
+        count = self.get_word_count(text, language)
+        return count >= threshold
+
+
+# Default language thresholds instance
+DEFAULT_LANGUAGE_THRESHOLDS = LanguageThresholds()
+
+
+# Centralized mapping from language codes to tokenizer name candidates
+# Used by both do_tts() and ChunkedTTSInferenceDataset
+LANGUAGE_TOKENIZER_MAP: Dict[str, List[str]] = {
+    "en": ["english_phoneme", "english"],
+    "de": ["german_phoneme", "german"],
+    "es": ["spanish_phoneme", "spanish"],
+    "fr": ["french_chartokenizer", "french"],
+    "it": ["italian_phoneme", "italian"],
+    "vi": ["vietnamese_phoneme", "vietnamese"],
+    "zh": ["mandarin_phoneme", "mandarin", "chinese"],
+    "hi": ["hindi_chartokenizer", "hindi"],
+    "ja": ["japanese_phoneme", "japanese"],
+}
+
+
+def get_tokenizer_for_language(
+    language: str,
+    available_tokenizers: List[str],
+    default_tokenizer: str = "english_phoneme",
+) -> str:
+    """Get the appropriate tokenizer name for a language.
+
+    Searches LANGUAGE_TOKENIZER_MAP for candidate tokenizers and returns
+    the first one available. Falls back to default if no match found.
+
+    Args:
+        language: Language code (e.g., "en", "de", "zh").
+        available_tokenizers: List of tokenizer names available in the model.
+        default_tokenizer: Fallback tokenizer if no match found.
+
+    Returns:
+        Tokenizer name to use.
+    """
+    if language in LANGUAGE_TOKENIZER_MAP:
+        for candidate in LANGUAGE_TOKENIZER_MAP[language]:
+            if candidate in available_tokenizers:
+                return candidate
+
+    # Fallback to default if available, else first available
+    if default_tokenizer in available_tokenizers:
+        return default_tokenizer
+    return available_tokenizers[0] if available_tokenizers else default_tokenizer
+
+
+def chunk_text_for_inference(
+    text: str,
+    language: str,
+    tokenizer_name: str,
+    text_tokenizer: Any,
+    eos_token_id: int,
+    language_thresholds: Optional[LanguageThresholds] = None,
+) -> Tuple[List[torch.Tensor], List[int], List[str]]:
+    """
+    Unified text chunking for inference: returns single chunk if below threshold,
+    multiple sentence chunks if above threshold.
+
+    This function unifies the standard and chunked inference paths by automatically
+    determining whether to split text based on language-specific thresholds.
+
+    Args:
+        text: Input text to tokenize and potentially split.
+        language: Language code (e.g., "en", "de", "zh").
+        tokenizer_name: Name of the tokenizer to use (e.g., "english_phoneme").
+        text_tokenizer: The tokenizer instance.
+        eos_token_id: End-of-sequence token ID to append.
+        language_thresholds: Optional custom thresholds. Uses defaults if None.
+
+    Returns:
+        Tuple of:
+            - chunked_tokens: List of token tensors. Single element for short text,
+              multiple elements (one per sentence) for long text.
+            - chunked_tokens_len: List of token lengths.
+            - chunked_text: List of text strings (original or split sentences).
+
+    Examples:
+        >>> # Short text - returns single chunk
+        >>> tokens, lens, texts = chunk_text_for_inference(
+        ...     "Hello world.", "en", "english_phoneme", tokenizer, eos_id
+        ... )
+        >>> len(tokens)
+        1
+
+        >>> # Long text - returns multiple chunks (sentences)
+        >>> long_text = "First sentence. " * 50  # ~50 sentences
+        >>> tokens, lens, texts = chunk_text_for_inference(
+        ...     long_text, "en", "english_phoneme", tokenizer, eos_id
+        ... )
+        >>> len(tokens) > 1
+        True
+    """
+    if language_thresholds is None:
+        language_thresholds = DEFAULT_LANGUAGE_THRESHOLDS
+
+    # Check if text exceeds threshold for this language
+    should_split = language_thresholds.exceeds_threshold(text, language)
+
+    if should_split:
+        # Long text: split by sentences
+        return chunk_and_tokenize_text_by_sentence(
+            text=text,
+            tokenizer_name=tokenizer_name,
+            text_tokenizer=text_tokenizer,
+            eos_token_id=eos_token_id,
+            language=language,
+        )
+    else:
+        # Short text: return as single chunk
+        tokens = text_tokenizer.encode(text=text, tokenizer_name=tokenizer_name)
+        tokens = tokens + [eos_token_id]
+        tokens_tensor = torch.tensor(tokens, dtype=torch.int32)
+        tokens_len = tokens_tensor.shape[0]
+
+        return [tokens_tensor], [tokens_len], [text]

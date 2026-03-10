@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
-    --codecmodel_path /home/TestData/tts/AudioCodec_21Hz_no_eliz_without_wavlm_disc.nemo \
+    --codecmodel_path /home/TestData/tts/21fps_causal_codecmodel.nemo \
     --datasets_json_path examples/tts/evalset_config.json \
     --datasets an4_val_ci \
     --out_dir ./mp_zs_0 \
@@ -21,11 +21,11 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --cfg_scale 2.5 \
     --num_repeats 1 \
     --temperature 0.6 \
-    --hparams_files /home/TestData/tts/2506_ZeroShot/lrhm_short_yt_prioralways_alignement_0.002_priorscale_0.1.yaml \
-    --checkpoint_files /home/TestData/tts/2506_ZeroShot/dpo-T5TTS--val_loss=0.4513-epoch=3.ckpt \
-    --legacy_codebooks \
-    --legacy_text_conditioning \
+    --nemo_files /home/TestData/tts/2602_MagpieTTS/feb26_Magpie-TTS-ML-V1--val_cer_gt=0.3258-step=1000.nemo \
     --apply_attention_prior \
+    --apply_prior_to_layers "3,4,5,6,7,8,9" \
+    --estimate_alignment_from_layers "3,4,5,6" \
+    --use_local_transformer \
     --run_evaluation \
     --clean_up_disk \
     --cer_target 0.25 \

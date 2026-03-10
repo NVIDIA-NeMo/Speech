@@ -432,7 +432,7 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         self.log('train_sft_loss', dpo_outputs['sft_loss'], prog_bar=True, sync_dist=True)
         return dpo_outputs['loss']
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
         dpo_outputs = self.process_batch_dpo(batch)
 
         val_loss = dpo_outputs['loss']
@@ -440,7 +440,7 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         val_sft_loss = dpo_outputs['sft_loss']
         val_alignment_loss = dpo_outputs['alignment_loss']
 
-        self.validation_step_outputs.append(
+        self.validation_step_outputs[dataloader_idx].append(
             {
                 'val_loss': val_loss,
                 'val_pref_loss': val_pref_loss,
@@ -452,11 +452,12 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
     def on_validation_epoch_end(self):
         def collect(key):
             values = []
-            for x in self.validation_step_outputs:
-                if x[key] is not None:
-                    values.append(x[key])
-                else:
-                    values.append(torch.tensor(0.0, device=self.device))
+            for val_outputs in self.validation_step_outputs:
+                for x in val_outputs:
+                    if x[key] is not None:
+                        values.append(x[key])
+                    else:
+                        values.append(torch.tensor(0.0, device=self.device))
             stacked_values = torch.stack(values)
             return stacked_values.mean()
 
@@ -469,7 +470,8 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         self.log("val_sft_loss", val_sft_loss, prog_bar=True, sync_dist=True)
         if val_alignment_loss is not None:
             self.log("val_alignment_loss", val_alignment_loss, prog_bar=True, sync_dist=True)
-        self.validation_step_outputs.clear()
+        for val_outputs in self.validation_step_outputs:
+            val_outputs.clear()
 
 
 class MagpieTTSModelOnlinePO(MagpieTTSModel):
@@ -972,14 +974,14 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         self.log('train_std_reward', po_outputs['std_reward'], prog_bar=True, sync_dist=True)
         return po_outputs['loss']
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
         po_outputs = self.process_batch_online_po(batch, 1, mode='val')
         batch_metrics = po_outputs['batch_metrics']
         mean_reward = po_outputs['mean_reward']
         val_loss = po_outputs['loss']
         val_kl_loss = po_outputs['kl_loss']
 
-        self.validation_step_outputs.append(
+        self.validation_step_outputs[dataloader_idx].append(
             {
                 'mean_reward': mean_reward,
                 'std_reward': po_outputs['std_reward'],
@@ -992,11 +994,12 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
     def on_validation_epoch_end(self):
         def collect(key):
             values = []
-            for x in self.validation_step_outputs:
-                if x[key] is not None:
-                    values.append(x[key])
-                else:
-                    values.append(torch.tensor(0.0, device=self.device))
+            for val_outputs in self.validation_step_outputs:
+                for x in val_outputs:
+                    if x[key] is not None:
+                        values.append(x[key])
+                    else:
+                        values.append(torch.tensor(0.0, device=self.device))
             stacked_values = torch.stack(values)
             return stacked_values.mean()
 
@@ -1011,20 +1014,22 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         self.log("val_std_reward", std_reward, prog_bar=True, sync_dist=True)
 
         mean_metrics = {}
-        for val_output in self.validation_step_outputs:
-            batch_metrics = val_output['batch_metrics']
-            for item_metrics in batch_metrics:
-                for key, value in item_metrics.items():
-                    if "transcript" not in key:
-                        if key not in mean_metrics:
-                            mean_metrics[key] = []
-                        mean_metrics[key].append(value)
+        for val_outputs in self.validation_step_outputs:
+            for val_output in val_outputs:
+                batch_metrics = val_output['batch_metrics']
+                for item_metrics in batch_metrics:
+                    for key, value in item_metrics.items():
+                        if "transcript" not in key:
+                            if key not in mean_metrics:
+                                mean_metrics[key] = []
+                            mean_metrics[key].append(value)
 
         for key, values in mean_metrics.items():
             mean_metrics[key] = np.mean(values)
             self.log(f"val_{key}", mean_metrics[key], prog_bar=True, sync_dist=True)
 
-        self.validation_step_outputs.clear()
+        for val_outputs in self.validation_step_outputs:
+            val_outputs.clear()
 
 
 # Utility functions

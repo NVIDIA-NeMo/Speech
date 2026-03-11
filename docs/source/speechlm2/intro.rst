@@ -46,18 +46,20 @@ You can run inference using the loaded pretrained SALM model:
 .. code-block:: python
 
     import torch
-    import torchaudio
+    import soundfile as sf
+    from nemo.collections.audio.parts.utils.transforms import resample
     import nemo.collections.speechlm2 as slm
 
     model = slm.models.SALM.from_pretrained("path/to/pretrained_checkpoint").eval()
     
     # Load audio file
     audio_path = "path/to/audio.wav"
-    audio_signal, sample_rate = torchaudio.load(audio_path)
+    audio_signal, sample_rate = sf.read(audio_path)
+    audio_signal = torch.tensor(audio_signal).unsqueeze(0)
     
     # Resample if needed
     if sample_rate != 16000:  # Most models expect 16kHz audio
-        audio_signal = torchaudio.functional.resample(audio_signal, sample_rate, 16000)
+        audio_signal = resample(audio_signal, sample_rate, 16000)
         sample_rate = 16000
     
     # Prepare audio for model
@@ -89,18 +91,20 @@ You can run inference using the loaded pretrained DuplexS2SModel:
 .. code-block:: python
 
     import torch
-    import torchaudio
+    import soundfile as sf
+    from nemo.collections.audio.parts.utils.transforms import resample
     import nemo.collections.speechlm2 as slm
 
     model = slm.models.DuplexS2SModel.from_pretrained("path/to/pretrained_checkpoint").eval()
     
     # Load audio file
     audio_path = "path/to/audio.wav"
-    audio_signal, sample_rate = torchaudio.load(audio_path)
+    audio_signal, sample_rate = sf.read(audio_path)
+    audio_signal = torch.tensor(audio_signal).unsqueeze(0)
     
     # Resample if needed
     if sample_rate != 16000:  # Most models expect 16kHz audio
-        audio_signal = torchaudio.functional.resample(audio_signal, sample_rate, 16000)
+        audio_signal = resample(audio_signal, sample_rate, 16000)
         sample_rate = 16000
     
     # Prepare audio for model
@@ -125,18 +129,20 @@ You can run inference using the loaded pretrained DuplexSTTModel:
 .. code-block:: python
 
     import torch
-    import torchaudio
+    import soundfile as sf
+    from nemo.collections.audio.parts.utils.transforms import resample
     import nemo.collections.speechlm2 as slm
 
     model = slm.models.DuplexSTTModel.from_pretrained("path/to/pretrained_checkpoint").eval()
 
     # Load audio file
     audio_path = "path/to/audio.wav"
-    audio_signal, sample_rate = torchaudio.load(audio_path)
+    audio_signal, sample_rate = sf.read(audio_path)
+    audio_signal = torch.tensor(audio_signal).unsqueeze(0)
 
     # Resample if needed
     if sample_rate != 16000:
-        audio_signal = torchaudio.functional.resample(audio_signal, sample_rate, 16000)
+        audio_signal = resample(audio_signal, sample_rate, 16000)
         sample_rate = 16000
 
     # Prepare audio for model
@@ -196,18 +202,20 @@ You can evaluate and run full-duplex inference using the `NemotronVoiceChat` pip
 .. code-block:: python
 
     import torch
-    import torchaudio
+    import soundfile as sf
+    from nemo.collections.audio.parts.utils.transforms import resample
     import nemo.collections.speechlm2 as slm
 
     model = slm.models.NemotronVoiceChat.from_pretrained("path/to/pretrained_checkpoint").eval()
 
     # Load user audio prompt
     audio_path = "path/to/user_audio.wav"
-    audio_signal, sample_rate = torchaudio.load(audio_path)
+    audio_signal, sample_rate = sf.read(audio_path)
+    audio_signal = torch.tensor(audio_signal).unsqueeze(0)
 
     # Resample to the source_sample_rate (usually 16kHz for STT perception)
     if sample_rate != 16000:
-        audio_signal = torchaudio.functional.resample(audio_signal, sample_rate, 16000)
+        audio_signal = resample(audio_signal, sample_rate, 16000)
         sample_rate = 16000
 
     # Prepare audio for model
@@ -215,8 +223,8 @@ You can evaluate and run full-duplex inference using the `NemotronVoiceChat` pip
     audio_len = torch.tensor([audio_signal.shape[1]], device=model.device)
 
     # (Optional) Load an explicit speaker reference audio to condition the agent's voice
-    # speaker_audio, _ = torchaudio.load("path/to/speaker_reference.wav")
-    # speaker_audio = speaker_audio.to(model.device)
+    # speaker_audio, _ = sf.read("path/to/speaker_reference.wav")
+    # speaker_audio = torch.tensor(speaker_audio).unsqueeze(0).to(model.device)
     # speaker_len = torch.tensor([speaker_audio.shape[1]], device=model.device)
 
     # Note: If an explicit audio reference is not passed into `offline_inference`, 
@@ -238,7 +246,7 @@ You can evaluate and run full-duplex inference using the `NemotronVoiceChat` pip
     
     print(f"Agent response: {generated_text}")
     # generated_speech can now be saved or played (sampled at model.target_sample_rate)
-
+    
 
 Training a Model
 ----------------

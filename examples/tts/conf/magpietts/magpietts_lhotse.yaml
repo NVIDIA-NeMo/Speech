@@ -1,6 +1,7 @@
 name: Magpie-TTS
 
 quadratic_duration: 20  # both training and validation datasets can apply same quadratic_duration.
+
 model:
   use_lhotse: true
   model_type: "decoder_ce" # decoder_context_tts or decoder_ce
@@ -16,7 +17,7 @@ model:
   alignment_loss_scale: 0.002
   embedding_dim: 768
   codecmodel_path: ???
-  cfg_unconditional_prob: 0.1
+  cfg_unconditional_prob: 0.1  # enable classifier-free guidance during traing by dropping out conditionals with this probability
 
   # Alignment encoder parameters, to binarize the prior
   # This is used for attention-constrained training and inference
@@ -70,57 +71,60 @@ model:
   train_ds:
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
+    min_duration: 0.2
+    min_context_speaker_similarity: 0.6
+    max_cer: 0.03
+    batch_duration: ???  # in seconds. Adjust based on your GPU memory.
+    quadratic_duration: ${quadratic_duration}
+    use_bucketing: true
+    num_buckets: 20
+    bucket_buffer_size: 20_000
+    shuffle_buffer_size: 20_000
+    num_cuts_for_bins_estimate: 20_000
+    shard_seed: "trng"
+    drop_last: true
+    shuffle: true
+    num_workers: 6
+    pin_memory: true
 
-    dataset:
-      min_duration: 0.2
-      min_context_speaker_similarity: 0.6
-      max_cer: 0.03
-      batch_duration : ???  # in seconds. Adjust based on your GPU memory.
-      quadratic_duration: ${quadratic_duration}
-      use_bucketing: true
-      num_buckets: 20
-      bucket_buffer_size: 20_000
-      shuffle_buffer_size: 20_000
-      num_cuts_for_bins_estimate: 20_000
-      shard_seed: "trng"
-      drop_last: true
-      shuffle: true
-      num_workers: 6
-      pin_memory: true
-
-      input_cfg:
-      - type: lhotse_shar
-        shar_path: ???
-        weight: 1.0
-        tags:
-          tokenizer_names: ["english_phoneme"]
+    input_cfg:
+    - type: lhotse_shar
+      shar_path: ???
+      weight: 1.0
+      tags:
+        tokenizer_names: ["english_phoneme"]
 
   validation_ds:
+    # the entries under 'datasets' are a list of separate dataloaders.
+    # The structure is:
+    # - name: '<dataset-name>'
+    #   <dataloader-dict-config>
+    # They inherit all settings from validation_ds, but can individually override them.
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
+    min_duration: 0.2
+    min_context_speaker_similarity: 0.6
+    max_cer: 0.03
+    batch_duration: ???   # recommend to use smaller batch_duration for validation dataset than training dataset.
+    quadratic_duration: ${quadratic_duration}
+    use_bucketing: false
+    force_finite: true
+    force_map_dataset: true
+    seed: 42
+    shard_seed: "randomized"
+    drop_last: false
+    shuffle: false
+    num_workers: 2
+    pin_memory: true
 
-    dataset:
-      min_duration: 0.2
-      min_context_speaker_similarity: 0.6
-      max_cer: 0.03
-      batch_duration: ???   # recommend to use smaller batch_duration for validation dataset than training dataset.
-      quadratic_duration: ${quadratic_duration}
-      use_bucketing: false
-      force_finite: true
-      force_map_dataset: true
-      seed: 42
-      shard_seed: "randomized"
-      drop_last: false
-      shuffle: false
-      num_workers: 2
-      pin_memory: true
-
-      input_cfg:
-      - type: lhotse_shar
-        shar_path: ???
-        weight: 1.0
-        tags:
-          tokenizer_names: ["english_phoneme"]
+    datasets:
+      - name: "val_set_0"  # rename to your dataset name, add more as needed
+        input_cfg:
+        - type: lhotse_shar
+          shar_path: ???
+          weight: 1.0
+          tags:
+            tokenizer_names: ["english_phoneme"]
 
   encoder:
     n_layers: 6
@@ -185,10 +189,9 @@ trainer:
   precision: 32
   max_steps: ???
   accumulate_grad_batches: 1
-  enable_checkpointing: False # Provided by exp_manager
-  logger: false # Provided by exp_manager
+  enable_checkpointing: false  # Provided by exp_manager
+  logger: false  # Provided by exp_manager
   log_every_n_steps: 100
-  check_val_every_n_epoch: 1
   limit_train_batches: 1_000
   val_check_interval: 1_000
   num_sanity_val_steps: 0

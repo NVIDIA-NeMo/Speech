@@ -21,7 +21,9 @@ import pprint
 import string
 import tempfile
 import time
+from collections import Counter
 from functools import partial
+from typing import Union
 
 import librosa
 import numpy as np
@@ -31,6 +33,7 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForCo
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
 from nemo.utils import logging
 
@@ -58,6 +61,9 @@ FILEWISE_METRICS_TO_SAVE = [
     'pred_audio_filepath',
     'context_audio_filepath',
     'utmosv2',
+    'eou_type',
+    'eou_trailing_duration',
+    'eou_trail_rms_ratio',
 ]
 
 
@@ -230,7 +236,7 @@ def compute_utmosv2_scores(audio_dir, device):
     return utmosv2_scores_dict
 
 
-def batch_transcribe(
+def transcribed_batched(
     audio_paths,
     language,
     asr_model,
@@ -301,6 +307,26 @@ def load_evaluation_models(
     return models
 
 
+def classify_eou_batched(
+    eou_classifier: EoUClassifier, items: list[tuple[Union[str, np.ndarray], str]], batch_size: int = 32
+) -> list[EoUClassification]:
+    """Run EoU classification in batches.
+
+    Args:
+        eou_classifier: EoUClassifier instance.
+        items: List of (audio, text) pairs. Audio can be a file path or numpy array.
+        batch_size: Batch size.
+    """
+    logging.info("\nRunning End-of-Utterance (EoU) classification...")
+    start_time = time.time()
+    results = []
+    for start in range(0, len(items), batch_size):
+        results.extend(eou_classifier.classify_batch(items[start : start + batch_size]))
+    elapsed = time.time() - start_time
+    logging.info(f"EoU classification for {len(results)} files took {elapsed:.2f} seconds\n")
+    return results
+
+
 def evaluate_dir(
     manifest_path,
     audio_dir,
@@ -310,6 +336,7 @@ def evaluate_dir(
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
     asr_batch_size=32,
+    eou_batch_size=32,
     device="cuda",
 ):
     """Compute per-file evaluation metrics for a directory of generated audio.
@@ -348,7 +375,10 @@ def evaluate_dir(
     speaker_verification_model = models['sv_model']
     speaker_verification_model_alternate = models['sv_model_alternate']
 
-    # 3. Compute UTMOSv2 scores
+    # 3. EoU classifier (support for English only)
+    eou_classifier = EoUClassifier(device=device) if language == "en" else None
+
+    # 4. Compute UTMOSv2 scores
     utmosv2_scores = None
     if with_utmosv2:
         if not UTMOSV2_AVAILABLE:
@@ -358,10 +388,10 @@ def evaluate_dir(
             )
         utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
 
-    # 4. ASR transcription in batches
+    # 5. ASR transcription in batches
     logging.info(f"Doing batched ASR transcription with batch size {asr_batch_size}...")
     # Transcribe predicted audios
-    pred_texts = batch_transcribe(
+    pred_texts = transcribed_batched(
         audio_file_lists,
         language,
         asr_model,
@@ -373,7 +403,7 @@ def evaluate_dir(
     )
     # Transcribe ground truth audios
     if len(gt_audio_paths) > 0:
-        gt_audio_texts = batch_transcribe(
+        gt_audio_texts = transcribed_batched(
             gt_audio_paths,
             language,
             asr_model,
@@ -386,7 +416,23 @@ def evaluate_dir(
     else:
         gt_audio_texts = [None] * len(records)
 
-    # 5. Compute metrics for each utterance (sequential)
+    # 6. Pre-compute ground-truth texts for all records
+    gt_texts_processed = []
+    for record in records:
+        if "original_text" in record:
+            gt_texts_processed.append(process_text(record['original_text']))
+        elif 'normalized_text' in record:
+            gt_texts_processed.append(process_text(record['normalized_text']))
+        else:
+            gt_texts_processed.append(process_text(record['text']))
+
+    # 7. Batched EoU classification
+    eou_results = None
+    if eou_classifier is not None:
+        eou_items = list(zip(audio_file_lists, gt_texts_processed))
+        eou_results = classify_eou_batched(eou_classifier, eou_items, batch_size=eou_batch_size)
+
+    # 8. Compute metrics for each utterance (sequential)
     filewise_metrics = []
     total_generated_audio_seconds = 0.0
     for ridx, record in enumerate(records):
@@ -402,12 +448,7 @@ def evaluate_dir(
         else:
             utmosv2_score = float('nan')
 
-        if "original_text" in record:
-            gt_text = process_text(record['original_text'])
-        elif 'normalized_text' in record:
-            gt_text = process_text(record['normalized_text'])
-        else:
-            gt_text = process_text(record['text'])
+        gt_text = gt_texts_processed[ridx]
 
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
@@ -485,6 +526,20 @@ def evaluate_dir(
             file_duration = get_wav_file_duration(pred_audio_filepath)
             total_generated_audio_seconds += file_duration
 
+        if eou_results is not None:
+            eou_result = eou_results[ridx]
+            if not eou_result.eou_type == EoUType.GOOD:
+                logging.warning(
+                    f"EoU classification: {eou_result.eou_type.value.upper()} for {pred_audio_filepath} (text: {gt_text})"
+                )
+            eou_type = eou_result.eou_type.value
+            eou_trailing = eou_result.trailing_duration
+            eou_rms_ratio = eou_result.trail_rms_ratio
+        else:
+            eou_type = None
+            eou_trailing = float('nan')
+            eou_rms_ratio = float('nan')
+
         filewise_metrics.append(
             {
                 'gt_text': gt_text,
@@ -504,6 +559,9 @@ def evaluate_dir(
                 'pred_audio_filepath': pred_audio_filepath,
                 'context_audio_filepath': context_audio_filepath,
                 'utmosv2': utmosv2_score,
+                'eou_type': eou_type,
+                'eou_trailing_duration': eou_trailing,
+                'eou_trail_rms_ratio': eou_rms_ratio,
                 'total_gen_audio_seconds': file_duration,
                 'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
             }
@@ -523,6 +581,7 @@ def evaluate(
     with_fcd=True,
     codec_model_path=None,
     asr_batch_size=32,
+    eou_batch_size=32,
     device="cuda",
 ):
     """Evaluate generated audio, computing both per-file and global metrics.
@@ -556,6 +615,7 @@ def evaluate(
         asr_model_name=asr_model_name,
         with_utmosv2=with_utmosv2,
         asr_batch_size=asr_batch_size,
+        eou_batch_size=eou_batch_size,
         device=device,
     )
 
@@ -661,6 +721,19 @@ def compute_global_metrics(
 
     avg_metrics['utmosv2_avg'] = sum(m['utmosv2'] for m in filewise_metrics) / n
     avg_metrics['total_gen_audio_seconds'] = sum(m['total_gen_audio_seconds'] for m in filewise_metrics)
+
+    # EoU classification rates
+    eou_types = [m.get('eou_type') for m in filewise_metrics]
+    if eou_types[0] is not None:
+        eou_counts = Counter(eou_types)
+        for label in EoUType.error_types():
+            avg_metrics[f'eou_{label}_rate'] = eou_counts.get(label, 0) / n
+        # Aggregate error rate: fraction of all non-GOOD cases
+        avg_metrics['eou_error_rate'] = 1.0 - eou_counts.get(EoUType.GOOD, 0) / n
+    else:
+        for label in EoUType.error_types():
+            avg_metrics[f'eou_{label}_rate'] = float('nan')
+        avg_metrics['eou_error_rate'] = float('nan')
 
     # FCD: compute only if all required paths are provided
     if gt_audio_paths and predicted_codes_paths and codec_model_path:

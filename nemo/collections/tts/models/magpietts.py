@@ -4133,7 +4133,8 @@ class MagpieTTSModel(ModelPT):
 
         Args:
             chunk_state: Mutable state object tracking history across chunks.
-            audio_codes_next: Sampled audio codes. Shape: (B, num_codebooks) or (B, num_codebooks, frame_stacking_factor).
+            audio_codes_next: Sampled audio codes. Shape: (B, num_codebooks, frame_stacking_factor).
+                Always 3D; when frame stacking is disabled (frame_stacking_factor=1) the last dim is 1.
             all_codes_next_argmax: Argmax sampled codes for EOS detection.
             chunk_end_dict: Maps batch indices to chunk end timesteps.
             chunk_end_frame_lens: Maps batch indices to frame-level length (for codes_to_audio); aligned with infer().
@@ -4570,6 +4571,9 @@ class MagpieTTSModel(ModelPT):
                 finished_texts_counter={},
                 attn_prior=initial_attn_prior,
             )
+            # Frame-level lengths for this chunk only: batch_idx -> number of codec frames to keep
+            # per item (used for predicted_codes_lens and trimming). Filled when EOS or chunk end
+            # is detected.
             chunk_end_frame_lens: Dict[int, int] = {}
 
             max_steps = self.inference_parameters.max_decoder_steps // self.frame_stacking_factor
@@ -4783,6 +4787,8 @@ class MagpieTTSModel(ModelPT):
 
                 chunk_state.overall_idx += 1
 
+            # Concatenate the list of predictions along the time dimension. 
+            # Note that when frame stacking is on, this also undoes the stacking.
             predicted_codes = torch.cat(state.all_predictions, dim=-1)  # (B, C, F*T_steps)
             num_steps = len(state.all_predictions)
             default_frame_len = num_steps * self.frame_stacking_factor

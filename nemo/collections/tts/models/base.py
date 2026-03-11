@@ -51,7 +51,7 @@ class NeedsNormalizer:
 
             if "whitelist" in cfg.text_normalizer:
                 normalizer_kwargs["whitelist"] = self.register_artifact(
-                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist, verify_src_exists=False
+                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist
                 )
 
             self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)

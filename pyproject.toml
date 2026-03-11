@@ -137,7 +137,8 @@ norecursedirs = [
     "CVS",
     "dist",
     "venv",
-    "{arch}"
+    "{arch}",
+    "e2e_nightly"
 ]
 # markers to select tests, use `pytest --markers` to see all available markers, `pytest -m "<marker>"` to select tests
 markers = [

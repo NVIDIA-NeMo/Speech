@@ -201,7 +201,30 @@ jobs:
             script: L2_TTS_InferEvaluatelongform_Magpietts_MoE_ZeroShot
           - runner: self-hosted-azure
             script: L2_TTS_InferEvaluate_Magpietts_FrameStacking
-          # Model support functional tests
+    needs: [unit-tests]
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.image-name }}
+          timeout: ${{ matrix.timeout || 10 }}
+          is_optional: ${{ matrix.is-optional || false }}
+
+  e2e-nightly:
+    if: ${{ github.event_name == 'schedule' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - runner: self-hosted-azure
             script: L2_Model_Support_nvidia__stt_de_fastconformer_hybrid_large_pc
             timeout: 15
@@ -444,7 +467,7 @@ jobs:
             timeout: 15
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
-    name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
+    name: ${{ matrix.script }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -458,4 +481,4 @@ jobs:
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ inputs.image-name }}
           timeout: ${{ matrix.timeout || 10 }}
-          is_optional: ${{ matrix.is-optional || false }}
+          test_dir: e2e_nightly

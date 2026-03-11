@@ -2241,6 +2241,11 @@ class ContextSizeBatch:
         Args:
             factor: subsampling factor
         """
+        # return ContextSizeBatch(
+        #     left=torch.div(self.left + factor - 1, factor, rounding_mode="floor"),
+        #     chunk=torch.div(self.chunk + factor - 1, factor, rounding_mode="floor"),
+        #     right=torch.div(self.right + factor - 1, factor, rounding_mode="floor"),
+        # )
         return ContextSizeBatch(
             left=torch.div(self.left, factor, rounding_mode="floor"),
             chunk=torch.div(self.chunk, factor, rounding_mode="floor"),

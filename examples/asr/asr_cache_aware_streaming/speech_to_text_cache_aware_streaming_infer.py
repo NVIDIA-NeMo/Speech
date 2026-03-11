@@ -133,7 +133,8 @@ class TranscriptionConfig:
     audio_type: str = "wav"  # type of audio file if audio_dir passed
     audio_file: Optional[str] = None  # Path to an audio file to perform streaming
     dataset_manifest: Optional[str] = None  # Path to dataset's JSON manifest
-    output_path: Optional[str] = None  # Path to output file when manifest is used as input
+    # output_path: Optional[str] = None  # Path to output file when manifest is used as input
+    output_manifest: Optional[str] = None  # Path to output file when manifest is used as input
 
     # General configs
     batch_size: int = 32
@@ -409,10 +410,12 @@ def main(cfg: TranscriptionConfig):
             )
         else:
             # stream audio files in a manifest file in batched mode
+            all_audio_filepaths = []
             all_streaming_tran = []
             all_offline_tran = []
             all_refs_text = []
             batch_size = cfg.batch_size
+            total_audio_duration = 0.0
 
             if cfg.dataset_manifest is not None:
                 manifest_dir = Path(cfg.dataset_manifest).parent
@@ -420,6 +423,7 @@ def main(cfg: TranscriptionConfig):
                 # fix relative paths
                 for item in samples:
                     audio_filepath = Path(item["audio_filepath"])
+                    total_audio_duration += float(item["duration"])
                     if not audio_filepath.is_absolute():
                         item["audio_filepath"] = str(manifest_dir / audio_filepath)
 
@@ -438,6 +442,7 @@ def main(cfg: TranscriptionConfig):
             start_time = time.time()
             for sample_idx, sample in enumerate(samples):
                 _ = streaming_buffer.append_audio_file(sample['audio_filepath'], stream_id=-1)
+                all_audio_filepaths.append(sample['audio_filepath'])
                 if "text" in sample:
                     all_refs_text.append(sample["text"])
                 logging.info(f'Added this sample to the buffer: {sample["audio_filepath"]}')
@@ -468,18 +473,17 @@ def main(cfg: TranscriptionConfig):
 
         end_time = time.time()
         logging.info(f"The whole streaming process took: {round(end_time - start_time, 2)}s")
+        logging.info(f"RTFx: {round(total_audio_duration / (end_time - start_time), 2)}")
 
         # stores the results including the transcriptions of the streaming inference in a json file
-        if cfg.output_path is not None and len(all_refs_text) == len(all_streaming_tran):
-            fname = "streaming_out_" + os.path.splitext(os.path.basename(model_name))[0] + f"_{dataset_title}.json"
+        if cfg.output_manifest is not None and len(all_refs_text) == len(all_streaming_tran):
 
-            hyp_json = os.path.join(cfg.output_path, fname)
-            os.makedirs(cfg.output_path, exist_ok=True)
-            with open(hyp_json, "w") as out_f:
+            with open(cfg.output_manifest, "w") as out_f:
                 for i, hyp in enumerate(all_streaming_tran):
                     record = {
-                        "pred_text": hyp,
+                        "audio_filepath": all_audio_filepaths[i],
                         "text": all_refs_text[i],
+                        "pred_text": hyp,
                         "wer": round(word_error_rate(hypotheses=[hyp], references=[all_refs_text[i]]) * 100, 2),
                     }
                     out_f.write(json.dumps(record) + '\n')

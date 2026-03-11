@@ -376,7 +376,7 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
                 audio_file = get_full_path(audio_file=item[audio_key], manifest_file=cfg.dataset_manifest)
                 item['audio_filepath'] = audio_file
                 filepaths.append(audio_file)
-                f.write(json.dumps(item) + "\n")
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
         sorted_manifest_path = f.name
 
     return filepaths, sorted_manifest_path
@@ -509,7 +509,7 @@ def write_transcription(
                         item['pred_lang_chars'] = transcription.langs_chars
                     if not cfg.decoding.beam.return_best_hypothesis:
                         item['beams'] = beams[idx]
-                f.write(json.dumps(item) + "\n")
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
         else:
             with open(cfg.dataset_manifest, 'r', encoding='utf-8') as fr:
                 for idx, line in enumerate(fr):
@@ -538,7 +538,7 @@ def write_transcription(
 
                         if not cfg.decoding.beam.return_best_hypothesis:
                             item['beams'] = beams[idx]
-                    f.write(json.dumps(item) + "\n")
+                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     return cfg.output_filename, pred_text_attr_name
 
@@ -629,7 +629,7 @@ def compute_metrics_per_sample(
     if output_manifest_path is not None:
         with open(output_manifest_path, 'w') as output:
             for sample in samples_with_metrics:
-                line = json.dumps(sample)
+                line = json.dumps(sample, ensure_ascii=False)
                 output.writelines(f'{line}\n')
         logging.info(f'Output manifest saved: {output_manifest_path}')
 

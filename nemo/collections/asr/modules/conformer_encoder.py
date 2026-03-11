@@ -305,13 +305,21 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         n_heads=4,
         att_context_size=None,
         att_context_probs=None,
+        att_chunk_context_size=None,
         att_context_style='regular',
+        att_zero_rc_weight=None,
+        skip_att_chunk_rc_prob=0.0,
+        dual_mode_training=False,
+        hybrid_dual_mode=False,
+        hybrid_dual_mode_prob=0.15,
+        unified_asr_prob=None,
         xscaling=True,
         untie_biases=True,
         pos_emb_max_len=5000,
         conv_kernel_size=31,
         conv_norm_type='batch_norm',
         conv_context_size=None,
+        conv_context_style='regular',
         use_bias=True,
         dropout=0.1,
         dropout_pre_encoder=0.1,
@@ -333,6 +341,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.n_layers = n_layers
         self._feat_in = feat_in
         self.att_context_style = att_context_style
+        self.skip_att_chunk_rc_prob = skip_att_chunk_rc_prob
+        self.dual_mode_training = dual_mode_training
+        self.hybrid_dual_mode = hybrid_dual_mode
+        self.hybrid_dual_mode_prob = hybrid_dual_mode_prob
+        self.unified_asr_prob = unified_asr_prob
         self.subsampling_factor = subsampling_factor
         self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
 
@@ -346,6 +359,27 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.use_pytorch_sdpa_backends = use_pytorch_sdpa_backends
         self.sync_max_audio_length = sync_max_audio_length
 
+        assert conv_context_style in ["regular", "dcc", "dcc_rc"], f"Invalid conv_context_style: {conv_context_style}!"
+        self.conv_context_style = conv_context_style
+        self.conv_kernel_size = conv_kernel_size
+
+        # Setting up the att_chunk_context_size
+        if att_chunk_context_size is not None:
+            assert att_context_style == "chunked_limited_with_rc", "att_chunk_context_size is only supported for chunked_limited_with_rc attention style!"
+            assert len(att_chunk_context_size) == 3, "att_chunk_context_size must have 3 elements: [left_context, chunk_size, right_context]"
+            self.att_chunk_context_size = att_chunk_context_size
+        else:
+            self.att_chunk_context_size = None
+
+        # setting up att_rc_weigts:
+        if att_zero_rc_weight is not None and self.att_chunk_context_size[2][0] == 0:
+            assert 0 <= att_zero_rc_weight <= 1, "att_zero_rc_weight must be between 0 and 1!"
+            non_zero_rc_weight = (1 - att_zero_rc_weight) / len(self.att_chunk_context_size[2][1:])
+            self.att_rc_weights = [non_zero_rc_weight] * len(self.att_chunk_context_size[2])
+            self.att_rc_weights[0] = att_zero_rc_weight
+        else:
+            self.att_rc_weights = None
+
         # Setting up the att_context_size
         (
             self.att_context_size_all,
@@ -357,6 +391,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             att_context_size=att_context_size,
             att_context_probs=att_context_probs,
             conv_context_size=conv_context_size,
+            conv_context_style=conv_context_style,
             conv_kernel_size=conv_kernel_size,
         )
 
@@ -447,6 +482,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         else:
             raise ValueError(f"Not valid self_attention_model: '{self_attention_model}'!")
 
+        # logging.info(f"self.att_context_size: {self.att_context_size}")
+        # logging.info(f"self.att_chunk_context_size: {self.att_chunk_context_size}")
+
+
         self.layers = nn.ModuleList()
         for i in range(n_layers):
             layer = ConformerLayer(
@@ -460,6 +499,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 conv_kernel_size=conv_kernel_size,
                 conv_norm_type=conv_norm_type,
                 conv_context_size=self.conv_context_size,
+                conv_context_style=self.conv_context_style,
                 dropout=dropout,
                 dropout_att=dropout_att,
                 pos_bias_u=pos_bias_u,
@@ -613,12 +653,52 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 (audio_signal.size(0),), audio_signal.size(-1), dtype=torch.int64, device=audio_signal.device
             )
 
+        dcc_chunk = None
         # select a random att_context_size with the distribution specified by att_context_probs during training
         # for non-validation cases like test, validation or inference, it uses the first mode in self.att_context_size
-        if self.training and len(self.att_context_size_all) > 1:
-            cur_att_context_size = random.choices(self.att_context_size_all, weights=self.att_context_probs)[0]
+        if self.training and (len(self.att_context_size_all) > 1 or self.att_chunk_context_size is not None):
+            if self.att_context_style == "chunked_limited":
+                cur_att_context_size = random.choices(self.att_context_size_all, weights=self.att_context_probs)[0]
+            elif self.att_context_style == "chunked_limited_with_rc":
+                left_context = random.choices(self.att_chunk_context_size[0])[0]
+                middle_context = random.choices(self.att_chunk_context_size[1])[0]
+                if self.att_rc_weights is not None:
+                    right_context = random.choices(self.att_chunk_context_size[2], weights=self.att_rc_weights)[0]
+                else:
+                    right_context = random.choices(self.att_chunk_context_size[2])[0]
+                cur_att_context_size = [left_context, middle_context, right_context]
+
+                # logging.info(f"cur_att_context_size: {cur_att_context_size}")
+                # logging.info(f"self.att_rc_weights: {self.att_rc_weights}")
+                # logging.info(f"right_context: {right_context}")
+                # raise ValueError("Stop here")
+
+                if random.random() < self.unified_asr_prob:
+                    # pure offline mode with full context
+                    cur_att_context_size = [-1, -1, -1]
+                elif self.conv_context_style in ["dcc", "dcc_rc"]:
+                    # add chunking for convolutions in Conformer layer to adopt model for streaming decoding
+                    dcc_chunk = cur_att_context_size[1]
         else:
-            cur_att_context_size = self.att_context_size
+            if self.att_context_style == "chunked_limited_with_rc":
+                if self.training:
+                    cur_att_context_size = [self.att_chunk_context_size[0][-1], self.att_chunk_context_size[1][-1], self.att_chunk_context_size[2][-1]]
+                else:
+                    # cur_att_context_size = [self.att_chunk_context_size[0][-1], self.att_chunk_context_size[1][-1], self.att_chunk_context_size[2][-1]]
+                    cur_att_context_size = self.att_context_size
+                    # cur_att_context_size = [-1, -1, -1]
+                    # cur_att_context_size = self.att_context_size
+                    # cur_att_context_size = [70,1000,13]
+                # logging.info(f"cur_att_context_size: {cur_att_context_size}")
+            else:
+                cur_att_context_size = self.att_context_size
+                # cur_att_context_size = [-1,-1]
+
+        # logging.info(f"self.att_chunk_context_size: {self.att_chunk_context_size}")
+        # logging.warning(f"cur_att_context_size: {cur_att_context_size}")
+        if len(cur_att_context_size) == 2 and cur_att_context_size[-1] == 26:
+            cur_att_context_size = [-1,-1]
+        # logging.warning(f"dcc_chunk: {dcc_chunk}")
 
         if not bypass_pre_encode:
             audio_signal = torch.transpose(audio_signal, 1, 2)
@@ -650,6 +730,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             offset = None
 
         audio_signal, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
+
+        # logging.warning("*********"*10)
+        # logging.warning(f"audio_signal.shape: {audio_signal.shape}")
+        # logging.warning(f"cur_att_context_size: {cur_att_context_size}")
+        # logging.warning(f"padding_length: {padding_length}")
+        # logging.warning(f"padding_length: {max_audio_length}")
+        # logging.warning(f"offset: {offset}")
+        # raise ValueError("Stop here")
 
         # Create the self-attention and padding masks
         pad_mask, att_mask = self._create_masks(
@@ -683,6 +771,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 pad_mask=pad_mask,
                 cache_last_channel=cache_last_channel_cur,
                 cache_last_time=cache_last_time_cur,
+                dcc_chunk=dcc_chunk,
             )
 
             if cache_last_channel_cur is not None:
@@ -796,6 +885,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     att_mask = att_mask.triu(diagonal=-att_context_size[0])
                 if att_context_size[1] >= 0:
                     att_mask = att_mask.tril(diagonal=att_context_size[1])
+
             elif self.att_context_style == "chunked_limited":
                 # When right context is unlimited, just the left side of the masking need to get updated
                 if att_context_size[1] == -1:
@@ -816,6 +906,51 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                         torch.le(diff_chunks, left_chunks_num), torch.ge(diff_chunks, 0)
                     )
                     att_mask = torch.logical_and(att_mask, chunked_limited_mask.unsqueeze(0))
+
+            elif self.att_context_style == "chunked_limited_with_rc" and sum(att_context_size) != -3:
+                assert len(att_context_size) == 3, "att_context_size must have 3 elements: [left_context, chunk_size, right_context]"
+                
+                left_context_frames = att_context_size[0]
+                chunk_size_frames = att_context_size[1]
+                right_context_frames = att_context_size[2]
+
+                # Calculate chunk index for each frame (which processing group it belongs to)
+                frame_idx = torch.arange(0, max_audio_length, dtype=torch.int, device=att_mask.device)
+                chunk_idx = torch.div(frame_idx, chunk_size_frames, rounding_mode="trunc")
+
+                # For each chunk i, the visible window is:
+                # Start: chunk_i * chunk_size_frames - left_context_frames
+                # End: chunk_i * chunk_size_frames + chunk_size_frames - 1 + right_context_frames
+
+                window_start = chunk_idx * chunk_size_frames - left_context_frames
+                window_start = torch.maximum(window_start, torch.zeros_like(window_start))
+
+                window_end = chunk_idx * chunk_size_frames + chunk_size_frames - 1 + right_context_frames
+
+                # skip right context for some chunks with skip_att_chunk_rc_prob (only for training stage)
+                
+                # import ipdb; ipdb.set_trace()
+                if self.training and self.skip_att_chunk_rc_prob > 0.0:
+                    chunks_num = max_audio_length // chunk_size_frames
+                    for chunk_step in range(chunks_num):
+                        if random.random() < self.skip_att_chunk_rc_prob:
+                            window_end[chunk_step*chunk_size_frames:chunk_step*chunk_size_frames+chunk_size_frames] -= right_context_frames
+                
+                window_end = torch.minimum(window_end, torch.full_like(window_end, max_audio_length - 1))
+
+                # Create the mask: frame i can see frame j if window_start[i] <= j <= window_end[i]
+                j_indices = frame_idx.unsqueeze(0)  # [1, T]
+                window_start_expanded = window_start.unsqueeze(1)  # [T, 1]
+                window_end_expanded = window_end.unsqueeze(1)      # [T, 1]
+
+                chunked_limited_mask = torch.logical_and(
+                    j_indices >= window_start_expanded,
+                    j_indices <= window_end_expanded
+                )
+                att_mask = torch.logical_and(att_mask, chunked_limited_mask.unsqueeze(0))
+
+                # logging.info(f"att_mask: {att_mask}")
+
         else:
             att_mask = None
 
@@ -841,6 +976,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             att_mask = ~att_mask
 
         pad_mask = ~pad_mask
+
+        # import ipdb; ipdb.set_trace()
         return pad_mask, att_mask
 
     def enable_pad_mask(self, on=True):
@@ -856,7 +993,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         return mask
 
     def _calc_context_sizes(
-        self, att_context_size, att_context_probs, att_context_style, conv_context_size, conv_kernel_size
+        self, att_context_size, att_context_probs, att_context_style, conv_context_size, conv_context_style, conv_kernel_size
     ):
         # convert att_context_size to a standard list of lists
         if att_context_size:
@@ -873,8 +1010,15 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                         raise ValueError(
                             f"Right context (att_context_size[{i}][1]) can not be unlimited for chunked_limited style!"
                         )
+                # TODO: do we need to check this?
+                # if conv_context_style == "dcc_rc" and att_context_style == "chunked_limited_with_rc" and att_cs[2] != 0:
+                #     assert (conv_kernel_size - 1) / 2 <=  att_cs[2], f"(conv_kernel_size - 1) / 2 must be less than or equal to right context"
         else:
             att_context_size_all = [[-1, -1]]
+
+        if att_context_style == "chunked_limited_with_rc":
+            # att_context_size_all = [[self.att_chunk_context_size[0][-1], self.att_chunk_context_size[1][-1], self.att_chunk_context_size[2][-1]]]
+            att_context_size_all = [[-1, -1, -1]]
 
         if att_context_probs:
             if len(att_context_probs) != len(att_context_size_all):
@@ -901,7 +1045,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     raise ValueError(f"Invalid conv_context_size: {self.conv_context_size}!")
         else:
             conv_context_size = [(conv_kernel_size - 1) // 2, (conv_kernel_size - 1) // 2]
+        
         return att_context_size_all, att_context_size_all[0], att_context_probs, conv_context_size
+
 
     def set_default_att_context_size(self, att_context_size):
         """
@@ -955,6 +1101,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         elif self.att_context_style == "chunked_limited":
             lookahead_steps = att_context_size[1]
             streaming_cfg.cache_drop_size = 0
+        elif self.att_context_style == "chunked_limited_with_rc":
+            # lookahead_steps = att_context_size[1] + att_context_size[2]
+            lookahead_steps = att_context_size[1] * self.n_layers + self.conv_context_size[1] * self.n_layers
+            streaming_cfg.cache_drop_size = 0
         elif self.att_context_style == "regular":
             lookahead_steps = att_context_size[1] * self.n_layers + self.conv_context_size[1] * self.n_layers
             streaming_cfg.cache_drop_size = lookahead_steps
@@ -980,6 +1130,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         else:
             sampling_frames = 0
 
+        # import pdb; pdb.set_trace()
+        
         if isinstance(sampling_frames, list):
             streaming_cfg.chunk_size = [
                 sampling_frames[0] + self.subsampling_factor * lookahead_steps,

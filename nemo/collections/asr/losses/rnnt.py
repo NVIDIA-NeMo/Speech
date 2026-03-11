@@ -36,6 +36,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch, TDTLossPytorch
+from nemo.collections.asr.parts.rnnt_triton.rnnt_loss import TritonRnntLoss
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
 from nemo.core.utils import numba_utils
@@ -152,6 +153,14 @@ RNNT_LOSS_RESOLVER = {
         min_version='0.0',
         is_available=True,
         installation_msg="Pure Pytorch implementation of TDT loss. Slow and for debugging purposes only.",
+    ),
+    "rnnt_triton": RNNTLossConfig(
+        loss_name="rnnt_triton",
+        lib_name="torch",
+        min_version='0.0',
+        is_available=True,  # always allow instantiation of the loss
+        installation_msg="Triton RNN-T loss",
+        force_float32=False,  # do not cast logits to float32
     ),
 }
 
@@ -322,6 +331,9 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
     elif loss_name == "graph_w_transducer":
         loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, GraphWTransducerLoss.__init__, ignore_params={"blank"})
         loss_func = GraphWTransducerLoss(blank=blank_idx, **loss_kwargs)
+    elif loss_name == "rnnt_triton":
+        loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, TritonRnntLoss.__init__, ignore_params={"blank"})
+        loss_func = TritonRnntLoss(blank=blank_idx, **loss_kwargs)
     else:
         raise ValueError(
             f"Invalid value of `loss_name`: {loss_name}. Allowed loss names are :" f"{loss_function_names}"
@@ -333,8 +345,7 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
 class RNNTLoss(Loss):
     @property
     def input_types(self):
-        """Input types definitions for CTCLoss.
-        """
+        """Input types definitions for CTCLoss."""
         return {
             "log_probs": NeuralType(('B', 'T', 'T', 'D'), LogprobsType()),
             "targets": NeuralType(('B', 'T'), LabelsType()),
@@ -395,7 +406,7 @@ class RNNTLoss(Loss):
                                  standard blank, and the standard blank is the last symbol in the vocab)
                 TDT: num_classes = V. Note, V here does not include any of the "duration outputs".
 
-            reduction: Type of reduction to perform on loss. Possible values are 
+            reduction: Type of reduction to perform on loss. Possible values are
                 `mean_batch`, 'mean_volume`, `mean`, `sum` or None.
                 `None` will return a torch vector comprising the individual loss values of the batch.
                 `mean_batch` will average the losses in the batch

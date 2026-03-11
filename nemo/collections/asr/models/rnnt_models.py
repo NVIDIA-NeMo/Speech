@@ -38,6 +38,11 @@ from nemo.collections.asr.parts.mixins import (
     TranscriptionReturnType,
 )
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
+from nemo.collections.asr.parts.rnnt_triton.rnnt_consistency import (
+    ConsistencyFullRNNTLoss,
+    ConsistencyGraphRNNTLoss,
+    ConsistencyRNNTLoss,
+)
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
@@ -94,6 +99,51 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
 
+        # consistency loss
+        if (consistency_loss_cfg := self.cfg.get("loss", {}).get("consistency", {})) is not None:
+            weight = consistency_loss_cfg.get("weight", None)
+            if weight is not None and weight != 0.0:
+                # check that it is not fused joint
+                if self.joint.fuse_loss_wer or self.joint.fused_batch_size > 0:
+                    raise NotImplementedError("Consistency loss is not supported for fused joint")
+                if loss_name == "tdt":
+                    raise NotImplementedError
+                self.use_double_batch = True
+                if consistency_loss_cfg.get("use_graph_rnnt", False):
+                    logging.info(f"Instantiated graph consistency loss with params: {consistency_loss_cfg}")
+                    self.consistency_loss = ConsistencyGraphRNNTLoss(
+                        blank_id=num_classes,
+                        symmetrical=consistency_loss_cfg.get("symmetrical", True),
+                    )
+                elif consistency_loss_cfg.get("use_all_logits", False):
+                    logging.info(f"Instantiated full consistency loss with params: {consistency_loss_cfg}")
+                    self.consistency_loss = ConsistencyFullRNNTLoss(
+                        symmetrical=consistency_loss_cfg.get("symmetrical", False),
+                        reduction=consistency_loss_cfg.get("reduction", "mean_volume"),
+                        use_triton=consistency_loss_cfg.get("use_triton", True),
+                        blank_id=consistency_loss_cfg.get("blank_id", num_classes),
+                    )
+                else:
+                    logging.info(f"Instantiated partial consistency loss with params: {consistency_loss_cfg}")
+                    self.consistency_loss = ConsistencyRNNTLoss(
+                        blank_id=num_classes,
+                        symmetrical=consistency_loss_cfg.get("symmetrical", True),
+                        use_blank=consistency_loss_cfg.get("use_blank", False),
+                        complete_distribution=consistency_loss_cfg.get("complete_distribution", False),
+                        reduction=consistency_loss_cfg.get("reduction", "mean_volume"),
+                    )
+                self.consistency_loss_weight = weight
+                self.consistency_loss_after_step = consistency_loss_cfg.get("after_step", -1)
+                # Choose who is teacher: "offline" (default) or "streaming"
+                self.who_is_teacher = consistency_loss_cfg.get("who_is_teacher", "offline")
+                if self.who_is_teacher not in ("offline", "streaming"):
+                    raise ValueError(f"who_is_teacher must be 'offline' or 'streaming', got '{self.who_is_teacher}'")
+            else:
+                self.consistency_loss = None
+                self.consistency_loss_weight = 0.0
+                self.consistency_loss_after_step = -1
+
+
         if hasattr(self.cfg, 'spec_augment') and self._cfg.spec_augment is not None:
             self.spec_augmentation = EncDecRNNTModel.from_config_dict(self.cfg.spec_augment)
         else:
@@ -137,6 +187,20 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
         # Setup encoder adapters (from ASRAdapterModelMixin)
         self.setup_adapters()
+
+        # Setup dual-mode training
+        self.dual_mode_training = self.cfg.encoder.get('dual_mode_training', False)
+        self.offline_loss_weight = self.cfg.loss.get('offline_loss_weight', 1)
+        self.streaming_loss_weight = self.cfg.loss.get('streaming_loss_weight', 1)
+
+        # Setup hybrid dual mode (probabilistic dual mode)
+        self.hybrid_dual_mode = self.cfg.encoder.get('hybrid_dual_mode', False)
+        self.hybrid_dual_mode_prob = self.cfg.encoder.get('hybrid_dual_mode_prob', 0.15)  # Default 15%
+
+        # check what only one dual mode is active
+        if self.dual_mode_training and self.hybrid_dual_mode:
+            raise ValueError("Only one dual mode can be active at a time: dual_mode_training or hybrid_dual_mode")
+
 
     def setup_optim_normalization(self):
         """
@@ -716,23 +780,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return encoded, encoded_len
 
-    # PTL-specific methods
+
     def training_step(self, batch, batch_nb):
         # Reset access registry
         if AccessMixin.is_access_enabled(self.model_guid):
             AccessMixin.reset_registry(self)
 
         signal, signal_len, transcript, transcript_len = batch
-
-        # forward() only performs encoder forward
-        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
-            encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
-        else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
-        del signal
-
-        # During training, loss must be computed, so decoder forward is necessary
-        decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
 
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
@@ -741,79 +795,368 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             log_every_n_steps = 1
             sample_id = batch_nb
 
-        # If experimental fused Joint-Loss-WER is not used
-        if not self.joint.fuse_loss_wer:
-            # Compute full joint and loss
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
-            loss_value = self.loss(
-                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
-            )
-
-            # Add auxiliary losses, if registered
-            loss_value = self.add_auxiliary_losses(loss_value)
-
-            # Reset access registry
-            if AccessMixin.is_access_enabled(self.model_guid):
-                AccessMixin.reset_registry(self)
-
-            tensorboard_logs = {
-                'train_loss': loss_value,
-                'learning_rate': self._optimizer.param_groups[0]['lr'],
-                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
-            }
-
-            if (sample_id + 1) % log_every_n_steps == 0:
-                self.wer.update(
-                    predictions=encoded,
-                    predictions_lengths=encoded_len,
-                    targets=transcript,
-                    targets_lengths=transcript_len,
+        # Check if dual-mode training is enabled
+        if self.dual_mode_training:
+            # raise NotImplementedError("Dual-mode training is not implemented yet")
+            # Preprocessing (done once)
+            if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+                processed_signal, processed_signal_length = signal, signal_len
+            else:
+                processed_signal, processed_signal_length = self.preprocessor(
+                    input_signal=signal, length=signal_len
                 )
-                _, scores, words = self.wer.compute()
-                self.wer.reset()
-                tensorboard_logs.update({'training_batch_wer': scores.float() / words})
+            
+            if self.spec_augmentation is not None and self.training:
+                processed_signal = self.spec_augmentation(
+                    input_spec=processed_signal, length=processed_signal_length
+                )
+            
+            # Store original value
+            original_unified_asr_prob = self.encoder.unified_asr_prob
+            
+            # --- OFFLINE MODE ---
+            self.encoder.unified_asr_prob = 1.0  # Force offline
+            offline_encoded, offline_len = self.encoder(
+                audio_signal=processed_signal, length=processed_signal_length
+            )
+            
+            # --- STREAMING MODE ---
+            self.encoder.unified_asr_prob = 0.0  # Force streaming
+            streaming_encoded, streaming_len = self.encoder(
+                audio_signal=processed_signal, length=processed_signal_length
+            )
+            
+            # Restore original value
+            self.encoder.unified_asr_prob = original_unified_asr_prob
+            
+            del signal
+            
+            # Decoder forward (same for both)
+            decoder_output, target_length, states = self.decoder(
+                targets=transcript, target_length=transcript_len
+            )
+            
+            if not self.joint.fuse_loss_wer:
+                # Compute joint and loss for OFFLINE
+                offline_joint = self.joint(encoder_outputs=offline_encoded, decoder_outputs=decoder_output)
+                offline_loss = self.loss(
+                    log_probs=offline_joint, targets=transcript,
+                    input_lengths=offline_len, target_lengths=target_length
+                )
+                
+                # Compute joint and loss for STREAMING
+                streaming_joint = self.joint(encoder_outputs=streaming_encoded, decoder_outputs=decoder_output)
+                streaming_loss = self.loss(
+                    log_probs=streaming_joint, targets=transcript,
+                    input_lengths=streaming_len, target_lengths=target_length
+                )
+            
+                # logging.warning(f"Offline loss: {offline_loss}, Streaming loss: {streaming_loss}")
+                # logging.warning(f"Weighted sum: {self.offline_loss_weight * offline_loss + self.streaming_loss_weight * streaming_loss}")
+
+                # Weighted sum
+                loss_value = (
+                    self.offline_loss_weight * offline_loss +
+                    self.streaming_loss_weight * streaming_loss
+                )
+                
+                loss_value = self.add_auxiliary_losses(loss_value)
+
+                tensorboard_logs = {
+                    'train_loss': loss_value.item(),
+                    'train_offline_loss': offline_loss.item(),
+                    'train_streaming_loss': streaming_loss.item(),
+                    'learning_rate': self._optimizer.param_groups[0]['lr'],
+                    'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+                }
+
+                # Consistency loss
+                if self.consistency_loss is not None and self.trainer.global_step > self.consistency_loss_after_step:
+                    if self.who_is_teacher == "offline":
+                        teacher_logits = offline_joint
+                        student_logits = streaming_joint
+                        teacher_src_lengths = offline_len
+                    else:  # streaming
+                        teacher_logits = streaming_joint
+                        student_logits = offline_joint
+                        teacher_src_lengths = streaming_len
+
+                    consistency_loss_value = self.consistency_loss(
+                        teacher_logits=teacher_logits,
+                        student_logits=student_logits,
+                        targets=transcript,
+                        src_lengths=teacher_src_lengths,
+                        tgt_lengths=target_length,
+                    )
+                    loss_value += self.consistency_loss_weight * consistency_loss_value
+                    tensorboard_logs['rnnt_consistency_loss'] = consistency_loss_value.item()
+                    tensorboard_logs['rnnt_consistency_loss_weighted'] = consistency_loss_value.item() * self.consistency_loss_weight
+                    tensorboard_logs['train_loss'] = loss_value.item()
+
+
+                # logging.warning(f"Offline loss: {offline_loss:.2f}, Streaming loss: {streaming_loss:.2f}")
+                # logging.warning(f"Weighted sum: {self.offline_loss_weight * offline_loss + self.streaming_loss_weight * streaming_loss:.2f}")
+                # logging.warning(f"Consistency loss: {consistency_loss_value:.2f}, Weighted sum: {self.consistency_loss_weight * consistency_loss_value:.2f}")
+                # logging.warning(f"Total loss: {loss_value:.2f}")
+
+                if AccessMixin.is_access_enabled(self.model_guid):
+                    AccessMixin.reset_registry(self)
+            
+                
+                if (sample_id + 1) % log_every_n_steps == 0:
+                    self.wer.update(
+                        predictions=offline_encoded,
+                        predictions_lengths=offline_len,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                    )
+                    _, scores, words = self.wer.compute()
+                    self.wer.reset()
+                    tensorboard_logs.update({'training_batch_wer': scores.float() / words})
+            # else:
+            #     # Fused mode - similar pattern
+            #     compute_wer = (sample_id + 1) % log_every_n_steps == 0
+                
+            #     offline_loss, wer, _, _ = self.joint(
+            #         encoder_outputs=offline_encoded, decoder_outputs=decoder_output,
+            #         encoder_lengths=offline_len, transcripts=transcript,
+            #         transcript_lengths=transcript_len, compute_wer=compute_wer,
+            #     )
+            #     streaming_loss, _, _, _ = self.joint(
+            #         encoder_outputs=streaming_encoded, decoder_outputs=decoder_output,
+            #         encoder_lengths=streaming_len, transcripts=transcript,
+            #         transcript_lengths=transcript_len, compute_wer=False,
+            #     )
+                
+            #     # logging.warning(f"Offline loss: {offline_loss}, Streaming loss: {streaming_loss}")
+            #     # logging.warning(f"Weighted sum: {self.offline_loss_weight * offline_loss + self.streaming_loss_weight * streaming_loss}")
+
+            #     loss_value = (
+            #         self.offline_loss_weight * offline_loss +
+            #         self.streaming_loss_weight * streaming_loss
+            #     )
+            #     loss_value = self.add_auxiliary_losses(loss_value)
+                
+            #     if AccessMixin.is_access_enabled(self.model_guid):
+            #         AccessMixin.reset_registry(self)
+                
+            #     tensorboard_logs = {
+            #         'train_loss': loss_value,
+            #         'train_offline_loss': offline_loss,
+            #         'train_streaming_loss': streaming_loss,
+            #         'learning_rate': self._optimizer.param_groups[0]['lr'],
+            #         'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            #     }
+            #     if compute_wer:
+            #         tensorboard_logs.update({'training_batch_wer': wer})
+
+
+        elif self.hybrid_dual_mode:
+            # Hybrid mode: probabilistically use dual mode
+            use_dual_mode_this_step = torch.rand(1).item() < self.hybrid_dual_mode_prob
+            
+            if use_dual_mode_this_step:
+                # DUAL MODE PATH
+                # Preprocessing (done once)
+                if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+                    processed_signal, processed_signal_length = signal, signal_len
+                else:
+                    processed_signal, processed_signal_length = self.preprocessor(
+                        input_signal=signal, length=signal_len
+                    )
+                
+                if self.spec_augmentation is not None and self.training:
+                    processed_signal = self.spec_augmentation(
+                        input_spec=processed_signal, length=processed_signal_length
+                    )
+                
+                # Store original value
+                original_unified_asr_prob = self.encoder.unified_asr_prob
+                
+                # --- OFFLINE MODE ---
+                self.encoder.unified_asr_prob = 1.0  # Force offline
+                offline_encoded, offline_len = self.encoder(
+                    audio_signal=processed_signal, length=processed_signal_length
+                )
+                
+                # --- STREAMING MODE ---
+                self.encoder.unified_asr_prob = 0.0  # Force streaming
+                streaming_encoded, streaming_len = self.encoder(
+                    audio_signal=processed_signal, length=processed_signal_length
+                )
+                
+                # Restore original value
+                self.encoder.unified_asr_prob = original_unified_asr_prob
+                
+                del signal
+                
+                # Decoder forward (same for both)
+                decoder_output, target_length, states = self.decoder(
+                    targets=transcript, target_length=transcript_len
+                )
+                
+                # Compute joint and loss for OFFLINE
+                offline_joint = self.joint(encoder_outputs=offline_encoded, decoder_outputs=decoder_output)
+                offline_loss = self.loss(
+                    log_probs=offline_joint, targets=transcript,
+                    input_lengths=offline_len, target_lengths=target_length
+                )
+                
+                # Compute joint and loss for STREAMING
+                streaming_joint = self.joint(encoder_outputs=streaming_encoded, decoder_outputs=decoder_output)
+                streaming_loss = self.loss(
+                    log_probs=streaming_joint, targets=transcript,
+                    input_lengths=streaming_len, target_lengths=target_length
+                )
+                
+                # Weighted sum
+                loss_value = (
+                    self.offline_loss_weight * offline_loss +
+                    self.streaming_loss_weight * streaming_loss
+                )
+                
+                loss_value = self.add_auxiliary_losses(loss_value)
+                
+                tensorboard_logs = {
+                    'train_loss': loss_value.item(),
+                    'train_offline_loss': offline_loss.item(),
+                    'train_streaming_loss': streaming_loss.item(),
+                    'hybrid_dual_mode_active': 1.0,  # Flag for logging
+                    'learning_rate': self._optimizer.param_groups[0]['lr'],
+                    'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+                }
+                
+                # Consistency loss
+                if self.consistency_loss is not None and self.trainer.global_step > self.consistency_loss_after_step:
+                    if self.who_is_teacher == "offline":
+                        teacher_logits = offline_joint
+                        student_logits = streaming_joint
+                        teacher_src_lengths = offline_len
+                    else:  # streaming
+                        teacher_logits = streaming_joint
+                        student_logits = offline_joint
+                        teacher_src_lengths = streaming_len
+
+                    consistency_loss_value = self.consistency_loss(
+                        teacher_logits=teacher_logits,
+                        student_logits=student_logits,
+                        targets=transcript,
+                        src_lengths=teacher_src_lengths,
+                        tgt_lengths=target_length,
+                    )
+                    loss_value += self.consistency_loss_weight * consistency_loss_value
+                    tensorboard_logs['rnnt_consistency_loss'] = consistency_loss_value.item()
+                    tensorboard_logs['rnnt_consistency_loss_weighted'] = consistency_loss_value.item() * self.consistency_loss_weight
+                    tensorboard_logs['train_loss'] = loss_value.item()
+                
+                if AccessMixin.is_access_enabled(self.model_guid):
+                    AccessMixin.reset_registry(self)
+                
+                if (sample_id + 1) % log_every_n_steps == 0:
+                    self.wer.update(
+                        predictions=offline_encoded,
+                        predictions_lengths=offline_len,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                    )
+                    _, scores, words = self.wer.compute()
+                    self.wer.reset()
+                    tensorboard_logs.update({'training_batch_wer': scores.float() / words})
+            else:
+                # STANDARD MODE PATH (single forward pass)
+                if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+                    encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
+                else:
+                    encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+                del signal
+                
+                decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
+                
+                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+                loss_value = self.loss(
+                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                )
+                loss_value = self.add_auxiliary_losses(loss_value)
+                
+                if AccessMixin.is_access_enabled(self.model_guid):
+                    AccessMixin.reset_registry(self)
+                
+                tensorboard_logs = {
+                    'train_loss': loss_value.item(),
+                    'hybrid_dual_mode_active': 0.0,  # Flag for logging
+                    'learning_rate': self._optimizer.param_groups[0]['lr'],
+                    'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+                }
+                
+                if (sample_id + 1) % log_every_n_steps == 0:
+                    self.wer.update(predictions=encoded, predictions_lengths=encoded_len,
+                                targets=transcript, targets_lengths=transcript_len)
+                    _, scores, words = self.wer.compute()
+                    self.wer.reset()
+                    tensorboard_logs.update({'training_batch_wer': scores.float() / words})
+
+
 
         else:
-            # If experimental fused Joint-Loss-WER is used
-            if (sample_id + 1) % log_every_n_steps == 0:
-                compute_wer = True
+            # Original single-mode training (unchanged)
+            if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+                encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
             else:
-                compute_wer = False
+                encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+            del signal
 
-            # Fused joint step
-            loss_value, wer, _, _ = self.joint(
-                encoder_outputs=encoded,
-                decoder_outputs=decoder,
-                encoder_lengths=encoded_len,
-                transcripts=transcript,
-                transcript_lengths=transcript_len,
-                compute_wer=compute_wer,
-            )
+            decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
 
-            # Add auxiliary losses, if registered
-            loss_value = self.add_auxiliary_losses(loss_value)
+            if not self.joint.fuse_loss_wer:
+                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+                loss_value = self.loss(
+                    log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+                )
+                loss_value = self.add_auxiliary_losses(loss_value)
 
-            # Reset access registry
-            if AccessMixin.is_access_enabled(self.model_guid):
-                AccessMixin.reset_registry(self)
+                if AccessMixin.is_access_enabled(self.model_guid):
+                    AccessMixin.reset_registry(self)
 
-            tensorboard_logs = {
-                'train_loss': loss_value,
-                'learning_rate': self._optimizer.param_groups[0]['lr'],
-                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
-            }
+                tensorboard_logs = {
+                    'train_loss': loss_value,
+                    'learning_rate': self._optimizer.param_groups[0]['lr'],
+                    'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+                }
 
-            if compute_wer:
-                tensorboard_logs.update({'training_batch_wer': wer})
+                if (sample_id + 1) % log_every_n_steps == 0:
+                    self.wer.update(predictions=encoded, predictions_lengths=encoded_len,
+                                targets=transcript, targets_lengths=transcript_len)
+                    _, scores, words = self.wer.compute()
+                    self.wer.reset()
+                    tensorboard_logs.update({'training_batch_wer': scores.float() / words})
+            else:
+                compute_wer = (sample_id + 1) % log_every_n_steps == 0
+                loss_value, wer, _, _ = self.joint(
+                    encoder_outputs=encoded, decoder_outputs=decoder, encoder_lengths=encoded_len,
+                    transcripts=transcript, transcript_lengths=transcript_len, compute_wer=compute_wer,
+                )
+                loss_value = self.add_auxiliary_losses(loss_value)
 
-        # Log items
+                if AccessMixin.is_access_enabled(self.model_guid):
+                    AccessMixin.reset_registry(self)
+
+                tensorboard_logs = {
+                    'train_loss': loss_value,
+                    'learning_rate': self._optimizer.param_groups[0]['lr'],
+                    'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+                }
+                if compute_wer:
+                    tensorboard_logs.update({'training_batch_wer': wer})
+
         self.log_dict(tensorboard_logs)
 
-        # Preserve batch acoustic model T and language model U parameters if normalizing
         if self._optim_normalize_joint_txu:
-            self._optim_normalize_txu = [encoded_len.max(), transcript_len.max()]
+            enc_len = offline_len if getattr(self, 'dual_mode_training', False) else encoded_len
+            self._optim_normalize_txu = [enc_len.max(), transcript_len.max()]
 
         return {'loss': loss_value}
+
+
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         signal, signal_len, transcript, transcript_len, sample_id = batch

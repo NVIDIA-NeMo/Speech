@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Type
 
 import numpy as np
@@ -20,6 +21,7 @@ import pytest
 import torch
 
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 
 
 class RNNTTestHelper:
@@ -357,6 +359,8 @@ def rnn_loss_sample_data() -> Type[RnntLossSampleData]:
     return RnntLossSampleData
 
 
+# models
+
 @pytest.fixture(scope='session')
 def fast_conformer_transducer_model():
     return ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
@@ -385,3 +389,38 @@ def canary_1b_v2():
 @pytest.fixture(scope='session')
 def hybrid_rnnt_ctc_bpe_model_with_prompt():
     return ASRModel.restore_from("/home/TestData/asr/hybrid_rnnt_ctc_bpe_model_with_prompt.nemo")
+
+
+# datasets
+@pytest.fixture(scope="session")
+def an4_val_manifest_corrected(tmp_path_factory, test_data_dir):
+    """
+    Correct an4_val manifest audio filepaths, e.g.,
+    "tests/data/asr/test/an4/wav/an440-mjgm-b.wav" -> test_data_dir / "test/an4/wav/an440-mjgm-b.wav"
+    """
+    an4_val_manifest_orig_path = Path(test_data_dir) / "asr/an4_val.json"
+    an4_val_manifest_corrected_path = tmp_path_factory.mktemp("manifests") / "an4_val_corrected.json"
+    an4_val_records = read_manifest(an4_val_manifest_orig_path)
+    for record in an4_val_records:
+        record["audio_filepath"] = record["audio_filepath"].replace(
+            "tests/data/asr", str(an4_val_manifest_orig_path.resolve().parent)
+        )
+    write_manifest(an4_val_manifest_corrected_path, an4_val_records)
+    return an4_val_manifest_corrected_path
+
+
+@pytest.fixture(scope="session")
+def an4_train_manifest_corrected(tmp_path_factory, test_data_dir):
+    """
+    Correct an4_train manifest audio filepaths, e.g.,
+    "tests/data/asr/test/an4/wav/an440-mjgm-b.wav" -> test_data_dir / "test/an4/wav/an440-mjgm-b.wav"
+    """
+    an4_train_manifest_orig_path = Path(test_data_dir) / "asr/an4_train.json"
+    an4_train_manifest_corrected_path = tmp_path_factory.mktemp("manifests") / "an4_train_corrected.json"
+    an4_train_records = read_manifest(an4_train_manifest_orig_path)
+    for record in an4_train_records:
+        record["audio_filepath"] = record["audio_filepath"].replace(
+            "tests/data/asr", str(an4_train_manifest_orig_path.resolve().parent)
+        )
+    write_manifest(an4_train_manifest_corrected_path, an4_train_records)
+    return an4_train_manifest_corrected_path

@@ -1,0 +1,57 @@
+checkpoint_path: null # Path to the pre-trained NemotronVoiceChat checkpoint for evaluation
+model:
+  scoring_asr: stt_en_fastconformer_transducer_large # ASR model used to transcribe generated audio for ASR-BLEU computation
+  inference_speaker_reference: null # Path to an audio file used to clone/condition the TTS voice. Set to "null" if using a preset name below.
+  inference_speaker_name: Megan # Preset speaker identifier. If provided, this overrides `inference_speaker_reference`.
+  
+  stt:
+    model:
+      # evaluation params
+      eval_text_turn_taking: true # Enables evaluation of turn-taking and text prediction accuracy in the Duplex STT model
+
+  speech_generation:
+    model:
+      # inference params for the Duplex EAR-TTS module
+      inference_guidance_scale: 0.2 # Classifier-Free Guidance (CFG) scale for conditioning the audio generation
+      inference_noise_scale: 0.001 # Sampling temperature/noise for MoG
+      inference_top_p_or_k: 0.95 # Nucleus sampling (top-p) or top-k threshold for token selection
+      inference_guidance_enabled: true # Toggle to enable/disable Classifier-Free Guidance
+      inference_force_speech_silence_on_eos: true # Forces the model to output silence tokens once the End-Of-Sequence (EOS) token is generated
+
+trainer:
+  devices: -1 # Number of GPUs to use (-1 uses all available)
+  accelerator: gpu # Hardware accelerator type
+  num_nodes: 1 # Number of compute nodes
+  precision: 32 # Mixed precision setting (16-bit) for faster, memory-efficient inference
+  logger: False # Disabled here because NeMo's `exp_manager` handles logging
+  limit_val_batches: 1.0 # Fraction of the validation dataset to use (1.0 = use the entire dataset)
+  log_every_n_steps: 20 # Frequency of logging metrics to the console/wandb
+  use_distributed_sampler: false # Disable distributed sampler
+  strategy:
+    _target_: lightning.pytorch.strategies.DDPStrategy # Distributed Data Parallel strategy for multi-GPU inference
+    gradient_as_bucket_view: true # Memory optimization for DDP
+    find_unused_parameters: true # Required if parts of the model (like text-only branches) don't receive gradients/usage
+
+data:
+  frame_length: 0.08 # Duration of a single audio frame in seconds (80ms)
+  source_sample_rate: 16000 # Sample rate of the input/user audio prompts (16 kHz)
+  target_sample_rate: 22050 # Sample rate of the generated output speech (22.05 kHz)
+  input_roles: ["user", "User"] # Conversation roles mapped to the input prompt
+  output_roles: ["agent", "Assistant", "assistant","Agent"] # Conversation roles the model is tasked with generating
+
+  validation_ds:
+    datasets:
+      evaluation_set:
+        shar_path: /lustre/fsw/portfolios/llmservice/users/kevinhu/duplex/ultrachat_v2/shar_duplex/manifest_000020 # Path to the Lhotse WebDataset tar shards manifest
+
+    sample_rate: ${data.target_sample_rate} # Audio will be resampled to this rate if necessary
+    batch_size: 4 # Number of samples processed per GPU during evaluation
+    seed: 42 # Random seed for reproducibility
+    shard_seed: "randomized" # Ensures distributed workers get different data shards
+
+exp_manager:
+   explicit_log_dir: nemotron_voicechat_log_dir/ # Root directory where evaluation metrics, JSON logs, and generated audio will be saved
+   name: nemotron-voicechat-eval # Name of the experiment
+   create_tensorboard_logger: false # Toggle for TensorBoard logging
+   create_checkpoint_callback: false # Enables the checkpoint callback module
+   use_datetime_version: true # Appends a timestamp to the log directory name

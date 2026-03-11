@@ -4791,16 +4791,13 @@ class MagpieTTSModel(ModelPT):
 
                 chunk_state.overall_idx += 1
 
-            # Concatenate the list of predictions along the time dimension. 
+            # Concatenate the list of predictions along the time dimension.
             # Note that when frame stacking is on, this also undoes the stacking.
             predicted_codes = torch.cat(state.all_predictions, dim=-1)  # (B, C, F*T_steps)
             num_steps = len(state.all_predictions)
             default_frame_len = num_steps * self.frame_stacking_factor
             predicted_codes_lens = torch.tensor(
-                [
-                    chunk_end_frame_lens.get(item_idx, default_frame_len)
-                    for item_idx in range(batch_size)
-                ],
+                [chunk_end_frame_lens.get(item_idx, default_frame_len) for item_idx in range(batch_size)],
                 device=device,
             )
             predicted_codes = predicted_codes[:, :, : predicted_codes_lens.max()]

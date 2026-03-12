@@ -18,6 +18,7 @@ vad:
 stt:
   type: nemo # choices in ['nemo'] currently only NeMo is supported
   model: "nvidia/parakeet_realtime_eou_120m-v1"
+  # model: "nvidia/nemotron-speech-streaming-en-0.6b"
   model_config: "./server_configs/stt_configs/nemo_cache_aware_streaming.yaml"
   device: "cuda"
 

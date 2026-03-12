@@ -35,6 +35,8 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
         freeze: bool = True,
         squeeze_single: bool = False,
         combine_time_steps: int = 1,
+        learnable_norm: bool = False,
+        xavier_normal_init: bool = False,
     ):
         """Vector quantization using random projection proposed in BEST-RQ paper:
         'Self-Supervised Learning with Random-Projection Quantizer for Speech Recognition'
@@ -48,6 +50,8 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
             time_ahead: if Ture, the input is of shape (B, T, D), otherwise (B, D, T)
             freeze: whether to freeze the projection matrix
             squeeze_single: if True, squeeze codebook dimension if num_books is 1
+            learnable_norm: if True, use LayerNorm with learnable affine params; otherwise plain standardization
+            xavier_normal_init: if True, use Xavier normal initialization for the projection matrix; otherwise Xavier uniform
         """
         super().__init__()
 
@@ -62,10 +66,14 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
         self.time_ahead = time_ahead
         self.squeeze_single = squeeze_single
         self.combine_time_steps = combine_time_steps
+        self.input_norm = nn.LayerNorm(self.feat_in * combine_time_steps, elementwise_affine=learnable_norm)
 
         # (B, T, D) -> (B, T, num_books, code_dim)
         self.proj = nn.Linear(self.feat_in * combine_time_steps, self.num_books * self.code_dim, bias=False)
-        torch.nn.init.xavier_normal_(self.proj.weight)
+        if xavier_normal_init:
+            torch.nn.init.xavier_normal_(self.proj.weight)
+        else:
+            torch.nn.init.xavier_uniform_(self.proj.weight)
 
         # (num_books, num_classes, hid_dim)
         codebooks = torch.randn(self.num_books, self.num_classes, self.code_dim)
@@ -79,6 +87,10 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
         )
         if freeze:
             self.freeze()
+        if learnable_norm:
+            # unfreeze the layernorm parameters
+            self.input_norm.weight.requires_grad = True
+            self.input_norm.bias.requires_grad = True
 
     @property
     def input_types(self):
@@ -128,28 +140,20 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
             input_signal = input_signal.contiguous().reshape(B, T // self.combine_time_steps, -1)
             T = T // self.combine_time_steps
 
+        input_signal = self.input_norm(input_signal)
+
         # (B, T, D) -> (B, T, num_books*code_dim)
         x = self.proj(input_signal)
 
-        # normalize each feature vector
+        # normalize each projected vector
         # (B, T, num_books*code_dim) -> (B, T, num_books, code_dim)
         x = F.normalize(x.view(B, T, self.num_books, self.code_dim), dim=-1)
 
         # get tokens (xid) of shape (B, T, num_books)
-        if self.dist_fn == "cosine":
-            # (B, T, num_books, code_dim) x (num_books, num_classes, code_dim) -> (B, T, num_books, num_classes)
-            xid = torch.einsum('btdh,dch->btdc', x, self.codebooks)
-            # (B, T, num_books, num_classes) -> (B, T, num_books)
-            xid = xid.max(dim=-1)[1]
-        elif self.dist_fn == "l2":
-            # ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a·b  (avoids code_dim-sized intermediate)
-            x_sq = (x * x).sum(dim=-1, keepdim=True)  # (B, T, books, 1)
-            cb_sq = (self.codebooks * self.codebooks).sum(dim=-1)  # (books, classes)
-            dot = torch.einsum('btdh,dch->btdc', x, self.codebooks)  # (B, T, books, classes)
-            dist = x_sq + cb_sq - 2 * dot  # (B, T, books, classes)
-            xid = dist.argmin(dim=-1)
-        else:
-            raise ValueError(f"Unknown distance function {self.dist_fn}, must be one of {self.DIST_FN_LIST}")
+        # Both x and codebooks are L2-normalized, so for both "cosine" and "l2":
+        # argmax(dot) == argmax(cosine) == argmin(||a-b||^2)  since ||a-b||^2 = 2 - 2*a·b
+        xid = torch.einsum('btdh,dch->btdc', x, self.codebooks)
+        xid = xid.max(dim=-1)[1]
 
         # xid2: (B, T, num_books) -> (B, T, num_books)
         xid2 = xid + self.book_offsets

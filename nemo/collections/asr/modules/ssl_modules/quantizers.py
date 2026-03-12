@@ -66,7 +66,7 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
         self.time_ahead = time_ahead
         self.squeeze_single = squeeze_single
         self.combine_time_steps = combine_time_steps
-        self.input_norm = nn.LayerNorm(self.feat_in * combine_time_steps, elementwise_affine=learnable_norm)
+        self.input_norm = nn.LayerNorm(self.feat_in, elementwise_affine=learnable_norm)
 
         # (B, T, D) -> (B, T, num_books, code_dim)
         self.proj = nn.Linear(self.feat_in * combine_time_steps, self.num_books * self.code_dim, bias=False)
@@ -136,11 +136,11 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
 
         B, T, _ = input_signal.size()
 
+        input_signal = self.input_norm(input_signal)
+
         if self.combine_time_steps > 1:
             input_signal = input_signal.contiguous().reshape(B, T // self.combine_time_steps, -1)
             T = T // self.combine_time_steps
-
-        input_signal = self.input_norm(input_signal)
 
         # (B, T, D) -> (B, T, num_books*code_dim)
         x = self.proj(input_signal)

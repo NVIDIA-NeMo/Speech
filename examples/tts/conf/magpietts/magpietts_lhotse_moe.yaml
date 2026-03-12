@@ -89,6 +89,7 @@ model:
     shuffle: true
     num_workers: 6
     pin_memory: true
+    reweight_temperature: 1.0  # Scalar broadcasts to all levels. Use a list for per-level control, e.g. [1.0, 0.0].
 
     input_cfg:
     - type: lhotse_shar

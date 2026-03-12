@@ -1336,7 +1336,7 @@ class TestSaveRestore:
     def test_hf_model_filter(self):
         filt = ModelPT.get_hf_model_filter()
         assert isinstance(filt, dict)
-        assert filt['library'] == 'nemo'
+        assert 'nemo' in filt['filter']
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit

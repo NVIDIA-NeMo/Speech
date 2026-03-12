@@ -73,3 +73,5 @@
 { "filename": "audio/datasets.rst", "lineno": 27, "status": "broken", "code": 0, "uri": "./api.html#datasets", "info": "" }
 { "filename": "audio/configs.rst", "lineno": 17, "status": "broken", "code": 0, "uri": "./api.html#datasets", "info": "" }
 { "filename": "tts/configs.rst", "lineno": 19, "status": "broken", "code": 0, "uri": "./api.html#datasets", "info": "" }
+{ "filename": "tts/datasets.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://zenodo.org/record/7265581/files/ThorstenVoice-Dataset_2022.10.zip?download=1", "info": "403 Client Error: Forbidden for url: https://zenodo.org/record/7265581/files/ThorstenVoice-Dataset_2022.10.zip?download=1" }
+{ "filename": "tts/datasets.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://zenodo.org/record/5525342/files/thorsten-neutral_v03.tgz?download=1", "info": "403 Client Error: Forbidden for url: https://zenodo.org/record/5525342/files/thorsten-neutral_v03.tgz?download=1" }

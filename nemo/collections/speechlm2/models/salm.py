@@ -64,8 +64,8 @@ class SALM(LightningModule, HFHubMixin):
         #       messing up FSDP/TP hooks.
         self.embed_tokens = self.llm.model.embed_tokens
         del self.llm.model.embed_tokens
-        maybe_install_lora(self)
 
+        maybe_install_lora(self)
         # Load the pretrained streaming ASR model and copy its parameters into the audio perception module.
         setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
 

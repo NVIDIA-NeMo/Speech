@@ -165,7 +165,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         with fp32_precision():
             source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
-                cuts.resample(self.target_sample_rate), recording_field="target_audio"
+                cuts.resample(self.target_sample_rate, recording_field="target_audio"), recording_field="target_audio"
             )
         target_text_tokens, target_token_lens = collate_token_channel(
             cuts,
@@ -674,7 +674,7 @@ def get_audio_prompt(
         cuts = sanitize_cuts(cuts)
         # sample a reference turn from the target-role speakers
         audio_prompt, audio_prompt_lens = collate_random_turn_audio(
-            cuts.resample(target_sample_rate),
+            cuts.resample(target_sample_rate, recording_field=recording_field),
             roles=roles,
             recording_field=recording_field,
         )

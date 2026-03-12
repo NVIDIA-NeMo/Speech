@@ -21,7 +21,7 @@ import warnings
 from functools import partial
 from itertools import repeat
 from pathlib import Path
-from typing import KeysView, Mapping, Sequence, Tuple, Union
+from typing import KeysView, List, Mapping, Sequence, Tuple, Union
 
 import numpy as np
 import omegaconf
@@ -53,6 +53,74 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     TextTurn,
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
+
+
+def temperature_reweighting(weights: List[Union[float, int]], temperature: float = 1.0) -> List[float]:
+    """
+    Apply temperature scaling to dataset weights and normalize.
+
+    Formula: normalized_weight_i = (w_i ^ temperature) / sum(w_j ^ temperature)
+
+    Args:
+        weights: List of dataset weights (can be hours, sample counts, or probabilities).
+                 Values can be any positive float/int, not limited to [0, 1].
+        temperature: Scaling factor.
+                     - 1.0: preserves original weight ratios
+                     - 0.0: equalizes all weights (w^0 = 1)
+                     - <1.0: oversamples smaller datasets
+                     - >1.0: amplifies weight differences
+
+    Returns:
+        Normalized weights that sum to 1.0
+
+    Example:
+        >>> temperature_reweighting([197, 2159], temperature=1.0)  # hours
+        [0.0836, 0.9164]  # preserves ratio
+        >>> temperature_reweighting([197, 2159], temperature=0.0)  # equalize
+        [0.5, 0.5]
+    """
+    if len(weights) == 0:
+        return []
+    weights = np.asarray(weights)
+    if np.any(weights <= 0):
+        raise ValueError(f"All weights must be positive (> 0), got: {weights.tolist()}")
+    weights = weights**temperature
+    return (weights / weights.sum()).tolist()
+
+
+def validate_and_standardize_reweight_temperature(config: Union[DictConfig, dict], propagate_attrs: dict) -> None:
+    """
+    Validate and standardize reweight_temperature in propagate_attrs.
+
+    Accepted formats:
+      - Scalar (int/float): broadcast to all nesting levels (warning logged).
+      - List: length must exactly match the input_cfg nesting depth.
+
+    Raises:
+        ValueError: If list length does not match the nesting depth.
+    """
+    if propagate_attrs["reweight_temperature"] is None:
+        return
+
+    expected_length = count_input_cfg_levels(config)
+    reweight_temp = propagate_attrs["reweight_temperature"]
+
+    if isinstance(reweight_temp, (int, float)):
+        propagate_attrs["reweight_temperature"] = [float(reweight_temp)] * expected_length
+        logging.warning(
+            f"reweight_temperature is a scalar ({reweight_temp}), broadcasting to all {expected_length} levels. "
+            f"Expanded to: {propagate_attrs['reweight_temperature']}"
+        )
+    else:
+        reweight_temp = list(reweight_temp)
+        if len(reweight_temp) != expected_length:
+            raise ValueError(
+                f"reweight_temperature list length ({len(reweight_temp)}) does not match "
+                f"the input_cfg nesting depth ({expected_length}). "
+                f"Provide exactly {expected_length} values (one per nesting level), "
+                f"or use a scalar to apply the same temperature to all levels."
+            )
+        propagate_attrs["reweight_temperature"] = reweight_temp
 
 
 def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bool]:
@@ -216,12 +284,13 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
         "slice_length": config.get("slice_length", None),
+        # Temperature for re-weighting datasets. 1 is a neutral value. Lower temperature over-samples smaller datasets, and vice versa.
+        "reweight_temperature": config.get("reweight_temperature", None),
     }
-    input_cfg = config.input_cfg
-    if isinstance(input_cfg, (str, Path)):
-        # Resolve /path/to/input_cfg.yaml into config contents if needed.
-        input_cfg = OmegaConf.load(input_cfg)
-    cuts, is_tarred = parse_and_combine_datasets(input_cfg, propagate_attrs=propagate_attrs)
+
+    validate_and_standardize_reweight_temperature(config, propagate_attrs)
+
+    cuts, is_tarred = parse_and_combine_datasets(config.input_cfg, propagate_attrs=propagate_attrs)
     return cuts, is_tarred
 
 
@@ -397,14 +466,66 @@ def attach_tags(cut, tags: dict):
     return cut
 
 
+def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
+    """
+    Compute the maximum nesting depth of 'input_cfg' keys in the configuration.
+
+    Each 'input_cfg' represents one level of nesting that consumes one temperature
+    value from reweight_temperature. Since sibling groups at the same level share
+    the same temperature (due to propagate_attrs.copy()), we count max depth,
+    not total occurrences.
+
+    Args:
+        config: Configuration dictionary that may contain nested 'input_cfg' keys.
+
+    Returns:
+        Maximum nesting depth of 'input_cfg' keys.
+
+    Example:
+        >>> config = {
+        ...     "input_cfg": [
+        ...         {"type": "group", "input_cfg": [{"type": "nemo"}]},
+        ...         {"type": "group", "input_cfg": [{"type": "nemo"}]},
+        ...     ]
+        ... }
+        >>> count_input_cfg_levels(config)
+        2
+    """
+
+    def _max_depth(obj) -> int:
+        if isinstance(obj, (dict, DictConfig)):
+            depths = []
+            for key, val in obj.items():
+                if key == "input_cfg":
+                    # Found input_cfg: this level counts as 1 + max depth of children
+                    depths.append(1 + _max_depth(val))
+                else:
+                    depths.append(_max_depth(val))
+            return max(depths, default=0)
+        elif isinstance(obj, (list, ListConfig)):
+            # For lists, find the max depth across all items (siblings)
+            return max((_max_depth(item) for item in obj), default=0)
+        return 0
+
+    return _max_depth(config)
+
+
 @data_type_parser("group")
 def parse_and_combine_datasets(
-    config_list: Union[list[DictConfig], ListConfig], propagate_attrs: dict
+    config_list: Union[list[DictConfig], ListConfig, str, Path], propagate_attrs: dict
 ) -> tuple[CutSet, bool]:
     """Parse a list of dataset configurations, potentially combining multiple datasets."""
     cuts = []
     weights = []
     tarred_status = []
+
+    # Extract the temperature for re-weighting datasets.
+    if not propagate_attrs["reweight_temperature"]:
+        temperature = 1.0
+        next_temperatures = None
+    else:
+        temperature, *next_temperatures = propagate_attrs["reweight_temperature"]
+    propagate_attrs["reweight_temperature"] = next_temperatures
 
     if isinstance(config_list, (str, Path)):
         # Resolve local filepath /path/to/input_cfg.yaml or
@@ -450,9 +571,14 @@ def parse_and_combine_datasets(
     ), "Missing dataset weight. When weighting datasets, every dataset must have a specified weight."
 
     if len(cuts) > 1:
+        if not weights:
+            reweights = None
+        else:
+            reweights = temperature_reweighting(weights, temperature=temperature)
+
         cuts = mux(
             *cuts,
-            weights=weights if weights else None,
+            weights=reweights,
             max_open_streams=propagate_attrs["max_open_streams"],
             seed=propagate_attrs["shard_seed"],
             force_finite=propagate_attrs["force_finite"] or propagate_attrs["metadata_only"],

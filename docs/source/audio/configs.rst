@@ -128,6 +128,140 @@ An example train dataset in Lhotse shar format can be configured as follows:
 A configuration file with Lhotse shar format can found in the `SSL pretraining example configuration <https://github.com/NVIDIA/NeMo/blob/main/examples/audio/conf/flow_matching_generative_ssl_pretraining.yaml>`_.
 
 
+Dataset Reweighting with Temperature
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When combining multiple datasets using nested ``input_cfg`` groups, you can control the sampling distribution using the ``reweight_temperature`` parameter. This feature allows you to balance dataset sampling without manually recalculating weights **when adding or removing datasets**.
+
+The temperature scaling formula is:
+
+.. math::
+
+    \hat{w}_i = \frac{w_i^{\tau}}{\sum_{j} w_j^{\tau}}
+
+where :math:`w_i` is the original weight of dataset :math:`i`, :math:`\tau` is the temperature, and :math:`\hat{w}_i` is the normalized sampling probability.
+
+**How Temperature Works:**
+
+- ``temperature = 1.0``: Preserves original weight ratios (neutral, no reweighting)
+- ``temperature = 0.0``: Equalizes all datasets (each gets equal probability regardless of original weights)
+- ``0 < temperature < 1.0``: Over-samples smaller datasets relative to larger ones
+- ``temperature > 1.0``: Amplifies differences between dataset weights
+
+**Configuration Options:**
+
+The ``reweight_temperature`` parameter accepts two formats:
+
+1. **Scalar value** (applied to all nesting levels, warning logged):
+
+.. code-block:: yaml
+
+    train_ds:
+      use_lhotse: true
+      reweight_temperature: 0.5  # Applied to all levels, warning logged
+      input_cfg:
+        - type: group
+          input_cfg:
+            - type: lhotse_shar
+              shar_path: /path/to/dataset1
+              weight: 900
+            - type: lhotse_shar
+              shar_path: /path/to/dataset2
+              weight: 100
+        - type: lhotse_shar
+          shar_path: /path/to/dataset3
+          weight: 200
+        - type: nemo_tarred
+          manifest_filepath: /path/to/dataset4/manifest.json
+          tarred_audio_filepath: /path/to/dataset4/audio.tar
+          weight: 300
+
+2. **List matching maximum nesting depth** (one temperature per level):
+
+.. code-block:: yaml
+
+    train_ds:
+      use_lhotse: true
+      reweight_temperature: [1.0, 0.0]  # Level 1: preserve ratios, Level 2: equalize
+      input_cfg:
+        - type: group
+          weight: 0.7
+          input_cfg:
+            - type: lhotse_shar
+              shar_path: /path/to/dataset1
+              weight: 600
+            - type: lhotse_shar
+              shar_path: /path/to/dataset2
+              weight: 400
+        - type: group
+          weight: 0.3
+          input_cfg:
+            - type: lhotse_shar
+              shar_path: /path/to/dataset3
+              weight: 100
+
+.. note::
+
+    If ``reweight_temperature`` is provided as a list, its length **must** exactly match the maximum nesting depth of ``input_cfg``.
+    A mismatch (too few or too many values) raises a ``ValueError``.
+    Use a scalar value instead if you want the same temperature applied uniformly to all levels.
+
+**Maximum Nesting Depth Calculation:**
+
+The maximum nesting depth is calculated as the maximum depth of ``input_cfg`` keys in the configuration. Sibling groups at the same level share the same temperature value.
+
+.. code-block:: yaml
+
+    # This has maximum nesting depth = 2
+    input_cfg:                          # Level 1
+      - type: group
+        input_cfg:                      # Level 2
+          - type: lhotse_shar
+      - type: group                     # Same level as above (sibling)
+        input_cfg:                      # Level 2 (same as above)
+          - type: lhotse_shar
+
+**Example: Balancing Multiple Task Groups**
+
+.. code-block:: yaml
+
+    train_ds:
+      use_lhotse: true
+      reweight_temperature: [1.0, 0.0]  # Level 1: Preserve task ratios, Level 2: Equalize within tasks
+      input_cfg:
+        - type: group
+          weight: 0.7
+          tags:
+            task: asr
+          input_cfg:
+            - type: nemo_tarred
+              manifest_filepath: /path/to/asr1/manifest.json
+              tarred_audio_filepath: /path/to/asr1/audio.tar
+              weight: 600  # Large dataset
+            - type: nemo_tarred
+              manifest_filepath: /path/to/asr2/manifest.json
+              tarred_audio_filepath: /path/to/asr2/audio.tar
+              weight: 100  # Small dataset (will be upsampled with temp=0.0)
+        - type: group
+          weight: 0.3
+          tags:
+            task: ast
+          input_cfg:
+            - type: nemo_tarred
+              manifest_filepath: /path/to/ast1/manifest.json
+              tarred_audio_filepath: /path/to/ast1/audio.tar
+              weight: 50
+            - type: nemo_tarred
+              manifest_filepath: /path/to/ast2/manifest.json
+              tarred_audio_filepath: /path/to/ast2/audio.tar
+              weight: 200
+
+In this example:
+
+- Level 1 temperature is ``1.0``: The 70/30 split between ASR and AST groups is preserved
+- Level 2 temperature is ``0.0``: Within each group, all datasets are sampled equally regardless of their original weights
+
+
 Model Architecture Configuration
 --------------------------------
 Each configuration file should describe the model architecture being used for the experiment.

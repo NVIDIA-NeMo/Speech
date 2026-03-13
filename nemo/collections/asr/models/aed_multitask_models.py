@@ -546,7 +546,11 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                     timestamps = 'no'
                 else:
                     timestamps = str(timestamps)
-                    assert timestamps in ('yes', 'no', 'timestamp', 'notimestamp', '1', '0')
+                    if timestamps not in ('yes', 'no', 'timestamp', 'notimestamp', '1', '0'):
+                        raise ValueError(
+                            f"Unsupported timestamps value '{timestamps}'. "
+                            f"Must be one of: 'yes', 'no', 'timestamp', 'notimestamp', '1', '0'."
+                        )
                 prompt['timestamp'] = timestamps
             else:
                 prompt['timestamp'] = 'no'
@@ -611,10 +615,11 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
 
-        assert config.get("use_lhotse", False), (
-            "Multi-task model only supports dataloading with Lhotse. "
-            "Please set config.{train,validation,test}_ds.use_lhotse=True"
-        )
+        if not config.get("use_lhotse", False):
+            raise ValueError(
+                "Multi-task model only supports dataloading with Lhotse. "
+                "Please set config.{train,validation,test}_ds.use_lhotse=True"
+            )
         global_rank = config.get("global_rank", self.global_rank)
         world_size = config.get("world_size", self.world_size)
         enable_chunking = config.get("enable_chunking", False)
@@ -1412,21 +1417,21 @@ def parse_multitask_prompt(prompt: dict | None) -> list[dict]:
     #     ],
     # )
     if 'turns' in prompt:
-        assert (
+        if not (
             len(prompt) == 1
             and isinstance(prompt["turns"], list)
             and all(isinstance(t, dict) and "role" in t and "slots" in t for t in prompt["turns"])
-        ), (
-            f"When providing a multi-turn prompt through 'turns', no other keys are allowed "
-            f"and the value under prompt['turns'] must be a list of dicts with roles and slot values "
-            f"(we received {prompt=})"
-        )
+        ):
+            raise ValueError(
+                f"When providing a multi-turn prompt through 'turns', no other keys are allowed "
+                f"and the value under prompt['turns'] must be a list of dicts with roles and slot values "
+                f"(we received {prompt=})"
+            )
         return prompt["turns"]
 
     values_are_dicts = any(isinstance(v, dict) for k, v in prompt.items() if k != "slots")
-    assert not values_are_dicts, (
-        f"We don't support dict values for prompt keys other than 'slots'. " f"We received {prompt=}"
-    )
+    if values_are_dicts:
+        raise ValueError(f"We don't support dict values for prompt keys other than 'slots'. " f"We received {prompt=}")
 
     # Case 2.
     # Single-turn prompting format with explicitly provided role and slot names and values.
@@ -1438,10 +1443,11 @@ def parse_multitask_prompt(prompt: dict | None) -> list[dict]:
     #     slots=dict(source_lang='en', target_lang='de', task='asr', pnc=True, context='translate this text'),
     # )
     if "role" in prompt and "slots" in prompt:
-        assert isinstance(prompt["slots"], dict), (
-            f"When providing a single-turn prompt through 'role', 'slots' must also be provided "
-            f"(we received {prompt=})."
-        )
+        if not isinstance(prompt["slots"], dict):
+            raise ValueError(
+                f"When providing a single-turn prompt through 'role', 'slots' must also be provided "
+                f"as a dict (we received {prompt=})."
+            )
         return [prompt]
 
     # Case 3.

@@ -121,7 +121,7 @@ class EoUClassifier:
     """
 
     def __init__(self, model_name: str = "facebook/wav2vec2-base-960h", device: str | None = None):
-        self.sr = 16000  # Wav2Vec2 expects 16 kHz input. We will resample all inputs to this rate internally.
+        self.sr = 16000  # We will resample all inputs to this rate internally.
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)

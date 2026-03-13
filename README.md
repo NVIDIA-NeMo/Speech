@@ -13,10 +13,13 @@ weight checkpoints and demos!
 
 ## Updates
 
-- 2026-03: MagpieTTS v2602 has been released with support for XYZ!
-- 2026-01: Nemotron-Speech-Streaming has been released featuring XYZ!
+- 2026-03: [MagpieTTS v2602](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) has been released with support
+    for 9 languages(En, Es, De, Fr, Vi, It, Zh, Hi, Ja). Try out [the demo](https://huggingface.co/nvidia/magpie_tts_multilingual_357m).
+- 2026-01: [Nemotron-Speech-Streaming](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) has been
+    released: One checkpoint that enables users to pick their optimal point on the latency-accuracy Pareto curve! Try
+    out [the demo](https://huggingface.co/spaces/nvidia/nemotron-speech-streaming-en-0.6b).
 - This repo has pivoted to focus on audio, speech, and multimodal LLM. For the last NeMo release with support for more
-modalities, see [v2.7.0](https://github.com/NVIDIA-NeMo/NeMo/releases/tag/v2.7.0)
+    modalities, see [v2.7.0](https://github.com/NVIDIA-NeMo/NeMo/releases/tag/v2.7.0)
 
 ## Introduction
 
@@ -26,31 +29,6 @@ AI models by leveraging existing code and pre-trained model checkpoints.
 
 For technical documentation, please see the
 [NeMo Framework User Guide](https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html).
-
-## Get Started with NeMo Framework
-
-Getting started with NeMo Framework is easy. State-of-the-art pretrained
-NeMo models are freely available on [Hugging Face
-Hub](https://huggingface.co/models?library=nemo&sort=downloads&search=nvidia)
-and [NVIDIA
-NGC](https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC).
-These models can be used to generate text or images, transcribe audio,
-and synthesize speech in just a few lines of code.
-
-We have extensive
-[tutorials](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html)
-that can be run on [Google Colab](https://colab.research.google.com) or
-with our [NGC NeMo Framework
-Container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo).
-We also have
-[playbooks](https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html)
-for users who want to train NeMo models with the NeMo Framework
-Launcher.
-
-For advanced users who want to train NeMo models from scratch or
-fine-tune existing NeMo models, we have a full suite of [example
-scripts](https://github.com/NVIDIA/NeMo/tree/main/examples) that support
-multi-GPU/multi-node training.
 
 ## Requirements
 
@@ -71,39 +49,14 @@ can have the risk of arbitrary code execution.
 | Latest  | [![Documentation Status](https://readthedocs.com/projects/nvidia-nemo/badge/?version=main)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/)     | [Documentation of the latest (i.e. main) branch.](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/)          |
 | Stable  | [![Documentation Status](https://readthedocs.com/projects/nvidia-nemo/badge/?version=stable)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/) | [Documentation of the stable (i.e. most recent release)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/) |
 
-## Install NeMo Framework
+## Install NeMo Speech
 
-TBD
-
-### Support matrix
-
-NeMo-Framework provides tiers of support based on OS / Platform and mode of installation. Please refer the following overview of support levels:
-
-- Fully supported: Max performance and feature-completeness.
-- Limited supported: Used to explore NeMo.
-- No support yet: In development.
-- Deprecated: Support has reached end of life.
-
-Please refer to the following table for current support levels:
-
-| OS / Platform              | Install from PyPi | Source into NGC container |
-|----------------------------|-------------------|---------------------------|
-| `linux` - `amd64/x84_64`   | Limited support   | Full support              |
-| `linux` - `arm64`          | Limited support   | Limited support           |
-| `darwin` - `amd64/x64_64`  | Deprecated        | Deprecated                |
-| `darwin` - `arm64`         | Limited support   | Limited support           |
-| `windows` - `amd64/x64_64` | No support yet    | No support yet            |
-| `windows` - `arm64`        | No support yet    | No support yet            |
-
-## Discussions Board
-
-FAQ can be found on the NeMo [Discussions board](https://github.com/NVIDIA/NeMo/discussions). You are welcome to ask
-questions or start discussions on the board.
+NeMo Speech is installable via pip: `pip install 'nemo-toolkit[all]'`
 
 ## Contribute to NeMo
 
 We welcome community contributions! Please refer to
-[CONTRIBUTING.md](https://github.com/NVIDIA/NeMo/blob/stable/CONTRIBUTING.md) for the process.
+[CONTRIBUTING.md](https://github.com/NVIDIA-NeMo/NeMo/blob/main/CONTRIBUTING.md) for the process.
 
 ## Licenses
 

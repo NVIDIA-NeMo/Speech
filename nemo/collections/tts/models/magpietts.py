@@ -2308,7 +2308,12 @@ class MagpieTTSModel(ModelPT):
                 # Skip when batch_size == 1: rolling a single sample maps it back to itself,
                 # so the context would remain matched to the correct speaker.
                 batch_size = context_input_embedded.size(0)
-                if self.training and batch_size > 1 and self.train_shuffle_context_embedding_prob > 0 and random.random() < self.train_shuffle_context_embedding_prob:
+                if (
+                    self.training
+                    and batch_size > 1
+                    and self.train_shuffle_context_embedding_prob > 0
+                    and random.random() < self.train_shuffle_context_embedding_prob
+                ):
                     shift = random.randint(1, batch_size - 1)
                     context_embeddings = context_input_embedded.roll(shift, dims=0)
                     context_mask = context_mask.roll(shift, dims=0)

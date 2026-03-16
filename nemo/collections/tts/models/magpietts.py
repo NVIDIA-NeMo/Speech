@@ -601,7 +601,10 @@ class MagpieTTSModel(ModelPT):
             self.register_buffer('_baked_embedding_T', None)  # Time dimension
             self.register_buffer('_baked_embedding_D', None)  # Embedding dimension
             self.register_buffer('baked_context_embedding_len', None)  # Per-speaker lengths (N,)
-            self.zero_shot_disable_prob = cfg.get('zero_shot_disable_prob', 0.0)
+            # Probability of bypassing the context encoder during training and instead feeding
+            # batch-shuffled raw context embeddings, so the model learns not to clone voices
+            # from untransformed (i.e. not encoded by the context encoder) input.
+            self.train_shuffle_context_embedding_prob = cfg.get('train_shuffle_context_embedding_prob', 0.0)
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
@@ -2302,7 +2305,7 @@ class MagpieTTSModel(ModelPT):
             else:
                 # Zero-shot disable: with some probability, bypass the context encoder and feed
                 # batch-shuffled raw embeddings so the model learns to not clone from untransformed input.
-                if self.training and self.zero_shot_disable_prob > 0 and random.random() < self.zero_shot_disable_prob:
+                if self.training and self.train_shuffle_context_embedding_prob > 0 and random.random() < self.train_shuffle_context_embedding_prob:
                     shuffle_idx = torch.randperm(context_input_embedded.size(0), device=context_input_embedded.device)
                     context_embeddings = context_input_embedded[shuffle_idx]
                     context_mask = context_mask[shuffle_idx]

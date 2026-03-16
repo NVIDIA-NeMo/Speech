@@ -42,6 +42,9 @@ Usage:
 import math
 from dataclasses import dataclass, field
 
+# StrEnum is part of enum in python >= 3.11, for backward compatibility
+# to python < 3.11 we import StrEnum from strenum. Use-case: Huggignface 
+# demo works on python version 3.10
 try:
     from enum import StrEnum
 except ImportError:

@@ -1311,9 +1311,7 @@ if args.s3cfg:
 _merged_tmp = None  # keep reference so temp file is not deleted
 if dual_manifest_mode:
     model_name_1, model_name_2 = args.names_compared
-    merged_manifest_path, _merged_tmp = merge_manifests(
-        args.manifest[0], args.manifest[1], model_name_1, model_name_2
-    )
+    merged_manifest_path, _merged_tmp = merge_manifests(args.manifest[0], args.manifest[1], model_name_1, model_name_2)
     data_filename = merged_manifest_path
     args.names_compared = [f'pred_text_{model_name_1}', f'pred_text_{model_name_2}']
     logging.info(f"Dual-manifest mode: using merged manifest at {merged_manifest_path}")

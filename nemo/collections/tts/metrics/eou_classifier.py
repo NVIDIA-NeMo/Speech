@@ -41,6 +41,7 @@ Usage:
 
 import math
 from dataclasses import dataclass, field
+
 try:
     from enum import StrEnum
 except ImportError:

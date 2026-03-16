@@ -4731,11 +4731,10 @@ class MagpieTTSModel(ModelPT):
             current_starting_point = batch_text_lens[_idx] - current_chunk_len[_idx]
             prior_weights = self.chunked_inference_config.prior_weights_init
             _attn_prior[_idx, :, :current_starting_point] = prior_epsilon * prior_epsilon
-            _attn_prior[_idx, :, current_starting_point] = prior_weights[0]
-            _attn_prior[_idx, :, current_starting_point + 1] = prior_weights[1]
-            _attn_prior[_idx, :, current_starting_point + 2] = prior_weights[2]
-            _attn_prior[_idx, :, current_starting_point + 3] = prior_weights[3]
-            _attn_prior[_idx, :, current_starting_point + 4] = prior_weights[4]
+            for offset, weight in enumerate(prior_weights[:5]):
+                idx = current_starting_point + offset
+                if idx < max_text_len:
+                    _attn_prior[_idx, :, idx] = weight
 
         return _attn_prior
 

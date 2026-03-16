@@ -41,7 +41,10 @@ Usage:
 
 import math
 from dataclasses import dataclass, field
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:
+    from strenum import StrEnum
 from typing import Union
 
 import librosa

@@ -25,6 +25,7 @@ import operator
 import os
 import pickle
 import tarfile
+import tempfile
 from collections import defaultdict
 from os.path import expanduser
 from pathlib import Path
@@ -625,7 +626,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Speech Data Explorer')
     parser.add_argument(
         'manifest',
-        help='Path to JSON manifest file. Supports S3 paths (s3://bucket/path) and '
+        nargs='+',
+        help='Path(s) to JSON manifest file(s). Accepts one or two manifests. '
+        'When two manifests are provided, -nc (--names_compared) is required and '
+        'each manifest must contain a plain "pred_text" field. '
+        'Supports S3 paths (s3://bucket/path) and '
         'sharded patterns using _OP_start..end_CL_ syntax '
         '(e.g., s3://ASR/manifests/manifest__OP_0..255_CL_.json)',
     )
@@ -692,15 +697,24 @@ def parse_args():
     )
     args = parser.parse_args()
 
+    # Validate manifest count
+    if len(args.manifest) > 2:
+        parser.error('At most two manifest files can be provided.')
+    if len(args.manifest) == 2 and args.names_compared is None:
+        parser.error('When two manifest files are provided, -nc/--names_compared is required.')
+
+    dual_manifest_mode = len(args.manifest) == 2
+
     # assume audio_filepath is relative to the directory where the manifest is stored
     # For S3 paths, we cannot use os.path.dirname, so leave it as None
+    primary_manifest = args.manifest[0]
     if args.audio_base_path is None:
-        if is_s3_path(args.manifest):
+        if is_s3_path(primary_manifest):
             # For S3 manifests, audio_base_path should be explicitly provided
             # or tar_base_path should be used
             args.audio_base_path = None
         else:
-            args.audio_base_path = os.path.dirname(args.manifest)
+            args.audio_base_path = os.path.dirname(primary_manifest)
 
     # automaticly going in comparison mode, if there is names_compared argument
     if args.names_compared is not None:
@@ -709,8 +723,8 @@ def parse_args():
     else:
         comparison_mode = False
 
-    logging.debug(f"Parsed args: {args}, comparison_mode: {comparison_mode}")
-    return args, comparison_mode
+    logging.debug(f"Parsed args: {args}, comparison_mode: {comparison_mode}, dual_manifest_mode: {dual_manifest_mode}")
+    return args, comparison_mode, dual_manifest_mode
 
 
 # estimate frequency bandwidth of signal
@@ -1218,11 +1232,93 @@ def load_audio_data(audio_filepath, audio_base_path=None, tar_path=None, dali_in
     return librosa.load(path=filepath, sr=None)
 
 
+def merge_manifests(path1, path2, name1, name2):
+    """Merge two NeMo manifests for dual-manifest NC mode.
+
+    Each manifest must have a 'pred_text' field.  The function renames them to
+    'pred_text_{name1}' and 'pred_text_{name2}' and writes a combined manifest
+    to a temporary file.
+
+    Returns (tmp_path: str, tmp_file: NamedTemporaryFile) — the caller must
+    hold a reference to tmp_file to prevent it from being deleted.
+    """
+    logging.warning(
+        "Two manifests provided. They are expected to be equivalent with only "
+        "pred_text/WER fields differing. Alignment is by line index only — "
+        "correctness is the user's responsibility."
+    )
+
+    lines1 = list(open_manifest_file(path1))
+    lines2 = list(open_manifest_file(path2))
+
+    if len(lines1) != len(lines2):
+        logging.warning(
+            f"Manifest line counts differ: {len(lines1)} vs {len(lines2)}. "
+            f"Truncating to {min(len(lines1), len(lines2))} entries."
+        )
+        n = min(len(lines1), len(lines2))
+        lines1 = lines1[:n]
+        lines2 = lines2[:n]
+
+    field1 = f'pred_text_{name1}'
+    field2 = f'pred_text_{name2}'
+    audio_mismatch_warned = False
+
+    tmp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8')
+    try:
+        for line1, line2 in zip(lines1, lines2):
+            if not line1.strip() or not line2.strip():
+                continue
+            item1 = json.loads(line1)
+            item2 = json.loads(line2)
+
+            if not audio_mismatch_warned and item1.get('audio_filepath') != item2.get('audio_filepath'):
+                logging.warning(
+                    f"audio_filepath mismatch between manifests at the same index "
+                    f"(e.g., '{item1.get('audio_filepath')}' vs '{item2.get('audio_filepath')}'). "
+                    f"Further mismatches will not be reported. This is the user's responsibility."
+                )
+                audio_mismatch_warned = True
+
+            if 'pred_text' not in item1:
+                logging.error(f"First manifest has no 'pred_text' field in entry: {item1}")
+                raise SystemExit(1)
+            if 'pred_text' not in item2:
+                logging.error(f"Second manifest has no 'pred_text' field in entry: {item2}")
+                raise SystemExit(1)
+
+            merged = dict(item1)
+            merged[field1] = merged.pop('pred_text')
+            merged[field2] = item2['pred_text']
+
+            tmp_file.write(json.dumps(merged) + '\n')
+    finally:
+        tmp_file.flush()
+        tmp_file.close()
+
+    logging.info(f"Merged manifest written to temporary file: {tmp_file.name}")
+    return tmp_file.name, tmp_file
+
+
 # parse the CLI arguments
-args, comparison_mode = parse_args()
+args, comparison_mode, dual_manifest_mode = parse_args()
 
 if args.s3cfg:
     _s3_client = get_s3_client(args.s3cfg)
+
+# Handle dual-manifest mode: merge the two manifests into one temp manifest
+# and rewrite names_compared to use the auto-generated pred_text_{name} field names.
+_merged_tmp = None  # keep reference so temp file is not deleted
+if dual_manifest_mode:
+    model_name_1, model_name_2 = args.names_compared
+    merged_manifest_path, _merged_tmp = merge_manifests(
+        args.manifest[0], args.manifest[1], model_name_1, model_name_2
+    )
+    data_filename = merged_manifest_path
+    args.names_compared = [f'pred_text_{model_name_1}', f'pred_text_{model_name_2}']
+    logging.info(f"Dual-manifest mode: using merged manifest at {merged_manifest_path}")
+else:
+    data_filename = args.manifest[0]
 
 if args.show_statistics is not None:
     fld_nm = args.show_statistics
@@ -1237,7 +1333,7 @@ if comparison_mode:
 logging.info('Loading data')
 if not comparison_mode:
     data, wer, cer, wmr, mwa, num_hours, vocabulary, alphabet, metrics_available = load_data(
-        args.manifest,
+        data_filename,
         args.disable_caching_metrics,
         args.estimate_audio_metrics,
         args.vocab,
@@ -1277,7 +1373,7 @@ else:
         alphabet_2,
         metrics_available_2,
     ) = load_data(
-        args.manifest,
+        data_filename,
         args.disable_caching_metrics,
         args.estimate_audio_metrics,
         args.vocab,
@@ -1293,7 +1389,7 @@ app = dash.Dash(
     __name__,
     suppress_callback_exceptions=True,
     external_stylesheets=[dbc.themes.BOOTSTRAP],
-    title=os.path.basename(args.manifest),
+    title=os.path.basename(args.manifest[0]),
 )
 
 figures_labels = {

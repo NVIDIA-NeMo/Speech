@@ -22,7 +22,7 @@ prior_weights offsets exceed max_text_len (e.g. during Japanese longform TTS).
 import pytest
 import torch
 
-from nemo.collections.tts.models.magpietts import ChunkState, ChunkedInferenceConfig
+from nemo.collections.tts.models.magpietts import ChunkedInferenceConfig, ChunkState
 
 
 class _StubModel:
@@ -85,9 +85,9 @@ class TestInitializeChunkedAttnPrior:
         assert result.shape == (batch_size, 1, max_text_len)
         starting = batch_text_lens[0] - current_chunk_len[0]  # 5
         for offset, weight in enumerate(self.prior_weights[:5]):
-            assert result[0, 0, starting + offset].item() == pytest.approx(weight), (
-                f"Weight mismatch at offset {offset}"
-            )
+            assert result[0, 0, starting + offset].item() == pytest.approx(
+                weight
+            ), f"Weight mismatch at offset {offset}"
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -129,9 +129,9 @@ class TestInitializeChunkedAttnPrior:
 
         # Item 0: all 5 weights present
         for offset, weight in enumerate(self.prior_weights[:5]):
-            assert result[0, 0, 5 + offset].item() == pytest.approx(weight), (
-                f"Item 0: weight mismatch at offset {offset}"
-            )
+            assert result[0, 0, 5 + offset].item() == pytest.approx(
+                weight
+            ), f"Item 0: weight mismatch at offset {offset}"
 
         # Item 1: only first weight at index 9; offsets 1..4 were out of bounds
         assert result[1, 0, 9].item() == pytest.approx(self.prior_weights[0])

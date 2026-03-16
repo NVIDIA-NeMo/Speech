@@ -40,6 +40,7 @@ from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setup_audio_codec, setup_speech_encoder
+from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
@@ -614,12 +615,3 @@ def replace_control_speech_codes(speech_codes: torch.Tensor, control_codes: torc
     assumed to consist of 'valid' codes representing silence.
     """
     return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
-
-
-def tokens_to_str(tokens: torch.Tensor, lengths: torch.Tensor, tokenizer: AutoTokenizer, pad_id: int) -> list[str]:
-    ans = []
-    for hyp_ids, hyp_len in zip(tokens.cpu(), lengths.cpu()):
-        hyp_ids = hyp_ids[:hyp_len]
-        hyp_ids = hyp_ids[hyp_ids != pad_id]
-        ans.append(tokenizer.ids_to_text(hyp_ids))
-    return ans

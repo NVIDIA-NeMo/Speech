@@ -433,7 +433,15 @@ class SaveRestoreConnector:
                 )
                 return None
 
-        assert os.path.exists(return_path)
+        if not os.path.exists(return_path):
+            nemo_folder = app_state.nemo_file_folder
+            existing_files = os.listdir(nemo_folder) if nemo_folder and os.path.isdir(nemo_folder) else []
+            raise FileNotFoundError(
+                f"Artifact not found at expected path: {return_path}\n"
+                f"  src: {src}\n"
+                f"  nemo_file_folder: {nemo_folder}\n"
+                f"  Files in nemo_file_folder: {existing_files}"
+            )
 
         artifact_item.path = os.path.abspath(src)
         model.artifacts[config_path] = artifact_item

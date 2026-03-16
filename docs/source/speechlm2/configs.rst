@@ -128,7 +128,7 @@ The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an 
       pretrained_llm: "TinyLlama/TinyLlama_v1.1"
       pretrained_audio_codec: "path/to/audio_codec.nemo"
       pretrained_asr: "stt_en_fastconformer_hybrid_large_streaming_80ms"
-      
+
       # Speech decoder settings
       speech_decoder:
         target: nemo.collections.speechlm2.modules.speech_generation.TransformerARSpeechDecoder
@@ -143,6 +143,20 @@ The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an 
         activation_function: "gelu_new"
         init_method_std: 0.02
         use_cache: True
+
+      # ... other settings
+
+DuplexSTTModel Configuration
+--------------------------------------
+
+The DuplexSTTModel is a speech-to-text model that processes duplex audio conversations and generates agent text responses:
+
+.. code-block:: yaml
+
+    model:
+      # Pretrained model paths
+      pretrained_llm: "TinyLlama/TinyLlama_v1.1"
+      pretrained_asr: "stt_en_fastconformer_hybrid_large_streaming_80ms"
         
       # ... other settings
 
@@ -279,6 +293,7 @@ Example configurations for all model types can be found in the example directory
 - SALM: `examples/speechlm2/conf/salm.yaml`
 - DuplexS2SModel: `examples/speechlm2/conf/s2s_duplex.yaml`
 - DuplexS2SSpeechDecoderModel: `examples/speechlm2/conf/s2s_duplex_speech_decoder.yaml`
+- DuplexSTTModel: `examples/speechlm2/conf/duplex_stt.yaml`
 
 Using Configuration Files
 -------------------------

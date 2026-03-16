@@ -63,19 +63,19 @@ def main(cfg: SalmEvalConfig):
     conversations = (
         guess_parse_cutset(cfg.inputs)
         .map(
+            partial(
+                cut_to_conversation,
+                audio_locator_tag=model.audio_locator_tag,
+                token_equivalent_duration=model.token_equivalent_duration,
+            )
+        )
+        .map(
             partial(replace_audio_locator_tag, audio_locator_tag=model.audio_locator_tag),
             apply_fn=None,
         )
         .map(
             partial(set_token_equivalent_duration, token_equivalent_duration=model.token_equivalent_duration),
             apply_fn=None,
-        )
-        .map(
-            partial(
-                cut_to_conversation,
-                audio_locator_tag=model.audio_locator_tag,
-                token_equivalent_duration=model.token_equivalent_duration,
-            )
         )
         .map(
             partial(attach_system_and_user_turns, system_prompt=cfg.system_prompt, user_prompt=cfg.user_prompt),

@@ -49,6 +49,10 @@ inputs:
     description: "Run tests on CPU only"
     required: false
     default: "false"
+  test_dir:
+    description: "Directory under tests/ containing the test scripts"
+    required: false
+    default: "functional_tests"
 runs:
   using: "composite"
   steps:
@@ -147,7 +151,7 @@ runs:
 
           docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} bash -c '\
             cp -r /opt/Megatron-LM/ /workspace/ && \
-            bash tests/functional_tests/${{ inputs.script }}.sh && \
+            bash tests/${{ inputs.test_dir }}/${{ inputs.script }}.sh && \
             echo "Finished successfully." || echo "Did not finish."'
         ) 2>&1 | tee $DIR/err.log
 

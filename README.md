@@ -1,5 +1,5 @@
 [![Project Status: Active -- The project has reached a stable, usable state and is being actively developed.](http://www.repostatus.org/badges/latest/active.svg)](http://www.repostatus.org/#active)
-[![Documentation](https://readthedocs.com/projects/nvidia-nemo/badge/?version=main)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/)
+[![Documentation](https://readthedocs.com/projects/nvidia-nemo/badge/?version=main)](https://docs.nvidia.com/nemo/speech/nightly/starthere/intro.html)
 [![CodeQL](https://github.com/nvidia/nemo/actions/workflows/codeql.yml/badge.svg?branch=main&event=push)](https://github.com/nvidia/nemo/actions/workflows/codeql.yml)
 [![NeMo core license and license for collections in this repo](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg)](https://github.com/NVIDIA/NeMo/blob/master/LICENSE)
 [![Release version](https://badge.fury.io/py/nemo-toolkit.svg)](https://badge.fury.io/py/nemo-toolkit)
@@ -18,17 +18,23 @@ weight checkpoints and demos!
 - 2026-01: [Nemotron-Speech-Streaming](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) has been
     released: One checkpoint that enables users to pick their optimal point on the latency-accuracy Pareto curve! Try
     out [the demo](https://huggingface.co/spaces/nvidia/nemotron-speech-streaming-en-0.6b).
-- This repo has pivoted to focus on audio, speech, and multimodal LLM. For the last NeMo release with support for more
+- 2026: This repo has pivoted to focus on audio, speech, and multimodal LLM. For the last NeMo release with support for more
     modalities, see [v2.7.0](https://github.com/NVIDIA-NeMo/NeMo/releases/tag/v2.7.0)
+- 2025-08: [Parakeet V3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) and
+    [Canary V2](https://huggingface.co/nvidia/canary-1b-v2) have been released with speech recognition and translation
+    support for 25 European languages.
+- 2025-06: [Canary-Qwen-2.5B](https://huggingface.co/nvidia/canary-qwen-2.5b) has been released with record-setting
+    5.63% WER on English Open ASR Leaderboard.
 
 ## Introduction
 
 NVIDIA NeMo Speech is built for researchers and PyTorch developers working on Speech models including Automatic Speech
-Recognition (ASR) and Text to Speech (TTS). It is designed to help you efficiently create, customize, and deploy new
-AI models by leveraging existing code and pre-trained model checkpoints.
+Recognition (ASR), Text to Speech (TTS), and Speech LLMs. It is designed to help you efficiently create, customize, and
+deploy new It is designed to help you efficiently create, customize, and deploy new AI models by leveraging existing
+code and pre-trained model checkpoints.
 
 For technical documentation, please see the
-[NeMo Framework User Guide](https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html).
+[NeMo Framework User Guide](https://docs.nvidia.com/nemo/speech/nightly/starthere/intro.html).
 
 ## Requirements
 
@@ -46,8 +52,8 @@ can have the risk of arbitrary code execution.
 
 | Version | Status                                                                                                                                                              | Description                                                                                                                    |
 | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Latest  | [![Documentation Status](https://readthedocs.com/projects/nvidia-nemo/badge/?version=main)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/)     | [Documentation of the latest (i.e. main) branch.](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/)          |
-| Stable  | [![Documentation Status](https://readthedocs.com/projects/nvidia-nemo/badge/?version=stable)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/) | [Documentation of the stable (i.e. most recent release)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/) |
+| Latest  | [![Documentation Status](https://readthedocs.com/projects/nvidia-nemo/badge/?version=main)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/)     | [Documentation of the latest (i.e. main) branch.](https://docs.nvidia.com/nemo/speech/nightly/starthere/intro.html)          |
+| Stable  | [![Documentation Status](https://readthedocs.com/projects/nvidia-nemo/badge/?version=stable)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/) | Documentation of the stable (i.e. most recent release) - To be added |
 
 ## Install NeMo Speech
 

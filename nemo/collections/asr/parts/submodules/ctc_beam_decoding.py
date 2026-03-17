@@ -824,6 +824,7 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
 
         return self.riva_decoder.decode(x.to(device=self.device), out_len.to(device=self.device))
 
+
 class BeamBatchedCTCInfer(AbstractBeamCTCInfer, WithOptionalCudaGraphs):
     """
     A batched beam CTC decoder.

@@ -44,8 +44,8 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import random
 import os
+import random
 import shutil
 from dataclasses import fields
 from pathlib import Path
@@ -371,7 +371,7 @@ def run_inference_and_evaluation(
     return None, None
 
 
-def seed_all(seed:int):
+def seed_all(seed: int):
     """
     Attempts to make script deterministic
     """

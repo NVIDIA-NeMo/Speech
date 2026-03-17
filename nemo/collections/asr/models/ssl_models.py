@@ -1023,6 +1023,15 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
             input_signal_length: Lengths of the input signal of shape [B].
             processed_signal: Processed signal of shape [B, D, T].
             processed_signal_length: Lengths of the processed signal of shape [B].
+            noise_signal: Noise signal of shape [B, T].
+            noise_signal_length: Lengths of the noise signal of shape [B].
+            processed_noise_signal: Processed noise signal of shape [B, D, T].
+            processed_noise_signal_length: Lengths of the processed noise signal of shape [B].
+            noisy_input_signal: Noisy input signal of shape [B, T].
+            noisy_input_signal_length: Lengths of the noisy input signal of shape [B].
+            processed_noisy_input_signal: Processed noisy input signal of shape [B, D, T].
+            processed_noisy_input_signal_length: Lengths of the processed noisy input signal of shape [B].
+            apply_mask: Whether to apply masking to the input signal.
         Returns:
             log_probs: Log probabilities of the model of shape [B, T, C].
             encoded_len: Lengths of the encoded signal of shape [B].

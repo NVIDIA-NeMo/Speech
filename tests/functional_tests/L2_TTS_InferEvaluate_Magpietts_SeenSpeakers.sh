@@ -14,14 +14,14 @@
 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
     --codecmodel_path /home/TestData/tts/21fps_causal_codecmodel.nemo \
     --datasets_json_path examples/tts/evalset_config.json \
-    --datasets an4_val_ci \
+    --datasets an4_val_seen_speaker \
     --out_dir ./mp_ss_0 \
     --batch_size 4 \
     --use_cfg \
     --cfg_scale 2.5 \
     --num_repeats 1 \
     --temperature 0.6 \
-    --nemo_files /home/TestData/tts/2602_MagpieTTS/feb26_Magpie-TTS-ML-V1--val_cer_gt=0.3258-step=1000.nemo \
+    --nemo_files /home/subhankarg/Projects/magpie_tts_multilingual_357m.nemo \
     --apply_attention_prior \
     --apply_prior_to_layers "3,4,5,6,7,8,9" \
     --estimate_alignment_from_layers "3,4,5,6" \

@@ -29,7 +29,7 @@ from nemo.core.classes.mixins.access_mixins import AccessMixin
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin, get_registered_adapter
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
-from nemo.utils import config_utils, model_utils
+from nemo.utils import model_utils
 
 NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cpu_is_supported(
     __NUMBA_MINIMUM_VERSION__

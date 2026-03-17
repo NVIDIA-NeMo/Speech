@@ -25,18 +25,10 @@ from nemo.collections.asr.models.ctc_models import EncDecCTCModel
 from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridRNNTCTCBPEModel
 from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import EncDecHybridRNNTCTCBPEModelWithPrompt
 from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel
-from nemo.collections.asr.models.k2_sequence_models import (
-    EncDecK2RnntSeqModel,
-    EncDecK2RnntSeqModelBPE,
-    EncDecK2SeqModel,
-    EncDecK2SeqModelBPE,
-)
 from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel
-from nemo.collections.asr.models.msdd_models import EncDecDiarLabelModel, NeuralDiarizer
 from nemo.collections.asr.models.multitalker_asr_models import EncDecMultiTalkerRNNTBPEModel
 from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
-from nemo.collections.asr.models.slu_models import SLUIntentSlotBPEModel
 from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
 from nemo.collections.asr.models.ssl_models import (
     EncDecDenoiseMaskedTokenPredModel,
@@ -53,14 +45,9 @@ __all__ = [
     'EncDecCTCModelBPE',
     'EncDecClassificationModel',
     'EncDecDenoiseMaskedTokenPredModel',
-    'EncDecDiarLabelModel',
     'EncDecFrameClassificationModel',
     'EncDecHybridRNNTCTCBPEModel',
     'EncDecHybridRNNTCTCModel',
-    'EncDecK2RnntSeqModel',
-    'EncDecK2RnntSeqModelBPE',
-    'EncDecK2SeqModel',
-    'EncDecK2SeqModelBPE',
     'EncDecMaskedTokenPredModel',
     'EncDecMultiTaskModel',
     'EncDecMultiTalkerRNNTBPEModel',
@@ -68,8 +55,6 @@ __all__ = [
     'EncDecRNNTModel',
     'EncDecSpeakerLabelModel',
     'EncDecTransfModelBPE',
-    'NeuralDiarizer',
-    'SLUIntentSlotBPEModel',
     'SortformerEncLabelModel',
     'SpeechEncDecSelfSupervisedModel',
 ]

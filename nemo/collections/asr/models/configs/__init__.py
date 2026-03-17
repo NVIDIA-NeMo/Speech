@@ -23,16 +23,10 @@ from nemo.collections.asr.models.configs.classification_models_config import (
     EncDecClassificationDatasetConfig,
     EncDecClassificationModelConfig,
 )
-from nemo.collections.asr.models.configs.diarizer_config import NeuralDiarizerInferenceConfig
 from nemo.collections.asr.models.configs.matchboxnet_config import (
     EncDecClassificationModelConfigBuilder,
     MatchboxNetModelConfig,
     MatchboxNetVADModelConfig,
-)
-from nemo.collections.asr.models.configs.quartznet_config import (
-    EncDecCTCModelConfigBuilder,
-    JasperModelConfig,
-    QuartzNetModelConfig,
 )
 from nemo.collections.asr.modules.audio_preprocessing import (
     AudioToMelSpectrogramPreprocessorConfig,

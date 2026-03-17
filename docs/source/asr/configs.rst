@@ -398,262 +398,6 @@ The following sections go into more detail about the specific configurations of 
 
 For more information about the ASR models, refer to the :doc:`Models <./models>` section.
 
-Jasper and QuartzNet
-~~~~~~~~~~~~~~~~~~~~
-
-The :ref:`Jasper <Jasper_model>` and :ref:`QuartzNet <Quartznet_model>` models are very similar, and as such the components in their
-configs are very similar as well.
-
-Both architectures use the ``ConvASREncoder`` for the ``encoder``, with parameters detailed in the table below. The encoder parameters
-include details about the Jasper/QuartzNet ``[BxR]`` encoder architecture, including how many blocks to use (``B``), how many times
-to repeat each sub-block (``R``), and the convolution parameters for each block.
-
-The number of blocks ``B`` is determined by the number of list elements under ``jasper`` minus the one prologue and two epilogue blocks.
-The number of sub-blocks ``R`` is determined by setting the ``repeat`` parameter.
-
-To use QuartzNet (which uses more compact time-channel separable convolutions) instead of Jasper, add :code:`separable: true` to all
-but the last block in the architecture.
-
-Change the parameter name ``jasper``.
-
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-| **Parameter**           | **Datatype**     | **Description**                                                                                               | **Supported Values**                |
-+=========================+==================+===============================================================================================================+=====================================+
-| :code:`feat_in`         | int              | The number of input features. Should be equal to :code:`features` in the preprocessor parameters.             |                                     |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-| :code:`activation`      | string           | Which activation function to use in the encoder.                                                              | :code:`hardtanh`, :code:`relu`,     |
-|                         |                  |                                                                                                               | :code:`selu`, :code:`swish`         |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-| :code:`conv_mask`       | bool             | Whether to use masked convolutions in the encoder. Defaults to ``true``.                                      |                                     |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-| :code:`jasper`          |                  | A list of blocks that specifies your encoder architecture. Each entry in this list represents one block in    |                                     |
-|                         |                  | the architecture and contains the parameters for that block, including convolution parameters, dropout, and   |                                     |
-|                         |                  | the number of times the block is repeated. Refer to the `Jasper <https://arxiv.org/pdf/1904.03288.pdf>`_ and  |                                     |
-|                         |                  | `QuartzNet <https://arxiv.org/pdf/1910.10261.pdf>`_ papers for details about specific model configurations.   |                                     |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-
-A QuartzNet 15x5 (fifteen blocks, each sub-block repeated five times) encoder configuration should look similar to the following example:
-
-.. code-block:: yaml
-
-  # Specified at the beginning of the file for convenience
-  n_mels: &n_mels 64    # Used for both the preprocessor and encoder as number of input features
-  repeat: &repeat 5     # R=5
-  dropout: &dropout 0.0
-  separable: &separable true  # Set to true for QN. Set to false for Jasper.
-
-  model:
-    ...
-    encoder:
-      _target_: nemo.collections.asr.modules.ConvASREncoder
-      feat_in: *n_mels  # Should match "features" in the preprocessor.
-      activation: relu
-      conv_mask: true
-
-      jasper:   # This field name should be "jasper" for both types of models.
-
-      # Prologue block
-      - dilation: [1]
-        dropout: *dropout
-        filters: 256
-        kernel: [33]
-        repeat: 1   # Prologue block is not repeated.
-        residual: false
-        separable: *separable
-        stride: [2]
-
-      # Block 1
-      - dilation: [1]
-        dropout: *dropout
-        filters: 256
-        kernel: [33]
-        repeat: *repeat
-        residual: true
-        separable: *separable
-        stride: [1]
-
-      ... # Entries for blocks 2~14
-
-      # Block 15
-      - dilation: [1]
-        dropout: *dropout
-        filters: 512
-        kernel: [75]
-        repeat: *repeat
-        residual: true
-        separable: *separable
-        stride: [1]
-
-      # Two epilogue blocks
-      - dilation: [2]
-        dropout: *dropout
-        filters: 512
-        kernel: [87]
-        repeat: 1   # Epilogue blocks are not repeated
-        residual: false
-        separable: *separable
-        stride: [1]
-
-      - dilation: [1]
-        dropout: *dropout
-        filters: &enc_filters 1024
-        kernel: [1]
-        repeat: 1   # Epilogue blocks are not repeated
-        residual: false
-        stride: [1]
-
-Both Jasper and QuartzNet use the ``ConvASRDecoder`` as the decoder. The decoder parameters are detailed in the following table.
-
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
-| **Parameter**           | **Datatype**     | **Description**                                                                                               | **Supported Values**            |
-+=========================+==================+===============================================================================================================+=================================+
-| :code:`feat_in`         | int              | The number of input features to the decoder. Should be equal to the number of filters in the last block of    |                                 |
-|                         |                  | the encoder.                                                                                                  |                                 |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
-| :code:`vocabulary`      | list             | A list of the valid output characters for your model. For example, for an English dataset, this could be a    |                                 |
-|                         |                  | list of all lowercase letters, space, and apostrophe.                                                         |                                 |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
-| :code:`num_classes`     | int              | Number of output classes, i.e. the length of :code:`vocabulary`.                                              |                                 |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
-
-For example, a decoder config corresponding to the encoder above should look similar to the following:
-
-.. code-block:: yaml
-
-  model:
-    ...
-    decoder:
-      _target_: nemo.collections.asr.modules.ConvASRDecoder
-      feat_in: *enc_filters
-      vocabulary: *labels
-      num_classes: 28   # Length of the vocabulary list
-
-Citrinet
-~~~~~~~~
-
-The :ref:`Citrinet <Citrinet_model>` and :ref:`QuartzNet <Quartznet_model>` models are very similar, and as such the
-components in their configs are very similar as well. Citrinet utilizes Squeeze and Excitation, as well as sub-word tokenization, in
-contrast to QuartzNet. Depending on the dataset, we utilize different tokenizers. For Librispeech, we utilize the HuggingFace WordPiece
-tokenizer, and for all other datasets we utilize the Google Sentencepiece tokenizer - usually the ``unigram`` tokenizer type.
-
-Both architectures use the ``ConvASREncoder`` for the ``encoder``, with parameters detailed above. The encoder parameters include
-details about the Citrinet-C encoder architecture, including how many filters are used per channel (``C``). The Citrinet-C
-configuration is a shortform notation for Citrinet-21x5xC, such that ``B = 21`` and ``R = 5`` are the default and should generally
-not be changed.
-
-To use Citrinet instead of QuartzNet, refer to the ``citrinet_512.yaml`` configuration found inside the ``examples/asr/conf/citrinet``
-directory. Citrinet is primarily comprised of the same :class:`~nemo.collections.asr.parts.submodules.jasper.JasperBlock` as ``Jasper`` or
-``QuartzNet``.
-
-While the configs for Citrinet and QuartzNet are similar, we note the additional flags used for Citrinet below. Refer to the
-``JasperBlock`` documentation for the meaning of these arguments.
-
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-| **Parameter**             | **Datatype**     | **Description**                                                                                           | **Supported Values**              |
-+===========================+==================+===========================================================================================================+===================================+
-| :code:`se`                | bool             | Whether to apply squeeze-and-excitation mechanism or not.                                                 | :code:`true` or :code:`false`     |
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-| :code:`se_context_size`   | int              | SE context size. -1 means global context.                                                                 | :code:`-1` or :code:`+ve int`     |
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-| :code:`stride_last`       | bool             | Stride on the final repeated block or all repeated blocks.                                                | :code:`true` or :code:`false`     |
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-| :code:`residual_mode`     | str              | Type of residual branch to construct.                                                                     | :code:`"add"` or                  |
-|                           |                  | Can be pointwise residual addition or pointwise strided residual attention                                | :code:`"stride_add"`              |
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-
-A Citrinet-512 config should look similar to the following:
-
-.. code-block:: yaml
-
-  model:
-    ...
-    # Specify some defaults across the entire model
-    model_defaults:
-      repeat: 5
-      dropout: 0.1
-      separable: true
-      se: true
-      se_context_size: -1
-    ...
-    encoder:
-      _target_: nemo.collections.asr.modules.ConvASREncoder
-      feat_in: *n_mels  # Should match "features" in the preprocessor.
-      activation: relu
-      conv_mask: true
-
-      jasper:   # This field name should be "jasper" for the JasperBlock (which constructs Citrinet).
-
-      # Prologue block
-      - filters: 512
-        repeat: 1
-        kernel: [5]
-        stride: [1]
-        dilation: [1]
-        dropout: 0.0
-        residual: false
-        separable: ${model.model_defaults.separable}
-        se: ${model.model_defaults.se}
-        se_context_size: ${model.model_defaults.se_context_size}
-
-      # Block 1
-      - filters: 512
-        repeat: ${model.model_defaults.repeat}
-        kernel: [11]
-        stride: [2]
-        dilation: [1]
-        dropout: ${model.model_defaults.dropout}
-        residual: true
-        separable: ${model.model_defaults.separable}
-        se: ${model.model_defaults.se}
-        se_context_size: ${model.model_defaults.se_context_size}
-        stride_last: true
-        residual_mode: "stride_add"
-
-      ... # Entries for blocks 2~21
-
-      # Block 22
-      - filters: 512
-        repeat: ${model.model_defaults.repeat}
-        kernel: [39]
-        stride: [1]
-        dilation: [1]
-        dropout: ${model.model_defaults.dropout}
-        residual: true
-        separable: ${model.model_defaults.separable}
-        se: ${model.model_defaults.se}
-        se_context_size: ${model.model_defaults.se_context_size}
-
-      # Epilogue block
-
-      - filters: &enc_final 640
-        repeat: 1
-        kernel: [41]
-        stride: [1]
-        dilation: [1]
-        dropout: 0.0
-        residual: false
-        separable: ${model.model_defaults.separable}
-        se: ${model.model_defaults.se}
-        se_context_size: ${model.model_defaults.se_context_size}
-
-As mentioned above, Citrinet uses the ``ConvASRDecoder`` as the decoder layer similar to QuartzNet. Only the configuration must be
-changed slightly as Citrinet utilizes sub-word tokenization.
-
-.. note::
-    The following information is relevant to any of the above models that implements its encoder as an :class:`~nemo.collections.asr.modules.conv_asr.ConvASREncoder`, and utilized the ``SqueezeExcite`` mechanism.
-
-The ``SqueezeExcite`` block within a :class:`~nemo.collections.asr.modules.conv_asr.ConvASREncoder` network can be modified to utilize a different context window after the model has been instantiated (even after the model has been trained) so as to evaluate the model with limited context. This can be achieved using the :meth:`~nemo.collections.asr.parts.mixins.mixins.ASRModuleMixin.change_conv_asr_se_context_window`
-
-.. code-block:: python
-
-    # Here, model can be any model that has a `ConvASREncoder` as its encoder, and utilized `SqueezeExcite` blocks
-    # `context_window` : It is an integer representing the number of timeframes (each corresponding to some window stride).
-    # `update_config` : Bool flag which determines whether the config of the model should be updated to reflect the new context window.
-
-    # Here, we specify that 128 timeframes of 0.01s stride should be the context window
-    # This is equivalent to 128 * 0.01s context window for `SqueezeExcite`
-    model.change_conv_asr_se_context_window(context_window=128, update_config=True)
-
 
 .. _asr-configs-conformer-ctc:
 
@@ -671,30 +415,13 @@ respectively. Some components of the configs of :ref:`Conformer-CTC <Conformer-C
 * ``trainer``
 * ``exp_manager``
 
-These datasets are similar to other ASR models like :ref:`QuartzNet <Quartznet_model>`. There should be a tokenizer section where you can
+There should be a tokenizer section where you can
 specify the tokenizer if you want to use sub-word encoding instead of character-based encoding.
 
 
 The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the
 config files and also :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`.
 
-.. _asr-configs-squeezeformer-ctc:
-
-Squeezeformer-CTC
-~~~~~~~~~~~~~~~~~
-
-The config files for Squeezeformer-CTC model contain character-based encoding and sub-word encoding at
-``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_char.yaml`` and ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_bpe.yaml``
-respectively. Components of the configs of :ref:`Squeezeformer-CTC <Squeezeformer-CTC_model>` are similar to :ref:`Conformer config <asr-configs-conformer-ctc>`.
-
-The encoder section includes the details about the Squeezeformer-CTC encoder architecture. You may find more information in the
-config files and also :ref:`nemo.collections.asr.modules.SqueezeformerEncoder <squeezeformer-encoder-api>`.
-
-
-ContextNet
-~~~~~~~~~~
-
-Please refer to the model page of :ref:`ContextNet <ContextNet_model>` for more information on this model.
 
 Conformer-Transducer
 ~~~~~~~~~~~~~~~~~~~~
@@ -806,7 +533,7 @@ The only condition that needs to be met is that **the final layer of the acousti
 Decoder / Prediction Model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The Prediction model is generally an autoregressive, causal model that consumes text tokens and returns embeddings that will be used by the Joint model. The base config for an LSTM based Prediction network can be found in the the ``decoder`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+The Prediction model is generally an autoregressive, causal model that consumes text tokens and returns embeddings that will be used by the Joint model. The base config for an LSTM based Prediction network can be found in the ``decoder`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -833,7 +560,7 @@ Let us discuss some of the important arguments:
 Joint Model
 ~~~~~~~~~~~
 
-The Joint model is a simple feed-forward Multi-Layer Perceptron network. This MLP accepts the output of the Acoustic and Prediction models and computes a joint probability distribution over the entire vocabulary space. The base config for the Joint network can be found in the the ``joint`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+The Joint model is a simple feed-forward Multi-Layer Perceptron network. This MLP accepts the output of the Acoustic and Prediction models and computes a joint probability distribution over the entire vocabulary space. The base config for the Joint network can be found in the ``joint`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -949,7 +676,7 @@ The fused operation goes as follows :
 Transducer Decoding
 ~~~~~~~~~~~~~~~~~~~
 
-Models which have been trained with CTC can transcribe text simply by performing a regular argmax over the output of their decoder. For transducer-based models, the three networks must operate in a synchronized manner in order to transcribe the acoustic features. The base config for the Transducer decoding step can be found in the the ``decoding`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+Models which have been trained with CTC can transcribe text simply by performing a regular argmax over the output of their decoder. For transducer-based models, the three networks must operate in a synchronized manner in order to transcribe the acoustic features. The base config for the Transducer decoding step can be found in the ``decoding`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -998,7 +725,7 @@ The most important component at the top level is the ``strategy``. It can take o
 Transducer Loss
 ~~~~~~~~~~~~~~~
 
-This section configures the type of Transducer loss itself, along with possible sub-sections. By default, an optimized implementation of Transducer loss will be used which depends on Numba for CUDA acceleration. The base config for the Transducer loss section can be found in the the ``loss`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+This section configures the type of Transducer loss itself, along with possible sub-sections. By default, an optimized implementation of Transducer loss will be used which depends on Numba for CUDA acceleration. The base config for the Transducer loss section can be found in the ``loss`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 

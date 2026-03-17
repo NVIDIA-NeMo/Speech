@@ -1,2 +1,0 @@
-Model Name,Language,EuroParl Test Set (en),Fisher Test Set (en),Librispeech Dev-Clean,Librispeech Dev-Other,Librispeech Test-Clean,Librispeech Test-Other,MCV Test-Set v11.0 (en),MCV Test-Set v8.0 (en),MLS Dev (en),MLS Test (en),NSC Part1,NSC Part6,Peoples Speech Test v1,SLR 83 Test,SPGI Test,VoxPopuli Test (en),WSJ Dev 93,WSJ Eval 92
-stt_en_jasper10x5dr,en,,,3.74,10.21,,,,,,,,,,,,,,

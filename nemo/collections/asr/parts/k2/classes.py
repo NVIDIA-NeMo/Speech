@@ -90,8 +90,7 @@ class ASRK2Mixin(ABC):
         Helper function to initialize or update k2 loss and transcribe_decoder.
 
         Args:
-            input_cfg: DictConfig to take new parameters from. Schema is expected as in
-                nemo.collections.asr.models.configs.k2_sequence_models_config.GraphModuleConfig
+            input_cfg: DictConfig to take new parameters from.
         """
         del self.loss
         if hasattr(self, "transcribe_decoder"):

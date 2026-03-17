@@ -24,8 +24,7 @@ from nemo.utils import logging
 
 @dataclass
 class GraphIntersectDenseConfig:
-    """Graph dense intersection config.
-    """
+    """Graph dense intersection config."""
 
     search_beam: float = 20.0
     output_beam: float = 10.0
@@ -51,7 +50,7 @@ class GraphModuleConfig:
 
 class ASRK2Mixin(ABC):
     """k2 Mixin class that simplifies the construction of various models with k2-based losses.
-    
+
     It does the following:
         -   Sets up the graph loss and decoder (methods _init_k2 and update_k2_modules).
         -   Registers external graphs, if needed.
@@ -104,7 +103,10 @@ class ASRK2Mixin(ABC):
             num_classes = self.decoder.num_classes_with_blank - 1
             remove_consecutive = input_cfg.backend_cfg.get("topo_with_self_loops", True) and input_cfg.backend_cfg.get(
                 "topo_type", "default"
-            ) not in ["forced_blank", "identity",]
+            ) not in [
+                "forced_blank",
+                "identity",
+            ]
             self._wer.remove_consecutive = remove_consecutive
 
         from nemo.collections.asr.losses.lattice_losses import LatticeLoss

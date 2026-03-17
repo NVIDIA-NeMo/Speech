@@ -626,5 +626,3 @@ def conformer_model():
     )
     conformer_model = EncDecCTCModel(cfg=modelConfig)
     return conformer_model
-
-

@@ -28,10 +28,8 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
 from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.collections.tts.g2p.utils import GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER, set_grapheme_case
 from nemo.utils import logging
-from nemo.utils.decorators import experimental
 
 
-@experimental
 class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]

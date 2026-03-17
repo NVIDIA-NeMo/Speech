@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 from omegaconf import open_dict
 from omegaconf.dictconfig import DictConfig
 
-from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
 from nemo.collections.asr.inference.model_wrappers.cache_aware_ctc_inference_wrapper import (
     CacheAwareCTCInferenceWrapper,
 )
@@ -28,6 +27,7 @@ from nemo.collections.asr.inference.model_wrappers.cache_aware_rnnt_inference_wr
 )
 from nemo.collections.asr.inference.model_wrappers.ctc_inference_wrapper import CTCInferenceWrapper
 from nemo.collections.asr.inference.model_wrappers.rnnt_inference_wrapper import RNNTInferenceWrapper
+from nemo.collections.asr.inference.model_wrappers.salm_asr_inference_wrapper import SALMASRInferenceWrapper
 from nemo.collections.asr.inference.utils.enums import ASRDecodingType, PipelineType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
@@ -35,6 +35,7 @@ from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
+    from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
 
 
 class BaseBuilder:
@@ -45,23 +46,62 @@ class BaseBuilder:
     """
 
     @classmethod
-    def _build_asr(cls, cfg: DictConfig, decoding_cfg: CTCDecodingConfig | RNNTDecodingConfig) -> ASRInferenceWrapper:
+    def _build_nmt(cls, cfg: DictConfig) -> LLMTranslator | None:
+        """
+        Build the NMT model based on the config.
+        Args:
+            cfg: (DictConfig) Config
+        Returns:
+            (LLMTranslator | None) NMT model
+        """
+        nmt_model = None
+        if cfg.enable_nmt:
+            from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
+
+            nmt_model = LLMTranslator(
+                model_name=cfg.nmt.model_name,
+                source_language=cfg.nmt.source_language,
+                target_language=cfg.nmt.target_language,
+                waitk=cfg.nmt.waitk,
+                device=cfg.nmt.device,
+                device_id=cfg.nmt.device_id,
+                batch_size=cfg.nmt.batch_size,
+                llm_params=cfg.nmt.llm_params,
+                sampling_params=cfg.nmt.sampling_params,
+            )
+            logging.info(f"NMT model `{cfg.nmt.model_name}` loaded")
+        return nmt_model
+
+    @classmethod
+    def _build_asr(cls, cfg: DictConfig, decoding_cfg: CTCDecodingConfig | RNNTDecodingConfig | None) -> Any:
         """
         Build the ASR model based on the config.
         Args:
             cfg: (DictConfig) Config
-            decoding_cfg: (CTCDecodingConfig | RNNTDecodingConfig) Decoding config
+            decoding_cfg: (CTCDecodingConfig | RNNTDecodingConfig | None) Decoding config
         Returns:
-            (ASRInferenceWrapper) ASR inference model
+            (Any) ASR inference model
         """
 
         asr_decoding_type = ASRDecodingType.from_str(cfg.asr_decoding_type)
         pipeline_type = PipelineType.from_str(cfg.pipeline_type)
+        model_params = {
+            "model_name": cfg.asr.model_name,
+            "device": cfg.asr.device,
+            "device_id": cfg.asr.device_id,
+            "compute_dtype": cfg.asr.compute_dtype,
+            "use_amp": cfg.asr.use_amp,
+            "decoding_cfg": decoding_cfg,
+        }
         match (asr_decoding_type, pipeline_type):
             case (ASRDecodingType.CTC, PipelineType.BUFFERED):
                 asr_class = CTCInferenceWrapper
             case (ASRDecodingType.RNNT, PipelineType.BUFFERED):
                 asr_class = RNNTInferenceWrapper
+            case (ASRDecodingType.SALM, PipelineType.BUFFERED):
+                asr_class = SALMASRInferenceWrapper
+                # remove decoding_cfg, SALM AED does not use decoding_cfg yet
+                model_params.pop("decoding_cfg")
             case (ASRDecodingType.CTC, PipelineType.CACHE_AWARE):
                 asr_class = CacheAwareCTCInferenceWrapper
             case (ASRDecodingType.RNNT, PipelineType.CACHE_AWARE):
@@ -71,15 +111,7 @@ class BaseBuilder:
                     f"Wrong combination of ASR decoding type and pipeline type: {asr_decoding_type, pipeline_type}"
                 )
 
-        asr_model = asr_class(
-            model_name=cfg.asr.model_name,
-            decoding_cfg=decoding_cfg,
-            device=cfg.asr.device,
-            device_id=cfg.asr.device_id,
-            compute_dtype=cfg.asr.compute_dtype,
-            use_amp=cfg.asr.use_amp,
-        )
-
+        asr_model = asr_class(**model_params)
         logging.info(f"ASR model `{cfg.asr.model_name}` loaded")
         return asr_model
 

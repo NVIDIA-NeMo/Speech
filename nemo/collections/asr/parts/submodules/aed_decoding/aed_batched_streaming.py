@@ -19,6 +19,7 @@ from omegaconf import OmegaConf
 
 from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel, parse_multitask_prompt
 from nemo.collections.asr.parts.submodules.multitask_decoding import AEDStreamingDecodingConfig
+from nemo.collections.asr.parts.utils.eval_utils import compute_laal
 from nemo.collections.asr.parts.utils.streaming_utils import ContextSize
 from nemo.utils import logging
 
@@ -379,20 +380,6 @@ class GreedyBatchedStreamingAEDComputer:
         hallucination_mask = hallucination_mask_1 + hallucination_mask_2 + hallucination_mask_3
         return hallucination_mask
 
-    def compute_laal(self, delays, source_length, target_length):
-        if delays[0] > source_length:
-            return delays[0]
-        LAAL = 0
-        gamma = max(len(delays), target_length) / source_length
-        tau = 0
-        for t_minus_1, d in enumerate(delays):
-            LAAL += d - t_minus_1 / gamma
-            tau = t_minus_1 + 1
-            if d >= source_length:
-                break
-        LAAL /= tau
-        return LAAL
-
     def compute_alignatt_lagging(
         self,
         records,
@@ -428,7 +415,7 @@ class GreedyBatchedStreamingAEDComputer:
                     break
             if len(lagging) == 0:
                 lagging.append(0)
-            laal = self.compute_laal(lagging, audio_signal_length, target_length_word[i])
+            laal = compute_laal(lagging, audio_signal_length, target_length_word[i])
             if torch.is_tensor(laal):
                 laal_list.append(laal.item())
             else:
@@ -461,7 +448,7 @@ class GreedyBatchedStreamingAEDComputer:
                     break
             if len(lagging) == 0:
                 lagging.append(0)
-            laal = self.compute_laal(lagging, audio_signal_length, target_length_word[i])
+            laal = compute_laal(lagging, audio_signal_length, target_length_word[i])
             laal_list.append(laal)
         return laal_list
 

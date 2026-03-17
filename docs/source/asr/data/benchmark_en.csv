@@ -42,6 +42,7 @@ Model,Model Base Class
 `stt_en_fastconformer_hybrid_medium_streaming_80ms_pc <https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms_pc>`_, EncDecHybridRNNTCTCBPEModel
 `parakeet-tdt_ctc-0.6b-ja <https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja>`_, ASRModel
 `parakeet-tdt-0.6b-v2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`_, ASRModel
+`multitalker-parakeet-streaming-0.6b-v1 <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`_, EncDecMultiTalkerRNNTBPEModel
 `canary-180m-flash <https://huggingface.co/nvidia/canary-180m-flash>`_, EncDecMultiTaskModel
 `parakeet-rnnt-1.1b <https://huggingface.co/nvidia/parakeet-rnnt-1.1b>`_, EncDecRNNTBPEModel
 `stt_en_fastconformer_hybrid_medium_streaming_80ms <https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms>`_, EncDecHybridRNNTCTCBPEModel

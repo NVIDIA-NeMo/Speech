@@ -1,0 +1,164 @@
+model:
+  # Every name/path here starting with 'pretrained' is used to initialize the model weights.
+  pretrained_llm: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+  pretrained_asr: nvidia/parakeet-tdt-0.6b-v2
+
+  pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
+
+  # Regexp (re.compile) patterns matching parameters to be frozen.
+  freeze_params:
+    # Frozen LLM
+    - "^llm\\..+$"  # LLM
+    - "^embed_tokens\\..+$"  # LLM embedding is moved
+    # Frozen pretrained ASR (only the modality adapter layers are trainable)
+    - "^perception\\.preprocessor\\..+$"
+    - "^perception\\.encoder\\..+$"
+  prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
+
+  prompt_format: llama3
+  audio_locator_tag: "<|audioplaceholder|>"  # placeholder token for audio turn is expected
+
+  # Note: Uncomment the block below to enable LoRA on LLM via HuggingFace PEFT library.
+  #   It will automatically freeze LLM parameters even if freeze_params was unused,
+  #   and prevent freezing any parameter that has the string '.lora_' in its name.
+  # lora:
+  #   task_type: CAUSAL_LM
+  #   r: 128
+  #   lora_alpha: 256
+  #   lora_dropout: 0.01
+
+  perception:
+     target: nemo.collections.speechlm2.modules.perception.AudioTranscriptionPerceptionModule
+     output_dim: 4096
+     modality_adapter:
+       _target_: nemo.collections.asr.modules.QformerConnector
+       prompt_size: 64
+       target_layer_ids: [0, 5, 11, 17, 23]
+       qformer_num_hidden_layers: 6
+       encoder_config:
+         d_model: 1024
+         encoder_attention_heads: 8
+       llm_config:
+         hidden_size: 4096
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 5e-4
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+    foreach: true # set to false if having issues with tensor-parallelism
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
+    warmup_steps: 1000
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: 1
+  precision: bf16-true
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_steps: 100000
+  limit_train_batches: 5000  # "epoch" size
+  val_check_interval: ${trainer.limit_train_batches}
+  limit_val_batches: 10
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    # Replace DDPStrategy with ModelParallelStrategy to enable model parallelism
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
+    find_unused_parameters: true
+    # _target_: lightning.pytorch.strategies.ModelParallelStrategy
+    # tensor_parallel_size: 1
+    # data_parallel_size: 8  # This is FSDP2
+
+data:
+  train_ds:
+    sample_rate: 16000
+    prompt_format: ${model.prompt_format}
+    token_equivalent_duration: 0.08
+    input_cfg:
+      - type: lhotse_as_conversation
+        cuts_path: ???  # needs to be set
+        audio_locator_tag: ${model.audio_locator_tag}
+        tags:
+          # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
+          # system_prompt: "some system prompt"
+          context: "Repeat after me, typing in lowercase."
+    seed: 42
+    shuffle: true
+    shard_seed: "randomized"
+    num_workers: 1
+    batch_size: 4
+    # Optional bucketing:
+    # batch_size: null
+    # use_bucketing: true
+    # use_multimodal_sampling: true
+    # measure_total_length: true
+    # Note: `batch_tokens`, `bucket_duration_bins`, and `max_tokens` all represent tokens as
+    #  the sum of input audio frames and output text tokens. Number of audio frames is
+    #  calculated using `token_equivalent_duration`.
+    # batch_tokens: 4000
+    # max_tokens: 2048
+    # bucket_duration_bins: [64, 128, 256, 384, 512, 768, 1024, 1280, 1536, 2048]
+    # num_buckets: 10
+    # bucket_buffer_size: 5000
+
+  validation_ds:
+    # The entries under 'datasets' are a list of separate dataloaders.
+    # The structure is <dataset-name>: {<dataloader-dict-config>}
+    # They inherit all settings from validation_ds, but can individually override them.
+    prompt_format: ${model.prompt_format}
+    token_equivalent_duration: 0.08
+    datasets:
+      val_set_0:  # rename to your dataset name, add more as needed
+        input_cfg:
+          - type: lhotse_as_conversation
+            cuts_path: ???  # needs to be set
+            audio_locator_tag: ${model.audio_locator_tag}
+            tags:
+              # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
+              # system_prompt: "some system prompt"
+              context: "Repeat after me, typing in lowercase."
+    sample_rate: 16000
+    batch_size: 1
+    seed: 42
+    shard_seed: "randomized"
+
+exp_manager:
+   exp_dir: null
+   explicit_log_dir: salm_results/
+   name: salm
+   create_tensorboard_logger: false
+   create_checkpoint_callback: true
+   use_datetime_version: true
+   max_time_per_run: 00:03:50:00
+
+   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+   # you need to set these two to True to continue the training
+   resume_if_exists: true
+   resume_ignore_no_checkpoint: true
+
+   # You may use this section to create a W&B logger
+   create_wandb_logger: false
+   wandb_logger_kwargs:
+     name: development-run
+     project: salm
+     resume: true
+
+   checkpoint_callback_params:
+     filename: "{step}"
+     monitor: val_acc
+     mode: max
+     every_n_train_steps: null
+     every_n_epochs: 1
+     save_top_k: 1
+     always_save_nemo: false
+     save_nemo_on_train_end: false

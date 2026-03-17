@@ -214,10 +214,19 @@ class BNR2(AudioToAudioModel):
                 )
             )
 
-        if input_signal.shape[-1] % SUPPORTED_INPUT_ALIGN_SAMPLES != 0:
-            raise ValueError("Input samples must be a multiple of {}".format(SUPPORTED_INPUT_ALIGN_SAMPLES))
+        # Pad input to nearest multiple of SUPPORTED_INPUT_ALIGN_SAMPLES
+        original_length = input_signal.shape[-1]
+        remainder = original_length % SUPPORTED_INPUT_ALIGN_SAMPLES
+        if remainder != 0:
+            pad_length = SUPPORTED_INPUT_ALIGN_SAMPLES - remainder
+            input_signal = F.pad(input_signal, (0, pad_length))
+        output = self.seasr.forward(x0=input_signal)
 
-        return self.seasr.forward(x0=input_signal)
+        # Trim output back to original length
+        if remainder != 0:
+            output = output[..., :original_length]
+
+        return output
 
     def training_step(self, batch, batch_idx):
         if isinstance(batch, dict):

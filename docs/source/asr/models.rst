@@ -106,8 +106,8 @@ It has the same encoder as Conformer-CTC but utilizes RNNT/Transducer loss/decod
 
 Most of the config file for Conformer-Transducer models are similar to Conformer-CTC except the sections related to the decoder and loss: decoder, loss, joint, decoding.
 You may take a look at our :doc:`tutorials page <../starthere/tutorials>` on Transducer models to become familiar with their configs:
-`Introduction to Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Intro_to_Transducers.ipynb>`_ and
-`ASR with Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_with_Transducers.ipynb>`_
+`Introduction to Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/Intro_to_Transducers.ipynb>`_ and
+`ASR with Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/ASR_with_Transducers.ipynb>`_
 You can find more details on the config files for the Conformer-Transducer models in the :ref:`Conformer-CTC configuration documentation <asr-configs-conformer-ctc>`.
 
 This model supports both the sub-word level and character level encodings. The variant with sub-word encoding is a BPE-based model
@@ -173,6 +173,8 @@ can be used with limited context attention even if trained with full context. Ho
 which help aggregate information from outside the limited context, then training is required.
 
 You may find more examples under ``<NeMo_git_root>/examples/asr/conf/fastconformer/``.
+
+.. _cache-aware streaming conformer:
 
 Cache-aware Streaming Conformer
 -------------------------------
@@ -259,6 +261,89 @@ Note cache-aware streaming models are being exported without caching support by 
 To include caching support, `model.set_export_config({'cache_support' : 'True'})` should be called before export.
 Or, if ``<NeMo_git_root>/scripts/export.py`` is being used:
 `python export.py cache_aware_conformer.nemo cache_aware_conformer.onnx --export-config cache_support=True`
+
+
+Multitalker Cache-aware Streaming FastConformer 
+-----------------------------------------------
+
+This model is a streaming multitalker ASR model based on the :ref:`Cache-aware Streaming FastConformer <Cache-aware Streaming Conformer>` architecture. The model only takes the speaker diarization outputs as external information and eliminates the need for explicit speaker queries or enrollment audio :cite:`asr-models-wang25y_interspeech`. Unlike conventional target-speaker ASR approaches that require speaker embeddings, this model dynamically adapts to individual speakers through speaker-wise speech activity prediction.
+
+
+Self-Speaker Adaptation Technique
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
+
+The key innovation involves injecting learnable speaker kernels into the pre-encode layer of the FastConformer encoder :cite:`asr-models-rekesh2023fastconformer`. These speaker kernels are generated via speaker supervision activations, enabling instantaneous adaptation to target speakers. This approach leverages the inherent tendency of streaming ASR systems to prioritize specific speakers, repurposing this mechanism to achieve robust speaker-focused recognition.
+
+The model architecture requires deploying one model instance per speaker, meaning the number of model instances matches the number of speakers in the conversation. While this necessitates additional computational resources, it achieves state-of-the-art performance in handling fully overlapped speech in both offline and streaming scenarios.
+
+This self-speaker adaptation approach offers several advantages over traditional multitalker ASR methods:
+
+* |  No Speaker Enrollment: Unlike target-speaker ASR systems that require pre-enrollment audio or speaker embeddings, this model only needs speaker activity information from diarization
+* |  Handles Severe Overlap: Each instance focuses on a single speaker, enabling accurate transcription even during fully overlapped speech
+* | Streaming Capable: Designed for real-time streaming scenarios with configurable latency-accuracy tradeoffs
+* | Leverages Single-Speaker Models: Can be fine-tuned from strong pre-trained single-speaker ASR models, and single speaker ASR performance is also preserved
+
+Speaker Kernel Injection
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The streaming multitalker Parakeet model employs a speaker kernel injection mechanism at some layers of the FastConformer encoder. The learnable speaker kernels are injected into selected encoder layers, enabling the model to dynamically adapt to specific speakers.
+
+The speaker kernels are generated through speaker supervision activations that detect speech activity for each target speaker. This enables the encoder states to become more responsive to the targeted speaker's speech characteristics, even during periods of fully overlapped speech.
+
+Multi-Instance Architecture
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The model is based on the Parakeet architecture and consists of a NeMo Encoder for Speech Tasks (NEST) :cite:`asr-models-huang2025nest` which is based on FastConformer :cite:`asr-models-rekesh2023fastconformer` encoder. The key architectural park2024nestinnovation is the **multi-instance approach**, where one model instance is deployed per speaker.
+
+Each model instance has the following characteristics: 
+
+* | Receives the identical speaker-mixed audio input.
+* | Injects speaker-specific kernels at the pre-encode layer.
+* | Produces transcription output specific to its target speaker.
+* | Operates independently and can run in parallel with other instances.
+
+This architecture enables the model to handle severe speech overlap by having each instance focus exclusively on one speaker, eliminating the permutation problem that affects other multitalker ASR approaches.
+Find more details in the :cite:`asr-models-wang25y_interspeech` paper.
+
+The real-time multitalker ASR model is built on RNNT model structure. :class:`~nemo.collections.asr.models.EncDecMultiTalkerRNNTBPEModel` class inherits from :class:`~nemo.collections.asr.models.EncDecRNNTBPEModel` class and speaker kernel :class:`~nemo.collections.asr.parts.mixins.SpeakerKernel` class. 
+
+Try real-time multitalker ASR with the tutorial notebook: `Streaming Multitalker ASR tutorial notebook <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Streaming_Multitalker_ASR.ipynb>`_.
+
+You can simulate the streaming audio stream and streaming multitalker ASR with the script:
+``<NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_multitalker_streaming_infer.py``
+
+
+.. note::
+   Many ASR pipelines expect **16 kHz, mono-channel WAV** input.
+   If your audio is mp3/m4a or has a different sample rate/channel count, convert it first:
+
+   .. code-block:: bash
+
+      ffmpeg -i input.mp3 -ac 1 -ar 16000 -y output.wav
+
+For an individual audio file:  
+
+.. code-block:: bash
+
+    python <NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_multitalker_streaming_infer.py \
+            asr_model="/path/to/multitalker-parakeet-streaming-0.6b-v1.nemo" \
+            diar_model="/path/to/nvidia/diar_streaming_sortformer_4spk-v2.nemo" \
+            audio_file="/path/to/your/example.wav" \
+            output_path="/path/to/your/example_output.json"
+
+If you want to simulate the system on multiple files, use NeMo manifest:  
+
+.. code-block:: bash
+
+    python <NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_multitalker_streaming_infer.py \
+            asr_model="/path/to/multitalker-parakeet-streaming-0.6b-v1.nemo" \
+            diar_model="/path/to/nvidia/diar_streaming_sortformer_4spk-v2.nemo" \
+            manifest_file="/path/to/your/example_manifest.json" \
+            output_path="/path/to/your/example_output.json"
+
+
+Download model checkpoint and more details can be found on Huggingface model card: `Multitalker Parakeet (Cache-aware FastConformer) Streaming <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__.
+
 
 
 .. _Hybrid-Transducer_CTC_model:
@@ -387,7 +472,6 @@ Usage Examples
     transcriptions = asr_model.transcribe(
         paths2audio_files=["audio1.wav", "audio2.wav"],
         target_lang="en-US",  # Specify target language
-
     )
 
 
@@ -407,31 +491,6 @@ Manifest files should include prompt information:
         "duration": 10.5,
         "target_lang": "en-US"
     }
-
-.. _Hybrid-ASR-TTS_model:
-
-Hybrid ASR-TTS Model
---------------------
-
-Hybrid ASR-TTS Model (``ASRWithTTSModel``) is a transparent wrapper for the ASR model with a frozen pretrained text-to-spectrogram model. The approach is described in the paper
-`Text-only domain adaptation for end-to-end ASR using integrated text-to-mel-spectrogram generator <https://arxiv.org/abs/2302.14036>`_.
-This allows using text-only data for training and finetuning, mixing it with audio-text pairs if necessary.
-
-The model consists of three models:
-
-* ASR model (``EncDecCTCModelBPE`` or ``EncDecRNNTBPEModel``)
-* Frozen TTS Mel Spectrogram Generator (currently, only FastPitch model is supported)
-* Optional frozen Spectrogram Enhancer model trained to mitigate mismatch between real and generated mel spectrogram
-
-.. image:: images/hybrid_asr_tts_model.png
-    :align: center
-    :alt: Hybrid ASR-TTS Model
-    :scale: 50%
-
-For the detailed information see:
-
-* :ref:`Text-only dataset <Hybrid-ASR-TTS_model__Text-Only-Data>` preparation
-* :ref:`Configs and training <Hybrid-ASR-TTS_model__Config>`
 
 .. _Jasper_model:
 

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from itertools import groupby
 from typing import Iterable, Union
 
@@ -73,7 +74,11 @@ class SALMDataset(torch.utils.data.Dataset):
         # Note: the function call below may filter out some or all conversations due to audio loading issues.
         # If all conversations are filtered out, we'll return None, and expect users to wrap this dataset
         # in ``nemo.collections.common.data.fallback.FallbackDataset`` to use the previous mini-batch instead.
-        audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(conversations)
+        try:
+            audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(conversations)
+        except Exception as e:
+            logging.warning(f"Error collating conversations: {e}")
+            return None
         if not conversations:
             return None
         return {

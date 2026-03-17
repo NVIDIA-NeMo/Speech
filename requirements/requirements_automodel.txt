@@ -1,2 +1,0 @@
-bitsandbytes==0.46.0 ; (platform_machine == 'x86_64' and platform_system != 'Darwin')
-# liger-kernel ; (platform_machine == 'x86_64' and platform_system != 'Darwin')

@@ -31,7 +31,7 @@ SALM Configuration
 ------------------
 
 The SALM (Speech-Augmented Language Model) configuration includes settings for the pretrained LLM, audio perception module, and training parameters.
-See the `SALM paper<https://arxiv.org/abs/2310.09424>`_ for more details.
+See the `SALM paper <https://arxiv.org/abs/2310.09424>`_ for more details.
 
 .. code-block:: yaml
 
@@ -95,7 +95,7 @@ See the `SALM paper<https://arxiv.org/abs/2310.09424>`_ for more details.
           dropout_emb: 0.0
 
 DuplexS2SModel Configuration
---------------------------
+-----------------------------
 
 The DuplexS2SModel adds speech generation capabilities to the configuration:
 
@@ -117,7 +117,7 @@ The DuplexS2SModel adds speech generation capabilities to the configuration:
         # ... (similar to SALM perception module)
 
 DuplexS2SSpeechDecoderModel Configuration
---------------------------------------
+-----------------------------------------
 
 The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an additional speech generation transformer decoder:
 
@@ -128,7 +128,7 @@ The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an 
       pretrained_llm: "TinyLlama/TinyLlama_v1.1"
       pretrained_audio_codec: "path/to/audio_codec.nemo"
       pretrained_asr: "stt_en_fastconformer_hybrid_large_streaming_80ms"
-      
+
       # Speech decoder settings
       speech_decoder:
         target: nemo.collections.speechlm2.modules.speech_generation.TransformerARSpeechDecoder
@@ -143,11 +143,25 @@ The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an 
         activation_function: "gelu_new"
         init_method_std: 0.02
         use_cache: True
+
+      # ... other settings
+
+DuplexSTTModel Configuration
+--------------------------------------
+
+The DuplexSTTModel is a speech-to-text model that processes duplex audio conversations and generates agent text responses:
+
+.. code-block:: yaml
+
+    model:
+      # Pretrained model paths
+      pretrained_llm: "TinyLlama/TinyLlama_v1.1"
+      pretrained_asr: "stt_en_fastconformer_hybrid_large_streaming_80ms"
         
       # ... other settings
 
 Trainer Configuration
-------------------
+---------------------
 
 The trainer section contains PyTorch Lightning Trainer settings:
 
@@ -169,7 +183,7 @@ The trainer section contains PyTorch Lightning Trainer settings:
       gradient_clip_val: 1.0
 
 Experiment Manager Configuration
------------------------------
+--------------------------------
 
 The exp_manager section contains settings for experiment logging and model checkpointing:
 
@@ -242,10 +256,10 @@ For example, S2S models have:
       train_ds: ...
 
 Important Configuration Parameters
--------------------------------
+-----------------------------------
 
 Model Parameters
-^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^
 
 - **pretrained_llm**: Path to the pretrained HuggingFace LLM
 - **pretrained_asr**: Name of the pretrained NeMo ASR model used for perception
@@ -254,7 +268,7 @@ Model Parameters
 - **audio_loss_weight/text_loss_weight**: Weighting of different loss components
 
 Perception Module
-^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^
 
 - **self_attention_model**: Type of attention mechanism ("rel_pos" or "abs_pos")
 - **att_context_size**: Context window size for attention ([left, right])
@@ -263,7 +277,7 @@ Perception Module
 - **d_model**: Model dimension size
 
 Data Parameters
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^^
 
 - **frame_length**: Frame duration in seconds
 - **source_sample_rate/target_sample_rate**: Sample rates for input/output audio
@@ -272,16 +286,17 @@ Data Parameters
 - **use_bucketing**: Whether to use length-based bucketing for efficient batching
 
 Example Configuration Files
--------------------------
+---------------------------
 
 Example configurations for all model types can be found in the example directory:
 
 - SALM: `examples/speechlm2/conf/salm.yaml`
 - DuplexS2SModel: `examples/speechlm2/conf/s2s_duplex.yaml`
 - DuplexS2SSpeechDecoderModel: `examples/speechlm2/conf/s2s_duplex_speech_decoder.yaml`
+- DuplexSTTModel: `examples/speechlm2/conf/duplex_stt.yaml`
 
 Using Configuration Files
------------------------
+-------------------------
 
 You can use these configurations with the training scripts by specifying the config path:
 

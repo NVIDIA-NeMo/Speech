@@ -3,3 +3,4 @@
 
   att_context_size: [70,1] # left and right attention context sizes for streaming ASR
   frame_len_in_secs: 0.08  # default for FastConformer, do not change unless using other architechtures
+  audio_chunk_size_in_secs: 0.08 

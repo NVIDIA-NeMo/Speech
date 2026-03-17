@@ -30,7 +30,7 @@ from nemo.collections.asr.modules.sortformer_modules import StreamingSortformerS
 class DiarizationConfig:
     """Diarization configuration parameters for inference."""
 
-    model_path: str = "nvidia/diar_sortformer_4spk-v1"
+    model_path: str = "nvidia/diar_streaming_sortformer_4spk-v2"
     device: str = "cuda"
 
     log: bool = False  # If True, log will be printed
@@ -81,7 +81,7 @@ class NeMoStreamingDiarService:
         self.streaming_state = self.init_streaming_state(batch_size=1)
         self.total_preds = torch.zeros((1, 0, self.max_num_speakers), device=self.diarizer.device)
 
-        print("NeMoLegacyDiarService initialized")
+        print(f"NeMoStreamingDiarService initialized with model `{model}` on device `{self.device}`")
 
     def build_diarizer(self):
         if self.cfg.model_path.endswith(".nemo"):

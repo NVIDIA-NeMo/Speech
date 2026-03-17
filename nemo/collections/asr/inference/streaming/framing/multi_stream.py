@@ -138,6 +138,7 @@ class ContinuousBatchedFrameStreamer:
         self.n_audio_files = len(audio_filepaths)
         self.total_progress_steps = self.n_audio_files * 2  # One step for adding, one for processing
         self.sid2filepath = {}
+        self.elapsed_durations = {}
 
     def set_progress_bar(self, progress_bar: ProgressBar) -> None:
         """
@@ -180,6 +181,7 @@ class ContinuousBatchedFrameStreamer:
         audio_filepath = self.audio_filepaths[self.stream_id]
         options = self.options[self.stream_id]
         self.sid2filepath[self.stream_id] = audio_filepath
+        self.elapsed_durations[self.stream_id] = 0.0
         stream.load_audio(audio_filepath, options)
 
         # Add the stream to the multi streamer
@@ -203,8 +205,10 @@ class ContinuousBatchedFrameStreamer:
             frames = next(self.multi_streamer)
             # Update progress when a stream is fully processed
             for frame in frames:
-                if frame.stream_id not in self.processed_streams and frame.is_last:
-                    self.processed_streams.add(frame.stream_id)
+                sid = frame.stream_id
+                self.elapsed_durations[sid] += frame.valid_size / self.sample_rate
+                if sid not in self.processed_streams and frame.is_last:
+                    self.processed_streams.add(sid)
                     self.update_progress_bar()
             return frames
         except StopIteration:
@@ -308,6 +312,16 @@ class ContinuousBatchedRequestStreamer:
             str: The audio filepath for the given stream id
         """
         return self.multi_streamer.sid2filepath[stream_id]
+
+    def get_elapsed_duration(self, stream_id: int) -> float:
+        """
+        Get the elapsed audio duration for a given stream id
+        Args:
+            stream_id (int): The id of the stream
+        Returns:
+            float: The elapsed audio duration for the given stream id
+        """
+        return self.multi_streamer.elapsed_durations[stream_id]
 
     def to_feature_buffers(self, frames: list[Frame]) -> list[FeatureBuffer]:
         """

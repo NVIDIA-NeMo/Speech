@@ -42,7 +42,7 @@ class ASRResult:
 class NemoStreamingASRService:
     def __init__(
         self,
-        model: str = "nvidia/stt_en_fastconformer_hybrid_large_streaming_multi",
+        model: str = "nvidia/parakeet_realtime_eou_120m-v1",
         att_context_size: List[int] = [70, 1],
         device: str = "cuda",
         eou_string: str = "<EOU>",
@@ -71,8 +71,6 @@ class NemoStreamingASRService:
         self.pad_and_drop_preencoded = False
         self.blank_id = self.get_blank_id()
         self.chunk_size_in_secs = chunk_size_in_secs
-
-        print("NemoLegacyASRService initialized")
 
         assert len(self.att_context_size) == 2, "Att context size must be a list of two integers"
         assert (
@@ -112,6 +110,7 @@ class NemoStreamingASRService:
         self._reset_cache()
         self._previous_hypotheses = self._get_blank_hypothesis()
         self._last_transcript_timestamp = time.time()
+        print(f"NemoStreamingASRService initialized with model `{model}` on device `{self.device}`")
 
     def _reset_cache(self):
         (

@@ -20,6 +20,7 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     lang=en \
     enable_pnc=False \
     enable_itn=False \
+    enable_nmt=False \
     asr_output_granularity=segment
 
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_streaming_inference/asr_streaming_infer.py \
@@ -31,4 +32,5 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     lang=en \
     enable_pnc=False \
     enable_itn=False \
+    enable_nmt=False \
     asr_output_granularity=segment

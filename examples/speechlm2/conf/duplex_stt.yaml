@@ -1,0 +1,120 @@
+model:
+  # Every name/path here starting with 'pretrained' is used to initialize the model weights.
+  pretrained_llm: TinyLlama/TinyLlama_v1.1
+  pretrained_asr: stt_en_fastconformer_hybrid_large_streaming_80ms
+  scoring_asr: stt_en_fastconformer_transducer_large  # used only in validation/evaluation
+
+  pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
+
+  prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
+
+  text_loss_weight: 1.0  # STT model only predicts text, no audio generation
+
+  perception:
+     target:  nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
+     _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+       d_model: 1024
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 3e-4
+    betas: [0.9, 0.98]
+    weight_decay: 0
+    foreach: true # set to false if having issues with tensor-parallelism
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
+    warmup_steps: 0  #2500
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: 1
+  precision: bf16-true
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_steps: 1000000
+  limit_train_batches: 100  # "epoch" size
+  val_check_interval: ${trainer.limit_train_batches}
+  limit_val_batches: 10
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    # Replace DDPStrategy with ModelParallelStrategy to enable model parallelism
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
+    find_unused_parameters: true
+    # _target_: lightning.pytorch.strategies.ModelParallelStrategy
+    # tensor_parallel_size: 1
+    # data_parallel_size: 2
+
+data:
+  frame_length: 0.08
+  source_sample_rate: 16000
+  input_roles: ["user", "User"]
+  output_roles: ["agent", "Assistant"]
+
+  train_ds:
+    sample_rate: ${data.source_sample_rate}
+    input_cfg:
+      - type: lhotse_shar
+        shar_path: ???
+    seed: 42
+    shard_seed: "randomized"
+    num_workers: 2
+    batch_size: 4
+    # Optional bucketing:
+    # batch_size: null
+    # batch_duration: 100
+    # bucket_duration_bins: [8.94766,10.1551,11.64118,19.30376,42.85]
+    # use_bucketing: true
+    # num_buckets: 5
+    # bucket_buffer_size: 5000
+
+  validation_ds:
+    # The entries under 'datasets' are a list of separate dataloaders.
+    # The structure is <dataset-name>: {<dataloader-dict-config>}
+    # They inherit all settings from validation_ds, but can individually override them.
+    datasets:
+      val_set_0:  # rename to your dataset name, add more as needed
+        shar_path: ???
+    sample_rate: ${data.source_sample_rate}
+    batch_size: 1
+    seed: 42
+    shard_seed: "randomized"
+
+exp_manager:
+   exp_dir: null
+   explicit_log_dir: duplex_stt_results/
+   name: speechlm2
+   create_tensorboard_logger: false
+   create_checkpoint_callback: true
+   use_datetime_version: true
+   max_time_per_run: 00:03:50:00
+
+   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+   # you need to set these two to True to continue the training
+   resume_if_exists: true
+   resume_ignore_no_checkpoint: true
+
+   # You may use this section to create a W&B logger
+   create_wandb_logger: false
+   wandb_logger_kwargs:
+     name: development-run
+     project: speechlm2_duplex_stt
+     resume: true
+
+   checkpoint_callback_params:
+     filename: "{step}"
+     monitor: val_bleu
+     mode: max
+     every_n_train_steps: null
+     every_n_epochs: 1
+     save_top_k: 1
+     always_save_nemo: false
+     save_nemo_on_train_end: false

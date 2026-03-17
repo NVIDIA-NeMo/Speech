@@ -17,11 +17,19 @@ import contextlib
 import numpy as np
 import torch
 from packaging.version import Version
+from nemo.utils.exceptions import NeMoBaseException
 
 __CUDA_PYTHON_MINIMUM_VERSION_CUDA_GRAPH_CONDITIONAL_NODES_SUPPORTED__ = (12, 6)  # 12060
 
 
+class NeMoCUDAPythonException(NeMoBaseException):
+    """Exception caused by python-cuda in NeMo"""
+
+    pass
+
+
 def check_cuda_python_cuda_graphs_conditional_nodes_supported():
+    """Check if CUDA and CUDA-Python are available with CUDA Graphs with conditional nodes support"""
     # for CPU-only environment we need to raise an exception, otherwise cuda-python library will fail
     if not torch.cuda.is_available():
         raise EnvironmentError("CUDA is not available")
@@ -78,15 +86,15 @@ def assert_drv(err):
 
     if isinstance(err, cuda.CUresult):
         if err != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError("Cuda Error: {}".format(err))
+            raise NeMoCUDAPythonException("Cuda Error: {}".format(err))
     elif isinstance(err, nvrtc.nvrtcResult):
         if err != nvrtc.nvrtcResult.NVRTC_SUCCESS:
-            raise RuntimeError("Nvrtc Error: {}".format(err))
+            raise NeMoCUDAPythonException("Nvrtc Error: {}".format(err))
     elif isinstance(err, cudart.cudaError_t):
         if err != cudart.cudaError_t.cudaSuccess:
-            raise RuntimeError("Cuda Runtime Error: {}".format(err))
+            raise NeMoCUDAPythonException("Cuda Runtime Error: {}".format(err))
     else:
-        raise RuntimeError("Unknown error type: {}".format(err))
+        raise NeMoCUDAPythonException("Unknown error type: {}".format(err))
 
 
 def cu_call(f_call_out):
@@ -98,7 +106,7 @@ def cu_call(f_call_out):
 
     error, *others = f_call_out
     if error != cudart.cudaError_t.cudaSuccess:
-        raise Exception(f"CUDA failure! {error}")
+        raise NeMoCUDAPythonException(f"CUDA failure! {error}")
     else:
         return tuple(others)
 
@@ -117,7 +125,8 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     from cuda.bindings import driver as cuda
     from cuda.bindings import runtime as cudart
 
-    capture_status, _, graph, _, _, _ = cu_call(
+    # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
+    capture_status, _, graph, *_ = cu_call(
         cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
     )
     assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
@@ -136,7 +145,8 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
         0,
     )
 
-    capture_status, _, graph, dependencies, _, _ = cu_call(
+    # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
+    capture_status, _, graph, dependencies, *_ = cu_call(
         cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
     )
     assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
@@ -160,18 +170,34 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     # Use driver API here because of bug in cuda-python runtime API: https://github.com/NVIDIA/cuda-python/issues/55
     # TODO: Change call to this after fix goes in (and we bump minimum cuda-python version to 12.4.0):
     # node, = cu_call(cudart.cudaGraphAddNode(graph, dependencies, len(dependencies), driver_params))
-    (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
+    # CUDA 13 (cuda-python >= 13.0.0) adds an edgeData parameter to cuGraphAddNode and
+    # cudaStreamUpdateCaptureDependencies; CUDA 12 does not accept it.
+    _cuda13 = Version(cuda_python_version) >= Version("13.0.0")
+    if _cuda13:
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
+    else:
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, len(dependencies), driver_params))
     body_graph = driver_params.conditional.phGraph_out[0]
 
-    cu_call(
-        cudart.cudaStreamUpdateCaptureDependencies(
-            torch.cuda.current_stream(device=device).cuda_stream,
-            [node],
-            None,
-            1,
-            cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+    if _cuda13:
+        cu_call(
+            cudart.cudaStreamUpdateCaptureDependencies(
+                torch.cuda.current_stream(device=device).cuda_stream,
+                [node],
+                None,
+                1,
+                cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+            )
         )
-    )
+    else:
+        cu_call(
+            cudart.cudaStreamUpdateCaptureDependencies(
+                torch.cuda.current_stream(device=device).cuda_stream,
+                [node],
+                1,
+                cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+            )
+        )
     body_stream = torch.cuda.Stream(device)
     previous_stream = torch.cuda.current_stream(device=device)
     cu_call(
@@ -198,6 +224,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
 
 
 def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
+    """Run CUDA kernel using CUDA-Python"""
     from cuda.bindings import driver as cuda
     from cuda.bindings import nvrtc
 

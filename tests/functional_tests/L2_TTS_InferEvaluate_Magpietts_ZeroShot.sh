@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
+    --deterministic \
     --codecmodel_path /home/TestData/tts/21fps_causal_codecmodel.nemo \
     --datasets_json_path examples/tts/evalset_config.json \
     --datasets an4_val_ci \

@@ -372,7 +372,7 @@ def get_adapter_cfg(in_features=50, dim=100, norm_pos='pre', atype='linear', **k
             hidden_size=in_features,
             proj_dim=kwargs.get('proj_dim', None),
         )
-    elif atype == 'relmha':
+    else:  # atype == 'relmha'
         cfg = multi_head_attention_adapter_module.RelPositionMultiHeadAttentionAdapterConfig(
             n_head=kwargs.get('n_head', 1), n_feat=in_features
         )

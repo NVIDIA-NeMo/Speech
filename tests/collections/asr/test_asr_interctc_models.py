@@ -221,7 +221,7 @@ class TestInterCTCLoss:
 
             ## Explicitly pass acclerator as cpu, since deafult val in PTL >= 2.0 is auto and it picks cuda
             ## which further causes an error in all reduce at: https://github.com/NVIDIA/NeMo/blob/v1.18.1/nemo/collections/asr/modules/conv_asr.py#L209
-                trainer = pl.Trainer(max_epochs=1, accelerator='cpu')
+            trainer = pl.Trainer(max_epochs=1, accelerator='cpu')
             trainer.fit(
                 asr_model,
                 train_dataloaders=torch.utils.data.DataLoader(

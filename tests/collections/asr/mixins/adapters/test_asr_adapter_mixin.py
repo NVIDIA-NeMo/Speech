@@ -710,11 +710,11 @@ class TestASRAdapterMixin:
     @pytest.mark.unit
     def test_constructor_pretrained_rnnt(self):
         # Check to/from config_dict:
-        cfg = ASRModel.from_pretrained('stt_en_contextnet_256', map_location='cpu', return_config=True)
+        cfg = ASRModel.from_pretrained('stt_en_fastconformer_transducer_large', map_location='cpu', return_config=True)
         adapter_metadata = get_registered_adapter(cfg.encoder._target_)
         if adapter_metadata is not None:
             cfg.encoder._target_ = adapter_metadata.adapter_class_path
-        model = ASRModel.from_pretrained('stt_en_contextnet_256', override_config_path=cfg)
+        model = ASRModel.from_pretrained('stt_en_fastconformer_transducer_large', override_config_path=cfg)
 
         assert isinstance(model, AdapterModuleMixin)
         assert hasattr(model, 'encoder')
@@ -724,14 +724,14 @@ class TestASRAdapterMixin:
         assert hasattr(model, 'joint')
         assert isinstance(model.joint, AdapterModuleMixin)
 
-        model.add_adapter('adapter_0', cfg=get_adapter_cfg(in_features=cfg.encoder.jasper[0].filters, dim=5))
+        model.add_adapter('adapter_0', cfg=get_adapter_cfg(in_features=cfg.encoder.d_model, dim=5))
         model.add_adapter('decoder:adapter_1', cfg=get_adapter_cfg(in_features=cfg.decoder.prednet.pred_hidden, dim=5))
         model.add_adapter('joint:adapter_2', cfg=get_adapter_cfg(in_features=cfg.joint.jointnet.joint_hidden, dim=5))
         assert model.is_adapter_available()
 
         model.freeze()
         model.unfreeze_enabled_adapters()
-        assert model.num_weights < 1e5
+        assert model.num_weights < 2e5
 
     @pytest.mark.unit
     def test_asr_model_adapter_loss(self, model):

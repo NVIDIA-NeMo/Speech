@@ -2392,3 +2392,89 @@ class SimpleAudioDataset(Dataset):
 
     def __len__(self):
         return len(self.audio_filenames)
+
+
+class DynamicTensor:
+    def __init__(
+        self,
+        batch_size: int,
+        init_length: int,
+        dim_shape: int | list[int] | None = None,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ):
+        assert init_length > 0
+        self._max_length = init_length
+        self.batch_size = batch_size
+        self.device = device
+        self.dtype = dtype or torch.get_default_dtype()
+        if dim_shape is None:
+            self.dim_shape = []
+        elif isinstance(dim_shape, int):
+            self.dim_shape = [
+                dim_shape,
+            ]
+        else:
+            assert isinstance(dim_shape, list)
+            self.dim_shape = dim_shape
+        self.data = torch.zeros([batch_size, self._max_length] + dim_shape, dtype=self.dtype, device=device)
+        self.lengths = torch.zeros(batch_size, device=device, dtype=torch.long)
+
+    def clear_(self):
+        """
+        Clears storage
+        """
+        self.lengths.fill_(0)
+        self.data.fill_(0)
+
+    def _allocate_more(self):
+        """
+        Allocate 2x space for tensors, similar to common C++ std::vector implementations
+        to maintain O(1) insertion time complexity
+        """
+        self.data = torch.cat((self.storage, torch.zeros_like(self.data)), dim=1)
+        self._max_length *= 2
+
+    def to_device(self, device: str | torch.device):
+        self.device = device
+        self.data.to(device=device)
+        self.lengths.to(device=device)
+
+    def append_(self, data: torch.Tensor, lengths: torch.Tensor | None):
+        cur_len = self.lengths.max().item()
+        other_len = data.shape[1] if lengths is None else lengths.max().item()
+        if cur_len + other_len >= self._max_length:
+            add_len = cur_len + other_len - self._max_length + 1
+            add_shape = [self.batch_size, add_len] + self.dim_shape
+            self.data = torch.cat((self.data, torch.zeros(add_shape, dtype=self.dtype, device=self.device)), dim=1)
+            self._max_length += add_len
+        self.append_no_checks_(data=data[:, :other_len], lengths=lengths)
+
+    def append_no_checks_(self, data: torch.Tensor, lengths: torch.Tensor | None):
+        other_len = data.shape[1]
+        indices = torch.arange(other_len, device=self.device)
+        shifted_indices = self.lengths[:, None] + indices[None, :]
+        self.data.scatter_(dim=1, index=shifted_indices, src=data)
+        self.lengths += lengths
+
+    def clone(self) -> "DynamicTensor":
+        """Return a copy of self"""
+        new_dynamic_tensor = DynamicTensor(
+            batch_size=self.batch_size,
+            init_length=self._max_length,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        new_dynamic_tensor.data.copy_(self.storage)
+        new_dynamic_tensor.data.copy_(self.lengths)
+        return new_dynamic_tensor
+
+    def merge_(self, other: "DynamicTensor") -> "DynamicTensor":
+        """
+        Merge two dynamic tensors
+        NB: this will reallocate memory
+
+        Args:
+            other: DynamicTensor
+        """
+        raise NotImplementedError

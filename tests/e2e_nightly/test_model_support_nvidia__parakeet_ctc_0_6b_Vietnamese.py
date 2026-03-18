@@ -74,10 +74,6 @@ def test_model_inference():
     model = _load_model()
     model.eval()
 
-    from conftest import prepare_for_transcribe
-
-    prepare_for_transcribe(model)
-
     audio = np.random.randn(16000).astype(np.float32)
 
     result = model.transcribe(audio=[audio], batch_size=1)

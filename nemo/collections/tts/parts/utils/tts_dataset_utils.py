@@ -28,6 +28,8 @@ from scipy import ndimage
 from torch.special import gammaln
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.audio.parts.utils.transforms import resample
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 
 
 def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
@@ -756,3 +758,14 @@ def chunk_text_for_inference(
         tokens_len = tokens_tensor.shape[0]
 
         return [tokens_tensor], [tokens_len], [text]
+
+
+def resample_batch(audio, audio_len, input_sample_rate, output_sample_rate):
+    audio = resample(waveform=audio, orig_freq=input_sample_rate, new_freq=output_sample_rate)
+    audio_len_scaled = audio_len.long() * output_sample_rate
+    new_audio_len = audio_len_scaled / input_sample_rate
+    # To avoid rounding issues at lower precisions, do not call torch.ceil when the length is divisible by the sample rate
+    audio_len = torch.where(audio_len_scaled % input_sample_rate == 0, new_audio_len, torch.ceil(new_audio_len))
+    audio_len = audio_len.int()
+    audio = mask_sequence_tensor(audio, audio_len)
+    return audio, audio_len

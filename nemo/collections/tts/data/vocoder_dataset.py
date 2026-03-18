@@ -16,7 +16,7 @@ import io
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import librosa
 import soundfile as sf
@@ -30,6 +30,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     filter_dataset_by_duration,
     get_weighted_sampler,
     load_audio,
+    resample_batch,
     sample_audio,
     stack_tensors,
 )
@@ -56,7 +57,7 @@ class DatasetSample:
     audio_dir: Path
 
 
-def audio_collate_fn(batch: List[dict]):
+def audio_collate_fn(batch: List[dict], resample_rates: Optional[Tuple[int]] = None):
     dataset_name_list = []
     audio_filepath_list = []
     audio_list = []
@@ -72,6 +73,14 @@ def audio_collate_fn(batch: List[dict]):
     audio_max_len = int(batch_audio_len.max().item())
 
     batch_audio = stack_tensors(audio_list, max_lens=[audio_max_len])
+
+    if resample_rates:
+        batch_audio, batch_audio_len = resample_batch(
+            audio=batch_audio,
+            audio_len=batch_audio_len,
+            input_sample_rate=resample_rates[0],
+            output_sample_rate=resample_rates[1],
+        )
 
     batch_dict = {
         "dataset_names": dataset_name_list,
@@ -135,6 +144,7 @@ class VocoderDataset(Dataset):
         self,
         dataset_meta: Dict,
         sample_rate: int,
+        resample_rate: Optional[int] = None,
         n_samples: Optional[int] = None,
         weighted_sampling_steps_per_epoch: Optional[int] = None,
         feature_processors: Optional[Dict[str, FeatureProcessor]] = None,
@@ -146,6 +156,11 @@ class VocoderDataset(Dataset):
         super().__init__()
 
         self.sample_rate = sample_rate
+        if resample_rate and self.sample_rate != resample_rate:
+            self.resample_rates = [sample_rate, resample_rate]
+        else:
+            self.resample_rates = None
+
         self.n_samples = n_samples
         self.trunc_duration = trunc_duration
         self.volume_norm = volume_norm
@@ -221,7 +236,7 @@ class VocoderDataset(Dataset):
         return example
 
     def collate_fn(self, batch):
-        return audio_collate_fn(batch)
+        return audio_collate_fn(batch, resample_rates=self.resample_rates)
 
 
 class TarredVocoderDataset(IterableDataset):

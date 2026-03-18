@@ -357,7 +357,6 @@ class TestSaveRestore:
         cn = EncDecCTCModelBPE.from_pretrained(model_name="stt_en_conformer_ctc_small")
         self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
 
-
     @pytest.mark.unit
     def test_mock_save_to_restore_from(self):
         with tempfile.NamedTemporaryFile('w') as empty_file:

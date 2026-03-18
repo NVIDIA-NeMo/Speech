@@ -30,10 +30,10 @@ jobs:
                 username,
               });
               if (res.data.state !== 'active') {
-                core.setFailed(`${username} is not an active member of NVIDIA-NeMo/speech_team`);
+                core.setFailed(`${username} is not an active member of NVIDIA Speech Team`);
               }
             } catch (e) {
-              core.setFailed(`${username} is not a member of NVIDIA-NeMo/speech_team`);
+              core.setFailed(`${username} is not a member of NVIDIA Speech Team`);
             }
 
   acknowledge:

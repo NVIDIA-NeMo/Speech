@@ -1,6 +1,6 @@
 .. _ten-minutes:
 
-10 Minutes to NeMo Speech
+NeMo Speech Inference in 5 Minutes
 =========================
 
 This guide gives you a quick, hands-on tour of NeMo's core speech capabilities. By the end, you'll have transcribed audio, synthesized speech, identified speakers, and used a speech language model — all in about 50 lines of code.
@@ -45,24 +45,25 @@ Automatic Speech Recognition converts audio to text. NeMo's Parakeet model sits 
 2. Synthesize Speech (TTS)
 --------------------------
 
-Text-to-Speech generates natural audio from text. NeMo's cascaded TTS pipeline uses FastPitch (spectrogram generator) + HiFi-GAN (vocoder):
+Text-to-Speech generates natural audio from text. NeMo's **Magpie TTS** is a multilingual, codec-based model that supports multiple speakers and languages:
 
 .. code-block:: python
 
-   import nemo.collections.tts as nemo_tts
+   from nemo.collections.tts.models import MagpieTTSModel
    import soundfile as sf
 
-   # Load models
-   spec_gen = nemo_tts.models.FastPitchModel.from_pretrained("tts_en_fastpitch")
-   vocoder = nemo_tts.models.HifiGanModel.from_pretrained("tts_en_hifigan")
+   # Load model (multilingual 357M, from Hugging Face)
+   model = MagpieTTSModel.from_pretrained("nvidia/magpie_tts_multilingual_357m")
+   model.eval()
 
    # Generate speech
-   tokens = spec_gen.parse("Hello! Welcome to NeMo speech AI.")
-   spectrogram = spec_gen.generate_spectrogram(tokens=tokens)
-   audio = vocoder.convert_spectrogram_to_audio(spec=spectrogram)
+   audio, audio_len = model.do_tts(
+       transcript="Hello! Welcome to NeMo speech AI.",
+       language="en",
+   )
 
    # Save to file
-   sf.write("output.wav", audio.to('cpu').detach().numpy()[0], 22050)
+   sf.write("output.wav", audio[0].cpu().numpy(), 22050)
    print("Speech saved to output.wav")
 
 

@@ -5,21 +5,16 @@ Key Concepts in Speech AI
 
 This page introduces the fundamental concepts you'll encounter when working with speech models in NeMo. No prior NeMo experience is required — we start from the basics of audio and work up to how NeMo structures its models.
 
-Audio Basics
-------------
+Audio Conventions in NeMo
+-------------------------
 
-**Sampling Rate**
-   Audio is a continuous signal, but computers work with discrete samples. The *sampling rate* (measured in Hz) is how many samples per second are captured. Most speech models expect **16,000 Hz** (16 kHz) audio. If your audio has a different rate, you'll need to resample it.
+**Sampling rate** — Expectations depend on the collection and model. ASR models often use **16 kHz**; TTS and audio processing models may use higher rates (e.g. 22.05 kHz, 44.1 kHz). Check each model's or preprocessor's config for the expected sample rate.
 
-**Mono vs. Stereo**
-   Speech models typically expect **mono** (single-channel) audio. If you have stereo audio, convert it first:
+**Channels** — Many models use mono input, but some support **multi-channel** audio (e.g. for spatial or multi-mic setups). See the model and preprocessor documentation for your use case.
 
-   .. code-block:: bash
+**Preprocessing** — NeMo models typically include a **preprocessor** (e.g. resampling, stereo→mono, mel-spectrogram) in the pipeline. You don't have to resample or convert channels offline unless you're building a custom dataset or bypassing the default preprocessor.
 
-      ffmpeg -i input.mp3 -ac 1 -ar 16000 -y output.wav
-
-**Mel-Spectrogram**
-   A mel-spectrogram is a visual representation of audio that shows how energy is distributed across frequency bands (on the mel scale) over time. Many speech models convert raw audio into mel-spectrograms as a preprocessing step before feeding data to a neural network.
+**Mel-spectrogram** — For models that use it, the preprocessor turns raw waveform into mel-spectrogram features; this is handled inside the model, not as a separate offline step.
 
 
 Speech AI Tasks
@@ -36,13 +31,13 @@ NeMo supports several speech AI tasks, each solving a different problem:
      - Example use case
    * - **ASR** (Automatic Speech Recognition)
      - Converts spoken audio to text
-     - Transcribing meetings, voice assistants
+     - Transcribing meetings, voice interfaces
    * - **TTS** (Text-to-Speech)
      - Generates natural speech from text
      - Audiobooks, voice interfaces
    * - **Speaker Diarization**
      - Determines "who spoke when"
-     - Meeting transcription with speaker labels
+     - Multi-speaker segmentation and transcription
    * - **Speaker Recognition**
      - Identifies or verifies a speaker's identity
      - Voice authentication, speaker search
@@ -59,11 +54,14 @@ Encoder Architectures
 
 The *encoder* converts audio features into a sequence of high-level representations:
 
-**FastConformer**
-   NeMo's default encoder. A faster variant of Conformer that combines self-attention (for global context) with depthwise convolutions (for local patterns). ~2.4x faster than standard Conformer.
+**Transformer**
+   The standard encoder from `Vaswani et al. (2017) <https://arxiv.org/abs/1706.03762>`_ — stacked self-attention and feed-forward layers with no convolutions. Used in NeMo as an encoder or decoder in encoder-decoder models (e.g. Canary).
 
 **Conformer**
-   The original architecture from `Gulati et al. (2020) <https://arxiv.org/abs/2005.08100>`_ that combines transformers and convolutions. FastConformer is recommended for new projects.
+   The original architecture from `Gulati et al. (2020) <https://arxiv.org/abs/2005.08100>`_ that combines self-attention with convolutions for both global and local patterns.
+
+**FastConformer**
+   A faster variant of Conformer with 8× subsampling and optimized attention. NeMo's default choice for ASR; recommended for new projects.
 
 
 How NeMo Models Work
@@ -106,14 +104,14 @@ Every NeMo model wraps these components into a single, cohesive unit:
      <rect x="680" y="20" width="140" height="70" rx="8" fill="#76b900" opacity="0.15" stroke="#76b900" stroke-width="2"/>
      <text x="750" y="48" text-anchor="middle" font-weight="700" font-size="13" fill="#333">Optimizer</text>
      <text x="750" y="66" text-anchor="middle" font-size="10" fill="#555">Updates weights</text>
-     <!-- Feedback arrow from Optimizer back to Encoder -->
-     <path d="M750,90 L750,120 L240,120 L240,96" fill="none" stroke="#76b900" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow)"/>
-     <text x="495" y="116" text-anchor="middle" font-size="9" fill="#76b900" font-style="italic">backpropagation</text>
    </svg>
    </div>
 
-NeMo models are PyTorch modules that also integrate with `PyTorch Lightning <https://lightning.ai/>`__ for training and `Hydra <https://hydra.cc/>`__ + `OmegaConf <https://omegaconf.readthedocs.io/>`__ for configuration.
 
+Overview of NeMo Speech
+========================
+
+NeMo models are PyTorch modules that also integrate with `PyTorch Lightning <https://lightning.ai/>`__ for training and `Hydra <https://hydra.cc/>`__ + `OmegaConf <https://omegaconf.readthedocs.io/>`__ for configuration.
 
 Configuration with YAML
 ------------------------

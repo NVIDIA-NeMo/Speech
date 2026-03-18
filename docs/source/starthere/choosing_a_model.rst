@@ -17,7 +17,7 @@ ASR: Which Model Should I Use?
      - Why
    * - Get the best accuracy on English
      - `Parakeet-TDT-0.6B V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`_
-     - #1 on the `OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`_. TDT decoder provides accurate timestamps.
+     - Top of the `OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`_. TDT decoder provides accurate timestamps.
    * - Transcribe multiple languages
      - `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`_
      - Supports 25 EU languages + translation between them. AED decoder.

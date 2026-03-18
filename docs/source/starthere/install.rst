@@ -25,7 +25,7 @@ The quickest way to install NeMo is via pip. Install only the collections you ne
    pip install nemo_toolkit[asr,tts]
 
    # Install everything speech-related
-   pip install nemo_toolkit[asr,tts,audio,common]
+   pip install nemo_toolkit[asr,tts,audio]
 
 Available extras:
 
@@ -41,8 +41,6 @@ Available extras:
      - Text-to-Speech models, vocoders, and audio codecs
    * - ``audio``
      - Audio processing models (enhancement, separation)
-   * - ``common``
-     - Shared components (tokenizers, data utilities, metrics)
 
 Install from Source
 -------------------
@@ -53,7 +51,8 @@ For the latest development version or if you plan to contribute:
 
    git clone https://github.com/NVIDIA/NeMo.git
    cd NeMo
-   pip install -e '.[asr,tts]'
+   pip install -e '.[test]'
+
 
 Using Docker
 ------------

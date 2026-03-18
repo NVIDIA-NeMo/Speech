@@ -1091,7 +1091,7 @@ def transcribe_with_whisper(
         whisper_processor.get_decoder_prompt_ids(language=language, task="transcribe") if language else None
     )
     inputs = whisper_processor(speech_array, sampling_rate=sampling_rate, return_tensors="pt").input_features
-    inputs = inputs.to(device)
+    inputs = inputs.to(device=device, dtype=whisper_model.dtype)
     with torch.no_grad():
         predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
     transcription = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)

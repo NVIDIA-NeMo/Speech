@@ -191,7 +191,7 @@ test_eartts_config = {
 }
 
 # set CI cached path
-if os.path.exists("/home/TestData/"):
+if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
     test_eartts_config["model"]["pretrained_lm_name"] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
 
 

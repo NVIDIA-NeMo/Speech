@@ -50,11 +50,8 @@ class HuggingFaceFileIO(ABC):
         """
         model_filter = dict(
             author=None,
-            library='nemo',
-            language=None,
+            filter=['nemo'],
             model_name=None,
-            task=None,
-            tags=None,
             limit=None,
             full=None,
             cardData=False,
@@ -83,9 +80,8 @@ class HuggingFaceFileIO(ABC):
             filt = <DomainSubclass>.get_hf_model_filter()
 
             # Make any modifications to the filter as necessary
-            filt['language'] = [...]
-            filt['task'] = ...
-            filt['tags'] = [...]
+            filt['filter'].append('en')  # Add language filter
+            filt['filter'].append('automatic-speech-recognition')  # Add task filter
 
             # Add any metadata to the filter as needed (kwargs to list_models)
             filt['limit'] = 5
@@ -120,9 +116,7 @@ class HuggingFaceFileIO(ABC):
         # Setup extra arguments for model filtering
         all_results = []  # type: List[ModelInfo]
 
-        results = api.list_models(
-            token=hf_token, sort="lastModified", direction=-1, **model_filter
-        )  # type: Iterable[ModelInfo]
+        results = api.list_models(token=hf_token, sort="lastModified", **model_filter)  # type: Iterable[ModelInfo]
 
         return results
 

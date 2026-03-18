@@ -1,4 +1,4 @@
-datasets
+datasets>=3.2.0
 einops
 inflect
 mediapy==1.1.6

@@ -109,6 +109,10 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('utmosv2_avg', ''),
         metrics.get('total_gen_audio_seconds', ''),
         metrics.get('frechet_codec_distance', ''),
+        metrics.get('eou_cutoff_rate', ''),
+        metrics.get('eou_silence_rate', ''),
+        metrics.get('eou_noise_rate', ''),
+        metrics.get('eou_error_rate', ''),
     ]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
@@ -216,7 +220,8 @@ def run_inference_and_evaluation(
         "wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
-        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance"
+        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
+        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate"
     )
 
     for dataset in datasets:

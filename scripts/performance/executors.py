@@ -248,7 +248,7 @@ def slurm_executor(
                     segment = segment_candidate
                     break
 
-    numa_divisor = 2 if gpu.lower() == 'gb200' else 4
+    numa_divisor = 2 if gpu.lower() in ["gb200", "gb300"] else 4
     numa_cmd = f"numactl --cpunodebind=$((SLURM_LOCALID/{numa_divisor})) --membind=$((SLURM_LOCALID/{numa_divisor}))"
     custom_bash_cmds.append(numa_cmd)
 

@@ -48,16 +48,30 @@ class BlendableDataset(torch.utils.data.Dataset):
         self.dataset_sample_index = np.zeros(self.size, dtype=np.int64)
 
         app_state = AppState()
+
+        # Determine if we are in a distributed environment
+        is_dist = torch.distributed.is_available() and torch.distributed.is_initialized()
+
         try:
-            if app_state.local_rank == 0:
+            # Defensive check for local_rank in AppState
+            local_rank = getattr(app_state, 'local_rank', 0) if is_dist else 0
+
+            if local_rank == 0:
                 compile_helper()
-            torch.distributed.barrier()
+
+            if is_dist:
+                torch.distributed.barrier()
+
+            # pylint: disable=import-outside-toplevel
             from nemo.collections.common.data import helpers
-        except ImportError:
+        except ImportError as exc:
             raise ImportError(
                 'Could not compile megatron dataset C++ helper functions and therefore '
                 'cannot import helpers python file.'
-            )
+            ) from exc
+
+        # Only the main process (rank 0) should handle logging/progress within helpers
+        is_main_process = (torch.distributed.get_rank() == 0) if is_dist else True
 
         helpers.build_blending_indices(
             self.dataset_index,
@@ -65,11 +79,9 @@ class BlendableDataset(torch.utils.data.Dataset):
             weights,
             num_datasets,
             self.size,
-            torch.distributed.get_rank() == 0,
+            is_main_process,
         )
-        logging.info(
-            '> elapsed time for building blendable dataset indices: ' '{:.2f} (sec)'.format(time.time() - start_time)
-        )
+        logging.info(f'> elapsed time for building blendable dataset indices: {time.time() - start_time:.2f} (sec)')
 
     def __len__(self):
         return self.size

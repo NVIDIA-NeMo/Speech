@@ -18,6 +18,6 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     diarizer.speaker_embeddings.parameters.window_length_in_sec=[1.5] \
     diarizer.speaker_embeddings.parameters.shift_length_in_sec=[0.75] \
     diarizer.speaker_embeddings.parameters.multiscale_weights=[1.0] \
-    diarizer.asr.model_path=QuartzNet15x5Base-En \
+    diarizer.asr.model_path=nvidia/stt_en_fastconformer_ctc_large \
     diarizer.asr.parameters.asr_based_vad=True \
     diarizer.out_dir=/tmp/speaker_diarization_asr_results

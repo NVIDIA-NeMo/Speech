@@ -17,7 +17,9 @@ import pytest
 
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType, TokenSegment
 
+# Path to the test data
 DATA_PATH = "/home/TestData/tts/eou_classifier_unit_test"
+
 # TEST_NAME, EoU_TYPE, AUDIO_PATH, TEXT
 _CLASSIFICATION_CASES: list[tuple[str, EoUType, str, str]] = [
     (

@@ -34,6 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: anthropics/claude-code-action@v1
+        id: claude
         with:
           prompt: |
             You are a developer working on the NeMo repository.
@@ -65,3 +66,25 @@ jobs:
 
             
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Label PR with agent-contribution
+        if: steps.claude.outputs.branch_name
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${process.env.BRANCH_NAME}`,
+              state: 'open'
+            });
+            if (prs.data.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prs.data[0].number,
+                labels: ['agent-contribution']
+              });
+            }
+        env:
+          BRANCH_NAME: ${{ steps.claude.outputs.branch_name }}

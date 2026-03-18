@@ -37,8 +37,31 @@ jobs:
         with:
           prompt: |
             You are a developer working on the NeMo repository.
-            Based on the issue description and comments, implement a fix.
-            Create a new branch and open a pull request with your changes.
-            Include a clear PR description explaining what was fixed and how.
-            Make sure to write or update tests if applicable.
+            Implement a focused fix for the issue based on the issue description and comments.
+
+            Requirements:
+            - Prioritize correctness and minimal scope; avoid unrelated refactors.
+            - Reproduce or reason about the failure first, then implement the smallest robust fix.
+            - If required, add or update tests for the changed behavior. If tests are not feasible, explain why.
+            - If required, update related docs or comments when behavior or usage changes.
+
+            PR expectations:
+            - Create a new branch and open a pull request with your changes.
+            - Include a concise summary of root cause and fix based on the following PR template:
+              ```
+              # What does this PR do ?
+              Add a one line overview of what this PR aims to accomplish.
+
+              # Changelog
+              Add specific line by line info of high level changes in this PR.
+
+              # Usage
+              Add a usage example of the changed functionality.
+              
+              Related to #${{ github.event.issue.number }}
+
+              This PR is created by Claude. 
+              ```
+
+            
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

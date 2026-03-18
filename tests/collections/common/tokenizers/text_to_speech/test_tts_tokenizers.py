@@ -28,6 +28,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
 )
 from nemo.collections.tts.g2p.models.i18n_ipa import IpaG2p
 from nemo.collections.tts.g2p.models.ja_jp_ipa import JapaneseG2p, JapaneseKatakanaAccentG2p
+from nemo.collections.tts.g2p.models.kn_in_ipa import KannadaG2p
 
 
 class TestTTSTokenizers:
@@ -71,6 +72,11 @@ class TestTTSTokenizers:
         "하세요": ["hˈɐsejˌo"],
         "감사": ["kˈɐmsɐ"],
         "합니다": ["hˈɐmnidˌɐ"],
+    }
+    PHONEME_DICT_KN = {
+        "ನಮಸ್ಕಾರ": ["namaskaːɾa"],
+        "ಕನ್ನಡ": ["kannaɖa"],
+        "ಬೆಂಗಳೂರು": ["beŋgaɭuːɾu"],
     }
 
     @staticmethod
@@ -543,3 +549,101 @@ class TestTTSTokenizers:
         tok_v2 = ArabicCharsTokenizer(charset_version=2)
 
         assert tok_v1.tokens != tok_v2.tokens
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_rule_based(self):
+        """Test Kannada G2P rule-based conversion."""
+        g2p = KannadaG2p()
+
+        # Test basic vowels
+        assert "".join(g2p("ಅ")) == "a"
+        assert "".join(g2p("ಆ")) == "aː"
+
+        # Test consonant with inherent vowel
+        assert "".join(g2p("ಕ")) == "ka"
+
+        # Test consonant with virama (no vowel)
+        assert "".join(g2p("ಕ್")) == "k"
+
+        # Test consonant with matra
+        assert "".join(g2p("ಕಾ")) == "kaː"
+        assert "".join(g2p("ಕಿ")) == "ki"
+
+        # Test word
+        assert "".join(g2p("ಕನ್ನಡ")) == "kannaɖa"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_dictionary_based(self):
+        """Test Kannada G2P with dictionary lookup."""
+        g2p = KannadaG2p(phoneme_dict=self.PHONEME_DICT_KN)
+
+        # Test dictionary lookup
+        assert "".join(g2p("ನಮಸ್ಕಾರ")) == "namaskaːɾa"
+        assert "".join(g2p("ಕನ್ನಡ")) == "kannaɖa"
+        assert "".join(g2p("ಬೆಂಗಳೂರು")) == "beŋgaɭuːɾu"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_special_characters(self):
+        """Test Kannada G2P with special characters."""
+        g2p = KannadaG2p()
+
+        # Test anusvara (nasal)
+        result = "".join(g2p("ಅಂಕ"))
+        assert "ŋ" in result  # Anusvara before velar should be ŋ
+
+        # Test retroflex consonants
+        assert "ɖ" in "".join(g2p("ಡ"))
+        assert "ɳ" in "".join(g2p("ಣ"))
+
+        # Test vocalic R
+        assert "ɾɯ" in "".join(g2p("ಕೃ"))
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_affricates(self):
+        """Test Kannada G2P affricate handling."""
+        g2p = KannadaG2p()
+
+        # Test palatal affricates
+        result = "".join(g2p("ಚ"))
+        assert "tʃ" in result or ("t" in result and "ʃ" in result)
+
+        result = "".join(g2p("ಜ"))
+        assert "dʒ" in result or ("d" in result and "ʒ" in result)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_digits(self):
+        """Test Kannada G2P digit handling."""
+        g2p = KannadaG2p()
+
+        # Test Arabic digits (should pass through)
+        result = "".join(g2p("123"))
+        assert result == "123"
+
+        # Test Kannada digits (should convert to Arabic)
+        result = "".join(g2p("೧೨೩"))
+        assert result == "123"
+
+        # Test mixed
+        result = "".join(g2p("೦೫"))
+        assert result == "05"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_punctuation(self):
+        """Test Kannada G2P punctuation handling."""
+        g2p = KannadaG2p()
+
+        # Test punctuation passthrough
+        result = "".join(g2p("ಕನ್ನಡ।"))
+        assert "।" in result
+
+        result = "".join(g2p("ಕನ್ನಡ॥"))
+        assert "॥" in result
+
+        result = "".join(g2p("ಕನ್ನಡ,"))
+        assert "," in result

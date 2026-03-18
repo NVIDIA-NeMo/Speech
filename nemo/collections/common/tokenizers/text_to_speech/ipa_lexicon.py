@@ -21,7 +21,7 @@
 #  These functions are used by locale-specific tokenizers (e.g., HindiCharsTokenizer uses
 #  get_grapheme_character_set("hi-IN")). If someone later creates PortugueseCharsTokenizer or
 #  KoreanCharsTokenizer, they'd hit this.
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN", "ar-MSA", "pt-BR", "ko-KR"]
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN", "ar-MSA", "pt-BR", "ko-KR", "kn-IN"]
 
 # Derived from LJSpeech and "/" additionally
 DEFAULT_PUNCTUATION = (
@@ -123,6 +123,32 @@ GRAPHEME_CHARACTER_SETS = {
         # Diacritics
         'ً', 'ٌ', 'ٍ', 'َ', 'ُ', 'ِ', 'ّ', 'ٰ', 'ْ',
     ),
+    "kn-IN": (
+        # Independent Vowels (Swaras)
+        'ಅ', 'ಆ', 'ಇ', 'ಈ', 'ಉ', 'ಊ', 'ಋ', 'ೠ', 'ಌ', 'ೡ',
+        'ಎ', 'ಏ', 'ಐ', 'ಒ', 'ಓ', 'ಔ',
+        # Consonants (Vyanjanas)
+        # Velar
+        'ಕ', 'ಖ', 'ಗ', 'ಘ', 'ಙ',
+        # Palatal
+        'ಚ', 'ಛ', 'ಜ', 'ಝ', 'ಞ',
+        # Retroflex
+        'ಟ', 'ಠ', 'ಡ', 'ಢ', 'ಣ',
+        # Dental
+        'ತ', 'ಥ', 'ದ', 'ಧ', 'ನ',
+        # Labial
+        'ಪ', 'ಫ', 'ಬ', 'ಭ', 'ಮ',
+        # Approximants and others
+        'ಯ', 'ರ', 'ಱ', 'ಲ', 'ಳ', 'ೞ', 'ವ', 'ಶ', 'ಷ', 'ಸ', 'ಹ',
+        # Dependent Vowel Signs (Matras)
+        'ಾ', 'ಿ', 'ೀ', 'ು', 'ೂ', 'ೃ', 'ೄ', 'ೆ', 'ೇ', 'ೈ', 'ೊ', 'ೋ', 'ೌ',
+        # Various Signs
+        'ಂ',  # Anusvara
+        'ಃ',  # Visarga
+        '್',  # Virama (Halant)
+        '಼',  # Nukta
+        'ಽ',  # Avagraha
+    ),
 }
 
 IPA_CHARACTER_SETS = {
@@ -198,6 +224,30 @@ IPA_CHARACTER_SETS = {
         'u', 'w', 'x', 'z', 'ŋ', 'ɔ', 'ɖ', 'ə', 'ɛ', 'ɟ',
         'ɡ', 'ɣ', 'ɪ', 'ɭ', 'ɲ', 'ɳ', 'ɾ', 'ʂ', 'ʃ', 'ʈ',
         'ʊ', 'ʋ', 'ʌ', 'ʰ', 'ː', '̃', '̩', 'χ',
+    ),
+    # Kannada IPA phoneme set (split form - all modifiers as separate tokens)
+    "kn-IN": (
+        # Vowels (monophthongs) - base forms only
+        'a', 'i', 'u', 'e', 'o',
+        'ə',  # schwa (inherent vowel, sometimes realized)
+        'ɯ',  # close back unrounded vowel (for vocalic R: ಋ, ೃ)
+        # Consonants - Stops (base forms only)
+        'k', 'g',  # Velar
+        'ʈ', 'ɖ',  # Retroflex
+        't', 'd',  # Dental
+        'p', 'b',  # Labial
+        # Nasals
+        'ŋ', 'ɲ', 'ɳ', 'n', 'm',
+        # Approximants
+        'j', 'ʋ', 'w',
+        # Liquids
+        'r', 'ɾ', 'l', 'ɭ', 'ɻ',
+        # Fricatives/Affricates (ʃ, ʒ used in affricates tʃ, dʒ)
+        'ʃ', 'ʒ', 'ʂ', 's', 'h',
+        # Modifiers (separate tokens, like Hindi/Japanese)
+        'ʰ',  # Aspiration marker
+        'ː',  # Length marker
+        '̃',   # Nasalization (combining tilde)
     ),
 }
 
@@ -406,6 +456,14 @@ def get_ipa_punctuation_list(locale):
                 '—',
                 '–',
                 '〜',
+            ]
+        )
+    elif locale == "kn-IN":
+        # Kannada punctuation
+        punct_set.update(
+            [
+                '।',  # Devanagari Danda (single)
+                '॥',  # Devanagari Double Danda
             ]
         )
     punct_list = sorted(list(punct_set))

@@ -178,7 +178,7 @@ In general, you can load models with model name in the following format,
   pretrained_vad_model='vad_multilingual_marblenet'
   pretrained_speaker_model='titanet_large'
   ...
-  config.diarizer.vad.model_path=retrained_vad_model \
+  config.diarizer.vad.model_path=pretrained_vad_model \
   config.diarizer.speaker_embeddings.model_path=pretrained_speaker_model
 
 where the model name is the value under "Model Name" entry in the tables below.

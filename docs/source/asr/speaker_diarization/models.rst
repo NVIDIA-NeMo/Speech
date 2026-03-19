@@ -12,7 +12,7 @@ We offer offline and online versions of Sortformer Diarizer. Online version of S
 
 2. **Cascaded (Pipelined) Speaker Diarization:** Clustering diarizer
 
-The speaker diarization pipeline in NeMo Speech AI involves the use of the :doc:`MarbleNet <../speech_classification/models>` model for Voice Activity Detection (VAD) and the :doc:`TitaNet <../speaker_recognition/models>` model for speaker embedding extraction, all of which are explained on this page.
+The clustering-based speaker diarization pipeline in NeMo Speech AI involves the use of the :doc:`MarbleNet <../speech_classification/models>` model for Voice Activity Detection (VAD) and the :doc:`TitaNet <../speaker_recognition/models>` model for speaker embedding extraction, followed by spectral clustering.
 
 .. _Sortformer Diarizer:
 
@@ -50,7 +50,7 @@ The ATS-based multispeaker ASR system is powered by an end-to-end neural diarize
 
 Additionally, as shown in the above figure, our diarization system integrates directly with the ASR encoder. By embedding speaker supervision data as speaker kernels into the ASR encoder states, the system seamlessly combines speaker and transcription information. This unified approach improves performance and simplifies the overall architecture.
 
-As a result, our end-to-end multispeaker ASR system is fully or partially trainable with token objectives, allowing both the ASR and speaker diarization modules to be trained or fine-tuned using these objectives. Additionally, during the multispeaker ASR training phase, no specialized loss calculation functions are needed when using Sortformer, as frameworks for standard single-speaker ASR models can be employed. These compatibilities greatly simplify and accelerate the training and fine-tuning process of multispeaker ASR systems. 
+As a result, our end-to-end multispeaker ASR system is fully or partially trainable with token objectives, allowing both the ASR and speaker diarization modules to be trained or fine-tuned using these objectives. Additionally, during the multispeaker ASR training phase, no specialized loss calculation functions are needed when using Sortformer, as frameworks for standard single-speaker ASR models can be employed. These compatibilities greatly simplify and accelerate the training and fine-tuning process of multispeaker ASR systems.
 
 On top of all these benefits, *Sortformer* can be used as a stand-alone end-to-end speaker diarization model. By training a Sortformer diarizer model especially on high-quality simulated data with accurate time-stamps, you can boost the performance of multi-speaker ASR systems, just by integrating the *Sortformer* model as *Speaker Supervision* model in a computation graph.
 
@@ -81,7 +81,7 @@ For example, the figure below shows two identical source target matrices (the tw
 Streaming Sortformer Diarizer
 -----------------------------
 
-`Streaming Sortformer <https://www.arxiv.org/pdf/2507.18446>`__ is a streaming version of Sortformer diarizer. To handle live audio, Streaming Sortformer processes the sound in small, overlapping chunks. It employs an Arrival-Order Speaker Cache (AOSC) that stores frame-level acoustic embeddings for all speakers previously detected in the audio stream. This allows the model to compare speakers in the current chunk with those in the previous ones, ensuring a person is consistently identified with the same label throughout the stream. 
+`Streaming Sortformer <https://www.arxiv.org/pdf/2507.18446>`__ is a streaming version of Sortformer diarizer. To handle live audio, Streaming Sortformer processes the sound in small, overlapping chunks. It employs an Arrival-Order Speaker Cache (AOSC) that stores frame-level acoustic embeddings for all speakers previously detected in the audio stream. This allows the model to compare speakers in the current chunk with those in the previous ones, ensuring a person is consistently identified with the same label throughout the stream.
 
 .. image:: images/cache_fifo_chunk.png
         :align: center
@@ -110,5 +110,3 @@ References
     :style: plain
     :labelprefix: SD-MODELS
     :keyprefix: sd-models-
-
-

@@ -1360,7 +1360,6 @@ def get_online_subsegments_from_buffer(
     assert len(sigs_list) == len(sig_rangel_list) == len(sig_indexes)
     return sigs_list, sig_rangel_list, sig_indexes
 
-
 def timestamps_to_pyannote_object(
     speaker_timestamps: List[Tuple[float, float]],
     uniq_id: str,

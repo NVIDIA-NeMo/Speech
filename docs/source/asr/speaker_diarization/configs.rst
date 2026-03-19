@@ -1,5 +1,5 @@
-End-to-End Speaker Diarization Configuration Files
-==================================================
+Speaker Diarization Configuration Files
+========================================
 
 Hydra Configurations for Sortformer Diarizer Training 
 -----------------------------------------------------
@@ -477,23 +477,6 @@ By default, post-processing is bypassed, and only binarization is performed. If 
     pad_offset: 0.0  # Adds the specified duration at the end of each speech segment
     min_duration_on: 0.1  # Removes short speech segments if the duration is less than the specified minimum duration
     min_duration_off: 0.15  # Removes short silences if the duration is less than the specified minimum duration
-
-
-Cascaded Speaker Diarization Configuration Files
-================================================
-
-Both training and inference of cascaded speaker diarization is configured by ``.yaml`` files. The diarizer section will generally require information about the dataset(s) being used, models used in this pipeline, as well as inference related parameters such as post processing of each models. The sections on this page cover each of these in more detail.
-
-.. note::
-  For model details and deep understanding about configs, training, fine-tuning and evaluations,
-  please refer to ``<NeMo_root>/tutorials/speaker_tasks/Speaker_Diarization_Inference.ipynb`` and ``<NeMo_root>/tutorials/speaker_tasks/Speaker_Diarization_Training.ipynb``;
-  for other applications such as possible integration with ASR, have a look at ``<NeMo_root>/tutorials/speaker_tasks/ASR_with_SpeakerDiarization.ipynb``.
-
-
-Hydra Configurations for Diarization Training
----------------------------------------------
-
-Example configuration files for neural diarizer model training can be found in ``<NeMo_root>/examples/speaker_tasks/diarization/conf/neural_diarizer/``. NeMo currently supports Sortformer as the neural diarizer model.
 
 
 Hydra Configurations for Diarization Inference

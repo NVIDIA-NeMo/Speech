@@ -1,5 +1,5 @@
 # This YAML file is created for all types of offline speaker diarization inference tasks in `<NeMo git root>/example/speaker_tasks/diarization` folder.
-# The inference parameters for VAD, speaker embedding extractor, clustering module, ASR decoder are all included in this YAML file.
+# The inference parameters for VAD, speaker embedding extractor, clustering module, ASR decoder are all included in this YAML file. 
 # All the keys under `diarizer` key (`vad`, `speaker_embeddings`, `clustering`, `asr`) can be selectively used for its own purpose and also can be ignored if the module is not used.
 # The configurations in this YAML file is optimized to show balanced performances on various types of domain. VAD is optimized on multilingual ASR datasets and diarizer is optimized on DIHARD3 development set.
 # An example line in an input manifest file (`.json` format):
@@ -42,8 +42,8 @@ diarizer:
       window_length_in_sec: [1.9,1.2,0.5] # Window length(s) in sec (floating-point number). either a number or a list. ex) 1.5 or [1.5,1.0,0.5]
       shift_length_in_sec: [0.95,0.6,0.25] # Shift length(s) in sec (floating-point number). either a number or a list. ex) 0.75 or [0.75,0.5,0.25]
       multiscale_weights: [1,1,1] # Weight for each scale. should be null (for single scale) or a list matched with window/shift scale count. ex) [0.33,0.33,0.33]
-      save_embeddings: True # If True, save speaker embeddings in pickle format. This should be True if clustering result is used for other models.
-
+      save_embeddings: True # If True, save speaker embeddings in pickle format.
+  
   clustering:
     parameters:
       oracle_num_speakers: False # If True, use num of speakers value provided in manifest file.

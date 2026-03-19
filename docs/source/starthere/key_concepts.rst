@@ -12,7 +12,7 @@ Audio Conventions in NeMo
 
 **Channels** — Most models use mono input, but some support **multi-channel** audio (e.g. for spatial or multi-mic setups). See the model and preprocessor documentation for your use case.
 
-**Preprocessing** — NeMo models typically include a **preprocessor** (e.g. resampling, stereo→mono, mel-spectrogram) in the pipeline. You don't have to resample or convert channels offline unless you're building a custom dataset or bypassing the default preprocessor.
+**Preprocessing** — NeMo models typically include a **preprocessor** that converts waveform input into features (e.g. mel-spectrogram). For most setups, you should provide audio that already matches the model's expected **sample rate** and **channel layout** (often mono); automatic resampling or stereo→mono is not guaranteed and depends on the collection, dataset, and preprocessor config. Check the model and preprocessor documentation for your use case.
 
 **Mel-spectrogram** — For models that use it, the preprocessor turns raw waveform into mel-spectrogram features; this is handled inside the model, not as a separate offline step.
 
@@ -61,7 +61,7 @@ The *encoder* converts audio features into a sequence of high-level representati
    The original architecture from `Gulati et al. (2020) <https://arxiv.org/abs/2005.08100>`_ that combines self-attention with convolutions for both global and local patterns.
 
 **FastConformer**
-   A faster variant of Conformer with 8× subsampling and optimized attention. NeMo's default choice for ASR; recommended for new projects.
+   A faster variant of Conformer (`Rekesh et al. (2023) <https://arxiv.org/abs/2305.05084>`_) with 8× subsampling and optimized attention. NeMo's default choice for ASR; recommended for new projects.
 
 
 How NeMo Models Work

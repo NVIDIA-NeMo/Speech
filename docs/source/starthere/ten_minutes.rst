@@ -1,7 +1,7 @@
 .. _ten-minutes:
 
 NeMo Speech Inference in 5 Minutes
-=========================
+===================================
 
 This guide gives you a quick, hands-on tour of NeMo's core speech capabilities. By the end, you'll have transcribed audio, synthesized speech, identified speakers, and used a speech language model — all in about 50 lines of code.
 

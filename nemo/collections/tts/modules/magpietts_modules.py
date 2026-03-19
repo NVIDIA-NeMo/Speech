@@ -257,6 +257,7 @@ class CharAwareSubwordEncoder(NeuralModule):
 
         return subword_emb
 
+
 def worker_init_fn(worker_id):
     """Per-worker init for DataLoader workers.
 

@@ -50,7 +50,7 @@ Requires additional config parameters `input_cuts` and `output_cuts`.
 Produces:
 - %output_cuts_parent_dir%/audio/
 - %output_cuts_parent_dir%/%output_cuts_filename%.jsonl
-where the audio folder contains the augmented and clean signals, respectively, with `.dirty.flac` and `.clean.flac` suffixes.
+where the audio folder contains the augmented and clean signals, respectively, with `.input.flac` and `.output.flac` suffixes.
 
 If `keep_directory_structure` provided and is True, the script will preserve the directory structure of the input cuts.
 
@@ -62,6 +62,7 @@ If not specified, the dataloader is used until exhausted.
 
 
 def check_input_cuts(input_cuts_path: Path) -> None:
+    """Validate that input cuts are well-formed MonoCuts with relative recording paths that exist on disk."""
     assert input_cuts_path.exists(), "input_cuts must exist"
     assert input_cuts_path.suffix == '.jsonl', "input_cuts must be a .jsonl file"
     assert input_cuts_path.parent.exists(), "input_cuts parent directory must exist"
@@ -94,7 +95,7 @@ def main(cfg: DictConfig):
     output_cuts_path = Path(cfg.output_cuts)
     check_input_cuts(input_cuts_path)  # throws an exception if they aren't ok
 
-    assert output_cuts_path.parent.exists(), "output_cuts parent directory must exist"
+    assert output_cuts_path.parent.exists(), f"output_cuts parent directory must exist: {output_cuts_path.parent}"
 
     OmegaConf.set_struct(cfg, True)
     OmegaConf.update(cfg, "model.train_ds.cuts_path", str(input_cuts_path), force_add=True)
@@ -117,41 +118,41 @@ def main(cfg: DictConfig):
             tqdm(zip(islice(dataloader, num_samples), cuts), total=num_samples)
         ):
             # batch_size is 1, so we can access the first element
-            dirty = sample['input_signal'][0].numpy()
-            clean = sample['target_signal'][0].numpy()
+            input_audio = sample['input_signal'][0].numpy()
+            output_audio = sample['target_signal'][0].numpy()
 
             # if necessary, apply negative gain to avoid clipping
-            if (coeff := max(np.max(np.abs(dirty)), np.max(np.abs(clean)))) > 1.0:
-                dirty = dirty / coeff
-                clean = clean / coeff
+            if (coeff := max(np.max(np.abs(input_audio)), np.max(np.abs(output_audio)))) > 1.0:
+                input_audio = input_audio / coeff
+                output_audio = output_audio / coeff
 
             if keep_directory_structure:
                 # definitely a relative path because we checked for that earlier
                 input_relative_path = Path(original_cut.recording.sources[0].source)
 
-                dirty_path = output_cuts_path.parent / input_relative_path.with_suffix('.dirty.flac')
-                clean_path = output_cuts_path.parent / input_relative_path.with_suffix('.clean.flac')
+                input_path = output_cuts_path.parent / input_relative_path.with_suffix('.input.flac')
+                output_path = output_cuts_path.parent / input_relative_path.with_suffix('.output.flac')
 
                 # we know that `audio_dir` exists, but we need to create the parent directories
-                dirty_path.parent.mkdir(exist_ok=True, parents=True)
-                clean_path.parent.mkdir(exist_ok=True, parents=True)
+                input_path.parent.mkdir(exist_ok=True, parents=True)
+                output_path.parent.mkdir(exist_ok=True, parents=True)
             else:
                 (output_cuts_path.parent / 'audio').mkdir(exist_ok=True, parents=True)
-                dirty_path = output_cuts_path.parent / 'audio' / f"{i:06}.dirty.flac"
-                clean_path = output_cuts_path.parent / 'audio' / f"{i:06}.clean.flac"
+                input_path = output_cuts_path.parent / 'audio' / f"{i:06}.input.flac"
+                output_path = output_cuts_path.parent / 'audio' / f"{i:06}.output.flac"
 
-            sf.write(dirty_path, dirty, sample_rate, format='FLAC', subtype='PCM_24')
-            sf.write(clean_path, clean, sample_rate, format='FLAC', subtype='PCM_24')
+            sf.write(input_path, input_audio, sample_rate, format='FLAC', subtype='PCM_24')
+            sf.write(output_path, output_audio, sample_rate, format='FLAC', subtype='PCM_24')
 
-            dirty_recording = Recording.from_file(dirty_path)
-            dirty_recording.sources[0].source = str(dirty_path.relative_to(output_cuts_path.parent))
-            clean_recording = Recording.from_file(clean_path)
-            clean_recording.sources[0].source = str(clean_path.relative_to(output_cuts_path.parent))
+            input_recording = Recording.from_file(input_path)
+            input_recording.sources[0].source = str(input_path.relative_to(output_cuts_path.parent))
+            output_recording = Recording.from_file(output_path)
+            output_recording.sources[0].source = str(output_path.relative_to(output_cuts_path.parent))
 
             cut = MonoCut(
-                id=dirty_recording.id, start=0, channel=0, duration=dirty_recording.duration, recording=dirty_recording
+                id=input_recording.id, start=0, channel=0, duration=input_recording.duration, recording=input_recording
             )
-            cut.target_recording = clean_recording
+            cut.target_recording = output_recording
 
             for optional_field_name in (
                 'text',

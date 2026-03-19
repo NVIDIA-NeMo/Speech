@@ -13,11 +13,16 @@ weight checkpoints and demos!
 
 ## Updates
 
+It has been trained on a larger and more diverse corpus, resulting in lower WER across all latency modes. Try out the demo and check out the NIM.
+
 - 2026-03: [Nemotron-Speech-Streaming v2603](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) has been
-    updated. It has been trained on double the data resulting in lower WER across all latency modes. Try out
-    [the demo](https://huggingface.co/spaces/nvidia/nemotron-speech-streaming-en-0.6b).
+    updated. It has been trained on a larger and more diverse corpus, resulting in lower WER across all latency modes.
+    Try out [the demo](https://huggingface.co/spaces/nvidia/nemotron-speech-streaming-en-0.6b) and check out
+    [the NIM](https://build.nvidia.com/nvidia/nemotron-asr-streaming).
 - 2026-03: [MagpieTTS v2602](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) has been released with support
-    for 9 languages(En, Es, De, Fr, Vi, It, Zh, Hi, Ja). Try out [the demo](https://huggingface.co/nvidia/magpie_tts_multilingual_357m).
+    for 9 languages(En, Es, De, Fr, Vi, It, Zh, Hi, Ja). Try out
+    [the demo](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) and check out
+    [the NIM](https://build.nvidia.com/nvidia/magpie-tts-multilingual).
 - 2026-01: [Nemotron-Speech-Streaming](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) has been
     released: One checkpoint that enables users to pick their optimal point on the latency-accuracy Pareto curve!
 - 2026: This repo has pivoted to focus on audio, speech, and multimodal LLM. For the last NeMo release with support for more

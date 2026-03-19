@@ -27,7 +27,7 @@ from nemo.collections.audio.data.audio_to_audio_lhotse import LhotseAudioToTarge
 from nemo.collections.common.data.lhotse.dataloader import LhotseDataLoadingConfig, get_lhotse_dataloader_from_config
 
 """
-The purpose of this script is to save online-aumented data as provided by NeMo Lhotse dataloader.
+The purpose of this script is to save online-augmented data as provided by NeMo Lhotse dataloader.
 The script piggybacks on a train_ds section of an existing model configuration file.
 
 Intended use cases are: 1) preparing a validation set, 2) debugging.

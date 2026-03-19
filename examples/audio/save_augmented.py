@@ -24,7 +24,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from nemo.collections.audio.data.audio_to_audio_lhotse import LhotseAudioToTargetDataset
-from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.dataloader import LhotseDataLoadingConfig, get_lhotse_dataloader_from_config
 
 """
 The purpose of this script is to save online-aumented data as provided by NeMo Lhotse dataloader.
@@ -104,6 +104,27 @@ def main(cfg: DictConfig):
     OmegaConf.update(cfg, "model.train_ds.shard_seed", 0, force_add=True)  # ensure deterministic behavior
     if cfg.model.train_ds.get("sample_rate", None) != sample_rate:
         OmegaConf.update(cfg, "model.train_ds.sample_rate", sample_rate, force_add=True)
+
+    # Disable bucketing to preserve original cut ordering (DynamicBucketingSampler reorders by duration).
+    # Also clear bucket params that would cause _auto_detect_bucketing_and_validate_batch_size to re-enable it.
+    OmegaConf.update(cfg, "model.train_ds.use_bucketing", False, force_add=True)
+    _defaults = LhotseDataLoadingConfig()
+    for key in ("bucket_batch_size", "bucket_duration_bins"):
+        OmegaConf.update(cfg, f"model.train_ds.{key}", getattr(_defaults, key), force_add=True)
+
+    # Reset all filters to pass-through defaults — we want a 1:1 mapping from input to output cuts,
+    # so no cuts should be silently dropped by model-config filter settings.
+    for key in (
+        "min_duration",
+        "max_duration",
+        "min_tps",
+        "max_tps",
+        "min_tokens",
+        "max_tokens",
+        "max_cer",
+        "min_context_speaker_similarity",
+    ):
+        OmegaConf.update(cfg, f"model.train_ds.{key}", getattr(_defaults, key), force_add=True)
 
     dataloader = get_lhotse_dataloader_from_config(
         OmegaConf.create(cfg.model.train_ds), global_rank=0, world_size=1, dataset=LhotseAudioToTargetDataset()

@@ -8,7 +8,7 @@ This page introduces the fundamental concepts you'll encounter when working with
 Audio Conventions in NeMo
 -------------------------
 
-**Sampling rate** — Expectations depend on the collection and model. ASR models often use **16 kHz**; TTS and audio processing models may use higher rates (e.g. 22.05 kHz, 44.1 kHz). Check each model's or preprocessor's config for the expected sample rate.
+**Sampling rate** — ASR models often use **16 kHz**; TTS and audio processing models may use higher rates (e.g. 22.05 kHz, 44.1 kHz). Check each model's or preprocessor's config for the expected sample rate.
 
 **Channels** — Many models use mono input, but some support **multi-channel** audio (e.g. for spatial or multi-mic setups). See the model and preprocessor documentation for your use case.
 

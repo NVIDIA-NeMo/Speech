@@ -144,7 +144,6 @@ class ClusteringConfig(DiarizerComponentConfig):
     parameters: ClusteringParams = field(default_factory=lambda: ClusteringParams())
 
 
-
 @dataclass
 class DiarizerConfig(DiarizerComponentConfig):
     manifest_filepath: Optional[str] = None
@@ -156,5 +155,3 @@ class DiarizerConfig(DiarizerComponentConfig):
     speaker_embeddings: SpeakerEmbeddingsConfig = field(default_factory=lambda: SpeakerEmbeddingsConfig())
     clustering: ClusteringConfig = field(default_factory=lambda: ClusteringConfig())
     asr: ASRDiarizerConfig = field(default_factory=lambda: ASRDiarizerConfig())
-
-

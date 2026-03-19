@@ -19,16 +19,9 @@ import numpy as np
 import torch
 
 from nemo.collections.asr.parts.utils.speaker_utils import convert_rttm_line, get_subsegments
-from nemo.collections.common.parts.preprocessing.collections import (
-    EndtoEndDiarizationSpeechLabel,
-)
+from nemo.collections.common.parts.preprocessing.collections import EndtoEndDiarizationSpeechLabel
 from nemo.core.classes import Dataset
-from nemo.core.neural_types import (
-    AudioSignal,
-    LengthsType,
-    NeuralType,
-    ProbsType,
-)
+from nemo.core.neural_types import AudioSignal, LengthsType, NeuralType, ProbsType
 from nemo.utils import logging
 
 

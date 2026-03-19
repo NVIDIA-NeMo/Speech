@@ -187,7 +187,7 @@ class SLMEncoder(NeuralModule):
         hidden_layer: Index of hidden layer to extract embeddings from.
             Defaults to 16, which for research suggests is effective for w2v-bert and TTS.
         padding: Number of audio samples to pad before encoding to ensure output has a frame rate compatible with the audio codec.
-        scaling_factor: Constant factor to scale output embedding by.
+        scaling_factor: Constant factor to divide output embedding by. Defaults to 5 to produce embeddings with values in [-1, 1].
     """
 
     def __init__(
@@ -247,8 +247,8 @@ class SLMEncoder(NeuralModule):
         return slm_emb
 
 
-class SLMDecoder(NeuralModule):
-    """Decoder for predicting SLM embeddings for semantic distillation. This decoder uses transposed convolutions to upsample from
+class SLMPredictor(NeuralModule):
+    """Module for predicting SLM embeddings for semantic distillation. This decoder uses transposed convolutions to upsample from
     the codecs frame rate to the frame rate of the SLM model.
 
     Args:

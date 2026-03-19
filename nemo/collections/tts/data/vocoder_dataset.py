@@ -126,7 +126,8 @@ class VocoderDataset(Dataset):
     Args:
         dataset_meta: Dict of dataset names (string) to dataset metadata.
         sample_rate: Sample rate to load audio as. If the audio is stored at a different sample rate, then it will
-            be resampled.
+            be resampled using librosa.
+        resample_rate: Optional sample rate to resample to, using torch-based resampling.
         n_samples: Optional int, if provided then n_samples samples will be randomly sampled from the full
             audio file.
         weighted_sampling_steps_per_epoch: Optional int, If provided, then data will be sampled (with replacement) based on

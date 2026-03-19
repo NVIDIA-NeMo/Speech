@@ -16,7 +16,7 @@ import itertools
 from contextlib import nullcontext
 from math import ceil
 from pathlib import Path
-from typing import List, Tuple
+from typing import Iterable, List, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -128,9 +128,9 @@ class AudioCodecModel(ModelPT):
             semantic_codec = None
 
         if semantic_codec is not None:
+            semantic_codec.eval()
+            semantic_codec.freeze()
             self.register_nemo_submodule(name="semantic_codec", config_field="semantic_codec", model=semantic_codec)
-            self.semantic_codec.eval()
-            self.semantic_codec.freeze()
         else:
             self.semantic_codec = None
 
@@ -140,12 +140,12 @@ class AudioCodecModel(ModelPT):
             self.slm_encoder = instantiate(cfg.get("slm_encoder"))
             self.slm_encoder.eval()
             self.slm_encoder.freeze()
-            self.slm_decoder = instantiate(cfg.slm_decoder)
+            self.slm_predictor = instantiate(cfg.slm_predictor)
             self.slm_loss_fn = torch.nn.MSELoss()
             self.slm_loss_scale = cfg.get("slm_loss_scale", 1.0)
         else:
             self.slm_encoder = None
-            self.slm_decoder = None
+            self.slm_predictor = None
             self.slm_loss_fn = None
             self.slm_loss_scale = None
 
@@ -262,7 +262,7 @@ class AudioCodecModel(ModelPT):
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         if hasattr(self, '_no_state_dict') and self._no_state_dict:
             return {}
-        # Don't save the speaker verification and codec model in the state dict
+        # Avoid saving weights of frozen pretrained models
         state_dict = super().state_dict(destination, prefix, keep_vars)
         for key in list(state_dict.keys()):
             if self.use_scl_loss and "speaker_encoder." in key:
@@ -275,7 +275,7 @@ class AudioCodecModel(ModelPT):
         return state_dict
 
     def load_state_dict(self, state_dict, strict=True):
-        # Override to load all the keys except .speaker_encoder. and WavLM model
+        # Avoid loading weights of frozen pretrained models
         for key in list(state_dict.keys()):
             if self.use_scl_loss and "speaker_encoder." in key:
                 del state_dict[key]
@@ -328,8 +328,10 @@ class AudioCodecModel(ModelPT):
         encoded, encoded_len = self.audio_encoder(audio=audio_preprocessed, audio_len=audio_preprocessed_len)
 
         if self.semantic_codec is not None:
-            semantic, _ = self.semantic_codec.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
-            semantic = semantic.detach()
+            with torch.no_grad():
+                semantic, _ = self.semantic_codec.encode_audio(
+                    audio=audio, audio_len=audio_len, sample_rate=sample_rate
+                )
             encoded = torch.concat([semantic, encoded], dim=1)
 
         return encoded, encoded_len
@@ -575,7 +577,7 @@ class AudioCodecModel(ModelPT):
 
         if self.training and self.use_slm_loss:
             slm_emb = self.slm_encoder(audio=audio)
-            slm_emb_pred = self.slm_decoder(inputs=encoded)
+            slm_emb_pred = self.slm_predictor(inputs=encoded)
         else:
             slm_emb = None
             slm_emb_pred = None
@@ -887,11 +889,11 @@ class AudioCodecModel(ModelPT):
         if schedulers is None or self.lr_schedule_interval != interval:
             return
 
-        if self.discriminator is None:
+        if not isinstance(schedulers, Iterable):
             schedulers.step()
         else:
-            schedulers[0].step()
-            schedulers[1].step()
+            for sch in schedulers:
+                sch.step()
 
     def configure_callbacks(self):
         if not self.log_config:

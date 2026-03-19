@@ -1024,118 +1024,91 @@ FastEmit Regularization is supported for the default Numba based WarpRNNT loss. 
 Refer to the above paper for results and recommendations of ``fastemit_lambda``.
 
 
-.. _Hybrid-ASR-TTS_model__Config:
+.. _Hybrid-Transducer-CTC-Prompt_model__Config:
 
-Hybrid ASR-TTS Model Configuration
-----------------------------------
+Hybrid-Transducer-CTC with Prompt Conditioning Configuration
+------------------------------------------------------------
 
-:ref:`Hybrid ASR-TTS model <Hybrid-ASR-TTS_model>` consists of three parts:
+The :ref:`Hybrid-Transducer-CTC model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model>` 
+(``EncDecHybridRNNTCTCBPEModelWithPrompt``) extends the base hybrid model to support prompt-based multilingual ASR/AST.
 
-* ASR model (``EncDecCTCModelBPE``, ``EncDecRNNTBPEModel`` or ``EncDecHybridRNNTCTCBPEModel``)
-* TTS Mel Spectrogram Generator (currently, only FastPitch model is supported)
-* Enhancer model (SpectrogramEnhancerModel) (optional)
+**Key Configuration Parameters:**
 
-Also, the config allows to specify :ref:`text-only dataset <Hybrid-ASR-TTS_model__Text-Only-Data>`.
-
-Main parts of the config:
-
-* ASR model
-    * ``asr_model_path``: path to the ASR model checkpoint (`.nemo`) file, loaded only once, then the config of the ASR model is stored in the ``asr_model`` field
-    * ``asr_model_type``: needed only when training from scratch. ``rnnt_bpe`` corresponds to ``EncDecRNNTBPEModel``, ``ctc_bpe`` to ``EncDecCTCModelBPE``, ``hybrid_rnnt_ctc_bpe`` to ``EncDecHybridRNNTCTCBPEModel``
-    * ``asr_model_fuse_bn``: fusing BatchNorm in the pretrained ASR model, can improve quality in finetuning scenario
-* TTS model
-    * ``tts_model_path``: path to the pretrained TTS model checkpoint (`.nemo`) file, loaded only once, then the config of the model is stored in the ``tts_model`` field
-* Enhancer model
-    * ``enhancer_model_path``: optional path to the enhancer model. Loaded only once, the config is stored in the ``enhancer_model`` field
-* ``train_ds``
-    * ``text_data``: properties related to text-only data
-        * ``manifest_filepath``: path (or paths) to :ref:`text-only dataset <Hybrid-ASR-TTS_model__Text-Only-Data>` manifests
-        * ``speakers_filepath``: path (or paths) to the text file containing speaker ids for the multi-speaker TTS model (speakers are sampled randomly during training)
-        * ``min_words`` and ``max_words``: parameters to filter text-only manifests by the number of words
-        * ``tokenizer_workers``: number of workers for initial tokenization (when loading the data). ``num_CPUs / num_GPUs`` is a recommended value.
-    * ``asr_tts_sampling_technique``, ``asr_tts_sampling_temperature``, ``asr_tts_sampling_probabilities``: sampling parameters for text-only and audio-text data (if both specified). Correspond to ``sampling_technique``, ``sampling_temperature``, and ``sampling_probabilities`` parameters of the :mod:`ConcatDataset <nemo.collections.common.data.dataset.ConcatDataset>`.
-    * all other components are similar to conventional ASR models
-* ``validation_ds`` and ``test_ds`` correspond to the underlying ASR model
-
+The model introduces several prompt-specific configuration parameters in the ``model_defaults`` section:
 
 .. code-block:: yaml
 
   model:
-    sample_rate: 16000
+    model_defaults:
+      # Prompt Feature Configuration
+      initialize_prompt_feature: true  # Enable prompt conditioning
+      num_prompts: 128                 # Number of supported prompt categories
+      prompt_dictionary: {             # Mapping from identifiers to prompt indices
+        # Language prompts (0-99)
+        'en-US': 0,
+        'de-DE': 1,
+        'fr-FR': 2,
+        'es-ES': 3,
+        # Task/domain prompts (100-127)
+        'pnc': 100,                    # Punctuation mode
+        'no_pnc': 101,                 # No punctuation mode
+      }
 
-    # asr model
-    asr_model_path: ???
-    asr_model: null
-    asr_model_type: null  # rnnt_bpe, ctc_bpe or hybrid_rnnt_ctc_bpe; needed only if instantiating from config, otherwise type is auto inferred
-    asr_model_fuse_bn: false  # only ConformerEncoder supported now, use false for other models
+**Dataset Configuration:**
 
-    # tts model
-    tts_model_path: ???
-    tts_model: null
+The model requires training data with prompt annotations when using Lhotse datasets:
 
-    # enhancer model
-    enhancer_model_path: null
-    enhancer_model: null
+.. code-block:: yaml
 
+  model:
     train_ds:
-      text_data:
-        manifest_filepath: ???
-        speakers_filepath: ???
-        min_words: 1
-        max_words: 45  # 45 - recommended value, ~16.7 sec for LibriSpeech
-        tokenizer_workers: 1
-      asr_tts_sampling_technique: round-robin  # random, round-robin, temperature
-      asr_tts_sampling_temperature: null
-      asr_tts_sampling_probabilities: null  # [0.5,0.5] – ASR,TTS
-      manifest_filepath: ???
-      batch_size: 16 # you may increase batch_size if your memory allows
-      # other params
+      use_lhotse: true
+      initialize_prompt_feature: true
+      prompt_field: "target_lang"     # Field name for prompt extraction
+      prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+      num_prompts: ${model.model_defaults.num_prompts}
+      
+    validation_ds:
+      use_lhotse: true
+      initialize_prompt_feature: true
+      prompt_field: "target_lang"
+      prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+      num_prompts: ${model.model_defaults.num_prompts}
 
-Finetuning with Text-Only Data
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+**Manifest Format:**
 
-To finetune existing ASR model using text-only data use ``<NeMo_git_root>/examples/asr/asr_with_tts/speech_to_text_bpe_with_text_finetune.py`` script with the corresponding config ``<NeMo_git_root>/examples/asr/conf/asr_tts/hybrid_asr_tts.yaml``.
+Training manifests should include prompt information:
 
-Please specify paths to all the required models (ASR, TTS, and Enhancer checkpoints), along with ``train_ds.text_data.manifest_filepath`` and ``train_ds.text_data.speakers_filepath``.
+.. code-block:: json
 
-.. code-block:: shell
+  {
+    "audio_filepath": "/path/to/audio.wav",
+    "text": "transcription text",
+    "duration": 10.5,
+    "target_lang": "en-US"
+  }
 
-    python speech_to_text_bpe_with_text_finetune.py \
-        model.asr_model_path=<path to ASR model> \
-        model.tts_model_path=<path to compatible TTS model> \
-        model.enhancer_model_path=<optional path to enhancer model> \
-        model.asr_model_fuse_bn=<true recommended if ConformerEncoder with BatchNorm, false otherwise> \
-        model.train_ds.manifest_filepath=<path to manifest with audio-text pairs or null> \
-        model.train_ds.text_data.manifest_filepath=<path(s) to manifest with train text> \
-        model.train_ds.text_data.speakers_filepath=<path(s) to speakers list> \
-        model.train_ds.text_data.tokenizer_workers=4 \
-        model.validation_ds.manifest_filepath=<path to validation manifest> \
-        model.train_ds.batch_size=<batch_size>
+**Example Configuration:**
 
-Training from Scratch
-~~~~~~~~~~~~~~~~~~~~~
+A complete example configuration can be found at:
+``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml``
 
-To train ASR model from scratch using text-only data use ``<NeMo_git_root>/examples/asr/asr_with_tts/speech_to_text_bpe_with_text.py`` script with conventional ASR model config, e.g. ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_bpe.yaml`` or  ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_transducer_bpe.yaml``
+**Training Command:**
 
-Please specify the ASR model type, paths to the TTS model, and (optional) enhancer, along with text-only data-related fields.
-Use ``++`` or ``+`` markers for these options, since the options are not present in the original ASR model config.
+.. code-block:: bash
 
-.. code-block:: shell
-
-    python speech_to_text_bpe_with_text.py \
-        ++asr_model_type=<rnnt_bpe or ctc_bpe> \
-        ++tts_model_path=<path to compatible tts model> \
-        ++enhancer_model_path=<optional path to enhancer model> \
-        ++model.train_ds.text_data.manifest_filepath=<path(s) to manifests with train text> \
-        ++model.train_ds.text_data.speakers_filepath=<path(s) to speakers list> \
-        ++model.train_ds.text_data.min_words=1 \
-        ++model.train_ds.text_data.max_words=45 \
-        ++model.train_ds.text_data.tokenizer_workers=4
+  python <NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe_prompt.py \
+      --config-path=<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/ \
+      --config-name=fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml \
+      model.train_ds.manifest_filepath=<path_to_train_manifest> \
+      model.validation_ds.manifest_filepath=<path_to_val_manifest> \
+      model.tokenizer.dir=<path_to_tokenizer> \
+      model.test_ds.manifest_filepath=<path_to_test_manifest>
 
 Fine-tuning Configurations
 --------------------------
 
-All ASR scripts support easy fine-tuning by partially/fully loading the pretrained weights from a checkpoint into the **currently instantiated model**. Note that the currently instantiated model should have parameters that match the pre-trained checkpoint (such that weights may load properly). In order to directly fine-tune a pre-existing checkpoint, please follow the tutorial  `ASR Language Fine-tuning. <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
+All ASR scripts support easy fine-tuning by partially/fully loading the pretrained weights from a checkpoint into the **currently instantiated model**. Note that the currently instantiated model should have parameters that match the pre-trained checkpoint (such that weights may load properly). In order to directly fine-tune a pre-existing checkpoint, please follow the tutorial  `ASR Language Fine-tuning. <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
 
 Models can be fine-tuned in two ways:
 * By updating or retaining current tokenizer alone

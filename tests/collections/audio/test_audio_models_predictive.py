@@ -23,7 +23,7 @@ import soundfile as sf
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.audio.models import PredictiveAudioToAudioModel
+from nemo.collections.audio.models.enhancement import PredictiveAudioToAudioModel
 
 
 @pytest.fixture(params=["nemo_manifest", "lhotse_cuts"])
@@ -111,7 +111,7 @@ def predictive_model_ncsn():
     }
 
     loss = {
-        '_target_': 'nemo.collections.audio.losses.MSELoss',  # computed in the time domain
+        '_target_': 'nemo.collections.audio.losses.audio.MSELoss',  # computed in the time domain
     }
 
     model_config = DictConfig(
@@ -183,7 +183,7 @@ def predictive_model_conformer():
     }
 
     loss = {
-        '_target_': 'nemo.collections.audio.losses.MSELoss',  # computed in the time domain
+        '_target_': 'nemo.collections.audio.losses.audio.MSELoss',  # computed in the time domain
     }
 
     model_config = DictConfig(
@@ -255,7 +255,7 @@ def predictive_model_streaming_conformer():
     }
 
     loss = {
-        '_target_': 'nemo.collections.audio.losses.MSELoss',  # computed in the time domain
+        '_target_': 'nemo.collections.audio.losses.audio.MSELoss',  # computed in the time domain
     }
 
     model_config = DictConfig(
@@ -318,7 +318,7 @@ def predictive_model_transformer_unet_params_base():
     }
 
     loss = {
-        '_target_': 'nemo.collections.audio.losses.MSELoss',  # computed in the time domain
+        '_target_': 'nemo.collections.audio.losses.audio.MSELoss',  # computed in the time domain
     }
 
     model_config = DictConfig(
@@ -384,7 +384,7 @@ def predictive_model_conformer_unet():
     }
 
     loss = {
-        '_target_': 'nemo.collections.audio.losses.MSELoss',  # computed in the time domain
+        '_target_': 'nemo.collections.audio.losses.audio.MSELoss',  # computed in the time domain
     }
 
     model_config = DictConfig(
@@ -456,7 +456,7 @@ def predictive_model_streaming_conformer_unet():
     }
 
     loss = {
-        '_target_': 'nemo.collections.audio.losses.MSELoss',  # computed in the time domain
+        '_target_': 'nemo.collections.audio.losses.audio.MSELoss',  # computed in the time domain
     }
 
     model_config = DictConfig(

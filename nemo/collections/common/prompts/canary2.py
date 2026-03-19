@@ -102,6 +102,29 @@ class Canary2PromptFormatter(PromptFormatter):
             prompt_template=prompt_template, expected_slots=expected_slots, slot_values=slot_values
         )
 
+    def get_default_dialog_slots(self) -> list[dict]:
+        """
+        Returns a list of dialog turns that can be used as a skeleton to fill with actual slot values.
+        If ``PromptFormatter`` was initialized with ``defaults`` argument, this method will return the
+        defaults. Otherwise, every slot is pre-filled with ``None``.
+        """
+
+        def _get_default_for_role(role: str) -> dict:
+            for turn in self._defaults:
+                if turn["role"] == role:
+                    return turn
+            return {}
+
+        role = "user"
+        return [
+            {
+                "role": role,
+                "slots": {
+                    slot: _get_default_for_role(role).get("slots", {}).get(slot) for slot in self.get_slots(role)
+                },
+            }
+        ]
+
 
 def map_manifest_values_to_special_tokens(slot_values: dict[str, str]) -> dict[str, str]:
     slot_values = slot_values.copy()

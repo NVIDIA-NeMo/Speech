@@ -25,7 +25,6 @@ from nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter
     MHAResidualAddAdapterStrategyConfig,
 )
 from nemo.collections.common.parts import adapter_modules
-from nemo.core.classes.mixins import adapter_mixin_strategies, adapter_mixins
 
 
 class TransformerMultiHeadAttentionAdapter(transformer_modules.MultiHeadAttention, adapter_modules.AdapterModuleUtil):
@@ -104,7 +103,9 @@ class TransformerMultiHeadAttentionAdapter(transformer_modules.MultiHeadAttentio
         key = self.pre_norm(keys)
         value = self.pre_norm(values)
 
-        return super().forward(query, key, value, attention_mask)
+        output, extra_output = super().forward(query, key, value, attention_mask)
+
+        return output
 
     def reset_parameters(self):
         with torch.no_grad():

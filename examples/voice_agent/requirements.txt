@@ -1,8 +1,0 @@
-fastapi[all]
-huggingface-hub
-nemo-toolkit
-onnxruntime
-pipecat-ai
-python-dotenv
-uvicorn
-websockets

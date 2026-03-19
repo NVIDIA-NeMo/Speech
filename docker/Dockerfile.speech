@@ -22,8 +22,6 @@ ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
 FROM ${BASE_IMAGE} as nemo-deps
 
 # dependency flags; should be declared after FROM
-# torchaudio: not required by default
-ARG REQUIRE_TORCHAUDIO=false
 # k2: not required by default
 ARG REQUIRE_K2=false
 # ais cli: not required by default, install only if required
@@ -95,18 +93,6 @@ WORKDIR /tmp/
 
 # uninstall stuff from base container
 RUN pip3 uninstall -y sacrebleu torchtext
-
-# build torchaudio
-WORKDIR /tmp/torchaudio_build
-COPY scripts/installers /tmp/torchaudio_build/scripts/installers/
-RUN INSTALL_MSG=$(/bin/bash /tmp/torchaudio_build/scripts/installers/install_torchaudio_latest.sh); INSTALL_CODE=$?; \
-  echo ${INSTALL_MSG}; \
-  if [ ${INSTALL_CODE} -ne 0 ]; then \
-  echo "torchaudio installation failed";  \
-  if [ "${REQUIRE_TORCHAUDIO}" = true ]; then \
-  exit ${INSTALL_CODE};  \
-  else echo "Skipping failed torchaudio installation"; fi \
-  else echo "torchaudio installed successfully"; fi
 
 COPY scripts /tmp/nemo/scripts/
 # install correct graphviz version (k2 and pynini visualization tool), skip if installation fails

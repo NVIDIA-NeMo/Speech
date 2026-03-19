@@ -11,7 +11,6 @@ Core
     :undoc-members: adapter_module_names
     :noindex:
 
------
 
 .. autoclass:: nemo.core.adapter_mixins.AdapterModelPTMixin
     :show-inheritance:
@@ -20,7 +19,6 @@ Core
     :undoc-members: adapter_module_names
     :noindex:
 
------
 
 Adapter Networks
 ----------------
@@ -32,7 +30,6 @@ Adapter Networks
     :member-order: bysource
     :noindex:
 
------
 
 .. autoclass:: nemo.collections.common.parts.adapter_modules.LinearAdapter
     :show-inheritance:
@@ -40,7 +37,6 @@ Adapter Networks
     :member-order: bysource
     :noindex:
 
------
 
 Adapter Strategies
 ------------------
@@ -53,7 +49,6 @@ Adapter Strategies
     :undoc-members: adapter_module_names
     :noindex:
 
------
 
 .. autoclass:: nemo.core.classes.mixins.adapter_mixin_strategies.ReturnResultAdapterStrategy
     :show-inheritance:
@@ -62,7 +57,6 @@ Adapter Strategies
     :undoc-members: adapter_module_names
     :noindex:
 
------
 
 .. autoclass:: nemo.core.classes.mixins.adapter_mixin_strategies.ResidualAddAdapterStrategy
     :show-inheritance:

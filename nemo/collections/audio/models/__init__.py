@@ -20,3 +20,12 @@ from nemo.collections.audio.models.enhancement import (
     SchroedingerBridgeAudioToAudioModel,
     ScoreBasedGenerativeAudioToAudioModel,
 )
+
+__all__ = [
+    "AudioToAudioModel",
+    "EncMaskDecAudioToAudioModel",
+    "FlowMatchingAudioToAudioModel",
+    "PredictiveAudioToAudioModel",
+    "SchroedingerBridgeAudioToAudioModel",
+    "ScoreBasedGenerativeAudioToAudioModel",
+]

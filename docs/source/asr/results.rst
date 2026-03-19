@@ -27,16 +27,6 @@ If there is a local ``.nemo`` checkpoint that you'd like to load, use the :code:
 Where the model base class is the ASR model class of the original checkpoint, or the general ``ASRModel`` class.
 
 
-Hybrid ASR-TTS Models Checkpoints
----------------------------------
-
-:ref:`Hybrid ASR-TTS model <Hybrid-ASR-TTS_model>` is a transparent wrapper for the ASR model, text-to-mel-spectrogram generator, and optional enhancer.
-The model is saved as a solid ``.nemo`` checkpoint containing all these parts.
-Due to transparency, the ASR model can be extracted after training/finetuning separately by using the ``asr_model`` attribute (NeMo submodel)
-:code:`hybrid_model.asr_model.save_to(<asr_checkpoint_path>.nemo)` or by using a wrapper
-made for convenience purpose :code:`hybrid_model.save_asr_model_to(<asr_checkpoint_path>.nemo)`
-
-
 Pretrained Checkpoints
 --------------------------
 
@@ -296,6 +286,42 @@ Fast Conformer Hybrid
    :align: left
    :widths: 50,50
    :header-rows: 1
+
+Fast Conformer Hybrid with Prompt Feature
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCBPEModelWithPrompt``) supports multilingual ASR/AST through prompt-based conditioning. This model enables:
+
+- **Multi-language transcription** with language-specific prompts
+- **Streaming and offline inference** modes
+- **Scalable architecture** can support multilingual ASR and AST tasks
+
+**Key Features:**
+- Prompt-based language conditioning using one-hot embeddings
+- Concatenation-based feature fusion with learned projection networks
+- Compatible with existing FastConformer hybrid architecture
+- Support for both offline and buffered streaming inference
+
+**Usage Example:**
+
+.. code-block:: python
+
+  import nemo.collections.asr as nemo_asr
+  
+  # Load the model
+  model = nemo_asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt.restore_from("path/to/model.nemo")
+  
+  # Transcribe with language prompts
+  transcriptions = model.transcribe(
+      paths2audio_files=["audio1.wav", "audio2.wav"],
+      target_lang="en-US"  # Specify target language
+  )
+
+**Configuration and Training:**
+- Training script: ``<NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe_prompt.py``
+- Config file: ``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml``
+
+For detailed configuration parameters, see :ref:`Hybrid-Transducer-CTC with Prompt Conditioning Configuration <Hybrid-Transducer-CTC-Prompt_model__Config>`.
 
 Code-Switching
 ^^^^^^^^^^^^^^

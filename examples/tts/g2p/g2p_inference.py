@@ -54,11 +54,6 @@ class TranscriptionConfig:
     batch_size: int = 32  # Batch size to use for inference
     num_workers: int = 0  # Number of workers to use for DataLoader during inference
 
-    # Config for heteronyms correction
-    pretrained_heteronyms_model: Optional[str] = (
-        None  # Path to a .nemo file or a Name of a pretrained model to disambiguate heteronyms (Optional)
-    )
-
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
 def main(cfg: TranscriptionConfig) -> TranscriptionConfig:

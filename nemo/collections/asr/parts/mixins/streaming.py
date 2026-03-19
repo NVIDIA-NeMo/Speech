@@ -14,13 +14,12 @@
 
 from abc import ABC, abstractmethod
 
-import torch
-
 
 class StreamingEncoder(ABC):
     @abstractmethod
     def setup_streaming_params(
-        self, max_look_ahead: int = 10000,
+        self,
+        max_look_ahead: int = 10000,
     ):
         """
         This function sets the needed values and parameters to perform streaming. The configuration (CacheAwareStreamingConfig) need to be stored in self.streaming_cfg.
@@ -47,6 +46,7 @@ class StreamingEncoder(ABC):
         cache_last_channel_len=None,
         keep_all_outputs=True,
         drop_extra_pre_encoded=None,
+        bypass_pre_encode=False,
     ):
         if self.streaming_cfg is None:
             self.setup_streaming_params()
@@ -65,6 +65,7 @@ class StreamingEncoder(ABC):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            bypass_pre_encode=bypass_pre_encode,
         )
 
         encoder_output = self.streaming_post_process(encoder_output, keep_all_outputs=keep_all_outputs)

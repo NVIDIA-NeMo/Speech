@@ -71,6 +71,19 @@ if [[ -z $MODEL_NAME_OR_PATH ]] || [[ -z $DATA_DIR ]] || [[ -z $OUTPUT_DIR ]]; t
   exit 1
 fi
 
+# check if num2words and ctc_segmentation are installed
+if ! command -v num2words &> /dev/null; then
+  echo "num2words could not be found"
+  echo "please install using tools/ctc_segmentation/requirements.txt"
+  exit 1
+fi
+
+if ! command -v ctc_segmentation &> /dev/null; then
+  echo "ctc_segmentation could not be found"
+  echo "please install using tools/ctc_segmentation/requirements.txt"
+  exit 1
+fi
+
 NEMO_NORMALIZATION=""
 if [[ ${USE_NEMO_NORMALIZATION,,} == "true" ]]; then
   NEMO_NORMALIZATION="--use_nemo_normalization "

@@ -56,6 +56,7 @@ class InternalTranscribeConfig:
 
 @dataclass
 class TranscribeConfig:
+    use_lhotse: bool = True
     batch_size: int = 4
     return_hypotheses: bool = False
     num_workers: Optional[int] = None
@@ -101,6 +102,10 @@ class TranscriptionTensorDataset(Dataset):
         self.augmentor_cfg = config.get('augmentor', None)
         self.sample_rate = config['sample_rate']
 
+        self.pad_min_duration = config.get('pad_min_duration', 1.0)
+        self.pad_direction = config.get('pad_direction', 'both')
+        self.pad_min_samples = int(self.pad_min_duration * self.sample_rate)
+
         if self.augmentor_cfg is not None:
             self.augmentor = process_augmentations(self.augmentor_cfg, global_rank=0, world_size=1)
         else:
@@ -116,6 +121,25 @@ class TranscriptionTensorDataset(Dataset):
 
     def __len__(self):
         return self.length
+
+    def _pad_audio(self, samples: torch.Tensor) -> torch.Tensor:
+        """Pad audio to minimum duration, matching Lhotse dataloader behavior."""
+        current_len = samples.shape[0]
+        if current_len >= self.pad_min_samples:
+            return samples
+
+        pad_total = self.pad_min_samples - current_len
+        if self.pad_direction == 'both':
+            pad_left = pad_total // 2
+            pad_right = pad_total - pad_left
+        elif self.pad_direction == 'left':
+            pad_left = pad_total
+            pad_right = 0
+        else:  # right (default)
+            pad_left = 0
+            pad_right = pad_total
+        samples = torch.nn.functional.pad(samples, (pad_left, pad_right), mode='constant', value=0.0)
+        return samples
 
     def get_item(self, index):
         samples = self.audio_tensors[index]
@@ -135,7 +159,7 @@ class TranscriptionTensorDataset(Dataset):
             samples = self.augmentor.perturb(segment)
             samples = torch.tensor(samples.samples, dtype=original_dtype)
 
-        # Calculate seq length
+        samples = self._pad_audio(samples)
         seq_len = torch.tensor(samples.shape[0], dtype=torch.long)
 
         # Typically NeMo ASR models expect the mini-batch to be a 4-tuple of (audio, audio_len, text, text_len).
@@ -175,6 +199,7 @@ class TranscriptionMixin(ABC):
     def transcribe(
         self,
         audio: Union[str, List[str], np.ndarray, DataLoader],
+        use_lhotse: bool = True,
         batch_size: int = 4,
         return_hypotheses: bool = False,
         num_workers: int = 0,
@@ -193,6 +218,8 @@ class TranscriptionMixin(ABC):
                 Can also be a dataloader object that provides values that can be consumed by the model.
                 Recommended length per file is between 5 and 25 seconds.
                 But it is possible to pass a few hours long file if enough GPU memory is available.
+            use_lhotse: (bool) If audio is not a dataloder, defines whether to create a lhotse dataloader or a
+                non-lhotse dataloader.
             batch_size: (int) batch size to use during inference.
                 Bigger will result in better throughput performance but would use more memory.
             return_hypotheses: (bool) Either return hypotheses or text
@@ -229,6 +256,7 @@ class TranscriptionMixin(ABC):
 
         if override_config is None:
             transcribe_cfg = TranscribeConfig(
+                use_lhotse=use_lhotse,
                 batch_size=batch_size,
                 return_hypotheses=return_hypotheses,
                 num_workers=num_workers,
@@ -526,12 +554,15 @@ class TranscriptionMixin(ABC):
             )
 
         ds_config = {
+            'use_lhotse': get_value_from_transcription_config(trcfg, 'use_lhotse', True),
             'audio_tensors': audio_tensors,
             'batch_size': get_value_from_transcription_config(trcfg, 'batch_size', 4),
             'temp_dir': temp_dir,
             'num_workers': get_value_from_transcription_config(trcfg, 'num_workers', 0),
             'channel_selector': get_value_from_transcription_config(trcfg, 'channel_selector', None),
             'sample_rate': sample_rate,
+            'pad_min_duration': get_value_from_transcription_config(trcfg, 'pad_min_duration', 1.0),
+            'pad_direction': get_value_from_transcription_config(trcfg, 'pad_direction', 'both'),
         }
 
         augmentor = get_value_from_transcription_config(trcfg, 'augmentor', None)
@@ -714,6 +745,7 @@ class ASRTranscriptionMixin(TranscriptionMixin):
                     )
 
         ds_config = {
+            'use_lhotse': get_value_from_transcription_config(trcfg, 'use_lhotse', True),
             'paths2audio_files': audio_files,
             'batch_size': get_value_from_transcription_config(trcfg, 'batch_size', 4),
             'temp_dir': temp_dir,

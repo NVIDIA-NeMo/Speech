@@ -542,12 +542,12 @@ class NGramGPULanguageModel(ModelPT):
                 "Triton is disabled. Version without Triton is not compatible with Cuda graphs; decoding can be slow"
             )
 
-        self.bos_state = 1 if cfg.separate_bos_state else self.START_STATE
-        self.vocab_size = cfg.vocab_size
-        self.num_states = cfg.num_states
-        self.num_arcs = cfg.num_arcs
-        self.max_order = cfg.max_order
-        self.num_arcs_extended = cfg.num_arcs + self.vocab_size  # + extra padding
+        self.bos_state: int = 1 if cfg.separate_bos_state else self.START_STATE
+        self.vocab_size: int = cfg.vocab_size
+        self.num_states: int = cfg.num_states
+        self.num_arcs: int = cfg.num_arcs
+        self.max_order: int = cfg.max_order
+        self.num_arcs_extended: int = cfg.num_arcs + self.vocab_size  # + extra padding
 
         # parameters: weights (forward/backoff/final)
         self.arcs_weights = nn.Parameter(torch.zeros([self.num_arcs_extended]))
@@ -560,14 +560,14 @@ class NGramGPULanguageModel(ModelPT):
             int_dtype = torch.int64
         # buffers: LM (suffix tree) structure
         # arcs data
-        self.register_buffer("from_states", torch.zeros([self.num_arcs_extended], dtype=int_dtype))
-        self.register_buffer("to_states", torch.zeros([self.num_arcs_extended], dtype=int_dtype))
-        self.register_buffer("ilabels", torch.zeros([self.num_arcs_extended], dtype=int_dtype))
+        self.from_states = nn.Buffer(torch.zeros([self.num_arcs_extended], dtype=int_dtype))
+        self.to_states = nn.Buffer(torch.zeros([self.num_arcs_extended], dtype=int_dtype))
+        self.ilabels = nn.Buffer(torch.zeros([self.num_arcs_extended], dtype=int_dtype))
 
         # states data
-        self.register_buffer("backoff_to_states", torch.zeros([self.num_states], dtype=int_dtype))
-        self.register_buffer("start_end_arcs", torch.zeros([self.num_states, 2], dtype=int_dtype))
-        self.register_buffer("state_order", torch.zeros([self.num_states], dtype=int_dtype))
+        self.backoff_to_states = nn.Buffer(torch.zeros([self.num_states], dtype=int_dtype))
+        self.start_end_arcs = nn.Buffer(torch.zeros([self.num_states, 2], dtype=int_dtype))
+        self.state_order = nn.Buffer(torch.zeros([self.num_states], dtype=int_dtype))
 
         self._final_resolved = False
 
@@ -584,6 +584,10 @@ class NGramGPULanguageModel(ModelPT):
         """Stub necessary to create the ModelPT. Not used for LM"""
         pass
 
+    def compatible_with_cuda_graphs(self) -> bool:
+        """True if model can be compiled as a part of CUDA graph, False otherwise"""
+        return self.use_triton
+
     @classmethod
     def from_nemo(
         cls,
@@ -599,7 +603,7 @@ class NGramGPULanguageModel(ModelPT):
             vocab_size: model vocabulary size
             use_triton: allow using Triton implementation; None (default) means "auto" (used if available)
         """
-        model = NGramGPULanguageModel.restore_from(restore_path=str(lm_path), map_location="cpu")
+        model = cls.restore_from(restore_path=str(lm_path), map_location="cpu")
         model._resolve_final()
         assert model.vocab_size == vocab_size
         model.use_triton = use_triton if use_triton is not None else TRITON_AVAILABLE
@@ -696,7 +700,7 @@ class NGramGPULanguageModel(ModelPT):
 
                 if ngram_cur_order_i == order2cnt[cur_order]:
                     suffix_tree_np._end_adding_ngrams_for_order(order=cur_order, bos_id=_BOS_ID, unk_id=_UNK_ID)
-                    logging.info(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
+                    logging.debug(f"Processed {order2cnt[cur_order]} n-grams of order {cur_order}")
                     cur_order += 1
                     ngram_cur_order_i = 0
 

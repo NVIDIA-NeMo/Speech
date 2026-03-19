@@ -40,6 +40,8 @@ The input folder consists of subfolders with following stricture
 import argparse
 import os
 import re
+import shutil
+import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -77,7 +79,7 @@ def get_audio(name, n):
 
     Args:
         name - name of folder within Spoken Wikipedia
-        n - integer that will serve as output file name, e.g. if n=1, file 1.ogg will be created  
+        n - integer that will serve as output file name, e.g. if n=1, file 1.ogg will be created
     """
     audio_path = os.path.join(args.input_folder, name, "audio.ogg")
     if not os.path.exists(audio_path):
@@ -104,19 +106,19 @@ def get_audio(name, n):
         if len(multiple_ogg_files) == 0:
             return
         elif len(multiple_ogg_files) == 1:
-            os.system("cp \"" + multiple_ogg_files[0] + "\" \"" + audio_path + "\"")
+            shutil.copy(multiple_ogg_files[0], audio_path)
         else:
             tmp_file_name = "ffmeg_inputs.txt"
             print("tmp_file_name=", tmp_file_name)
             with open(tmp_file_name, "w", encoding="utf-8") as tmp_file:
                 for path in multiple_ogg_files:
                     tmp_file.write("file '" + path + "'\n")
-            cmd = "ffmpeg -f concat -i \"" + tmp_file_name + "\" -c copy \"" + audio_path + "\""
-            print(cmd)
-            os.system(cmd)
+            ffmpeg_cmd = ["ffmpeg", "-f", "concat", "-i", tmp_file_name, "-c", "copy", audio_path]
+            print("ffmpeg command:", ffmpeg_cmd)
+            subprocess.run(ffmpeg_cmd, check=True)
 
     output_audio_path = args.destination_folder + "/audio/" + str(n) + ".ogg"
-    os.system("cp \"" + audio_path + "\" " + output_audio_path)
+    shutil.copy(audio_path, output_audio_path)
 
 
 def get_text(name, n):
@@ -125,7 +127,7 @@ def get_text(name, n):
 
     Args:
         name - name of folder within Spoken Wikipedia
-        n - integer that will serve as output file name, e.g. if n=1, file 1.txt will be created  
+        n - integer that will serve as output file name, e.g. if n=1, file 1.txt will be created
     """
 
     # Then we need to clean the text

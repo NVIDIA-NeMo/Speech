@@ -53,11 +53,13 @@ Word Boosting
 Word boosting increases the likelihood of specific words or phrases during decoding by applying a positive bias, helping the model better recognize names,
 uncommon terms, and custom vocabulary.
 
-- **Flashlight-based Word Boosting**: Word-boosting method for CTC models with external n-gram LM.
+- :ref:`word_boosting_gpupb` (preferred): GPU-accelerated phrase-boosting for CTC, RNN-T/TDT, and AED (Canary) models supporting greedy and beam search decoding.
 
-- **CTC-WS (Context-biasing) Word Boosting**: Word-boosting method for hybrid models without LM.
+- :ref:`word_boosting_flashlight`: Word-boosting method for CTC models with external n-gram LM.
 
-For details, please refer to: :ref:`word_boosting`
+- :ref:`word_boosting_ctcws`: Word-boosting method for hybrid (Transducer-CTC) models without LM.
+
+For details, please refer to: :ref:`word_boosting`.
 
 
 LM Training
@@ -65,3 +67,14 @@ LM Training
 
 NeMo provides tools for training n-gram language models that can be used for language model fusion or word-boosting.
 For details, please refer to: :ref:`ngram-utils`.
+
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+
+   asr_customization/ngpulm_language_modeling_and_customization
+   asr_customization/neural_rescoring
+   asr_customization/legacy_language_modeling_and_customization
+   asr_customization/ngram_utils
+   asr_customization/word_boosting

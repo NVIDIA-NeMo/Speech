@@ -22,6 +22,8 @@ import pytest
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
+nemo_text_processing = pytest.importorskip("nemo_text_processing", reason="Requires nemo_text_processing to run")
+
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
 except (ImportError, ModuleNotFoundError):
@@ -89,7 +91,12 @@ def textonly_unnormalized_manifest_path(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def tts_normalizer():
-    normalizer = Normalizer(lang="en", input_case="cased", overwrite_cache=True, cache_dir=None,)
+    normalizer = Normalizer(
+        lang="en",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=None,
+    )
     return normalizer
 
 

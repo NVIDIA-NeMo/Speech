@@ -35,7 +35,7 @@ from pipecat.utils.tracing.service_decorators import traced_stt
 from pydantic import BaseModel
 
 from nemo.agents.voice_agent.pipecat.frames.frames import DiarResultFrame
-from nemo.agents.voice_agent.pipecat.services.nemo.legacy_diar import DiarizationConfig, NeMoLegacyDiarService
+from nemo.agents.voice_agent.pipecat.services.nemo.streaming_diar import DiarizationConfig, NeMoStreamingDiarService
 
 
 class NeMoDiarInputParams(BaseModel):
@@ -102,7 +102,7 @@ class NemoDiarService(STTService):
         if self._backend == "legacy":
             cfg = DiarizationConfig()
             cfg.device = self._device
-            self._model = NeMoLegacyDiarService(
+            self._model = NeMoStreamingDiarService(
                 cfg, self._model_name, frame_len_in_secs=self._params.frame_len_in_secs, sample_rate=self.sample_rate
             )
         else:
@@ -324,6 +324,7 @@ class NemoDiarService(STTService):
             self._audio_buffer = []
 
     def reset(self):
+        """Reset the diarization service."""
         self._current_speaker_id = None
         self._audio_buffer = []
         self._vad_user_speaking = False

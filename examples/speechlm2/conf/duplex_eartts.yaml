@@ -1,0 +1,200 @@
+model:
+  pretrained_lm_name: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+  pretrained_audio_codec: ???  # to be released
+  pretrained_tts_model: null
+  scoring_asr: stt_en_fastconformer_transducer_large # used only in validation/evaluation
+
+  # Regexp (re.compile) patterns matching parameters to be frozen.
+  freeze_params:
+    - "^audio_codec\\..+$" # Keep audio codec frozen as it only provides supervision for training.
+    - "^embed_tokens\\..+$" # Keep embed_tokens frozen as done in eartts
+
+  prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
+
+  # set custom text eos/bos/pad tokens
+  bos_token: "<s>"
+  eos_token: "</s>"
+  pad_token: "<SPECIAL_12>"
+
+  # inference params
+  inference_guidance_scale: 0.5
+  inference_noise_scale: 0.8
+  inference_top_p_or_k: 0.8
+  inference_guidance_enabled: true
+
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 4e-05
+    betas: [0.9, 0.98]
+    weight_decay: 0
+    foreach: true # set to false if having issues with tensor-parallelism
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.InverseSquareRootAnnealing
+    warmup_steps: 2500
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+  codec_config:
+    latent_size: 512
+    n_fft: 16
+    hop_length: 4
+    base_hidden_size: 384
+    channel_mult:
+      - 1
+      - 2
+      - 4
+    rates:
+      - 7
+      - 7
+      - 9
+    num_blocks: 3
+    kernel_size: 7
+    groups: 1
+    codebook_size: 1024
+    num_quantizers: 31
+    wav_to_token_ratio: 1764
+
+  tts_config:
+    # extra configs added
+    use_gated_fusion_for_text_audio: true
+    disable_eos_prediction: true # disable eos prediction
+    use_bos_eos_emb: true
+    use_subword_flag_emb: true
+    num_delay_speech_tokens: 2
+    # EAR-TTS configs
+    backbone_type: gemma3_text
+    backbone_model_class: null
+    backbone_config_class: null
+    backbone_config:
+      hidden_size: 1152
+      intermediate_size: 4608
+      num_hidden_layers: 28
+      num_attention_heads: 16
+      num_key_value_heads: 16
+      head_dim: 72
+      attention_dropout: 0.1
+      use_cache: false
+    latent_size: 512
+    codebook_size: 1024
+    num_quantizers: 31
+    context_hidden_size: null
+    cas_config:
+      backbone_type: t5gemma
+      backbone_model_class: null
+      backbone_config_class: null
+      backbone_config:
+        is_encoder_decoder: false
+        encoder:
+          hidden_size: 1152
+          intermediate_size: 4608
+          num_hidden_layers: 1
+          num_attention_heads: 16
+          num_key_value_heads: 16
+          head_dim: 72
+          use_cache: false
+          attention_dropout: 0.1
+    mog_head_config:
+      intermediate_size: 4608
+      num_layers: 3
+      low_rank: 64
+      num_predictions: 1024
+      min_log_std: -4.0
+      eps: 1e-06
+    p_uncond: 0.1
+    label_smoothing: 0.01
+    max_training_rate: 0.8
+    quantizer_dropout: 0.5
+    random_target_masking: false
+    exponent: 3.0
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: 1
+  precision: 32
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_steps: 1000000
+  val_check_interval: 2000
+  limit_train_batches: ${trainer.val_check_interval}  # an "epoch"
+  limit_val_batches: 2
+  log_every_n_steps: 20
+  num_sanity_val_steps: 0
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
+    find_unused_parameters: true
+
+data:
+  # data loader configs
+  add_text_bos_and_eos_in_each_turn: true
+  add_audio_prompt_after_description: true
+  audio_prompt_duration: 3.0
+  frame_length: 0.08
+  source_sample_rate: 22050
+  target_sample_rate: 22050
+  input_roles: ["user", "User"]
+  output_roles: ["agent", "Assistant", "assistant","Agent"]
+
+  train_ds:
+    sample_rate: ${data.target_sample_rate}
+    input_cfg:
+      - type: lhotse_shar
+        shar_path: ???
+    seed: 42
+    shard_seed: "randomized"
+    num_workers: 2
+    batch_size: 4
+    # Optional bucketing:
+    # batch_size: null
+    # batch_duration: 100
+    # bucket_duration_bins: [8.94766,10.1551,11.64118,19.30376,42.85]
+    # use_bucketing: true
+    # num_buckets: 5
+    # bucket_buffer_size: 5000
+
+  validation_ds:
+    # The entries under 'datasets' are a list of separate dataloaders.
+    # The structure is <dataset-name>: {<dataloader-dict-config>}
+    # They inherit all settings from validation_ds, but can individually override them.
+    datasets:
+      val_set_0:  # rename to your dataset name, add more as needed
+        shar_path: ???
+    sample_rate: ${data.target_sample_rate}
+    batch_size: 1
+    seed: 42
+    shard_seed: "randomized"
+
+exp_manager:
+   exp_dir: null
+   explicit_log_dir: duplex_eartts_results/
+   name: eartts
+   create_tensorboard_logger: false
+   create_checkpoint_callback: true
+   use_datetime_version: true
+   max_time_per_run: 00:03:50:00
+
+   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+   # you need to set these two to True to continue the training
+   resume_if_exists: true
+   resume_ignore_no_checkpoint: true
+
+   # You may use this section to create a W&B logger
+   create_wandb_logger: false
+   wandb_logger_kwargs:
+     name: development-run
+     project: duplex_eartts
+     resume: true
+
+   checkpoint_callback_params:
+     filename: "{step}"
+     monitor: val_asr_bleu
+     mode: max
+     every_n_train_steps: null
+     every_n_epochs: 1
+     save_top_k: 1
+     always_save_nemo: false

@@ -14,19 +14,24 @@
 import os
 import random
 import warnings
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Optional, Sequence, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
+import lhotse
 import numpy as np
 import torch
 from lhotse import CutSet, RecordingSet
 from lhotse.cut import Cut
 from lhotse.dataset import (
+    ClippingTransform,
+    Compress,
     CutConcatenate,
     DynamicBucketingSampler,
     DynamicCutSampler,
     IterableDatasetWrapper,
+    LowpassUsingResampling,
     ReverbWithImpulseResponse,
     RoundRobinSampler,
     ZipSampler,
@@ -45,6 +50,8 @@ from nemo.collections.common.data.lhotse.cutset import (
 )
 from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
+    CERFilter,
+    ContextSpeakerSimilarityFilter,
     DurationFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
@@ -52,6 +59,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     TokenCountFilter,
     TokenPerSecondFilter,
     TokenPerTokenFilter,
+    ValidationStatusFilter,
 )
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn
 from nemo.collections.common.prompts import PromptFormatter
@@ -100,6 +108,10 @@ class LhotseDataLoadingConfig:
     shard_seed: int | str = "trng"
     max_open_streams: int | None = None
     cuda_expandable_segments: bool = True
+    # Temperature for re-weighting datasets. 1 is a neutral value. Lower temperature over-samples smaller datasets, and vice versa.
+    # Can be a scalar (broadcast to all levels) or a list whose length must exactly match the input_cfg nesting depth.
+    # A list length mismatch raises ValueError.
+    reweight_temperature: Any = None  # float | int | list[float] | None = None
     # e. Multi-config related options.
     #    Setting multi_config=True will scan the config for keys with DictConfig values,
     #    create a separate sampler for each, and fuse the samplers according to sampler_fusion.
@@ -115,6 +127,9 @@ class LhotseDataLoadingConfig:
     token_equivalent_duration: float | None = None
     batch_tokens: int | None = None
     quadratic_factor: float | None = None
+    # Text pretraining data is usually very long, so we split it into smaller chunks.
+    # When provided, the text tokens will be cut into windows of this size.
+    cut_text_into_windows_tokens: int | None = None
 
     # 2.2 Filters on sequence lengths.
     #   * Speech input
@@ -130,6 +145,13 @@ class LhotseDataLoadingConfig:
     measure_total_length: bool = True
     min_tpt: int = -1  # allowed tokens per token (text-only)
     max_tpt: Any = float("inf")  # float | list[float]
+
+    # 2.3 Filters on CER and/or cosine speaker similarity of the context audio serving for TTS use cases.
+    max_cer: float | None = float("inf")
+    min_context_speaker_similarity: float | None = -1
+
+    # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
+    keep: str = "pass"
 
     # 3. Supported existing NeMo options.
     shuffle: bool = False
@@ -176,6 +198,27 @@ class LhotseDataLoadingConfig:
     #   f. Padding to a minimum duration. Examples shorter than this will be padded, others are unaffected.
     pad_min_duration: Optional[float] = None
     pad_direction: str = "right"  # "right" | "left" | "both" | "random"
+    #   g. Bandwidth limitation via back-and-forth resampling
+    lowpass_enabled: bool = False
+    lowpass_frequencies_interval: Tuple[float, float] = (3500.0, 8000.0)
+    lowpass_prob: float = 0.5
+    #   h. Lossy compression augmentation (opus, mp3, vorbis, gsm)
+    #   implemented via soundfile, so compression level is specified via number in [0.0, 1.0]
+    #   0.0 denotes the highest bitrate and denotes the lowest bitrate for a given codec
+    #   overall, parameters mirror lhotse interface
+    compression_enabled: bool = False
+    compression_prob: float = 0.5
+    compression_level_interval: Tuple[float, float] = (0.8, 0.99)
+    compression_codecs: Tuple[str] = ("opus",)
+    compression_codec_weights: Optional[List[float]] = None
+    compression_enable_for_custom_fields: bool = False
+    #   i. Clipping/saturation augmentation
+    clipping_enabled: bool = False
+    clipping_gain_db: Tuple[float, float] = (0.0, 24.0)
+    clipping_normalize: bool = True
+    clipping_oversampling: Optional[int] = 2
+    clipping_prob_hard: float = 0.5
+    clipping_prob: float = 0.5
 
     # 5. Other Lhotse options.
     text_field: str = "text"  # key to read the transcript from
@@ -230,7 +273,7 @@ def get_lhotse_dataloader_from_config(
     tokenizer=None,
 ) -> torch.utils.data.DataLoader:
     """
-    Set up a Lhotse training dataloder.
+    Set up a Lhotse training dataloader.
 
     Expects a typical NeMo dataset configuration format, with additional fields: "use_lhotse=True".
     Some fields in the original NeMo configuration may be ignored.
@@ -276,7 +319,7 @@ def get_lhotse_dataloader_from_single_config(
     tokenizer=None,
 ) -> torch.utils.data.DataLoader:
     """
-    Set up a Lhotse training dataloder.
+    Set up a Lhotse training dataloader.
 
     Expects a typical NeMo dataset configuration format, with additional fields: "use_lhotse=True".
     Some fields in the original NeMo configuration may be ignored.
@@ -466,6 +509,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
 
+    _auto_detect_bucketing_and_validate_batch_size(config)
+
     # Apply channel selector
     if config.channel_selector is not None:
         logging.info('Using channel selector %s.', config.channel_selector)
@@ -491,6 +536,20 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
                 "possibly impacting the training speed if your tokenizer is very large."
                 "If the impact is noticable, set pretokenize=False in dataloader config."
                 "(note: that will disable token-per-second filtering and 2D bucketing features)"
+            )
+
+        if config.use_multimodal_sampling and config.cut_text_into_windows_tokens is not None:
+            cuts = CutSet(
+                LazyFlattener(
+                    cuts.map(
+                        partial(
+                            _cut_text_into_windows,
+                            num_tokens=config.cut_text_into_windows_tokens,
+                            tokenizer=tokenizer,
+                        ),
+                        apply_fn=None,
+                    )
+                )
             )
 
         if config.prompt_format is not None:
@@ -548,6 +607,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts = cuts.filter(
         TokenCountFilter(config.min_tokens, config.max_tokens, measure_total_length=config.measure_total_length)
     )
+
+    # validation status filtering
+    cuts = cuts.filter(ValidationStatusFilter(config.keep))
+    # CER filtering, same as native NeMo dataloaders.
+    cuts = cuts.filter(CERFilter(config.max_cer))
+    # Context speaker similarity filtering, same as native NeMo dataloaders.
+    cuts = cuts.filter(ContextSpeakerSimilarityFilter(config.min_context_speaker_similarity))
 
     if tokenizer is not None and config.pretokenize:
         cuts = cuts.filter(TokenPerSecondFilter(config.min_tps, config.max_tps))
@@ -622,12 +688,53 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         if config.concatenate_merge_supervisions:
             sampler = sampler.map(_merge_supervisions)
 
+    if config.lowpass_enabled:
+        if lhotse.get_current_resampling_backend() != "libsox":
+            logging.warning(
+                "Lowpass augmentation works best with libsox backend. Consider setting resamping backend in Lhotse to libsox."
+            )
+        sampler = sampler.map(
+            LowpassUsingResampling(
+                frequencies_interval=OmegaConf.to_container(config.lowpass_frequencies_interval),
+                p=config.lowpass_prob,
+                seed=config.shard_seed,
+            )
+        )
+
+    if config.clipping_enabled:
+        sampler = sampler.map(
+            ClippingTransform(
+                gain_db=OmegaConf.to_container(config.clipping_gain_db),
+                normalize=config.clipping_normalize,
+                p=config.clipping_prob,
+                p_hard=config.clipping_prob_hard,
+                oversampling=config.clipping_oversampling,
+                seed=config.shard_seed,
+            )
+        )
+
     if config.rir_enabled:
         sampler = sampler.map(
             ReverbWithImpulseResponse(
                 rir_recordings=RecordingSet.from_file(config.rir_path) if config.rir_path is not None else None,
                 p=config.rir_prob,
                 randgen=random.Random(config.seed),
+            )
+        )
+
+    if config.compression_enabled:
+        sampler = sampler.map(
+            Compress(
+                codecs=OmegaConf.to_container(config.compression_codecs),
+                p=config.compression_prob,
+                compression_level=OmegaConf.to_container(config.compression_level_interval),
+                codec_weights=(
+                    OmegaConf.to_container(config.compression_codec_weights)
+                    if config.compression_codec_weights
+                    else config.compression_codec_weights
+                ),
+                compress_custom_fields=config.compression_enable_for_custom_fields,
+                seed=config.shard_seed,
             )
         )
 
@@ -687,6 +794,35 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 quadratic_duration=config.quadratic_duration,
             )
     return cuts, constraint
+
+
+def _auto_detect_bucketing_and_validate_batch_size(config) -> None:
+    """
+    Auto-enable ``use_bucketing`` when bucketing params are set, and validate
+    that at least one valid batch size combination is configured.
+    """
+    # Auto-detect use_bucketing when bucketing params are set.
+    if not config.use_bucketing:
+        if config.bucket_batch_size is not None:
+            logging.info("Auto-enabling use_bucketing=True because bucket_batch_size is set.")
+            config.use_bucketing = True
+        elif config.bucket_duration_bins is not None:
+            logging.info("Auto-enabling use_bucketing=True because bucket_duration_bins is set.")
+            config.use_bucketing = True
+
+    # Validate that at least one valid batch size combination is configured.
+    has_batch_size = config.batch_size is not None
+    has_batch_duration = not config.use_multimodal_sampling and config.batch_duration is not None
+    has_bucket_config = config.bucket_duration_bins is not None and config.bucket_batch_size is not None
+    has_batch_tokens = config.use_multimodal_sampling and config.batch_tokens is not None
+    if not (has_batch_size or has_batch_duration or has_bucket_config or has_batch_tokens):
+        raise ValueError(
+            "Batch size is not configured. Please set one of the following:\n"
+            "  1. batch_size\n"
+            "  2. batch_duration (when use_multimodal_sampling=False)\n"
+            "  3. bucket_duration_bins and bucket_batch_size (enables bucketing)\n"
+            "  4. batch_tokens (when use_multimodal_sampling=True)"
+        )
 
 
 def determine_bucket_duration_bins(config):
@@ -881,3 +1017,28 @@ def _select_channel(cut, channel_selector: int | str) -> list:
     else:
         # with_channels only defined on MultiCut
         return cut.with_channels(channel_idx)
+
+
+def _cut_text_into_windows(cut, num_tokens: int, tokenizer) -> list:
+    """Split cut.text into chunks of num_tokens, creating new cuts with copied attributes from the original cut.
+
+    This only applies to pretraining data without chat template.
+
+    Args:
+        cut: TextExample, the cut object containing text to split
+        num_tokens: The number of tokens per chunk
+        tokenizer: The tokenizer to use to convert tokens to text
+
+    Returns:
+        list: A list of new cut objects, each containing a chunk of tokens
+    """
+    tokens = tokenizer.text_to_ids(cut.text)
+    ans = []
+    for i in range(0, len(tokens), num_tokens):
+        new_cut = type(cut)(
+            text=tokenizer.ids_to_text(tokens[i : i + num_tokens]),
+            language=cut.language,
+            custom=deepcopy(cut.custom),
+        )
+        ans.append(new_cut)
+    return ans

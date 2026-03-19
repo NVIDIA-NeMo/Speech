@@ -410,7 +410,7 @@ class TestDataAnnotator:
     def test_create_new_ctm_entry(self, annotator):
         words, alignments, speaker_id = generate_words_and_alignments(sample_index=0)
         session_name = 'test_session'
-        ctm_list = annotator.create_new_ctm_entry(
+        ctm_list, word_and_ts_list = annotator.create_new_ctm_entry(
             words=words, alignments=alignments, session_name=session_name, speaker_id=speaker_id, start=alignments[0]
         )
         assert ctm_list[0] == (
@@ -424,6 +424,7 @@ class TestDataAnnotator:
                 conf=None,
                 type_of_token='lex',
                 speaker=speaker_id,
+                output_precision=annotator._params.data_simulator.outputs.output_precision,
             ),
         )
         assert ctm_list[1] == (
@@ -437,6 +438,7 @@ class TestDataAnnotator:
                 conf=None,
                 type_of_token='lex',
                 speaker=speaker_id,
+                output_precision=annotator._params.data_simulator.outputs.output_precision,
             ),
         )
 

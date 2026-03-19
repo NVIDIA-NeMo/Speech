@@ -15,11 +15,23 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Tuple
 
 from omegaconf import DictConfig, OmegaConf, open_dict
 from nemo.collections.asr.parts.utils.eval_utils import get_hydra_override_from_config
 from nemo.utils import logging
+
+
+def model_name_contains(model_name: str, *keywords) -> bool:
+    """
+    Check if any of the given keywords appear (case-insensitive) in the model name.
+    Args:
+        model_name (str): Model name.
+        *keywords: Variable length argument list of keywords to check.
+    Returns:
+        bool: True if any of the keywords are found in the model name, False otherwise.
+    """
+    model_name_lower = model_name.lower()
+    return any(kw.lower() in model_name_lower for kw in keywords)
 
 
 def run_asr_inference(cfg: DictConfig) -> DictConfig:
@@ -30,7 +42,7 @@ def run_asr_inference(cfg: DictConfig) -> DictConfig:
         raise ValueError("Please specify either cfg.model_path or cfg.pretrained_name!")
 
     if cfg.inference.decoder_type not in [None, 'ctc', 'rnnt', 'aed']:
-        raise ValueError("decoder_type could only be null, ctc or rnnt")
+        raise ValueError("decoder_type could only be null, ctc, rnnt or aed")
 
     if cfg.inference.mode == "offline":
         cfg = run_offline_inference(cfg)
@@ -72,11 +84,12 @@ def run_asr_inference(cfg: DictConfig) -> DictConfig:
 
 def run_chunked_inference(cfg: DictConfig) -> DictConfig:
 
+    if cfg.model_path:
+        model_name = Path(cfg.model_path).stem
+    else:
+        model_name = cfg.pretrained_name
+
     if "output_filename" not in cfg or not cfg.output_filename:
-        if cfg.model_path:
-            model_name = Path(cfg.model_path).stem
-        else:
-            model_name = cfg.pretrained_name
         dataset_name = Path(cfg.test_ds.manifest_filepath).stem
         mode_name = (
             cfg.inference.mode
@@ -88,34 +101,29 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
 
         OmegaConf.set_struct(cfg, True)
         with open_dict(cfg):
-            cfg.output_filename = model_name + "-" + dataset_name + "-" + mode_name + ".json"
+            cfg.output_filename = f"{model_name}-{dataset_name}-{mode_name}.json"
 
-    script_path = (
-        Path(__file__).parents[2]
-        / "examples"
-        / "asr"
-        / "asr_chunked_inference"
-        / "ctc"
-        / "speech_to_text_buffered_infer_ctc.py"
-    )
-
+    use_ctc_script = False
     use_rnnt_scrpit = False
     use_aed_script = False
 
     # hybrid model
-    if (cfg.pretrained_name and 'hybrid' in cfg.pretrained_name.lower()) or (
-        cfg.model_path and 'hybrid' in cfg.model_path.lower()
-    ):
-        if cfg.inference.decoder_type != 'ctc':
+    if model_name_contains(model_name, "hybrid"):
+        if cfg.inference.decoder_type:
+            if cfg.inference.decoder_type == "rnnt":
+                use_rnnt_scrpit = True
+            elif cfg.inference.decoder_type == "ctc":
+                use_ctc_script = True
+            else:
+                raise ValueError(
+                    f"Hybrid models only support rnnt or ctc decoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null, rnnt or ctc for hybrid models"
+                )
+        else:
+            # By default, use RNNT for hybrid models
             use_rnnt_scrpit = True
 
     # rnnt model
-    elif (
-        (cfg.pretrained_name and 'rnnt' in cfg.pretrained_name.lower())
-        or (cfg.pretrained_name and 'transducer' in cfg.pretrained_name.lower())
-        or (cfg.model_path and 'rnnt' in cfg.model_path.lower())
-        or (cfg.model_path and 'transducer' in cfg.model_path.lower())
-    ):
+    elif model_name_contains(model_name, "rnnt", "transducer"):
         if cfg.inference.decoder_type and cfg.inference.decoder_type != 'rnnt':
             raise ValueError(
                 f"rnnt models only support rnnt decoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or rnnt for rnnt models"
@@ -123,18 +131,15 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
         use_rnnt_scrpit = True
 
     # ctc model
-    elif (cfg.pretrained_name and 'ctc' in cfg.pretrained_name.lower()) or (
-        cfg.model_path and 'ctc' in cfg.model_path.lower()
-    ):
+    elif model_name_contains(model_name, "ctc"):
         if cfg.inference.decoder_type and cfg.inference.decoder_type != 'ctc':
             raise ValueError(
                 f"ctc models only support ctc decoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or ctc for ctc models"
             )
+        use_ctc_script = True
 
     # aed model
-    elif (cfg.pretrained_name and 'canary' in cfg.pretrained_name.lower()) or (
-        cfg.model_path and 'canary' in cfg.model_path.lower()
-    ):
+    elif model_name_contains(model_name, "canary"):
         if cfg.inference.decoder_type and cfg.inference.decoder_type != 'aed':
             raise ValueError(
                 f"Canary models only support aed decoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or aed for aed models"
@@ -150,6 +155,7 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
             'aed' for EncDecMultiTaskModel."
         )
 
+    script_path = None
     if use_rnnt_scrpit:
         script_path = (
             Path(__file__).parents[2]
@@ -168,28 +174,35 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
             / "aed"
             / "speech_to_text_aed_chunked_infer.py"
         )
+    elif use_ctc_script:
+        raise ValueError("Evaluation of CTC models with chunked inference is not supported")
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
 
     # If need to change other config such as decoding strategy, could either:
     # 1) change TranscriptionConfig on top of the executed scripts such as speech_to_text_buffered_infer_rnnt.py, or
     # 2) add command as "decoding.strategy=greedy_batch " to below script
 
-    base_cmd = f"python {script_path} \
-    calculate_wer=False \
-    model_path={cfg.model_path} \
-    pretrained_name={cfg.pretrained_name} \
-    dataset_manifest={cfg.test_ds.manifest_filepath} \
-    output_filename={cfg.output_filename} \
-    random_seed={cfg.random_seed} \
-    batch_size={cfg.test_ds.batch_size} \
-    ++num_workers={cfg.test_ds.num_workers} \
-    chunk_len_in_secs={cfg.inference.chunk_len_in_secs} \
-    ++total_buffer_in_secs={cfg.inference.total_buffer_in_secs} \
-    model_stride={cfg.inference.model_stride} \
-    ++timestamps={cfg.inference.timestamps}"
+    base_cmd = [
+        "python",
+        str(script_path),
+        "calculate_wer=False",
+        f"model_path={cfg.model_path}",
+        f"pretrained_name={cfg.pretrained_name}",
+        f"dataset_manifest={cfg.test_ds.manifest_filepath}",
+        f"output_filename={cfg.output_filename}",
+        f"random_seed={cfg.random_seed}",
+        f"batch_size={cfg.test_ds.batch_size}",
+        f"++num_workers={cfg.test_ds.num_workers}",
+        f"chunk_len_in_secs={cfg.inference.chunk_len_in_secs}",
+        f"++total_buffer_in_secs={cfg.inference.total_buffer_in_secs}",
+        f"model_stride={cfg.inference.model_stride}",
+        f"++timestamps={cfg.inference.timestamps}",
+    ]
 
     subprocess.run(
         base_cmd,
-        shell=True,
+        shell=False,
         check=True,
     )
     return cfg
@@ -206,7 +219,7 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
 
         OmegaConf.set_struct(cfg, True)
         with open_dict(cfg):
-            cfg.output_filename = model_name + "-" + dataset_name + "-" + mode_name + ".json"
+            cfg.output_filename = f"{model_name}-{dataset_name}-{mode_name}.json"
 
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8') as f:
         OmegaConf.save(cfg, f)
@@ -229,19 +242,25 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
         # If need to change other config such as decoding strategy, could either:
         # 1) change TranscriptionConfig on top of the executed scripts such as transcribe_speech.py in examples/asr, or
         # 2) add command as "rnnt_decoding.strategy=greedy_batch " to below script
+        base_cmd = [
+            "python",
+            str(script_path),
+            "calculate_wer=False",
+            f"model_path={cfg.model_path}",
+            f"pretrained_name={cfg.pretrained_name}",
+            f"dataset_manifest={cfg.test_ds.manifest_filepath}",
+            f"output_filename={cfg.output_filename}",
+            f"batch_size={cfg.test_ds.batch_size}",
+            f"num_workers={cfg.test_ds.num_workers}",
+            f"random_seed={cfg.random_seed}",
+            f"eval_config_yaml={f.name}",
+            f"decoder_type={cfg.inference.decoder_type}",
+        ]
+        if hydra_overrides:
+            base_cmd.extend(hydra_overrides.split())
         subprocess.run(
-            f"python {script_path} "
-            f"calculate_wer=False "
-            f"model_path={cfg.model_path} "
-            f"pretrained_name={cfg.pretrained_name} "
-            f"dataset_manifest={cfg.test_ds.manifest_filepath} "
-            f"output_filename={cfg.output_filename} "
-            f"batch_size={cfg.test_ds.batch_size} "
-            f"num_workers={cfg.test_ds.num_workers} "
-            f"random_seed={cfg.random_seed} "
-            f"eval_config_yaml={f.name} "
-            f"decoder_type={cfg.inference.decoder_type} {hydra_overrides}",
-            shell=True,
+            base_cmd,
+            shell=False,
             check=True,
         )
 

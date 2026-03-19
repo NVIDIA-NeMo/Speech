@@ -602,6 +602,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         drop_extra_pre_encoded: int = None,
         return_transcription: bool = True,
         return_log_probs: bool = False,
+        bypass_pre_encode: bool = False,
     ):
         """
         It simulates a forward step with caching for streaming purposes.
@@ -657,6 +658,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             cache_last_channel_len=cache_last_channel_len,
             keep_all_outputs=keep_all_outputs,
             drop_extra_pre_encoded=drop_extra_pre_encoded,
+            bypass_pre_encode=bypass_pre_encode,
         )
 
         if isinstance(self, asr_models.EncDecCTCModel) or (

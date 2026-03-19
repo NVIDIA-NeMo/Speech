@@ -1,0 +1,24 @@
+{
+  "filename": "checkpoints/dist_ckpt.rst",
+  "lineno": 428,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/optimizer/optimizer.py#L793",
+  "info": "Anchor 'L793' not found"
+}
+{
+  "filename": "tools/nemo_forced_aligner.rst",
+  "lineno": 22,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://github.com/NVIDIA/NeMo#installation",
+  "info": "Anchor 'installation' not found"
+}
+{
+  "filename": "checkpoints/intro.rst",
+  "lineno": 28,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://nvidia.github.io/TensorRT-LLM/architecture/checkpoint.html",
+  "info": "404 Client Error: Not Found for url: https://nvidia.github.io/TensorRT-LLM/architecture/checkpoint.html"
+}

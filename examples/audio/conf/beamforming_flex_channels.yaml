@@ -45,7 +45,7 @@ model:
 
   decoder:
     _target_: nemo.collections.audio.modules.transforms.SpectrogramToAudio
-    fft_length: ${model.encoder.fft_length} 
+    fft_length: ${model.encoder.fft_length}
     hop_length: ${model.encoder.hop_length}
 
   mask_estimator:
@@ -64,7 +64,7 @@ model:
     mag_normalization: mean_var # normalization using mean and variance
     use_ipd: true # use inter-channel phase difference
     ipd_normalization: mean # mean normalization
-    
+
   mask_processor:
     # Mask-based multi-channel processor
     _target_: nemo.collections.audio.modules.masking.MaskBasedBeamformer
@@ -78,16 +78,16 @@ model:
     num_subbands: ${model.mask_estimator.num_subbands}
 
   loss:
-    _target_: nemo.collections.audio.losses.SDRLoss
+    _target_: nemo.collections.audio.losses.audio.SDRLoss
     convolution_invariant: true # convolution-invariant loss
-    sdr_max: 30 # soft threshold for SDR 
+    sdr_max: 30 # soft threshold for SDR
 
   metrics:
     val:
       sdr_0:
         _target_: torchmetrics.audio.SignalDistortionRatio
         channel: 0 # evaluate only on channel 0, if there are multiple outputs
-    
+
   optim:
     name: adamw
     lr: 1e-4

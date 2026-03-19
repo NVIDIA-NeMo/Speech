@@ -110,7 +110,7 @@ def numba_cuda_is_supported(min_version: str) -> bool:
     """
     Tests if an appropriate version of numba is installed, and if it is,
     if cuda is supported properly within it.
-    
+
     Args:
         min_version: The minimum version of numba that is required.
 
@@ -127,25 +127,20 @@ def numba_cuda_is_supported(min_version: str) -> bool:
     if module_available is True:
         from numba import cuda
 
-        # this method first arrived in 0.53, and that's the minimum version required
-        if hasattr(cuda, 'is_supported_version'):
-            try:
-                cuda_available = cuda.is_available()
-                if cuda_available:
-                    cuda_compatible = cuda.is_supported_version()
-                else:
-                    cuda_compatible = False
+        try:
+            cuda_available = cuda.is_available()
+            if cuda_available:
+                cuda_compatible = cuda.cudadrv.runtime.get_version()[0] == 13
+            else:
+                cuda_compatible = False
 
-                if is_numba_compat_strict():
-                    return cuda_available and cuda_compatible
-                else:
-                    return cuda_available
+            if is_numba_compat_strict():
+                return cuda_available and cuda_compatible
+            else:
+                return cuda_available
 
-            except OSError:
-                # dlopen(libcudart.dylib) might fail if CUDA was never installed in the first place.
-                return False
-        else:
-            # assume cuda is supported, but it may fail due to CUDA incompatibility
+        except Exception:
+            # dlopen(libcudart.dylib) might fail if CUDA was never installed in the first place.
             return False
 
     else:
@@ -188,7 +183,7 @@ def is_numba_cuda_fp16_supported(return_reason: bool = False) -> Union[bool, Tup
 def skip_numba_cuda_test_if_unsupported(min_version: str):
     """
     Helper method to skip pytest test case if numba cuda is not supported.
-    
+
     Args:
         min_version: The minimum version of numba that is required.
     """

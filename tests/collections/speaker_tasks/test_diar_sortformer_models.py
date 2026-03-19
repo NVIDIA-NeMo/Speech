@@ -31,8 +31,8 @@ def sortformer_model():
         'streaming_mode': False,
     }
     model_defaults = {
-        'fc_d_model': 512,
-        'tf_d_model': 192,
+        'fc_d_model': 32,
+        'tf_d_model': 16,
     }
     preprocessor = {
         '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
@@ -59,7 +59,7 @@ def sortformer_model():
         '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
         'feat_in': preprocessor['features'],
         'feat_out': -1,
-        'n_layers': 18,
+        'n_layers': 1,
         'd_model': model_defaults['fc_d_model'],
         'subsampling': 'dw_striding',
         'subsampling_factor': 8,
@@ -87,9 +87,9 @@ def sortformer_model():
 
     transformer_encoder = {
         '_target_': 'nemo.collections.asr.modules.transformer.transformer_encoders.TransformerEncoder',
-        'num_layers': 18,
+        'num_layers': 1,
         'hidden_size': model_defaults['tf_d_model'],
-        'inner_size': 768,
+        'inner_size': 32,
         'num_attention_heads': 8,
         'attn_score_dropout': 0.5,
         'attn_layer_dropout': 0.5,

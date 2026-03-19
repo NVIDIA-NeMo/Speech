@@ -95,6 +95,14 @@ def _stt_en_fastconformer_tdt_large_raw():
     return model
 
 
+@pytest.fixture(scope="package")
+def _canary_180m_flash_raw():
+    model_name = "nvidia/canary-180m-flash"
+    model = ASRModel.from_pretrained(model_name, map_location="cpu")
+    make_preprocessor_deterministic(model)
+    return model
+
+
 @pytest.fixture
 def stt_en_conformer_transducer_small(_stt_en_conformer_transducer_small_raw):
     """Function-level fixture for model. Guarantees to preserve decoding config and device"""
@@ -115,5 +123,13 @@ def stt_en_fastconformer_transducer_large(_stt_en_fastconformer_transducer_large
 def stt_en_fastconformer_tdt_large(_stt_en_fastconformer_tdt_large_raw):
     """Function-level fixture for model. Guarantees to preserve decoding config and device"""
     model = _stt_en_fastconformer_tdt_large_raw
+    with preserve_decoding_cfg_and_cpu_device(model):
+        yield model
+
+
+@pytest.fixture
+def canary_180m_flash(_canary_180m_flash_raw):
+    """Function-level fixture for model. Guarantees to preserve decoding config and device"""
+    model = _canary_180m_flash_raw
     with preserve_decoding_cfg_and_cpu_device(model):
         yield model

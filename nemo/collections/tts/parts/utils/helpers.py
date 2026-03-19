@@ -42,19 +42,22 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import string
+from collections import defaultdict
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import librosa
 import matplotlib.pylab as plt
 import numpy as np
+import soundfile as sf
 import torch
 from numba import jit, prange
 
+from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_DATA_TYPES, WithLens
 from nemo.utils import logging
 from nemo.utils.decorators import deprecated
-
 
 try:
     from lightning.pytorch.utilities import rank_zero_only
@@ -802,3 +805,122 @@ def g2p_backward_compatible_support(g2p_target: str) -> str:
     # for backward compatibility
     g2p_target_new = g2p_target.replace("nemo_text_processing.g2p", "nemo.collections.tts.g2p")
     return g2p_target_new
+
+
+def process_text_for_cer(input_text):
+    """Normalizes text for CER/WER calculation."""
+    text = input_text.lower()
+    for char in [",", "'", ";", "."]:
+        text = text.replace(char, "")
+    text = text.replace("-", " ")
+    text = " ".join(text.split())
+    # Strip any remaining punctuation characters
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    # Fix common ASR transcript artifacts
+    text = text.replace("h t t p", "http")
+    text = text.replace("w w w", "www")
+    return text
+
+
+def transcribe_with_whisper(
+    audio_filepath: str,
+    language: Optional[str],
+    whisper_processor: Any,
+    whisper_model: Any,
+    device: torch.device,
+    normalizer: Optional[Any] = None,
+) -> str:
+    """
+    Transcribe audio with Whisper. Optionally normalize the transcript if a normalizer is provided.
+    """
+    transcripts = transcribe_with_whisper_from_filepaths(
+        audio_filepaths=[audio_filepath],
+        language=language,
+        whisper_processor=whisper_processor,
+        whisper_model=whisper_model,
+        device=device,
+        normalizer=normalizer,
+    )
+    return transcripts[0]
+
+
+def transcribe_with_whisper_from_filepaths(
+    audio_filepaths: Sequence[str],
+    language: Optional[Union[str, Sequence[Optional[str]]]],
+    whisper_processor: Any,
+    whisper_model: Any,
+    device: torch.device,
+    normalizer: Optional[Any] = None,
+    batch_size: Optional[int] = None,
+) -> List[str]:
+    """
+    Transcribe a list of audios with Whisper using batched inference.
+    Supports a single language for all files or per-file language values.
+    """
+    if len(audio_filepaths) == 0:
+        return []
+
+    if batch_size is None:
+        batch_size = len(audio_filepaths)
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, but received: {batch_size}")
+
+    if isinstance(language, str) or language is None:
+        languages = [language] * len(audio_filepaths)
+    else:
+        if len(language) != len(audio_filepaths):
+            raise ValueError(
+                f"Expected len(language) == len(audio_filepaths), but got {len(language)} and {len(audio_filepaths)}."
+            )
+        languages = list(language)
+
+    grouped_indices = defaultdict(list)
+    for idx, lang in enumerate(languages):
+        grouped_indices[lang].append(idx)
+
+    transcripts = [""] * len(audio_filepaths)
+    for lang, indices in grouped_indices.items():
+        forced_decoder_ids = (
+            whisper_processor.get_decoder_prompt_ids(language=lang, task="transcribe") if lang else None
+        )
+        for start_idx in range(0, len(indices), batch_size):
+            batch_indices = indices[start_idx : start_idx + batch_size]
+            speech_arrays = [librosa.load(audio_filepaths[idx], sr=16000)[0] for idx in batch_indices]
+            inputs = whisper_processor(
+                speech_arrays, sampling_rate=16000, return_tensors="pt", padding=True
+            ).input_features
+            inputs = inputs.to(device=device, dtype=whisper_model.dtype)
+            with torch.no_grad():
+                predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
+            batch_transcripts = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
+            if normalizer is not None:
+                batch_transcripts = [normalizer.normalize(text) for text in batch_transcripts]
+            for idx, text in zip(batch_indices, batch_transcripts):
+                transcripts[idx] = text
+
+    return transcripts
+
+
+def get_speaker_embeddings_from_filepaths(filepaths, speaker_verification_model, device):
+    """
+    Get speaker embeddings from audio filepaths using a speaker verification model.
+    """
+    audio_batch = []
+    audio_lengths = []
+    for filepath in filepaths:
+        audio, sr = sf.read(filepath)
+        if sr != 16000:
+            audio = librosa.core.resample(audio, orig_sr=sr, target_sr=16000)
+        audio_tensor = torch.tensor(audio, dtype=torch.float32, device=device)
+        audio_batch.append(audio_tensor)
+        audio_lengths.append(audio_tensor.size(0))
+
+    batch_audio_lens = torch.tensor(audio_lengths, device=device).long()
+    max_audio_len = int(batch_audio_lens.max().item())
+    audio_batch = stack_tensors(audio_batch, max_lens=[max_audio_len])
+
+    _, speaker_embeddings = speaker_verification_model.forward(
+        input_signal=audio_batch, input_signal_length=batch_audio_lens
+    )
+
+    return speaker_embeddings

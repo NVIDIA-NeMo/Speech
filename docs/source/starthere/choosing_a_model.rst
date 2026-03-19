@@ -16,17 +16,14 @@ ASR: Which Model Should I Use?
      - Recommended Model
      - Why
    * - Get the best accuracy on English
-     - `Parakeet-TDT-0.6B V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`_
-     - Top of the `OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`_. TDT decoder provides accurate timestamps.
+     - `Canary-Qwen 2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`_
+     - State-of-the-art English ASR. For very fast offline alternatives with almost SOTA accuracy, use `Parakeet-TDT V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`_ or `Parakeet-TDT V3 <https://huggingface.co/nvidia/parakeet-tdt-1.1b>`_.
    * - Transcribe multiple languages
      - `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`_
      - Supports 25 EU languages + translation between them. AED decoder.
-   * - Fast multilingual inference
-     - `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`_
-     - Optimized for speed while maintaining multilingual quality.
    * - Stream audio in real-time
-     - Cache-aware Streaming FastConformer
-     - Designed for low-latency streaming with caching to avoid recomputation.
+     - `Nemotron-Speech-Streaming <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`_
+     - Low-latency streaming English ASR with configurable chunk sizes. Cache-aware FastConformer + RNN-T.
    * - Minimize model size
      - `Canary-180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`_
      - Smallest multilingual model. Good for edge deployment.
@@ -71,8 +68,8 @@ Speaker Tasks: Which Model Should I Use?
      - Recommended Model
      - Why
    * - Determine who spoke when
-     - `Sortformer <https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1>`_
-     - End-to-end streaming diarization. Supports up to 4 speakers.
+     - `Streaming Sortformer <https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1>`_, `Offline Sortformer <https://huggingface.co/nvidia/diar_sortformer_4spk-v1>`_
+     - End-to-end diarization for up to 4 speakers. Use streaming for real-time; use offline for batch.
    * - Verify/identify a speaker
      - `TitaNet <https://huggingface.co/nvidia/speakerverification_en_titanet_large>`_
      - Extracts speaker embeddings for verification and identification.
@@ -106,9 +103,9 @@ Decision Flowchart
    What do you want to do?
    │
    ├─ Transcribe speech to text (ASR)
-   │  ├─ English only? → Parakeet-TDT-0.6B V2
+   │  ├─ Best accuracy on English? → Canary-Qwen 2.5B (or Parakeet-TDT V2/V3 for fast offline)
    │  ├─ Multiple languages? → Canary-1B V2
-   │  ├─ Need streaming? → Cache-aware Streaming FastConformer
+   │  ├─ Stream audio in real-time? → Nemotron-Speech-Streaming
    │  └─ Multi-speaker meeting? → Multitalker Parakeet Streaming
    │
    ├─ Generate speech from text (TTS)
@@ -116,7 +113,7 @@ Decision Flowchart
    │  └─ English with pitch control? → FastPitch + HiFi-GAN
    │
    ├─ Identify speakers
-   │  ├─ Who spoke when? → Sortformer
+   │  ├─ Who spoke when? → Streaming Sortformer or Offline Sortformer
    │  └─ Verify identity? → TitaNet
    │
    ├─ Enhance audio quality → See Audio Processing models

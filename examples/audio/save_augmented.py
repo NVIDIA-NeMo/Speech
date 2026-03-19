@@ -70,7 +70,7 @@ def check_input_cuts(input_cuts_path: Path) -> None:
     for i, cut in enumerate(cuts):
         assert isinstance(cut, MonoCut), f"{i}th cut is a {type(cut)}, not a MonoCut"
         assert len(cut.recording.sources) == 1, f"{i}th cut has {len(cut.recording.sources)} sources"
-        assert cut.recording.sources[0].source is not None, "{i}th cut has no audio source specified"
+        assert cut.recording.sources[0].source is not None, f"{i}th cut has no audio source specified"
 
         recording_path = Path(cut.recording.sources[0].source)
         assert not recording_path.is_absolute(), f"{i}th cut's recording source is an absolute path: {recording_path}"

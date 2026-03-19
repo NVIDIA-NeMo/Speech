@@ -120,6 +120,7 @@ extend-exclude = '''
 # -vv will also display tests with durration = 0.00s
 addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
 testpaths = ["tests"]
+pythonpath = ["tests/e2e_nightly"]
 # directories to ignore when discovering tests
 norecursedirs = [
     "nemo",
@@ -137,7 +138,8 @@ norecursedirs = [
     "CVS",
     "dist",
     "venv",
-    "{arch}"
+    "{arch}",
+    "e2e_nightly"
 ]
 # markers to select tests, use `pytest --markers` to see all available markers, `pytest -m "<marker>"` to select tests
 markers = [

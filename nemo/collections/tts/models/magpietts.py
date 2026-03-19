@@ -601,6 +601,10 @@ class MagpieTTSModel(ModelPT):
             self.register_buffer('_baked_embedding_T', None)  # Time dimension
             self.register_buffer('_baked_embedding_D', None)  # Embedding dimension
             self.register_buffer('baked_context_embedding_len', None)  # Per-speaker lengths (N,)
+            # Probability of bypassing the context encoder during training and instead feeding
+            # batch-shuffled raw context embeddings, so the model learns not to clone voices
+            # from untransformed (i.e. not encoded by the context encoder) input.
+            self.train_shuffle_context_embedding_prob = cfg.get('train_shuffle_context_embedding_prob', 0.0)
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
@@ -2299,9 +2303,24 @@ class MagpieTTSModel(ModelPT):
                 context_input_lens = context_input_lens.to(text.device)
                 context_mask = get_mask_from_lengths(context_input_lens)
             else:
-                context_embeddings = self.context_encoder(
-                    context_input_embedded, context_mask, cond=None, cond_mask=None
-                )['output']
+                # Zero-shot disable: with some probability, bypass the context encoder and feed
+                # batch-shuffled raw embeddings so the model learns to not clone from untransformed input.
+                # Skip when batch_size == 1: rolling a single sample maps it back to itself,
+                # so the context would remain matched to the correct speaker.
+                batch_size = context_input_embedded.size(0)
+                if (
+                    self.training
+                    and batch_size > 1
+                    and self.train_shuffle_context_embedding_prob > 0
+                    and random.random() < self.train_shuffle_context_embedding_prob
+                ):
+                    shift = random.randint(1, batch_size - 1)
+                    context_embeddings = context_input_embedded.roll(shift, dims=0)
+                    context_mask = context_mask.roll(shift, dims=0)
+                else:
+                    context_embeddings = self.context_encoder(
+                        context_input_embedded, context_mask, cond=None, cond_mask=None
+                    )['output']
         else:
             raise ValueError(f"Unsupported model type for decoder context: {self.model_type}")
 
@@ -4731,11 +4750,10 @@ class MagpieTTSModel(ModelPT):
             current_starting_point = batch_text_lens[_idx] - current_chunk_len[_idx]
             prior_weights = self.chunked_inference_config.prior_weights_init
             _attn_prior[_idx, :, :current_starting_point] = prior_epsilon * prior_epsilon
-            _attn_prior[_idx, :, current_starting_point] = prior_weights[0]
-            _attn_prior[_idx, :, current_starting_point + 1] = prior_weights[1]
-            _attn_prior[_idx, :, current_starting_point + 2] = prior_weights[2]
-            _attn_prior[_idx, :, current_starting_point + 3] = prior_weights[3]
-            _attn_prior[_idx, :, current_starting_point + 4] = prior_weights[4]
+            for offset, weight in enumerate(prior_weights[:5]):
+                idx = current_starting_point + offset
+                if idx < max_text_len:
+                    _attn_prior[_idx, :, idx] = weight
 
         return _attn_prior
 

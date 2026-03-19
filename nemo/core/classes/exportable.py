@@ -224,11 +224,14 @@ class Exportable(ABC):
                     # dynamic axis is a mapping from input/output_name => list of "dynamic" indices
                     if dynamic_axes is None:
                         dynamic_axes = self.dynamic_shapes_for_export(use_dynamo)
+                    # When using dynamo export, use dynamic_shapes instead of dynamic_axes
+                    if use_dynamo:
+                        dynamic_shapes = dynamic_axes
                     if use_dynamo:
                         typecheck.enable_wrapping(enabled=False)
                         # https://github.com/pytorch/pytorch/issues/126339
                         with monkeypatched(torch.nn.RNNBase, "flatten_parameters", lambda *args: None):
-                            logging.info(f"Running export.export, dynamic shapes:{dynamic_axes}\n")
+                            logging.info(f"Running export.export, dynamic shapes:{dynamic_shapes}\n")
 
                             # We have to use different types of arguments for dynamo_export to achieve
                             # same external weights behaviour as onnx.export :
@@ -243,7 +246,7 @@ class Exportable(ABC):
                                     self,
                                     tuple(input_list),
                                     kwargs=input_dict,
-                                    dynamic_shapes=dynamic_axes,
+                                    dynamic_shapes=dynamic_shapes,
                                     strict=False,
                                 )
                                 ex_model = ex_model.run_decompositions()

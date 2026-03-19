@@ -25,9 +25,12 @@ Usage:
 
     classifier = EoUClassifier()  # loads model once
 
-    # Single-sample inference
+    # Single-sample inference (file path — any sample rate is handled automatically)
     result = classifier.classify("output.wav", "Hello world.")
     print(result.eou_type, result.trailing_duration)
+
+    # Single-sample inference (numpy array — sample_rate is required)
+    result = classifier.classify(samples, "Hello world.", sample_rate=22050)
 
     # Batched inference (same outputs, better throughput)
     results = classifier.classify_batch([
@@ -38,7 +41,14 @@ Usage:
 
 import math
 from dataclasses import dataclass, field
-from enum import StrEnum
+
+# StrEnum is part of enum in python >= 3.11, for backward compatibility
+# to python < 3.11 we import StrEnum from strenum. Use-case: Huggignface
+# demo works on python version 3.10
+try:
+    from enum import StrEnum
+except ImportError:
+    from strenum import StrEnum
 from typing import Union
 
 import librosa
@@ -117,8 +127,8 @@ class EoUClassifier:
     for batched inference with better throughput.
     """
 
-    def __init__(self, model_name: str = "facebook/wav2vec2-base-960h", sr: int = 16000, device: str | None = None):
-        self.sr = sr
+    def __init__(self, model_name: str = "facebook/wav2vec2-base-960h", device: str | None = None):
+        self.sr = 16000  # We will resample all inputs to this rate internally.
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
@@ -319,18 +329,21 @@ class EoUClassifier:
         self,
         audio: Union[str, np.ndarray],
         text: str,
+        sample_rate: int | None = None,
     ) -> EoUClassification:
         """
         Classify the end-of-utterance quality of utterance audio.
 
         Args:
-            audio: Path to a WAV file, or a numpy array of audio samples at self.sr.
+            audio: Path to a WAV file, or a numpy array of audio samples.
             text: The target text that was supposed to be spoken.
+            sample_rate: Required when `audio` is a numpy array. The audio will
+                be resampled to 16 kHz internally. Ignored for file paths.
 
         Returns:
             EoUClassification with the predicted eou_type and supporting features.
         """
-        return self.classify_batch([(audio, text)])[0]
+        return self.classify_batch([(audio, text)], sample_rate=sample_rate)[0]
 
     def _forced_align_batch(self, audios: list[np.ndarray], texts: list[str]) -> list[AlignmentFeatures]:
         """Run forced alignment on a batch.
@@ -422,12 +435,16 @@ class EoUClassifier:
     def classify_batch(
         self,
         items: list[tuple[Union[str, np.ndarray], str]],
+        sample_rate: int | None = None,
     ) -> list[EoUClassification]:
         """
         Classifies a batch of utterances.
 
         Args:
             items: List of (audio, text) pairs. Audio can be a file path or numpy array.
+            sample_rate: Required when any item's audio is a numpy array. All numpy
+                arrays in the batch are assumed to share this rate and will be
+                resampled to 16 kHz internally. Ignored for file paths.
 
         Returns:
             List of EoUClassification results, one per input item.
@@ -435,6 +452,13 @@ class EoUClassifier:
         audios: list[np.ndarray] = []
         for audio, _text in items:
             if isinstance(audio, np.ndarray):
+                if sample_rate is None:
+                    raise ValueError(
+                        "sample_rate is required when audio is a numpy array. "
+                        "Pass the sample rate of the array so it can be resampled to 16 kHz."
+                    )
+                if sample_rate != self.sr:
+                    audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=self.sr)
                 audios.append(audio)
             else:
                 samples, _ = librosa.load(audio, sr=self.sr)

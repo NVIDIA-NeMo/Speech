@@ -220,7 +220,8 @@ def run_inference_and_evaluation(
         "wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
-        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance"
+        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
+        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate"
     )
 
     for dataset in datasets:

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import contextlib
-import inspect
 
 import numpy as np
 import torch
@@ -171,21 +170,16 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     # Use driver API here because of bug in cuda-python runtime API: https://github.com/NVIDIA/cuda-python/issues/55
     # TODO: Change call to this after fix goes in (and we bump minimum cuda-python version to 12.4.0):
     # node, = cu_call(cudart.cudaGraphAddNode(graph, dependencies, len(dependencies), driver_params))
-    # depending on cuda-python version, number of parameters vary
-    num_cuda_graph_add_node_params = len(inspect.signature(cuda.cuGraphAddNode).parameters)
-    if num_cuda_graph_add_node_params == 5:
+    # CUDA 13 (cuda-python >= 13.0.0) adds an edgeData parameter to cuGraphAddNode and
+    # cudaStreamUpdateCaptureDependencies; CUDA 12 does not accept it.
+    _cuda13 = Version(cuda_python_version) >= Version("13.0.0")
+    if _cuda13:
         (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
-    elif num_cuda_graph_add_node_params == 4:
-        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, len(dependencies), driver_params))
     else:
-        raise NeMoCUDAPythonException("Unexpected number of parameters for `cuGraphAddNode`")
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, len(dependencies), driver_params))
     body_graph = driver_params.conditional.phGraph_out[0]
 
-    # depending on cuda-python version, number of parameters vary
-    num_cuda_stream_update_capture_dependencies_params = len(
-        inspect.signature(cudart.cudaStreamUpdateCaptureDependencies).parameters
-    )
-    if num_cuda_stream_update_capture_dependencies_params == 5:
+    if _cuda13:
         cu_call(
             cudart.cudaStreamUpdateCaptureDependencies(
                 torch.cuda.current_stream(device=device).cuda_stream,
@@ -195,7 +189,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
                 cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
             )
         )
-    elif num_cuda_stream_update_capture_dependencies_params == 4:
+    else:
         cu_call(
             cudart.cudaStreamUpdateCaptureDependencies(
                 torch.cuda.current_stream(device=device).cuda_stream,
@@ -204,8 +198,6 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
                 cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
             )
         )
-    else:
-        raise NeMoCUDAPythonException("Unexpected number of parameters for `cudaStreamUpdateCaptureDependencies`")
     body_stream = torch.cuda.Stream(device)
     previous_stream = torch.cuda.current_stream(device=device)
     cu_call(

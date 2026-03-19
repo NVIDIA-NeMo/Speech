@@ -17,11 +17,9 @@ import pytest
 
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType, TokenSegment
 
-# ---------------------------------------------------------------------------
-# TODO: Fill in (audio_path, text) pairs per EoU class.
-# Paths are relative to the repo root. Multiple examples per class are supported.
-# ---------------------------------------------------------------------------
+# Path to the test data
 DATA_PATH = "/home/TestData/tts/eou_classifier_unit_test"
+
 # TEST_NAME, EoU_TYPE, AUDIO_PATH, TEXT
 _CLASSIFICATION_CASES: list[tuple[str, EoUType, str, str]] = [
     (
@@ -82,13 +80,35 @@ def test_classification_matches_expected_class(classifier, eou_type, audio_path,
 def test_classify_accepts_numpy_array(classifier):
     """Classifier should accept a pre-loaded numpy array instead of a path."""
     _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
-    samples, _ = librosa.load(audio_path, sr=16000)
+    samples, _ = librosa.load(audio_path, sr=classifier.sr)
 
     result_from_path = classifier.classify(audio_path, text)
-    result_from_array = classifier.classify(samples, text)
+    result_from_array = classifier.classify(samples, text, sample_rate=classifier.sr)
 
     assert result_from_path.eou_type == result_from_array.eou_type
     assert abs(result_from_path.trailing_duration - result_from_array.trailing_duration) < 1e-4
+
+
+@pytest.mark.unit
+def test_classify_resamples_numpy_array(classifier):
+    """Passing a numpy array at a non-16 kHz rate should produce the same result after resampling."""
+    _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
+    samples_44k, _ = librosa.load(audio_path, sr=44100)
+
+    result_from_path = classifier.classify(audio_path, text)
+    result_from_array = classifier.classify(samples_44k, text, sample_rate=44100)
+
+    assert result_from_path.eou_type == result_from_array.eou_type
+
+
+@pytest.mark.unit
+def test_classify_numpy_without_sample_rate_raises(classifier):
+    """Passing a numpy array without sample_rate must raise ValueError."""
+    _, _, audio_path, text = next(c for c in _CLASSIFICATION_CASES if c[1] == EoUType.GOOD)
+    samples, _ = librosa.load(audio_path, sr=classifier.sr)
+
+    with pytest.raises(ValueError, match="sample_rate is required"):
+        classifier.classify(samples, text)
 
 
 # ── return value structure ────────────────────────────────────────────────

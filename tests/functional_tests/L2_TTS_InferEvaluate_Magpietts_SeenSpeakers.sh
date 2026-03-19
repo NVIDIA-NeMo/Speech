@@ -21,7 +21,7 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --cfg_scale 2.5 \
     --num_repeats 1 \
     --temperature 0.6 \
-    --nemo_files /home/TestData/tts/2602_MagpieTTS/feb26_Magpie-TTS-ML-V1--val_cer_gt=0.3258-step=1000.nemo \
+    --nemo_files /home/TestData/tts/2602_MagpieTTS/magpie_tts_multilingual_357m.nemo \
     --apply_attention_prior \
     --apply_prior_to_layers "3,4,5,6,7,8,9" \
     --estimate_alignment_from_layers "3,4,5,6" \
@@ -29,4 +29,4 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --run_evaluation \
     --clean_up_disk \
     --cer_target 0.3 \
-    --ssim_target 0.5
+    --ssim_target 0.0

@@ -218,3 +218,267 @@ jobs:
           image: ${{ inputs.image-name }}
           timeout: ${{ matrix.timeout || 10 }}
           is_optional: ${{ matrix.is-optional || false }}
+
+  e2e-nightly:
+    if: ${{ github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'Run e2e nightly') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_de_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_es_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_it_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_ua_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_pl_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_hr_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_be_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_fr_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_ru_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_nl_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_fa_fastconformer_hybrid_large
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_ka_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_kk_ru_fastconformer_hybrid_large
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_ka_fastconformer_hybrid_transducer_ctc_large_streaming_80ms_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_uz_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_ar_fastconformer_hybrid_large_pc_v1_0
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_hy_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_hybrid_medium_streaming_80ms_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_hybrid_medium_streaming_80ms
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_pt_fastconformer_hybrid_large_pc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_es_fastconformer_hybrid_large_pc_nc
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_ar_fastconformer_hybrid_large_pcd_v1_0
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_hybrid_large_streaming_multi
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_ctc_large
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_transducer_large
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_ctc_xlarge
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_transducer_xlarge
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_transducer_xxlarge
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_ctc_xxlarge
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__stt_en_fastconformer_tdt_large
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_stt_en_fastconformer_hybrid_large_streaming_1040ms
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_stt_multilingual_fastconformer_hybrid_large_pc_blend_eu
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_rnnt_1_1b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_ctc_1_1b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_rnnt_0_6b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_ctc_0_6b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_tdt_1_1b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_tdt_ctc_1_1b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_tdt_ctc_0_6b_ja
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_tdt_ctc_110m
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_tdt_0_6b_v2
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_rnnt_110m_da_dk
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_tdt_0_6b_v3
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_ctc_0_6b_Vietnamese
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__canary_1b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__canary_1b_flash
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__canary_180m_flash
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__canary_1b_v2
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__parakeet_realtime_eou_120m_v1
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__multitalker_parakeet_streaming_0_6b_v1
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__nemotron_speech_streaming_en_0_6b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__canary_qwen_2_5b
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__diar_sortformer_4spk_v1
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__diar_streaming_sortformer_4spk_v2
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__diar_streaming_sortformer_4spk_v2_1
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_titanet_large
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__speakerverification_en_titanet_large
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__ssl_en_nest_large_v1_0
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__ssl_en_nest_xlarge_v1_0
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_vad_multilingual_marblenet
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_vad_multilingual_frame_marblenet
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__Frame_VAD_Multilingual_MarbleNet_v2_0
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__se_den_sb_16k_small
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__se_der_sb_16k_small
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__sr_ssl_flowmatching_16k_430m
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_mel_codec_44khz_medium
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_mel_codec_22khz_fullband_medium
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__low_frame_rate_speech_codec_22khz
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__audio_codec_22khz
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__audio_codec_44khz
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__mel_codec_22khz
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__mel_codec_44khz
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__nemo_nano_codec_22khz_1_78kbps_12_5fps
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__nemo_nano_codec_22khz_1_89kbps_21_5fps
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__nemo_nano_codec_22khz_0_6kbps_12_5fps
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__tts_en_fastpitch
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__tts_hifigan
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_nvidia__magpie_tts_multilingual_357m
+            timeout: 15
+          - runner: self-hosted-azure
+            script: L2_Model_Support_tts_en_e2e_fastspeech2hifigan
+            timeout: 15
+    needs: [unit-tests]
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.image-name }}
+          timeout: ${{ matrix.timeout || 10 }}
+          test_dir: e2e_nightly

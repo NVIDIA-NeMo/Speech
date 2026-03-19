@@ -52,13 +52,13 @@ As an output file, ``train_manifest.json`` will have the following line for each
 
 
 For end-to-end speaker diarization training, the manifest file described in this section fullfils the requirements for the input manifest file. 
-For cascaded speaker diarization training (TS-VAD style), the manifest file should be further processed to generate session-wise manifest files.
+For cascaded speaker diarization training, the manifest file should be further processed to generate session-wise manifest files.
 
 
-Manifest JSON files for MSDD (TS-VAD style model) Training
-----------------------------------------------------------
+Manifest JSON files for Cascaded Diarization Training
+-----------------------------------------------------
 
-This section is about formatting a dataset for cascaded diarization training (e.g., TS-VAD, MSDD, etc.). To train or fine-tune the speaker diarization system, you could either train/fine-tune speaker embedding extractor model separately or you can train/fine-tune speaker embedding extractor and neural diarizer at the same time.
+This section is about formatting a dataset for cascaded diarization training. To train or fine-tune the speaker diarization system, you could either train/fine-tune speaker embedding extractor model separately or you can train/fine-tune speaker embedding extractor and neural diarizer at the same time.
 
 * To train or fine-tune a speaker embedding extractor model separately, please go check out these pages: :doc:`Speech Classification Datasets <../speech_classification/datasets>` and :doc:`Speaker Recognition Datasets <../speaker_recognition/datasets>` for preparing datasets for training and validating VAD and speaker embedding models respectively.   
 
@@ -66,17 +66,17 @@ This section is about formatting a dataset for cascaded diarization training (e.
 .. image:: images/msdd_train_and_infer.png
         :align: center
         :width: 800px
-        :alt: MSDD training and inference 
+        :alt: Diarization training and inference 
 
-As shown in the above figure, a full-fledged speaker diarization process through speaker embedding extractor, clustering algorithm and neural diarizer. Note that only speaker embedding extractor and neural diarizer are trainable models and they can be train/fine-tune together on diarization datasets. We recommend to use a speaker embedding extractor model that is trained on large amount of single-speaker dataset and use it for training a neural diarizer model. 
+As shown in the above figure, a full-fledged speaker diarization process through speaker embedding extractor, clustering algorithm and neural diarizer. Note that only speaker embedding extractor and neural diarizer are trainable models and they can be trained/fine-tuned together on diarization datasets. We recommend to use a speaker embedding extractor model that is trained on large amount of single-speaker dataset and use it for training a neural diarizer model. 
 
-For training MSDD, we need one more step of trucating the source manifest into even shorter chunks. After generating a session-wise manifest file, we need to break down each session-wise manifest file into a split manifest file containing start time and duration of the split samples due to memory capacity. More importantly, since MSDD only uses pairwise (two-speaker) model and data samples, we need to split RTTM files if there are more than two speakers.
+For training a cascaded diarizer, we need one more step of truncating the source manifest into even shorter chunks. After generating a session-wise manifest file, we need to break down each session-wise manifest file into a split manifest file containing start time and duration of the split samples due to memory capacity. If the model uses pairwise (two-speaker) data samples, we need to split RTTM files if there are more than two speakers.
 
-Note that you should specify window length and shift length of the base scale of your MSDD model when you generate the manifest file for training samples. More importantly, ``step_count`` determines how many steps (i.e., base-scale segments) are in a split data sample. If ``step_count`` is too long, you might not be able to load a single sample in a batch.
+Note that you should specify window length and shift length of the base scale of your diarization model when you generate the manifest file for training samples. ``step_count`` determines how many steps (i.e., base-scale segments) are in a split data sample. If ``step_count`` is too long, you might not be able to load a single sample in a batch.
 
 .. code-block:: bash
 
-  python NeMo/scripts/speaker_tasks/create_msdd_train_dataset.py \ 
+  python NeMo/scripts/speaker_tasks/create_diarization_train_dataset.py \ 
     --input_manifest_path='path/to/train_manifest.json' \
     --output_manifest_path='path/to/train_manifest.50step.json' \
     --pairwise_rttm_output_folder='path/to/rttm_output_folder' \
@@ -88,7 +88,7 @@ All arguments are required to generate a new manifest file. Specify a session-wi
 
 For example, if ``abcd01.wav`` has three speakers (``1911,1988,192``), the three RTTM files will be created: ``abcd01.1911_1988.rttm``, ``abcd01.1911_192.rttm`` and ``abcd01.1988_192.rttm``. Subsequently, the segments will be only generated from the newly generated two-speaker RTTM files.
 
-Specify ``window`` and ``shift`` of the base-scale in your MSDD model. In this example, we use default setting of ``window=0.5`` and ``shift=0.25`` and ``step_count=50``. Here are example lines in the output file ``/path/to/train_manifest.50step.json``.
+Specify ``window`` and ``shift`` of the base-scale in your diarization model. In this example, we use default setting of ``window=0.5`` and ``shift=0.25`` and ``step_count=50``. Here are example lines in the output file ``/path/to/train_manifest.50step.json``.
 
 - Example manifest file ``train_manifest.50step.json``.
 
@@ -100,22 +100,9 @@ Specify ``window`` and ``shift`` of the base-scale in your MSDD model. In this e
     {"audio_filepath": "/path/to/abcd02.wav", "offset": 15.478, "duration": 14.47, "label": "infer", "text": "-", "num_speakers": 2, "rttm_filepath": "path/to/rttm_output_folder/abcd02.777_5694.rttm"}
 
 
-Prepare the msdd training dataset for both train and validation. After the training dataset is prepared, you can train an MSDD model with the following script:
+Prepare the diarization training dataset for both train and validation. After the training dataset is prepared, you can train a diarization model with the provided training scripts and configuration files.
 
-.. code-block:: bash
-
-  python ./multiscale_diar_decoder.py --config-path='../conf/neural_diarizer' --config-name='msdd_5scl_15_05_50Povl_256x3x32x2.yaml' \ 
-    trainer.devices=1 \ 
-    trainer.max_epochs=20  \ 
-    model.base.diarizer.speaker_embeddings.model_path="titanet_large" \ 
-    model.train_ds.manifest_filepath="<train_manifest_path>" \ 
-    model.validation_ds.manifest_filepath="<dev_manifest_path>" \ 
-    model.train_ds.emb_dir="<train_temp_dir>" \ 
-    model.validation_ds.emb_dir="<dev_temp_dir>" \ 
-    exp_manager.name='sample_train' \ 
-    exp_manager.exp_dir='./msdd_exp' \
-
-In the above example training session, we use ``titanet_large`` model as a pretrained speaker embedding model.
+In the training sessions, we recommend using ``titanet_large`` model as a pretrained speaker embedding model.
 
 Data Preparation for Diarization Inference: for Both End-to-end and Cascaded Systems
 ------------------------------------------------------------------------------------

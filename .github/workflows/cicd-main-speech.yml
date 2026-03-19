@@ -165,8 +165,6 @@ jobs:
           - runner: self-hosted-azure
             script: L2_Speaker_dev_run_Clustering_Diarizer_Inference
           - runner: self-hosted-azure
-            script: L2_Speaker_dev_run_Neural_Diarizer_Inference
-          - runner: self-hosted-azure
             script: L2_Speaker_dev_run_Multispeaker_ASR_Data_Simulation
           - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_1_FastPitch

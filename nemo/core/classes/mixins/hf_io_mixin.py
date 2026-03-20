@@ -116,9 +116,7 @@ class HuggingFaceFileIO(ABC):
         # Setup extra arguments for model filtering
         all_results = []  # type: List[ModelInfo]
 
-        results = api.list_models(
-            token=hf_token, sort="lastModified", direction=-1, **model_filter
-        )  # type: Iterable[ModelInfo]
+        results = api.list_models(token=hf_token, sort="lastModified", **model_filter)  # type: Iterable[ModelInfo]
 
         return results
 

@@ -220,7 +220,7 @@ jobs:
           is_optional: ${{ matrix.is-optional || false }}
 
   e2e-nightly:
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'Run e2e nightly') }}
     strategy:
       fail-fast: false
       matrix:

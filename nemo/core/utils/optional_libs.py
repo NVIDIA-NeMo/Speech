@@ -67,7 +67,7 @@ try:
     else:
         CUDA_PYTHON_AVAILABLE = False
 except (ImportError, ModuleNotFoundError):
-    CUDA_PYTHON_AVAILABLE = True
+    CUDA_PYTHON_AVAILABLE = False
 
 CUDA_PYTHON_INSTALLATION_MESSAGE = "Try installing cuda-python with `pip install cuda-python>=12.3.0`"
 

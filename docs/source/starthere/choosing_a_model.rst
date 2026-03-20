@@ -21,6 +21,9 @@ ASR: Which Model Should I Use?
    * - Transcribe multiple languages
      - `Canary-1B V2 <https://huggingface.co/nvidia/canary-1b-v2>`_
      - Supports 25 EU languages + translation between them. AED decoder.
+   * - Transcribe European languages (ASR only, auto language detection)
+     - `Parakeet-TDT 0.6B V3 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>`_
+     - 25 European languages in one model; automatic language detection; punctuation, capitalization, and word/segment timestamps; long-form and streaming options. No speech-to-text translation—use Canary-1B V2 if you need translation.
    * - Stream audio in real-time
      - `Nemotron-Speech-Streaming <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`_
      - Low-latency streaming English ASR with configurable chunk sizes. Cache-aware FastConformer + RNN-T.
@@ -104,7 +107,8 @@ Decision Flowchart
    │
    ├─ Transcribe speech to text (ASR)
    │  ├─ Best accuracy on English? → Canary-Qwen 2.5B (or Parakeet-TDT V2/V3 for fast offline)
-   │  ├─ Multiple languages? → Canary-1B V2
+   │  ├─ Multiple languages + translation? → Canary-1B V2
+   │  ├─ European multilingual ASR (auto LID)? → Parakeet-TDT 0.6B V3
    │  ├─ Stream audio in real-time? → Nemotron-Speech-Streaming
    │  └─ Multi-speaker meeting? → Multitalker Parakeet Streaming
    │

@@ -168,9 +168,9 @@ def is_numba_cuda_fp16_supported(return_reason: bool = False) -> Union[bool, Tup
     )[0]
 
     if numba_fp16_version_correct:
-        reason += f"Numba CUDA FP16 is supported in installed numba version."
+        reason += "Numba CUDA FP16 is supported in installed numba version."
     else:
-        reason += f"Numba CUDA FP16 is not supported in installed numba version."
+        reason += "Numba CUDA FP16 is not supported in installed numba version."
 
     result = use_nvidia_binding and numba_fp16_version_correct
 

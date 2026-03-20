@@ -53,7 +53,7 @@ def test_model_training_step():
     """Run one training step via direct training_step() call."""
     import math
 
-    from conftest import prepare_for_training_step
+    from e2e_utils import prepare_for_training_step
 
     model = _load_model()
     prepare_for_training_step(model)

@@ -17,10 +17,22 @@ Module with guards for optional libraries, that cannot be listed in `requirement
 Provides helper constants and decorators to check if the library is available in the system.
 """
 
-__all__ = ["KENLM_AVAILABLE", "K2_AVAILABLE", "TRITON_AVAILABLE", "kenlm_required", "k2_required", "triton_required"]
+__all__ = [
+    "KENLM_AVAILABLE",
+    "K2_AVAILABLE",
+    "TRITON_AVAILABLE",
+    "CUDA_PYTHON_AVAILABLE",
+    "kenlm_required",
+    "k2_required",
+    "triton_required",
+    "cuda_python_required",
+]
 
 import importlib.util
 from functools import wraps
+
+from packaging.version import Version
+
 from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
 
 
@@ -46,6 +58,18 @@ try:
     K2_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
     K2_AVAILABLE = False
+
+try:
+    from cuda.bindings import __version__ as cuda_python_version
+
+    if Version(cuda_python_version) < Version("12.3.0"):
+        CUDA_PYTHON_AVAILABLE = True
+    else:
+        CUDA_PYTHON_AVAILABLE = False
+except (ImportError, ModuleNotFoundError):
+    CUDA_PYTHON_AVAILABLE = True
+
+CUDA_PYTHON_INSTALLATION_MESSAGE = "Try installing cuda-python with `pip install cuda-python>=12.3.0`"
 
 
 def identity_decorator(f):
@@ -82,3 +106,6 @@ def _lib_required(is_available: bool, name: str, message: str | None = None):
 kenlm_required = _lib_required(is_available=KENLM_AVAILABLE, name="kenlm", message=KENLM_INSTALLATION_MESSAGE)
 triton_required = _lib_required(is_available=TRITON_AVAILABLE, name="triton", message=TRITON_INSTALLATION_MESSAGE)
 k2_required = _lib_required(is_available=K2_AVAILABLE, name="k2", message=K2_INSTALLATION_MESSAGE)
+cuda_python_required = _lib_required(
+    is_available=CUDA_PYTHON_AVAILABLE, name="cuda_python", message=CUDA_PYTHON_INSTALLATION_MESSAGE
+)

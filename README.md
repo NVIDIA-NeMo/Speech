@@ -359,7 +359,7 @@ To install nemo_toolkit from this Git reference `$REF`, use the following instal
 git clone https://github.com/NVIDIA/NeMo
 cd NeMo
 git checkout @${REF:-'main'}
-pip install '.[all]'
+pip install '.[all]'  # '.[all,cu12]' or '.[all,cu13]' to install with extra dependencies for CUDA 12.x or 13.x
 ```
 
 #### Install a specific Domain
@@ -403,7 +403,7 @@ cd /opt
 git clone https://github.com/NVIDIA/NeMo
 cd NeMo
 git checkout ${REF:-'main'}
-pip install ".[all]"
+pip install ".[all]"  # '.[all,cu12]' or '.[all,cu13]' to install with extra dependencies for CUDA 12.x or 13.x
 ```
 
 ## NGC NeMo container

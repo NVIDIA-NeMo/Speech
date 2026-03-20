@@ -18,14 +18,24 @@ Provides helper constants and decorators to check if the library is available in
 """
 
 __all__ = [
+    # kenlm
     "KENLM_AVAILABLE",
-    "K2_AVAILABLE",
-    "TRITON_AVAILABLE",
-    "CUDA_PYTHON_AVAILABLE",
     "kenlm_required",
+    # k2
+    "K2_AVAILABLE",
     "k2_required",
+    # triton
+    "TRITON_AVAILABLE",
     "triton_required",
+    # cuda-python
+    "CUDA_PYTHON_AVAILABLE",
     "cuda_python_required",
+    # numba
+    "NUMBA_AVAILABLE",
+    "numba_required",
+    # numba-cuda
+    "NUMBA_CUDA_AVAILABLE",
+    "numba_cuda_required",
 ]
 
 import importlib.util
@@ -34,6 +44,7 @@ from functools import wraps
 from packaging.version import Version
 
 from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
+from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__, numba_cpu_is_supported, numba_cuda_is_supported
 
 
 def is_lib_available(name: str) -> bool:
@@ -51,6 +62,17 @@ KENLM_INSTALLATION_MESSAGE = "Try installing kenlm with `pip install kenlm`"
 TRITON_AVAILABLE = is_lib_available("triton")
 TRITON_INSTALLATION_MESSAGE = "Try installing triton with `pip install triton`"
 
+NUMBA_AVAILABLE = numba_cpu_is_supported(__NUMBA_MINIMUM_VERSION__)
+NUMBA_INSTALLATION_MESSAGE = (
+    "Numba is not found. Install with `pip install numba`. "
+    "For GPU support install with `pip install numba-cuda[cu12]` or `pip install numba-cuda[cu13]`"
+)
+
+NUMBA_CUDA_AVAILABLE = numba_cuda_is_supported(__NUMBA_MINIMUM_VERSION__)
+NUMBA_CUDA_INSTALLATION_MESSAGE = (
+    "Numba with GPU support is not available. "
+    "For GPU support install with `pip install numba-cuda[cu12]` or `pip install numba-cuda[cu13]`"
+)
 
 try:
     from nemo.core.utils.k2_guard import k2 as _  # noqa: F401
@@ -108,4 +130,8 @@ triton_required = _lib_required(is_available=TRITON_AVAILABLE, name="triton", me
 k2_required = _lib_required(is_available=K2_AVAILABLE, name="k2", message=K2_INSTALLATION_MESSAGE)
 cuda_python_required = _lib_required(
     is_available=CUDA_PYTHON_AVAILABLE, name="cuda_python", message=CUDA_PYTHON_INSTALLATION_MESSAGE
+)
+numba_required = _lib_required(is_available=NUMBA_AVAILABLE, name="numba", message=NUMBA_INSTALLATION_MESSAGE)
+numba_cuda_required = _lib_required(
+    is_available=NUMBA_CUDA_AVAILABLE, name="numba-cuda", message=NUMBA_CUDA_INSTALLATION_MESSAGE
 )

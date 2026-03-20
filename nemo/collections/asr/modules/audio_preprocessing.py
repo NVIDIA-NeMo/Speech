@@ -20,7 +20,6 @@ from typing import Any, Optional
 
 import torch
 
-from nemo.collections.asr.parts.numba.spec_augment import SpecAugmentNumba, spec_augment_launch_heuristics
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
 from nemo.collections.asr.parts.submodules.spectr_augment import SpecAugment, SpecCutout
 from nemo.collections.audio.parts.utils.transforms import MFCC
@@ -33,9 +32,11 @@ from nemo.core.neural_types import (
     NeuralType,
     SpectrogramType,
 )
-from nemo.core.utils import numba_utils
-from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
+from nemo.core.utils.optional_libs import NUMBA_CUDA_AVAILABLE
 from nemo.utils import logging, logging_mode
+
+if NUMBA_CUDA_AVAILABLE:
+    from nemo.collections.asr.parts.numba.spec_augment import SpecAugmentNumba, spec_augment_launch_heuristics
 
 __all__ = [
     'AudioToMelSpectrogramPreprocessor',
@@ -501,7 +502,7 @@ class SpectrogramAugmentation(NeuralModule):
             self.spec_augment = lambda input_spec, length: input_spec
 
         # Check if numba is supported, and use a Numba kernel if it is
-        if use_numba_spec_augment and numba_utils.numba_cuda_is_supported(__NUMBA_MINIMUM_VERSION__):
+        if use_numba_spec_augment and NUMBA_CUDA_AVAILABLE:
             logging.info('Numba CUDA SpecAugment kernel is being used')
             self.spec_augment_numba = SpecAugmentNumba(
                 freq_masks=freq_masks,

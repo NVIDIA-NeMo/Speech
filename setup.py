@@ -17,7 +17,6 @@
 
 """Setup for pip package."""
 
-import codecs
 import importlib.util
 import os
 import subprocess
@@ -82,6 +81,16 @@ extras_require = {
 
 
 extras_require['all'] = list(chain(val for key, val in extras_require.items()))
+
+# CUDA version extras (not included in 'all' - user must explicitly select)
+extras_require['cu12'] = [
+    'numba-cuda[cu12] ; platform_system != "Darwin"',
+    'cuda-python>=12.6.0,<13 ; platform_system != "Darwin"'
+]
+extras_require['cu13'] = [
+    'numba-cuda[cu13] ; platform_system != "Darwin"',
+    'cuda-python>=13,<14 ; platform_system != "Darwin"',
+]
 
 # Add lightning requirements as needed
 extras_require['common'] = extras_require['common-only']

@@ -130,7 +130,7 @@ def numba_cuda_is_supported(min_version: str) -> bool:
         try:
             cuda_available = cuda.is_available()
             if cuda_available:
-                cuda_compatible = cuda.cudadrv.runtime.get_version()[0] == 13
+                cuda_compatible = cuda.cudadrv.runtime.get_version()[0] in (12, 13)
             else:
                 cuda_compatible = False
 

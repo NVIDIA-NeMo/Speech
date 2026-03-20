@@ -32,14 +32,10 @@ from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.core.utils.cuda_python_utils import NeMoCUDAPythonException, cu_call, run_nvrtc, with_conditional_node
 from nemo.utils import logging
+from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 
-try:
+if CUDA_PYTHON_AVAILABLE:
     from cuda.bindings import runtime as cudart
-
-    HAVE_CUDA_PYTHON = True
-except ImportError:
-    HAVE_CUDA_PYTHON = False
-
 
 class LabelLoopingState:
     """
@@ -733,6 +729,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         )
         return batched_state
 
+    @cuda_python_required
     def cuda_graphs_impl(
         self,
         encoder_output: torch.Tensor,

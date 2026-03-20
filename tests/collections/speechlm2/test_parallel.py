@@ -111,11 +111,10 @@ class TestResolveAutomodelConfigs:
 
     def test_plain_dict_to_moe_config(self):
         strategy = AutomodelParallelStrategy(
-            moe_config={"activation_checkpointing": True, "reshard_after_forward": True},
+            moe_config={"reshard_after_forward": True},
         )
         _resolve_automodel_configs(strategy)
         assert isinstance(strategy.moe_config, MoEParallelizerConfig)
-        assert strategy.moe_config.activation_checkpointing is True
         assert strategy.moe_config.reshard_after_forward is True
 
     def test_noop_when_no_configs(self):
@@ -150,7 +149,6 @@ class TestResolveAutomodelConfigs:
         # All defaults should apply
         assert strategy.distributed_config.defer_fsdp_grad_sync is True
         assert strategy.distributed_config.sequence_parallel is False
-        assert strategy.moe_config.activation_checkpointing is False
 
     def test_nested_target_in_distributed_config(self):
         """A sub-field like mp_policy can use _target_ for Hydra instantiation."""
@@ -173,7 +171,7 @@ class TestResolveAutomodelConfigs:
     def test_both_configs_resolved_together(self):
         strategy = AutomodelParallelStrategy(
             distributed_config={"sequence_parallel": False},
-            moe_config={"activation_checkpointing": True},
+            moe_config={},
         )
         _resolve_automodel_configs(strategy)
         assert isinstance(strategy.distributed_config, FSDP2Config)
@@ -200,9 +198,7 @@ class TestResolveTrainerCfg:
                         "sequence_parallel": True,
                         "defer_fsdp_grad_sync": False,
                     },
-                    "moe_config": {
-                        "activation_checkpointing": True,
-                    },
+                    "moe_config": {},
                 },
             }
         )
@@ -215,7 +211,6 @@ class TestResolveTrainerCfg:
         assert strategy.distributed_config.sequence_parallel is True
         assert strategy.distributed_config.defer_fsdp_grad_sync is False
         assert isinstance(strategy.moe_config, MoEParallelizerConfig)
-        assert strategy.moe_config.activation_checkpointing is True
 
     def test_non_automodel_strategy_unaffected(self):
         """Other strategies (e.g. DDPStrategy) should pass through unchanged."""

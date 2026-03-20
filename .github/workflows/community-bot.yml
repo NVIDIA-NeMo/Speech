@@ -8,7 +8,7 @@ on:
 
 jobs:
   community-bot:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_community_bot.yml@v0.62.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_community_bot.yml@v0.80.1
     with:
       community_project_id: ${{ vars.COMMUNITY_PROJECT_ID }}
     secrets:

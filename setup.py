@@ -85,7 +85,7 @@ extras_require['all'] = list(chain(val for key, val in extras_require.items()))
 # CUDA version extras (not included in 'all' - user must explicitly select)
 extras_require['cu12'] = [
     'numba-cuda[cu12] ; platform_system != "Darwin"',
-    'cuda-python>=12.6.0,<13 ; platform_system != "Darwin"'
+    'cuda-python>=12.6.0,<13 ; platform_system != "Darwin"',
 ]
 extras_require['cu13'] = [
     'numba-cuda[cu13] ; platform_system != "Darwin"',

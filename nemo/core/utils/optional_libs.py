@@ -84,7 +84,7 @@ except (ImportError, ModuleNotFoundError):
 try:
     from cuda.bindings import __version__ as cuda_python_version
 
-    if Version(cuda_python_version) < Version("12.3.0"):
+    if Version(cuda_python_version) >= Version("12.3.0"):
         CUDA_PYTHON_AVAILABLE = True
     else:
         CUDA_PYTHON_AVAILABLE = False

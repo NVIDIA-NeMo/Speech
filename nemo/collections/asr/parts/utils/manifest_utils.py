@@ -335,7 +335,10 @@ def get_path_dict(data_path: str, uniqids: List[str], len_wavs: int = None) -> D
     if data_path is not None:
         data_pathlist = read_file(data_path)
         if len_wavs is not None:
-            assert len(data_pathlist) == len_wavs
+            if len(data_pathlist) != len_wavs:
+                raise ValueError(
+                    f"Number of data paths ({len(data_pathlist)}) does not match expected count ({len_wavs})."
+                )
             data_pathdict = get_dict_from_list(data_pathlist, uniqids)
     elif len_wavs is not None:
         data_pathdict = {uniq_id: None for uniq_id in uniqids}

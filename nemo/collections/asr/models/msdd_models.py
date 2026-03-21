@@ -456,9 +456,10 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
         ms_avg_embs = torch.stack(ms_avg_embs_list).permute(0, 1, 3, 2)
         ms_avg_embs = ms_avg_embs.float().detach().to(embs.device)
-        assert (
-            not ms_avg_embs.requires_grad
-        ), "ms_avg_embs.requires_grad = True. ms_avg_embs should be detached from the torch graph."
+        if ms_avg_embs.requires_grad:
+            raise RuntimeError(
+                "ms_avg_embs.requires_grad = True. ms_avg_embs should be detached from the torch graph."
+            )
         return ms_avg_embs
 
     @torch.no_grad()
@@ -747,9 +748,10 @@ class ClusterEmbedding(torch.nn.Module):
             all_scale_clus_label_dict[self.base_scale_index][uniq_id] = base_scale_clus_label
             for scale_index in range(self.scale_n - 1):
                 new_clus_label = []
-                assert (
-                    uniq_scale_mapping_dict[scale_index].shape[0] == base_scale_clus_label.shape[0]
-                ), "The number of base scale labels does not match the segment numbers in uniq_scale_mapping_dict"
+                if uniq_scale_mapping_dict[scale_index].shape[0] != base_scale_clus_label.shape[0]:
+                    raise RuntimeError(
+                        "The number of base scale labels does not match the segment numbers in uniq_scale_mapping_dict"
+                    )
                 max_index = max(uniq_scale_mapping_dict[scale_index])
                 for seg_idx in range(max_index + 1):
                     if seg_idx in uniq_scale_mapping_dict[scale_index]:

@@ -467,10 +467,11 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
 
         processed_signal = torch.cat(processed_signal_list, 0)
         processed_signal_length = torch.cat(processed_signal_length_list, 0)
-        assert processed_signal.shape[0] == org_batch_size, (
-            f"The resulting batch size of processed signal - {processed_signal.shape[0]} "
-            f"is not equal to original batch size: {org_batch_size}"
-        )
+        if processed_signal.shape[0] != org_batch_size:
+            raise RuntimeError(
+                f"The resulting batch size of processed signal - {processed_signal.shape[0]} "
+                f"is not equal to original batch size: {org_batch_size}"
+            )
         processed_signal = processed_signal.to(self.device)
         processed_signal_length = processed_signal_length.to(self.device)
         return processed_signal, processed_signal_length

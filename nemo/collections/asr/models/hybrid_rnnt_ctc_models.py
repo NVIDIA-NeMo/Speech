@@ -339,7 +339,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             self.cur_decoder = "rnnt"
             return super().change_decoding_strategy(decoding_cfg=decoding_cfg, verbose=verbose)
 
-        assert decoder_type == 'ctc' and hasattr(self, 'ctc_decoder')
+        if decoder_type != 'ctc' or not hasattr(self, 'ctc_decoder'):
+            raise ValueError(
+                f"Unsupported decoder_type '{decoder_type}'. "
+                f"Expected 'ctc' with a 'ctc_decoder' attribute on the model."
+            )
         if decoding_cfg is None:
             # Assume same decoding config as before
             logging.info("No `decoding_cfg` passed when changing decoding strategy, using internal config")

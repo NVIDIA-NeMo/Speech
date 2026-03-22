@@ -660,7 +660,6 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         )
         return batched_state
 
-    @cuda_python_required
     def cuda_graphs_impl(
         self,
         encoder_output: torch.Tensor,
@@ -953,6 +952,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         ):
             self._after_inner_loop_step()
 
+    @cuda_python_required
     def _full_graph_compile(self):
         """Compile full graph for decoding"""
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.

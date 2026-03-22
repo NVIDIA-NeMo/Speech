@@ -45,7 +45,7 @@
 import string
 from collections import defaultdict
 from enum import Enum
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import librosa
 import matplotlib.pylab as plt
@@ -924,3 +924,28 @@ def get_speaker_embeddings_from_filepaths(filepaths, speaker_verification_model,
     )
 
     return speaker_embeddings
+
+
+def print_grad_weight_summary(metrics: Dict[str, float], step: int, is_global_zero: bool = True) -> None:
+    """Print a compact per-module summary of grad_norm / weight_norm / weight_delta."""
+    if not is_global_zero:
+        return
+
+    lines = [
+        f"\n[grad/weight] step={step}  "
+        f"grad={metrics.get('grad_norm/global', 0.0):.6f}  "
+        f"w={metrics.get('weight_norm/global', 0.0):.4f}  "
+        f"Δw={metrics.get('weight_delta/global', 0.0):.8f}"
+    ]
+
+    module_names = sorted(
+        k.split('/')[1] for k in metrics if k.startswith('weight_norm/') and k != 'weight_norm/global'
+    )
+    for name in module_names:
+        gn = metrics.get(f'grad_norm/{name}', 0.0)
+        wn = metrics.get(f'weight_norm/{name}', 0.0)
+        wd = metrics.get(f'weight_delta/{name}', 0.0)
+        lines.append(f"  {name:40s}  grad={gn:.6f}  w={wn:.4f}  Δw={wd:.8f}")
+
+    summary = "\n".join(lines)
+    logging.info(summary)

@@ -116,7 +116,7 @@ def add_simulstream_fields(cfg_path: str, output_dir: str, src_lang: str = None,
             'type': 'nemo.collections.asr.inference.simulstream_pipeline_adapter.NeMoStreamingPipelineAdapter',
             'speech_chunk_size': speech_chunk_size,
             'detokenizer_type': 'simuleval',  # For metrics evaluation
-            'latency_unit': get_latency_unit(src_lang),  # For metrics evaluation
+            'latency_unit': get_latency_unit(tgt_lang),  # For metrics evaluation
         })
         
         # Merge (simulstream fields first, then original config)

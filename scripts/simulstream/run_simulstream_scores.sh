@@ -112,7 +112,7 @@ mkdir -p "$SCORES_DIR"
 echo "========== Run simulstream eval (latency / quality / stats) =========="
 
 echo "Running simulstream_score_latency..."
-PYTHONUNBUFFERED=1 uv run simulstream_score_latency \
+PYTHONUNBUFFERED=1  simulstream_score_latency \
   --scorer stream_laal \
   --eval-config "$SIMULSTREAM_CONFIG" \
   --log-file "$LOG_FILE" \
@@ -121,7 +121,7 @@ PYTHONUNBUFFERED=1 uv run simulstream_score_latency \
   --latency-unit "$LATENCY_UNIT" > "$SCORES_DIR/simulstream_score_latency.log" 2>&1
 
 echo "Running simulstream_score_quality (sacrebleu)..."
-PYTHONUNBUFFERED=1 uv run simulstream_score_quality \
+PYTHONUNBUFFERED=1 simulstream_score_quality \
   --scorer sacrebleu \
   --tokenizer "$SACREBLEU_TOKENIZER" \
   --eval-config "$SIMULSTREAM_CONFIG" \
@@ -129,6 +129,7 @@ PYTHONUNBUFFERED=1 uv run simulstream_score_quality \
   --references "$REFS" \
   --transcripts "$TRANSCRIPTS" \
   --audio-definition "$AUDIO_DEF" \
+  --latency-unit "$LATENCY_UNIT" \
   > "$SCORES_DIR/simulstream_score_quality.log" 2>&1
 
 if [[ -n "${HF_TOKEN:-}" ]]; then
@@ -136,7 +137,7 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
   huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
 
   echo "Running simulstream_score_quality (COMET Unbabel/XCOMET-XL)..."
-  PYTHONUNBUFFERED=1 uv run simulstream_score_quality \
+  PYTHONUNBUFFERED=1 simulstream_score_quality \
     --scorer comet \
     --model "Unbabel/XCOMET-XL" \
     --batch-size "8" \
@@ -145,10 +146,11 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
     --references "$REFS" \
     --transcripts "$TRANSCRIPTS" \
     --audio-definition "$AUDIO_DEF" \
+    --latency-unit "$LATENCY_UNIT" \
     > "$SCORES_DIR/simulstream_score_quality_comet_unbabel_xcomet_xl.log" 2>&1
 
   echo "Running simulstream_score_quality (COMET Unbabel/wmt22-comet-da)..."
-  PYTHONUNBUFFERED=1 uv run simulstream_score_quality \
+  PYTHONUNBUFFERED=1 simulstream_score_quality \
     --scorer comet \
     --model "Unbabel/wmt22-comet-da" \
     --batch-size "8" \
@@ -157,13 +159,14 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
     --references "$REFS" \
     --transcripts "$TRANSCRIPTS" \
     --audio-definition "$AUDIO_DEF" \
+    --latency-unit "$LATENCY_UNIT" \
     > "$SCORES_DIR/simulstream_score_quality_comet_unbabel_wmt22_comet_da.log" 2>&1
 else
   echo "HF_TOKEN not set. Skipping COMET evaluation."
 fi
 
 echo "Running simulstream_stats..."
-PYTHONUNBUFFERED=1 uv run simulstream_stats \
+PYTHONUNBUFFERED=1 simulstream_stats \
   --eval-config "$SIMULSTREAM_CONFIG" \
   --log-file "$LOG_FILE" \
   --latency-unit "$LATENCY_UNIT" >> "$SCORES_DIR/simulstream_stats.log" 2>&1

@@ -35,6 +35,7 @@ Key Insight:
 from __future__ import annotations
 
 import json
+import unicodedata
 from types import SimpleNamespace
 from typing import List, Optional
 
@@ -434,12 +435,15 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         return self._join_tokens(tokens)
 
     def _tokenize_text(self, text: Optional[str]) -> List[str]:
-        """Tokenize text according to configured latency unit."""
+        """Tokenize text according to configured latency unit. For char-level, removes
+        all spaces so emitted token count matches simulstream eval (MWER path does
+        .replace(" ", "") on resegmented text, so delay count must be non-space chars only)."""
         if not text:
             return []
         if self.latency_unit == "char":
-            return list(text)
-        return text.split()
+            norm = unicodedata.normalize("NFKC", text.strip())
+            return list(norm.replace(" ", ""))
+        return text.strip().split()
 
     def _join_tokens(self, tokens: List[str]) -> str:
         """Join tokens according to configured latency unit."""

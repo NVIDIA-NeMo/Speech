@@ -19,6 +19,12 @@ SIMULSTREAM_CONFIG=""
 TGT_LANG=""
 COMET=""
 SEGMENTS_MANIFEST=""
+LATENCY_UNIT="word"
+BLEU_TOKENIZER="13a"
+LATENCY_FLAG="--word_level"
+if [[ "$LATENCY_UNIT" == "char" ]]; then
+  LATENCY_FLAG="--char_level"
+fi
 
 usage() {
   echo "Usage: $0 output-dir=DIR tgt-lang=LANG [OPTIONS]"
@@ -31,6 +37,8 @@ usage() {
   echo "  simulstream-config=YAML Simulstream config for omnisteval (auto-detected from output-dir if omitted)"
   echo "  comet=true|false         Enable COMET in omnisteval (default: false)"
   echo "  segments-manifest=PATH   Segments manifest used to auto-create missing eval files"
+  echo "  latency-unit=char|word   Latency unit for omnisteval (default: word)"
+  echo "  bleu-tokenizer=TOKENIZER Tokenizer for SacreBLEU (default: 13a)"
   exit 1
 }
 
@@ -40,6 +48,8 @@ for arg in "$@"; do
     simulstream-config=*)  SIMULSTREAM_CONFIG="${arg#*=}" ;;
     tgt-lang=*)            TGT_LANG="${arg#*=}" ;;
     segments-manifest=*)   SEGMENTS_MANIFEST="${arg#*=}" ;;
+    latency-unit=*)         LATENCY_UNIT="${arg#*=}" ;;
+    bleu-tokenizer=*)       BLEU_TOKENIZER="${arg#*=}" ;;
     comet=*)
       COMET_VALUE="${arg#*=}"
       case "${COMET_VALUE,,}" in
@@ -121,10 +131,13 @@ python -m omnisteval.cli longform \
   --hypothesis_file "$HYPOTHESIS_JSON" \
   --hypothesis_format=simulstream \
   --simulstream_config_file "$SIMULSTREAM_CONFIG" \
-  --lang "$TGT_LANG" \
+  --lang ${TGT_LANG} \
+  --bleu_tokenizer ${BLEU_TOKENIZER} \
   --source_sentences_file "$TRANSCRIPTS" \
   --output_folder "$OMNI_OUTPUT" \
-  $COMET
+  $COMET \
+  $LATENCY_FLAG \
+  --comet_model Unbabel/XCOMET-XL
 
 SUMMARY_FILE="$OMNI_OUTPUT/omnisteval_summary.txt"
 {

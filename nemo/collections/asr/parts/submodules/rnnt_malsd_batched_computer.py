@@ -43,7 +43,6 @@ if CUDA_PYTHON_AVAILABLE:
     from cuda.bindings import runtime as cudart
 
 
-
 class MALSDState:
     """
     State for batched ALSD algorithm for RNN-T models. Used only with CUDA graphs.

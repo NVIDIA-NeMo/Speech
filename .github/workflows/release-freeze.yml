@@ -45,7 +45,7 @@ jobs:
     environment: main
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
           token: ${{ secrets.PAT }}

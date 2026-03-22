@@ -83,7 +83,7 @@ runs:
         echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
     - name: Checkout NeMo
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       env:
         DIR: ${{ github.run_id }}
       with:
@@ -213,7 +213,7 @@ runs:
         docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} coverage report -i
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: ${{ steps.check.outputs.coverage_report != 'none' }}
       with:
         name: ${{ steps.check.outputs.coverage_report }}

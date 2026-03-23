@@ -187,7 +187,6 @@ class LhotseDataLoadingConfig:
     cut_into_windows_duration: Optional[float] = None  # set this to enable
     cut_into_windows_hop: Optional[float] = None
     #       III) cut_into_windows_balanced: like cut_into_windows but with optimal last-chunk sizing.
-    #            Applied after cut_into_windows. Replaces dataset-level chunk_audio_sample calls.
     #            Requires cut_into_windows_duration to be set (for the coarse outer windowing).
     cut_into_windows_balanced_min_duration: Optional[float] = None  # set this to enable
     cut_into_windows_balanced_max_duration: Optional[float] = None

@@ -22,16 +22,12 @@ from nemo.collections.asr.parts.mixins.transcription import (
     resolve_chunking,
 )
 from nemo.collections.asr.parts.utils.chunking_utils import (
-    chunk_audio_sample,
     chunk_waveform,
     find_optimal_chunk_size,
     join_char_level_timestamps,
-    merge_all_hypotheses,
     merge_flat_chunk_hypotheses,
-    merge_hypotheses_of_same_audio,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
-from nemo.collections.asr.parts.mixins.transcription import resolve_chunking
 
 
 def _make_hyp(text, id_, chunk_start=0.0):
@@ -123,35 +119,6 @@ def test_chunk_waveform_raises_when_overlap_not_smaller_than_chunk():
             overlap_sec=1.5,
             sample_rate=10,
         )
-
-
-@pytest.mark.unit
-def test_chunk_audio_sample_chunks_and_tracks_lengths():
-    audio = torch.arange(100, dtype=torch.float32).unsqueeze(0)
-    audio_lens = torch.tensor([100], dtype=torch.long)
-
-    chunked_audio, chunked_lens = chunk_audio_sample(
-        audio=audio,
-        audio_lens=audio_lens,
-        chunk_range=[3, 3],
-        overlap_sec=1.0,
-        sample_rate=10,
-    )
-
-    assert chunked_audio.shape == (5, 30)
-    assert torch.equal(chunked_lens, torch.tensor([30, 30, 30, 30, 20], dtype=torch.long))
-    assert torch.allclose(chunked_audio[0], audio[0, :30])
-
-
-@pytest.mark.unit
-def test_chunk_audio_sample_validates_inputs():
-    audio = torch.arange(10, dtype=torch.float32)
-    with pytest.raises(ValueError):
-        chunk_audio_sample(audio=audio, audio_lens=torch.tensor([10]))
-
-    audio = torch.zeros((2, 20))
-    with pytest.raises(ValueError):
-        chunk_audio_sample(audio=audio, audio_lens=torch.tensor([20, 20]))
 
 
 @pytest.mark.unit
@@ -267,97 +234,6 @@ def test_join_char_level_timestamps_with_filter():
 
 
 @pytest.mark.unit
-def test_merge_hypotheses_of_same_audio():
-    # Different segments of the same audio file are correctly combined
-    subsampling_factor = 8
-    chunk_duration_seconds = 10
-    frame_offset = int(chunk_duration_seconds * 1000 / subsampling_factor)
-
-    h0 = Hypothesis(
-        score=0.0,
-        y_sequence=torch.tensor([1]),
-        timestamp={
-            "word": [{"word": "a", "start": 0.0, "end": 0.1, "start_offset": 0, "end_offset": 2}],
-            "segment": [{"segment": "a", "start": 0.0, "end": 0.1, "start_offset": 0, "end_offset": 2}],
-        },
-    )
-    h1 = Hypothesis(
-        score=0.0,
-        y_sequence=torch.tensor([2]),
-        timestamp={
-            "word": [{"word": "b", "start": 0.2, "end": 0.3, "start_offset": 0, "end_offset": 3}],
-            "segment": [{"segment": "b", "start": 0.2, "end": 0.3, "start_offset": 0, "end_offset": 3}],
-        },
-    )
-    h2 = Hypothesis(
-        score=0.0,
-        y_sequence=torch.tensor([3]),
-        timestamp={
-            "word": [],
-            "segment": [],
-        },
-    )
-
-    merged = merge_hypotheses_of_same_audio(
-        hypotheses_list=[h0, h1, h2],
-        timestamps=True,
-        subsampling_factor=subsampling_factor,
-        chunk_duration_seconds=chunk_duration_seconds,
-    )
-
-    words = merged.timestamp["word"]
-    segs = merged.timestamp["segment"]
-
-    assert [w["word"] for w in words] == ["a", "b"]
-    assert words[0]["start"] == pytest.approx(0.0)
-    assert words[0]["start_offset"] == 0
-    assert words[1]["start"] == pytest.approx(0.2 + chunk_duration_seconds)
-    assert words[1]["start_offset"] == frame_offset
-
-    assert [s["segment"] for s in segs] == ["a", "b"]
-    assert segs[1]["end"] == pytest.approx(0.3 + chunk_duration_seconds)
-    assert segs[1]["end_offset"] == 3 + frame_offset
-
-
-@pytest.mark.unit
-def test_merge_all_hypotheses():
-    # Testing if merging by id works
-    hyps = [_make_hyp("a", 1), _make_hyp("b", 1), _make_hyp("c", 2), _make_hyp("d", 2)]
-
-    merged_list = merge_all_hypotheses(
-        hypotheses_list=hyps,
-        timestamps=False,
-        subsampling_factor=2,
-        chunk_duration_seconds=3600,
-    )
-
-    assert len(merged_list) == 2
-    texts = {m.text for m in merged_list}
-    assert texts == {"a b", "c d"}
-
-
-@pytest.mark.unit
-def test_merge_all_hypotheses_with_cut_segmented_suffix():
-    hyps = [
-        _make_hyp("root", "11-0"),
-        _make_hyp("cont1", "11-1_cut_segmented"),
-        _make_hyp("cont2", "11-2_cut_segmented"),
-        _make_hyp("other", "12-0"),
-    ]
-
-    merged_list = merge_all_hypotheses(
-        hypotheses_list=hyps,
-        timestamps=False,
-        subsampling_factor=2,
-        chunk_duration_seconds=3600,
-    )
-
-    assert len(merged_list) == 2
-    texts = sorted(m.text for m in merged_list)
-    assert texts == ["other", "root cont1 cont2"]
-
-
-@pytest.mark.unit
 def test_merge_flat_chunk_hypotheses_preserves_manifest_order():
     """merge_flat_chunk_hypotheses must output results in the order they first appear
     in the flat hypotheses list (which matches the presorted manifest order), NOT in
@@ -389,31 +265,6 @@ def test_merge_flat_chunk_hypotheses_preserves_manifest_order():
     assert len(merged) == 3
     ids = [getattr(m, 'id', None) for m in merged]
     assert ids == ["258-0", "113-0", "11-0"], f"Expected presorted order, got {ids}"
-
-
-@pytest.mark.unit
-def test_merge_all_hypotheses_multi_window_recording():
-    """Recordings slightly longer than 3600s produce two windows (e.g. "11-0" and "11-1").
-    Both windows must be grouped into a single hypothesis for the same recording."""
-
-    # File "11" is 3609s → windows "11-0" (3600s) and "11-1" (9s tail)
-    # File "113" is 3539s → single window "113-0"
-    hyps = [
-        _make_hyp("first hour", "11-0"),
-        _make_hyp("tail", "11-1"),
-        _make_hyp("other file", "113-0"),
-    ]
-
-    merged_list = merge_all_hypotheses(
-        hypotheses_list=hyps,
-        timestamps=False,
-        subsampling_factor=8,
-        chunk_duration_seconds=3600,
-    )
-
-    assert len(merged_list) == 2
-    texts = sorted(m.text for m in merged_list)
-    assert texts == ["first hour tail", "other file"]
 
 
 @pytest.mark.unit

@@ -321,6 +321,58 @@ def merge_all_hypotheses(hypotheses_list, timestamps, subsampling_factor, chunk_
     return all_merged_hypotheses
 
 
+def chunk_concat_audio(audio_signal: torch.Tensor, audio_len: torch.Tensor, chunk_size: int):
+    """
+    Reshape audio signal into chunks and concatenate features within each chunk.
+
+    This function is used for CHAT (Chunked Attention Transducer) models where
+    the encoder output needs to be chunked before being passed to the joint network
+    for cross-attention computation.
+
+    Args:
+        audio_signal: Tensor of shape [B, T, D] - batch of audio features
+        audio_len: Tensor of shape [B] - lengths of each audio sequence
+        chunk_size: Size of each chunk (number of frames)
+
+    Returns:
+        Tuple of:
+            - chunked_signal: Tensor of shape [B, num_chunks, chunk_size * D]
+            - chunk_sizes: Tensor of shape [B, num_chunks] - actual valid frames per chunk
+    """
+    B, T, D = audio_signal.shape
+    # Calculate number of chunks (with potential padding)
+    num_chunks = (T + chunk_size - 1) // chunk_size
+    padded_T = num_chunks * chunk_size
+
+    # Pad the input if necessary with zeros
+    if padded_T > T:
+        padding = torch.zeros(B, padded_T - T, D, dtype=audio_signal.dtype, device=audio_signal.device)
+        padded_signal = torch.cat([audio_signal, padding], dim=1)
+    else:
+        padded_signal = audio_signal
+
+    # Calculate actual sizes for each chunk for each utterance (vectorized)
+    # Create chunk start and end positions
+    chunk_starts = torch.arange(num_chunks, device=audio_signal.device) * chunk_size  # [num_chunks]
+    chunk_ends = chunk_starts + chunk_size  # [num_chunks]
+
+    # Broadcast for all utterances in batch
+    audio_len_expanded = audio_len.unsqueeze(1)  # [B, 1]
+    chunk_starts_expanded = chunk_starts.unsqueeze(0)  # [1, num_chunks]
+    chunk_ends_expanded = chunk_ends.unsqueeze(0)  # [1, num_chunks]
+
+    # For each chunk, calculate how many samples are actually valid
+    # Clamp chunk end to not exceed actual audio length
+    actual_chunk_ends = torch.min(chunk_ends_expanded, audio_len_expanded)  # [B, num_chunks]
+    # Calculate actual chunk size (0 if chunk starts beyond audio length)
+    chunk_sizes = torch.clamp(actual_chunk_ends - chunk_starts_expanded, min=0)  # [B, num_chunks]
+
+    # Reshape to [B, num_chunks, chunk_size * D]
+    result = padded_signal.reshape(B, num_chunks, chunk_size * D)
+
+    return result, chunk_sizes
+
+
 def merge_hypotheses_of_same_audio(hypotheses_list, timestamps, subsampling_factor, chunk_duration_seconds=3600):
     """
     Merge hypotheses from the same audio source into a single hypothesis.

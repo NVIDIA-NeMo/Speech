@@ -274,6 +274,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         self.compute_hypothesis_token_set = self.cfg.get("compute_hypothesis_token_set", False)
         self.compute_langs = decoding_cfg.get('compute_langs', False)
         self.preserve_alignments = self.cfg.get('preserve_alignments', None)
+        self.joint = joint
         self.joint_fused_batch_size = self.cfg.get('fused_batch_size', None)
         self.compute_timestamps = self.cfg.get('compute_timestamps', None)
         self.tdt_include_token_duration = self.cfg.get('tdt_include_token_duration', False)
@@ -714,10 +715,19 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 List of best hypotheses
                     Look at rnnt_utils.Hypothesis for more information.
         """
+        # CHAT mode: chunk encoder output for cross-attention decoding
+        chunk_frame_lengths = None
+        chunk_encoder_fn = getattr(self.joint, 'chunk_encoder_for_decoding', None)
+        if chunk_encoder_fn is not None:
+            encoder_output, encoded_lengths, chunk_frame_lengths = chunk_encoder_fn(encoder_output, encoded_lengths)
+
         # Compute hypotheses
         with torch.inference_mode():
             hypotheses_list = self.decoding(
-                encoder_output=encoder_output, encoded_lengths=encoded_lengths, partial_hypotheses=partial_hypotheses
+                encoder_output=encoder_output,
+                encoded_lengths=encoded_lengths,
+                partial_hypotheses=partial_hypotheses,
+                chunk_frame_lengths=chunk_frame_lengths,
             )  # type: [List[Hypothesis]]
 
             # extract the hypotheses

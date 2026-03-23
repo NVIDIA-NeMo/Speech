@@ -278,6 +278,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
+        chunk_frame_lengths: Optional[torch.Tensor] = None,
     ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
         """
         Pure PyTorch implementation
@@ -287,6 +288,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             encoder_output_length: lengths of the utterances in `encoder_output`
             prev_batched_state: previous batched decoding state
             multi_biasing_ids: optional tensor [Batch] with ids of multi-biasing models
+            chunk_frame_lengths: Optional tensor of shape [B, T] containing the number of valid
+                frames in each chunk. Required for CHAT models with cross-attention in the joint.
         """
         batch_size, max_time, _unused = encoder_output.shape
         device = encoder_output.device
@@ -359,10 +362,15 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             # blank label in `labels` tensor means "end of hypothesis" (for this index)
 
             # stage 1.1: get first joint output
+            # Get chunk frame lengths for current time indices if available (CHAT mode)
+            current_f_len = None
+            if chunk_frame_lengths is not None:
+                current_f_len = chunk_frame_lengths[batch_indices, safe_time_indices].unsqueeze(1)
             logits = (
                 self.joint.joint_after_projection(
                     encoder_output_projected[batch_indices, safe_time_indices].unsqueeze(1),
                     decoder_output,
+                    current_f_len,
                 )
                 .squeeze(1)
                 .squeeze(1)
@@ -410,10 +418,14 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 # same as: time_indices_current_labels[advance_mask] = time_indices[advance_mask], but non-blocking
                 # store current time indices to use further for storing the results
                 torch.where(advance_mask, time_indices, time_indices_current_labels, out=time_indices_current_labels)
+                # Update chunk frame lengths for current time indices if available (CHAT mode)
+                if chunk_frame_lengths is not None:
+                    current_f_len = chunk_frame_lengths[batch_indices, safe_time_indices].unsqueeze(1)
                 logits = (
                     self.joint.joint_after_projection(
                         encoder_output_projected[batch_indices, safe_time_indices].unsqueeze(1),
                         decoder_output,
+                        current_f_len,
                     )
                     .squeeze(1)
                     .squeeze(1)
@@ -666,6 +678,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
+        chunk_frame_lengths: Optional[torch.Tensor] = None,
     ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
         """
         Implementation with CUDA graphs.
@@ -675,7 +688,16 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             encoder_output_length: lengths of the utterances in `encoder_output`
             prev_batched_state: previous batched decoding state
             multi_biasing_ids: optional tensor [Batch] with ids of multi-biasing models
+            chunk_frame_lengths: Optional tensor of shape [B, T] containing the number of valid
+                frames in each chunk. Required for CHAT models with cross-attention in the joint.
+                Note: CUDA graphs implementation currently does not support CHAT mode.
         """
+        # TODO: Add CHAT mode support for CUDA graphs implementation
+        if chunk_frame_lengths is not None:
+            raise NotImplementedError(
+                "CHAT mode (chunk_frame_lengths) is not yet supported with CUDA graphs. "
+                "Please disable CUDA graphs for CHAT mode decoding."
+            )
         assert self.cuda_graphs_mode is not None
         device = encoder_output.device
 

@@ -163,7 +163,8 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         return {
             "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
-            "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],  # must always be last
+            "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],
+            "chunk_frame_lengths": NeuralType(('B', 'T'), LengthsType(), optional=True),
         }
 
     @property
@@ -239,7 +240,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         # output: [B, 1, K]
         return self.decoder.predict(label, hidden, add_sos=add_sos, batch_size=batch_size)
 
-    def _joint_step(self, enc, pred, log_normalize: Optional[bool] = None):
+    def _joint_step(self, enc, pred, enc_len, log_normalize: Optional[bool] = None):
         """
         Common joint step based on AbstractRNNTJoint implementation.
 
@@ -252,7 +253,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
              logits of shape (B, T=1, U=1, V + 1)
         """
         with torch.no_grad():
-            logits = self.joint.joint(enc, pred)
+            logits = self.joint.joint(enc, pred, enc_len)
 
             if log_normalize is None:
                 if not logits.is_cuda:  # Use log softmax only if on CPU
@@ -263,20 +264,23 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
 
         return logits
 
-    def _joint_step_after_projection(self, enc, pred, log_normalize: Optional[bool] = None) -> torch.Tensor:
+    def _joint_step_after_projection(
+        self, enc, pred, f_len: Optional[torch.Tensor] = None, log_normalize: Optional[bool] = None
+    ) -> torch.Tensor:
         """
         Common joint step based on AbstractRNNTJoint implementation.
 
         Args:
             enc: Output of the Encoder model after projection. A torch.Tensor of shape [B, 1, H]
             pred: Output of the Decoder model after projection. A torch.Tensor of shape [B, 1, H]
+            f_len: Optional tensor of encoder frame lengths for CHAT models. Shape [B] or [B, 1].
             log_normalize: Whether to log normalize or not. None will log normalize only for CPU.
 
         Returns:
              logits of shape (B, T=1, U=1, V + 1)
         """
         with torch.no_grad():
-            logits = self.joint.joint_after_projection(enc, pred)
+            logits = self.joint.joint_after_projection(enc, pred, f_len)
 
             if log_normalize is None:
                 if not logits.is_cuda:  # Use log softmax only if on CPU
@@ -375,6 +379,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
         encoder_output: torch.Tensor,
         encoded_lengths: torch.Tensor,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+        chunk_frame_lengths: Optional[torch.Tensor] = None,
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
@@ -383,6 +388,9 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
             encoder_output: A tensor of size (batch, features, timesteps).
             encoded_lengths: list of int representing the length of each sequence
                 output sequence.
+            chunk_frame_lengths: Optional tensor of shape [B, T] containing the number of valid
+                frames in each chunk. Used for CHAT models with cross-attention in the joint.
+                Note: For CHAT mode, use GreedyBatchedRNNTInfer instead for proper support.
 
         Returns:
             packed list containing batch number of sentences (Hypotheses).
@@ -402,10 +410,17 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
             # Process each sequence independently
             for batch_idx in range(encoder_output.size(0)):
                 inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
-                logitlen = encoded_lengths[batch_idx]
+                logitlen = encoded_lengths[batch_idx : batch_idx + 1]
 
                 partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
-                hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
+
+                # CHAT mode: pass chunk frame lengths to _greedy_decode
+                if chunk_frame_lengths is not None:
+                    batch_chunk_lengths = chunk_frame_lengths[batch_idx : batch_idx + 1]
+                    hypothesis = self._greedy_decode(inseq, batch_chunk_lengths, partial_hypotheses=partial_hypothesis)
+                else:
+                    # Standard RNNT mode: use simpler decoding path
+                    hypothesis = self._greedy_decode_standard(inseq, logitlen, partial_hypotheses=partial_hypothesis)
                 hypotheses.append(hypothesis)
 
             # Pack results into Hypotheses
@@ -420,74 +435,37 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
     def _greedy_decode(
         self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
     ):
-        # x: [T, 1, D]
-        # out_len: [seq_len]
+        hypothesis = rnnt_utils.Hypothesis(
+            score=0.0, y_sequence=[], dec_state=None, timestamp=[], last_token=self._SOS
+        )
+        assert partial_hypotheses is None
+        out_len_list = out_len.tolist()[0]
 
-        # Initialize blank state and empty label set in Hypothesis
-        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestamp=[], last_token=None)
+        self.max_symbols = x.shape[-1] // self.joint.encoder_hidden
 
-        if partial_hypotheses is not None:
-            hypothesis.last_token = partial_hypotheses.last_token
-            hypothesis.y_sequence = (
-                partial_hypotheses.y_sequence.cpu().tolist()
-                if isinstance(partial_hypotheses.y_sequence, torch.Tensor)
-                else partial_hypotheses.y_sequence
-            )
-            if partial_hypotheses.dec_state is not None:
-                hypothesis.dec_state = self.decoder.batch_concat_states([partial_hypotheses.dec_state])
-                hypothesis.dec_state = _states_to_device(hypothesis.dec_state, x.device)
-
-        if self.preserve_alignments:
-            # Alignments is a 2-dimensional dangling list representing T x U
-            hypothesis.alignments = [[]]
-
-        if self.preserve_frame_confidence:
-            hypothesis.frame_confidence = [[]]
-
-        # For timestep t in X_t
-        for time_idx in range(out_len):
-            # Extract encoder embedding at timestep t
-            # f = x[time_idx, :, :].unsqueeze(0)  # [1, 1, D]
+        for time_idx in range(len(out_len_list)):
+            if out_len_list[time_idx] == 0:
+                break
             f = x.narrow(dim=0, start=time_idx, length=1)
 
-            # Setup exit flags and counter
             not_blank = True
             symbols_added = 0
-            # While blank is not predicted, or we dont run out of max symbols per timestep
-            while not_blank and (self.max_symbols is None or symbols_added < self.max_symbols):
-                # In the first timestep, we initialize the network with RNNT Blank
-                # In later timesteps, we provide previous predicted label as input.
-                if hypothesis.last_token is None and hypothesis.dec_state is None:
-                    last_label = self._SOS
-                else:
-                    last_label = label_collate([[hypothesis.last_token]])
+            while not_blank and symbols_added < self.max_symbols:
+                last_label = label_collate([[hypothesis.last_token]])
 
-                # Perform prediction network and joint network steps.
                 g, hidden_prime = self._pred_step(last_label, hypothesis.dec_state)
-                # If preserving per-frame confidence, log_normalize must be true
-                logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None)[
-                    0, 0, 0, :
-                ]
-
-                del g
-
-                # torch.max(0) op doesnt exist for FP 16.
+                logp = self._joint_step(
+                    f,
+                    g,
+                    out_len[:, time_idx : time_idx + 1],
+                    log_normalize=True if self.preserve_frame_confidence else None,
+                )[0, 0, 0, :]
                 if logp.dtype != torch.float32:
                     logp = logp.float()
 
                 # get index k, of max prob
                 v, k = logp.max(0)
                 k = k.item()  # K is the label at timestep t_s in inner loop, s >= 0.
-
-                if self.preserve_alignments:
-                    # insert logprobs into last timestep
-                    hypothesis.alignments[-1].append((logp.to('cpu'), torch.tensor(k, dtype=torch.int32)))
-
-                if self.preserve_frame_confidence:
-                    # insert confidence into last timestep
-                    hypothesis.frame_confidence[-1].append(self._get_confidence(logp))
-
-                del logp
 
                 # If blank token is predicted, exit inner loop, move onto next timestep t
                 if k == self._blank_index:
@@ -500,27 +478,73 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
                     hypothesis.dec_state = hidden_prime
                     hypothesis.last_token = k
 
-                # Increment token counter.
+                symbols_added += 1
+        hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
+
+        return hypothesis
+
+    @torch.no_grad()
+    def _greedy_decode_standard(
+        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
+    ):
+        """
+        Standard RNNT greedy decoding without chunk frame lengths.
+
+        Args:
+            x: Encoder output for a single utterance [T, 1, D]
+            out_len: Sequence length tensor [1] containing the number of valid frames
+            partial_hypotheses: Optional partial hypothesis to continue from
+
+        Returns:
+            Decoded hypothesis
+        """
+        hypothesis = rnnt_utils.Hypothesis(
+            score=0.0, y_sequence=[], dec_state=None, timestamp=[], last_token=self._SOS
+        )
+        assert partial_hypotheses is None
+
+        # Get the sequence length (scalar)
+        seq_len = out_len.item() if out_len.numel() == 1 else int(out_len[0].item())
+
+        # Standard max_symbols calculation
+        if self.max_symbols is None:
+            max_symbols = 10  # reasonable default
+        else:
+            max_symbols = self.max_symbols
+
+        for time_idx in range(seq_len):
+            f = x.narrow(dim=0, start=time_idx, length=1)
+
+            not_blank = True
+            symbols_added = 0
+            while not_blank and symbols_added < max_symbols:
+                last_label = label_collate([[hypothesis.last_token]])
+
+                g, hidden_prime = self._pred_step(last_label, hypothesis.dec_state)
+                # Standard joint step without chunk frame lengths
+                logp = self._joint_step(f, g, None, log_normalize=True if self.preserve_frame_confidence else None)[
+                    0, 0, 0, :
+                ]
+                if logp.dtype != torch.float32:
+                    logp = logp.float()
+
+                # get index k, of max prob
+                v, k = logp.max(0)
+                k = k.item()
+
+                # If blank token is predicted, exit inner loop, move onto next timestep t
+                if k == self._blank_index:
+                    not_blank = False
+                else:
+                    # Append token to label set, update RNN state.
+                    hypothesis.y_sequence.append(k)
+                    hypothesis.score += float(v)
+                    hypothesis.timestamp.append(time_idx)
+                    hypothesis.dec_state = hidden_prime
+                    hypothesis.last_token = k
+
                 symbols_added += 1
 
-            if self.preserve_alignments:
-                # convert Ti-th logits into a torch array
-                hypothesis.alignments.append([])  # blank buffer for next timestep
-
-            if self.preserve_frame_confidence:
-                hypothesis.frame_confidence.append([])  # blank buffer for next timestep
-
-        # Remove trailing empty list of Alignments
-        if self.preserve_alignments:
-            if len(hypothesis.alignments[-1]) == 0:
-                del hypothesis.alignments[-1]
-
-        # Remove trailing empty list of per-frame confidence
-        if self.preserve_frame_confidence:
-            if len(hypothesis.frame_confidence[-1]) == 0:
-                del hypothesis.frame_confidence[-1]
-
-        # Unpack the hidden states
         hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
 
         return hypothesis
@@ -738,6 +762,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         encoder_output: torch.Tensor,
         encoded_lengths: torch.Tensor,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+        chunk_frame_lengths: Optional[torch.Tensor] = None,
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
@@ -746,6 +771,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             encoder_output: A tensor of size (batch, features, timesteps).
             encoded_lengths: list of int representing the length of each sequence
                 output sequence.
+            chunk_frame_lengths: Optional tensor of shape [B, T] containing the number of valid
+                frames in each chunk. Required for CHAT models with cross-attention in the joint.
 
         Returns:
             packed list containing batch number of sentences (Hypotheses).
@@ -765,7 +792,11 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             inseq = encoder_output  # [B, T, D]
 
             hypotheses = self._greedy_decode(
-                inseq, logitlen, device=inseq.device, partial_hypotheses=partial_hypotheses
+                inseq,
+                logitlen,
+                device=inseq.device,
+                partial_hypotheses=partial_hypotheses,
+                chunk_frame_lengths=chunk_frame_lengths,
             )
 
             # Pack the hypotheses results
@@ -783,11 +814,20 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         out_len: torch.Tensor,
         device: torch.device,
         partial_hypotheses: Optional[list[rnnt_utils.Hypothesis | None]] = None,
+        chunk_frame_lengths: Optional[torch.Tensor] = None,
     ) -> list[rnnt_utils.Hypothesis]:
         """
         Optimized batched greedy decoding.
         The main idea: search for next labels for the whole batch (evaluating Joint)
         and thus always evaluate prediction network with maximum possible batch size
+
+        Args:
+            x: encoder output [B, T, D]
+            out_len: encoder output lengths [B]
+            device: device to use
+            partial_hypotheses: optional partial hypotheses to continue decoding from
+            chunk_frame_lengths: Optional tensor of shape [B, T] containing the number of valid
+                frames in each chunk. Required for CHAT models with cross-attention in the joint.
         """
         # setup batched state
         if partial_hypotheses is None or all((hyp is None or hyp.dec_state is None) for hyp in partial_hypotheses):
@@ -817,6 +857,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             out_len=out_len,
             prev_batched_state=batched_state,
             multi_biasing_ids=multi_biasing_ids,
+            chunk_frame_lengths=chunk_frame_lengths,
         )
         hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
         for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):

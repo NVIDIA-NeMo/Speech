@@ -573,10 +573,8 @@ def join_word_level_timestamps_add_segment_level_timestamps(
         chunk_offsets: Frame offsets for each chunk
         subsampling_factor: Subsampling factor of the encoder
         window_stride: Time stride per frame in seconds
-        tokenizer: Tokenizer for text operations
-        merged_tokens: Token sequence after LCS merge
+        merged_text: Merged text string whose whitespace-split words serve as ground truth
         timestamps_type: Types of timestamps to include ('word', 'segment', 'all')
-        lang_id: Language ID for multilingual models
         similarity_threshold: Threshold for word similarity matching (0.0-1.0)
 
     Returns:

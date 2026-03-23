@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared fixtures and utilities for per-model functional tests."""
+"""Shared utilities for per-model functional tests."""
 
 import torch
 
@@ -50,14 +50,3 @@ def prepare_for_training_step(model):
     # to log the learning rate. Provide a minimal stand-in if no optimizer is set.
     if getattr(model, '_optimizer', None) is None:
         model._optimizer = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=1e-4)
-
-
-def prepare_for_transcribe(model):
-    """Placeholder for any pre-transcribe model preparation.
-
-    Previously disabled CUDA graph decoding, but the root cause
-    (CUDA 12/13 API mismatch in cudaStreamGetCaptureInfo) is now
-    fixed in the NeMo source. Kept as a no-op for compatibility
-    with test files that call it.
-    """
-    pass

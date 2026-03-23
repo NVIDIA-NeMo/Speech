@@ -51,7 +51,7 @@ def test_model_init():
 
 def test_model_training_step():
     """Run one training step via direct training_step() call."""
-    from conftest import prepare_for_training_step
+    from e2e_utils import prepare_for_training_step
 
     from nemo.collections.asr.data.ssl_dataset import AudioNoiseBatch
 

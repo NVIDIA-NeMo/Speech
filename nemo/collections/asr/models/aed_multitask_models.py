@@ -1099,6 +1099,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
                 main_model_predictions=hypotheses,
                 timestamp_type='char' if merge_to_be_done else ['word', 'segment'],
                 viterbi_device=trcfg._internal.device,
+                verbose=trcfg.verbose,
             )
         elif trcfg.timestamps:
             hypotheses = process_aed_timestamp_outputs(

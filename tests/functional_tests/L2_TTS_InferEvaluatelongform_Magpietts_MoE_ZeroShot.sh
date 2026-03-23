@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
+    --deterministic \
     --nemo_files "/home/TestData/tts/2602_MoE/moe16_sinkhorn_top1_valLoss5.0469_step2625132_epoch524.nemo" \
     --codecmodel_path "/home/TestData/tts/21fps_causal_codecmodel.nemo" \
     --datasets_json_path "examples/tts/evalset_config.json" \
@@ -23,5 +24,5 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --apply_attention_prior \
     --run_evaluation \
     --clean_up_disk \
-    --cer_target 0.08 \
-    --ssim_target 0.40
+    --cer_target 0.03 \
+    --ssim_target 0.49

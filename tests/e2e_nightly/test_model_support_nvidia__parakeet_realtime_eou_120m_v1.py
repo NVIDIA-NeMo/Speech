@@ -50,7 +50,7 @@ def test_model_init():
 
 def test_model_training_step():
     """Run one training step via direct training_step() call."""
-    from conftest import prepare_for_training_step
+    from e2e_utils import prepare_for_training_step
 
     model = _load_model()
     prepare_for_training_step(model)
@@ -74,10 +74,6 @@ def test_model_inference():
 
     model = _load_model()
     model.eval()
-
-    from conftest import prepare_for_transcribe
-
-    prepare_for_transcribe(model)
 
     audio = np.random.randn(16000).astype(np.float32)
 

@@ -116,6 +116,7 @@ BASE_CFG = {
         },
     },
     "optimizer": {"_target_": "torch.optim.AdamW"},
+    "torch_dtype": "bfloat16",
 }
 
 

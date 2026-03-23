@@ -107,6 +107,7 @@ def model():
             },
         },
         "optimizer": {"_target_": "torch.optim.AdamW"},
+        "torch_dtype": "bfloat16",
     }
     model = SALMAutomodel(cfg)
     model.configure_model()

@@ -9,6 +9,7 @@ Documentation for the individual collections
    :titlesonly:
 
    asr/intro
+   dataloaders
    asr/speech_classification/intro
    asr/speaker_recognition/intro
    asr/speaker_diarization/intro

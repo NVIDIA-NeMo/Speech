@@ -892,18 +892,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         metrics = self.validation_pass(batch, batch_idx, dataloader_idx, eval_mode="val")
-        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
-            self.validation_step_outputs[dataloader_idx].append(metrics)
-        else:
-            self.validation_step_outputs.append(metrics)
+        self.validation_step_outputs[dataloader_idx].append(metrics)
         return metrics
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         metrics = self.validation_pass(batch, batch_idx, dataloader_idx, eval_mode="test")
-        if type(self.trainer.test_dataloaders) == list and len(self.trainer.test_dataloaders) > 1:
-            self.test_step_outputs[dataloader_idx].append(metrics)
-        else:
-            self.test_step_outputs.append(metrics)
+        self.test_step_outputs[dataloader_idx].append(metrics)
         return metrics
 
     def test_dataloader(self):

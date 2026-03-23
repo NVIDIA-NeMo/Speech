@@ -59,9 +59,9 @@ class ExampleModel(ModelPT):
     def forward(self, batch):
         return (self.l1(batch) - batch.mean(dim=1)).mean()
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss = (self.l1(batch) - batch.mean(dim=1)).mean()
-        self.validation_step_outputs.append(loss)
+        self.validation_step_outputs[dataloader_idx].append(loss)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -76,11 +76,8 @@ class ExampleModel(ModelPT):
     def setup_validation_data(self):
         pass
 
-    def on_validation_epoch_end(self):
-        if not self.validation_step_outputs:
-            return
-        self.log("val_loss", torch.stack(self.validation_step_outputs).mean(), sync_dist=True)
-        self.validation_step_outputs.clear()  # free memory
+    def multi_validation_epoch_end(self, outputs, dataloader_idx=0):
+        self.log("val_loss", torch.stack(outputs).mean(), sync_dist=True)
 
 
 class TestStatelessTimer:

@@ -91,14 +91,14 @@ class ExampleModel(ModelPT):
     def training_step(self, batch, batch_idx):
         return self(batch)
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss = self(batch)
-        self.validation_step_outputs.append(loss)
+        self.validation_step_outputs[dataloader_idx].append(loss)
         return loss
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
         loss = self(batch)
-        self.test_step_outputs.append(loss)
+        self.test_step_outputs[dataloader_idx].append(loss)
         return loss
 
     def configure_optimizers(self):
@@ -116,9 +116,8 @@ class ExampleModel(ModelPT):
     def setup_test_data(self, val_data_config: Union[DictConfig, Dict]):
         pass
 
-    def on_validation_epoch_end(self):
-        self.log("val_loss", torch.stack(self.validation_step_outputs).mean())
-        self.validation_step_outputs.clear()  # free memory
+    def multi_validation_epoch_end(self, outputs, dataloader_idx=0):
+        self.log("val_loss", torch.stack(outputs).mean())
 
 
 class TestEMAConfig:

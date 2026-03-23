@@ -439,15 +439,9 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel, VerificationMixin)
             f'{tag}_acc_macro_stats': stats,
         }
         if tag == 'val':
-            if isinstance(self.trainer.val_dataloaders, (list, tuple)) and len(self.trainer.val_dataloaders) > 1:
-                self.validation_step_outputs[dataloader_idx].append(output)
-            else:
-                self.validation_step_outputs.append(output)
+            self.validation_step_outputs[dataloader_idx].append(output)
         else:
-            if isinstance(self.trainer.test_dataloaders, (list, tuple)) and len(self.trainer.test_dataloaders) > 1:
-                self.test_step_outputs[dataloader_idx].append(output)
-            else:
-                self.test_step_outputs.append(output)
+            self.test_step_outputs[dataloader_idx].append(output)
 
         return output
 
@@ -478,15 +472,9 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel, VerificationMixin)
         }
 
         if tag == 'val':
-            if isinstance(self.trainer.val_dataloaders, (list, tuple)) and len(self.trainer.val_dataloaders) > 1:
-                self.validation_step_outputs[dataloader_idx].append(output)
-            else:
-                self.validation_step_outputs.append(output)
+            self.validation_step_outputs[dataloader_idx].append(output)
         else:
-            if isinstance(self.trainer.test_dataloaders, (list, tuple)) and len(self.trainer.test_dataloaders) > 1:
-                self.test_step_outputs[dataloader_idx].append(output)
-            else:
-                self.test_step_outputs.append(output)
+            self.test_step_outputs[dataloader_idx].append(output)
 
         return output
 

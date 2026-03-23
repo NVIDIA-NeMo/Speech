@@ -453,6 +453,16 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         )
 
     def on_validation_epoch_end(self):
+        if len(self.validation_step_outputs) != 1:
+            raise RuntimeError(
+                "MagpieTTSModelDPO.on_validation_epoch_end only supports a single validation dataloader. "
+                "Please override multi_validation_epoch_end for multi-dataloader validation."
+            )
+
+        outputs = self.validation_step_outputs[0]
+        if not outputs:
+            return
+
         def collect(key):
             values = []
             for val_outputs in self.validation_step_outputs:
@@ -1006,6 +1016,16 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         )
 
     def on_validation_epoch_end(self):
+        if len(self.validation_step_outputs) != 1:
+            raise RuntimeError(
+                "MagpieTTSModelOnlinePO.on_validation_epoch_end only supports a single validation dataloader. "
+                "Please override multi_validation_epoch_end for multi-dataloader validation."
+            )
+
+        outputs = self.validation_step_outputs[0]
+        if not outputs:
+            return
+
         def collect(key):
             values = []
             for val_outputs in self.validation_step_outputs:

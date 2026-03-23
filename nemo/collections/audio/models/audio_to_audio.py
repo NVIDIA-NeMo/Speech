@@ -62,9 +62,9 @@ class AudioToAudioModel(ModelPT, ABC):
 
     def _get_num_dataloaders(self, tag: str = 'val'):
         if tag == 'val':
-            num_dataloaders = len(self._validation_dl) if isinstance(self._validation_dl, List) else 1
+            num_dataloaders = len(self._validation_dl) if self._validation_dl else 1
         elif tag == 'test':
-            num_dataloaders = len(self._test_dl) if isinstance(self._test_dl, List) else 1
+            num_dataloaders = len(self._test_dl) if self._test_dl else 1
         else:
             raise ValueError(f'Unexpected tag {tag}.')
 
@@ -144,18 +144,12 @@ class AudioToAudioModel(ModelPT, ABC):
 
     def validation_step(self, batch, batch_idx, dataloader_idx: int = 0):
         output_dict = self.evaluation_step(batch, batch_idx, dataloader_idx, 'val')
-        if isinstance(self.trainer.val_dataloaders, (list, tuple)) and len(self.trainer.val_dataloaders) > 1:
-            self.validation_step_outputs[dataloader_idx].append(output_dict)
-        else:
-            self.validation_step_outputs.append(output_dict)
+        self.validation_step_outputs[dataloader_idx].append(output_dict)
         return output_dict
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         output_dict = self.evaluation_step(batch, batch_idx, dataloader_idx, 'test')
-        if isinstance(self.trainer.test_dataloaders, (list, tuple)) and len(self.trainer.test_dataloaders) > 1:
-            self.test_step_outputs[dataloader_idx].append(output_dict)
-        else:
-            self.test_step_outputs.append(output_dict)
+        self.test_step_outputs[dataloader_idx].append(output_dict)
         return output_dict
 
     def multi_evaluation_epoch_end(self, outputs, dataloader_idx: int = 0, tag: str = 'val'):
@@ -514,10 +508,7 @@ class AudioToAudioModel(ModelPT, ABC):
         log_callbacks = []
         from nemo.collections.audio.parts.utils.callbacks import SpeechEnhancementLoggingCallback
 
-        if isinstance(self._validation_dl, List):
-            data_loaders = self._validation_dl
-        else:
-            data_loaders = [self._validation_dl]
+        data_loaders = self._validation_dl if self._validation_dl else []
 
         for data_loader_idx, data_loader in enumerate(data_loaders):
             log_callbacks.append(

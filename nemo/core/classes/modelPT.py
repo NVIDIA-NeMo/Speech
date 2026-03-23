@@ -585,7 +585,7 @@ class ModelPT(LightningModule, Model):
         # Set some placeholder overriden by helper method
         self._val_dl_idx: int = 0
         self._validation_names: Optional[List[str]] = None
-        self._validation_dl: Optional[torch.utils.data.DataLoader] = None
+        self._validation_dl: Optional[List[torch.utils.data.DataLoader]] = None
 
         # preserve config
         self._update_dataset_config(dataset_name='validation', config=val_data_config)
@@ -597,7 +597,7 @@ class ModelPT(LightningModule, Model):
             self._multi_dataset_mode = False
 
         if self._validation_names is None:
-            if self._validation_dl is not None and type(self._validation_dl) in [list, tuple]:
+            if self._validation_dl is not None:
                 self._validation_names = ['val_{}_'.format(idx) for idx in range(len(self._validation_dl))]
 
     def setup_multiple_test_data(self, test_data_config: Union[DictConfig, Dict]):
@@ -979,18 +979,18 @@ class ModelPT(LightningModule, Model):
             A dictionary containing the union of all items from individual data_loaders,
             along with merged logs from all data loaders.
         """
-        # Case where we dont provide data loaders
-        if self.validation_step_outputs is not None and len(self.validation_step_outputs) == 0:
+        # Case where we dont provide data loaders, or all dataloaders produced no batches.
+        if not self.validation_step_outputs or all(len(outputs) == 0 for outputs in self.validation_step_outputs):
             return {}
 
         # Case where we provide exactly 1 data loader
-        if isinstance(self.validation_step_outputs[0], dict):
-            output_dict = self.multi_validation_epoch_end(self.validation_step_outputs, dataloader_idx=0)
+        if len(self.validation_step_outputs) == 1:
+            output_dict = self.multi_validation_epoch_end(self.validation_step_outputs[0], dataloader_idx=0)
 
             if output_dict is not None and 'log' in output_dict:
                 self.log_dict(output_dict.pop('log'), on_epoch=True, sync_dist=sync_metrics)
 
-            self.validation_step_outputs.clear()  # free memory
+            self.validation_step_outputs[0].clear()  # free memory
             return output_dict
 
         else:  # Case where we provide more than 1 data loader
@@ -998,6 +998,9 @@ class ModelPT(LightningModule, Model):
 
             # The output is a list of list of dicts, outer list corresponds to dataloader idx
             for dataloader_idx, val_outputs in enumerate(self.validation_step_outputs):
+                if len(val_outputs) == 0:
+                    continue
+
                 # Get prefix and dispatch call to multi epoch end
                 dataloader_prefix = self.get_validation_dataloader_prefix(dataloader_idx)
                 dataloader_logs = self.multi_validation_epoch_end(val_outputs, dataloader_idx=dataloader_idx)
@@ -1075,18 +1078,18 @@ class ModelPT(LightningModule, Model):
             A dictionary containing the union of all items from individual data_loaders,
             along with merged logs from all data loaders.
         """
-        # Case where we dont provide data loaders
-        if self.test_step_outputs is not None and len(self.test_step_outputs) == 0:
+        # Case where we dont provide data loaders, or all dataloaders produced no batches.
+        if not self.test_step_outputs or all(len(outputs) == 0 for outputs in self.test_step_outputs):
             return {}
 
         # Case where we provide exactly 1 data loader
-        if isinstance(self.test_step_outputs[0], dict):
-            output_dict = self.multi_test_epoch_end(self.test_step_outputs, dataloader_idx=0)
+        if len(self.test_step_outputs) == 1:
+            output_dict = self.multi_test_epoch_end(self.test_step_outputs[0], dataloader_idx=0)
 
             if output_dict is not None and 'log' in output_dict:
                 self.log_dict(output_dict.pop('log'), on_epoch=True)
 
-            self.test_step_outputs.clear()  # free memory
+            self.test_step_outputs[0].clear()  # free memory
             return output_dict
 
         else:  # Case where we provide more than 1 data loader
@@ -1094,6 +1097,9 @@ class ModelPT(LightningModule, Model):
 
             # The output is a list of list of dicts, outer list corresponds to dataloader idx
             for dataloader_idx, test_outputs in enumerate(self.test_step_outputs):
+                if len(test_outputs) == 0:
+                    continue
+
                 # Get prefix and dispatch call to multi epoch end
                 dataloader_prefix = self.get_test_dataloader_prefix(dataloader_idx)
                 dataloader_logs = self.multi_test_epoch_end(test_outputs, dataloader_idx=dataloader_idx)
@@ -1692,26 +1698,20 @@ class ModelPT(LightningModule, Model):
     @property
     def validation_step_outputs(self):
         """
-        Cached outputs of validation_step. It can be a list of items (for single data loader) or a list of lists
-        (for multiple data loaders).
+        Cached outputs of validation_step. Always returns a list of lists,
+        where each inner list corresponds to one validation dataloader.
 
         Returns:
-            List of outputs of validation_step.
+            List of lists of outputs of validation_step.
         """
         if self._validation_step_outputs is not None:
             return self._validation_step_outputs
 
-        # Initialize new output list
-        self._validation_step_outputs = []
-        # Check len(self._validation_dl) > 1 as sometimes single dataloader can be in a
-        # list: [<Dataloader obj>] when ds_item in config has 1 item passed in a list
-        if (
-            self._validation_dl is not None
-            and isinstance(self._validation_dl, (list, tuple))
-            and len(self._validation_dl) > 1
-        ):
-            for _ in range(len(self._validation_dl)):
-                self._validation_step_outputs.append([])
+        if isinstance(self._validation_dl, (list, tuple)) and len(self._validation_dl) > 0:
+            num_dl = len(self._validation_dl)
+        else:
+            num_dl = 1
+        self._validation_step_outputs = [[] for _ in range(num_dl)]
 
         return self._validation_step_outputs
 
@@ -1722,22 +1722,20 @@ class ModelPT(LightningModule, Model):
     @property
     def test_step_outputs(self):
         """
-        Cached outputs of test_step. It can be a list of items (for single data loader) or a list of
-        lists (for multiple data loaders).
+        Cached outputs of test_step. Always returns a list of lists,
+        where each inner list corresponds to one test dataloader.
 
         Returns:
-            List of outputs of test_step.
+            List of lists of outputs of test_step.
         """
         if self._test_step_outputs is not None:
             return self._test_step_outputs
 
-        # Initialize new output list
-        self._test_step_outputs = []
-        # Check len(self._test_dl) > 1 as sometimes single dataloader can be in a list: [<Dataloader obj>]
-        # when ds_item in config has 1 item passed in a list
-        if self._test_dl is not None and isinstance(self._test_dl, (list, tuple)) and len(self._test_dl) > 1:
-            for _ in range(len(self._test_dl)):
-                self._test_step_outputs.append([])
+        if isinstance(self._test_dl, (list, tuple)) and len(self._test_dl) > 0:
+            num_dl = len(self._test_dl)
+        else:
+            num_dl = 1
+        self._test_step_outputs = [[] for _ in range(num_dl)]
 
         return self._test_step_outputs
 

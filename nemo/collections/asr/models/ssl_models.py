@@ -596,10 +596,7 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         metrics = self.validation_pass(batch, batch_idx, dataloader_idx)
-        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
-            self.validation_step_outputs[dataloader_idx].append(metrics)
-        else:
-            self.validation_step_outputs.append(metrics)
+        self.validation_step_outputs[dataloader_idx].append(metrics)
         return metrics
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
@@ -780,18 +777,12 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
 
     def validation_step(self, batch, batch_idx=0, dataloader_idx=0):
         metrics = self.inference_pass(batch, batch_idx, dataloader_idx, apply_mask=True)
-        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
-            self.validation_step_outputs[dataloader_idx].append(metrics)
-        else:
-            self.validation_step_outputs.append(metrics)
+        self.validation_step_outputs[dataloader_idx].append(metrics)
         return metrics
 
     def test_step(self, batch, batch_idx=0, dataloader_idx=0):
         metrics = self.inference_pass(batch, batch_idx, dataloader_idx, mode="test", apply_mask=True)
-        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
-            self.validation_step_outputs[dataloader_idx].append(metrics)
-        else:
-            self.validation_step_outputs.append(metrics)
+        self.test_step_outputs[dataloader_idx].append(metrics)
         return metrics
 
     def multi_validation_epoch_end(self, outputs: list, dataloader_idx: int = 0):

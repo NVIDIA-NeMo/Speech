@@ -13,9 +13,7 @@
 # limitations under the License.
 
 import itertools
-import json
 import os
-import tempfile
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
 
@@ -26,7 +24,6 @@ from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 from torchmetrics.text import SacreBLEUScore
-from tqdm.auto import tqdm
 
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
@@ -483,7 +480,7 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
 
         output_dict = {f'{eval_mode}_loss': transf_loss, 'translations': translations, 'ground_truths': ground_truths}
 
-        self.validation_step_outputs.append(output_dict)
+        self.validation_step_outputs[dataloader_idx].append(output_dict)
 
         return output_dict
 
@@ -498,48 +495,44 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         if not outputs:
             return
 
-        if isinstance(outputs[0], dict):
-            outputs = [outputs]
+        eval_loss = getattr(self, 'val_loss').compute()
+        translations = list(itertools.chain(*[x['translations'] for x in outputs]))
+        ground_truths = list(itertools.chain(*[x['ground_truths'] for x in outputs]))
 
-        for output in outputs:
-            eval_loss = getattr(self, 'val_loss').compute()
-            translations = list(itertools.chain(*[x['translations'] for x in output]))
-            ground_truths = list(itertools.chain(*[x['ground_truths'] for x in output]))
+        # Gather translations and ground truths from all workers
+        tr_and_gt = [None for _ in range(self.world_size)]
+        # we also need to drop pairs where ground truth is an empty string
+        if self.world_size > 1:
+            dist.all_gather_object(
+                tr_and_gt, [(t, g) for (t, g) in zip(translations, ground_truths) if g.strip() != '']
+            )
+        else:
+            tr_and_gt[0] = [(t, g) for (t, g) in zip(translations, ground_truths) if g.strip() != '']
 
-            # Gather translations and ground truths from all workers
-            tr_and_gt = [None for _ in range(self.world_size)]
-            # we also need to drop pairs where ground truth is an empty string
-            if self.world_size > 1:
-                dist.all_gather_object(
-                    tr_and_gt, [(t, g) for (t, g) in zip(translations, ground_truths) if g.strip() != '']
-                )
-            else:
-                tr_and_gt[0] = [(t, g) for (t, g) in zip(translations, ground_truths) if g.strip() != '']
+        if self.global_rank == 0:
+            _translations = []
+            _ground_truths = []
+            for rank in range(0, self.world_size):
+                _translations += [t for (t, g) in tr_and_gt[rank]]
+                _ground_truths += [g for (t, g) in tr_and_gt[rank]]
 
-            if self.global_rank == 0:
-                _translations = []
-                _ground_truths = []
-                for rank in range(0, self.world_size):
-                    _translations += [t for (t, g) in tr_and_gt[rank]]
-                    _ground_truths += [g for (t, g) in tr_and_gt[rank]]
+            sacre_bleu = SacreBLEUScore()(_translations, [[x] for x in _ground_truths]).item()
+            sb_score = sacre_bleu * self.world_size
 
-                sacre_bleu = SacreBLEUScore()(_translations, [[x] for x in _ground_truths]).item()
-                sb_score = sacre_bleu * self.world_size
+            wer_scores, wer_words = 0, 0
+            for h, r in zip(_translations, _ground_truths):
+                wer_words += len(r.split())
+                wer_scores += editdistance.eval(h.split(), r.split())
+            wer_score = 1.0 * wer_scores * self.world_size / wer_words
 
-                wer_scores, wer_words = 0, 0
-                for h, r in zip(_translations, _ground_truths):
-                    wer_words += len(r.split())
-                    wer_scores += editdistance.eval(h.split(), r.split())
-                wer_score = 1.0 * wer_scores * self.world_size / wer_words
+        else:
+            sb_score = 0.0
+            wer_score = 0.0
 
-            else:
-                sb_score = 0.0
-                wer_score = 0.0
-
-            self.log(f"{eval_mode}_loss", eval_loss, sync_dist=True)
-            self.log(f"{eval_mode}_sacreBLEU", sb_score, sync_dist=True)
-            self.log(f"{eval_mode}_WER", wer_score, sync_dist=True)
-            self.val_loss.reset()
+        self.log(f"{eval_mode}_loss", eval_loss, sync_dist=True)
+        self.log(f"{eval_mode}_sacreBLEU", sb_score, sync_dist=True)
+        self.log(f"{eval_mode}_WER", wer_score, sync_dist=True)
+        self.val_loss.reset()
 
     def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
         return self.multi_validation_epoch_end(outputs, dataloader_idx, eval_mode="test")

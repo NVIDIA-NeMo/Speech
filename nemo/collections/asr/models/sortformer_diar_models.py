@@ -967,10 +967,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             audio_signal_length=audio_signal_length,
         )
         val_metrics = self._get_aux_validation_evaluations(preds, targets, target_lens)
-        if isinstance(self.trainer.val_dataloaders, list) and len(self.trainer.val_dataloaders) > 1:
-            self.validation_step_outputs[dataloader_idx].append(val_metrics)
-        else:
-            self.validation_step_outputs.append(val_metrics)
+        self.validation_step_outputs[dataloader_idx].append(val_metrics)
         return val_metrics
 
     def test_step(self, batch: list, batch_idx: int, dataloader_idx: int = 0):

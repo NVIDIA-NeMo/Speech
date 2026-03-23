@@ -607,7 +607,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
 
     def compute_confidence(self, hypotheses_list: List[Hypothesis]) -> List[Hypothesis]:
         """
-        Computes high-level (per-token and/or per-word) confidence scores for a list of hypotheses.`
+        Computes high-level (per-token and/or per-word) confidence scores for a list of hypotheses.
         Assumes that `frame_confidence` is present in the hypotheses.
 
         Args:

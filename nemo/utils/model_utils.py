@@ -652,7 +652,10 @@ def check_lib_version(lib_name: str, checked_version: str, operator) -> Tuple[Op
                 f"Could not check version compatibility."
             )
             return False, msg
-    except (AttributeError, ImportError, ModuleNotFoundError):
+    except (AttributeError, ImportError, ModuleNotFoundError, TypeError):
+        # TypeError: some libraries (e.g. numba) can crash during import due to
+        # incompatible transitive dependencies (e.g. numba + coverage version mismatch).
+        # Treat such broken imports the same as missing libraries.
         pass
 
     msg = f"Lib {lib_name} has not been installed. Please use pip or conda to install this package."

@@ -87,10 +87,6 @@ jobs:
           - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run_Speech_to_Text
           - runner: self-hosted-azure-gpus-1
-            script: ASR_dev_run_Speech_to_Text_WPE_CitriNet
-          - runner: self-hosted-azure-gpus-1
-            script: ASR_dev_run_Speech_Pre-training_-_CitriNet
-          - runner: self-hosted-azure-gpus-1
             script: Optional_ASR_dev_run_Speech_To_Text_Finetuning
             is-optional: true
           - runner: self-hosted-azure-gpus-1
@@ -100,8 +96,6 @@ jobs:
             script: ASR_dev_run_Speech_to_Text_WPE_-_Conformer
           - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run_Speech_to_Text_Hybrid_RNNT_CTC_Prompt
-          - runner: self-hosted-azure-gpus-1
-            script: ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer
           - runner: self-hosted-azure-gpus-1
             script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader
           - runner: self-hosted-azure-gpus-1
@@ -155,8 +149,6 @@ jobs:
           - runner: self-hosted-azure-gpus-1
             script: L2_Speaker_dev_run_Speaker_Recognition
           - runner: self-hosted-azure-gpus-1
-            script: L2_Speaker_dev_run_Speaker_Diarization
-          - runner: self-hosted-azure-gpus-1
             script: L2_Speaker_dev_run_EndtoEnd_Speaker_Diarization_Sortformer
           - runner: self-hosted-azure
             script: L2_Speaker_dev_run_EndtoEnd_Diarizer_Inference
@@ -164,8 +156,6 @@ jobs:
             script: L2_Speaker_dev_run_Speaker_Diarization_with_ASR_Inference
           - runner: self-hosted-azure
             script: L2_Speaker_dev_run_Clustering_Diarizer_Inference
-          - runner: self-hosted-azure
-            script: L2_Speaker_dev_run_Neural_Diarizer_Inference
           - runner: self-hosted-azure
             script: L2_Speaker_dev_run_Multispeaker_ASR_Data_Simulation
           - runner: self-hosted-azure

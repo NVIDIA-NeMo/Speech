@@ -169,6 +169,15 @@ thead td {
 	background: #ffffff;
 }
 
+/* NVIDIA green hover on table rows */
+table tbody tr:hover,
+table.table tbody tr:hover,
+table.docutils tbody tr:hover,
+.pst-scrollable-table-container table tbody tr:hover,
+.rst-content table tbody tr:hover {
+	background-color: rgba(118, 185, 0, 0.15) !important;
+}
+
 /* List (numbered, bulleted) padding Fix */
 
 

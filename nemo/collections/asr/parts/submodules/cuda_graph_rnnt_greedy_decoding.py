@@ -13,16 +13,10 @@
 # limitations under the License.
 
 
+from typing import List, Optional
+
 import numpy as np
 import torch
-
-try:
-    from cuda.bindings import runtime as cudart
-
-    HAVE_CUDA_PYTHON = True
-except ImportError:
-    HAVE_CUDA_PYTHON = False
-from typing import List, Optional
 
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.core.utils.cuda_python_utils import (
@@ -31,6 +25,10 @@ from nemo.core.utils.cuda_python_utils import (
     run_nvrtc,
     with_conditional_node,
 )
+from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
+
+if CUDA_PYTHON_AVAILABLE:
+    from cuda.bindings import runtime as cudart
 
 _CUDA_PROGRAM_NAME = b"while_loop_conditional.cu"
 
@@ -77,7 +75,7 @@ def create_inner_while_loop_kernel():
 
 class RNNTGreedyDecodeCudaGraph:
     def __init__(self, max_symbols: int, caller):
-        if HAVE_CUDA_PYTHON:
+        if CUDA_PYTHON_AVAILABLE:
             check_cuda_python_cuda_graphs_conditional_nodes_supported()
         else:
             raise ValueError("Cannot instantiate RNNTGreedyDecodeCudaGraph without `pip install cuda-python`")
@@ -114,6 +112,7 @@ class RNNTGreedyDecodeCudaGraph:
 
         self.caller = caller
 
+    @cuda_python_required
     def _reinitialize(self, max_time, batch_size, encoder_output, encoder_output_length):
         if self.first_call:
             # We need to call the original _greedy_decode_blank_as_pad

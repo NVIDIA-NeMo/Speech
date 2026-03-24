@@ -35,8 +35,8 @@ PTL logs will be found in "$(./outputs/$(date +"%y-%m-%d")/$(date +"%H-%M-%S")/l
 
 Override some args of optimizer:
     python speech_to_text_rnnt.py \
-    --config-path="experimental/contextnet_rnnt" \
-    --config-name="config_rnnt" \
+    --config-path="../conf/conformer" \
+    --config-name="conformer_transducer_char" \
     model.train_ds.manifest_filepath="./an4/train_manifest.json" \
     model.validation_ds.manifest_filepath="./an4/test_manifest.json" \
     trainer.devices=2 \
@@ -47,8 +47,8 @@ Override some args of optimizer:
 
 Override optimizer entirely
     python speech_to_text_rnnt.py \
-    --config-path="experimental/contextnet_rnnt" \
-    --config-name="config_rnnt" \
+    --config-path="../conf/conformer" \
+    --config-name="conformer_transducer_char" \
     model.train_ds.manifest_filepath="./an4/train_manifest.json" \
     model.validation_ds.manifest_filepath="./an4/test_manifest.json" \
     trainer.devices=2 \
@@ -77,7 +77,7 @@ from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 
-@hydra_runner(config_path="experimental/contextnet_rnnt", config_name="config_rnnt")
+@hydra_runner(config_path="../conf/conformer", config_name="conformer_transducer_char")
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 

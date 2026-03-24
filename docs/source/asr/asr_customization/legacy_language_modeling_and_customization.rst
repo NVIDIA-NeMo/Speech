@@ -58,6 +58,7 @@ It can evaluate a model in the following three modes by setting the argument ``-
 
 In ``beamsearch`` mode, the evaluation is performed using beam search decoding without any language model. The performance is reported in terms of Word Error Rate (WER) and Character Error Rate (CER). Moreover, when the best candidate is selected among the candidates, it is also reported as the best WER/CER. This can serve as an indicator of the quality of the predicted candidates.
 
+
 The script initially loads the ASR model and predicts the outputs of the model's encoder as log probabilities. This part is computed in batches on a device specified by --device, which can be either a CPU (`--device=cpu`) or a single GPU (`--device=cuda:0`).
 The batch size for this part is specified by ``--acoustic_batch_size``. Using the largest feasible batch size can speed up the calculation of log probabilities. Additionally, you can use `--use_amp` to accelerate the calculation and allow for larger --acoustic_batch_size values.
 Currently, multi-GPU support is not available for calculating log probabilities. However, using ``--probs_cache_file`` can help. This option stores the log probabilities produced by the model's encoder in a pickle file, allowing you to skip the first step in future runs.

@@ -1067,7 +1067,7 @@ One such example are attention encoder-decoder models, where the overall GPU mem
 into two main components: input-sequence-length bound (encoder activations) and output-sequence-length bound
 (decoder activations).
 Classical bucketing techniques only stratify on the input sequence length (e.g. duration in speech),
-which leverages encoder effectively but leads to excessive padding on on decoder's side.
+which leverages encoder effectively but leads to excessive padding on decoder's side.
 
 To amend this we support a 2D bucketing technique which estimates the buckets in two stages.
 The first stage is identical to 1D bucketing, i.e. we determine the input-sequence bucket bins so that

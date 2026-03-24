@@ -21,12 +21,14 @@ on:
       - r**
     paths:
       - "docs/**"
+      - ".github/workflows/build-docs.yml"
   push:
     branches:
       - main
       - r**
     paths:
       - "docs/**"
+      - ".github/workflows/build-docs.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}-${{ github.event_name }}

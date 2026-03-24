@@ -46,6 +46,7 @@ class EvaluationConfig:
 
     sv_model: str = "titanet"
     asr_model_name: str = "nvidia/parakeet-tdt-1.1b"
+    eou_model_name: str = "facebook/wav2vec2-base-960h"
     language: str = "en"
     with_utmosv2: bool = True
     with_fcd: bool = True
@@ -91,6 +92,7 @@ def evaluate_generated_audio_dir(
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
         device=config.device,
+        eou_model_name=config.eou_model_name,
     )
 
     return avg_metrics, filewise_metrics

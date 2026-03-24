@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
+HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
     --deterministic \
     --codecmodel_path /home/TestData/tts/21fps_causal_codecmodel.nemo \
     --datasets_json_path examples/tts/evalset_config.json \
@@ -30,4 +30,6 @@ TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.cover
     --run_evaluation \
     --clean_up_disk \
     --cer_target 0.02 \
-    --ssim_target 0.44
+    --ssim_target 0.44 \
+    --asr_model_name /home/TestData/tts/pretrained_models/parakeet-tdt-1.1b/parakeet-tdt-1.1b.nemo \
+    --eou_model_name /home/TestData/tts/pretrained_models/wav2vec2-base-960h

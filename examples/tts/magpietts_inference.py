@@ -508,7 +508,13 @@ def create_argument_parser() -> argparse.ArgumentParser:
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
     eval_group.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b")
     eval_group.add_argument(
-        '--eou_model_name', type=str, default="facebook/wav2vec2-base-960h", help='Local path to EoU wav2vec2 model'
+        '--eou_model_name',
+        type=str,
+        default="facebook/wav2vec2-base-960h",
+        help=(
+            'Hugging Face model id or local path to the EoU wav2vec2 model directory. '
+            'For offline use, download the model locally and pass the directory path here.'
+        ),
     )
     eval_group.add_argument('--num_repeats', type=int, default=1)
     eval_group.add_argument('--confidence_level', type=float, default=0.95)

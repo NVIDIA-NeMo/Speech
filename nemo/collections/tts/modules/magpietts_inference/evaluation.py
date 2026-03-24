@@ -37,7 +37,9 @@ class EvaluationConfig:
     Attributes:
         sv_model: Speaker verification model type ("titanet" or "wavlm").
         asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
-        language: Language code for transcription (e.g., "en").
+       asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
+       eou_model_name: Hugging Face model id or local path to the EoU model.
+       language: Language code for transcription (e.g., "en").
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
         with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.

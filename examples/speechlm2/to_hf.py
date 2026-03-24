@@ -158,10 +158,14 @@ def main(cfg: HfExportConfig):
 
     strategy_cfg = full_cfg.get("trainer", {}).get("strategy", {})
 
-    if dist.is_available() and not dist.is_initialized():
+    _is_torchrun = "RANK" in os.environ
+    if _is_torchrun and dist.is_available() and not dist.is_initialized():
         dist.init_process_group(backend="nccl")
     is_distributed = (
-        Path(cfg.ckpt_path).is_dir() and _uses_automodel_parallel(strategy_cfg) and dist.get_world_size() > 1
+        _is_torchrun
+        and Path(cfg.ckpt_path).is_dir()
+        and _uses_automodel_parallel(strategy_cfg)
+        and dist.get_world_size() > 1
     )
 
     if is_distributed:

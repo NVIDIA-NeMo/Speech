@@ -8,8 +8,8 @@
 -r requirements_run.txt
 -r requirements_slu.txt
 -r requirements_tts.txt
+-r requirements_cu12.txt
 
 # excluded requirements:
 # -r requirements_test.txt
-# -r requirements_cu12.txt
 # -r requirements_cu13.txt

@@ -219,6 +219,7 @@ trainer:
   enable_checkpointing: False  # Provided by exp_manager
   logger: false  # Provided by exp_manager
   benchmark: false # needs to be false for models with variable-length speech input as it slows down training
+  use_distributed_sampler: false
 
 exp_manager:
   exp_dir: null

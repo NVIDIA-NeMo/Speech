@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from lhotse.cut import CutSet, MixedCut
+from lhotse.cut import CutSet, MixedCut, MultiCut
 from lhotse.dataset import AudioSamples
 from omegaconf import DictConfig, ListConfig, open_dict
 from torch import Tensor
@@ -484,10 +484,12 @@ def maybe_convert_cuts_to_mono(cuts: CutSet) -> CutSet:
         except:
             if isinstance(cut, MixedCut):
                 cut.first_non_padding_cut.recording.sources[0].channel_ids = [0, 1]
+                cut.first_non_padding_cut = MultiCut.from_dict(cut.first_non_padding_cut.to_dict())
             else:
                 cut.recording.sources[0].channel_ids = [0, 1]
+                cut = MultiCut.from_dict(cut.to_dict())
             resolved_cuts.append(cut.to_mono(mono_downmix=True))
-    cuts = CutSet(resolved_cuts)
+    resolved_cuts = CutSet(resolved_cuts)
     return cuts
 
 
@@ -517,19 +519,8 @@ class LhotseAudioNoiseDataset(torch.utils.data.Dataset):
         self.return_noise = return_noise
 
     def __getitem__(self, cuts: CutSet):
-
-        resolved_cuts = []
-        for cut in cuts:
-            try:
-                resolved_cuts.append(cut.move_to_memory())
-            except:
-                if isinstance(cut, MixedCut):
-                    cut.first_non_padding_cut.recording.sources[0].channel_ids = [0, 1]
-                else:
-                    cut.recording.sources[0].channel_ids = [0, 1]
-                resolved_cuts.append(cut.to_mono(mono_downmix=True))
-        audios, audio_lens, cuts = self.load_audio(resolved_cuts)
-
+        cuts = maybe_convert_cuts_to_mono(cuts)
+        audios, audio_lens, cuts = self.load_audio(cuts)
         if len(self.noise_data) > 0:
             sampled_noises = [sample_noise(self.noise_data, cut.sampling_rate, cut.num_samples) for cut in cuts]
             sampled_noises, sampled_noises_lens = zip(*sampled_noises)

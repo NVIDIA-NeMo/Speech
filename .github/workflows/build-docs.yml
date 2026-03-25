@@ -41,11 +41,122 @@ jobs:
   build-docs:
     needs: [pre-flight]
     if: needs.pre-flight.outputs.is_deployment_workflow != 'true'
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.80.2
-    with:
-      docs-directory: docs/source
-      sync-all: false
-      requirements-file: requirements/requirements_docs_ci.txt
+#    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.80.2
+#    with:
+#      docs-directory: docs/source
+#      sync-all: false
+#      requirements-file: requirements/requirements_docs_ci.txt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv pip install -r requirements/requirements_docs_ci.txt
+
+      - name: Debug - show numba and coverage versions
+        run: |
+          source .venv/bin/activate
+          pip show numba coverage || true
+          pip list | grep -iE "numba|coverage" || true
+
+      - name: Sphinx build
+        run: |
+          source .venv/bin/activate
+          cd docs/source
+          echo "Building docs with --fail-on-warning"
+          sphinx-build --fail-on-warning --builder html . _build/html
+
+      - name: Upload docs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/source/_build/html
+          retention-days: 7
+
+      - name: Sphinx linkcheck
+        run: |
+          source .venv/bin/activate
+          cd docs/source
+          MAX_RETRIES=3
+          RETRY_DELAY=10
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            sphinx-build --builder linkcheck . _build/linkcheck && break || true
+            if [ $attempt -lt $MAX_RETRIES ]; then
+              echo "Linkcheck attempt ${attempt}/${MAX_RETRIES} produced broken links, retrying in ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            fi
+          done
+
+      - name: Upload linkcheck output
+        uses: actions/upload-artifact@v4
+        with:
+          name: linkcheck-artifact
+          path: docs/source/_build/linkcheck
+          retention-days: 7
+
+      - name: Check for unknown broken links
+        run: |
+          FALSE_POSITIVES_JSON=docs/source/broken_links_false_positives.json
+          NEEDS_REVIEW_JSON=docs/source/broken_links_needing_review.json
+          LINKCHECK_JSON=docs/source/_build/linkcheck/output.json
+
+          function check_environment {
+            local err=0
+            if ! [ -x "$(command -v jq)" ]; then
+              echo "jq is required but is not found."
+              err=$((err + 1))
+            fi
+            if [ ! -f "${LINKCHECK_JSON}" ]; then
+              echo "Did not find linkcheck output JSON file: ${LINKCHECK_JSON}."
+              err=$((err + 1))
+            fi
+            if [ "${err}" -gt 0 ]; then
+              exit 2
+            fi
+          }
+
+          function check_links {
+            local err=0
+            broken=$(jq -s 'map(select(.status=="broken"))' "$LINKCHECK_JSON")
+            count=$(echo "${broken}" | jq 'length')
+            for i in $(seq 0 $(($count - 1)))
+            do
+              entry=$(echo "${broken}" | jq ".[${i}]")
+              link=$(echo "${entry}" | jq -r '.uri')
+              local false_positive_resp="false"
+              local needs_review_resp="false"
+              if [ -f "${FALSE_POSITIVES_JSON}" ]; then
+                false_positive_resp=$(jq --arg check "${link}" -s 'any(.uri == $check)' < "${FALSE_POSITIVES_JSON}")
+              fi
+              if [ -f "${NEEDS_REVIEW_JSON}" ]; then
+                needs_review_resp=$(jq --arg check "${link}" -s 'any(.uri == $check)' < "${NEEDS_REVIEW_JSON}")
+              fi
+
+              if [[ "false" = "${false_positive_resp}" && "false" = "${needs_review_resp}" ]]; then
+                err=$((err + 1))
+                echo $entry
+              fi
+            done
+
+            if [ "${err}" -gt 0 ]; then
+              echo "Found ${err} broken links that are not in exclusion lists"
+              exit 1
+            fi
+          }
+
+          check_environment
+          check_links
 
   build-docs-summary:
     needs: [pre-flight, build-docs]

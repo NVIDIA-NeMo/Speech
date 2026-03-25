@@ -154,12 +154,15 @@ def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
 def filter_datasets(dataset_meta_info: dict, datasets: Optional[List[str]]) -> List[str]:
     """Select datasets from the dataset meta info."""
     if datasets is None:
+        # Dataset filtering not specified, return all datasets.
         return list(dataset_meta_info.keys())
     else:
         datasets = datasets.split(",")
+        # Check if requested datasets are valid.
         for dataset in datasets:
             if dataset not in dataset_meta_info:
                 raise ValueError(f"Dataset {dataset} not found in dataset meta info")
+        # Return all requested datasets.
         return datasets
 
 

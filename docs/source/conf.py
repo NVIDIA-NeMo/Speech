@@ -73,7 +73,7 @@ autodoc_mock_imports = [
 _skipped_autodoc_mock_imports = ['wrapt', 'numpy']
 
 for req_path in sorted(list(glob.glob("../../requirements/*.txt"))):
-    if "docs.txt" in req_path:
+    if "docs.txt" in req_path or "test.txt" in req_path:
         continue
 
     req_file = os.path.abspath(os.path.expanduser(req_path))

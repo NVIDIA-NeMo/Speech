@@ -46,11 +46,6 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.utils import logging
 
 
-# ---------------------------------------------------------------------------
-# Inference config hierarchy
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class BaseInferenceConfig(abc.ABC):
     """Shared inference configuration fields.
@@ -153,10 +148,6 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
 InferenceConfig = MagpieInferenceConfig
 
 
-# ---------------------------------------------------------------------------
-# Inference runner hierarchy
-# ---------------------------------------------------------------------------
-
 
 class BaseInferenceRunner(abc.ABC):
     """Abstract base for TTS inference runners.
@@ -179,8 +170,6 @@ class BaseInferenceRunner(abc.ABC):
         self._manifest_records: Optional[List[dict]] = None
         self._audio_base_dir: Optional[str] = None
 
-    # -- interface -----------------------------------------------------------
-
     @abc.abstractmethod
     def create_dataset(
         self,
@@ -188,7 +177,16 @@ class BaseInferenceRunner(abc.ABC):
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
     ) -> Union[ChunkedTTSInferenceDataset, MagpieTTSDataset]:
-        """Create an inference dataset from dataset metadata."""
+        """Create an inference dataset from dataset metadata.
+
+        Args:
+            dataset_meta: Dataset metadata dictionary with manifest and audio root.
+            context_duration_min: Minimum context duration in seconds, or None to use defaults.
+            context_duration_max: Maximum context duration in seconds, or None to use defaults.
+
+        Returns:
+            A model-compatible inference dataset implementation.
+        """
         ...
 
     @abc.abstractmethod
@@ -202,10 +200,24 @@ class BaseInferenceRunner(abc.ABC):
         save_context_audio: bool = True,
         save_predicted_codes: bool = True,
     ) -> Tuple[List[dict], List[str], List[str]]:
-        """Run model inference on a prepared dataset and save outputs."""
-        ...
+        """Run inference on a dataset and persist generated artifacts.
 
-    # -- shared helpers ------------------------------------------------------
+        Args:
+            dataset: The inference dataset created by ``create_dataset``.
+            output_dir: Directory to save generated outputs.
+            manifest_records: Original manifest records (uses cached records if None).
+            audio_base_dir: Base directory for audio paths (uses cached value if None).
+            save_cross_attention_maps: Whether to save attention maps, if supported.
+            save_context_audio: Whether to copy context/target reference audio to output.
+            save_predicted_codes: Whether to save predicted codec tokens.
+
+        Returns:
+            Tuple of:
+                - rtf_metrics: Per-batch real-time factor metrics.
+                - generated_audio_paths: Paths to generated audio files.
+                - codec_file_paths: Paths to predicted codec token files.
+        """
+        ...
 
     def _configure_tokenizer(self) -> None:
         """Configure the tokenizer for inference (phoneme prob = 1.0)."""
@@ -375,33 +387,12 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         save_context_audio: bool = True,
         save_predicted_codes: bool = True,
     ) -> Tuple[List[dict], List[str], List[str]]:
-        """Run unified inference on a dataset.
-
-        Uses the unified inference path that automatically handles both short texts
-        (single chunk) and long texts (multiple chunks) through the same code path.
-
-        Args:
-            dataset: The inference dataset (created by create_dataset()).
-            output_dir: Directory to save generated audio and artifacts.
-            manifest_records: Original manifest records (uses cached if None).
-            audio_base_dir: Base directory for audio paths (uses cached if None).
-            save_cross_attention_maps: Whether to save attention map images (not used in unified path).
-            save_context_audio: Whether to copy context audio files.
-            save_predicted_codes: Whether to save predicted code files.
-
-        Returns:
-            Tuple of:
-                - rtf_metrics: List of real-time factor metrics per batch.
-                - generated_audio_paths: List of paths to generated audio files.
-                - codec_file_paths: List of paths to predicted codes files.
-        """
+        """Use the unified chunked inference path for encoder-decoder models."""
         manifest_records, audio_base_dir = self._resolve_manifest_and_audio_dir(manifest_records, audio_base_dir)
         logging.info("Using unified inference path")
         return self._run_unified_inference(
             dataset, output_dir, manifest_records, audio_base_dir, save_context_audio, save_predicted_codes
         )
-
-    # -- private -------------------------------------------------------------
 
     def _create_chunked_inference_dataset(
         self,
@@ -639,11 +630,6 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         return is_end_of_text
 
 
-# ---------------------------------------------------------------------------
-# EasyMagpieInferenceRunner  (decoder-only EasyMagpieTTSInferenceModel)
-# ---------------------------------------------------------------------------
-
-
 class EasyMagpieInferenceRunner(BaseInferenceRunner):
     """Runner for decoder-only EasyMagpieTTSInferenceModel.
 
@@ -709,8 +695,6 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
         return self._run_decoder_only_inference(
             dataset, output_dir, manifest_records, audio_base_dir, save_context_audio, save_predicted_codes
         )
-
-    # -- private -------------------------------------------------------------
 
     def _run_decoder_only_inference(
         self,

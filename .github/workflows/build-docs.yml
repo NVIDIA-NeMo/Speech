@@ -66,8 +66,8 @@ jobs:
       - name: Debug - show numba and coverage versions
         run: |
           source .venv/bin/activate
-          pip show numba coverage || true
-          pip list | grep -iE "numba|coverage" || true
+          uv pip show numba coverage || true
+          uv pip list | grep -iE "numba|coverage" || true
 
       - name: Sphinx build
         run: |

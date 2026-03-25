@@ -331,7 +331,6 @@ class BaseInferenceRunner(abc.ABC):
         return mean_metrics
 
 
-
 class MagpieInferenceRunner(BaseInferenceRunner):
     """Runner for encoder-decoder MagpieTTSModel.
 

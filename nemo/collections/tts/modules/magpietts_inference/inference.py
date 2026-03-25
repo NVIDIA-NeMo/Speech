@@ -71,6 +71,7 @@ class BaseInferenceConfig(abc.ABC):
 
     @staticmethod
     def _format_layer_list(layers: Optional[List[int]]) -> str:
+        """Format a list of layer indices as a compact string."""
         if layers is None:
             return "None"
         return "".join(str(_layer) for _layer in layers)
@@ -90,6 +91,13 @@ class MagpieInferenceConfig(BaseInferenceConfig):
     maskgit_sampling_type: Optional[str] = None
 
     def build_identifier(self) -> str:
+        """Build a unique identifier string for this configuration.
+
+        Used for naming output directories and files.
+
+        Returns:
+            String identifier incorporating key config values.
+        """
         parts = [
             f"Temp{self.model_inference_parameters.temperature}",
             f"Topk{self.model_inference_parameters.topk}",
@@ -159,6 +167,12 @@ class BaseInferenceRunner(abc.ABC):
     """
 
     def __init__(self, model, config: BaseInferenceConfig):
+        """Initialize the inference runner.
+
+        Args:
+            model: Loaded TTS model (should be on GPU and in eval mode).
+            config: Inference configuration.
+        """
         self.model = model
         self.config = config
         self._configure_tokenizer()
@@ -173,7 +187,9 @@ class BaseInferenceRunner(abc.ABC):
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
-    ) -> Union[ChunkedTTSInferenceDataset, MagpieTTSDataset]: ...
+    ) -> Union[ChunkedTTSInferenceDataset, MagpieTTSDataset]:
+        """Create an inference dataset from dataset metadata."""
+        ...
 
     @abc.abstractmethod
     def run_inference_on_dataset(
@@ -185,7 +201,9 @@ class BaseInferenceRunner(abc.ABC):
         save_cross_attention_maps: bool = True,
         save_context_audio: bool = True,
         save_predicted_codes: bool = True,
-    ) -> Tuple[List[dict], List[str], List[str]]: ...
+    ) -> Tuple[List[dict], List[str], List[str]]:
+        """Run model inference on a prepared dataset and save outputs."""
+        ...
 
     # -- shared helpers ------------------------------------------------------
 
@@ -245,6 +263,7 @@ class BaseInferenceRunner(abc.ABC):
 
     @staticmethod
     def _batch_to_cuda(batch: dict) -> dict:
+        """Move batch tensors to CUDA device."""
         batch_cuda = {}
         for key, value in batch.items():
             if isinstance(value, torch.Tensor):
@@ -255,6 +274,7 @@ class BaseInferenceRunner(abc.ABC):
 
     @staticmethod
     def _delete_old_generated_files(output_dir: str) -> None:
+        """Delete leftover generated files from previous runs."""
         logging.info(f"Cleaning up old generated files in: {output_dir}")
         patterns = [
             "predicted_codes*.pt",
@@ -272,6 +292,7 @@ class BaseInferenceRunner(abc.ABC):
         output_dir: str,
         item_idx: int,
     ) -> None:
+        """Copy context and target audio files to output directory."""
         context_path = record.get('context_audio_filepath')
         target_path = record.get('audio_filepath')
 
@@ -289,6 +310,7 @@ class BaseInferenceRunner(abc.ABC):
 
     @staticmethod
     def compute_mean_rtf_metrics(rtf_metrics_list: List[dict]) -> Dict[str, float]:
+        """Compute mean RTF metrics across batches."""
         if not rtf_metrics_list or not rtf_metrics_list[0]:
             return {}
         mean_metrics = {}
@@ -319,6 +341,21 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
     ) -> ChunkedTTSInferenceDataset:
+        """Create a unified dataset for inference.
+
+        Always creates ChunkedTTSInferenceDataset which uses language-aware chunking
+        to automatically handle both short and long texts:
+        - Short text (below threshold): processed as single chunk
+        - Long text (above threshold): split into sentence chunks
+
+        Args:
+            dataset_meta: Dataset metadata dictionary with 'manifest_path' and 'audio_dir'.
+            context_duration_min: Minimum context duration (uses model default if None).
+            context_duration_max: Maximum context duration (uses model default if None).
+
+        Returns:
+            Configured ChunkedTTSInferenceDataset instance.
+        """
         context_duration_min, context_duration_max = self._get_context_durations(
             context_duration_min, context_duration_max
         )
@@ -338,6 +375,26 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         save_context_audio: bool = True,
         save_predicted_codes: bool = True,
     ) -> Tuple[List[dict], List[str], List[str]]:
+        """Run unified inference on a dataset.
+
+        Uses the unified inference path that automatically handles both short texts
+        (single chunk) and long texts (multiple chunks) through the same code path.
+
+        Args:
+            dataset: The inference dataset (created by create_dataset()).
+            output_dir: Directory to save generated audio and artifacts.
+            manifest_records: Original manifest records (uses cached if None).
+            audio_base_dir: Base directory for audio paths (uses cached if None).
+            save_cross_attention_maps: Whether to save attention map images (not used in unified path).
+            save_context_audio: Whether to copy context audio files.
+            save_predicted_codes: Whether to save predicted code files.
+
+        Returns:
+            Tuple of:
+                - rtf_metrics: List of real-time factor metrics per batch.
+                - generated_audio_paths: List of paths to generated audio files.
+                - codec_file_paths: List of paths to predicted codes files.
+        """
         manifest_records, audio_base_dir = self._resolve_manifest_and_audio_dir(manifest_records, audio_base_dir)
         logging.info("Using unified inference path")
         return self._run_unified_inference(
@@ -352,6 +409,19 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         context_duration_min: float,
         context_duration_max: float,
     ) -> ChunkedTTSInferenceDataset:
+        """Create a unified inference dataset.
+
+        Creates ChunkedTTSInferenceDataset which uses language-aware chunking
+        to automatically handle both short and long texts.
+
+        Args:
+            dataset_meta: Dataset metadata dictionary (same format as MagpieTTSDataset).
+            context_duration_min: Minimum context duration.
+            context_duration_max: Maximum context duration.
+
+        Returns:
+            Configured ChunkedTTSInferenceDataset instance.
+        """
         dataset = ChunkedTTSInferenceDataset(
             dataset_meta=dataset_meta,
             sample_rate=self.model.output_sample_rate,
@@ -377,6 +447,26 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         save_context_audio: bool = True,
         save_predicted_codes: bool = True,
     ) -> Tuple[List[dict], List[str], List[str]]:
+        """Run unified inference with automatic single/multi-chunk handling.
+
+        Processes all samples through generate_speech, passing
+        beginning_of_text and end_of_text so the model can handle both
+        single-chunk (short text) and multi-chunk (long text) cases correctly.
+
+        Args:
+            dataset: ChunkedTTSInferenceDataset created by create_dataset().
+            output_dir: Directory to save generated audio and artifacts.
+            manifest_records: List of manifest record dictionaries.
+            audio_base_dir: Base directory for resolving audio paths.
+            save_context_audio: Whether to copy context audio files.
+            save_predicted_codes: Whether to save predicted code files.
+
+        Returns:
+            Tuple of:
+                - rtf_metrics: List of real-time factor metrics per batch.
+                - generated_audio_paths: List of paths to generated audio files.
+                - codec_file_paths: List of paths to predicted codes files.
+        """
         os.makedirs(output_dir, exist_ok=True)
         self._delete_old_generated_files(output_dir)
 
@@ -524,6 +614,18 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         current_tokens_lens: List[int],
         batch_size: int,
     ) -> List[bool]:
+        """Compute end-of-text flags for each sample in batch.
+
+        Args:
+            batch: Current batch dictionary.
+            chunk_idx: Current chunk index.
+            max_num_chunks: Maximum number of chunks in this batch.
+            current_tokens_lens: Token lengths for current chunk per sample.
+            batch_size: Number of samples in batch.
+
+        Returns:
+            List of booleans indicating if each sample has reached end of text.
+        """
         is_end_of_text = []
         for b_idx in range(batch_size):
             if chunk_idx == max_num_chunks - 1:

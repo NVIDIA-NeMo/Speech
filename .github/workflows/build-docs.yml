@@ -39,7 +39,7 @@ jobs:
   build-docs:
     needs: [pre-flight]
     if: needs.pre-flight.outputs.is_deployment_workflow != 'true'
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@f07407eb3feccd2f585fa981241d86f197b98fa0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.83.0
     with:
       docs-directory: docs/source
       sync-all: true

@@ -57,6 +57,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAVE_UTMOSV2 = False
 
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 @dataclass
 class ProcessBatchOutput:
@@ -126,8 +127,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.run_val_inference:
             logging.info("Loading eval models for validation inference (ASR and speaker verification)...")
             if self.use_multilingual_asr:
-                from transformers import WhisperForConditionalGeneration, WhisperProcessor
-
                 self.whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
                 self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
                 self.whisper_model.eval()
@@ -600,18 +599,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         return audio_channel_embedding, audio_channel_lens, audio_codes_target, audio_codes_lens_target
 
-    def slice_pred_embeddings(self, transformer_out, context_lens, target_lens):
+    def slice_sequence_embeddings(self, sequence_embeddings, context_lens, target_lens):
         """
-        Slices the transformer output to get the predicted embeddings for the target sequence.
+        Slices sequence embeddings to get the predicted embeddings for the target sequence.
         Args:
-            transformer_out: (B, T, E)
+            sequence_embeddings: (B, T, E)
             context_lens: (B,) - start index of target per batch
             target_lens: (B,) - length of target per batch
 
         Returns: (B, T_max, E) tensor where T_max = max(target_lens)
         """
-        B, T, E = transformer_out.shape
-        device = transformer_out.device
+        B, T, E = sequence_embeddings.shape
+        device = sequence_embeddings.device
 
         # Compute max target length in batch for padding
         max_len = target_lens.max().item()
@@ -620,11 +619,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         # Shape: (B, max_len)
         range_indices = torch.arange(max_len, device=device).unsqueeze(0).expand(B, -1)
         gather_indices = context_lens.unsqueeze(1) + range_indices  # (B, max_len)
-        gather_indices = torch.clamp(gather_indices, max=transformer_out.size(1) - 1)
+        gather_indices = torch.clamp(gather_indices, max=sequence_embeddings.size(1) - 1)
 
         # Expand to shape (B, max_len, E) for gather
         gather_indices_exp = gather_indices.unsqueeze(2).expand(-1, -1, E)
-        sliced = torch.gather(transformer_out, dim=1, index=gather_indices_exp)
+        sliced = torch.gather(sequence_embeddings, dim=1, index=gather_indices_exp)
         return sliced
 
     def process_batch(
@@ -856,7 +855,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         # 9. Extract prediction embeddings and compute losses
         # Audio predictions start at audio_delay
-        pred_embeddings = self.slice_pred_embeddings(
+        pred_embeddings = self.slice_sequence_embeddings(
             transformer_hidden_states,
             context_lens=audio_delay,
             target_lens=audio_codes_lens_target,
@@ -890,7 +889,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         pb_phoneme_tokens_lens_target = None
         if self.phoneme_tokenizer is not None and phoneme_tokens_stacked is not None:
             # Phoneme predictions start at phoneme_delay
-            pred_embeddings_phoneme = self.slice_pred_embeddings(
+            pred_embeddings_phoneme = self.slice_sequence_embeddings(
                 transformer_hidden_states,
                 context_lens=phoneme_delay,
                 target_lens=phoneme_tokens_lens_stacked - 1,
@@ -1334,19 +1333,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     return torch.stack(values).mean()
                 return None
 
-            val_cer = collect_if_exists("val_cer")
-            val_wer = collect_if_exists("val_wer")
-            val_ssim = collect_if_exists("val_ssim")
-            val_utmos = collect_if_exists("val_utmos")
-
-            if val_cer is not None:
-                self.log("val/cer", val_cer, prog_bar=True, sync_dist=True)
-            if val_wer is not None:
-                self.log("val/wer", val_wer, prog_bar=True, sync_dist=True)
-            if val_ssim is not None:
-                self.log("val/ssim", val_ssim, prog_bar=True, sync_dist=True)
-            if val_utmos is not None:
-                self.log("val/utmos", val_utmos, prog_bar=True, sync_dist=True)
+            val_metrics = ["val_cer", "val_wer", "val_ssim", "val_utmos"]
+            for val_metric in val_metrics:
+                metric_value = collect_if_exists(val_metric)
+                if metric_value is not None:
+                    self.log(val_metric.replace("val_", "val/", 1), metric_value, prog_bar=True, sync_dist=True)
 
             if self.use_multilingual_asr:
                 lang_cer = {}

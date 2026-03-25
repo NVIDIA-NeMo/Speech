@@ -488,9 +488,13 @@ def maybe_convert_cuts_to_mono(cuts: CutSet) -> CutSet:
             else:
                 cut.recording.sources[0].channel_ids = [0, 1]
                 cut = MultiCut.from_dict(cut.to_dict())
-            resolved_cuts.append(cut.to_mono(mono_downmix=True))
+            try:
+                resolved_cuts.append(cut.to_mono(mono_downmix=True))
+            except Exception as e:
+                logging.warning(f"Error converting cut to mono: {cut}, with exception: {e}. Skipping this cut.")
+                continue
     resolved_cuts = CutSet(resolved_cuts)
-    return cuts
+    return resolved_cuts
 
 
 class LhotseAudioNoiseDataset(torch.utils.data.Dataset):

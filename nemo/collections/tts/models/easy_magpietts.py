@@ -59,6 +59,7 @@ except (ImportError, ModuleNotFoundError):
 
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
+
 @dataclass
 class ProcessBatchOutput:
     """

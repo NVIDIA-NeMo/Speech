@@ -210,7 +210,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if self._use_tp:
             tp_world_size = self.device_mesh["tp"].size()
             if (remainder := (input_embs.shape[1] - 1) % tp_world_size) != 0:
-                # Truncate some tokens from the end to make the sequence lenght shape divisible by tensor parallelism
+                # Truncate some tokens from the end to make the sequence length shape divisible by tensor parallelism
                 # world size. Otherwise, sequence parallelism will change the input shape making leading to mismatches.
                 input_embs = input_embs[:, :-remainder]
                 attention_mask = attention_mask[:, :-remainder]

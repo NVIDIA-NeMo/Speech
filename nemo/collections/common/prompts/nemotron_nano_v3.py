@@ -59,7 +59,7 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
         roles = self.get_roles()
         assert len(turns) > 0, "Empty dialog is not supported."
         for turn in turns:
-            assert "role" in turn, f"A turn must have have a 'role' key. We received {turn=}"
+            assert "role" in turn, f"A turn must have a 'role' key. We received {turn=}"
             assert turn["role"] in roles, f"Found turn with {turn['role']=}, but available roles are {roles}"
 
         # 0) Normalize "content" → "slots" format.

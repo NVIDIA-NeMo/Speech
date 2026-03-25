@@ -13,6 +13,7 @@ weight checkpoints and demos!
 
 ## Updates
 
+- 2026-03: [Nemotron VoiceChat](Link_here) is now released in Early Access. Key detail. More links to check out.
 - 2026-03: [Nemotron-Speech-Streaming v2603](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) has been
     updated. It has been trained on a larger and more diverse corpus, resulting in lower WER across all latency modes.
     Try out [the demo](https://huggingface.co/spaces/nvidia/nemotron-speech-streaming-en-0.6b) and check out

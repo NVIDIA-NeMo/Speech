@@ -22,11 +22,11 @@ on:
     paths:
       - "docs/**"
   push:
-    branches:
-      - main
-      - r**
-    paths:
-      - "docs/**"
+    # branches:
+    #   - main
+    #   - r**
+    # paths:
+    #   - "docs/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}-${{ github.event_name }}
@@ -39,10 +39,11 @@ jobs:
   build-docs:
     needs: [pre-flight]
     if: needs.pre-flight.outputs.is_deployment_workflow != 'true'
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.80.2
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@f07407eb3feccd2f585fa981241d86f197b98fa0
     with:
       docs-directory: docs/source
       sync-all: true
+      no-extras: "--no-extra cu12"
 
   build-docs-summary:
     needs: [pre-flight, build-docs]

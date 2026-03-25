@@ -294,6 +294,7 @@ def run_inference_and_evaluation(
             eval_config_for_dataset = EvaluationConfig(
                 sv_model=eval_config.sv_model,
                 asr_model_name=eval_config.asr_model_name,
+                eou_model_name=eval_config.eou_model_name,
                 language=language,
                 with_utmosv2=eval_config.with_utmosv2,
                 with_fcd=eval_config.with_fcd,
@@ -506,6 +507,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
     eval_group.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b")
+    eval_group.add_argument(
+        '--eou_model_name',
+        type=str,
+        default="facebook/wav2vec2-base-960h",
+        help=(
+            'Hugging Face model id or local path to the EoU wav2vec2 model directory. '
+            'For offline use, download the model locally and pass the directory path here.'
+        ),
+    )
     eval_group.add_argument('--num_repeats', type=int, default=1)
     eval_group.add_argument('--confidence_level', type=float, default=0.95)
     eval_group.add_argument('--disable_utmosv2', action='store_true')
@@ -579,6 +589,7 @@ def main(argv=None):
     eval_config = EvaluationConfig(
         sv_model=args.sv_model,
         asr_model_name=args.asr_model_name,
+        eou_model_name=args.eou_model_name,
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,

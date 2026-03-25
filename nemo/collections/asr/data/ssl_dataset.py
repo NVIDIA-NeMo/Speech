@@ -22,8 +22,9 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from lhotse.cut import CutSet, MixedCut, MultiCut
+from lhotse.cut import Cut, CutSet, MixedCut, MonoCut, MultiCut
 from lhotse.dataset import AudioSamples
+from lhotse.dataset.collation import collate_vectors
 from omegaconf import DictConfig, ListConfig, open_dict
 from torch import Tensor
 
@@ -478,6 +479,9 @@ def maybe_convert_cuts_to_mono(cuts: CutSet) -> CutSet:
         the converted cuts
     """
     resolved_cuts = []
+    import pdb
+
+    pdb.set_trace()
     for cut in cuts:
         try:
             resolved_cuts.append(cut.move_to_memory())
@@ -495,6 +499,50 @@ def maybe_convert_cuts_to_mono(cuts: CutSet) -> CutSet:
                 continue
     resolved_cuts = CutSet(resolved_cuts)
     return resolved_cuts
+
+
+def safe_load_and_convert_to_mono(cut: Cut) -> Tensor:
+    """
+    Load the audio safely.
+    Args:
+        cut: the cut to load
+    Returns:
+        the loaded audio
+    """
+    try:
+        audio = cut.load_audio()
+        if audio.ndim == 2:
+            audio = audio.mean(axis=0)
+        return audio
+    except Exception as e:
+        logging.warning(f"Error loading audio: {cut}, with exception: {e}. Skipping this cut.")
+        return None
+
+
+def safe_collate_audios(cuts: CutSet) -> tuple[Tensor, Tensor, CutSet]:
+    """
+    Collate the audios safely.
+    Args:
+        cuts: the cuts to collate
+    Returns:
+        the collated audios, audio lengths, and cuts
+    """
+    loaded_audios = []
+    loaded_audio_lens = []
+    loaded_cuts = []
+    for cut in cuts:
+        audio = safe_load_and_convert_to_mono(cut)
+        if audio is not None:
+            loaded_audios.append(audio)
+            loaded_audio_lens.append(audio.shape[0])
+            loaded_cuts.append(cut)
+
+    if len(loaded_audios) == 0:
+        return None, None, None
+    loaded_audios = collate_vectors(loaded_audios)
+    loaded_audio_lens = torch.tensor(loaded_audio_lens).long()
+    loaded_cuts = CutSet(loaded_cuts)
+    return loaded_audios, loaded_audio_lens, loaded_cuts
 
 
 class LhotseAudioNoiseDataset(torch.utils.data.Dataset):
@@ -523,8 +571,9 @@ class LhotseAudioNoiseDataset(torch.utils.data.Dataset):
         self.return_noise = return_noise
 
     def __getitem__(self, cuts: CutSet):
-        cuts = maybe_convert_cuts_to_mono(cuts)
-        audios, audio_lens, cuts = self.load_audio(cuts)
+        audios, audio_lens, cuts = safe_collate_audios(cuts)
+        if audios is None:
+            return None
         if len(self.noise_data) > 0:
             sampled_noises = [sample_noise(self.noise_data, cut.sampling_rate, cut.num_samples) for cut in cuts]
             sampled_noises, sampled_noises_lens = zip(*sampled_noises)

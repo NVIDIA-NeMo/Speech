@@ -148,7 +148,6 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
 InferenceConfig = MagpieInferenceConfig
 
 
-
 class BaseInferenceRunner(abc.ABC):
     """Abstract base for TTS inference runners.
 

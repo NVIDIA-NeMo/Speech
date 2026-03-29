@@ -36,7 +36,7 @@ Glossary
    * - **EU4**
      - Multilingual: English, German, Spanish, French
    * - **EU25**
-     - Multilingual: English + 24 European languages (de, es, fr, it, pl, pt, nl, ru, uk, be, hr, cs, bg, da, et, fi, el, hu, lv, lt, mt, ro, sk, sl, sv)
+     - Multilingual: 25 European languages (de, en, es, fr, it, pl, pt, nl, ru, uk, be, hr, cs, bg, da, et, fi, el, hu, lv, lt, mt, ro, sk, sl, sv)
 
 
 Canary Models (AED)

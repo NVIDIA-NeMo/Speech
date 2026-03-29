@@ -46,7 +46,7 @@ Bucketing
 ---------
 
 Split training samples into duration-based buckets for up to 2x speedup by reducing padding.
-Pass tarred datasets as a list of lists to enable bucketing. Use ``bucketing_batch_size`` for adaptive batch sizes per bucket.
+Pass tarred datasets as a list of lists to enable bucketing. Use ``bucket_batch_size`` for adaptive batch sizes per bucket.
 
 For advanced dynamic bucketing with Lhotse, see :doc:`Lhotse Dataloading </dataloaders>`.
 

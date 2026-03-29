@@ -26,7 +26,7 @@ Glossary
    * - **RNN-T**
      - Recurrent Neural Network Transducer — autoregressive streaming-friendly decoder
    * - **TDT**
-     - Token-and-Duration Transducer — extends RNN-T with duration prediction for better timestamps
+     - Token-and-Duration Transducer — extends RNN-T with duration prediction for faster inference
    * - **Hybrid**
      - Joint RNN-T + CTC model — both decoders trained together, either usable at inference
    * - **PnC**

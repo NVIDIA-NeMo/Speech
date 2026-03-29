@@ -18,7 +18,7 @@ Glossary
    * - **ASR**
      - Automatic Speech Recognition — transcribing speech to text
    * - **AST**
-     - Automatic Speech Translation — translating speech from one language to another
+     - Automatic Speech Translation — translating speech to text from one language to another
    * - **AED**
      - Attention Encoder-Decoder — autoregressive decoder using cross-attention (Canary family)
    * - **CTC**

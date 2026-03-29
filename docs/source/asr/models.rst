@@ -28,7 +28,7 @@ Parakeet
 Parakeet is a family of English ASR models with a :ref:`FastConformer Encoder <Fast-Conformer>` and CTC, RNN-T, or TDT decoders.
 
 * `Parakeet-TDT-0.6B V3 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>`__ — 25 languages, PnC, blazing fast
-* `Parakeet-TDT-0.6B V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`__ — Top of `OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`__
+* `Parakeet-TDT-0.6B V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`__ — English-only, PnC, blazing fast
 * `Parakeet-TDT/CTC-110M <https://huggingface.co/nvidia/parakeet-tdt_ctc-110m>`__ — Edge deployment
 * `Nemotron-Speech-Streaming <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`__ — Real-time streaming
 * `Multitalker-Parakeet <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__ — Multi-speaker streaming

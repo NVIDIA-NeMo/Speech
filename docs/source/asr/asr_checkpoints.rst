@@ -128,7 +128,7 @@ High-accuracy English ASR models with FastConformer encoder.
    * - `parakeet-rnnt-110m-da-dk <https://huggingface.co/nvidia/parakeet-rnnt-110m-da-dk>`__
      - RNN-T
      - ASR
-     - 110M (Danish)
+     - 110M
 
 
 Streaming Models

@@ -103,7 +103,7 @@ High-accuracy English ASR models with FastConformer encoder.
      - 1.1B
    * - `parakeet-tdt_ctc-0.6b-ja <https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja>`__
      - Hybrid TDT+CTC
-     - ASR, timestamps
+     - ASR, timestamps, Japanese
      - 0.6B
    * - `parakeet-tdt_ctc-110m <https://huggingface.co/nvidia/parakeet-tdt_ctc-110m>`__
      - Hybrid TDT+CTC

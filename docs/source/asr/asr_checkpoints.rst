@@ -69,7 +69,7 @@ Multi-task encoder-decoder models supporting ASR, AST, PnC, and timestamps acros
      - EU4
    * - `canary-1b <https://huggingface.co/nvidia/canary-1b>`__
      - AED
-     - ASR, AST, PnC, timestamps
+     - ASR, AST, PnC
      - EU4
 
 

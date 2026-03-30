@@ -23,9 +23,83 @@ from nemo.utils import logging
 PACKING_ALGOS = ["first_fit_decreasing", "first_fit_shuffle"]
 
 
+class _SegmentTree:
+    """Segment tree over bin remaining-capacities for O(log n) first-fit queries.
+
+    Each leaf stores the remaining capacity of a bin.  Internal nodes store the
+    maximum value among their children, which allows us to find the *leftmost*
+    leaf with remaining capacity >= s in O(log n) time.
+    """
+
+    __slots__ = ("_n", "_tree", "_num_bins")
+
+    def __init__(self, capacity: int) -> None:
+        self._n = capacity
+        self._tree = [0] * (4 * capacity)
+        self._num_bins = 0
+
+    # -- internal helpers -----------------------------------------------------
+
+    def _push_up(self, node: int) -> None:
+        self._tree[node] = max(self._tree[2 * node], self._tree[2 * node + 1])
+
+    def _update(self, node: int, lo: int, hi: int, idx: int, val: int) -> None:
+        if lo == hi:
+            self._tree[node] = val
+            return
+        mid = (lo + hi) // 2
+        if idx <= mid:
+            self._update(2 * node, lo, mid, idx, val)
+        else:
+            self._update(2 * node + 1, mid + 1, hi, idx, val)
+        self._push_up(node)
+
+    def _query(self, node: int, lo: int, hi: int, s: int) -> int:
+        if lo == hi:
+            return lo
+        mid = (lo + hi) // 2
+        if self._tree[2 * node] >= s:
+            return self._query(2 * node, lo, mid, s)
+        return self._query(2 * node + 1, mid + 1, hi, s)
+
+    def _get_leaf(self, idx: int) -> int:
+        node, lo, hi = 1, 0, self._n - 1
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if idx <= mid:
+                node, hi = 2 * node, mid
+            else:
+                node, lo = 2 * node + 1, mid + 1
+        return self._tree[node]
+
+    # -- public API -----------------------------------------------------------
+
+    def open_bin(self, remaining: int) -> int:
+        """Open a new bin with *remaining* free capacity.  Returns its 0-based index."""
+        idx = self._num_bins
+        self._num_bins += 1
+        self._update(1, 0, self._n - 1, idx, remaining)
+        return idx
+
+    def query(self, s: int) -> int:
+        """Return the index of the leftmost bin with remaining capacity >= *s*, or -1."""
+        if self._tree[1] < s:
+            return -1
+        return self._query(1, 0, self._n - 1, s)
+
+    def update(self, idx: int, amount: int) -> None:
+        """Decrease the remaining capacity of bin *idx* by *amount*."""
+        new_val = self._get_leaf(idx) - amount
+        self._update(1, 0, self._n - 1, idx, new_val)
+
+
 def find_first_bin_that_fits(bins: List[List[int]], s: int, bin_size: int) -> int:
     """
     Finds the first bin in a list of bins that has enough space to fit a sequence of size 's'.
+
+    .. deprecated::
+        This O(n) linear-scan implementation is kept for reference.  ``first_fit``
+        now uses :class:`_SegmentTree` internally for O(log n) queries.
 
     Args:
       bins: A list of lists, where each inner list represents a bin and contains the current elements in that bin.
@@ -41,25 +115,57 @@ def find_first_bin_that_fits(bins: List[List[int]], s: int, bin_size: int) -> in
     return -1
 
 
-def first_fit(seqlens: List[int], pack_size: int) -> List[List[int]]:
+def first_fit(seqlens: List[int], pack_size: int, backend: str = "segment_tree") -> List[List[int]]:
     """
     Packs sequences of varying lengths into bins using the First-Fit algorithm.
 
     Args:
       seqlens: A list of integers, representing the lengths of the sequences to be packed.
       pack_size: The maximum capacity of each bin.
+      backend: The search backend to use for finding the first fitting bin.
+        ``"segment_tree"`` (default) uses a segment tree for O(log n) queries.
+        ``"naive"`` uses the original O(n) linear scan.
 
     Returns:
       A list of lists, where each inner list represents a bin and contains the indices
         of the sequences assigned to that bin.
     """
-    res = []
+    if backend == "segment_tree":
+        return _first_fit_segment_tree(seqlens, pack_size)
+    elif backend == "naive":
+        return _first_fit_naive(seqlens, pack_size)
+    else:
+        raise ValueError(f"Unknown backend {backend!r}, expected 'segment_tree' or 'naive'")
+
+
+def _first_fit_naive(seqlens: List[int], pack_size: int) -> List[List[int]]:
+    """First-Fit packing with O(n) linear scan per sequence."""
+    res: List[List[int]] = []
     for s in seqlens:
         first_bin = find_first_bin_that_fits(res, s, pack_size)
-        if first_bin == -1:  # open a new bin
+        if first_bin == -1:
             res.append([s])
         else:
             res[first_bin].append(s)
+    return res
+
+
+def _first_fit_segment_tree(seqlens: List[int], pack_size: int) -> List[List[int]]:
+    """First-Fit packing with O(log n) segment tree queries."""
+    if not seqlens:
+        return []
+
+    tree = _SegmentTree(len(seqlens))
+    res: List[List[int]] = []
+
+    for s in seqlens:
+        first_bin = tree.query(s)
+        if first_bin == -1:  # open a new bin
+            tree.open_bin(pack_size - s)
+            res.append([s])
+        else:
+            res[first_bin].append(s)
+            tree.update(first_bin, s)
     return res
 
 

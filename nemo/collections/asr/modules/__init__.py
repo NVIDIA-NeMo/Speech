@@ -73,7 +73,6 @@ __all__ = [
     'SpeakerDecoder',
     'HATJoint',
     'LSTMDecoder',
-    'MSDD_module',
     'RNNTDecoder',
     'RNNTDecoderJointSSL',
     'RNNTJoint',

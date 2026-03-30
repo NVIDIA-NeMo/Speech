@@ -188,7 +188,11 @@ class BaseInferenceRunner(abc.ABC):
         """
         self.model = model
         self.config = config
+
+        # Set phoneme probability to 1 for inference
         self._configure_tokenizer()
+
+        # Cached state from create_dataset (set when create_dataset is called)
         self._manifest_records: Optional[List[dict]] = None
         self._audio_base_dir: Optional[str] = None
 
@@ -290,6 +294,7 @@ class BaseInferenceRunner(abc.ABC):
             context_duration_min = self.model.cfg.get('context_duration_min', 5.0)
         if context_duration_max is None:
             context_duration_max = self.model.cfg.get('context_duration_max', 5.0)
+        # For multi-encoder models, use fixed 5s context for fair evaluation
         if context_duration_min < 5.0 and context_duration_max > 5.0:
             context_duration_min = 5.0
             context_duration_max = 5.0
@@ -390,6 +395,8 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         )
         self._read_and_cache_manifest(dataset_meta)
 
+        # Always use unified dataset (handles both short and long texts automatically)
+        # Language for chunking thresholds is determined per-sample from manifest
         logging.info("Creating unified inference dataset")
         dataset = self._create_chunked_inference_dataset(dataset_meta, context_duration_min, context_duration_max)
         return dataset
@@ -430,6 +437,7 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         Returns:
             Configured ChunkedTTSInferenceDataset instance.
         """
+        # Create unified dataset - language and tokenizer are determined per-sample from manifest
         dataset = ChunkedTTSInferenceDataset(
             dataset_meta=dataset_meta,
             sample_rate=self.model.output_sample_rate,
@@ -443,6 +451,8 @@ class MagpieInferenceRunner(BaseInferenceRunner):
             pad_context_text_to_max_duration=self.model.pad_context_text_to_max_duration,
             load_16khz_audio=self.model.model_type == 'single_encoder_sv_tts',
         )
+
+        # Attach model's tokenizer
         dataset.text_tokenizer = self.model.tokenizer
         return dataset
 
@@ -482,7 +492,7 @@ class MagpieInferenceRunner(BaseInferenceRunner):
             dataset,
             batch_size=self.config.batch_size,
             collate_fn=dataset.collate_fn,
-            num_workers=0,
+            num_workers=0,  # Avoid multiprocessing issues with CUDA
             shuffle=False,
         )
 
@@ -494,6 +504,7 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         for batch_idx, batch in enumerate(dataloader):
             logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)}")
 
+            # Move batch tensors to CUDA
             batch = self._batch_to_cuda(batch)
             batch['sample_rate'] = self.model.output_sample_rate
             batch['context_sample_rate'] = self.model.output_sample_rate
@@ -501,35 +512,45 @@ class MagpieInferenceRunner(BaseInferenceRunner):
             batch_size = len(batch['chunked_tokens'])
             max_num_chunks = max(len(tokens) for tokens in batch['chunked_tokens'])
 
+            # Clear stale KV cache from prior inference calls (e.g., the previous batch or dataset
+            # may have left with populated tensors).
             logging.info(f"Resetting KV cache for decoder: {self.model.use_kv_cache_for_inference}")
             use_kv_cache_for_this_batch = self.model.use_kv_cache_for_inference if max_num_chunks == 1 else False
             self.model.decoder.reset_cache(use_cache=use_kv_cache_for_this_batch)
 
+            # Create chunk state for this batch
             chunk_state = self.model.create_chunk_state(batch_size=batch_size)
 
+            # Accumulators for predicted codes
             predicted_codes_per_sample = [[] for _ in range(batch_size)]
             predicted_codes_lens = [0 for _ in range(batch_size)]
 
+            # Overwrite the model's parameters since we want to use the arguments from the commandline
             self.model.inference_parameters = self.config.model_inference_parameters
 
             start_time = time.time()
+            # Iterate over text chunks (1 for short text, N for long text)
             for chunk_idx in range(max_num_chunks):
+                # Extract current chunk tokens for each sample
                 current_tokens = []
                 current_tokens_lens = []
                 for b_idx in range(batch_size):
                     current_tokens.append(batch['chunked_tokens'][b_idx][chunk_idx])
                     current_tokens_lens.append(batch['chunked_tokens_lens'][b_idx][chunk_idx])
 
+                # Pad tokens to max length in this chunk
                 max_len = max(current_tokens_lens)
                 batch['text'] = stack_tensors(current_tokens, max_lens=[max_len]).cuda()
                 batch['text_lens'] = torch.tensor(current_tokens_lens, dtype=torch.int32).cuda()
 
+                # Compute is_end_of_text flags (per-sample)
                 is_end_of_text = self._compute_end_of_text_flags(
                     batch, chunk_idx, max_num_chunks, current_tokens_lens, batch_size
                 )
 
                 beginning_of_text = chunk_idx == 0
 
+                # Call generate_speech (unified entry point)
                 output = self.model.generate_speech(
                     batch,
                     chunk_state=chunk_state,
@@ -543,10 +564,13 @@ class MagpieInferenceRunner(BaseInferenceRunner):
                     maskgit_sampling_type=self.config.maskgit_sampling_type,
                 )
 
+                # Unpack output
                 chunk_codes = output.predicted_codes
                 chunk_codes_lens = output.predicted_codes_lens
 
+                # Accumulate codes for each sample
                 for b_idx in range(batch_size):
+                    # Skip if this sample's text has ended (padding chunks)
                     if is_end_of_text[b_idx] and current_tokens_lens[b_idx] == 1:
                         continue
                     code_len = chunk_codes_lens[b_idx]
@@ -558,14 +582,17 @@ class MagpieInferenceRunner(BaseInferenceRunner):
             elapsed = time.time() - start_time
             logging.info(f"Batch inference time: {elapsed:.2f}s")
 
+            # Concatenate codes and convert to audio
             predicted_codes_list = []
             for b_idx in range(batch_size):
                 if predicted_codes_per_sample[b_idx]:
                     concatenated = torch.cat(predicted_codes_per_sample[b_idx], dim=1).cuda()
                 else:
+                    # Empty placeholder
                     concatenated = torch.zeros((self.model.num_audio_codebooks, 1), dtype=torch.long, device='cuda')
                 predicted_codes_list.append(concatenated)
 
+            # Stack and convert to audio
             max_code_len = max(predicted_codes_lens) if any(predicted_codes_lens) else 1
             predicted_codes = stack_tensors(predicted_codes_list, max_lens=[max_code_len]).cuda()
             predicted_codes_lens_tensor = torch.tensor(predicted_codes_lens, dtype=torch.long, device='cuda')
@@ -575,6 +602,7 @@ class MagpieInferenceRunner(BaseInferenceRunner):
                 predicted_codes_lens_tensor,
             )
 
+            # Compute RTF metrics
             total_audio_samples = sum(predicted_audio_lens.cpu().tolist())
             total_audio_seconds = total_audio_samples / self.model.output_sample_rate
             rtf = elapsed / total_audio_seconds if total_audio_seconds > 0 else 0.0
@@ -585,6 +613,7 @@ class MagpieInferenceRunner(BaseInferenceRunner):
             }
             all_rtf_metrics.append(rtf_metrics)
 
+            # Save outputs
             predicted_audio_np = predicted_audio.float().detach().cpu().numpy()
 
             for b_idx in range(batch_size):
@@ -596,6 +625,7 @@ class MagpieInferenceRunner(BaseInferenceRunner):
                 sf.write(audio_path, audio_np, self.model.output_sample_rate)
                 generated_audio_paths.append(audio_path)
 
+                # Copy reference audio if requested
                 if save_context_audio and sample_idx < len(manifest_records):
                     self._copy_reference_audio(
                         manifest_records[sample_idx],
@@ -606,7 +636,7 @@ class MagpieInferenceRunner(BaseInferenceRunner):
 
                 if save_predicted_codes:
                     codes_path = os.path.join(output_dir, f"predicted_codes_{sample_idx}.pt")
-                    predicted_codes_current = predicted_codes[b_idx, :, : predicted_codes_lens[b_idx]]
+                    predicted_codes_current = predicted_codes[b_idx, :, : predicted_codes_lens[b_idx]]  # C, T
                     torch.save(predicted_codes_current, codes_path)
                     codec_file_paths.append(codes_path)
 
@@ -637,10 +667,13 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         is_end_of_text = []
         for b_idx in range(batch_size):
             if chunk_idx == max_num_chunks - 1:
+                # Last chunk
                 is_end_of_text.append(True)
             elif current_tokens_lens[b_idx] == 1:
+                # Current chunk is padding
                 is_end_of_text.append(True)
             elif batch['chunked_tokens_lens'][b_idx][chunk_idx + 1] == 1:
+                # Next chunk is padding
                 is_end_of_text.append(True)
             else:
                 is_end_of_text.append(False)

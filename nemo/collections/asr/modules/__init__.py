@@ -71,7 +71,6 @@ __all__ = [
     'ECAPAEncoder',
     'ParallelConvASREncoder',
     'SpeakerDecoder',
-    'ViterbiDecoderWithGraph',
     'HATJoint',
     'LSTMDecoder',
     'MSDD_module',

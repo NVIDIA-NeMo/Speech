@@ -343,7 +343,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     context_audio_len = context_audio.shape[0]
                     context_audio_list.append(context_audio)
                     context_audio_len_list.append(context_audio_len)
-
+    
             if self.load_16khz_audio:
                 if cut.has_custom("context_audio"):
                     # use context audio for SV model
@@ -428,11 +428,17 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 # Use IPA text for IPABPETokenizer (required), otherwise use regular text_str
                 if isinstance(self.phoneme_tokenizer, IPABPETokenizer):
                     if not cut.supervisions[0].has_custom("ipa"):
-                        raise ValueError(
-                            f"IPABPETokenizer requires 'ipa' field but it is not available in the cut. "
-                            f"Cut ID: {cut.id}, Text: {text_str}"
-                        )
-                    phoneme_text = cut.supervisions[0].ipa
+                        if self.dataset_type == 'train':
+                            raise ValueError(
+                                f"IPABPETokenizer requires 'ipa' field but it is not available in the cut. "
+                                f"Cut ID: {cut.id}, Text: {text_str}"
+                            )
+                        else:
+                            logging.warning(
+                                f"'ipa' field not found in cut {cut.id} for text: {text_str}. "
+                                f"Use only predicted phonemes for inference."
+                            )
+                    phoneme_text = cut.supervisions[0].ipa if cut.supervisions[0].has_custom("ipa") else ""
                     if language in self.ignore_phoneme_languages:
                         # Ignore phoneme tokenization for this language
                         phoneme_text = ""

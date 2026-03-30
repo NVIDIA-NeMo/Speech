@@ -450,11 +450,17 @@ class MagpieTTSDataset(TextToSpeechDataset):
             # Use IPA text for IPABPETokenizer (required), otherwise use regular text
             if isinstance(self.phoneme_tokenizer, IPABPETokenizer):
                 if 'ipa' not in data.manifest_entry:
-                    raise ValueError(
-                        f"IPABPETokenizer requires 'ipa' field but it is not available in the manifest entry. "
-                        f"Text: {data.text}"
-                    )
-                phoneme_text = data.manifest_entry['ipa']
+                    if self.dataset_type == 'train':
+                        raise ValueError(
+                            f"IPABPETokenizer requires 'ipa' field but it is not available in the manifest entry. "
+                            f"Text: {data.text}"
+                        )
+                    else:
+                        logging.warning(
+                            f"'ipa' field not found in manifest entry for text: {data.text}. "
+                            f"Use only predicted phonemes for inference."
+                        )
+                phoneme_text = data.manifest_entry.get('ipa', '')
                 if language in self.ignore_phoneme_languages:
                     # Ignore phoneme tokenization for this language.
                     phoneme_text = ""

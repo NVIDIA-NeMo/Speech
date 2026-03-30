@@ -20,12 +20,12 @@ import pytest
 import torch
 
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    LanguageThresholds,
     _get_sentence_separators_for_language,
     chunk_and_tokenize_text_by_sentence,
     filter_dataset_by_duration,
     get_abs_rel_paths,
     get_audio_filepaths,
-    get_word_count,
     load_audio,
     normalize_volume,
     split_by_sentence,
@@ -212,6 +212,192 @@ class TestTTSDatasetUtils:
         assert filtered_entries[1]["duration"] == 5.0
         assert total_hours == (135.6 / 3600.0)
         assert filtered_hours == (15.0 / 3600.0)
+
+
+class TestLanguageThresholds:
+    """Test cases for LanguageThresholds dataclass."""
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_default_thresholds(self):
+        """Test default language thresholds are set correctly."""
+
+        thresholds = LanguageThresholds()
+
+        assert thresholds.thresholds["en"] == 45
+        assert thresholds.thresholds["es"] == 73
+        assert thresholds.thresholds["fr"] == 69
+        assert thresholds.thresholds["de"] == 50
+        assert thresholds.thresholds["zh"] == 100
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_word_count_english(self):
+        """Test word count for English (word-based)."""
+
+        thresholds = LanguageThresholds()
+        text = "Hello world this is a test"
+
+        count = thresholds.get_word_count(text, "en")
+
+        assert count == 6
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_word_count_chinese(self):
+        """Test character count for Chinese (character-based)."""
+
+        thresholds = LanguageThresholds()
+        text = "你好世界"  # 4 characters
+
+        count = thresholds.get_word_count(text, "zh")
+
+        assert count == 4
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_exceeds_threshold_short_text(self):
+        """Test that short text does not exceed threshold."""
+
+        thresholds = LanguageThresholds()
+        short_text = "Hello world."  # 2 words, below 45
+
+        assert not thresholds.exceeds_threshold(short_text, "en")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_exceeds_threshold_long_text(self):
+        """Test that long text exceeds threshold."""
+
+        thresholds = LanguageThresholds()
+        # Generate text with more than 45 words
+        long_text = " ".join(["word"] * 50)
+
+        assert thresholds.exceeds_threshold(long_text, "en")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_exceeds_threshold_boundary(self):
+        """Test boundary case exactly at threshold."""
+
+        thresholds = LanguageThresholds()
+        # Generate text with exactly 45 words (threshold)
+        boundary_text = " ".join(["word"] * 45)
+
+        # At threshold should be True (>= comparison)
+        assert thresholds.exceeds_threshold(boundary_text, "en")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_exceeds_threshold_fallback_to_english(self):
+        """Test fallback to English threshold for unknown language."""
+
+        thresholds = LanguageThresholds()
+        # Unknown language should use English threshold (45)
+        text = " ".join(["word"] * 50)
+
+        assert thresholds.exceeds_threshold(text, "unknown_lang")
+
+
+class TestChunkTextForInference:
+    """Test cases for chunk_text_for_inference function."""
+
+    @pytest.fixture
+    def mock_tokenizer(self):
+        """Create a simple mock tokenizer for testing."""
+
+        class MockTokenizer:
+            def encode(self, text, tokenizer_name):
+                # Simple mock: return list of integers based on word count
+                return list(range(len(text.split())))
+
+        return MockTokenizer()
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_short_text_single_chunk(self, mock_tokenizer):
+        """Test that short text returns as single chunk."""
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference
+
+        short_text = "Hello world."
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=short_text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=mock_tokenizer,
+            eos_token_id=eos_id,
+        )
+
+        assert len(tokens) == 1  # Single chunk
+        assert len(lens) == 1
+        assert len(texts) == 1
+        assert texts[0] == short_text
+        assert tokens[0][-1].item() == eos_id  # EOS token appended
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_long_text_multiple_chunks(self, mock_tokenizer):
+        """Test that long text is split into multiple sentence chunks."""
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference
+
+        # Create long text with multiple sentences (> 45 words)
+        long_text = "This is sentence one. " * 20 + "This is sentence two."
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=long_text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=mock_tokenizer,
+            eos_token_id=eos_id,
+        )
+
+        assert len(tokens) > 1  # Multiple chunks
+        assert len(tokens) == len(lens) == len(texts)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_custom_language_threshold(self, mock_tokenizer):
+        """Test with different language thresholds."""
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference
+
+        # German has threshold of 50 words
+        text = " ".join(["wort"] * 40)  # 40 words, below German threshold
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=text,
+            language="de",
+            tokenizer_name="german_phoneme",
+            text_tokenizer=mock_tokenizer,
+            eos_token_id=eos_id,
+        )
+
+        # 40 words is below German threshold (50), so should be single chunk
+        assert len(tokens) == 1
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_empty_text(self, mock_tokenizer):
+        """Test handling of empty text."""
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference
+
+        empty_text = ""
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=empty_text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=mock_tokenizer,
+            eos_token_id=eos_id,
+        )
+
+        # Empty text should still return something valid
+        assert len(tokens) == 1
+        assert tokens[0][-1].item() == eos_id
 
 
 class TestSentenceSplitting:
@@ -539,55 +725,58 @@ class TestChunkAndTokenizeTextBySentence:
 class TestGetWordCount:
     """Tests for get_word_count function with language-aware word counting."""
 
+    def setup_method(self):
+        self.thresholds = LanguageThresholds()
+
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_word_count_english(self):
         """Test English word count using whitespace splitting."""
         text = "Hello world how are you"
-        assert get_word_count(text, "en") == 5
+        assert self.thresholds.get_word_count(text, "en") == 5
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_word_count_english_with_punctuation(self):
         """Test English word count with punctuation."""
         text = "Hello, world! How are you?"
-        assert get_word_count(text, "en") == 5
+        assert self.thresholds.get_word_count(text, "en") == 5
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_word_count_chinese_characters(self):
         """Test Chinese character count (no word segmentation)."""
         text = "你好世界"
-        assert get_word_count(text, "zh") == 4
+        assert self.thresholds.get_word_count(text, "zh") == 4
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_word_count_chinese_with_spaces(self):
         """Test Chinese ignores spaces for character count."""
         text = "你好 世界"
-        assert get_word_count(text, "zh") == 4
+        assert self.thresholds.get_word_count(text, "zh") == 4
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_word_count_hindi(self):
         """Test Hindi word count using whitespace splitting."""
         text = "नमस्ते दुनिया कैसे हो"
-        assert get_word_count(text, "hi") == 4
+        assert self.thresholds.get_word_count(text, "hi") == 4
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_word_count_empty_string(self):
         """Test empty string returns 0."""
-        assert get_word_count("", "en") == 0
-        assert get_word_count("", "ja") == 0
-        assert get_word_count("", "zh") == 0
+        assert self.thresholds.get_word_count("", "en") == 0
+        assert self.thresholds.get_word_count("", "ja") == 0
+        assert self.thresholds.get_word_count("", "zh") == 0
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_word_count_whitespace_only(self):
         """Test whitespace-only string returns 0."""
-        assert get_word_count("   ", "en") == 0
-        assert get_word_count("\t\n", "en") == 0
+        assert self.thresholds.get_word_count("   ", "en") == 0
+        assert self.thresholds.get_word_count("\t\n", "en") == 0
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
@@ -598,13 +787,13 @@ class TestGetWordCount:
 
             # "こんにちは世界" should be segmented into morphemes
             text = "こんにちは世界"
-            word_count = get_word_count(text, "ja")
+            word_count = self.thresholds.get_word_count(text, "ja")
             # pyopenjtalk typically segments this into ~2-3 morphemes
             assert word_count >= 2
 
             # Longer sentence with more words
             text2 = "今日はいい天気ですね"
-            word_count2 = get_word_count(text2, "ja")
+            word_count2 = self.thresholds.get_word_count(text2, "ja")
             # Should have multiple morphemes
             assert word_count2 >= 4
 
@@ -618,7 +807,7 @@ class TestGetWordCount:
         # This tests the fallback path - if pyopenjtalk returns no words,
         # it should fall back to character count
         text = "テスト"
-        word_count = get_word_count(text, "ja")
+        word_count = self.thresholds.get_word_count(text, "ja")
         # Should return something > 0 regardless of pyopenjtalk availability
         assert word_count >= 1
 
@@ -627,4 +816,4 @@ class TestGetWordCount:
     def test_word_count_unknown_language_fallback(self):
         """Test unknown language falls back to whitespace splitting."""
         text = "word1 word2 word3"
-        assert get_word_count(text, "unknown") == 3
+        assert self.thresholds.get_word_count(text, "unknown") == 3

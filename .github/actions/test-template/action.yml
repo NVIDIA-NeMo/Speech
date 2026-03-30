@@ -49,6 +49,10 @@ inputs:
     description: "Run tests on CPU only"
     required: false
     default: "false"
+  test_dir:
+    description: "Directory under tests/ containing the test scripts"
+    required: false
+    default: "functional_tests"
 runs:
   using: "composite"
   steps:
@@ -79,7 +83,7 @@ runs:
         echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
     - name: Checkout NeMo
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       env:
         DIR: ${{ github.run_id }}
       with:
@@ -147,7 +151,7 @@ runs:
 
           docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} bash -c '\
             cp -r /opt/Megatron-LM/ /workspace/ && \
-            bash tests/functional_tests/${{ inputs.script }}.sh && \
+            bash tests/${{ inputs.test_dir }}/${{ inputs.script }}.sh && \
             echo "Finished successfully." || echo "Did not finish."'
         ) 2>&1 | tee $DIR/err.log
 
@@ -209,7 +213,7 @@ runs:
         docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} coverage report -i
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: ${{ steps.check.outputs.coverage_report != 'none' }}
       with:
         name: ${{ steps.check.outputs.coverage_report }}

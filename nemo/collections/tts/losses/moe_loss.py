@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from nemo.core.classes import Loss, typecheck
-from nemo.core.neural_types.elements import LossType, ProbsType
+from nemo.core.neural_types.elements import LogitsType, LossType, ProbsType
 from nemo.core.neural_types.neural_type import NeuralType
 
 
@@ -122,7 +122,7 @@ class MoERouterZLoss(Loss):
     @property
     def input_types(self):
         return {
-            "router_logits": NeuralType(('B', 'T', 'D'), ProbsType()),  # D = num_experts
+            "router_logits": NeuralType(('B', 'T', 'D'), LogitsType()),  # D = num_experts
             "x_mask": NeuralType(('B', 'T'), ProbsType(), optional=True),
         }
 
@@ -194,7 +194,7 @@ class MoEAuxiliaryLoss(Loss):
     @property
     def input_types(self):
         return {
-            "router_logits": NeuralType(('B', 'T', 'D'), ProbsType()),
+            "router_logits": NeuralType(('B', 'T', 'D'), LogitsType()),
             "router_probs": NeuralType(('B', 'T', 'D'), ProbsType()),
             "x_mask": NeuralType(('B', 'T'), ProbsType(), optional=True),
         }

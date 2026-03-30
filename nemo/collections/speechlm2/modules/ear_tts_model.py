@@ -350,6 +350,7 @@ class RVQEARTTSOutput:
 
     hidden_states: Tensor | None = None
     past_key_values: Tensor | None = None
+    audio_prompt_lantent: Tensor | None = None
 
     codes: Tensor | None = None
     lm_logits: Tensor | None = None
@@ -467,7 +468,7 @@ def build_vocabs(
     return subword_id_to_char_ids, char_vocab, subword_padding_idx
 
 
-@torch.compile
+@torch._dynamo.disable
 def depthsum_encoding_step(
     embs: Tensor,
     r: Tensor,
@@ -581,7 +582,8 @@ class MoGHead(nn.Module):
             )
 
         # Sample a mixture component using the Gumbel-Max trick
-        mixture_indices = (F.log_softmax(logits, dim=-1) + gumbel_like(logits)).argmax(-1)
+        with fp32_precision():
+            mixture_indices = (F.log_softmax(logits, dim=-1) + gumbel_like(logits)).argmax(-1)
 
         # Select the mean corresponding to the sampled component
         mu = batch_matmul(
@@ -1114,6 +1116,15 @@ class RVQEARTTSModel(nn.Module):
                 self.hidden_size, self.hidden_size, self.hidden_size, self.config.num_quantizers
             )
 
+        if self.config.get("use_audio_prompt_frozen_projection", False):
+            with fp32_precision():
+                U, _ = torch.linalg.qr(torch.randn(self.hidden_size, self.hidden_size))
+                V, _ = torch.linalg.qr(torch.randn(self.hidden_size, self.hidden_size))
+                smin, smax = 0.4, 2.5
+                s = smin + (smax - smin) * torch.rand(self.hidden_size)
+                W = U @ torch.diag(s) @ V.T
+                self.register_buffer("audio_prompt_projection_W", W)  # register as buffer to avoid weight update
+
         # Prediction Heads
         if not self.config.disable_eos_prediction:
             self.lm_head = nn.Linear(self.hidden_size, 2, bias=False)
@@ -1248,30 +1259,32 @@ class RVQEARTTSModel(nn.Module):
             mog_mus = mog_mus.float()
             mog_mu_res = mog_mu_res.float()
             mog_logs = mog_logs.float()
-
-            # Log probability of the true code under each Gaussian component
-            logp_code = (-0.5 * math.log(2 * math.pi) - mog_logs) * self.config.latent_size - 0.5 * self.mog_head.dist(
-                mog_mus, (cont_code_target - mog_mu_res) * torch.exp(-mog_logs)
-            )
-
-            # Compute posterior q(k|c)
-            q_kc = (
-                torch.softmax(
-                    logp_code,
-                    -1,
+            with fp32_precision():
+                # Log probability of the true code under each Gaussian component
+                logp_code = (
+                    -0.5 * math.log(2 * math.pi) - mog_logs
+                ) * self.config.latent_size - 0.5 * self.mog_head.dist(
+                    mog_mus, (cont_code_target - mog_mu_res) * torch.exp(-mog_logs)
                 )
-                * (1 - self.config.label_smoothing)
-                + self.config.label_smoothing / self.mog_head.num_predictions
-            ).detach()
-            log_q_kc = torch.log(q_kc + 1e-8).detach()
 
-            #  Continuous Loss (negative log-likelihood)
-            c_loss = (-(q_kc * logp_code).sum(-1) * reduced_target_mask).sum() / target_mask.sum().clamp_min(1)
+                # Compute posterior q(k|c)
+                q_kc = (
+                    torch.softmax(
+                        logp_code,
+                        -1,
+                    )
+                    * (1 - self.config.label_smoothing)
+                    + self.config.label_smoothing / self.mog_head.num_predictions
+                ).detach()
+                log_q_kc = torch.log(q_kc + 1e-8).detach()
 
-            # KL Divergence Loss
-            k_loss = (
-                (q_kc * (log_q_kc - F.log_softmax(mog_logits, -1))).sum(-1) * reduced_target_mask
-            ).sum() / target_mask.sum().clamp_min(1)
+                #  Continuous Loss (negative log-likelihood)
+                c_loss = (-(q_kc * logp_code).sum(-1) * reduced_target_mask).sum() / target_mask.sum().clamp_min(1)
+
+                # KL Divergence Loss
+                k_loss = (
+                    (q_kc * (log_q_kc - F.log_softmax(mog_logits, -1))).sum(-1) * reduced_target_mask
+                ).sum() / target_mask.sum().clamp_min(1)
 
         return lm_loss, c_loss, k_loss
 
@@ -1293,6 +1306,8 @@ class RVQEARTTSModel(nn.Module):
         teacher_forcing_inference: bool = False,
         ignore_eos_flag_stop: bool = False,
         asr_speech_tokens_emb: Tensor | None = None,
+        audio_prompt_lantent: Tensor | None = None,
+        dataset_type: list[str] | None = None,
     ) -> RVQEARTTSOutput:
         """
         Performs a forward pass handling training, generation, or single-step inference.
@@ -1332,10 +1347,50 @@ class RVQEARTTSModel(nn.Module):
                 dropped_code = code
                 uncond_dec_flag = torch.zeros(code.size(0), 1, 1, device=code.device, dtype=torch.bool)
 
-            code_embeds = (
-                self.embed_code(self.depthsum_embedding(F.pad(dropped_code[:, :-1], [0, 0, 1, 0])))
-                + (audio_mask & (~F.pad(audio_mask[:, :-1], [1, 0]))).unsqueeze(-1) * self.bos_emb
-            )
+            # Shifted code
+            shifted_code = F.pad(dropped_code[:, :-1], [0, 0, 1, 0])
+
+            # Base embeddings
+            code_embed = self.depthsum_embedding(shifted_code)
+
+            # BOS mask
+            bos_mask = audio_mask & (~F.pad(audio_mask[:, :-1], [1, 0]))  # [B, T]
+            bos_mask = bos_mask.unsqueeze(-1)  # [B, T, 1]
+
+            # Mask for tokens BEFORE BOS
+            pre_bos_mask = bos_mask.cumsum(dim=1) == 0  # [B, T, 1]
+
+            # Apply projection to model size
+            code_embed = self.embed_code(code_embed)
+            # audio frozen projection
+            if self.config.get("use_audio_prompt_frozen_projection", False):
+                if audio_prompt_lantent is None:
+                    # Training-only anti-cloning augmentation for pure TTS batches.
+                    all_tts = (
+                        training
+                        and dataset_type is not None
+                        and len(dataset_type) == code_embed.size(0)
+                        and all(str(p).strip().lower() == "tts" for p in dataset_type)
+                    )
+                    if (
+                        self.config.get("force_no_audio_cond_latent_on_prompt", False)
+                        and all_tts
+                        and torch.rand(1, device=code_embed.device).item() < 0.3
+                    ):
+                        perm = torch.randperm(code_embed.size(0), device=code_embed.device)
+                        audio_prompt_lantent = code_embed[perm]
+                    else:
+                        W = self.audio_prompt_projection_W.to(code_embed.device, code_embed.dtype)
+                        audio_prompt_lantent = torch.nn.functional.linear(code_embed, W.T)
+
+                code_embed = torch.where(
+                    pre_bos_mask,
+                    audio_prompt_lantent,
+                    code_embed,
+                )
+
+            # Add BOS embedding
+            code_embeds = code_embed + bos_mask * self.bos_emb
 
         else:  # Inference
             code_embeds = self.embed_code(self.depthsum_embedding(code))
@@ -1402,13 +1457,19 @@ class RVQEARTTSModel(nn.Module):
             total_loss = lm_loss + c_loss + k_loss
 
             return RVQEARTTSOutput(
-                loss=total_loss, lm_loss=lm_loss, c_loss=c_loss, k_loss=k_loss, hidden_states=hidden_states
+                loss=total_loss,
+                lm_loss=lm_loss,
+                c_loss=c_loss,
+                k_loss=k_loss,
+                hidden_states=hidden_states,
+                audio_prompt_lantent=audio_prompt_lantent,
             )
         else:  # Inference
             if not generation_config:
                 return RVQEARTTSOutput(
                     hidden_states=hidden_states,
                     past_key_values=backbone_outputs.past_key_values,
+                    audio_prompt_lantent=audio_prompt_lantent,
                 )
             else:
                 if teacher_forcing_inference:
@@ -1553,7 +1614,10 @@ class RVQEARTTSModel(nn.Module):
                         lm_logits.view(-1, lm_logits.size(-1)),
                     ).view_as(lm_logits)
                 )
-            lm_logits = F.log_softmax(lm_logits, -1)
+
+            with fp32_precision():
+                lm_logits = F.log_softmax(lm_logits, -1)
+
             if eos_threshold is not None:
                 eos_flag = lm_logits[..., -1] > eos_threshold
             else:

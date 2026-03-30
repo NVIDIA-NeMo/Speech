@@ -693,7 +693,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 if f.is_file()
             }
 
-            checkpoint_filepaths = {f.resolve() for f in checkpoint_dir.rglob("*.ckpt")}
+            checkpoint_filepaths = {f.resolve() for f in checkpoint_dir.rglob("*.ckpt") if f.is_file()}
             for ckpt_filepath in checkpoint_filepaths:
                 possible_marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(ckpt_filepath)
                 if possible_marker_path in existing_marker_filepaths:

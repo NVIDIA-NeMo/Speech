@@ -35,15 +35,12 @@ from nemo.core.utils.cuda_python_utils import (
     run_nvrtc,
     with_conditional_node,
 )
+from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils import logging, logging_mode
 from nemo.utils.enum import PrettyStrEnum
 
-try:
+if CUDA_PYTHON_AVAILABLE:
     from cuda.bindings import runtime as cudart
-
-    HAVE_CUDA_PYTHON = True
-except ImportError:
-    HAVE_CUDA_PYTHON = False
 
 NEG_INF = float("-inf")
 
@@ -862,6 +859,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         else:
             raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
 
+    @cuda_python_required
     def _full_graph_compile(self):
         """Compiling full graph"""
         stream_for_graph = torch.cuda.Stream(self.state.device)

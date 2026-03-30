@@ -45,12 +45,14 @@ import argparse
 import copy
 import json
 import os
+import random
 import shutil
 from dataclasses import fields
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
+import torch
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
@@ -109,6 +111,10 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('utmosv2_avg', ''),
         metrics.get('total_gen_audio_seconds', ''),
         metrics.get('frechet_codec_distance', ''),
+        metrics.get('eou_cutoff_rate', ''),
+        metrics.get('eou_silence_rate', ''),
+        metrics.get('eou_noise_rate', ''),
+        metrics.get('eou_error_rate', ''),
     ]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
@@ -156,9 +162,9 @@ def run_inference_and_evaluation(
 ) -> Tuple[Optional[float], Optional[float]]:
     """Run inference and optional evaluation on specified datasets.
 
-    Longform inference is automatically detected based on text characteristics
-    when longform_mode="auto" (default). Use longform_mode="always" or "never"
-    for explicit control.
+    Uses unified inference path with automatic text chunking based on
+    per-sample language thresholds. Short texts are processed as single chunks,
+    long texts are automatically split into sentences.
 
     Args:
         model_config: Configuration for loading the model.
@@ -201,8 +207,8 @@ def run_inference_and_evaluation(
         f"{checkpoint_name}_{moe_info}{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
     )
 
-    # Create inference runner (auto-detects longform based on config.longform_mode)
-    logging.info(f"Longform mode: {inference_config.longform_mode}")
+    # Create inference runner (uses unified path with automatic text chunking)
+    logging.info("Using unified inference with automatic text chunking based on language thresholds")
     runner = MagpieInferenceRunner(model, inference_config)
 
     # Tracking metrics across datasets
@@ -216,7 +222,8 @@ def run_inference_and_evaluation(
         "wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
-        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance"
+        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
+        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate"
     )
 
     for dataset in datasets:
@@ -287,6 +294,7 @@ def run_inference_and_evaluation(
             eval_config_for_dataset = EvaluationConfig(
                 sv_model=eval_config.sv_model,
                 asr_model_name=eval_config.asr_model_name,
+                eou_model_name=eval_config.eou_model_name,
                 language=language,
                 with_utmosv2=eval_config.with_utmosv2,
                 with_fcd=eval_config.with_fcd,
@@ -364,12 +372,28 @@ def run_inference_and_evaluation(
     return None, None
 
 
+def seed_all(seed: int):
+    """
+    Attempts to make script deterministic
+    """
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+
+
 def create_argument_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
     parser = argparse.ArgumentParser(
         description='MagpieTTS Inference and Evaluation',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+    )
+    parser.add_argument(
+        '--deterministic',
+        action='store_true',
+        help='Attempts to make results deterministic to the best that can be done. Used for testing',
     )
 
     # Model loading arguments
@@ -462,25 +486,6 @@ def create_argument_parser() -> argparse.ArgumentParser:
         infer_group.add_argument(f"--{field.name}", **extra_args)
     infer_group.add_argument('--batch_size', type=int, default=32)
     infer_group.add_argument('--use_cfg', action='store_true', help='Enable classifier-free guidance')
-    infer_group.add_argument(
-        '--longform_mode',
-        type=str,
-        default='auto',
-        choices=['auto', 'always', 'never'],
-        help='Longform inference mode: auto (detect from text), always, or never',
-    )
-    infer_group.add_argument(
-        '--longform_word_threshold',
-        type=int,
-        default=40,
-        help='Word threshold for auto-detection of longform text',
-    )
-    infer_group.add_argument(
-        '--longform_max_decoder_steps',
-        type=int,
-        default=50000,
-        help='Maximum decoder steps for longform inference',
-    )
 
     # Local transformer / MaskGit arguments
     infer_group.add_argument('--use_local_transformer', action='store_true')
@@ -502,6 +507,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
     eval_group.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b")
+    eval_group.add_argument(
+        '--eou_model_name',
+        type=str,
+        default="facebook/wav2vec2-base-960h",
+        help=(
+            'Hugging Face model id or local path to the EoU wav2vec2 model directory. '
+            'For offline use, download the model locally and pass the directory path here.'
+        ),
+    )
     eval_group.add_argument('--num_repeats', type=int, default=1)
     eval_group.add_argument('--confidence_level', type=float, default=0.95)
     eval_group.add_argument('--disable_utmosv2', action='store_true')
@@ -529,6 +543,8 @@ def main(argv=None):
     """
     parser = create_argument_parser()
     args = parser.parse_args(argv)
+    if args.deterministic:
+        seed_all(seed=9)
 
     dataset_meta_info = load_evalset_config(args.datasets_json_path)
     datasets = filter_datasets(dataset_meta_info, args.datasets)
@@ -548,26 +564,15 @@ def main(argv=None):
         parser.error("You must provide either:\n 1. --hparams_files and --checkpoint_files\n 2. --nemo_files")
 
     # Build configurations
-    # Use higher max_decoder_steps for longform inference when mode is 'always'
-    if args.longform_mode == 'always':
-        max_decoder_steps = args.longform_max_decoder_steps
-    elif args.longform_mode == 'auto':
-        # Use longform steps if any text appears long (will be checked in runner)
-        max_decoder_steps = args.longform_max_decoder_steps
-    else:  # 'never'
-        max_decoder_steps = 440
     model_inference_parameters = {}
     for field in fields(ModelInferenceParameters):
-        field = field.name
-        if field == "max_decoder_steps":
-            model_inference_parameters[field] = max_decoder_steps
-            continue
-        arg_from_cmdline = vars(args)[field]
+        field_name = field.name
+        arg_from_cmdline = vars(args)[field_name]
         if arg_from_cmdline is not None:
-            if field in ["estimate_alignment_from_layers", "apply_prior_to_layers"]:
-                model_inference_parameters[field] = parse_layer_list(vars(args)[field])
+            if field_name in ["estimate_alignment_from_layers", "apply_prior_to_layers"]:
+                model_inference_parameters[field_name] = parse_layer_list(arg_from_cmdline)
             else:
-                model_inference_parameters[field] = vars(args)[field]
+                model_inference_parameters[field_name] = arg_from_cmdline
 
     inference_config = InferenceConfig(
         model_inference_parameters=ModelInferenceParameters.from_dict(model_inference_parameters),
@@ -579,13 +584,12 @@ def main(argv=None):
         maskgit_noise_scale=args.maskgit_noise_scale,
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,
-        longform_mode=args.longform_mode,
-        longform_word_threshold=args.longform_word_threshold,
     )
 
     eval_config = EvaluationConfig(
         sv_model=args.sv_model,
         asr_model_name=args.asr_model_name,
+        eou_model_name=args.eou_model_name,
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,

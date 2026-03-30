@@ -64,6 +64,101 @@ def configure_optimizers(model: LightningModule):
     return ans
 
 
+def configure_optimizers_exclude_norm_from_wd(model: LightningModule):
+    """
+    Advanced optimizer configuration function for top-level PyTorch Lightning modules.
+
+    This function sets up parameter freezing and instantiates the optimizer and LR scheduler,
+    but specifically separates parameters into two groups:
+      1. Standard weights: Receive the configured weight decay.
+      2. Biases and Normalization layers (e.g., LayerNorm): Receive 0.0 weight decay to improve
+         mixed precision stability during training.
+
+    The ``model`` object is expected to have a ``model.cfg`` attribute with OmegaConf configuration.
+    The following fields are expected:
+
+    * ``optimizer`` with hydra-style ``_target_`` pointing to optimizer class.
+    * (optional) ``freeze_params`` with a list of regex patterns for identifying frozen parameters.
+    * (optional) ``prevent_freeze_params`` with a list of regex patterns for keeping specific parameters trainable.
+    * (optional) ``lr_scheduler`` with hydra-style ``_target_`` pointing to LR scheduler class.
+
+    Returns:
+        PyTorch Lightning Trainer-compatible dict with structure::
+
+            {
+                "optimizer": <optimizer>,
+                "lr_scheduler": {"scheduler": <lr_scheduler>, "interval": "step", "frequency": 1}
+            }
+    """
+    assert hasattr(model, "cfg"), "Expected `model.cfg` attribute to exist."
+    assert "optimizer" in model.cfg, "Expected `model.cfg` to contain 'optimizer' configuration."
+
+    # 1. Identify trainable parameters using the standard freezing logic
+    trainable_params_gen = freeze_and_subset(
+        model.named_parameters(),
+        exclude_patterns=model.cfg.get("freeze_params", []),
+        keep_patterns=model.cfg.get("prevent_freeze_params", []),
+    )
+
+    # freeze_and_subset yields parameters, but we need to track names to separate by norm/bias.
+    # So we get the set of id(param) that are trainable to filter named_parameters.
+    trainable_param_ids = {id(p) for p in trainable_params_gen}
+
+    # 2. Identify layers for Weight Decay exclusion
+    no_decay_keywords = ["bias", "norm", "layernorm"]
+
+    decay_group = []
+    no_decay_group = []
+    no_decay_names = []
+    total_trainable_layers = 0
+
+    for name, param in model.named_parameters():
+        if id(param) in trainable_param_ids:
+            total_trainable_layers += 1
+            if any(nd in name.lower() for nd in no_decay_keywords):
+                no_decay_group.append(param)
+                no_decay_names.append(name)
+            else:
+                decay_group.append(param)
+
+    # Logging audit trail
+    logging.info("=" * 70)
+    logging.info("OPTIMIZER STRATEGY: Mixed Precision Stability")
+    logging.info(f"Total Trainable Layers: {total_trainable_layers}")
+    logging.info("-" * 70)
+    logging.info(
+        f"REGULARIZATION: Applying weight_decay={model.cfg.optimizer.get('weight_decay', 0.1)} "
+        f"to {len(decay_group)} weight layers."
+    )
+    logging.info(f"STABILITY: Excluding {len(no_decay_names)} Normalization and Bias layers from weight decay.")
+
+    for n in no_decay_names[:10]:
+        logging.info(f"  [WD=0.0] -> {n}")
+    if len(no_decay_names) > 10:
+        logging.info(f"  ... (+ {len(no_decay_names) - 10} additional normalization/bias layers)")
+    logging.info("=" * 70)
+
+    # 3. Parameter Grouping
+    # Note: We must exclude 'weight_decay' from the main config so we can apply it per-group
+    # Hydra's instantiate will fail if we pass grouped dicts to the main positional argument
+    # but weight_decay is also defined in model.cfg.optimizer.
+    base_wd = model.cfg.optimizer.get("weight_decay", 0.01)
+    optim_groups = [
+        {"params": decay_group, "weight_decay": base_wd},
+        {"params": no_decay_group, "weight_decay": 0.0},
+    ]
+
+    # 4. Instantiate via Hydra
+    optimizer = hydra.utils.instantiate(model.cfg.optimizer, optim_groups, _convert_='all')
+
+    ans = {"optimizer": optimizer}
+    if "lr_scheduler" in model.cfg:
+        lr_scheduler = hydra.utils.instantiate(model.cfg.lr_scheduler, optimizer)
+        ans["lr_scheduler"] = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
+
+    return ans
+
+
 def freeze_and_subset(
     named_parameters: Iterable[tuple[str, torch.nn.Parameter]],
     exclude_patterns: list[str],

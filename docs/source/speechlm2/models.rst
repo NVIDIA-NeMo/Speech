@@ -68,7 +68,7 @@ This model is particularly useful for:
 * Applications requiring natural-sounding spoken responses
 
 DuplexS2SSpeechDecoderModel
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This model focuses on the speech generation aspect of the duplex system, optimizing the decoder for high-quality speech output.
 
@@ -82,6 +82,40 @@ This model is particularly useful for:
 * Applications focusing on high-quality speech synthesis
 * Systems where speech generation quality is the primary concern
 * Specialized voice output applications
+
+DuplexSTTModel
+^^^^^^^^^^^^^^
+
+This model focuses on speech-to-text conversion in duplex conversations, processing both user speech and generating agent text responses.
+
+Key components:
+
+* **Audio Perception Module**: Processes audio inputs into embeddings for the LLM.
+* **LLM**: Processes audio embeddings and generates text responses.
+* **Tokenizer**: Converts LLM outputs into readable text.
+
+This model is particularly useful for:
+* Speech-to-text applications in conversational settings
+* Duplex systems where text responses are needed instead of speech
+* Applications requiring transcript generation from spoken dialogue
+
+
+NemotronVoiceChat
+^^^^^^^^^^^^^^^^^
+
+NemotronVoiceChat is an **inference-only**, end-to-end Duplex Speech-to-Speech pipeline. It achieves full-duplex conversational capabilities by seamlessly merging the `DuplexSTTModel` with the `DuplexEARTTS` model. 
+
+Because it is designed exclusively for evaluation, offline inference, and validation workflows (no training step is implemented), it is highly optimized for executing the full perception-generation-synthesis loop.
+
+Key components:
+
+* **DuplexSTTModel**: Handles the streaming audio perception and text response generation.
+* **DuplexEARTTS**: Serves as the autoregressive speech decoder, generating high-fidelity audio from the STT model's text tokens in a streamable fashion.
+
+This model is particularly useful for:
+* End-to-end evaluation of the complete speech-to-speech pipeline.
+* Offline speech-to-speech inference workflows.
+
 
 Model Components
 ----------------
@@ -221,12 +255,18 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     
     # Load DuplexS2SModel
     duplex_model = slm.models.DuplexS2SModel.from_pretrained("path/to/checkpoint")
-    
+
     # Load DuplexS2SSpeechDecoderModel
-    decoder_model = slm.models.DuplexS2SSpeechDecoderModel.from_pretrained("path/to/checkpoint")
+    speech_decoder_model = slm.models.DuplexS2SSpeechDecoderModel.from_pretrained("path/to/checkpoint")
+
+    # Load DuplexSTTModel
+    stt_model = slm.models.DuplexSTTModel.from_pretrained("path/to/checkpoint")
 
     # Load DuplexEARTTS
-    decoder_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
+    ear_tts_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
+
+    # Load NemotronVoiceChat (Inference Only)
+    voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("path/to/checkpoint")
 
 Model Configuration
 -------------------

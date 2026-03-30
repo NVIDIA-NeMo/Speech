@@ -1,2 +1,0 @@
-Model Name,Model Base Class,Model Card
-slu_conformer_transformer_large_slurp,SLUIntentSlotBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:slu_conformer_transformer_large_slurp"

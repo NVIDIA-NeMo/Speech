@@ -67,7 +67,7 @@ class UTMOSv2Calculator:
         input_dir: str,
         batch_size: int = 16,
         num_workers: int = None,
-        filenames: list[str] | None = None,
+        val_list: list[str] | None = None,
     ) -> list[dict[str, str | float]]:
         """
         Computes UTMOSv2 scores for `*.wav` files in the given directory.
@@ -77,7 +77,7 @@ class UTMOSv2Calculator:
             batch_size: The number of audio files per scoring batch.
             num_workers: Number of worker processes used by UTMOS internals.
                 Set to 0 to avoid multiprocessing pickling issues.
-            filenames: If provided, only score these basenames (e.g. ``["000000.wav", "000001.wav"]``)
+            val_list: If provided, only score these basenames (e.g. ``["000000.wav", "000001.wav"]``)
                 via the library's ``val_list`` parameter instead of globbing the whole directory.
                 If None, all ``*.wav`` files in ``input_dir`` are scored.
         Returns:
@@ -86,15 +86,17 @@ class UTMOSv2Calculator:
         if num_workers is None:
             num_workers = batch_size
 
-        predict_kwargs = dict(input_dir=input_dir, num_repetitions=1, num_workers=num_workers, batch_size=batch_size)
-        if filenames is not None:
-            predict_kwargs["val_list"] = list(filenames)
-
         with torch.inference_mode():
             # UTMOSV2 tends to launch many of OpenMP threads which overloads the machine's CPUs
             # while actually slowing down the prediction. Limit the number of threads here.
             with threadpool_limits(limits=1):
-                results = self.model.predict(**predict_kwargs)
+                results = self.model.predict(
+                    input_dir=input_dir,
+                    num_repetitions=1,
+                    num_workers=num_workers,
+                    batch_size=batch_size,
+                    val_list=val_list,
+                )
         return results
 
 

@@ -59,6 +59,7 @@ except (ImportError, ModuleNotFoundError):
 
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
+
 @dataclass
 class ProcessBatchOutput:
     """
@@ -1230,12 +1231,12 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                         utmos_batch_size = max(int(self.cfg.get('utmos_batch_size', len(predicted_audio_paths))), 1)
                         utmos_num_workers = max(int(self.cfg.get('utmos_num_workers', 0)), 0)
                         try:
-                            filenames = [os.path.basename(p) for p in predicted_audio_paths]
+                            val_list = [os.path.basename(p) for p in predicted_audio_paths]
                             batch_results = self._utmos_calculator.process_directory(
                                 audio_dir,
                                 batch_size=utmos_batch_size,
                                 num_workers=utmos_num_workers,
-                                filenames=filenames,
+                                val_list=val_list,
                             )
                             utmos_scores = [float(item['predicted_mos']) for item in batch_results]
                         except Exception as e:

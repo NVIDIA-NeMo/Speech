@@ -53,6 +53,11 @@ class BaseInferenceConfig(abc.ABC):
     Subclasses must declare their own ``model_inference_parameters`` field
     with the appropriate type (ModelInferenceParameters or
     EasyModelInferenceParameters).
+
+    Attributes:
+        batch_size: Batch size for inference.
+        use_cfg: Whether to use classifier-free guidance.
+        use_local_transformer: Whether to use local transformer for inference.
     """
 
     batch_size: int = 32
@@ -74,7 +79,18 @@ class BaseInferenceConfig(abc.ABC):
 
 @dataclass
 class MagpieInferenceConfig(BaseInferenceConfig):
-    """Configuration for encoder-decoder MagpieTTSModel inference."""
+    """Configuration for encoder-decoder MagpieTTSModel inference.
+    
+    Attributes:
+        # Model specific inference parameters
+        model_inference_parameters: See ModelInferenceParameters dataclass
+
+        # MaskGit parameters
+        maskgit_n_steps: Number of MaskGit refinement steps.
+        maskgit_noise_scale: Noise scale for MaskGit sampling.
+        maskgit_fixed_schedule: Fixed schedule for MaskGit (optional).
+        maskgit_sampling_type: Type of MaskGit sampling.
+    """
 
     model_inference_parameters: ModelInferenceParameters = field(default_factory=ModelInferenceParameters)
     apply_attention_prior: bool = False
@@ -126,7 +142,14 @@ class MagpieInferenceConfig(BaseInferenceConfig):
 
 @dataclass
 class EasyMagpieInferenceConfig(BaseInferenceConfig):
-    """Configuration for decoder-only EasyMagpieTTSInferenceModel inference."""
+    """Configuration for decoder-only EasyMagpieTTSInferenceModel inference.
+    
+    Attributes:
+        model_inference_parameters: See EasyModelInferenceParameters dataclass
+        phoneme_input_type: Type of phoneme input ('gt' or 'predicted').
+        phoneme_sampling_method: Method of sampling phonemes ('argmax' or 'multinomial').
+        dropout_text_input: Whether to dropout text input.
+    """
 
     model_inference_parameters: EasyModelInferenceParameters = field(default_factory=EasyModelInferenceParameters)
     phoneme_input_type: str = "gt"

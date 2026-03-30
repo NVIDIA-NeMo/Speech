@@ -96,7 +96,7 @@ model:
   
   phoneme_tokenizer:
     _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPABPETokenizer
-    tokenizer_path: "scripts/tts_dataset_files/bpe_ipa_tokenizer_2048_en_de_es_fr_hi_it_vi_zh.json"
+    tokenizer_path: ???
 
   text_tokenizers:
     nemotron_nano_30b:

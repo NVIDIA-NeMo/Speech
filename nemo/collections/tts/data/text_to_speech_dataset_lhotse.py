@@ -343,7 +343,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     context_audio_len = context_audio.shape[0]
                     context_audio_list.append(context_audio)
                     context_audio_len_list.append(context_audio_len)
-    
+
             if self.load_16khz_audio:
                 if cut.has_custom("context_audio"):
                     # use context audio for SV model

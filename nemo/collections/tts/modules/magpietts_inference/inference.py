@@ -80,7 +80,7 @@ class BaseInferenceConfig(abc.ABC):
 @dataclass
 class MagpieInferenceConfig(BaseInferenceConfig):
     """Configuration for encoder-decoder MagpieTTSModel inference.
-    
+
     Attributes:
         # Model specific inference parameters
         model_inference_parameters: See ModelInferenceParameters dataclass
@@ -143,7 +143,7 @@ class MagpieInferenceConfig(BaseInferenceConfig):
 @dataclass
 class EasyMagpieInferenceConfig(BaseInferenceConfig):
     """Configuration for decoder-only EasyMagpieTTSInferenceModel inference.
-    
+
     Attributes:
         model_inference_parameters: See EasyModelInferenceParameters dataclass
         phoneme_input_type: Type of phoneme input ('gt' or 'predicted').

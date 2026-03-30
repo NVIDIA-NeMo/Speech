@@ -62,7 +62,7 @@ class BaseInferenceConfig(abc.ABC):
     @abc.abstractmethod
     def build_identifier(self) -> str:
         """Build a unique identifier string for naming output directories."""
-        ...
+        pass
 
     @staticmethod
     def _format_layer_list(layers: Optional[List[int]]) -> str:
@@ -186,7 +186,7 @@ class BaseInferenceRunner(abc.ABC):
         Returns:
             A model-compatible inference dataset implementation.
         """
-        ...
+        pass
 
     @abc.abstractmethod
     def run_inference_on_dataset(
@@ -216,7 +216,7 @@ class BaseInferenceRunner(abc.ABC):
                 - generated_audio_paths: Paths to generated audio files.
                 - codec_file_paths: Paths to predicted codec token files.
         """
-        ...
+        pass
 
     def _configure_tokenizer(self) -> None:
         """Configure the tokenizer for inference (phoneme prob = 1.0)."""

@@ -144,11 +144,13 @@ model:
       quadratic_duration: ${quadratic_duration}
       use_bucketing: false
       force_finite: true
+      force_map_dataset: true
       drop_last: false
       shuffle: false
       num_workers: 2
       pin_memory: true
-      force_map_dataset: true
+      seed: 42
+      shard_seed: "randomized"
 
       input_cfg:
       - type: lhotse_shar

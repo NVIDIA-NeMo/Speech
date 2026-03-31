@@ -197,6 +197,7 @@ jobs:
             script: L2_TTS_Fast_dev_runs_EasyMagpietts_Nemotron
           - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_EasyMagpietts_OnlinePO
+            timeout: 20
           - runner: self-hosted-azure
             script: L2_TTS_InferEvaluate_EasyMagpietts
     needs: [unit-tests]

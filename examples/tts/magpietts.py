@@ -21,10 +21,18 @@ from nemo.collections.tts.models import (
     MagpieTTSModelOfflinePO,
     MagpieTTSModelOfflinePODataGen,
     MagpieTTSModelOnlinePO,
+    OnlineCFGDistillation,
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
+
+_TRAIN_MODES: list[str] = [
+    "train",
+    "online_cfg_distillation_train",
+    "dpo_train",
+    "onlinepo_train",
+]
 
 
 @hydra_runner(config_path="conf/magpietts", config_name="magpietts_lhotse")
@@ -54,8 +62,12 @@ def main(cfg):
         pl.seed_everything(seed, workers=True)
 
     mode = cfg.get('mode', 'train')
+    train_modes_msg = ", ".join(_TRAIN_MODES)
+
     if mode == 'train':
         model = MagpieTTSModel(cfg=cfg.model, trainer=trainer)
+    elif mode == 'online_cfg_distillation_train':
+        model = OnlineCFGDistillation(cfg=cfg.model, trainer=trainer)
     elif mode == 'dpo_train':
         model_cfg = cfg.model
         with open_dict(model_cfg):
@@ -69,21 +81,19 @@ def main(cfg):
     elif mode == 'test':
         model = MagpieTTSModelOfflinePODataGen(cfg=cfg.model, trainer=trainer)
     else:
-        raise NotImplementedError(f"Only train, dpo_train, onlinepo_train and test modes are supported. Got {mode}")
+        raise NotImplementedError(f"Only {train_modes_msg} and test modes are supported. Got {mode}")
 
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
 
     try:
-        if mode in ['train', 'dpo_train', 'onlinepo_train']:
+        if mode in _TRAIN_MODES:
             logging.info("Starting training...")
             trainer.fit(model)
         elif mode == 'test':
             logging.info("Starting testing...")
             trainer.test(model)
         else:
-            raise NotImplementedError(
-                f"Only train, dpo_train, onlinepo_train and test modes are supported. Got {mode}"
-            )
+            raise NotImplementedError(f"Only {train_modes_msg} and test modes are supported. Got {mode}")
         logging.info("Training/testing completed successfully.")
     finally:
         # Ensure WandB completes all uploads before Python thread shutdown

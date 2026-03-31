@@ -1068,6 +1068,7 @@ class MagpieTTSModel(ModelPT):
             'eval_speaker_verification_model',
             'whisper_model',
             'squim_objective_model',
+            '_teacher_model',
         ]
         # Skip context_encoder if checkpoint has baked embedding (weights won't be in checkpoint)
         if has_baked_embedding_in_ckpt:

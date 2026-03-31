@@ -192,6 +192,12 @@ jobs:
           - runner: self-hosted-azure
             script: L2_TTS_InferEvaluate_Magpietts_FrameStacking
           - runner: self-hosted-azure
+            script: L2_TTS_Fast_dev_runs_Magpietts_OnlineCFGDistillation
+          - runner: self-hosted-azure
+            script: L2_TTS_Fast_dev_runs_Magpietts_MoE_OnlineCFGDistillation
+          - runner: self-hosted-azure
+            script: L2_TTS_Fast_dev_runs_Magpietts_FrameStacking_OnlineCFGDistillation
+          - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_EasyMagpietts_Qwen
           - runner: self-hosted-azure
             script: L2_TTS_Fast_dev_runs_EasyMagpietts_Nemotron

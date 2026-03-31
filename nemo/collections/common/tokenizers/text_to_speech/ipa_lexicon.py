@@ -15,7 +15,7 @@
 
 # fmt: off
 
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN"]
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN", "ar-MSA","pt-BR"]
 
 DEFAULT_PUNCTUATION = (
     ',', '.', '!', '?', '-',
@@ -106,6 +106,15 @@ GRAPHEME_CHARACTER_SETS = {
         'ॅ', 'ॉ', 'ँ', 'ं', 'ः', '्', '़', 'ॊ', 'ॢ', 'ॣ', 'ॆ',
         # Danda (period)
         '।',
+    ),
+    # ref: https://en.wikipedia.org/wiki/Arabic_alphabet
+    "ar-MSA": (
+        'ء', 'آ', 'أ', 'إ', 'ؤ', 'ئ', 'ا', 'ب', 'ة', 'ت',
+        'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر', 'ز', 'س', 'ش',
+        'ص', 'ض', 'ط', 'ظ', 'ع', 'غ', 'ف', 'ق', 'ك', 'ل',
+        'م', 'ن', 'ه', 'و', 'ى', 'ي', 
+        # Diacritics
+        'ً', 'ٌ', 'ٍ', 'َ', 'ُ', 'ِ', 'ّ', 'ٰ', 'ْ',
     ),
 }
 
@@ -345,6 +354,21 @@ def get_ipa_punctuation_list(locale):
                 '！',
                 '？',
                 '・',
+            ]
+        )
+    elif locale == "hi-IN":
+        punct_set.update(
+            [
+                '।',
+                '॥',
+            ]
+        )
+    elif locale == "ar-MSA":
+        punct_set.update(
+            [
+                '،',
+                '؛',
+                '؟',
             ]
         )
     punct_list = sorted(list(punct_set))

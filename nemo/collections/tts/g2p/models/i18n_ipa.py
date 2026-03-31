@@ -21,6 +21,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     LATIN_CHARS_ALL,
+    INDIC_CHARS_ALL,
     any_locale_word_tokenize,
     english_word_tokenize,
     normalize_unicode_text,
@@ -29,18 +30,21 @@ from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.collections.tts.g2p.utils import GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER, set_grapheme_case
 from nemo.utils import logging
 
+# Compiled regex pattern for Indic scripts (used in dictionary parsing)
+_INDIC_PATTERN = re.compile(f'^[{INDIC_CHARS_ALL}]')
 
 class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]
     # Regex for roman characters, accented characters, and locale-agnostic numbers/digits
-    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}\d]")
-    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}\d]")
+    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\d]")
+    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\d]")
     # fmt: on
 
     def __init__(
         self,
-        phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]],
+        #phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]],
+        phoneme_dict: Union[str, pathlib.Path, List[Union[str, pathlib.Path]], Dict[str, List[List[str]]]],
         locale: str = "en-US",
         apply_to_oov_word: Optional[Callable[[str], str]] = None,
         ignore_ambiguous_words: bool = True,
@@ -154,10 +158,10 @@ class IpaG2p(BaseG2p):
 
     @staticmethod
     def _parse_phoneme_dict(
-        phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]]
+        phoneme_dict: Union[str, pathlib.Path, List[Union[str, pathlib.Path]], Dict[str, List[List[str]]]]
     ) -> Dict[str, List[List[str]]]:
         """
-        parse an input IPA dictionary and save it as a dict object.
+        parse an input IPA dictionary (or multiple) and save it as a dict object.
 
         Args:
             phoneme_dict (Union[str, pathlib.Path, dict]): Path to file in CMUdict format or an IPA dict object with
@@ -167,6 +171,14 @@ class IpaG2p(BaseG2p):
 
         Returns: a dict object (Dict[str, List[List[str]]]).
         """
+        if isinstance(phoneme_dict, list):
+            merged = defaultdict(list)
+            for path in phoneme_dict:
+                parsed = IpaG2p._parse_phoneme_dict(path)
+                for word, prons in parsed.items():
+                    merged[word].extend(prons)
+            return merged
+            
         if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path):
             # load the dictionary file where there may exist a digit suffix after a word, e.g. "Word(2)", which
             # represents the pronunciation variant of that word.
@@ -190,6 +202,7 @@ class IpaG2p(BaseG2p):
                         or 'À' <= line[0] <= 'Ö'
                         or 'Ø' <= line[0] <= 'ö'
                         or 'ø' <= line[0] <= 'ÿ'
+                        or _INDIC_PATTERN.match(line[0])
                         or line[0] == "'"
                     ):
                         parts = line.strip().split(maxsplit=1)
@@ -217,7 +230,7 @@ class IpaG2p(BaseG2p):
 
         return phoneme_dict_obj
 
-    def replace_dict(self, phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]]):
+    def replace_dict(self, phoneme_dict: Union[str, pathlib.Path, List[Union[str, pathlib.Path]], Dict[str, List[List[str]]]]):
         """
         Replace model's phoneme dictionary with a custom one
         """

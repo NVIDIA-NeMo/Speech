@@ -29,6 +29,7 @@ __all__ = [
     "any_locale_word_tokenize",
     "english_word_tokenize",
     "LATIN_CHARS_ALL",
+    "INDIC_CHARS_ALL",
     "normalize_unicode_text",
     "japanese_text_preprocessing",
 ]
@@ -52,12 +53,24 @@ SYNOGLYPH2ASCII = {g: asc for asc, glyphs in _synoglyphs.items() for g in glyphs
 LATIN_ALPHABET_BASIC = "A-Za-z"
 ACCENTED_CHARS = "À-ÖØ-öø-ÿ"
 LATIN_CHARS_ALL = f"{LATIN_ALPHABET_BASIC}{ACCENTED_CHARS}"
+
+# Indic characters based on https://www.unicode.org/charts/
+# Hindi, Marathi, Nepali, Sanskrit https://en.wikipedia.org/wiki/Devanagari_(Unicode_block)
+DEVANAGARI_CHARS = r'\u0900-\u0963\u0966-\u097F'  # excluding danda (U+0964), double danda (U+0965) so they are treated as punctuation
+BENGALI_CHARS = r'\u0980-\u09FF'  # Bengali, Assamese
+TAMIL_CHARS = r'\u0B80-\u0BFF'  # Tamil
+TELUGU_CHARS = r'\u0C00-\u0C7F'  # Telugu
+KANNADA_CHARS = r'\u0C80-\u0CFF'  # Kannada
+GUJARATI_CHARS = r'\u0A80-\u0AFF'  # Gujarati
+INDIC_CHARS_ALL = f"{DEVANAGARI_CHARS}{BENGALI_CHARS}{TAMIL_CHARS}{TELUGU_CHARS}{KANNADA_CHARS}{GUJARATI_CHARS}"
+
 _WORDS_RE_EN = re.compile(
     fr"([{LATIN_ALPHABET_BASIC}]+(?:[{LATIN_ALPHABET_BASIC}\-']*[{LATIN_ALPHABET_BASIC}]+)*)|(\|[^|]*\|)|([^{LATIN_ALPHABET_BASIC}|]+)"
 )
 _WORDS_RE_ANY_LOCALE = re.compile(
-    fr"([{LATIN_CHARS_ALL}]+(?:[{LATIN_CHARS_ALL}\-']*[{LATIN_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{LATIN_CHARS_ALL}|]+)"
+    fr"([{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}]+(?:[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\-']*[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}|]+)"
 )
+
 
 
 def english_text_preprocessing(text, lower=True):

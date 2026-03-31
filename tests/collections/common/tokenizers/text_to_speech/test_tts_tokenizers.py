@@ -52,6 +52,14 @@ class TestTTSTokenizers:
         "ハロー": ["haɾoː"],
         "ワールド": ["wa:ɾdo"],
     }
+    PHONEME_DICT_HI = {
+        "नमस्ते": ["nəmˈʌsteː"],
+        "दुनिया": ["dˈʊnɪjˌã"],
+    }
+    PHONEME_DICT_PT_BR = {
+        "Olá": ["olˈa"],
+        "mundo": ["mˈũndʊ"],
+    }
 
     @staticmethod
     def _parse_text(tokenizer, text):
@@ -235,6 +243,31 @@ class TestTTSTokenizers:
         tokenizer = IPATokenizer(g2p=g2p, locale="fr-FR")
         chars, tokens = self._parse_text(tokenizer, input_text)
 
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_pt_br(self):
+        input_text = "Olá mundo"
+        expected_output = "olˈa mˈũndʊ"
+
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_PT_BR, locale="pt-BR")
+        tokenizer = IPATokenizer(g2p=g2p, locale="pt-BR")
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_hi_in(self):
+        input_text = "नमस्ते world।"
+        expected_output = "nəmˈʌsteː ˈwɝɫd।"
+        g2p = IpaG2p(
+            phoneme_dict=[self.PHONEME_DICT_HI, self.PHONEME_DICT_EN],
+            locale="hi-IN",
+        )
+        tokenizer = IPATokenizer(g2p=g2p, locale="hi-IN")
+        chars, tokens = self._parse_text(tokenizer, input_text)
         assert chars == expected_output
 
     @pytest.mark.run_only_on('CPU')

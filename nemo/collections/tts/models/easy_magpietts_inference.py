@@ -47,6 +47,9 @@ from nemo.utils import logging
 class TrainingMode:
     """
     Configuration for a training mode in multi-mode training.
+    We can configure our model to have different delays for phoneme and speech streams in each mode.
+    During training, we choose one of the modes randomly for each batch.
+    For inference, we can specify the inference mode to use.
 
     Attributes:
         text_input_mode: Either "full" or "streaming"

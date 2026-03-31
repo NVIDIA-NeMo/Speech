@@ -56,7 +56,9 @@ LATIN_CHARS_ALL = f"{LATIN_ALPHABET_BASIC}{ACCENTED_CHARS}"
 
 # Indic characters based on https://www.unicode.org/charts/
 # Hindi, Marathi, Nepali, Sanskrit https://en.wikipedia.org/wiki/Devanagari_(Unicode_block)
-DEVANAGARI_CHARS = r'\u0900-\u0963\u0966-\u097F'  # excluding danda (U+0964), double danda (U+0965) so they are treated as punctuation
+DEVANAGARI_CHARS = (
+    r'\u0900-\u0963\u0966-\u097F'  # excluding danda (U+0964), double danda (U+0965) so they are treated as punctuation
+)
 BENGALI_CHARS = r'\u0980-\u09FF'  # Bengali, Assamese
 TAMIL_CHARS = r'\u0B80-\u0BFF'  # Tamil
 TELUGU_CHARS = r'\u0C00-\u0C7F'  # Telugu
@@ -70,7 +72,6 @@ _WORDS_RE_EN = re.compile(
 _WORDS_RE_ANY_LOCALE = re.compile(
     fr"([{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}]+(?:[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\-']*[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}|]+)"
 )
-
 
 
 def english_text_preprocessing(text, lower=True):

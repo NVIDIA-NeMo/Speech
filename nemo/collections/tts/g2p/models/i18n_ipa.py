@@ -20,8 +20,8 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
-    LATIN_CHARS_ALL,
     INDIC_CHARS_ALL,
+    LATIN_CHARS_ALL,
     any_locale_word_tokenize,
     english_word_tokenize,
     normalize_unicode_text,
@@ -33,6 +33,7 @@ from nemo.utils import logging
 # Compiled regex pattern for Indic scripts (used in dictionary parsing)
 _INDIC_PATTERN = re.compile(f'^[{INDIC_CHARS_ALL}]')
 
+
 class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]
@@ -43,7 +44,7 @@ class IpaG2p(BaseG2p):
 
     def __init__(
         self,
-        #phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]],
+        # phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]],
         phoneme_dict: Union[str, pathlib.Path, List[Union[str, pathlib.Path]], Dict[str, List[List[str]]]],
         locale: str = "en-US",
         apply_to_oov_word: Optional[Callable[[str], str]] = None,
@@ -178,7 +179,7 @@ class IpaG2p(BaseG2p):
                 for word, prons in parsed.items():
                     merged[word].extend(prons)
             return merged
-            
+
         if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path):
             # load the dictionary file where there may exist a digit suffix after a word, e.g. "Word(2)", which
             # represents the pronunciation variant of that word.
@@ -230,7 +231,9 @@ class IpaG2p(BaseG2p):
 
         return phoneme_dict_obj
 
-    def replace_dict(self, phoneme_dict: Union[str, pathlib.Path, List[Union[str, pathlib.Path]], Dict[str, List[List[str]]]]):
+    def replace_dict(
+        self, phoneme_dict: Union[str, pathlib.Path, List[Union[str, pathlib.Path]], Dict[str, List[List[str]]]]
+    ):
         """
         Replace model's phoneme dictionary with a custom one
         """

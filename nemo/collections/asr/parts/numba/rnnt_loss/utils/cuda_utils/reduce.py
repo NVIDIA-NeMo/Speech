@@ -284,12 +284,12 @@ def ReduceHelper(
         stream: CUDA Stream.
     """
     if minus:
-        grid_size = num_cols
+        grid_size = int(num_cols)  # convert np.int64 to int
         # call kernel
         _reduce_minus[grid_size, CTA_REDUCE_SIZE, stream, 0](I_opid, R_opid, acts, output, num_rows)
 
     else:
-        grid_size = num_cols
+        grid_size = int(num_cols)  # convert np.int64 to int
         # call kernel
         _reduce_rows[grid_size, CTA_REDUCE_SIZE, stream, 0](I_opid, R_opid, acts, output, num_rows)
 

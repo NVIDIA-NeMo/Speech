@@ -64,6 +64,8 @@ can have the risk of arbitrary code execution.
 ## Install NeMo Speech
 
 NeMo Speech is installable via pip: `pip install 'nemo-toolkit[all]'`
+To install with extra dependencies for CUDA 12.x or 13.x, use `pip install 'nemo-toolkit[all,cu12]'` 
+or `pip install 'nemo-toolkit[all,cu13]'` respectively.
 
 ## Contribute to NeMo
 

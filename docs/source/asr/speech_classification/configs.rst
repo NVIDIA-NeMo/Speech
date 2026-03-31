@@ -84,7 +84,7 @@ specifying the module to use for each.
 
 The following sections go into more detail about the specific configurations of each model architecture.
 
-The :ref:`MatchboxNet <MarbleNet_model>` and :ref:`MarbleNet <MarbleNet_model>` models are very similar, and they are based on :ref:`QuartzNet <QuartzNet_model>`  and as 
+The :ref:`MatchboxNet <MarbleNet_model>` and :ref:`MarbleNet <MarbleNet_model>` models are very similar, and as 
 such the components in their configs are very similar as well.
 
 Decoder Configurations

@@ -22,7 +22,6 @@ from typing import List, Optional, Tuple, Union
 import torch
 
 from nemo.collections.asr.parts.context_biasing import BoostingTreeModelConfig, GPUBoostingTreeModel
-from nemo.collections.asr.parts.k2.classes import GraphIntersectDenseConfig
 from nemo.collections.asr.parts.submodules.ctc_batched_beam_decoding import BatchedBeamCTCComputer
 from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET, NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.wfst_decoder import RivaDecoderConfig, WfstNbestHypothesis
@@ -624,7 +623,7 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
         self,
         blank_id: int,
         beam_size: int,
-        search_type: str = "riva",  # 'riva', 'k2'
+        search_type: str = "riva",
         return_best_hypothesis: bool = True,
         preserve_alignments: bool = False,
         compute_timestamps: bool = False,
@@ -636,7 +635,6 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
         arpa_lm_path: str = None,
         wfst_lm_path: str = None,
         riva_decoding_cfg: Optional['RivaDecoderConfig'] = None,
-        k2_decoding_cfg: Optional['GraphIntersectDenseConfig'] = None,
     ):
         super().__init__(blank_id=blank_id, beam_size=beam_size)
 
@@ -648,8 +646,6 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
         self.decoding_algorithm = None
         if search_type in ("default", "riva"):
             self.decoding_algorithm = self._riva_decoding
-        elif search_type == "k2":
-            self.decoding_algorithm = self._k2_decoding
 
         # Log the WFST search_type
         logging.info(f"WFST beam search search_type: {search_type}")
@@ -675,11 +671,9 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
         self.wfst_lm_path = wfst_lm_path
 
         self.riva_decoding_cfg = riva_decoding_cfg
-        self.k2_decoding_cfg = k2_decoding_cfg
 
         # Default beam search scorer functions
         self.riva_decoder = None
-        self.k2_decoder = None
 
     @typecheck()
     def forward(
@@ -710,7 +704,7 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
         if self.decoding_algorithm is None:
             raise NotImplementedError(
                 f"The decoding search_type ({self.search_type}) supplied is not supported!\n"
-                f"Please use one of : (default, riva, k2)"
+                f"Please use one of : (default, riva)"
             )
 
         with torch.no_grad(), torch.inference_mode():
@@ -734,7 +728,7 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
 
         return (packed_result,)
 
-    def _prepare_decoding_lm_wfst(self) -> Union[str, 'kaldifst.StdFst', 'k2.Fsa']:  # noqa: F821
+    def _prepare_decoding_lm_wfst(self) -> Union[str, 'kaldifst.StdFst']:  # noqa: F821
         """TBD"""
         arpa_lm_path_exists = self.arpa_lm_path is not None and os.path.exists(self.arpa_lm_path)
         wfst_lm_path_exists = self.wfst_lm_path is not None and os.path.exists(self.wfst_lm_path)
@@ -743,10 +737,6 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
             if self.search_type == "riva" and not self.wfst_lm_path.endswith(".fst"):
                 raise ValueError(
                     f"Search type `riva` expects WFSTs in the `.fst` format. Provided: `{self.wfst_lm_path}`"
-                )
-            if self.search_type == "k2" and not self.wfst_lm_path.endswith(".pt"):
-                raise ValueError(
-                    f"Search type `k2` expects WFSTs in the `.pt` format. Provided: `{self.wfst_lm_path}`"
                 )
             if arpa_lm_path_exists:
                 logging.warning(
@@ -771,7 +761,7 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
                 logging.warning("Consider providing a write-permitted `wfst_lm_path` for WFST LM buffering.")
                 write_tlg_path = None
             ctc_topology = "default"  # there is no way to indicate the need of other topologies
-            target = "kaldi" if self.search_type == "riva" else "k2"
+            target = "kaldi"
 
             from nemo.collections.asr.parts.utils.wfst_utils import mkgraph_ctc_ov
 
@@ -833,51 +823,6 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
             )
 
         return self.riva_decoder.decode(x.to(device=self.device), out_len.to(device=self.device))
-
-    @torch.no_grad()
-    def _k2_decoding(self, x: torch.Tensor, out_len: torch.Tensor) -> List['WfstNbestHypothesis']:
-        """
-        K2 WFST decoder Algorithm.
-
-        Args:
-            x: Tensor of shape [B, T, V+1], where B is the batch size, T is the maximum sequence length,
-                and V is the vocabulary size. The tensor contains log-probabilities.
-            out_len: Tensor of shape [B], contains lengths of each sequence in the batch.
-
-        Returns:
-            A list of WfstNbestHypothesis objects, one for each sequence in the batch.
-        """
-        if self.k2_decoder is None:
-            lm_fst = self._prepare_decoding_lm_wfst()
-            if self.open_vocabulary_decoding and self._tokenword_disambig_id == -1:
-                if isinstance(lm_fst, str):
-                    from nemo.collections.asr.parts.k2.utils import load_graph
-
-                    with torch.inference_mode(False):
-                        lm_fst = load_graph(lm_fst)
-                try:
-                    tokenword_disambig_id = lm_fst.aux_labels_sym.get("#1")
-                    self._tokenword_disambig_id = tokenword_disambig_id
-                except KeyError:
-                    raise ValueError(
-                        "Cannot determine `tokenword_disambig_id` "
-                        "which is required if `open_vocabulary_decoding` == True"
-                    )
-
-            from nemo.collections.asr.parts.k2.graph_decoders import K2WfstDecoder
-
-            self.k2_decoder = K2WfstDecoder(
-                lm_fst=lm_fst,
-                decoding_mode=self.decoding_mode,
-                beam_size=self.beam_width,
-                config=self.k2_decoding_cfg,
-                tokenword_disambig_id=self._tokenword_disambig_id,
-                lm_weight=self.lm_weight,
-                nbest_size=self.beam_size,
-                device=self.device,
-            )
-
-        return self.k2_decoder.decode(x.to(device=self.device), out_len.to(device=self.device))
 
 
 class BeamBatchedCTCInfer(AbstractBeamCTCInfer, WithOptionalCudaGraphs):
@@ -1058,7 +1003,7 @@ class BeamCTCInferConfig:
 @dataclass
 class WfstCTCInferConfig:
     beam_size: int
-    search_type: str = "riva"  # 'riva', 'k2'
+    search_type: str = "riva"
     return_best_hypothesis: bool = True
     preserve_alignments: bool = False
     compute_timestamps: bool = False
@@ -1070,4 +1015,3 @@ class WfstCTCInferConfig:
     arpa_lm_path: Optional[str] = None
     wfst_lm_path: Optional[str] = None
     riva_decoding_cfg: Optional['RivaDecoderConfig'] = field(default_factory=lambda: RivaDecoderConfig())
-    k2_decoding_cfg: Optional['GraphIntersectDenseConfig'] = field(default_factory=lambda: GraphIntersectDenseConfig())

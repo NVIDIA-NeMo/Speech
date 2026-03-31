@@ -37,7 +37,9 @@ class EvaluationConfig:
     Attributes:
         sv_model: Speaker verification model type ("titanet" or "wavlm").
         asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
-        language: Language code for transcription (e.g., "en").
+       asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
+       eou_model_name: Hugging Face model id or local path to the EoU model.
+       language: Language code for transcription (e.g., "en").
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
         with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
@@ -46,6 +48,7 @@ class EvaluationConfig:
 
     sv_model: str = "titanet"
     asr_model_name: str = "nvidia/parakeet-tdt-1.1b"
+    eou_model_name: str = "facebook/wav2vec2-base-960h"
     language: str = "en"
     with_utmosv2: bool = True
     with_fcd: bool = True
@@ -91,6 +94,7 @@ def evaluate_generated_audio_dir(
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
         device=config.device,
+        eou_model_name=config.eou_model_name,
     )
 
     return avg_metrics, filewise_metrics

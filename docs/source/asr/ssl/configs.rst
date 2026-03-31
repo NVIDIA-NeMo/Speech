@@ -141,7 +141,7 @@ We can define the corresponding decoder and loss configs in the following way fo
 Note that in the above example we combine 4 steps from the input spectrogram into a single "token" for the loss,
 which corresponds to the encoder stride 4x. We might want to use different values for "combine_time_steps" and encoder stride.
 In that case, we will need to add stride layers to decoders to match the strides. We can use the following example config
-for a Citrinet encoder with stride 8x. In order to go from stride 8x to 4x, we use a single ``stride_layer`` in the decoder
+for a FastConformer encoder with stride 8x. In order to go from stride 8x to 4x, we use a single ``stride_layer`` in the decoder
 with ``stride_transpose`` set to True.
 
 .. code-block:: yaml

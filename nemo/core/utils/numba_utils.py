@@ -81,6 +81,7 @@ def set_numba_compat_strictness(strict: bool):
 
 @contextlib.contextmanager
 def with_numba_compat_strictness(strict: bool):
+    """Context manager for setting numba compatibility checks temporary"""
     initial_strictness = is_numba_compat_strict()
     set_numba_compat_strictness(strict=strict)
     yield
@@ -130,7 +131,7 @@ def numba_cuda_is_supported(min_version: str) -> bool:
         try:
             cuda_available = cuda.is_available()
             if cuda_available:
-                cuda_compatible = cuda.cudadrv.runtime.get_version()[0] == 13
+                cuda_compatible = cuda.cudadrv.runtime.get_version()[0] in (12, 13)
             else:
                 cuda_compatible = False
 
@@ -168,9 +169,9 @@ def is_numba_cuda_fp16_supported(return_reason: bool = False) -> Union[bool, Tup
     )[0]
 
     if numba_fp16_version_correct:
-        reason += f"Numba CUDA FP16 is supported in installed numba version."
+        reason += "Numba CUDA FP16 is supported in installed numba version."
     else:
-        reason += f"Numba CUDA FP16 is not supported in installed numba version."
+        reason += "Numba CUDA FP16 is not supported in installed numba version."
 
     result = use_nvidia_binding and numba_fp16_version_correct
 

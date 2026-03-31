@@ -1,3 +1,0 @@
-Model Name,Language,Call Home Dev Test (es),Call Home Eval Test (es),Call Home Train (es),Fisher Dev Set (es),Fisher Test Set (es),MCV Dev-Set (v??) (es),MCV Dev-Set v12.0 (es),MCV Dev-Set v7.0 (es),MCV Test-Set (v??) (es),MCV Test-Set v12.0 (es),MCV Test-Set v7.0 (es),MLS Dev (en),MLS Test (en),VoxPopuli Dev (es),VoxPopuli Test (es)
-stt_es_citrinet_512,es,,,,,,9.1 % WER,,,10.3 % WER,,,4.9 % WER,5.2 % WER,,
-stt_es_citrinet_1024_gamma_0_25,es,19.9 %,21.3 %,19.1 %,15.8 %,15.9 %,,,6.1 %,,,6.8 %,3.5 %,4.1 %,5.6 %,7.0 %

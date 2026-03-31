@@ -56,7 +56,7 @@ from nemo.core.neural_types import (
 )
 from nemo.utils import logging
 
-__all__ = ['ConformerEncoder']
+__all__ = ['ConformerEncoder', 'ConformerMultiLayerFeatureExtractor']
 
 
 class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
@@ -1273,17 +1273,34 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
     def __init__(
         self,
         encoder: ConformerEncoder,
-        layer_idx_list: List[int],
-        aggregator: NeuralModule = None,
+        layer_idx_list: Optional[List[int]] = None,
+        aggregator: Optional[NeuralModule] = None,
         detach: bool = False,
         convert_to_cpu: bool = False,
     ):
+        """
+        This class is used to extract features from different layers of the ConformerEncoder.
+        Args:
+            encoder: ConformerEncoder instance.
+            layer_idx_list: List of layer indices to extract features from. If None, all layers are extracted.
+            aggregator: Aggregator instance. If None, the features are returned as a list.
+            detach: If True, the features are detached from the graph.
+            convert_to_cpu: If True, the features are converted to CPU.
+        """
         super().__init__()
         self.encoder = encoder
-        self.layer_idx_list = [int(lyr_idx) for lyr_idx in layer_idx_list]
-        for x in self.layer_idx_list:
-            if x < 0 or x >= len(encoder.layers):
-                raise ValueError(f"layer index {x} out of range [0, {len(encoder.layers)})")
+        self.num_layers = len(encoder.layers)
+        self.layer_idx_list = []
+        if not layer_idx_list:
+            layer_idx_list = list(range(self.num_layers))
+        for lid in layer_idx_list:
+            if lid < -self.num_layers or lid >= self.num_layers:
+                raise ValueError(f"Invalid layer index {lid} for ConformerEncoder with {self.num_layers} layers.")
+            if lid < 0:
+                lid = self.num_layers + lid
+            self.layer_idx_list.append(lid)
+        self.layer_idx_list.sort()
+        logging.info(f"Extracting ConformerEncoder features from layers: {self.layer_idx_list}")
         self.enc_access_cfg = {
             "interctc": {
                 "capture_layers": self.layer_idx_list,
@@ -1296,7 +1313,13 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
     def forward(
         self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # pylint: disable=missing-function-docstring
+        """
+        Args:
+            same interface as ConformerEncoder.forward()
+        Returns:
+            - Tuple[List[Tensor[B,D,T]], List[Tensor[B]]] if aggregator is None
+            - Tuple[Tensor[B,H,T], Tensor[B]] if aggregator is not None, where H is the hidden size of the aggregator
+        """
         old_access_flag = self.is_access_enabled(guid=getattr(self, "model_guid", None))
         self.update_access_cfg(self.enc_access_cfg, guid=getattr(self, "model_guid", None))
         self.set_access_enabled(access_enabled=True, guid=getattr(self, "model_guid", None))
@@ -1338,7 +1361,7 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         # End of the adapted chunk
 
         if self.aggregator is not None:
-            return self.aggregator(encoded_list, encoded_len_list)  # Tensor[B,D*L,T], Tensor[B]
+            return self.aggregator(encoded_list, encoded_len_list)  # Tensor[B,H,T], Tensor[B]
         else:
             return encoded_list, encoded_len_list  # List[Tensor[B,D,T]], List[Tensor[B]]
 

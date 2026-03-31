@@ -509,7 +509,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         # Repeat/skip corruption with a shared remap over [0, min_len).
         # This keeps batched execution efficient and applies the same corrupted timeline across the batch.
-        source_index = torch.arange(min_len, device=phoneme_tokens_stacked.device, dtype=torch.long)
         step_delta = torch.ones(min_len, device=phoneme_tokens_stacked.device, dtype=torch.long)
         op_is_repeat = torch.rand(corrupt_steps.numel(), device=phoneme_tokens_stacked.device) < 0.5
         step_delta[corrupt_steps] = torch.where(

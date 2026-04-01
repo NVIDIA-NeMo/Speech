@@ -1,0 +1,123 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+name: Release docs
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Whether to run the workflow in dry-run mode
+        required: true
+        type: boolean
+        default: true
+      publish-as-latest:
+        description: Publish as Latest stable version.
+        required: false
+        type: boolean
+        default: true
+      docs-version-override:
+        description: Docs version if commit is not tagged
+        required: false
+        type: string
+        default: ""
+      update-version-picker:
+        description: Update version picker.
+        required: false
+        type: boolean
+        default: true
+      notify-emails:
+        description: Email addresses to send the notification to. Format as "me@me.com,you@you.com".
+        required: false
+        type: string
+      github-ref:
+        description: Github ref to checkout
+        required: false
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      dry-run:
+        description: Whether to run the workflow in dry-run mode
+        required: false
+        type: boolean
+        default: true
+      publish-as-latest:
+        description: Publish as Latest stable version.
+        required: false
+        type: boolean
+        default: true
+      docs-version-override:
+        description: Docs version if commit is not tagged
+        required: false
+        type: string
+        default: ""
+      update-version-picker:
+        description: Update version picker.
+        required: false
+        type: boolean
+        default: true
+      notify-emails:
+        description: Email addresses to send the notification to. Format as "me@me.com,you@you.com".
+        required: false
+        type: string
+      github-ref:
+        description: Github ref to checkout
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  build-docs:
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.83.0
+    with:
+      ref: ${{ inputs.github-ref }}
+      docs-directory: docs/source
+      sync-all: true
+      no-extras: "--no-extra cu12"
+
+  publish-docs:
+    runs-on: ubuntu-latest
+    needs: [build-docs]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: NVIDIA-NeMo/FW-CI-templates
+          ref: v0.74.0
+          path: FW-CI-templates
+
+      - uses: ./FW-CI-templates/.github/actions/publish-docs
+        # This workflow runs either on main, or on a version tag. Any other git ref will lead
+        # to an error.
+        # If its on main, it will publish to "latest" directory in Akamai.
+        # If its on a versioned tag, it will extract the version number from the tag (strip `v` prefix)
+        # and publish to the versioned directory in Akamai.
+        with:
+          dry-run: ${{ inputs.dry-run }}
+          artifacts-name: docs-html
+          artifacts-path: _build/html
+          emails-csv: ${{ inputs.notify-emails && format('{0},{1}', vars.docs_release_emails, inputs.notify-emails) || vars.docs_release_emails }}
+          overwrite-latest-on-tag: ${{ inputs.publish-as-latest }}
+          docs-version-override: ${{ inputs.docs-version-override }}
+          update-version-picker: ${{ inputs.update-version-picker }}
+          run-on-version-tag-only: ${{ github.ref_name != 'main' }}
+          request-name: nemo-speech-publish-docs-${{ github.run_id }}
+          aws-region: ${{ vars.DOCS_AWS_REGION }}
+          aws-role-to-assume: ${{ secrets.AWS_ASSUME_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          akamai-host: ${{ secrets.AKAMAI_HOST }}
+          akamai-client-token: ${{ secrets.AKAMAI_CLIENT_TOKEN }}
+          akamai-client-secret: ${{ secrets.AKAMAI_CLIENT_SECRET }}
+          akamai-access-token: ${{ secrets.AKAMAI_ACCESS_TOKEN }}
+          s3-target-root: ${{ secrets.S3_BUCKET_NAME }}
+          s3-target-path: nemo/speech

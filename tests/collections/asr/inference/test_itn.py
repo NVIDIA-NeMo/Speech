@@ -13,6 +13,9 @@
 # limitations under the License.
 
 import pytest
+
+nemo_text_processing = pytest.importorskip("nemo_text_processing", reason="Requires nemo_text_processing")
+
 from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
 
 

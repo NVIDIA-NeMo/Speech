@@ -99,7 +99,7 @@ def add_asr_args(parent_parser: ArgumentParser) -> ArgumentParser:
         ArgumentParser: Parser extended by NeMo ASR Collection arguments.
     """
     parser = ArgumentParser(parents=[parent_parser], add_help=False, conflict_handler='resolve')
-    parser.add_argument("--asr_model", type=str, required=True, default="bad_quartznet15x5.yaml", help="")
+    parser.add_argument("--asr_model", type=str, required=True, default=None, help="Path to ASR model config yaml")
     parser.add_argument("--train_dataset", type=str, required=True, default=None, help="training dataset path")
     parser.add_argument("--eval_dataset", type=str, required=True, help="evaluation dataset path")
     return parser

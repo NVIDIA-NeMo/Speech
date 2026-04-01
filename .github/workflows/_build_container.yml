@@ -23,7 +23,7 @@ jobs:
       cache-from: ${{ steps.cache_from.outputs.LAST_PRS }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Parse manifest.json
         id: manifest

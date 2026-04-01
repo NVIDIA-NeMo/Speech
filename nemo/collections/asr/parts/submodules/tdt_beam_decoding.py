@@ -934,16 +934,17 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
     ) -> Tuple[list[Hypothesis] | List[NBestHypotheses]]:
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
+
         Args:
             encoder_output: A tensor of size (batch, features, timesteps).
             encoded_lengths: list of int representing the length of each sequence
                 output sequence.
+
         Returns:
-            Tuple[list[Hypothesis] | List[NBestHypotheses]]: Tuple of a list of hypotheses for each batch. Each hypothesis contains
-                the decoded sequence, timestamps and associated scores. The format of the returned hypotheses depends
-                on the `return_best_hypothesis` attribute:
-                    - If `return_best_hypothesis` is True, returns the best hypothesis for each batch.
-                    - Otherwise, returns the N-best hypotheses for each batch.
+            Tuple of a list of hypotheses for each batch. Each hypothesis contains
+            the decoded sequence, timestamps and associated scores.
+            If ``return_best_hypothesis`` is True, returns the best hypothesis for each batch;
+            otherwise, returns the N-best hypotheses for each batch.
         """
         if partial_hypotheses is not None:
             raise NotImplementedError("Partial hypotheses feature is not yet supported in batched beam search.")

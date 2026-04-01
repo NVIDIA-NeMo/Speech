@@ -42,24 +42,22 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import string
+from collections import defaultdict
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import librosa
 import matplotlib.pylab as plt
 import numpy as np
+import soundfile as sf
 import torch
 from numba import jit, prange
 
+from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_DATA_TYPES, WithLens
 from nemo.utils import logging
 from nemo.utils.decorators import deprecated
-
-HAVE_WANDB = True
-try:
-    import wandb
-except ModuleNotFoundError:
-    HAVE_WANDB = False
 
 try:
     from lightning.pytorch.utilities import rank_zero_only
@@ -302,146 +300,6 @@ def log_audio_to_tb(
     swriter.add_audio(name, audio / max(np.abs(audio)), step, sample_rate=sr)
 
 
-@rank_zero_only
-def tacotron2_log_to_tb_func(
-    swriter,
-    tensors,
-    step,
-    tag="train",
-    log_images=False,
-    log_images_freq=1,
-    add_audio=True,
-    griffin_lim_mag_scale=1024,
-    griffin_lim_power=1.2,
-    sr=22050,
-    n_fft=1024,
-    n_mels=80,
-    fmax=8000,
-):
-    _, spec_target, mel_postnet, gate, gate_target, alignments = tensors
-    if log_images and step % log_images_freq == 0:
-        swriter.add_image(
-            f"{tag}_alignment",
-            plot_alignment_to_numpy(alignments[0].data.cpu().numpy().T),
-            step,
-            dataformats="HWC",
-        )
-        swriter.add_image(
-            f"{tag}_mel_target",
-            plot_spectrogram_to_numpy(spec_target[0].data.cpu().numpy()),
-            step,
-            dataformats="HWC",
-        )
-        swriter.add_image(
-            f"{tag}_mel_predicted",
-            plot_spectrogram_to_numpy(mel_postnet[0].data.cpu().numpy()),
-            step,
-            dataformats="HWC",
-        )
-        swriter.add_image(
-            f"{tag}_gate",
-            plot_gate_outputs_to_numpy(
-                gate_target[0].data.cpu().numpy(),
-                torch.sigmoid(gate[0]).data.cpu().numpy(),
-            ),
-            step,
-            dataformats="HWC",
-        )
-
-        if add_audio:
-            filterbank = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels, fmax=fmax)
-            log_mel = mel_postnet[0].data.cpu().numpy().T
-            mel = np.exp(log_mel)
-            magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-            audio = griffin_lim(magnitude.T**griffin_lim_power)
-            swriter.add_audio(f"audio/{tag}_predicted", audio / max(np.abs(audio)), step, sample_rate=sr)
-
-            log_mel = spec_target[0].data.cpu().numpy().T
-            mel = np.exp(log_mel)
-            magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-            audio = griffin_lim(magnitude.T**griffin_lim_power)
-            swriter.add_audio(f"audio/{tag}_target", audio / max(np.abs(audio)), step, sample_rate=sr)
-
-
-def tacotron2_log_to_wandb_func(
-    swriter,
-    tensors,
-    step,
-    tag="train",
-    log_images=False,
-    log_images_freq=1,
-    add_audio=True,
-    griffin_lim_mag_scale=1024,
-    griffin_lim_power=1.2,
-    sr=22050,
-    n_fft=1024,
-    n_mels=80,
-    fmax=8000,
-):
-    _, spec_target, mel_postnet, gate, gate_target, alignments = tensors
-    if not HAVE_WANDB:
-        return
-    if log_images and step % log_images_freq == 0:
-        alignments = []
-        specs = []
-        gates = []
-        alignments += [
-            wandb.Image(
-                plot_alignment_to_numpy(alignments[0].data.cpu().numpy().T),
-                caption=f"{tag}_alignment",
-            )
-        ]
-        alignments += [
-            wandb.Image(
-                plot_spectrogram_to_numpy(spec_target[0].data.cpu().numpy()),
-                caption=f"{tag}_mel_target",
-            ),
-            wandb.Image(
-                plot_spectrogram_to_numpy(mel_postnet[0].data.cpu().numpy()),
-                caption=f"{tag}_mel_predicted",
-            ),
-        ]
-        gates += [
-            wandb.Image(
-                plot_gate_outputs_to_numpy(
-                    gate_target[0].data.cpu().numpy(),
-                    torch.sigmoid(gate[0]).data.cpu().numpy(),
-                ),
-                caption=f"{tag}_gate",
-            )
-        ]
-
-        swriter.log({"specs": specs, "alignments": alignments, "gates": gates})
-
-        if add_audio:
-            audios = []
-            filterbank = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels, fmax=fmax)
-            log_mel = mel_postnet[0].data.cpu().numpy().T
-            mel = np.exp(log_mel)
-            magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-            audio_pred = griffin_lim(magnitude.T**griffin_lim_power)
-
-            log_mel = spec_target[0].data.cpu().numpy().T
-            mel = np.exp(log_mel)
-            magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-            audio_true = griffin_lim(magnitude.T**griffin_lim_power)
-
-            audios += [
-                wandb.Audio(
-                    audio_true / max(np.abs(audio_true)),
-                    caption=f"{tag}_wav_target",
-                    sample_rate=sr,
-                ),
-                wandb.Audio(
-                    audio_pred / max(np.abs(audio_pred)),
-                    caption=f"{tag}_wav_predicted",
-                    sample_rate=sr,
-                ),
-            ]
-
-            swriter.log({"audios": audios})
-
-
 def plot_alignment_to_numpy(alignment, title='', info=None, phoneme_seq=None, vmin=None, vmax=None, attended=None):
     if phoneme_seq:
         fig, ax = plt.subplots(figsize=(15, 10))
@@ -629,51 +487,73 @@ def save_figure_to_numpy(fig):
     return img_array
 
 
-@rank_zero_only
-def waveglow_log_to_tb_func(
-    swriter,
-    tensors,
-    step,
-    tag="train",
-    n_fft=1024,
-    hop_length=256,
-    window="hann",
-    mel_fb=None,
-):
-    _, audio_pred, spec_target, mel_length = tensors
-    mel_length = mel_length[0]
-    spec_target = spec_target[0].data.cpu().numpy()[:, :mel_length]
-    swriter.add_image(
-        f"{tag}_mel_target",
-        plot_spectrogram_to_numpy(spec_target),
-        step,
-        dataformats="HWC",
+def plot_expert_usage_heatmap_to_numpy(
+    layer_expert_usage: np.ndarray,
+    ideal_usage: float,
+    title: str,
+) -> np.ndarray:
+    """
+    Render a layer-wise expert usage heatmap and return it as a numpy image.
+
+    Rows = decoder layers (bottom = layer 0), columns = experts.
+    Cell values are delta from ideal usage (usage - ideal), so 0 = perfectly balanced,
+    positive = overused, negative = underused.
+
+    Args:
+        layer_expert_usage: shape (n_layers, num_experts), per-layer expert usage fractions.
+        ideal_usage: expected uniform value (1 / num_experts).
+        title: figure title.
+
+    Returns:
+        numpy array in RGBA HWC format suitable for wandb.Image().
+    """
+    from matplotlib.colors import TwoSlopeNorm
+
+    n_layers, num_experts = layer_expert_usage.shape
+    delta = layer_expert_usage - ideal_usage
+
+    row_labels = [f"L{i}" for i in range(n_layers)]
+    col_labels = [f"E{i}" for i in range(num_experts)]
+
+    abs_max = max(np.abs(delta).max(), 1e-9)
+    norm = TwoSlopeNorm(vcenter=0.0, vmin=-abs_max, vmax=abs_max)
+
+    dpi = 150
+    fig, ax = plt.subplots(
+        figsize=(max(6, num_experts * 0.55), max(2.4, n_layers * 0.4)),
+        dpi=dpi,
     )
-    if mel_fb is not None:
-        mag, _ = librosa.core.magphase(
-            librosa.core.stft(
-                np.nan_to_num(audio_pred[0].cpu().detach().numpy()),
-                n_fft=n_fft,
-                hop_length=hop_length,
-                window=window,
+    im = ax.imshow(delta, aspect='auto', cmap='RdBu_r', norm=norm, origin='lower', interpolation='nearest')
+
+    ax.set_xticks(range(num_experts))
+    ax.set_xticklabels(col_labels, fontsize=7)
+    ax.set_yticks(range(n_layers))
+    ax.set_yticklabels(row_labels, fontsize=7)
+    ax.set_xlabel("Experts", fontsize=8)
+    ax.set_ylabel("Layers", fontsize=8)
+    ax.set_title(f"{title}\nideal = {ideal_usage:.4f}", fontsize=9, pad=8)
+
+    for row in range(n_layers):
+        for col in range(num_experts):
+            ax.text(
+                col,
+                row,
+                f"{delta[row, col]:+.3f}",
+                ha='center',
+                va='center',
+                fontsize=5,
+                color='white' if abs(delta[row, col]) > abs_max * 0.6 else 'black',
             )
-        )
-        mel_pred = np.matmul(mel_fb.cpu().numpy(), mag).squeeze()
-        log_mel_pred = np.log(np.clip(mel_pred, a_min=1e-5, a_max=None))
-        swriter.add_image(
-            f"{tag}_mel_predicted",
-            plot_spectrogram_to_numpy(log_mel_pred[:, :mel_length]),
-            step,
-            dataformats="HWC",
-        )
 
+    cbar = fig.colorbar(im, ax=ax, fraction=0.02, pad=0.04)
+    cbar.ax.tick_params(labelsize=6)
+    cbar.set_label("Δ from ideal", fontsize=7)
 
-def remove(conv_list):
-    new_conv_list = torch.nn.ModuleList()
-    for old_conv in conv_list:
-        old_conv = torch.nn.utils.remove_weight_norm(old_conv)
-        new_conv_list.append(old_conv)
-    return new_conv_list
+    fig.tight_layout()
+    fig.canvas.draw()
+    data = save_figure_to_numpy(fig)
+    plt.close(fig)
+    return data
 
 
 def regulate_len(
@@ -723,21 +603,6 @@ def regulate_len(
         dec_lens = torch.clamp_max(dec_lens, mel_max_len)
 
     return enc_rep, dec_lens
-
-
-def split_view(tensor, split_size: int, dim: int = 0):
-    if dim < 0:  # Support negative indexing
-        dim = len(tensor.shape) + dim
-    # If not divisible by split_size, we need to pad with 0
-    if tensor.shape[dim] % split_size != 0:
-        to_pad = split_size - (tensor.shape[dim] % split_size)
-        padding = [0] * len(tensor.shape) * 2
-        padding[dim * 2 + 1] = to_pad
-        padding.reverse()
-        tensor = torch.nn.functional.pad(tensor, padding)
-    cur_shape = tensor.shape
-    new_shape = cur_shape[:dim] + (tensor.shape[dim] // split_size, split_size) + cur_shape[dim + 1 :]
-    return tensor.reshape(*new_shape)
 
 
 def slice_segments(x, ids_str, segment_size=4):
@@ -940,3 +805,122 @@ def g2p_backward_compatible_support(g2p_target: str) -> str:
     # for backward compatibility
     g2p_target_new = g2p_target.replace("nemo_text_processing.g2p", "nemo.collections.tts.g2p")
     return g2p_target_new
+
+
+def process_text_for_cer(input_text):
+    """Normalizes text for CER/WER calculation."""
+    text = input_text.lower()
+    for char in [",", "'", ";", "."]:
+        text = text.replace(char, "")
+    text = text.replace("-", " ")
+    text = " ".join(text.split())
+    # Strip any remaining punctuation characters
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    # Fix common ASR transcript artifacts
+    text = text.replace("h t t p", "http")
+    text = text.replace("w w w", "www")
+    return text
+
+
+def transcribe_with_whisper(
+    audio_filepath: str,
+    language: Optional[str],
+    whisper_processor: Any,
+    whisper_model: Any,
+    device: torch.device,
+    normalizer: Optional[Any] = None,
+) -> str:
+    """
+    Transcribe audio with Whisper. Optionally normalize the transcript if a normalizer is provided.
+    """
+    transcripts = transcribe_with_whisper_from_filepaths(
+        audio_filepaths=[audio_filepath],
+        language=language,
+        whisper_processor=whisper_processor,
+        whisper_model=whisper_model,
+        device=device,
+        normalizer=normalizer,
+    )
+    return transcripts[0]
+
+
+def transcribe_with_whisper_from_filepaths(
+    audio_filepaths: Sequence[str],
+    language: Optional[Union[str, Sequence[Optional[str]]]],
+    whisper_processor: Any,
+    whisper_model: Any,
+    device: torch.device,
+    normalizer: Optional[Any] = None,
+    batch_size: Optional[int] = None,
+) -> List[str]:
+    """
+    Transcribe a list of audios with Whisper using batched inference.
+    Supports a single language for all files or per-file language values.
+    """
+    if len(audio_filepaths) == 0:
+        return []
+
+    if batch_size is None:
+        batch_size = len(audio_filepaths)
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, but received: {batch_size}")
+
+    if isinstance(language, str) or language is None:
+        languages = [language] * len(audio_filepaths)
+    else:
+        if len(language) != len(audio_filepaths):
+            raise ValueError(
+                f"Expected len(language) == len(audio_filepaths), but got {len(language)} and {len(audio_filepaths)}."
+            )
+        languages = list(language)
+
+    grouped_indices = defaultdict(list)
+    for idx, lang in enumerate(languages):
+        grouped_indices[lang].append(idx)
+
+    transcripts = [""] * len(audio_filepaths)
+    for lang, indices in grouped_indices.items():
+        forced_decoder_ids = (
+            whisper_processor.get_decoder_prompt_ids(language=lang, task="transcribe") if lang else None
+        )
+        for start_idx in range(0, len(indices), batch_size):
+            batch_indices = indices[start_idx : start_idx + batch_size]
+            speech_arrays = [librosa.load(audio_filepaths[idx], sr=16000)[0] for idx in batch_indices]
+            inputs = whisper_processor(
+                speech_arrays, sampling_rate=16000, return_tensors="pt", padding=True
+            ).input_features
+            inputs = inputs.to(device=device, dtype=whisper_model.dtype)
+            with torch.no_grad():
+                predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
+            batch_transcripts = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
+            if normalizer is not None:
+                batch_transcripts = [normalizer.normalize(text) for text in batch_transcripts]
+            for idx, text in zip(batch_indices, batch_transcripts):
+                transcripts[idx] = text
+
+    return transcripts
+
+
+def get_speaker_embeddings_from_filepaths(filepaths, speaker_verification_model, device):
+    """
+    Get speaker embeddings from audio filepaths using a speaker verification model.
+    """
+    audio_batch = []
+    audio_lengths = []
+    for filepath in filepaths:
+        audio, sr = sf.read(filepath)
+        if sr != 16000:
+            audio = librosa.core.resample(audio, orig_sr=sr, target_sr=16000)
+        audio_tensor = torch.tensor(audio, dtype=torch.float32, device=device)
+        audio_batch.append(audio_tensor)
+        audio_lengths.append(audio_tensor.size(0))
+
+    batch_audio_lens = torch.tensor(audio_lengths, device=device).long()
+    max_audio_len = int(batch_audio_lens.max().item())
+    audio_batch = stack_tensors(audio_batch, max_lens=[max_audio_len])
+
+    _, speaker_embeddings = speaker_verification_model.forward(
+        input_signal=audio_batch, input_signal_length=batch_audio_lens
+    )
+
+    return speaker_embeddings

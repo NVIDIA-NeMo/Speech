@@ -39,7 +39,7 @@ To use NFA, all you need to provide is a correct NeMo manifest (with ``"audio_fi
 
 Call the ``align.py`` script, specifying the parameters as follows:
 
-* ``pretrained_name``: string specifying the name of a CTC NeMo ASR model which will be automatically downloaded from NGC and used for generating the log-probs which we will use to do alignment. Any Quartznet, Citrinet, Conformer CTC model should work, in any language (only English has been tested so far). If ``model_path`` is specified, ``pretrained_name`` must not be specified.
+* ``pretrained_name``: string specifying the name of a CTC NeMo ASR model which will be automatically downloaded from NGC and used for generating the log-probs which we will use to do alignment. Any CTC model (e.g., Conformer CTC, FastConformer CTC) should work, in any language (only English has been tested so far). If ``model_path`` is specified, ``pretrained_name`` must not be specified.
 
 	Note: Currently NFA can only use CTC models, or Hybrid CTC-Transducer models (in CTC mode). Pure Transducer models cannot be used.
 
@@ -74,7 +74,7 @@ Optional parameters:
 
 * ``minimum_timestamp_duration``: a float indicating a minimum duration (in seconds) for timestamps in the CTM. If any line in the CTM has a duration lower than the ``minimum_timestamp_duration``, it will be enlarged from the middle outwards until it meets the minimum_timestamp_duration, or reaches the beginning or end of the audio file. Note that this may cause timestamps to overlap. (Default: 0, i.e. no modifications to predicted duration).
 
-* ``use_buffered_chunked_streaming``: a flag to indicate whether to do buffered chunk streaming. Notice only CTC models (e.g., stt_en_citrinet_1024_gamma_0_25)with ``per_feature`` preprocessor are supported. The below two params are needed if this option set to ``True``.
+* ``use_buffered_chunked_streaming``: a flag to indicate whether to do buffered chunk streaming. Notice only CTC models with ``per_feature`` preprocessor are supported. The below two params are needed if this option set to ``True``.
 
 * ``chunk_len_in_secs``: the chunk size for buffered chunked streaming inference. Default is 1.6 seconds.
 

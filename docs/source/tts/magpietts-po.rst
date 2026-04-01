@@ -96,8 +96,8 @@ The final step is fine-tuning the base model on the preference pairs using the D
         max_epochs=10 \
         exp_manager.exp_dir=/path/to/dpo_experiment \
         exp_manager.checkpoint_callback_params.always_save_nemo=false \
-        model.train_ds.dataset._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
-        model.validation_ds.dataset._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
+        model.train_ds.datasets._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
+        model.validation_ds.datasets._target_="nemo.collections.tts.data.text_to_speech_dataset.MagpieTTSDatasetDPO" \
         +train_ds_meta.dpopreftrain.manifest_path="/path/to/manifests/" \
         +train_ds_meta.dpopreftrain.audio_dir="/" \
         +train_ds_meta.dpopreftrain.feature_dir="/" \

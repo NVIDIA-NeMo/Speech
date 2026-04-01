@@ -1,4 +1,2 @@
 Model,Model Base Class
-`stt_zh_citrinet_512 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_zh_citrinet_512>`_,EncDecCTCModel
-`stt_zh_citrinet_1024_gamma_0_25 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_zh_citrinet_1024_gamma_0_25>`_,EncDecCTCModel
 `stt_zh_conformer_transducer_large <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_zh_conformer_transducer_large>`_,EncDecRNNTModel

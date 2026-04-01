@@ -19,5 +19,13 @@ from nemo.collections.common.metrics.metric_string_to_torchmetric import (
     MetricStringToTorchMetric,
     TextMetricsSet,
 )
-from nemo.collections.common.metrics.perf_metrics import FLOPsMeasurementCallback
 from nemo.collections.common.metrics.perplexity import Perplexity
+
+__all__ = [
+    "ClassificationMetricsSet",
+    "GlobalAverageLossMetric",
+    "MetricStringToTorchMetric",
+    "Perplexity",
+    "TextMetricsSet",
+    "TopKClassificationAccuracy",
+]

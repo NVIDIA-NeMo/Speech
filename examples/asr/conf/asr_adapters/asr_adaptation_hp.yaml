@@ -23,7 +23,7 @@
 #
 # - model.adapter.in_features: The output dimension of each block of the model. This is model dependent.
 #     For example, Conformer dimension can be found via `model.encoder.d_model` in its config.
-#     For Citrinets/ContextNets, the dimension can be found usually in `model.encoder.jasper.0.filters`.
+#     For ConvASR models (e.g. MarbleNet), the dimension can be found usually in `model.encoder.jasper.0.filters`.
 #
 # - model.train_ds.manifest_filepath / model.validation_ds.manifest_filepath: Data filepaths to train the
 #     adapter module.

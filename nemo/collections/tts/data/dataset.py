@@ -24,16 +24,11 @@ from typing import Callable, Dict, List, Optional, Union
 import librosa
 import numpy as np
 import torch
-from einops import rearrange
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
-    BaseTokenizer,
-    EnglishCharsTokenizer,
-    EnglishPhonemesTokenizer,
-)
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     BetaBinomialInterpolator,
     beta_binomial_prior_distribution,
@@ -46,7 +41,6 @@ from nemo.collections.tts.torch.tts_data_types import (
     AlignPriorMatrix,
     Durations,
     Energy,
-    LMTokens,
     LogMel,
     P_voiced,
     Pitch,
@@ -915,106 +909,6 @@ class TTSDataset(Dataset):
         return joined_data
 
 
-class MixerTTSXDataset(TTSDataset):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    def _albert(self):
-        from transformers import AlbertTokenizer  # noqa pylint: disable=import-outside-toplevel
-
-        self.lm_model_tokenizer = AlbertTokenizer.from_pretrained('albert-base-v2')
-        self.lm_padding_value = self.lm_model_tokenizer._convert_token_to_id('<pad>')
-        space_value = self.lm_model_tokenizer._convert_token_to_id('▁')
-
-        self.id2lm_tokens = {}
-        for i, d in enumerate(self.data):
-            normalized_text = d["normalized_text"]
-
-            assert isinstance(self.text_tokenizer, EnglishPhonemesTokenizer) or isinstance(
-                self.text_tokenizer, EnglishCharsTokenizer
-            )
-            preprocess_text_as_tts_input = self.text_tokenizer.text_preprocessing_func(normalized_text)
-
-            lm_tokens_as_ids = self.lm_model_tokenizer.encode(preprocess_text_as_tts_input, add_special_tokens=False)
-
-            if self.text_tokenizer.pad_with_space:
-                lm_tokens_as_ids = [space_value] + lm_tokens_as_ids + [space_value]
-
-            self.id2lm_tokens[i] = lm_tokens_as_ids
-
-    def add_lm_tokens(self, **kwargs):
-        lm_model = kwargs.pop('lm_model')
-
-        if lm_model == "albert":
-            self._albert()
-        else:
-            raise NotImplementedError(
-                f"{lm_model} lm model is not supported. Only albert is supported at this moment."
-            )
-
-    def __getitem__(self, index):
-        (
-            audio,
-            audio_length,
-            text,
-            text_length,
-            log_mel,
-            log_mel_length,
-            durations,
-            align_prior_matrix,
-            pitch,
-            pitch_length,
-            energy,
-            energy_length,
-            speaker_id,
-            voiced_mask,
-            p_voiced,
-            _,  # audio_shifted (only needed for SSLDisentangler)
-        ) = super().__getitem__(index)
-
-        lm_tokens = None
-        if LMTokens in self.sup_data_types_set:
-            lm_tokens = torch.tensor(self.id2lm_tokens[index]).long()
-
-        # Note: Please change the indices in _collate_fn if any items are added/removed.
-        return (
-            audio,
-            audio_length,
-            text,
-            text_length,
-            log_mel,
-            log_mel_length,
-            durations,
-            align_prior_matrix,
-            pitch,
-            pitch_length,
-            energy,
-            energy_length,
-            speaker_id,
-            voiced_mask,
-            p_voiced,
-            lm_tokens,
-        )
-
-    def _collate_fn(self, batch):
-        batch = list(zip(*batch))
-        data_dict = self.general_collate_fn(list(zip(*batch[:15])))
-        lm_tokens_list = batch[15]
-
-        if LMTokens in self.sup_data_types_set:
-            lm_tokens = torch.full(
-                (len(lm_tokens_list), max([lm_tokens.shape[0] for lm_tokens in lm_tokens_list])),
-                fill_value=self.lm_padding_value,
-            )
-            for i, lm_tokens_i in enumerate(lm_tokens_list):
-                lm_tokens[i, : lm_tokens_i.shape[0]] = lm_tokens_i
-
-            data_dict[LMTokens.name] = lm_tokens
-
-        joined_data = self.join_data(data_dict)
-        return joined_data
-
-
 class VocoderDataset(Dataset):
     def __init__(
         self,
@@ -1159,43 +1053,6 @@ class VocoderDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
-
-
-class PairedRealFakeSpectrogramsDataset(Dataset):
-    def __init__(
-        self,
-        manifest_filepath: Union[str, Path],
-    ):
-        manifest_filepath = Path(manifest_filepath)
-        with Path(manifest_filepath).open() as f:
-            logging.info(f"Loading paired spectrogram dataset from {manifest_filepath}")
-            self.manifest = []
-            for line in f:
-                entry = json.loads(line.strip())
-                assert "mel_filepath" in entry
-                assert "mel_gt_filepath" in entry
-                self.manifest.append(entry)
-
-        logging.info(f"Manifest describes {len(self)} spectrogram pairs")
-
-    def __len__(self):
-        return len(self.manifest)
-
-    def __getitem__(self, index):
-        entry = self.manifest[index]
-        pred_spec = np.load(entry["mel_filepath"])
-        true_spec = np.load(entry["mel_gt_filepath"])
-        return torch.from_numpy(pred_spec.T), torch.from_numpy(true_spec.T)
-
-    def _collate_fn(self, batch):
-        pred_specs, true_specs = zip(*batch)
-        lengths = [spec.shape[0] for spec in true_specs]
-
-        pred_specs = torch.nn.utils.rnn.pad_sequence(pred_specs, batch_first=True)
-        true_specs = torch.nn.utils.rnn.pad_sequence(true_specs, batch_first=True)
-        lengths = torch.LongTensor(lengths)
-
-        return rearrange(pred_specs, "b l c -> b c l"), rearrange(true_specs, "b l c -> b c l"), lengths
 
 
 class FastPitchSSLDataset(Dataset):

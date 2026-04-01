@@ -74,3 +74,25 @@ def canary_tokenizer(bpe_tokenizer, tmp_path_factory):
             "en": bpe_tokenizer,
         }
     )
+
+
+@pytest.fixture(scope="session")
+def canary2_tokenizer(bpe_tokenizer, tmp_path_factory):
+    tmpdir = tmp_path_factory.mktemp("spl_tokens_canary2")
+    spl_tokens = CanaryTokenizer.build_special_tokenizer(
+        [
+            "startofcontext",
+            "en",
+            "emo:undefined",
+            "noitn",
+            "notimestamp",
+            "nodiarize",
+        ],
+        tmpdir,
+    )
+    return CanaryTokenizer(
+        tokenizers={
+            "spl_tokens": spl_tokens,
+            "en": bpe_tokenizer,
+        }
+    )

@@ -72,7 +72,7 @@ class CacheAwareStreamingState(StreamingState):
         if shift == 0:
             return
         if shift >= len(self.label_buffer):
-            self.label_buffer[:] = labels[-len(self.label_buffer):]
+            self.label_buffer[:] = labels[-len(self.label_buffer) :]
             return
         self.label_buffer[:-shift] = self.label_buffer[shift:].copy()
         self.label_buffer[-shift:] = labels.copy()

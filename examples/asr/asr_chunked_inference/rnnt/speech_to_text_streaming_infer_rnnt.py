@@ -53,18 +53,6 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
-import time
-
-
-# NB: PYTORCH_CUDA_ALLOC_CONF should be set before importing pytorch / nemo
-alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-if "expandable_segments" not in alloc_conf:
-    if len(alloc_conf) > 0:
-        alloc_conf += ",expandable_segments:True"
-    else:
-        alloc_conf = "expandable_segments:True"
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = alloc_conf
-
 
 # NB: PYTORCH_CUDA_ALLOC_CONF should be set before importing pytorch / nemo
 # using expandable_segments can save more than 10x GPU memory when using small chunks
@@ -144,8 +132,6 @@ class TranscriptionConfig:
         10.0  # left context: larger value improves quality without affecting theoretical latency
     )
     right_context_secs: float = 2  # right context
-    
-    att_context_size_as_chunk: bool = True  # whether to use the att_context_size as chunk size
 
     # Set `cuda` to int to define CUDA device. If 'None', will look for CUDA
     # device anyway, and do inference on CPU only if CUDA device is not found.
@@ -253,15 +239,25 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         if use_per_stream_biasing:
             cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
 
-    set_duration = None
+    # Setup decoding strategy
+    if hasattr(asr_model, 'change_decoding_strategy'):
+        if not isinstance(asr_model, EncDecRNNTModel) and not isinstance(asr_model, EncDecHybridRNNTCTCModel):
+            raise ValueError("The script supports rnnt model and hybrid model with rnnt decodng!")
+        else:
+            # rnnt model
+            if isinstance(asr_model, EncDecRNNTModel):
+                asr_model.change_decoding_strategy(cfg.decoding)
+
+            # hybrid ctc rnnt model with decoder_type = rnnt
+            if hasattr(asr_model, 'cur_decoder'):
+                asr_model.change_decoding_strategy(cfg.decoding, decoder_type='rnnt')
+
     if manifest is not None:
         records = read_manifest(manifest)
         manifest_dir = Path(manifest).parent.absolute()
         # fix relative paths
         for record in records:
             record["audio_filepath"] = str(filepath_to_absolute(record["audio_filepath"], manifest_dir))
-        records = sorted(records, key=lambda x: x['duration'], reverse=True)
-        set_duration = sum(float(record['duration']) for record in records)
     else:
         assert filepaths is not None
         records = [{"audio_filepath": audio_file} for audio_file in filepaths]
@@ -273,6 +269,10 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 record["duration"] = librosa.get_duration(path=record["audio_filepath"])
             filepath2order[record["audio_filepath"]] = i
         records.sort(key=lambda record: record["duration"], reverse=True)
+
+    asr_model.preprocessor.featurizer.dither = 0.0
+    asr_model.preprocessor.featurizer.pad_to = 0
+    asr_model.eval()
 
     decoding_computer: GreedyBatchedLabelLoopingComputerBase = asr_model.decoding.decoding.decoding_computer
 
@@ -340,29 +340,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         drop_last=False,
         in_order=True,
     )
-
-
-    # Setup decoding strategy
-    if hasattr(asr_model, 'change_decoding_strategy'):
-        if not isinstance(asr_model, EncDecRNNTModel) and not isinstance(asr_model, EncDecHybridRNNTCTCModel):
-            raise ValueError("The script supports rnnt model and hybrid model with rnnt decodng!")
-        else:
-            if asr_model.cfg.encoder.att_context_style == 'chunked_limited_with_rc' and cfg.att_context_size_as_chunk:
-                asr_model.encoder.set_default_att_context_size(
-                    att_context_size=[context_encoder_frames.left,context_encoder_frames.chunk,context_encoder_frames.right]
-                )
-            # rnnt model
-            if isinstance(asr_model, EncDecRNNTModel):
-                asr_model.change_decoding_strategy(cfg.decoding)
-
-            # hybrid ctc rnnt model with decoder_type = rnnt
-            if hasattr(asr_model, 'cur_decoder'):
-                asr_model.change_decoding_strategy(cfg.decoding, decoder_type='rnnt')
-
-    asr_model.preprocessor.featurizer.dither = 0.0
-    asr_model.preprocessor.featurizer.pad_to = 0
-    asr_model.eval()
-
 
     timer = SimpleTimer()
     with torch.no_grad(), torch.inference_mode():
@@ -436,8 +413,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 encoder_context_batch = buffer.context_size_batch.subsample(factor=encoder_frame2audio_samples)
                 # remove left context
                 encoder_output = encoder_output[:, encoder_context.left :]
-                
-                # import ipdb; ipdb.set_trace()
+
                 # decode only chunk frames
                 chunk_batched_hyps, _, state = decoding_computer(
                     x=encoder_output,
@@ -449,11 +425,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     prev_batched_state=state,
                     multi_biasing_ids=multi_biasing_ids,
                 )
-                # chunk_batched_hyps, _, state = decoding_computer(
-                #     x=encoder_output,
-                #     out_len=encoder_context_batch.chunk,
-                #     prev_batched_state=state,
-                # )
                 # merge hyps with previous hyps
                 if current_batched_hyps is None:
                     current_batched_hyps = chunk_batched_hyps
@@ -486,32 +457,17 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             )
             all_hyps[i] = hyp
 
-    # write predictions to outputfile
-    # import ipdb; ipdb.set_trace()
-    import json
-    output_filename = cfg.output_filename
-    Path(output_filename).parent.mkdir(parents=True, exist_ok=True)
-    pred_text_attr_name = "pred_text"
-    with open(output_filename, "w") as out_f:
-        for i, record in enumerate(records):
-            record[pred_text_attr_name] = all_hyps[i].text
-            out_f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    if cfg.sort_by_duration:
+        # restore order for all_hyps and records (all_hyps are consistent with records)
+        order_restored = sorted(
+            zip(records, all_hyps), key=lambda records_hyps: filepath2order[records_hyps[0]["audio_filepath"]]
+        )
+        records, all_hyps = map(list, zip(*order_restored))
 
-    # output_filename, pred_text_attr_name = write_transcription(
-    #     all_hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=cfg.timestamps
-    # )
-
-    # if cfg.sort_by_duration:
-    #     # restore order for all_hyps and records (all_hyps are consistent with records)
-    #     order_restored = sorted(
-    #         zip(records, all_hyps), key=lambda records_hyps: filepath2order[records_hyps[0]["audio_filepath"]]
-    #     )
-    #     records, all_hyps = map(list, zip(*order_restored))
-
-    # output_filename, pred_text_attr_name = write_transcription(
-    #     all_hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=cfg.timestamps
-    # )
-    # logging.info(f"Finished writing predictions to {output_filename}!")
+    output_filename, pred_text_attr_name = write_transcription(
+        all_hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=cfg.timestamps
+    )
+    logging.info(f"Finished writing predictions to {output_filename}!")
 
     if cfg.calculate_rtfx:
         durations = [
@@ -529,13 +485,13 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             langid=cfg.langid,
             use_cer=cfg.use_cer,
             output_filename=None,
+            ignore_punctuation=True,
+            ignore_capitalization=True,
         )
         if output_manifest_w_wer:
             logging.info(f"Writing prediction and error rate of each sample to {output_manifest_w_wer}!")
             logging.info(f"{total_res}")
 
-    logging.info(f"The whole streaming inference process took: {timer.total_sec():.2f}s")
-    
     return cfg
 
 

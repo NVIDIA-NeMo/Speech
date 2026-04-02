@@ -15,6 +15,7 @@ from omegaconf import DictConfig, ListConfig
 from peft import LoraConfig, get_peft_model
 from transformers import PreTrainedModel
 
+from nemo.collections.speechlm2.parts.pretrained import move_embedding
 from nemo.utils import logging
 
 
@@ -25,6 +26,9 @@ def maybe_install_lora(model):
         assert hasattr(model, "llm") and isinstance(model.llm, PreTrainedModel)
         assert "prevent_freeze_params" in model.cfg and isinstance(model.cfg.prevent_freeze_params, (list, ListConfig))
         model.lora_config = LoraConfig(**model.cfg.lora)
-        model.llm = get_peft_model(model.llm, model.lora_config)
+        # PEFT inspects get_input_embeddings() while wrapping the model, so temporarily
+        # restore the embedding layer that SALM keeps outside the LLM for FSDP/TP.
+        with move_embedding(model):
+            model.llm = get_peft_model(model.llm, model.lora_config)
         model.cfg.prevent_freeze_params.append(r"^.+\.lora_.+$")
         logging.info(f"LoRA adapter installed: {model.lora_config}")

@@ -138,7 +138,7 @@ class BaseBuilder:
 
             target_lang = getattr(cfg, "lang", getattr(cfg, "target_lang", None))
             if target_lang is None:
-                raise ValueError("Language is not specified. Cannot load PnC model.")
+                raise ValueError("Language is not specified. Cannot load ITN model.")
 
             itn_cfg = cfg.itn
             with open_dict(itn_cfg):

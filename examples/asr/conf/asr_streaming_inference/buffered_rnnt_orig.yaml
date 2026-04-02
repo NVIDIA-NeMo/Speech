@@ -99,6 +99,7 @@ streaming:
   request_type: feature_buffer                # Type of request: frame or feature_buffer
   stateful: true                              # Whether to use stateful processing
   padding_mode: right                         # Padding mode: left or right. How to pad frames to match the required buffer length
+  decode_temporary: true                      # decode right context - temporary part of the hypothesis
 
 
 # ========================

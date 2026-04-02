@@ -95,6 +95,7 @@ class BufferedRNNTPipeline(BasePipeline):
         self.chunk_size = cfg.streaming.chunk_size
         self.left_padding_size = cfg.streaming.left_padding_size
         self.right_padding_size = cfg.streaming.right_padding_size
+        self.decode_temporary = cfg.streaming.decode_temporary
         self.buffer_size_in_secs = self.chunk_size + self.left_padding_size + self.right_padding_size
         self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
@@ -127,6 +128,9 @@ class BufferedRNNTPipeline(BasePipeline):
         self.padding_mode = FeatureBufferPaddingMode.from_str(cfg.streaming.padding_mode)
         self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
+        if not self.decode_temporary and self.stop_history_eou_in_milliseconds > 0:
+            # right part not decoded -> empty -> cannot be used to detect eou
+            self.stop_history_eou_in_milliseconds += int(self.right_padding_size * 1000)
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
@@ -579,7 +583,7 @@ class BufferedRNNTPipeline(BasePipeline):
         for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):
             state.hyp_decoding_state = rnnt_state
 
-        if self.tokens_per_right_padding > 0:
+        if self.decode_temporary and self.tokens_per_right_padding > 0:
             # decode right context
             _, max_time, feat_dim = encs_dim_last.shape
             device = encs.device
@@ -651,9 +655,14 @@ class BufferedRNNTPipeline(BasePipeline):
             tokens = hyp.y_sequence
             timestamp = torch.tensor(timestamp) if isinstance(timestamp, list) else timestamp
             tokens = torch.tensor(tokens) if isinstance(tokens, list) else tokens
-            timestamp = update_punctuation_and_language_tokens_timestamps(
-                tokens, timestamp, self.tokens_to_move, self.underscore_id
-            )
+            if not self.stateful:
+                # TODO(vbataev): fix stateful properly
+                # core issue: in stateful decoding, punctuation at the start of the chunk should be moved
+                # not to 0 timestamp (which is beyond chunk boundaries) – it will be lost
+                # (since for stateful decoding timestamps are global)
+                timestamp = update_punctuation_and_language_tokens_timestamps(
+                    tokens, timestamp, self.tokens_to_move, self.underscore_id
+                )
             vad_segments = request.vad_segments
             eou_detected = self.run_greedy_decoder(
                 state=state,

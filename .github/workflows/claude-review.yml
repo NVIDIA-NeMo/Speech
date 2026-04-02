@@ -1,0 +1,58 @@
+name: Claude Code Review
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  acknowledge:
+    if: >-
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/claude review')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add eyes reaction to comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+  claude-review:
+    needs: acknowledge
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_claude_review.yml@v0.79.0
+    with:
+      prompt: |
+        You are doing a light code review. Keep it concise and actionable.
+
+        Focus ONLY on:
+        - Critical bugs or logic errors
+        - Typos in code, comments, or strings
+        - Missing or insufficient test coverage for changed code
+        - Outdated or inaccurate documentation affected by the changes
+
+        Do NOT comment on:
+        - Style preferences or formatting
+        - Minor naming suggestions
+        - Architectural opinions or refactoring ideas
+        - Performance unless there is a clear, measurable issue
+
+        Provide feedback using inline comments for specific code suggestions.
+        Use top-level comments for general observations.
+
+        IMPORTANT: Do NOT approve the pull request. Only leave comments.
+
+        It's perfectly acceptable to not have anything to comment on.
+        If you do not have anything to comment on, post "LGTM".
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

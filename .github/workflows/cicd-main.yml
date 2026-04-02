@@ -48,7 +48,7 @@ jobs:
       HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
     steps:
       - name: Checkout branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -171,7 +171,7 @@ jobs:
           echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout NeMo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
@@ -212,7 +212,7 @@ jobs:
       && !cancelled()
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
 
@@ -274,7 +274,7 @@ jobs:
     permissions: write-all
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Get workflow result
         id: result
@@ -301,7 +301,7 @@ jobs:
           echo "code=$RESULT" | tee -a $GITHUB_OUTPUT
 
       - name: Checkout for GH CLI
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Remove label if not cancelled
         if: |
@@ -359,10 +359,10 @@ jobs:
         flag: [unit-test, e2e]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download coverage reports of current branch
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: coverage-${{ matrix.flag }}-*
 
@@ -387,7 +387,7 @@ jobs:
           flags: ${{ matrix.flag }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-${{ matrix.flag }}-aggregated
           path: |

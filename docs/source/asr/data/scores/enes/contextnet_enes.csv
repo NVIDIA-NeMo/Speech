@@ -1,2 +1,0 @@
-Model Name,Language,Fisher-Dev-En,Fisher-Dev-Es,Fisher-Test-En,Fisher-Test-Es,Librispeech Dev-Clean,Librispeech Dev-Other,Librispeech Test-Clean,Librispeech Test-Other,MCV Dev-Set v7.0 (en),MCV Dev-Set v7.0 (es),MCV Test-Set v7.0 (en),MCV Test-Set v7.0 (es),MLS Dev (en),MLS Dev (es),MLS Test (en),MLS Test (es),VoxPopuli Dev (en),VoxPopuli Dev (es),VoxPopuli Test (en),VoxPopuli Test (es)
-stt_enes_contextnet_large,enes,,14.8 %,,,2.2 %,5.6 %,2.3 %,5.5 %,4.7 %,,,,,3.0 %,,,,5.0 %,,

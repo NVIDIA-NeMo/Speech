@@ -45,12 +45,14 @@ import argparse
 import copy
 import json
 import os
+import random
 import shutil
 from dataclasses import fields
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
+import torch
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
@@ -220,7 +222,8 @@ def run_inference_and_evaluation(
         "wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
-        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance"
+        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
+        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate"
     )
 
     for dataset in datasets:
@@ -291,6 +294,7 @@ def run_inference_and_evaluation(
             eval_config_for_dataset = EvaluationConfig(
                 sv_model=eval_config.sv_model,
                 asr_model_name=eval_config.asr_model_name,
+                eou_model_name=eval_config.eou_model_name,
                 language=language,
                 with_utmosv2=eval_config.with_utmosv2,
                 with_fcd=eval_config.with_fcd,
@@ -368,12 +372,28 @@ def run_inference_and_evaluation(
     return None, None
 
 
+def seed_all(seed: int):
+    """
+    Attempts to make script deterministic
+    """
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+
+
 def create_argument_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
     parser = argparse.ArgumentParser(
         description='MagpieTTS Inference and Evaluation',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+    )
+    parser.add_argument(
+        '--deterministic',
+        action='store_true',
+        help='Attempts to make results deterministic to the best that can be done. Used for testing',
     )
 
     # Model loading arguments
@@ -487,6 +507,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
     eval_group.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b")
+    eval_group.add_argument(
+        '--eou_model_name',
+        type=str,
+        default="facebook/wav2vec2-base-960h",
+        help=(
+            'Hugging Face model id or local path to the EoU wav2vec2 model directory. '
+            'For offline use, download the model locally and pass the directory path here.'
+        ),
+    )
     eval_group.add_argument('--num_repeats', type=int, default=1)
     eval_group.add_argument('--confidence_level', type=float, default=0.95)
     eval_group.add_argument('--disable_utmosv2', action='store_true')
@@ -514,6 +543,8 @@ def main(argv=None):
     """
     parser = create_argument_parser()
     args = parser.parse_args(argv)
+    if args.deterministic:
+        seed_all(seed=9)
 
     dataset_meta_info = load_evalset_config(args.datasets_json_path)
     datasets = filter_datasets(dataset_meta_info, args.datasets)
@@ -558,6 +589,7 @@ def main(argv=None):
     eval_config = EvaluationConfig(
         sv_model=args.sv_model,
         asr_model_name=args.asr_model_name,
+        eou_model_name=args.eou_model_name,
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,

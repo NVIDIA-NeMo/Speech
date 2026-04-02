@@ -17,7 +17,6 @@
 
 """Setup for pip package."""
 
-import codecs
 import importlib.util
 import os
 import subprocess
@@ -82,6 +81,10 @@ extras_require = {
 
 
 extras_require['all'] = list(chain(val for key, val in extras_require.items()))
+
+# CUDA version extras (not included in 'all' - user must explicitly select)
+extras_require['cu12'] = req_file("requirements_cu12.txt")
+extras_require['cu13'] = req_file("requirements_cu13.txt")
 
 # Add lightning requirements as needed
 extras_require['common'] = extras_require['common-only']

@@ -128,6 +128,9 @@ class BufferedRNNTPipeline(BasePipeline):
         self.padding_mode = FeatureBufferPaddingMode.from_str(cfg.streaming.padding_mode)
         self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
+        if not self.decode_temporary and self.stop_history_eou_in_milliseconds > 0:
+            # right part not decoded -> empty -> cannot be used to detect eou
+            self.stop_history_eou_in_milliseconds += int(self.right_padding_size * 1000)
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result

@@ -95,6 +95,7 @@ class BufferedRNNTPipeline(BasePipeline):
         self.chunk_size = cfg.streaming.chunk_size
         self.left_padding_size = cfg.streaming.left_padding_size
         self.right_padding_size = cfg.streaming.right_padding_size
+        self.decode_temporary = cfg.streaming.decode_temporary
         self.buffer_size_in_secs = self.chunk_size + self.left_padding_size + self.right_padding_size
         self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
@@ -579,7 +580,7 @@ class BufferedRNNTPipeline(BasePipeline):
         for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):
             state.hyp_decoding_state = rnnt_state
 
-        if self.tokens_per_right_padding > 0:
+        if self.decode_temporary and self.tokens_per_right_padding > 0:
             # decode right context
             _, max_time, feat_dim = encs_dim_last.shape
             device = encs.device

@@ -24,7 +24,7 @@ from lhotse.dataset.collation import collate_matrices, collate_vectors
 from omegaconf import DictConfig
 from transformers import AutoTokenizer, T5Tokenizer
 
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPABPETokenizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     beta_binomial_prior_distribution,
     normalize_volume,
@@ -41,7 +41,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
     for tokenizer_name in all_tokenizers_config:
         tokenizer_config = all_tokenizers_config[tokenizer_name]
         if tokenizer_config._target_ == 'AutoTokenizer':
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_config.pretrained_model)
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_config.pretrained_model, trust_remote_code=True)
         elif tokenizer_config._target_ == 'T5Tokenizer':
             tokenizer = T5Tokenizer.from_pretrained(tokenizer_config.pretrained_model)
         else:
@@ -140,6 +140,9 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         tokenizer_config: DictConfig = None,
         text_context_remapping: Dict[str, str] = None,
         text_context_remapping_prob: float = 0.0,
+        phoneme_tokenizer_config: DictConfig = None,
+        ignore_phoneme_languages: List[str] = None,
+        add_language_to_context_text: bool = False,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -160,8 +163,12 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.context_duration_max = context_duration_max
         self.tokenizer_config = tokenizer_config
         self.text_tokenizer = None
+        self.phoneme_tokenizer = None
         self.text_context_remapping = text_context_remapping
         self.text_context_remapping_prob = text_context_remapping_prob
+        self.phoneme_tokenizer_config = phoneme_tokenizer_config
+        self.ignore_phoneme_languages = ignore_phoneme_languages or []
+        self.add_language_to_context_text = add_language_to_context_text
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -188,6 +195,10 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             self.eos_id = self.bos_id + 1
             self.pad_id = self.text_tokenizer.pad
 
+        # initialize the phoneme tokenizer once per dataset/worker when config is available.
+        if self.phoneme_tokenizer is None and self.phoneme_tokenizer_config is not None:
+            self.phoneme_tokenizer = instantiate(self.phoneme_tokenizer_config)
+
         # define list to store batched information
         dataset_name_list = []
         audio_list = []
@@ -207,15 +218,29 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         context_text_tokens_len_list = []
         context_has_text_context_list = []
         reward_list = []
+        language_list = []
         raw_text_list = (
             []
         )  # raw text here is the string of normalized text or text stored in the supervision segment. Used to distinguish from text tokens.
+        phoneme_token_list = []
+        phoneme_token_len_list = []
+
+        def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
+            effective_duration_max = min(self.context_duration_max, available_duration_sec)
+            effective_duration_max = max(self.context_duration_min, effective_duration_max)
+            return random.uniform(self.context_duration_min, effective_duration_max)
+
         for cut in cuts:
             speaker = cut.supervisions[0].speaker
             if not check_speaker_format(speaker):
                 raise ValueError(f"Invalid format in cut.supervisions[0].speaker: {speaker}")
             dataset_name = speaker.strip().split()[2].split(":")[-1]
             dataset_name_list.append(dataset_name)
+            if cut.has_custom("lang"):
+                language = cut.lang
+            else:
+                language = cut.supervisions[0].language if cut.supervisions[0].has_custom("language") else "en"
+            language_list.append(language)
 
             # target audio or target codes
             if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
@@ -252,8 +277,10 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 # and duration are None to the load function.
                 context_audio_codes_array = cut.context_codes.load().astype(np.int32)
                 context_audio_codes = torch.from_numpy(context_audio_codes_array)  # (C, T)
-                # Sample random duration between self.context_duration_min and self.context_duration_max
-                _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
+                _available_context_duration = (
+                    context_audio_codes.shape[1] * self.codec_model_samples_per_frame / self.sample_rate
+                )
+                _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
                 _num_frames_to_slice = int(
                     _context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame
                 )
@@ -277,7 +304,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 context_audio_array = cut.context_audio.resample(self.sample_rate).load_audio().squeeze(0)
                 if self.volume_norm:
                     context_audio_array = normalize_volume(context_audio_array)
-                _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
+                _available_context_duration = len(context_audio_array) / self.sample_rate
+                _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
                 _num_samples_to_slice = self.get_num_audio_samples_to_slice(
                     _context_duration_to_slice, self.sample_rate
                 )
@@ -327,7 +355,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     audio_array_16khz = cut.target_audio.resample(16_000).load_audio().squeeze(0)
                     if self.volume_norm:
                         audio_array_16khz = normalize_volume(audio_array_16khz)
-                _context_duration_to_slice = random.uniform(self.context_duration_min, self.context_duration_max)
+                _available_context_duration = len(audio_array_16khz) / 16_000
+                _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
                 _num_samples_to_slice = int(_context_duration_to_slice * 16_000)
                 if _num_samples_to_slice < len(audio_array_16khz):
                     start_idx = random.randint(0, len(audio_array_16khz) - _num_samples_to_slice)
@@ -349,8 +378,13 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     )
                     has_text_context = True
                 else:
+                    if self.add_language_to_context_text:
+                        context_text = f"[{language.upper()}]"
+                    else:
+                        context_text = "[NO TEXT CONTEXT]"
+
                     context_text_tokens = self.text_tokenizer.encode(
-                        "[NO TEXT CONTEXT]", tokenizer_name=self.text_conditioning_tokenizer_name
+                        context_text, tokenizer_name=self.text_conditioning_tokenizer_name
                     )
                     has_text_context = False
                 if self.pad_context_text_to_max_duration:
@@ -390,6 +424,34 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             token_list.append(tokens)
             token_len_list.append(text_len)
 
+            if self.phoneme_tokenizer is not None:
+                # Use IPA text for IPABPETokenizer (required), otherwise use regular text_str
+                if isinstance(self.phoneme_tokenizer, IPABPETokenizer):
+                    if not cut.supervisions[0].has_custom("ipa"):
+                        if self.dataset_type == 'train':
+                            raise ValueError(
+                                f"IPABPETokenizer requires 'ipa' field but it is not available in the cut. "
+                                f"Cut ID: {cut.id}, Text: {text_str}"
+                            )
+                        else:
+                            logging.warning(
+                                f"'ipa' field not found in cut {cut.id} for text: {text_str}. "
+                                f"Use only predicted phonemes for inference."
+                            )
+                    phoneme_text = cut.supervisions[0].ipa if cut.supervisions[0].has_custom("ipa") else ""
+                    if language in self.ignore_phoneme_languages:
+                        # Ignore phoneme tokenization for this language
+                        phoneme_text = ""
+                else:
+                    phoneme_text = text_str
+                phoneme_tokens = self.phoneme_tokenizer.encode(phoneme_text)
+                phoneme_tokens = (
+                    [self.phoneme_tokenizer.bos_token_id] + phoneme_tokens + [self.phoneme_tokenizer.eos_token_id]
+                )
+                phoneme_tokens_len = len(phoneme_tokens)
+                phoneme_token_list.append(torch.tensor(phoneme_tokens, dtype=torch.int32))
+                phoneme_token_len_list.append(phoneme_tokens_len)
+
             if self.include_align_prior:
                 align_prior = beta_binomial_prior_distribution(
                     phoneme_count=text_len, mel_count=spec_len, scaling_factor=self.prior_scaling_factor
@@ -405,9 +467,16 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         batch_dict = {
             "dataset_names": dataset_name_list,
             "raw_texts": raw_text_list,
+            "languages": language_list,
             "text": collate_vectors(token_list, padding_value=self.pad_id),  # (B, max_len)
             "text_lens": torch.IntTensor(token_len_list),
         }
+
+        if self.phoneme_tokenizer is not None:
+            batch_dict["phoneme_tokens"] = collate_vectors(
+                phoneme_token_list, padding_value=self.phoneme_tokenizer.pad
+            )
+            batch_dict["phoneme_tokens_lens"] = torch.IntTensor(phoneme_token_len_list)
 
         # audio for SV.
         if len(audio_list_16khz) > 0:

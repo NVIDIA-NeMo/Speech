@@ -17,14 +17,13 @@ from typing import Any, ContextManager, Mapping, Sequence
 
 import hydra
 import torch
+from lightning.fabric.plugins.precision.utils import _convert_fp_tensor
 from lightning.pytorch.plugins import HalfPrecision
 from lightning.pytorch.plugins.precision.precision import Precision
 from lightning_utilities import apply_to_collection
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor
 from typing_extensions import override
-
-from lightning.fabric.plugins.precision.utils import _convert_fp_tensor
 
 
 def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
@@ -165,7 +164,9 @@ class AutomodelPrecision(Precision):
     @override
     def convert_input(self, data: Any) -> Any:
         if not isinstance(data, dict):
-            return apply_to_collection(data, function=_convert_fp_tensor, dtype=Tensor, dst_type=self._desired_input_dtype)
+            return apply_to_collection(
+                data, function=_convert_fp_tensor, dtype=Tensor, dst_type=self._desired_input_dtype
+            )
 
         return _convert_audio_preserving(data, self._desired_input_dtype)
 
@@ -186,4 +187,3 @@ def _convert_audio_preserving(data: dict, dtype: torch.dtype) -> dict:
         return v
 
     return _convert(data)
-

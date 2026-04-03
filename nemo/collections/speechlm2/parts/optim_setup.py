@@ -12,13 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import re
-from typing import Generator, Iterable
+from typing import Any, Generator, Iterable
 
 import hydra
 import torch
 from lightning import LightningModule
 
 from nemo.utils import logging
+
+
+def _patch_flashoptim_uneven_shard_support(optimizer):
+    """Patch flashoptim to handle FSDP2 unevenly-sharded parameters in DCP.
+
+    FlashOptim <= 0.1.3 raises ``ValueError`` when saving optimizer state for
+    parameters whose shard dimension is not evenly divisible by the FSDP mesh
+    size.  The root cause is that ``DTensor.from_local()`` is called without an
+    explicit ``shape``, so it infers ``global = local * mesh_size`` which is
+    wrong for padded (uneven) shards.
+
+    This patch replaces ``_wrap_state_as_dtensor`` on the optimizer class so
+    that ``shape=param.shape`` and ``stride=param.stride()`` are always passed,
+    which is correct for both even and uneven shards.
+    """
+    klass = type(optimizer)
+    if not hasattr(klass, "_wrap_state_as_dtensor"):
+        return  # not a flashoptim optimizer
+    if getattr(klass, "_nemo_patched_uneven_shard", False):
+        return  # already patched
+
+    @staticmethod
+    def _fixed_wrap_state_as_dtensor(state: dict[str, Any], param: torch.Tensor) -> None:  # noqa: UP006
+        if not hasattr(param, "device_mesh"):
+            return
+        from torch.distributed.tensor import DTensor
+
+        mesh = param.device_mesh
+        placements = param.placements
+
+        for key, val in state.items():
+            if isinstance(val, torch.Tensor) and not isinstance(val, DTensor) and val.dim() > 0:
+                state[key] = DTensor.from_local(
+                    val,
+                    mesh,
+                    placements,
+                    shape=param.shape,
+                    stride=param.stride(),
+                )
+
+    klass._wrap_state_as_dtensor = _fixed_wrap_state_as_dtensor
+    klass._nemo_patched_uneven_shard = True
+    logging.info("Patched flashoptim %s to support unevenly-sharded FSDP2 parameters in DCP.", klass.__name__)
 
 
 def configure_optimizers(model: LightningModule):
@@ -57,6 +100,7 @@ def configure_optimizers(model: LightningModule):
         keep_patterns=model.cfg.get("prevent_freeze_params", []),
     )
     optimizer = hydra.utils.instantiate(model.cfg.optimizer, parameters, _convert_='all')
+    _patch_flashoptim_uneven_shard_support(optimizer)
     ans = {"optimizer": optimizer}
     if "lr_scheduler" in model.cfg:
         lr_scheduler = hydra.utils.instantiate(model.cfg.lr_scheduler, optimizer)
@@ -150,6 +194,7 @@ def configure_optimizers_exclude_norm_from_wd(model: LightningModule):
 
     # 4. Instantiate via Hydra
     optimizer = hydra.utils.instantiate(model.cfg.optimizer, optim_groups, _convert_='all')
+    _patch_flashoptim_uneven_shard_support(optimizer)
 
     ans = {"optimizer": optimizer}
     if "lr_scheduler" in model.cfg:

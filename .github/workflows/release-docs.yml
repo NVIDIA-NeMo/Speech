@@ -78,11 +78,12 @@ on:
 
 jobs:
   build-docs:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.74.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.83.0
     with:
       ref: ${{ inputs.github-ref }}
       docs-directory: docs/source
       sync-all: true
+      no-extras: "--no-extra cu12"
 
   publish-docs:
     runs-on: ubuntu-latest

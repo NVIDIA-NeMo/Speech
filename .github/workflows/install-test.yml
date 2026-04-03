@@ -21,7 +21,7 @@ jobs:
         installer: ["pip-install", "nemo-install"]
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
 
       - name: Check disk space before cleanup
         run: df -h
@@ -39,7 +39,7 @@ jobs:
       - name: Check disk space after cleanup
         run: df -h
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "${{ matrix.python }}"
 
@@ -80,7 +80,7 @@ jobs:
         installer: ["pip-install", "nemo-install"]
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
 
       - name: Check disk space before cleanup
         run: df -h
@@ -102,7 +102,7 @@ jobs:
         run: df -h
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -137,7 +137,7 @@ jobs:
         python: ["3.10", "3.11", "3.12"]
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
 
       - name: Check disk space before cleanup
         run: df -h
@@ -159,7 +159,7 @@ jobs:
         run: df -h
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -186,7 +186,7 @@ jobs:
         installer: ["pip-install", "nemo-install"]
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
 
       - name: Check disk space before cleanup
         run: df -h
@@ -208,7 +208,7 @@ jobs:
         run: df -h
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -243,7 +243,7 @@ jobs:
         python: ["3.10", "3.11", "3.12"]
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
 
       - name: Check disk space before cleanup
         run: df -h
@@ -265,7 +265,7 @@ jobs:
         run: df -h
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 

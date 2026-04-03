@@ -630,3 +630,32 @@ class TestRNNTTimestamps(BaseTimestampsTest):
     def test_word_offsets_subword_wpe_other_delimiter(self, tmp_tokenizer):
         self.tmp_tokenizer = tmp_tokenizer
         super().test_word_offsets_subword_wpe_other_delimiter()
+
+
+@pytest.mark.unit
+@pytest.mark.with_downloads
+def test_transcribe_timestamps_no_decoder_reinstantiation(stt_en_fastconformer_transducer_large, test_data_dir):
+    """
+    Test that calling transcribe with timestamps=True multiple times
+    does not reinstantiate the decoder.
+
+    Regression test for the fix that avoids calling change_decoding_strategy()
+    when compute_timestamps is already set to the desired value.
+    """
+    model = stt_en_fastconformer_transducer_large
+    audio_file = os.path.join(test_data_dir, "asr/test/an4/wav/cen3-mjwl-b.wav")
+
+    # First call - may change decoding strategy
+    _ = model.transcribe(audio_file, timestamps=True)
+
+    # Get reference to decoding algorithm after first call
+    decoding_after_first_call = model.decoding.decoding
+
+    # Second call - should NOT reinstantiate decoder
+    _ = model.transcribe(audio_file, timestamps=True)
+
+    # Verify decoder is the same object (not reinstantiated)
+    assert model.decoding.decoding is decoding_after_first_call, (
+        "Decoder was reinstantiated on second transcribe call with timestamps=True. "
+        "This indicates change_decoding_strategy() was called unnecessarily."
+    )

@@ -33,6 +33,7 @@ def pack_hypotheses(
     beam_hypotheses: torch.Tensor,
     scores: List[Optional[float]],
     step_confidence: Optional[torch.Tensor] = None,
+    xatt_scores: Optional[List[torch.Tensor]] = None,
 ) -> List[Hypothesis]:
 
     for idx, hyp in enumerate(hypotheses):  # type: Hypothesis
@@ -51,6 +52,9 @@ def pack_hypotheses(
 
         if hyp.dec_state is not None:
             hyp.dec_state = _states_to_device(hyp.dec_state)
+
+        if xatt_scores is not None:
+            hyp.xatt_scores = [xatt_layer[idx] for xatt_layer in xatt_scores]
 
     return hypotheses
 
@@ -134,6 +138,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
         preserve_token_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         n_samples: int = 1,
+        return_xattn_scores: bool = False,
     ):
         super().__init__(
             transformer_decoder=transformer_decoder,
@@ -159,6 +164,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             n_samples=n_samples,
             preserve_step_confidence=preserve_token_confidence,
             confidence_method_cfg=confidence_method_cfg,
+            return_xattn_scores=return_xattn_scores,
         )
 
         self.preserve_alignments = preserve_alignments
@@ -192,7 +198,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             self.transformer_decoder.eval()
             self.log_softmax_module.eval()
 
-            best_hypo, topk_hypotheses, step_confidence = self.greedy_search(
+            best_hypo, topk_hypotheses, step_confidence, xatt_scores_list = self.greedy_search(
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_input_mask=encoder_input_mask,
                 decoder_input_ids=decoder_input_ids,
@@ -202,23 +208,35 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                 topk_hypotheses = [x.detach().cpu() for x in topk_hypotheses]  # each item is [beam, seq_len]
                 beam_scores = [[None] * self.n_samples for _ in topk_hypotheses]  # each item is [beam,]
                 packed_result = []
+                if xatt_scores_list is not None:
+                    xatt_scores_list = [
+                        xatt_layer.view(len(topk_hypotheses), -1, *xatt_layer.shape[1:]).detach().cpu()
+                        for xatt_layer in xatt_scores_list
+                    ]
                 for i in range(len(topk_hypotheses)):
                     # Pack results into Hypotheses
                     hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(self.n_samples)]
                     self.format_hypotheses(hypotheses, decoder_input_ids)
+                    topk_xatt_scores = None
+                    if xatt_scores_list is not None:
+                        topk_xatt_scores = [xatt_layer[i] for xatt_layer in xatt_scores_list]
                     packed_result.append(
                         NBestHypotheses(
-                            pack_hypotheses(hypotheses, topk_hypotheses[i], beam_scores[i]), step_confidence
+                            pack_hypotheses(
+                                hypotheses, topk_hypotheses[i], beam_scores[i], step_confidence, topk_xatt_scores
+                            )
                         )
                     )
             else:
                 beam_scores = [None for _ in range(len(best_hypo))]
                 best_hypo = best_hypo.cpu()
+                if xatt_scores_list is not None:
+                    xatt_scores_list = [xatt_scores_layer.detach().cpu() for xatt_scores_layer in xatt_scores_list]
                 hypotheses = [
                     Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(encoder_hidden_states.shape[0])
                 ]
                 # Pack results into Hypotheses
-                packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores, step_confidence)
+                packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores, step_confidence, xatt_scores_list)
                 self.format_hypotheses(packed_result, decoder_input_ids)
 
         self.transformer_decoder.train()
@@ -256,6 +274,8 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
             if pos < -1:
                 hyp.y_sequence = ids[: pos + 1]
                 hyp.token_confidence = hyp.token_confidence[: pos + 1] if hyp.token_confidence is not None else None
+                if hyp.xatt_scores is not None:
+                    hyp.xatt_scores = [xatt_layer[:, : pos + 1, :] for xatt_layer in hyp.xatt_scores]
 
 
 @dataclass

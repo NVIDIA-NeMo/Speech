@@ -14,11 +14,13 @@
 # limitations under the License.
 
 import itertools
+import os
 import string
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import List, Optional, Union
 
+from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerBase
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
@@ -36,6 +38,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     spanish_text_preprocessing,
     vietnamese_text_preprocessing,
 )
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 
 
@@ -378,6 +381,81 @@ class ItalianCharsTokenizer(BaseCharsTokenizer):
             non_default_punct_list=non_default_punct_list,
             text_preprocessing_func=italian_text_preprocessing,
         )
+
+
+class HindiCharsTokenizer(BaseCharsTokenizer):
+    """Hindi grapheme tokenizer (character-based, no phonemes).
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function. Keeps Devanagari unchanged.
+
+        Each Unicode code point becomes 1 token (not visual grapheme clusters)
+        ड़ = ड (U+0921) + '़' nukta (U+093C)
+
+        Input Text: अंगड़ाई
+        Chars: ['अ', 'ं', 'ग', 'ड', '़', 'ा', 'ई']
+        IDs:   [74, 138, 90, 100, 141, 124, 77]
+    """
+
+    _LOCALE = "hi-IN"
+    _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
+    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="mixed")
+    _CHARSET_STR += string.ascii_lowercase
+
+    def __init__(
+        self,
+        chars=_CHARSET_STR,
+        punct=True,
+        apostrophe=True,
+        add_blank_at=None,
+        pad_with_space=False,
+        non_default_punct_list=_PUNCT_LIST,
+        text_preprocessing_func=any_locale_text_preprocessing,
+    ):
+        super().__init__(
+            chars=chars,
+            punct=punct,
+            apostrophe=apostrophe,
+            add_blank_at=add_blank_at,
+            pad_with_space=pad_with_space,
+            non_default_punct_list=non_default_punct_list,
+            text_preprocessing_func=text_preprocessing_func,
+        )
+
+    def encode(self, text):
+        """Encode Hindi text, handling Devanagari combining marks correctly."""
+        cs, space, tokens = [], self.tokens[self.space], set(self.tokens)
+
+        text = self.text_preprocessing_func(text)
+        for c in text:
+            # Add a whitespace if the current char is a whitespace while the previous char is not a whitespace.
+            if c == space and len(cs) > 0 and cs[-1] != space:
+                cs.append(c)
+            # For Hindi: accept any character that's in tokens (not just alphanumeric)
+            # This handles Devanagari combining marks like ि, ं, ी, etc.
+            elif c in tokens and c != space:
+                cs.append(c)
+            # Add a punctuation that has a single char.
+            elif (c in self.PUNCT_LIST) and self.punct:
+                cs.append(c)
+
+            elif c != space:
+                logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
+
+        # Remove trailing spaces
+        if cs:
+            while cs[-1] == space:
+                cs.pop()
+
+        if self.pad_with_space:
+            cs = [space] + cs + [space]
+
+        return [self._token2id[p] for p in cs]
 
 
 class GermanPhonemesTokenizer(BaseCharsTokenizer):
@@ -1097,8 +1175,82 @@ class JapanesePhonemeTokenizer(BaseTokenizer):
         return [self._token2id[p] for p in ps]
 
 
+class IPABPETokenizer(TokenizerSpec):
+    """Simple IPA BPE tokenizer wrapper around HuggingFace tokenizers.
+
+    Args:
+        tokenizer_path: Path to the tokenizer.json file (or directory containing it).
+    """
+
+    def __init__(self, tokenizer_path: str):
+        if os.path.isdir(tokenizer_path):
+            tokenizer_file = os.path.join(tokenizer_path, "tokenizer.json")
+        else:
+            tokenizer_file = tokenizer_path
+
+        if not os.path.exists(tokenizer_file):
+            raise ValueError(f"Tokenizer file not found: {tokenizer_file}")
+
+        self._tokenizer = Tokenizer.from_file(tokenizer_file)
+        self.tokens = self._tokenizer.get_vocab()
+        phoneme_vocab_size = len(self.tokens)
+        self.bos_token_id = phoneme_vocab_size
+        self.eos_token_id = phoneme_vocab_size + 1
+        self.unk_token_id = phoneme_vocab_size + 2
+        self.vocab_size = phoneme_vocab_size + 3
+        self.tokens["<sp_bos>"] = self.bos_token_id
+        self.tokens["<sp_eos>"] = self.eos_token_id
+        self.tokens["<sp_unk>"] = self.unk_token_id
+        self._inv_vocab = {idx: token for token, idx in self.tokens.items()}
+        self.pad_token_id = self.tokens.get("<pad>", None)
+
+    def encode(self, text: str) -> List[int]:
+        """Encode IPA text to token IDs."""
+        return self._tokenizer.encode(text).ids
+
+    def decode(self, tokens: List[int]) -> str:
+        """Decode token IDs back to IPA text."""
+        return self._tokenizer.decode(tokens)
+
+    def text_to_tokens(self, text: str) -> List[str]:
+        """Convert text into token pieces."""
+        return self._tokenizer.encode(text).tokens
+
+    def tokens_to_text(self, tokens: List[str]) -> str:
+        """Convert token pieces back into text."""
+        return self.ids_to_text(self.tokens_to_ids(tokens))
+
+    def tokens_to_ids(self, tokens: List[str]) -> List[int]:
+        """Convert token pieces into IDs."""
+        return [self.tokens.get(token, self.unk_token_id) for token in tokens]
+
+    def ids_to_tokens(self, ids: List[int]) -> List[str]:
+        """Convert IDs into token pieces."""
+        return [self._inv_vocab.get(idx, "<sp_unk>") for idx in ids]
+
+    def text_to_ids(self, text: str) -> List[int]:
+        """Convert text directly into IDs."""
+        return self.encode(text)
+
+    def ids_to_text(self, ids: List[int]) -> str:
+        """Convert IDs back into text."""
+        return self.decode(ids)
+
+    @property
+    def bos(self):
+        return self.bos_token_id
+
+    @property
+    def eos(self):
+        return self.eos_token_id
+
+    @property
+    def pad(self):
+        return self.pad_token_id
+
+
 # TODO @xueyang: subclassing from `nemo/collections/common/tokenizers/tokenizer_spec.py::TokenizerSpec`, and/or
-#  adjust to reuse `nemo/collections/common/tokenizers/aggregate_tokenizer.py::AggregateTokenizer`
+# adjust to reuse `nemo/collections/common/tokenizers/aggregate_tokenizer.py::AggregateTokenizer`
 class AggregatedTTSTokenizer:
     """A simple aggregated tokenizer. Aggregates multiple tokenizers into one by combining (simply concatenating)
     their tokens into one vocabulary.
@@ -1127,7 +1279,13 @@ class AggregatedTTSTokenizer:
                 _tokens = list(tokenizer.get_vocab().keys())
                 tokens.extend(_tokens)
                 num_tokens = len(_tokens)
-                tokenizer_pad_ids[tokenizer_name] = tokenizer.pad_token_id + tokenizer_offset
+                pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.unk_token_id
+                if pad_token_id is None:
+                    raise ValueError(
+                        f"Tokenizer '{tokenizer_name}' has no pad_token_id or unk_token_id. "
+                        "Please set one before using with AggregatedTTSTokenizer."
+                    )
+                tokenizer_pad_ids[tokenizer_name] = pad_token_id + tokenizer_offset
             else:
                 raise ValueError("Tokenizers must be either BaseTokenizer or HuggingFace PreTrainedTokenizerBase.")
             tokenizer_offset += num_tokens
@@ -1141,8 +1299,11 @@ class AggregatedTTSTokenizer:
         self.tokenizer_pad_ids = tokenizer_pad_ids
         # Define aggregated token's pad value from the first tokenizer's pad value
         first_tokenizer = self.tokenizers[tokenizer_names[0]]
-        if hasattr(first_tokenizer, "pad_token_id"):  # Defined in PreTrainedTokenizerBase subclasses
+        self.first_tokenizer = first_tokenizer
+        if hasattr(first_tokenizer, "pad_token_id") and first_tokenizer.pad_token_id is not None:
             self.pad = first_tokenizer.pad_token_id
+        elif hasattr(first_tokenizer, "unk_token_id") and first_tokenizer.unk_token_id is not None:
+            self.pad = first_tokenizer.unk_token_id
         elif hasattr(first_tokenizer, "pad"):  # Defined in BaseTokenizer subclasses
             self.pad = first_tokenizer.pad
         else:

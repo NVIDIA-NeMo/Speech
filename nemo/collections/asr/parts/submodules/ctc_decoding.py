@@ -380,7 +380,6 @@ class AbstractCTCDecoding(ConfidenceMixin):
                 arpa_lm_path=self.cfg.wfst.get('arpa_lm_path', None),
                 wfst_lm_path=self.cfg.wfst.get('wfst_lm_path', None),
                 riva_decoding_cfg=self.cfg.wfst.get('riva_decoding_cfg', None),
-                k2_decoding_cfg=self.cfg.wfst.get('k2_decoding_cfg', None),
             )
 
             self.decoding.override_fold_consecutive_value = False

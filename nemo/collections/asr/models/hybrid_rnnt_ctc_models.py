@@ -141,18 +141,26 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
                     f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
                 )
             decoding_cfg = self.cfg.aux_ctc.decoding if self.cur_decoder == "ctc" else self.cfg.decoding
+            need_change_decoding = False
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(
                     "Timestamps requested, setting decoding timestamps to True. Capture them in Hypothesis object, \
                         with output[idx].timestep['word'/'segment'/'char']"
                 )
                 return_hypotheses = True
-                with open_dict(decoding_cfg):
-                    decoding_cfg.compute_timestamps = True
+                if decoding_cfg.get("compute_timestamps", None) is not True:
+                    # compute_timestamps None, False or non-existent -> change to True
+                    need_change_decoding = True
+                    with open_dict(decoding_cfg):
+                        decoding_cfg.compute_timestamps = True
             else:
-                with open_dict(decoding_cfg):
-                    decoding_cfg.compute_timestamps = False
-            self.change_decoding_strategy(decoding_cfg, decoder_type=self.cur_decoder, verbose=False)
+                if decoding_cfg.get("compute_timestamps", None) is not False:
+                    # compute_timestamps None, True or non-existent -> change to False
+                    need_change_decoding = True
+                    with open_dict(decoding_cfg):
+                        decoding_cfg.compute_timestamps = False
+            if need_change_decoding:
+                self.change_decoding_strategy(decoding_cfg, decoder_type=self.cur_decoder, verbose=False)
 
         return ASRTranscriptionMixin.transcribe(
             self,

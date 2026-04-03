@@ -12,21 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-MagpieTTS Inference and Evaluation Script.
+TTS Inference and Evaluation Script.
 
-This script provides a clean CLI for running MagpieTTS inference with optional evaluation.
-It decouples inference and evaluation into separate modules for better maintainability.
+Supports both encoder-decoder MagpieTTS and decoder-only EasyMagpieTTS models
+with:
+- Automatic MoE detection and FLOPs calculation
+- Comprehensive evaluation metrics (RTF, FLOPs, CER, SSIM, etc.)
+
+This script provides a clean CLI for running TTS inference with optional
+evaluation. Model-specific behaviour (dataset creation, inference loop, CLI
+arguments) is handled by separate runner classes so there is no scattered
+if/else branching.
 
 Example usage:
-    # Inference only (from .nemo file) - default behavior
+    # MagpieTTS inference (encoder-decoder, default)
     python examples/tts/magpietts_inference.py \\
+        --model_type magpie \\
         --nemo_files /path/to/model.nemo \\
         --datasets_json_path /path/to/evalset_config.json \\
         --out_dir /path/to/output \\
         --codecmodel_path /path/to/codec.nemo
 
-    # Inference with evaluation (from checkpoint)
+    # EasyMagpieTTS inference (decoder-only)
     python examples/tts/magpietts_inference.py \\
+        --model_type easy_magpie \\
+        --nemo_files /path/to/model.nemo \\
+        --datasets_json_path /path/to/evalset_config.json \\
+        --out_dir /path/to/output \\
+        --codecmodel_path /path/to/codec.nemo
+
+    # With evaluation
+    python examples/tts/magpietts_inference.py \\
+        --model_type magpie \\
         --hparams_files /path/to/hparams.yaml \\
         --checkpoint_files /path/to/model.ckpt \\
         --datasets_json_path /path/to/evalset_config.json \\
@@ -41,30 +58,39 @@ import argparse
 import copy
 import json
 import os
+import random
 import shutil
 from dataclasses import fields
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
+import torch
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import load_evalset_config
-
-# Import the modular components
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     DEFAULT_VIOLIN_METRICS,
-    STANDARD_METRIC_KEYS,
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_dir,
 )
-from nemo.collections.tts.modules.magpietts_inference.inference import InferenceConfig, MagpieInferenceRunner
+from nemo.collections.tts.modules.magpietts_inference.inference import (
+    BaseInferenceConfig,
+    BaseInferenceRunner,
+    EasyMagpieInferenceConfig,
+    EasyMagpieInferenceRunner,
+    MagpieInferenceConfig,
+    MagpieInferenceRunner,
+)
 from nemo.collections.tts.modules.magpietts_inference.utils import (
     ModelLoadConfig,
     get_experiment_name_from_checkpoint_path,
+    load_easy_magpie_model,
     load_magpie_model,
+    log_model_architecture_summary,
 )
 from nemo.collections.tts.modules.magpietts_inference.visualization import create_combined_box_plot, create_violin_plot
 from nemo.collections.tts.modules.magpietts_modules import EOSDetectionMethod
@@ -105,6 +131,10 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('utmosv2_avg', ''),
         metrics.get('total_gen_audio_seconds', ''),
         metrics.get('frechet_codec_distance', ''),
+        metrics.get('eou_cutoff_rate', ''),
+        metrics.get('eou_silence_rate', ''),
+        metrics.get('eou_noise_rate', ''),
+        metrics.get('eou_error_rate', ''),
     ]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
@@ -124,50 +154,52 @@ def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
 def filter_datasets(dataset_meta_info: dict, datasets: Optional[List[str]]) -> List[str]:
     """Select datasets from the dataset meta info."""
     if datasets is None:
-        # Dataset filtering not specified, return all datasets
+        # Dataset filtering not specified, return all datasets.
         return list(dataset_meta_info.keys())
     else:
         datasets = datasets.split(",")
-        # Check if datasets are valid
+        # Check if requested datasets are valid.
         for dataset in datasets:
             if dataset not in dataset_meta_info:
                 raise ValueError(f"Dataset {dataset} not found in dataset meta info")
-        # Return all requsted datasets
+        # Return all requested datasets.
         return datasets
 
 
 def run_inference_and_evaluation(
-    model_config: ModelLoadConfig,
-    inference_config: InferenceConfig,
+    runner: BaseInferenceRunner,
+    checkpoint_name: str,
+    inference_config: BaseInferenceConfig,
     eval_config: EvaluationConfig,
     dataset_meta_info: dict,
-    datasets: Optional[List[str]],
+    datasets: List[str],
     out_dir: str,
+    flops_per_component: dict,
+    moe_info: str,
     num_repeats: int = 1,
     confidence_level: float = 0.95,
     violin_plot_metrics: Optional[List[str]] = None,
-    log_exp_name: bool = False,
     clean_up_disk: bool = False,
     skip_evaluation: bool = False,
 ) -> Tuple[Optional[float], Optional[float]]:
     """Run inference and optional evaluation on specified datasets.
 
-    Longform inference is automatically detected based on text characteristics
-    when longform_mode="auto" (default). Use longform_mode="always" or "never"
-    for explicit control.
+    This function is model-type agnostic -- it delegates dataset creation
+    and batch inference to the provided ``runner``.
 
     Args:
-        model_config: Configuration for loading the model.
+        runner: Concrete inference runner (MagpieInferenceRunner or EasyMagpieInferenceRunner).
+        checkpoint_name: Human-readable checkpoint identifier for output naming.
         inference_config: Configuration for inference.
         eval_config: Configuration for evaluation.
         dataset_meta_info: Dictionary containing dataset metadata.
-        datasets: List of dataset names to run inference and evaluation on. If None, all datasets in the
-                  dataset meta info will be processed.
+        datasets: List of dataset names to process.
         out_dir: Output directory for results.
+        flops_per_component: FLOPs info dict from log_model_architecture_summary.
+        moe_info: MoE identifier string from log_model_architecture_summary.
         num_repeats: Number of times to repeat inference (for CI estimation).
         confidence_level: Confidence level for CI calculation.
         violin_plot_metrics: Metrics to include in violin plots.
-        log_exp_name: Whether to include experiment name in output paths.
         clean_up_disk: Whether to clean up output directory after completion.
         skip_evaluation: Whether to skip evaluation (inference only mode).
 
@@ -181,20 +213,10 @@ def run_inference_and_evaluation(
     if not eval_config.with_utmosv2 and 'utmosv2' in violin_plot_metrics:
         violin_plot_metrics.remove('utmosv2')
 
-    # Load model
-    model, checkpoint_name = load_magpie_model(model_config)
-
-    # Add experiment name prefix if requested
-    if log_exp_name and model_config.checkpoint_file:
-        exp_name = get_experiment_name_from_checkpoint_path(model_config.checkpoint_file)
-        checkpoint_name = f"{exp_name}__{checkpoint_name}"
-
-    # Build full checkpoint identifier
-    full_checkpoint_name = f"{checkpoint_name}_{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
-
-    # Create inference runner (auto-detects longform based on config.longform_mode)
-    logging.info(f"Longform mode: {inference_config.longform_mode}")
-    runner = MagpieInferenceRunner(model, inference_config)
+    # Build full checkpoint identifier (include MoE info if present)
+    full_checkpoint_name = (
+        f"{checkpoint_name}_{moe_info}{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
+    )
 
     # Tracking metrics across datasets
     ssim_per_dataset = []
@@ -207,7 +229,8 @@ def run_inference_and_evaluation(
         "wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
-        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance"
+        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
+        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate"
     )
 
     for dataset in datasets:
@@ -260,6 +283,13 @@ def run_inference_and_evaluation(
 
             # Compute mean RTF metrics
             mean_rtf = runner.compute_mean_rtf_metrics(rtf_metrics_list)
+
+            # Add FLOPs metrics per component
+            for component_name, component_flops in flops_per_component.items():
+                for key, value in component_flops.items():
+                    mean_rtf[f"{component_name}_{key}"] = value
+                logging.info(f"{component_name} FLOPs per token: {component_flops['total_flops_per_token']:,}")
+
             with open(os.path.join(eval_dir, f"{dataset}_rtf_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(mean_rtf, f, indent=4)
 
@@ -271,10 +301,12 @@ def run_inference_and_evaluation(
             eval_config_for_dataset = EvaluationConfig(
                 sv_model=eval_config.sv_model,
                 asr_model_name=eval_config.asr_model_name,
+                eou_model_name=eval_config.eou_model_name,
                 language=language,
                 with_utmosv2=eval_config.with_utmosv2,
                 with_fcd=eval_config.with_fcd,
                 codec_model_path=eval_config.codec_model_path,
+                device=eval_config.device,
             )
 
             metrics, filewise_metrics = evaluate_generated_audio_dir(
@@ -291,8 +323,9 @@ def run_inference_and_evaluation(
             with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(metrics, f, indent=4)
 
+            sorted_filewise = sorted(filewise_metrics, key=lambda x: x.get('cer', 0), reverse=True)
             with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
-                json.dump(filewise_metrics, f, indent=4)
+                json.dump(sorted_filewise, f, indent=4)
 
             # Append to per-run CSV
             append_metrics_to_csv(per_run_csv, full_checkpoint_name, dataset, metrics)
@@ -314,7 +347,6 @@ def run_inference_and_evaluation(
         # Compute mean with confidence interval across repeats
         metrics_mean_ci = compute_mean_with_confidence_interval(
             metrics_all_repeats,
-            STANDARD_METRIC_KEYS,
             confidence=confidence_level,
         )
 
@@ -347,15 +379,65 @@ def run_inference_and_evaluation(
     return None, None
 
 
-def create_argument_parser() -> argparse.ArgumentParser:
-    """Create the CLI argument parser."""
-    parser = argparse.ArgumentParser(
-        description='MagpieTTS Inference and Evaluation',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+def _get_shared_inference_param_names() -> set:
+    """Return the field names shared by ModelInferenceParameters and EasyModelInferenceParameters."""
+    magpie_fields = {f.name for f in fields(ModelInferenceParameters)}
+    easy_fields = {f.name for f in fields(EasyModelInferenceParameters)}
+    return magpie_fields & easy_fields
+
+
+def _add_inference_param_fields(
+    group: argparse._ArgumentGroup,
+    param_cls: type,
+    skip_fields: Optional[set] = None,
+    only_fields: Optional[set] = None,
+) -> None:
+    """Auto-generate argparse arguments from fields of a dataclass.
+
+    Args:
+        group: The argparse argument group to add arguments to.
+        param_cls: The dataclass whose fields to add.
+        skip_fields: Field names to skip (already added by another group).
+        only_fields: If provided, only add fields whose names are in this set.
+    """
+    if skip_fields is None:
+        skip_fields = set()
+    for f in fields(param_cls):
+        if f.name in skip_fields:
+            continue
+        if only_fields is not None and f.name not in only_fields:
+            continue
+        extra_args: dict = {"type": f.type}
+        if f.type == bool:
+            extra_args = {"action": "store_true"}
+        if f.name in ("estimate_alignment_from_layers", "apply_prior_to_layers"):
+            extra_args = {
+                "help": "Must be a comma separate string. Not enclosed in brackets",
+                "type": str,
+            }
+        elif f.name == "eos_detection_method":
+            extra_args["choices"] = [m.value for m in EOSDetectionMethod]
+        group.add_argument(f"--{f.name}", **extra_args)
+
+
+def _add_common_args(parser: argparse.ArgumentParser) -> None:
+    """Add arguments shared by all model types."""
+
+    parser.add_argument(
+        '--model_type',
+        type=str,
+        default='magpie',
+        choices=['magpie', 'easy_magpie'],
+        help='Model type: "magpie" for encoder-decoder MagpieTTSModel, '
+        '"easy_magpie" for decoder-only EasyMagpieTTSInferenceModel',
+    )
+    parser.add_argument(
+        '--deterministic',
+        action='store_true',
+        help='Attempts to make results deterministic to the best that can be done. Used for testing',
     )
 
-    # Model loading arguments
+    # Model loading
     model_group = parser.add_argument_group('Model Loading')
     model_group.add_argument(
         '--hparams_files',
@@ -397,94 +479,49 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help='Use legacy text conditioning (for old checkpoints)',
     )
 
-    # Dataset and output arguments
+    # Dataset and output
     data_group = parser.add_argument_group('Dataset and Output')
     data_group.add_argument(
         '--datasets_json_path',
         type=str,
         required=True,
         default=None,
-        help='Path to dataset configuration JSON file (will process all datasets in the file if --datasets is not specified)',
+        help='Path to dataset configuration JSON file',
     )
     data_group.add_argument(
         '--datasets',
         type=str,
         default=None,
-        help='Comma-separated list of dataset names to process using names from the datasets_json_path file.  If not specified, all datasets in the datasets_json_path will be processed.',
+        help='Comma-separated list of dataset names to process',
     )
-    data_group.add_argument(
-        '--out_dir',
-        type=str,
-        required=True,
-        help='Output directory for generated audio and metrics',
-    )
-    data_group.add_argument(
-        '--log_exp_name',
-        action='store_true',
-        help='Include experiment name in output folder name',
-    )
-    data_group.add_argument(
-        '--clean_up_disk',
-        action='store_true',
-        help='Delete output directory after completion',
-    )
+    data_group.add_argument('--out_dir', type=str, required=True, help='Output directory')
+    data_group.add_argument('--log_exp_name', action='store_true')
+    data_group.add_argument('--clean_up_disk', action='store_true')
 
-    # Inference arguments
-    infer_group = parser.add_argument_group('Inference Parameters')
-    # Add model specific parameters
-    for field in fields(ModelInferenceParameters):
-        extra_args = {"type": field.type}
-        if field.type == bool:
-            extra_args["action"] = "store_true"
-            del extra_args["type"]
-        if field.name == "estimate_alignment_from_layers" or field.name == "apply_prior_to_layers":
-            extra_args["help"] = "Must be a comma separate string. Not enclosed in brackets"
-            extra_args["type"] = str
-        elif field.name == "eos_detection_method":
-            extra_args["choices"] = [m.value for m in EOSDetectionMethod]
-        infer_group.add_argument(f"--{field.name}", **extra_args)
+    # Common inference parameters
+    infer_group = parser.add_argument_group('Common Inference Parameters')
     infer_group.add_argument('--batch_size', type=int, default=32)
     infer_group.add_argument('--use_cfg', action='store_true', help='Enable classifier-free guidance')
-    infer_group.add_argument(
-        '--longform_mode',
-        type=str,
-        default='auto',
-        choices=['auto', 'always', 'never'],
-        help='Longform inference mode: auto (detect from text), always, or never',
-    )
-    infer_group.add_argument(
-        '--longform_word_threshold',
-        type=int,
-        default=40,
-        help='Word threshold for auto-detection of longform text',
-    )
-    infer_group.add_argument(
-        '--longform_max_decoder_steps',
-        type=int,
-        default=50000,
-        help='Maximum decoder steps for longform inference',
-    )
-
-    # Local transformer / MaskGit arguments
     infer_group.add_argument('--use_local_transformer', action='store_true')
-    infer_group.add_argument('--maskgit_n_steps', type=int, default=3)
-    infer_group.add_argument('--maskgit_noise_scale', type=float, default=0.0)
-    infer_group.add_argument('--maskgit_fixed_schedule', type=int, nargs='+', default=None)
-    infer_group.add_argument(
-        '--maskgit_sampling_type',
-        default=None,
-        choices=["default", "causal", "purity_causal", "purity_default"],
-    )
 
-    # Evaluation arguments
+    # Model inference parameters shared by both MagpieTTS and EasyMagpieTTS
+    shared_param_names = _get_shared_inference_param_names()
+    _add_inference_param_fields(infer_group, ModelInferenceParameters, only_fields=shared_param_names)
+
+    # Evaluation
     eval_group = parser.add_argument_group('Evaluation')
-    eval_group.add_argument(
-        '--run_evaluation',
-        action='store_true',
-        help='Run evaluation after inference (default: False, inference only)',
-    )
+    eval_group.add_argument('--run_evaluation', action='store_true', help='Run evaluation after inference')
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
     eval_group.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b")
+    eval_group.add_argument(
+        '--eou_model_name',
+        type=str,
+        default="facebook/wav2vec2-base-960h",
+        help=(
+            'Hugging Face model id or local path to the EoU wav2vec2 model directory. '
+            'For offline use, download the model locally and pass the directory path here.'
+        ),
+    )
     eval_group.add_argument('--num_repeats', type=int, default=1)
     eval_group.add_argument('--confidence_level', type=float, default=0.95)
     eval_group.add_argument('--disable_utmosv2', action='store_true')
@@ -494,31 +531,133 @@ def create_argument_parser() -> argparse.ArgumentParser:
         nargs='*',
         default=['cer', 'pred_context_ssim', 'utmosv2'],
     )
-    eval_group.add_argument('--disable_fcd', action='store_true', help="Disable Frechet Codec Distance computation")
+    eval_group.add_argument('--disable_fcd', action='store_true')
 
-    # Quality targets (for CI/CD)
+    # Quality targets
     target_group = parser.add_argument_group('Quality Targets')
     target_group.add_argument('--cer_target', type=float, default=None)
     target_group.add_argument('--ssim_target', type=float, default=None)
 
+
+def seed_all(seed: int):
+    """
+    Attempts to make script deterministic
+    """
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+
+
+def _add_magpie_args(parser: argparse.ArgumentParser) -> None:
+    """Add arguments specific to encoder-decoder MagpieTTSModel."""
+    group = parser.add_argument_group('MagpieTTS-specific Parameters')
+
+    # MagpieTTS-specific model inference parameters (attention prior, EOS, etc.)
+    shared_param_names = _get_shared_inference_param_names()
+    _add_inference_param_fields(group, ModelInferenceParameters, skip_fields=shared_param_names)
+
+    group.add_argument('--maskgit_n_steps', type=int, default=3)
+    group.add_argument('--maskgit_noise_scale', type=float, default=0.0)
+    group.add_argument('--maskgit_fixed_schedule', type=int, nargs='+', default=None)
+    group.add_argument(
+        '--maskgit_sampling_type',
+        default=None,
+        choices=["default", "causal", "purity_causal", "purity_default"],
+    )
+
+
+def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
+    """Add arguments specific to decoder-only EasyMagpieTTSInferenceModel."""
+    group = parser.add_argument_group('EasyMagpieTTS-specific Parameters')
+    group.add_argument(
+        '--phoneme_input_type',
+        type=str,
+        default='gt',
+        choices=['gt', 'predicted'],
+        help='Source of phoneme input for decoder-only model',
+    )
+    group.add_argument(
+        '--phoneme_sampling_method',
+        type=str,
+        default='argmax',
+        choices=['argmax', 'multinomial'],
+        help='Sampling method for phoneme prediction',
+    )
+    group.add_argument('--dropout_text_input', action='store_true', help='Force dropout on text input')
+    group.add_argument(
+        '--phoneme_tokenizer_path',
+        type=str,
+        default=None,
+        help='Override path to the phoneme tokenizer file (overrides the path stored in the checkpoint config)',
+    )
+
+
+def create_argument_parser() -> argparse.ArgumentParser:
+    """Create the CLI argument parser with all argument groups."""
+    parser = argparse.ArgumentParser(
+        description='TTS Inference and Evaluation (MagpieTTS & EasyMagpieTTS)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    _add_common_args(parser)
+    _add_magpie_args(parser)
+    _add_easy_magpie_args(parser)
     return parser
 
 
-def main(argv=None):
-    """Entry point for MagpieTTS inference and evaluation.
+def _build_inference_params_from_args(param_cls: type, args):
+    """Extract inference parameters from parsed CLI args for the given dataclass."""
+    params = {}
+    for f in fields(param_cls):
+        arg_val = vars(args).get(f.name)
+        if arg_val is not None:
+            if f.name in ("estimate_alignment_from_layers", "apply_prior_to_layers"):
+                params[f.name] = parse_layer_list(arg_val)
+            else:
+                params[f.name] = arg_val
+    return param_cls.from_dict(params)
 
-    Args:
-        argv: Command-line arguments. If None, uses sys.argv.
-    """
+
+def _build_magpie_config(args) -> MagpieInferenceConfig:
+    return MagpieInferenceConfig(
+        model_inference_parameters=_build_inference_params_from_args(ModelInferenceParameters, args),
+        batch_size=args.batch_size,
+        use_cfg=args.use_cfg,
+        apply_attention_prior=args.apply_attention_prior,
+        use_local_transformer=args.use_local_transformer,
+        maskgit_n_steps=args.maskgit_n_steps,
+        maskgit_noise_scale=args.maskgit_noise_scale,
+        maskgit_fixed_schedule=args.maskgit_fixed_schedule,
+        maskgit_sampling_type=args.maskgit_sampling_type,
+    )
+
+
+def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
+    return EasyMagpieInferenceConfig(
+        model_inference_parameters=_build_inference_params_from_args(EasyModelInferenceParameters, args),
+        batch_size=args.batch_size,
+        use_cfg=args.use_cfg,
+        use_local_transformer=args.use_local_transformer,
+        phoneme_input_type=args.phoneme_input_type,
+        phoneme_sampling_method=args.phoneme_sampling_method,
+        dropout_text_input=args.dropout_text_input,
+    )
+
+
+def main(argv=None):
+    """Entry point for TTS inference and evaluation."""
     parser = create_argument_parser()
     args = parser.parse_args(argv)
+    if args.deterministic:
+        seed_all(seed=9)
 
     dataset_meta_info = load_evalset_config(args.datasets_json_path)
     datasets = filter_datasets(dataset_meta_info, args.datasets)
-
     logging.info(f"Loaded {len(datasets)} datasets: {', '.join(datasets)}")
 
-    # Determine mode and validate
+    # Validate model loading args
     has_checkpoint_mode = (
         args.hparams_files is not None
         and args.checkpoint_files is not None
@@ -530,45 +669,16 @@ def main(argv=None):
     if not has_checkpoint_mode and not has_nemo_mode:
         parser.error("You must provide either:\n 1. --hparams_files and --checkpoint_files\n 2. --nemo_files")
 
-    # Build configurations
-    # Use higher max_decoder_steps for longform inference when mode is 'always'
-    if args.longform_mode == 'always':
-        max_decoder_steps = args.longform_max_decoder_steps
-    elif args.longform_mode == 'auto':
-        # Use longform steps if any text appears long (will be checked in runner)
-        max_decoder_steps = args.longform_max_decoder_steps
-    else:  # 'never'
-        max_decoder_steps = 440
-    model_inference_parameters = {}
-    for field in fields(ModelInferenceParameters):
-        field = field.name
-        if field == "max_decoder_steps":
-            model_inference_parameters[field] = max_decoder_steps
-            continue
-        arg_from_cmdline = vars(args)[field]
-        if arg_from_cmdline is not None:
-            if field in ["estimate_alignment_from_layers", "apply_prior_to_layers"]:
-                model_inference_parameters[field] = parse_layer_list(vars(args)[field])
-            else:
-                model_inference_parameters[field] = vars(args)[field]
-
-    inference_config = InferenceConfig(
-        model_inference_parameters=ModelInferenceParameters.from_dict(model_inference_parameters),
-        batch_size=args.batch_size,
-        use_cfg=args.use_cfg,
-        apply_attention_prior=args.apply_attention_prior,
-        use_local_transformer=args.use_local_transformer,
-        maskgit_n_steps=args.maskgit_n_steps,
-        maskgit_noise_scale=args.maskgit_noise_scale,
-        maskgit_fixed_schedule=args.maskgit_fixed_schedule,
-        maskgit_sampling_type=args.maskgit_sampling_type,
-        longform_mode=args.longform_mode,
-        longform_word_threshold=args.longform_word_threshold,
-    )
+    # Select model loader and config builder based on --model_type
+    is_easy_magpie = args.model_type == 'easy_magpie'
+    load_fn = load_easy_magpie_model if is_easy_magpie else load_magpie_model
+    inference_config = _build_easy_magpie_config(args) if is_easy_magpie else _build_magpie_config(args)
+    runner_cls = EasyMagpieInferenceRunner if is_easy_magpie else MagpieInferenceRunner
 
     eval_config = EvaluationConfig(
         sv_model=args.sv_model,
         asr_model_name=args.asr_model_name,
+        eou_model_name=args.eou_model_name,
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
@@ -576,7 +686,7 @@ def main(argv=None):
 
     cer, ssim = None, None
 
-    # Run for each model (checkpoint or nemo)
+    # Iterate over model files (checkpoint or nemo)
     if has_checkpoint_mode:
         hparam_files = args.hparams_files.split(",")
         checkpoint_files = args.checkpoint_files.split(",")
@@ -594,19 +704,35 @@ def main(argv=None):
                 legacy_codebooks=args.legacy_codebooks,
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 hparams_from_wandb=args.hparams_file_from_wandb,
+                phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
             )
 
+            # Load model
+            model, checkpoint_name = load_fn(model_config)
+            # Log architecture summary and get MoE info + FLOPs metrics
+            moe_info, flops_per_component = log_model_architecture_summary(model)
+
+            # Add experiment name prefix if requested
+            if args.log_exp_name and model_config.checkpoint_file:
+                exp_name = get_experiment_name_from_checkpoint_path(model_config.checkpoint_file)
+                checkpoint_name = f"{exp_name}__{checkpoint_name}"
+
+            # Create inference runner
+            runner = runner_cls(model, inference_config)
+
             cer, ssim = run_inference_and_evaluation(
-                model_config=model_config,
+                runner=runner,
+                checkpoint_name=checkpoint_name,
                 inference_config=inference_config,
                 eval_config=eval_config,
                 dataset_meta_info=dataset_meta_info,
                 datasets=datasets,
                 out_dir=args.out_dir,
+                flops_per_component=flops_per_component,
+                moe_info=moe_info,
                 num_repeats=args.num_repeats,
                 confidence_level=args.confidence_level,
                 violin_plot_metrics=args.violin_plot_metrics,
-                log_exp_name=args.log_exp_name,
                 clean_up_disk=args.clean_up_disk,
                 skip_evaluation=not args.run_evaluation,
             )
@@ -620,19 +746,30 @@ def main(argv=None):
                 codecmodel_path=args.codecmodel_path,
                 legacy_codebooks=args.legacy_codebooks,
                 legacy_text_conditioning=args.legacy_text_conditioning,
+                phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
             )
 
+            # Load model
+            model, checkpoint_name = load_fn(model_config)
+            # Log architecture summary and get MoE info + FLOPs metrics
+            moe_info, flops_per_component = log_model_architecture_summary(model)
+
+            # Create inference runner
+            runner = runner_cls(model, inference_config)
+
             cer, ssim = run_inference_and_evaluation(
-                model_config=model_config,
+                runner=runner,
+                checkpoint_name=checkpoint_name,
                 inference_config=inference_config,
                 eval_config=eval_config,
                 dataset_meta_info=dataset_meta_info,
                 datasets=datasets,
                 out_dir=args.out_dir,
+                flops_per_component=flops_per_component,
+                moe_info=moe_info,
                 num_repeats=args.num_repeats,
                 confidence_level=args.confidence_level,
                 violin_plot_metrics=args.violin_plot_metrics,
-                log_exp_name=args.log_exp_name,
                 clean_up_disk=args.clean_up_disk,
                 skip_evaluation=not args.run_evaluation,
             )

@@ -329,5 +329,5 @@ class T5G2PModel(G2PModel, Exportable):
         outputs = self.model.generate(
             input_ids, output_scores=True, return_dict_in_generate=True, max_length=self.max_source_len
         )
-        generated_ids, sequence_toks_scores = outputs['sequences'], outputs['scores']
+        generated_ids, _ = outputs['sequences'], outputs['scores']
         return tuple(generated_ids)

@@ -1,7 +1,7 @@
 model:
   # Every name/path here starting with 'pretrained' is used to initialize the model weights.
-  pretrained_llm: Qwen/Qwen3-1.7B
-  pretrained_asr: nvidia/canary-1b-flash
+  pretrained_llm: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+  pretrained_asr: nvidia/canary-1b-v2
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
 
@@ -17,8 +17,8 @@ model:
     - "^perception\\.encoder\\..+$"
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
-  prompt_format: qwen
-  audio_locator_tag: "<|audioplaceholder|>"  # placeholder token for audio turn is expected
+  prompt_format: nemotron-nano-v3
+  audio_locator_tag: "<|audio|>"  # placeholder token for audio turn is expected
 
   # Uncomment the block below to enable LoRA on the LLM via Automodel.
   # LoRA parameters are kept trainable even when the LLM is frozen.
@@ -36,7 +36,7 @@ model:
 
   perception:
      target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
-     output_dim: 2048
+     output_dim: 4096
      modality_adapter:
        _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
        d_model: 1024
@@ -48,11 +48,10 @@ model:
      #   time_width: 5  # 5 frames = 50ms
 
   optimizer:
-    _target_: torch.optim.AdamW
-    lr: 5e-4
-    betas: [0.9, 0.98]
-    weight_decay: 1e-3
-    foreach: true # set to false if having issues with tensor-parallelism
+    _target_: flashoptim.FlashAdamW
+    lr: 1e-4
+    betas: [0.9, 0.999]
+    weight_decay: 5e-2
 
   lr_scheduler:
     _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
@@ -61,10 +60,10 @@ model:
     max_steps: ${trainer.max_steps}
 
 trainer:
-  devices: -1
+  devices: 8
   accelerator: gpu
   num_nodes: 1
-  precision: bf16-true
+  precision: bf16-automodel
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   use_distributed_sampler: False
@@ -89,7 +88,7 @@ trainer:
     tp_size: 1          # Tensor parallel size
     pp_size: 1          # Pipeline parallel size
     cp_size: 1          # Context parallel size
-    ep_size: 1          # Expert parallel size (for MoE models)
+    ep_size: 8          # Expert parallel size (for MoE models)
 
     # --- FSDP2 distributed config (plain dict, resolved to FSDP2Config automatically) ---
     # distributed_config:
@@ -102,8 +101,6 @@ trainer:
     # moe_config:
     #   activation_checkpointing: false  # Checkpoint activations in MoE blocks
     #   reshard_after_forward: false      # Reshard params after forward (saves memory, more comms)
-    #
-    # save_distributed_checkpoint: true  # Each rank saves its shard (false = gather to rank 0)
 
 data:
   train_ds:

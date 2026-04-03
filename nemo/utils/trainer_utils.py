@@ -12,13 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Mapping, Sequence
+from contextlib import nullcontext
+from typing import Any, ContextManager, Mapping, Sequence
 
 import hydra
 import torch
 from lightning.pytorch.plugins import HalfPrecision
+from lightning.pytorch.plugins.precision.precision import Precision
+from lightning_utilities import apply_to_collection
 from omegaconf import DictConfig, OmegaConf
+from torch import Tensor
 from typing_extensions import override
+
+from lightning.fabric.plugins.precision.utils import _convert_fp_tensor
 
 
 def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
@@ -43,6 +49,9 @@ def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
     if precision in ("fp16-true", "bf16-true"):
         trainer_cfg.pop("precision", None)
         trainer_cfg["plugins"] = [HalfPrecisionForAudio(precision)]
+    elif precision in ("fp16-automodel", "bf16-automodel"):
+        trainer_cfg.pop("precision", None)
+        trainer_cfg["plugins"] = [AutomodelPrecision(precision)]
 
     # Allows customizable strategies (eg ModelParallelStrategy) in YAML configs.
     if (strategy := trainer_cfg.get("strategy", None)) is not None and isinstance(strategy, Mapping):
@@ -117,16 +126,64 @@ class HalfPrecisionForAudio(HalfPrecision):
         if not isinstance(data, dict):
             return super().convert_input(data)
 
-        def _convert(v):
-            if isinstance(v, dict):
-                ans = {}
-                for k, v in v.items():
-                    if "audio" not in k or not torch.is_tensor(v):
-                        v = _convert(v)
-                    ans[k] = v
-                return ans
-            if isinstance(v, torch.Tensor) and torch.is_floating_point(v):
-                return v.to(self._desired_input_dtype)
-            return v  # any other type
+        return _convert_audio_preserving(data, self._desired_input_dtype)
 
-        return _convert(data)
+
+class AutomodelPrecision(Precision):
+    """Precision plugin for Automodel-based training.
+
+    Unlike Lightning's :class:`HalfPrecision`, this does **not** call
+    :func:`torch.set_default_dtype` and does **not** use :func:`torch.autocast`.
+    Parameter casting is assumed to have been handled by ``configure_model()``.
+    It's recommended to use this class together with ``flashoptim`` optimizers.
+
+    This ensures that Automodel's fp32 escaping (``Float32RMSNorm``, Gate
+    softmax) and FlashOptim's master-weight correction terms are never
+    silently downcast by a global dtype override.
+
+    Opt in by setting ``trainer.precision: bf16-automodel`` in the YAML config.
+    """
+
+    precision: str = "bf16-automodel"
+
+    def __init__(self, precision: str = "bf16-automodel") -> None:
+        self.precision = precision
+        self._desired_input_dtype = torch.bfloat16 if "bf16" in precision else torch.float16
+
+    @override
+    def convert_module(self, module: torch.nn.Module) -> torch.nn.Module:
+        # Lightning calls convert_module AFTER configure_model().  When FSDP2
+        # is in use, parameters are already DTensors and casting was done
+        # inside configure_model() (before fully_shard) using .to(dtype)
+        # — so this is a no-op.
+        return module
+
+    @override
+    def forward_context(self) -> ContextManager:
+        return nullcontext()
+
+    @override
+    def convert_input(self, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return apply_to_collection(data, function=_convert_fp_tensor, dtype=Tensor, dst_type=self._desired_input_dtype)
+
+        return _convert_audio_preserving(data, self._desired_input_dtype)
+
+
+def _convert_audio_preserving(data: dict, dtype: torch.dtype) -> dict:
+    """Convert dict batch to *dtype*, keeping tensors whose key contains ``'audio'`` in fp32."""
+
+    def _convert(v):
+        if isinstance(v, dict):
+            ans = {}
+            for k, v in v.items():
+                if "audio" not in k or not torch.is_tensor(v):
+                    v = _convert(v)
+                ans[k] = v
+            return ans
+        if isinstance(v, torch.Tensor) and torch.is_floating_point(v):
+            return v.to(dtype)
+        return v
+
+    return _convert(data)
+

@@ -560,6 +560,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if device_mesh is None:
             return
 
+        # Cast perception to training dtype BEFORE FSDP2 wrapping.
+        # The LLM is already in the target dtype (loaded via torch_dtype=dtype).
+        # FSDP2 requires uniform parameter dtype, so we cast all parameters.
+        if dtype != torch.float32:
+            self.perception.to(dtype=dtype)
+
         if device_mesh["tp"].size() > 1:
             self._use_tp = True
 

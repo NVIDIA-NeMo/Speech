@@ -238,6 +238,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     if use_per_stream_biasing:
         with open_dict(cfg.decoding):
             cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
+            cfg.decoding.beam.enable_per_stream_biasing = use_per_stream_biasing
     if use_simulated_decoding:
         with open_dict(cfg.decoding):
             if cfg.decoding.strategy != "greedy_batch" or cfg.decoding.greedy.loop_labels is not True:
@@ -293,7 +294,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     asr_model.eval()
 
     try:
-        decoding_computer: GreedyBatchedLabelLoopingComputerBase | None = asr_model.decoding.decoding.decoding_computer
+        decoding_computer = asr_model.decoding.decoding.decoding_computer
     except AttributeError:
         decoding_computer = None
 
@@ -475,7 +476,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 right_sample = min(right_sample + context_samples.chunk, audio_batch.shape[1])  # add next chunk
 
             if use_simulated_decoding:
-                if decoding_computer is not None:
+                if isinstance(decoding_computer, GreedyBatchedLabelLoopingComputerBase):
+                    # greedy: call decoding_computer directly (supports prev_batched_state)
                     current_batched_hyps, _, _ = decoding_computer(
                         x=encoder_output_aggregated.data,
                         out_len=encoder_output_aggregated.lengths,
@@ -484,11 +486,13 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     )
                     all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, None, batch_size=batch_size))
                 else:
-                    (cur_hyps,) = asr_model.decoding.decoding(
-                        encoder_output=encoder_output_aggregated.data.transpose(1, 2),
-                        encoded_lengths=encoder_output_aggregated.lengths,
+                    # beam search: call via BeamBatchedRNNTInfer (handles transpose, score_norm, etc.)
+                    current_batched_beam_hyps = decoding_computer(
+                        x=encoder_output_aggregated.data,
+                        out_len=encoder_output_aggregated.lengths,
+                        multi_biasing_ids=multi_biasing_ids,
                     )
-                    all_hyps.extend(cur_hyps)
+                    all_hyps.extend(current_batched_beam_hyps.to_hyps_list(score_norm=True)[:batch_size])
             else:
                 all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, None, batch_size=batch_size))
 

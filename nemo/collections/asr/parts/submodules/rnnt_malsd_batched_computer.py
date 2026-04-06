@@ -872,6 +872,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.decoder.batch_replace_states_all(self.state.init_decoder_state, dst_states=self.state.prev_decoder_state)
         self.state.prev_decoder_output = self.state.init_decoder_output.clone()
 
+        device = encoder_output_projected.device
         if self.per_stream_biasing_enabled:
             self.state.multi_biasing_ids = torch.full(
                 [self.state.batch_size], fill_value=-1, dtype=torch.long, device=device
@@ -881,7 +882,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             )
 
         if self.has_fusion_models:
-            device = encoder_output_projected.device
             # initialize all fusion models (including multi-biasing as last element)
             self.state.init_fusion_states_list = []
             for fusion_model in self._all_fusion_models():

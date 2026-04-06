@@ -131,7 +131,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         audio, audio_len = self.pad_audio_to_factor(audio, audio_len, self.target_samples_per_frame)
 
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-            sil_codes, sil_codes_lens = self.audio_codec.encode(audio.unsqueeze(1).to(self.audio_codec_run_dtype), audio_len)
+            sil_codes, sil_codes_lens = self.audio_codec.encode(
+                audio.unsqueeze(1).to(self.audio_codec_run_dtype), audio_len
+            )
             return sil_codes[0, -1]
 
     def get_codec_silence_frame(self):
@@ -142,7 +144,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         audio, audio_len = self.pad_audio_to_factor(audio, audio_len, self.target_samples_per_frame)
 
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-            sil_codes, _ = self.audio_codec.encode(audio.unsqueeze(1).to(self.audio_codec_run_dtype), audio_len)  # [1, T, C]
+            sil_codes, _ = self.audio_codec.encode(
+                audio.unsqueeze(1).to(self.audio_codec_run_dtype), audio_len
+            )  # [1, T, C]
             sil_codes = sil_codes[0]  # [T, C]
 
         # Convert each frame (C tokens) into a tuple
@@ -328,7 +332,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             target_audio, target_audio_lens, self.target_samples_per_frame, 1
         )
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-            target_codes, target_codes_lens = self.audio_codec.encode(target_audio.unsqueeze(1).to(self.audio_codec_run_dtype), target_audio_lens)
+            target_codes, target_codes_lens = self.audio_codec.encode(
+                target_audio.unsqueeze(1).to(self.audio_codec_run_dtype), target_audio_lens
+            )
 
         with fp32_precision():
             target_len = target_codes.shape[1]
@@ -1013,7 +1019,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             [target_audio.size(-1)] * target_audio.size(0), dtype=torch.long, device=self.device
         )
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-            code, _ = self.audio_codec.encode(target_audio.unsqueeze(1).to(self.audio_codec_run_dtype), target_audio_len)
+            code, _ = self.audio_codec.encode(
+                target_audio.unsqueeze(1).to(self.audio_codec_run_dtype), target_audio_len
+            )
 
         # get context hidden
         if self.cfg.tts_config.context_hidden_size is not None:
@@ -1683,7 +1691,7 @@ def setup_audio_codec(model):
         p.requires_grad = False
 
     model.audio_codec.eval()
-    model.audio_codec.to(model.device) # force codec to run in the same device as the main model
+    model.audio_codec.to(model.device)  # force codec to run in the same device as the main model
 
     assert callable(model.tts_model.set_rvq_embs)
 

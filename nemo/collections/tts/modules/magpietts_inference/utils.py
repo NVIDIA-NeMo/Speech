@@ -28,7 +28,7 @@ from typing import Dict, Optional, Tuple
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-from nemo.collections.tts.models import MagpieTTSModel
+from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
 from nemo.utils import logging
 
 
@@ -119,6 +119,7 @@ class ModelLoadConfig:
         legacy_codebooks: Use legacy codebook indices for old checkpoints.
         legacy_text_conditioning: Use legacy text conditioning for old checkpoints.
         hparams_from_wandb: Whether hparams file is from wandb export.
+        phoneme_tokenizer_path: Override path to the phoneme tokenizer file (EasyMagpieTTS only).
     """
 
     hparams_file: Optional[str] = None
@@ -128,6 +129,7 @@ class ModelLoadConfig:
     legacy_codebooks: bool = False
     legacy_text_conditioning: bool = False
     hparams_from_wandb: bool = False
+    phoneme_tokenizer_path: Optional[str] = None
 
     def validate(self) -> None:
         """Validate that the configuration is complete and consistent."""
@@ -336,6 +338,82 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
     return model, checkpoint_name
 
 
+def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[EasyMagpieTTSInferenceModel, str]:
+    """Load an EasyMagpieTTSInferenceModel (decoder-only) from checkpoint or NeMo archive.
+
+    Uses the inference-only base class rather than the full training model,
+    which avoids pulling in training-specific dependencies.
+
+    Supports two loading modes:
+    1. Checkpoint mode: hparams.yaml + .ckpt file
+    2. NeMo mode: .nemo archive file
+
+    Args:
+        config: Model loading configuration.
+        device: Device to load the model onto ("cuda" or "cpu").
+
+    Returns:
+        Tuple of (loaded model, checkpoint name for output labeling).
+
+    Raises:
+        ValueError: If configuration is invalid.
+    """
+    config.validate()
+
+    if config.hparams_file is not None and config.checkpoint_file is not None:
+        model_cfg = OmegaConf.load(config.hparams_file)
+
+        if "cfg" in model_cfg:
+            model_cfg = model_cfg.cfg
+        if config.hparams_from_wandb:
+            model_cfg = model_cfg.value
+
+        with open_dict(model_cfg):
+            model_cfg.codecmodel_path = config.codecmodel_path
+            model_cfg.train_ds = None
+            model_cfg.validation_ds = None
+            model_cfg.run_val_inference = False
+            model_cfg.use_utmos = False
+            model_cfg.use_meta_init_for_decoder = True
+            if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
+                model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
+
+        model = EasyMagpieTTSInferenceModel(cfg=model_cfg)
+
+        logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
+        ckpt = torch.load(config.checkpoint_file)
+        state_dict = ckpt['state_dict']
+        model.load_state_dict(state_dict)
+
+        checkpoint_name = os.path.basename(config.checkpoint_file).replace(".ckpt", "")
+    else:
+        if config.nemo_file.startswith("nvidia/"):
+            model = EasyMagpieTTSInferenceModel.from_pretrained(config.nemo_file)
+            checkpoint_name = config.nemo_file.split("/")[-1]
+        else:
+            logging.info(f"Loading model from NeMo archive: {config.nemo_file}")
+            model_cfg = EasyMagpieTTSInferenceModel.restore_from(config.nemo_file, return_config=True)
+
+            with open_dict(model_cfg):
+                model_cfg.codecmodel_path = config.codecmodel_path
+                model_cfg.train_ds = None
+                model_cfg.validation_ds = None
+                if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
+                    model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
+                # Override target so restore_from instantiates the inference class,
+                # not the training subclass stored in the .nemo config.
+                model_cfg.target = 'nemo.collections.tts.models.easy_magpietts_inference.EasyMagpieTTSInferenceModel'
+
+            model = EasyMagpieTTSInferenceModel.restore_from(config.nemo_file, override_config_path=model_cfg)
+            checkpoint_name = os.path.basename(config.nemo_file).replace(".nemo", "")
+
+    model.to(device)
+    model.eval().float()
+    logging.info("EasyMagpieTTS model loaded and ready for inference.")
+
+    return model, checkpoint_name
+
+
 def _log_transformer_component(name: str, cfg: DictConfig, use_moe: bool = False) -> dict:
     """Log architecture info for a single transformer component and return its FLOPs metrics.
 
@@ -412,14 +490,16 @@ def _log_transformer_component(name: str, cfg: DictConfig, use_moe: bool = False
         return flops_info
 
 
-def log_model_architecture_summary(model: MagpieTTSModel) -> Tuple[str, Dict[str, dict]]:
+def log_model_architecture_summary(model) -> Tuple[str, Dict[str, dict]]:
     """Log model architecture summary including MoE configuration.
 
     Detects and logs MoE configuration for each transformer component,
-    computing FLOPs metrics and parameter counts.
+    computing FLOPs metrics and parameter counts. Gracefully handles
+    decoder-only models (EasyMagpieTTSInferenceModel) that use HuggingFace/Nemotron
+    decoders without the d_model/d_ffn config structure.
 
     Args:
-        model: Loaded MagpieTTS model.
+        model: Loaded MagpieTTS or EasyMagpieTTS model.
 
     Returns:
         Tuple of:
@@ -433,23 +513,28 @@ def log_model_architecture_summary(model: MagpieTTSModel) -> Tuple[str, Dict[str
     flops_per_component: Dict[str, dict] = {}
     use_moe = getattr(model.cfg, 'use_moe', False)
 
-    # Log optional encoder if present
-    if hasattr(model.cfg, 'encoder'):
+    # Log optional encoder if present (encoder-decoder models)
+    if hasattr(model.cfg, 'encoder') and hasattr(model.cfg.encoder, 'd_model'):
         flops_per_component['encoder'] = _log_transformer_component('encoder', model.cfg.encoder)
 
     # Log optional context_encoder if present
-    if hasattr(model.cfg, 'context_encoder'):
+    if hasattr(model.cfg, 'context_encoder') and hasattr(model.cfg.context_encoder, 'd_model'):
         flops_per_component['context_encoder'] = _log_transformer_component(
             'context_encoder', model.cfg.context_encoder
         )
 
-    # Decoder is required - always present in MagpieTTS. MoE only applies to decoder.
-    flops_per_component['decoder'] = _log_transformer_component('decoder', model.cfg.decoder, use_moe=use_moe)
+    # Decoder -- only log detailed FLOPs for encoder-decoder models whose
+    # decoder config exposes d_model/d_ffn.  Decoder-only models (EasyMagpieTTS)
+    # use HuggingFace or Nemotron decoders with a different config shape.
+    decoder_cfg = getattr(model.cfg, 'decoder', None)
+    if decoder_cfg is not None and hasattr(decoder_cfg, 'd_model'):
+        flops_per_component['decoder'] = _log_transformer_component('decoder', decoder_cfg, use_moe=use_moe)
+    else:
+        logging.info("DECODER: detailed FLOPs logging not available for this model type")
 
     # Build MoE info string for checkpoint naming
     moe_info = ""
-    if use_moe:
-        decoder_cfg = model.cfg.decoder
+    if use_moe and decoder_cfg is not None and hasattr(decoder_cfg, 'num_experts'):
         moe_info = (
             f"decoder-MoE_{decoder_cfg.num_experts}x{decoder_cfg.top_k_experts}"
             f"_d{decoder_cfg.d_ffn}_{decoder_cfg.routing_strategy}_"

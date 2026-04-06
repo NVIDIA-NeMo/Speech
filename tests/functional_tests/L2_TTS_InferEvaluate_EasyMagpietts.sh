@@ -16,7 +16,8 @@
 # that is incompatible with torch.use_deterministic_algorithms(True) on CUDA >= 10.2.
 # Setting CUBLAS_WORKSPACE_CONFIG is not sufficient since the error originates inside the
 # transformers library (modeling_qwen2.py Qwen2RotaryEmbedding.forward).
-TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
+CUBLAS_WORKSPACE_CONFIG=:4096:8 HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
+    --deterministic \
     --codecmodel_path /home/TestData/tts/25fps_spectral_codec_with_bandwidth_extension.nemo \
     --nemo_files /home/TestData/tts/2603_EasyMagpieTTS/EMTTS_Pretraining_Qwen_WithCrossLingual_3_5_Delay.nemo \
     --out_dir ./emp_zs_0 \

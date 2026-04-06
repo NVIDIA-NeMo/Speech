@@ -1683,7 +1683,7 @@ def setup_audio_codec(model):
         p.requires_grad = False
 
     model.audio_codec.eval()
-    model.audio_codec.to(model.device) # force codec to run in the same device as the main model
+    model.audio_codec.to(model.device)  # force codec to run in the same device as the main model
 
     assert callable(model.tts_model.set_rvq_embs)
 

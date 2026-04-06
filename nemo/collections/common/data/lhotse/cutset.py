@@ -1019,24 +1019,24 @@ def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
     """
     Reverse the speaker roles and swap the source/target audio streams in a Duplex S2S CutSet.
 
-    This parser takes an existing conversational dataset and inverts the perspective 
-    by swapping the "user" and "agent" supervision labels. It also swaps the primary 
-    `recording` (usually source audio) with the `target_audio` to fully simulate the 
+    This parser takes an existing conversational dataset and inverts the perspective
+    by swapping the "user" and "agent" supervision labels. It also swaps the primary
+    `recording` (usually source audio) with the `target_audio` to fully simulate the
     conversation from the opposite participant's point of view.
 
     Args:
         config: Dictionary containing parser options:
-            - agent_roles (List[str], optional): List of role strings to be identified as the agent. 
+            - agent_roles (List[str], optional): List of role strings to be identified as the agent.
               Defaults to ["agent", "Agent", "Assistant", "assistant"].
-            - user_roles (List[str], optional): List of role strings to be identified as the user. 
+            - user_roles (List[str], optional): List of role strings to be identified as the user.
               Defaults to ["user", "User"].
-            - target_agent_name (str, optional): The canonical name to assign to former user roles. 
+            - target_agent_name (str, optional): The canonical name to assign to former user roles.
               Defaults to "agent".
-            - target_user_name (str, optional): The canonical name to assign to former agent roles. 
+            - target_user_name (str, optional): The canonical name to assign to former agent roles.
               Defaults to "user".
 
     Returns:
-        Tuple[CutSet, bool]: Converted cuts with swapped roles and audio streams, 
+        Tuple[CutSet, bool]: Converted cuts with swapped roles and audio streams,
         along with a flag indicating if the data was tarred.
     """
     cuts, is_tarred = read_cutset_from_config(config)

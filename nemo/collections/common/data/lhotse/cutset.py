@@ -1105,7 +1105,7 @@ def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
         assert new_cut.recording is old_target_audio, f"{new_cut.id}: recording object not swapped"
         assert new_cut.target_audio is old_recording, f"{new_cut.id}: target_audio object not swapped"
 
-        new_cut.formatter = "s2s_duplex_reverse_role"
+        new_cut.task = "s2s_duplex_reverse_role"
         return new_cut
 
     cuts = cuts.map(convert_cut_fn)

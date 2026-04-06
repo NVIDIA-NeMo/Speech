@@ -1149,7 +1149,7 @@ class RVQEARTTSModel(nn.Module):
         _, v, h = self.rvq_embs.size()
         device = code.device
 
-        ret = torch.zeros((b, t, h), device=device)
+        ret = torch.zeros((b, t, h), device=device, dtype=self.rvq_embs.dtype)
         embs = F.pad(self.rvq_embs, [0, 0, 0, 1])
         for i in range(d):
             emb = embs[i]
@@ -1203,7 +1203,7 @@ class RVQEARTTSModel(nn.Module):
         asr_speech_tokens_emb: Tensor | None,
     ) -> Tensor:
         """Computes the final conditioning tensor by combining all sources."""
-        cond = torch.zeros((1, 1, self.hidden_size), device=uncond_dec_flag.device)
+        cond = torch.zeros((1, 1, self.hidden_size), device=uncond_dec_flag.device, dtype=self.rvq_embs.dtype)
 
         if self.embed_context is not None and context_hidden_state is not None:
             cond = cond + self.embed_context(context_hidden_state)

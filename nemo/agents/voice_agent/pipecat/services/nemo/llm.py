@@ -668,6 +668,49 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         return chunks
 
 
+
+class MiniMaxService(OpenAILLMService):
+    """
+    LLM service that connects to MiniMax API using the OpenAI-compatible interface.
+    Supports MiniMax-M2.7 and MiniMax-M2.7-highspeed models.
+
+    Requires the MINIMAX_API_KEY environment variable or passing api_key explicitly.
+    API documentation: https://platform.minimax.io/docs/api-reference/text-openai-api
+    """
+
+    SUPPORTED_MODELS = [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+    ]
+    DEFAULT_BASE_URL = "https://api.minimax.io/v1"
+
+    def __init__(
+        self,
+        *,
+        model: str = "MiniMax-M2.7",
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        params: Optional[OpenAILLMService.InputParams] = None,
+        **kwargs,
+    ):
+        resolved_api_key = api_key or os.environ.get("MINIMAX_API_KEY")
+        if not resolved_api_key:
+            raise ValueError(
+                "MiniMax API key is required. Set the MINIMAX_API_KEY environment variable or pass api_key."
+            )
+        resolved_base_url = base_url or self.DEFAULT_BASE_URL
+        super().__init__(
+            model=model,
+            api_key=resolved_api_key,
+            base_url=resolved_base_url,
+            params=params,
+            **kwargs,
+        )
+        logger.info(
+            f"MiniMaxService initialized with model: {model}, base_url: {resolved_base_url}"
+        )
+
+
 def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
     """Get an LLM service from the configuration."""
     backend = config.type
@@ -696,7 +739,8 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
         "hf",
         "vllm",
         "auto",
-    ], f"Invalid backend: {backend}, only `hf`, `vllm`, and `auto` are supported."
+        "minimax",
+    ], f"Invalid backend: {backend}, only `hf`, `vllm`, `auto`, and `minimax` are supported."
 
     if backend == "hf":
         llm_model = config.model
@@ -756,5 +800,27 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
             start_vllm_on_init=config.get("start_vllm_on_init", False),
             vllm_server_params=vllm_server_params,
         )
+    elif backend == "minimax":
+        llm_model = config.get("model", "MiniMax-M2.7")
+        llm_api_key = config.get("api_key", None)
+        llm_base_url = config.get("base_url", None)
+        llm_params = config.get("minimax_generation_params", None)
+        if llm_params is not None:
+            llm_params = OmegaConf.to_container(llm_params, resolve=True)
+            extra = llm_params.get("extra", None)
+            if extra is None:
+                llm_params["extra"] = {}
+            elif not isinstance(extra, dict):
+                raise ValueError(f"extra must be a dictionary, got {type(extra)}")
+            llm_params = OpenAILLMService.InputParams(**llm_params)
+        else:
+            llm_params = OpenAILLMService.InputParams()
+        return MiniMaxService(
+            model=llm_model,
+            api_key=llm_api_key,
+            base_url=llm_base_url,
+            params=llm_params,
+        )
     else:
         raise ValueError(f"Invalid LLM backend: {backend}")
+

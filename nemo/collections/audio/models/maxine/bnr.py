@@ -154,7 +154,20 @@ class _Seasr(plt.LightningModule):
 
 
 class BNR2(AudioToAudioModel):
-    """Implementation of the BNR 2 model"""
+    """Maxine Background Noise Removal (BNR) 2.0 model.
+
+    BNR 2.0 is a single-channel speech denoising model that removes background
+    noise from audio to improve speech intelligibility and downstream ASR accuracy.
+    It uses the SEASR architecture, which combines convolutional feature extraction
+    with GRU-based temporal modeling and a learnable masking mechanism operating
+    in a learned transform domain.
+
+    The model operates at 16 kHz sample rate.
+
+    Reference:
+        `SEASR: A Speech Enhancement Model Using the SAEV Representation
+        <https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=10837982>`_
+    """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         self.world_size = 1

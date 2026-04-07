@@ -20,9 +20,11 @@ from nemo.collections.audio.models.enhancement import (
     SchroedingerBridgeAudioToAudioModel,
     ScoreBasedGenerativeAudioToAudioModel,
 )
+from nemo.collections.audio.models.maxine.bnr import BNR2
 
 __all__ = [
     "AudioToAudioModel",
+    "BNR2",
     "EncMaskDecAudioToAudioModel",
     "FlowMatchingAudioToAudioModel",
     "PredictiveAudioToAudioModel",

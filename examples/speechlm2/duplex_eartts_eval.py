@@ -484,7 +484,7 @@ def inference(cfg):
                 init_inputs=init_inputs,
             )
 
-        if cfg.get("debug_dtype", True) and batch_id == 0:
+        if cfg.get("debug_dtype", False) and batch_id == 0:
             for h in handles:
                 h.remove()
 

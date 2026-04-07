@@ -46,9 +46,10 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x):
-        weight = (1.0 + self.weight).to(dtype=x.dtype)
-        output = self._norm(x)
-        return output * weight
+        output = self._norm(x.float())
+        # Llama does x.to(float16) * w whilst Gemma3 is (x * w).to(float16)
+        output = output * (1.0 + self.weight.float())
+        return output.type_as(x)
 
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.eps}"
@@ -92,14 +93,12 @@ class MLPLayer(nn.Module):
 
 
 # ==============================================================================
-# Matmul Functions
+# Core Mathematical and Masking Functions
 # ==============================================================================
+
 def batch_matmul(x: Tensor, w: Tensor, y: Tensor, *args, **kwargs) -> Tensor:
     """
     Performs a batched matrix multiplication using PyTorch's native functions.
-
-    This function serves as a fallback when Triton is not available. It achieves
-    the same result by gathering the appropriate weight matrices and using `torch.bmm`.
 
     Args:
         x (Tensor): The input tensor of shape `[batch_size, d_in]`.
@@ -112,13 +111,7 @@ def batch_matmul(x: Tensor, w: Tensor, y: Tensor, *args, **kwargs) -> Tensor:
     # w[y] gathers the weight matrices for each item in the batch.
     # x.unsqueeze(2) reshapes x to [batch_size, d_in, 1] for bmm.
     # The result is squeezed to remove the trailing dimension of size 1.
-    w_selected = w[y].to(x.dtype)
-    return torch.bmm(w_selected, x.unsqueeze(2)).squeeze(2)
-
-
-# ==============================================================================
-# Core Mathematical and Masking Functions
-# ==============================================================================
+    return torch.bmm(w[y], x.unsqueeze(2)).squeeze(2)
 
 
 def gumbel_like(tensor: Tensor, eps: float = 1e-8) -> Tensor:
@@ -477,6 +470,7 @@ class MoGHead(nn.Module):
 
         # Apply top-p or top-k filtering to the mixture logits
         if top_p_or_k is not None:
+
             logits = (
                 TopPLogitsWarper(top_p_or_k)(
                     None,
@@ -489,7 +483,7 @@ class MoGHead(nn.Module):
                 ).view_as(logits)
             )
 
-        logits = logits.to(x.dtype)
+            logits = logits.to(x.dtype)
 
         # Sample a mixture component using the Gumbel-Max trick
         with fp32_precision():

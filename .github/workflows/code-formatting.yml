@@ -27,7 +27,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # setup repository and ref for PRs, see
           # https://github.com/EndBug/add-and-commit?tab=readme-ov-file#working-with-prs
@@ -45,7 +45,7 @@ jobs:
             **.py
 
       - name: Setup Python env
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.10"
 

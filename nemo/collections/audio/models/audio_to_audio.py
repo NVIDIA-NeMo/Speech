@@ -378,10 +378,9 @@ class AudioToAudioModel(ModelPT, ABC):
         norm_scale = torch.amax(signal.abs(), dim=(-1, -2), keepdim=True)
         return signal / (norm_scale + self.eps), norm_scale
 
-    @staticmethod
-    def _denormalize(signal: torch.Tensor, norm_scale: torch.Tensor) -> torch.Tensor:
+    def _denormalize(self, signal: torch.Tensor, norm_scale: torch.Tensor) -> torch.Tensor:
         """Restore original scale after _normalize."""
-        return signal * norm_scale
+        return signal * (norm_scale + self.eps)
 
     @staticmethod
     def match_batch_length(input: torch.Tensor, batch_length: int) -> torch.Tensor:

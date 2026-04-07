@@ -365,7 +365,7 @@ class AudioToAudioModel(ModelPT, ABC):
         temporary_dataloader = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_dataloader
 
-    def _normalize(self, signal: torch.Tensor) -> tuple:
+    def _normalize(self, signal: torch.Tensor):
         """Normalize signal so its peak amplitude is 1.
 
         Args:

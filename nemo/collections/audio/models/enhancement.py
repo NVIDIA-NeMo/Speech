@@ -1100,8 +1100,6 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         },
         output_types={
             "loss": NeuralType(None, LossType()),
-            "loss_encoded": NeuralType(None, LossType()),
-            "loss_time": NeuralType(None, LossType()),
         },
     )
     def _step(self, target_signal, input_signal, input_length=None):
@@ -1164,7 +1162,6 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
             if self.loss is not None:
                 # Single loss in the encoded domain
                 loss = self.loss(estimate=estimate, target=target_enc, input_length=estimate_len)
-                loss_encoded = loss_time = None
             else:
                 # Weighted loss between encoded and time domain
                 loss = 0.0
@@ -1173,10 +1170,9 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
                 if self.loss_encoded is not None:
                     # Loss between the estimate and the target in the encoded domain
                     loss_encoded = self.loss_encoded(estimate=estimate, target=target_enc, input_length=estimate_len)
+                    self.log('train_loss_encoded', loss_encoded)
                     # Weighting
                     loss += self.loss_encoded_weight * loss_encoded
-                else:
-                    loss_encoded = None
 
                 # Loss in the time domain
                 if self.loss_time is not None:
@@ -1193,14 +1189,13 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
                     loss_time = self.loss_time(
                         estimate=estimate_signal, target=target_signal, input_length=input_length
                     )
+                    self.log('train_loss_time', loss_time)
                     # Weighting
                     loss += self.loss_time_weight * loss_time
-                else:
-                    loss_time = None
         else:
             raise NotImplementedError(f'Output type {self.estimator_output} is not implemented')
 
-        return loss, loss_encoded, loss_time
+        return loss
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):
@@ -1220,20 +1215,12 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
             target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
 
         # Calculate the loss
-        loss, loss_encoded, loss_time = self._step(
-            target_signal=target_signal, input_signal=input_signal, input_length=input_length
-        )
+        loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
 
         # Logs
         self.log('train_loss', loss)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
         self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
-
-        if loss_encoded is not None:
-            self.log('train_loss_encoded', loss_encoded)
-
-        if loss_time is not None:
-            self.log('train_loss_time', loss_time)
 
         return loss
 
@@ -1254,7 +1241,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
             target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
 
         # Calculate loss
-        loss, *_ = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+        loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
 
         # Update metrics
         update_metrics = False

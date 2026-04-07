@@ -1,0 +1,21 @@
+# This is an example config for using MiniMax as the LLM backend for a NeMo Voice Agent server.
+# Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
+# MiniMax API documentation: https://platform.minimax.io/docs/api-reference/text-openai-api
+
+# type: minimax
+# model: "MiniMax-M2.7"  # choices: ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]
+
+##################################
+######## MiniMax config ##########
+##################################
+# API key for MiniMax. If not set here, MINIMAX_API_KEY environment variable will be used.
+# api_key: null
+base_url: "https://api.minimax.io/v1"
+
+# Inference parameters passed to the MiniMax OpenAI-compatible API
+# Note: MiniMax temperature must be in range (0.0, 1.0], default is 1.0
+minimax_generation_params:
+  temperature: 1.0          # Sampling temperature (0.0 exclusive to 1.0 inclusive)
+  top_p: 0.9                # Top-p (nucleus) sampling (0.0 to 1.0)
+  max_completion_tokens: 256  # Max number of output tokens
+  extra: null               # Additional model-specific params in dict format

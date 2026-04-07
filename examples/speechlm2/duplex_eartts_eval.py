@@ -100,7 +100,7 @@ import librosa
 import soundfile as sf
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.audio.parts.utils.transforms import resample
 
@@ -114,13 +114,14 @@ from omegaconf import OmegaConf
 from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
 from nemo.collections.speechlm2.parts.metrics.asr_cer_wer import Intelligibility
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
+from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-from nemo.collections.speechlm2.parts.precision import fp32_precision
 
 # Use .get() to avoid crashing when running a single GPU without torchrun
 if torch.cuda.is_available():
     torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", 0)))
+
 
 def attach_dtype_counter(model):
     handles = []
@@ -186,6 +187,7 @@ class EvalJSONLDataset(Dataset):
     """
     Standard PyTorch Dataset for reading JSONL evaluation files.
     """
+
     def __init__(self, file_path):
         self.samples = []
         with open(file_path, "r", encoding="utf-8") as f:
@@ -280,10 +282,7 @@ def collate_and_tokenize_custom(
         else:
             # Standard String Handling
             tokenized_list.append(
-                torch.as_tensor(
-                    [model.tokenizer.bos] + model.tokenizer.text_to_ids(text_data),
-                    dtype=torch.long
-                )
+                torch.as_tensor([model.tokenizer.bos] + model.tokenizer.text_to_ids(text_data), dtype=torch.long)
             )
 
     if add_beginning_pad_tokens:
@@ -365,9 +364,7 @@ def collate_and_tokenize_custom(
     # (prevents truncation if calc was slightly off)
     target_len = max(target_len, L)
 
-    padded_input_ids = torch.full(
-        (B, target_len), fill_value=model.text_pad_id, dtype=input_ids.dtype
-    )
+    padded_input_ids = torch.full((B, target_len), fill_value=model.text_pad_id, dtype=input_ids.dtype)
 
     # Copy the actual tokens (which might already contain list-based padding)
     padded_input_ids[:, :L] = input_ids
@@ -410,9 +407,7 @@ def inference(cfg):
 
     if cfg.get("checkpoint_path", None):
         model = DuplexEARTTS.load_from_checkpoint(
-            cfg.checkpoint_path,
-            cfg=OmegaConf.to_container(cfg, resolve=True),
-            map_location=target_device  
+            cfg.checkpoint_path, cfg=OmegaConf.to_container(cfg, resolve=True), map_location=target_device
         ).eval()
     else:
         raise ValueError("For evaluation, you must provide `cfg.checkpoint_path`.")
@@ -420,7 +415,7 @@ def inference(cfg):
     if target_dtype != torch.float32:
         if cfg.get("keep_codec_original_dtype", True):
             model.tts_model.to(dtype=target_dtype)
-            model.on_train_epoch_start() # ensures that codec is in the right precision
+            model.on_train_epoch_start()  # ensures that codec is in the right precision
         else:
             model.audio_codec_run_dtype = target_dtype
             model.to(dtype=target_dtype)
@@ -453,10 +448,10 @@ def inference(cfg):
         dataset=eval_dataset,
         batch_size=cfg.batch_size,
         collate_fn=collate_fn,
-        num_workers=cfg.get("num_workers", 4), 
-        pin_memory=True, 
+        num_workers=cfg.get("num_workers", 4),
+        pin_memory=True,
         shuffle=False,
-        drop_last=False
+        drop_last=False,
     )
 
     if cfg.get("user_custom_speaker_reference", None):
@@ -465,7 +460,7 @@ def inference(cfg):
 
     # Iterate over the DataLoader
     for batch_id, inputs in enumerate(dataloader):
-        
+
         # Move required tensors to the GPU immediately
         inputs["input_ids"] = inputs["input_ids"].to(model.device)
         inputs["context_audio"] = inputs["context_audio"].to(model.device)
@@ -512,12 +507,13 @@ def inference(cfg):
                     if mods:
                         logging.info(f"{dtype}: {mods}")
 
-
         with fp32_precision():
             audio = audio.float()
 
             # reset audio len to the actual size removing extra long audio padding
-            audio_len = (torch.tensor(inputs["target_num_frames"], device=audio.device) * model.target_samples_per_frame).int()
+            audio_len = (
+                torch.tensor(inputs["target_num_frames"], device=audio.device) * model.target_samples_per_frame
+            ).int()
 
             # resample audio to the asr sampling rate
             metric_audio_pred = resample(audio, model.target_sample_rate, 16000)

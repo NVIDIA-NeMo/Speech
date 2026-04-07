@@ -156,10 +156,6 @@ class BNR2(AudioToAudioModel):
     """Implementation of the BNR 2 model"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        self.world_size = 1
-        if trainer is not None:
-            self.world_size = trainer.world_size
-
         super().__init__(cfg=cfg, trainer=trainer)
 
         self.seasr = _Seasr(self.sample_rate)

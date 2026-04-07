@@ -52,7 +52,6 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
             self.world_size = trainer.world_size
 
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.encoder)
@@ -74,9 +73,6 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         else:
             logging.debug('Channel augmentation not used')
             self.channel_augmentation = None
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
@@ -182,7 +178,6 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = self.from_config_dict(self._cfg.encoder)
@@ -196,9 +191,6 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
 
         # Term added to the denominator to improve numerical stability
         self.eps = self._cfg.get('eps', 1e-8)
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
         logging.debug('Initialized %s', self.__class__.__name__)
         logging.debug('\tnormalize_input: %s', self.normalize_input)
@@ -293,7 +285,6 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = self.from_config_dict(self._cfg.encoder)
@@ -327,9 +318,6 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
 
         # Term added to the denominator to improve numerical stability
         self.eps = self._cfg.get('eps', 1e-8)
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
         logging.debug('Initialized %s', self.__class__.__name__)
         logging.debug('\tnormalize_input: %s', self.normalize_input)
@@ -518,7 +506,6 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = self.from_config_dict(self._cfg.encoder)
@@ -560,9 +547,6 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
 
         # Regularization
         self.eps = self._cfg.get('eps', 1e-8)
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
         logging.debug('Initialized              %s', self.__class__.__name__)
         logging.debug('\tdoing SSL-pretraining: %s', (self.ssl_pretrain_masking is not None))
@@ -825,7 +809,6 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = self.from_config_dict(self._cfg.encoder)
@@ -879,9 +862,6 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
 
         # Term added to the denominator to improve numerical stability
         self.eps = self._cfg.get('eps', 1e-8)
-
-        # Setup optional optimization flags
-        self.setup_optimization_flags()
 
         logging.debug('Initialized %s', self.__class__.__name__)
         logging.debug('\testimator_output:    %s', self.estimator_output)

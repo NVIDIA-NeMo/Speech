@@ -161,10 +161,6 @@ class BNR2(AudioToAudioModel):
             self.world_size = trainer.world_size
 
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
         self.seasr = _Seasr(self.sample_rate)
         if (

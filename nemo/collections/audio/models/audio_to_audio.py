@@ -51,7 +51,9 @@ class AudioToAudioModel(ModelPT, ABC):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
 
+        self.sample_rate = self._cfg.sample_rate
         self._setup_loss()
+        self.setup_optimization_flags()
 
     def _setup_loss(self):
         """Setup loss for this model."""

@@ -1213,7 +1213,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 - audio_pred_cur_step: Latest decoded waveform chunk, shape (B, wav_to_token_ratio).
                 - audio_len: Lengths (number of samples), shape (B,).
         """
-        with fp32_precision(), torch.no_grad():
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             if number_prev_tokens:
                 gen_audio_codes_history = gen_audio_codes_history[:, -number_prev_tokens:]
 
@@ -1373,7 +1373,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             logging.info(f"Autoregressive inference step: {i} of {max_steps} take around {step_time}s")
 
         if not incremental_audio_decoding:
-            gen_audio_codes_lens = torch.tensor([gen_audio_codes.shape[1]] * gen_audio_codes.shape[0]).to(self.device)
+            gen_audio_codes_lens = torch.tensor([gen_audio_codes.shape[1]] * gen_audio_codes.shape[0], dtype=torch.long).to(self.device)
             # decode audio. Note that it is not necessary because the prompt is removed, so no special token should be on the output, but lets do it for safety
             gen_audio_codes = replace_control_speech_codes(
                 gen_audio_codes, self._control_codes, self.codec_silence_tokens
@@ -1666,6 +1666,7 @@ def ensures_codec_target_dtype(model):
     setup_audio_codec(model)
 
 
+
 def setup_audio_codec(model):
     """
     Instantiates the RVQ audio codec and injects codec embeddings into the TTS model.
@@ -1691,7 +1692,7 @@ def setup_audio_codec(model):
         p.requires_grad = False
 
     model.audio_codec.eval()
-    model.audio_codec.to(model.device)  # force codec to run in the same device as the main model
+    model.audio_codec.to(model.device) # force codec to run in the same device as the main model
 
     assert callable(model.tts_model.set_rvq_embs)
 
@@ -1700,6 +1701,7 @@ def setup_audio_codec(model):
     # compute target fps
     model.target_fps = model.target_sample_rate / model.audio_codec.config.wav_to_token_ratio
     model.target_samples_per_frame = model.audio_codec.config.wav_to_token_ratio
+
 
 
 def rescale_state_dict(state_dict, target_std=0.02, first_n_layers=None, layer_prefix="tts_model.backbone.layers."):

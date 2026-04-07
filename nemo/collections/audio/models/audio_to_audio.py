@@ -170,7 +170,7 @@ class AudioToAudioModel(ModelPT, ABC):
         Returns:
             Scalar loss tensor.
         """
-        ...
+        pass
 
     def training_step(self, batch, batch_idx):
         input_signal, target_signal, input_length = self._parse_batch(batch)

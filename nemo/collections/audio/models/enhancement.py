@@ -218,10 +218,7 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
         batch_length = input_signal.size(-1)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
+            input_signal, norm_scale = self._normalize(input_signal)
 
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
@@ -233,8 +230,7 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
         output, output_length = self.decoder(input=estimated, input_length=estimated_length)
 
         if self.normalize_input:
-            # rescale to the original scale
-            output = output * norm_scale
+            output = self._denormalize(output, norm_scale)
 
         # Trim or pad the estimated signal to match input length
         output = self.match_batch_length(input=output, batch_length=batch_length)
@@ -353,10 +349,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
         batch_length = input_signal.size(-1)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
+            input_signal, norm_scale = self._normalize(input_signal)
 
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
@@ -370,8 +363,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
         output, output_length = self.decoder(input=generated, input_length=generated_length)
 
         if self.normalize_input:
-            # rescale to the original scale
-            output = output * norm_scale
+            output = self._denormalize(output, norm_scale)
 
         # Trim or pad the estimated signal to match input length
         output = self.match_batch_length(input=output, batch_length=batch_length)
@@ -396,11 +388,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
         batch_size = target_signal.size(0)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
-            # scale the target signal
+            input_signal, norm_scale = self._normalize(input_signal)
             target_signal = target_signal / (norm_scale + self.eps)
 
         # Apply encoder to both target and the input
@@ -627,10 +615,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         batch_length = input_signal.size(-1)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
+            input_signal, norm_scale = self._normalize(input_signal)
 
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
@@ -655,8 +640,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         output, output_length = self.decoder(input=generated, input_length=generated_length)
 
         if self.normalize_input:
-            # rescale to the original scale
-            output = output * norm_scale
+            output = self._denormalize(output, norm_scale)
 
         # Trim or pad the estimated signal to match input length
         output = self.match_batch_length(input=output, batch_length=batch_length)
@@ -677,11 +661,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         batch_size = target_signal.size(0)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
-            # scale the target signal
+            input_signal, norm_scale = self._normalize(input_signal)
             target_signal = target_signal / (norm_scale + self.eps)
 
         # Apply encoder to both target and the input
@@ -905,10 +885,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         batch_length = input_signal.size(-1)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
+            input_signal, norm_scale = self._normalize(input_signal)
 
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
@@ -922,8 +899,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         output, output_length = self.decoder(input=generated, input_length=generated_length)
 
         if self.normalize_input:
-            # rescale to the original scale
-            output = output * norm_scale
+            output = self._denormalize(output, norm_scale)
 
         # Trim or pad the estimated signal to match input length
         output = self.match_batch_length(input=output, batch_length=batch_length)
@@ -947,11 +923,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         batch_size = target_signal.size(0)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
-            # scale the target signal
+            input_signal, norm_scale = self._normalize(input_signal)
             target_signal = target_signal / (norm_scale + self.eps)
 
         # Apply encoder to both target and the input

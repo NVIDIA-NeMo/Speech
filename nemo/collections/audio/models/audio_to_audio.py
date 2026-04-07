@@ -365,6 +365,24 @@ class AudioToAudioModel(ModelPT, ABC):
         temporary_dataloader = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_dataloader
 
+    def _normalize(self, signal: torch.Tensor) -> tuple:
+        """Normalize signal so its peak amplitude is 1.
+
+        Args:
+            signal: tensor with shape (B, C, T)
+
+        Returns:
+            Tuple of (normalized_signal, norm_scale). Pass norm_scale to
+            _denormalize to restore the original scale.
+        """
+        norm_scale = torch.amax(signal.abs(), dim=(-1, -2), keepdim=True)
+        return signal / (norm_scale + self.eps), norm_scale
+
+    @staticmethod
+    def _denormalize(signal: torch.Tensor, norm_scale: torch.Tensor) -> torch.Tensor:
+        """Restore original scale after _normalize."""
+        return signal * norm_scale
+
     @staticmethod
     def match_batch_length(input: torch.Tensor, batch_length: int) -> torch.Tensor:
         """Trim or pad the output to match the batch length.

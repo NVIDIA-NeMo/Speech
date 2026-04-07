@@ -135,20 +135,7 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Apply channel augmentation
         if self.training and self.channel_augmentation is not None:
@@ -169,20 +156,7 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         return loss
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Process input
         processed_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
@@ -296,20 +270,7 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Estimate the signal
         output_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
@@ -325,25 +286,12 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
         return loss
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Estimate the signal
         output_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
 
-        # Prepare output
+        # Calculate the loss
         loss = self.loss(estimate=output_signal, target=target_signal, input_length=input_length)
 
         # Update metrics
@@ -537,20 +485,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate the loss
         loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
@@ -563,20 +498,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
         return loss
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate loss
         loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
@@ -857,21 +779,25 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
 
         return self.loss(estimate=estimate, target=loss_target, input_length=input_enc_len)
 
-    # PTL-specific methods
-    def training_step(self, batch, batch_idx):
+    def _parse_batch(self, batch):
+        """Override to allow missing target_signal for SSL pretraining."""
         if isinstance(batch, dict):
-            # lhotse batches are dictionaries
             input_signal = batch['input_signal']
             input_length = batch['input_length']
             target_signal = batch.get('target_signal', input_signal.clone())
         else:
             input_signal, input_length, target_signal, _ = batch
 
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
         if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, "B T -> B 1 T")
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
         if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, "B T -> B 1 T")
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        return input_signal, target_signal, input_length
+
+    # PTL-specific methods
+    def training_step(self, batch, batch_idx):
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate the loss
         loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
@@ -884,20 +810,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         return loss
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch.get('target_signal', input_signal.clone())
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate loss
         loss = self._step(
@@ -1199,20 +1112,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate the loss
         loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
@@ -1225,20 +1125,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         return loss
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate loss
         loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)

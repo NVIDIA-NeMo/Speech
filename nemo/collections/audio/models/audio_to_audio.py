@@ -18,6 +18,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
 
+import einops
 import hydra
 import librosa
 import soundfile as sf
@@ -129,6 +130,31 @@ class AudioToAudioModel(ModelPT, ABC):
             logging.info(
                 'Setup metrics for %s, dataloader %d: %s', tag, dataloader_idx, ', '.join(metrics_dataloader_idx)
             )
+
+    def _parse_batch(self, batch):
+        """Parse a batch into input signal, target signal, and input length.
+
+        Handles both dict-style (lhotse) and tuple-style (AudioToTargetDataset)
+        batches, and ensures signals are in multi-channel format (B, C, T).
+
+        Returns:
+            Tuple of (input_signal, target_signal, input_length).
+        """
+        if isinstance(batch, dict):
+            # Lhotse dataloaders produce dict batches
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch['target_signal']
+        else:
+            # Standard audio datasets produce tuple batches
+            input_signal, input_length, target_signal, _ = batch
+
+        if input_signal.ndim == 2:
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
+        if target_signal.ndim == 2:
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        return input_signal, target_signal, input_length
 
     @abstractmethod
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):

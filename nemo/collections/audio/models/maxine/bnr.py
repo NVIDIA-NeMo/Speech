@@ -26,7 +26,6 @@ BNR 2.0 uses the SEASR architecture described in https://ieeexplore.ieee.org/sta
 
 from typing import Dict, Optional
 
-import einops
 import lightning.pytorch as plt
 import torch
 import torch.nn as nn
@@ -229,17 +228,7 @@ class BNR2(AudioToAudioModel):
         return output
 
     def training_step(self, batch, batch_idx):
-        if isinstance(batch, dict):
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         predicted_audio = self.forward(input_signal=input_signal)
 
@@ -252,17 +241,7 @@ class BNR2(AudioToAudioModel):
         return loss
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-        if isinstance(batch, dict):
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Process input
         processed_signal = self(input_signal=input_signal)

@@ -227,18 +227,9 @@ class BNR2(AudioToAudioModel):
 
         return output
 
-    def training_step(self, batch, batch_idx):
-        input_signal, target_signal, input_length = self._parse_batch(batch)
-
+    def _compute_train_loss(self, input_signal, target_signal, input_length):
         predicted_audio = self.forward(input_signal=input_signal)
-
-        loss = self.loss(target=target_signal, estimate=predicted_audio, input_length=input_length)
-
-        self.log('train_loss', loss)
-        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
-
-        return loss
+        return self.loss(target=target_signal, estimate=predicted_audio, input_length=input_length)
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
         input_signal, target_signal, input_length = self._parse_batch(batch)

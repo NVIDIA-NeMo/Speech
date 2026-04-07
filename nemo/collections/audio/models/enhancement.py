@@ -1034,7 +1034,8 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
                 if self.loss_encoded is not None:
                     # Loss between the estimate and the target in the encoded domain
                     loss_encoded = self.loss_encoded(estimate=estimate, target=target_enc, input_length=estimate_len)
-                    self.log('train_loss_encoded', loss_encoded)
+                    if self.training:
+                        self.log('train_loss_encoded', loss_encoded)
                     # Weighting
                     loss += self.loss_encoded_weight * loss_encoded
 
@@ -1053,7 +1054,8 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
                     loss_time = self.loss_time(
                         estimate=estimate_signal, target=target_signal, input_length=input_length
                     )
-                    self.log('train_loss_time', loss_time)
+                    if self.training:
+                        self.log('train_loss_time', loss_time)
                     # Weighting
                     loss += self.loss_time_weight * loss_time
         else:

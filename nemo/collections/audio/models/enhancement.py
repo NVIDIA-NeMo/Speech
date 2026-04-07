@@ -48,14 +48,14 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         super().__init__(cfg=cfg, trainer=trainer)
 
         # Setup processing modules
-        self.encoder = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.encoder)
-        self.mask_estimator = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mask_estimator)
-        self.mask_processor = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mask_processor)
-        self.decoder = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.decoder)
+        self.encoder = self.from_config_dict(self._cfg.encoder)
+        self.mask_estimator = self.from_config_dict(self._cfg.mask_estimator)
+        self.mask_processor = self.from_config_dict(self._cfg.mask_processor)
+        self.decoder = self.from_config_dict(self._cfg.decoder)
 
         if 'mixture_consistency' in self._cfg:
             logging.debug('Using mixture consistency')
-            self.mixture_consistency = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mixture_consistency)
+            self.mixture_consistency = self.from_config_dict(self._cfg.mixture_consistency)
         else:
             logging.debug('Mixture consistency not used')
             self.mixture_consistency = None
@@ -63,7 +63,7 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         # Setup augmentation
         if hasattr(self.cfg, 'channel_augment') and self.cfg.channel_augment is not None:
             logging.debug('Using channel augmentation')
-            self.channel_augmentation = EncMaskDecAudioToAudioModel.from_config_dict(self.cfg.channel_augment)
+            self.channel_augmentation = self.from_config_dict(self.cfg.channel_augment)
         else:
             logging.debug('Channel augmentation not used')
             self.channel_augmentation = None

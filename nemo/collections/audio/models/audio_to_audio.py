@@ -519,11 +519,10 @@ class AudioToAudioModel(ModelPT, ABC):
         return list_of_models
 
     def setup_optimization_flags(self):
-        """
-        Utility method that must be explicitly called by the subclass in order to support optional optimization flags.
-        This method is the only valid place to access self.cfg prior to DDP training occurs.
+        """Setup optional optimization flags from the model config.
 
-        The subclass may chose not to support this method, therefore all variables here must be checked via hasattr()
+        Called automatically during __init__. This is the only valid place
+        to access self.cfg prior to DDP training.
         """
         # Skip update if nan/inf grads appear on any rank.
         self._skip_nan_grad = False

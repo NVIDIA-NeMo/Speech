@@ -420,7 +420,7 @@ def inference(cfg):
             model.audio_codec_run_dtype = target_dtype
             model.to(dtype=target_dtype)
 
-    if cfg.get("debug_dtype", True):
+    if cfg.get("debug_dtype", False):
         handles, stats, examples = attach_dtype_counter(model)
 
     with fp32_precision():

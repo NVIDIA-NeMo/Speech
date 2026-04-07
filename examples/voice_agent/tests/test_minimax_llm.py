@@ -33,10 +33,7 @@ sys.modules["psutil"] = MagicMock()
 
 from omegaconf import OmegaConf
 
-from nemo.agents.voice_agent.pipecat.services.nemo.llm import (
-    MiniMaxService,
-    get_llm_service_from_config,
-)
+from nemo.agents.voice_agent.pipecat.services.nemo.llm import MiniMaxService, get_llm_service_from_config
 
 
 class TestMiniMaxService:
@@ -108,11 +105,13 @@ class TestGetLLMServiceFromConfigMiniMax:
 
     def test_factory_creates_minimax_service(self):
         """get_llm_service_from_config returns a MiniMaxService for type=minimax."""
-        cfg = OmegaConf.create({
-            "type": "minimax",
-            "model": "MiniMax-M2.7",
-            "api_key": "test-factory-key",
-        })
+        cfg = OmegaConf.create(
+            {
+                "type": "minimax",
+                "model": "MiniMax-M2.7",
+                "api_key": "test-factory-key",
+            }
+        )
         with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None):
             svc = get_llm_service_from_config(cfg)
         assert isinstance(svc, MiniMaxService)
@@ -133,11 +132,13 @@ class TestGetLLMServiceFromConfigMiniMax:
 
     def test_factory_minimax_highspeed_model(self):
         """Factory correctly passes MiniMax-M2.7-highspeed model to MiniMaxService."""
-        cfg = OmegaConf.create({
-            "type": "minimax",
-            "model": "MiniMax-M2.7-highspeed",
-            "api_key": "key",
-        })
+        cfg = OmegaConf.create(
+            {
+                "type": "minimax",
+                "model": "MiniMax-M2.7-highspeed",
+                "api_key": "key",
+            }
+        )
         with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None) as mock_init:
             svc = get_llm_service_from_config(cfg)
         assert isinstance(svc, MiniMaxService)
@@ -146,12 +147,14 @@ class TestGetLLMServiceFromConfigMiniMax:
 
     def test_factory_minimax_custom_base_url(self):
         """Factory forwards a custom base_url to MiniMaxService."""
-        cfg = OmegaConf.create({
-            "type": "minimax",
-            "model": "MiniMax-M2.7",
-            "api_key": "key",
-            "base_url": "https://custom.minimax.io/v1",
-        })
+        cfg = OmegaConf.create(
+            {
+                "type": "minimax",
+                "model": "MiniMax-M2.7",
+                "api_key": "key",
+                "base_url": "https://custom.minimax.io/v1",
+            }
+        )
         with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None) as mock_init:
             svc = get_llm_service_from_config(cfg)
         call_kwargs = mock_init.call_args[1]

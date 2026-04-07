@@ -668,7 +668,6 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         return chunks
 
 
-
 class MiniMaxService(OpenAILLMService):
     """
     LLM service that connects to MiniMax API using the OpenAI-compatible interface.
@@ -706,9 +705,7 @@ class MiniMaxService(OpenAILLMService):
             params=params,
             **kwargs,
         )
-        logger.info(
-            f"MiniMaxService initialized with model: {model}, base_url: {resolved_base_url}"
-        )
+        logger.info(f"MiniMaxService initialized with model: {model}, base_url: {resolved_base_url}")
 
 
 def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
@@ -823,4 +820,3 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
         )
     else:
         raise ValueError(f"Invalid LLM backend: {backend}")
-

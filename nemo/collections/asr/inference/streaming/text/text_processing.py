@@ -96,7 +96,7 @@ class StreamingTextProcessor:
 
     def process(self, states: list[StreamingState]) -> None:
         """
-        Apply PnC and ITN on the states.
+        Post-process the states.
         Args:
             states: (list[StreamingState]) List of StreamingState objects
         """
@@ -120,7 +120,7 @@ class StreamingTextProcessor:
 
     def process_states_with_segment_boundaries(self, states: list[StreamingState]) -> None:
         """
-        Process states with segment boundaries.
+        Post-process the states with segment boundaries.
         Args:
             states (list[StreamingState]): List of StreamingState objects that have segments
         """
@@ -163,7 +163,7 @@ class StreamingTextProcessor:
 
     def process_states_with_word_boundaries(self, states: list[StreamingState]) -> None:
         """
-        Apply PnC and ITN on the states.
+        Post-process the states with word boundaries.
         Args:
             states: (list[StreamingState]) List of StreamingState objects
         """

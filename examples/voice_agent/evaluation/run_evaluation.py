@@ -34,6 +34,7 @@ from datetime import datetime
 
 from nemo.agents.voice_agent.evaluation.runner import run_dynamic_evaluation
 from nemo.agents.voice_agent.evaluation.scenarios import get_eval_scenario, list_eval_scenarios
+from nemo.agents.voice_agent.evaluation.utils import LLMJudge
 from nemo.agents.voice_agent.utils import FileLogger
 
 
@@ -87,6 +88,15 @@ Examples:
     parser.add_argument(
         "--output-sample-rate", type=int, default=16000, help="Output sample rate for recorded audio (default: 16000)"
     )
+    parser.add_argument(
+        "--judge-url", default="http://localhost:8000/v1/chat/completions", help="URL of the judge API"
+    )
+    parser.add_argument(
+        "--judge-model",
+        default="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+        help="Model name for the judge API (default: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4)",
+    )
+    parser.add_argument("--judge-api-key", default=None, help="API key for the LLM judge")
 
     args = parser.parse_args()
 
@@ -126,6 +136,22 @@ Examples:
     logger = FileLogger(os.path.join(session_dir, "evaluation_log.txt"))
     logger.info(f"Running {len(scenarios)} scenario(s): {[s.name for s in scenarios]}")
 
+    if args.judge_url and args.judge_model:
+        logger.info(f"Using LLM judge: {args.judge_url} with model: {args.judge_model}")
+        judge = LLMJudge(
+            url=args.judge_url,
+            model=args.judge_model,
+            api_key=args.judge_api_key,
+            max_tokens=1024,
+            temperature=0.7,
+            top_p=0.95,
+            seed=42,
+            chat_template_kwargs={"enable_thinking": True},
+            vllm_xargs={"thinking_budget": 512},
+        )
+    else:
+        judge = None
+
     # Run evaluation
     try:
         asyncio.run(
@@ -139,6 +165,7 @@ Examples:
                 output_sample_rate=args.output_sample_rate,
                 global_timestamp=session_timestamp,
                 logger=logger,
+                judge=judge,
             )
         )
         return 0

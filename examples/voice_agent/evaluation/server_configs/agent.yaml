@@ -25,8 +25,8 @@ vad:
 
 stt:
   type: nemo # choices in ['nemo'] currently only NeMo is supported
-  # model: "nvidia/parakeet_realtime_eou_120m-v1"
-  model: "nvidia/nemotron-speech-streaming-en-0.6b"
+  model: "nvidia/parakeet_realtime_eou_120m-v1"
+  # model: "nvidia/nemotron-speech-streaming-en-0.6b"
   device: "cuda"
   att_context_size: [70,1] # left and right attention context sizes for streaming ASR
   frame_len_in_secs: 0.08  # default for FastConformer, do not change unless using other architechtures
@@ -49,7 +49,9 @@ turn_taking:
 
 llm:
   type: vllm  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
-  model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+  # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+  # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
+  model: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
   # model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
   dtype: bfloat16  # torch.dtype for LLM
   device: "cuda"
@@ -93,9 +95,10 @@ llm:
   ######## vLLM config #########
   ##############################
   api_key: "EMPTY"
-  base_url: "http://localhost:8000/v1"  
+  # base_url: "http://localhost:8000/v1"  
+  base_url: http://10.110.41.138:8000/v1
   # Set `start_vllm_on_init` to automatically start vllm server if it's not manually started yet
-  start_vllm_on_init: true
+  start_vllm_on_init: false
   # Specifying vllm_server_params with the parameters you want to pass to the vllm server command `vllm serve $model $vllm_server_params`
   # Refer to each LLM's model page for details on the recommended parameters
   # It's recommended to stay with `--max-num-seqs` 1 as the voice agent currently supports one connection at a time.

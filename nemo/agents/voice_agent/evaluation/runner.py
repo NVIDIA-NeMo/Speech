@@ -23,11 +23,11 @@ import asyncio
 import json
 import os
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from nemo.agents.voice_agent.evaluation.bridge import VoiceAgentEvaluationBridge
 from nemo.agents.voice_agent.evaluation.scenarios.classes import Scenario
-from nemo.agents.voice_agent.evaluation.utils import check_if_task_success
+from nemo.agents.voice_agent.evaluation.utils import LLMJudge, check_if_task_success
 from nemo.agents.voice_agent.utils import FileLogger
 
 
@@ -45,6 +45,8 @@ async def run_dynamic_evaluation(
     output_sample_rate: int = 24000,
     global_timestamp: str = None,
     logger: FileLogger = None,
+    judge: Optional[LLMJudge] = None,
+    judge_threshold: float = 0.9,
 ):
     """
     Run evaluation with dynamic scenario switching and latency measurement.
@@ -63,6 +65,8 @@ async def run_dynamic_evaluation(
         output_sample_rate: Output sample rate for recorded audio (default: 24000)
         global_timestamp: Timestamp string for output file naming
         logger: FileLogger instance for logging
+        judge: LLMJudge instance for judging the scenario
+        judge_threshold: Threshold for judging the scenario
     """
 
     if not logger:
@@ -129,6 +133,15 @@ async def run_dynamic_evaluation(
             logger.info(f"Prediction file {prediction_file} not found, skipping checking for task success...")
             is_successful = False
             success_results.append(False)
+        elif judge is not None:
+            result = judge.judge_file(
+                reference=reference_file,
+                prediction=prediction_file,
+            )
+            with open(os.path.join(scenario_dir, "judge_result.json"), "w") as f:
+                json.dump(result, f, indent=2)
+            is_successful = result["score"] >= judge_threshold
+            success_results.append(is_successful)
         else:
             is_successful = check_if_task_success(
                 reference=reference_file,

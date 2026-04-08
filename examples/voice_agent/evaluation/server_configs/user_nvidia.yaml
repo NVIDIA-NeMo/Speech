@@ -47,7 +47,8 @@ turn_taking:
 
 llm:
   type: nvidia
-  model: "nvidia/nvidia/Nemotron-3-Nano-30B-A3B"
+  model: "nvidia/nvidia/Nemotron-3-Nano-30B-A3B-FP8"
+  # model: "nvidia/nvidia/Nemotron-3-Nano-30B-A3B"
   # model: "aws/anthropic/bedrock-claude-opus-4-6"
   # model: "nvidia/openai/gpt-oss-20b"
 
@@ -61,7 +62,8 @@ llm:
   #### Generation config #######
   ##############################
   api_key: null # set NVIDIA_API_KEY in env
-  base_url: "https://inference-api.nvidia.com/v1"  
+  # base_url: "https://inference-api.nvidia.com/v1"  
+  base_url: http://10.110.41.138:8000/v1"
   # `params` are the inference parameters that would be passed into OpenAI API, 
   # please put additional model-specific parameters in `extra`
   nvidia_generation_params:

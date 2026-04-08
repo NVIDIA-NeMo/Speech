@@ -32,7 +32,7 @@ class SimpleQA(Scenario):
         "question": "What is the answer to life, the universe, and everything?",
         "answer": "The answer is 42.",
     }
-    max_duration = 90
+    max_duration = 60
 
     ignore_capitalization = True
     ignore_punctuation = True

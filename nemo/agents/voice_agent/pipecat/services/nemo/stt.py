@@ -135,7 +135,7 @@ class NemoSTTService(STTService):
         Returns:
             bool: True, as this service supports metric generation.
         """
-        return True
+        return False
 
     def _reset_stt_state(self):
         """Reset the state of the STT service."""
@@ -269,7 +269,8 @@ class NemoSTTService(STTService):
 
                 # Run ASR inference in thread pool to avoid blocking event loop
                 start_time = asyncio.get_event_loop().time()
-                asr_result = await asyncio.to_thread(self._model.transcribe, audio_chunk_bytes)
+                # asr_result = await asyncio.to_thread(self._model.transcribe, audio_chunk_bytes)
+                asr_result = self._model.transcribe(audio_chunk_bytes)
                 end_time = asyncio.get_event_loop().time()
                 transcription = asr_result.text
                 is_final = asr_result.is_final
@@ -372,12 +373,11 @@ class NemoSTTService(STTService):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process incoming frames and handle VAD events."""
         if isinstance(frame, VADUserStoppedSpeakingFrame) and isinstance(self._model, NemoStreamingASRService):
-            # manualy reset the state of the model when end of utterance is detected by VAD
-            logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")
             if self.user_is_speaking:
                 logger.debug(
                     "[EOU missing] STT failed to detect end of utterance before VAD detected user stopped speaking"
                 )
+            logger.debug("Resetting state of the model due to VADUserStoppedSpeakingFrame")
             self._model.reset_state()
             self._is_vad_active = False
         elif isinstance(frame, VADUserStartedSpeakingFrame):

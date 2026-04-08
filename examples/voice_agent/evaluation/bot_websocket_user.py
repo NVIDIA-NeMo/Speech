@@ -411,11 +411,8 @@ async def run_bot_websocket_server(
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
-            allow_interruptions=True,
             enable_metrics=False,
             enable_usage_metrics=False,
-            send_initial_empty_metrics=True,
-            report_only_initial_ttfb=True,
             idle_timeout=None,  # Disable idle timeout
         ),
         observers=[

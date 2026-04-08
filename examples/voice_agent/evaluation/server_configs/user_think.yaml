@@ -25,6 +25,7 @@ vad:
 
 stt:
   type: nemo # choices in ['nemo'] currently only NeMo is supported
+  # model: "nvidia/nemotron-speech-streaming-en-0.6b"
   model: "nvidia/parakeet_realtime_eou_120m-v1"
   device: "cuda"
   att_context_size: [70,1] # left and right attention context sizes for streaming ASR
@@ -46,7 +47,9 @@ turn_taking:
 
 llm:
   type: vllm  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
-  model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+  # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+  # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
+  model: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
   # model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
   dtype: bfloat16  # torch.dtype for LLM
   device: "cuda"
@@ -69,7 +72,7 @@ llm:
   top_k: 20  # LLM sampling params, NO effect for vllm
   top_p: 0.95  # LLM sampling params
   min_p: 0.0  # LLM sampling params
-  max_new_tokens: 256  # max num of output tokens from LLM
+  max_new_tokens: 512  # max num of output tokens from LLM
   ##############################
   ##### HuggingFace config #####
   ##############################
@@ -90,9 +93,10 @@ llm:
   ######## vLLM config #########
   ##############################
   api_key: "EMPTY"
-  base_url: "http://localhost:8000/v1"  
+  # base_url: "http://localhost:8000/v1"  
+  base_url: "http://10.110.41.138:8000/v1"
   # Set `start_vllm_on_init` to automatically start vllm server if it's not manually started yet
-  start_vllm_on_init: true
+  start_vllm_on_init: false
   # Specifying vllm_server_params with the parameters you want to pass to the vllm server command `vllm serve $model $vllm_server_params`
   # Refer to each LLM's model page for details on the recommended parameters
   # It's recommended to stay with `--max-num-seqs` 1 as the voice agent currently supports one connection at a time.
@@ -112,9 +116,8 @@ llm:
       extra_body:
         chat_template_kwargs:
           enable_thinking: ${llm.enable_reasoning}
-          vllm_xargs:
-            thinking_budget: 100
-            think_end_tokens: "\nFinalize response\n</think>\n"
+        thinking_token_budget: 256
+
 
 tts:
   type: nemo

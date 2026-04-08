@@ -385,6 +385,7 @@ You MUST return ONLY a JSON object in the following format, with no other text:
             result["score"] = float(result["score"])
             if "reason" not in result:
                 result["reason"] = ""
+            logger.debug(f"LLMJudge result: {result}")
             return result
         except Exception as e:
             logger.error(f"LLMJudge error: {e}")

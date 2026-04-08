@@ -811,7 +811,7 @@ class VoiceAgentEvaluationBridge:
                 if hasattr(frame, 'audio') and frame.audio:
                     # Put raw audio into thread-safe queue
                     queue.put(frame.audio)
-                    logger.debug(f"[{direction}] Queued {len(frame.audio)} bytes of audio")
+                    # logger.debug(f"[{direction}] Queued {len(frame.audio)} bytes of audio")
 
             if self.stop_event.is_set():
                 logger.info(f"[{direction}] Stop event received, exiting receive loop")
@@ -868,10 +868,11 @@ class VoiceAgentEvaluationBridge:
                     except queue.Empty:
                         break
 
-                if chunks_retrieved > 0:
-                    logger.debug(f"[{direction}] Retrieved {chunks_retrieved} chunks from queue")
+                # if chunks_retrieved > 0:
+                #     logger.debug(f"[{direction}] Retrieved {chunks_retrieved} chunks from queue")
                 if in_grace_period:
                     # logger.debug(f"[{direction}] In grace period, skip forwarding audio: {chunks_retrieved} chunks")
+                    await asyncio.sleep(0.1)
                     continue
 
                 # Burst sending: send N frames rapidly, then pause
@@ -913,10 +914,10 @@ class VoiceAgentEvaluationBridge:
                 if wait_duration < 0.001:
                     logger.debug(f"[{direction}] Behind schedule by {-wait_duration:.3f}s")
 
-                if self.use_burst_mode:
-                    logger.debug(
-                        f"[{direction}] Burst complete ({burst_size} frames), waiting {wait_duration*1000:.1f}ms (target: {target_time:.3f}s)"
-                    )
+                # if self.use_burst_mode:
+                #     logger.debug(
+                #         f"[{direction}] Burst complete ({burst_size} frames), waiting {wait_duration*1000:.1f}ms (target: {target_time:.3f}s)"
+                #     )
                 await asyncio.sleep(wait_duration)
 
             if self.stop_event.is_set():
@@ -955,7 +956,7 @@ class VoiceAgentEvaluationBridge:
         async def user_loop():
             try:
                 # Connect to user WebSocket
-                async with websockets.connect(self.user_url) as user_ws:
+                async with websockets.connect(self.user_url, ping_timeout=None) as user_ws:
                     self.user_ws = user_ws
                     logger.info(f"[USER THREAD] Connected to user: {self.user_url}")
 
@@ -1021,7 +1022,7 @@ class VoiceAgentEvaluationBridge:
         async def agent_loop():
             try:
                 # Connect to agent WebSocket
-                async with websockets.connect(self.agent_url) as agent_ws:
+                async with websockets.connect(self.agent_url, ping_timeout=None) as agent_ws:
                     self.agent_ws = agent_ws
                     logger.info(f"[AGENT THREAD] Connected to agent: {self.agent_url}")
 

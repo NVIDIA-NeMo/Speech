@@ -24,6 +24,7 @@ from loguru import logger
 from omegaconf import OmegaConf
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import EndTaskFrame, LLMRunFrame
+from pipecat.observers.loggers.user_bot_latency_log_observer import UserBotLatencyLogObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -450,16 +451,14 @@ async def run_bot_websocket_server(
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
-            allow_interruptions=server_config.transport.get("allow_interruption", True),
-            enable_metrics=False,
-            enable_usage_metrics=False,
-            send_initial_empty_metrics=True,
-            report_only_initial_ttfb=True,
+            enable_metrics=True,
+            enable_usage_metrics=True,
             idle_timeout=None,  # Disable idle timeout
         ),
         observers=[
             RTVIObserver(rtvi),
             RTVIAudioLoggerObserver(audio_logger=audio_logger),
+            UserBotLatencyLogObserver(),
         ],
         idle_timeout_secs=None,
         cancel_on_idle_timeout=False,

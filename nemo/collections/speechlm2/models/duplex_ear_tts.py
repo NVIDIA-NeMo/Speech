@@ -552,10 +552,27 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.log_dict(ans, on_step=True)
         return ans
 
+    def ensures_codec_target_dtype(self) -> None:
+        """
+        Ensures the audio codec is instantiated with the target dtype.
+
+        This method checks whether `self.audio_codec` exists and whether its
+        parameters match `self.audio_codec_run_dtype`. If the codec is missing
+        or is running with the wrong dtype (e.g., due to PTL auto-downcasting),
+        the codec is reloaded by calling `setup_audio_codec()`.
+
+        Intended to be called at runtime boundaries such as:
+        - `on_train_epoch_start`
+        - `on_validation_epoch_start`
+        """
+        if hasattr(self, "audio_codec") and next(self.audio_codec.parameters()).dtype == self.audio_codec_run_dtype:
+            self.audio_codec.eval()
+            return  # already correct precision → no-op
+
+        setup_audio_codec(self)
+
     def on_train_epoch_start(self) -> None:
-        ensures_codec_target_dtype(
-            self
-        )  # potentially reloads the audio codec to make sure it's in target codec precision
+        self.ensures_codec_target_dtype() # potentially reloads the audio codec to make sure it's in target codec precision
 
     def on_train_epoch_end(self) -> None:
         # log model stats to debug gradient weights issues
@@ -606,9 +623,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         if torch.distributed.is_initialized():
             self.trainer.strategy.model.require_backward_grad_sync = False
 
-        ensures_codec_target_dtype(
-            self
-        )  # potentially reloads the audio codec to make sure it's in target codec precision
+        self.ensures_codec_target_dtype()  # potentially reloads the audio codec to make sure it's in target codec precision
 
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
@@ -1642,30 +1657,6 @@ def replace_control_speech_codes(
         )
     else:
         return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
-
-
-def ensures_codec_target_dtype(model):
-    """
-    Ensures the audio codec is instantiated with the target dtype.
-
-    This function checks whether `model.audio_codec` exists and whether its
-    parameters match `model.audio_codec_run_dtype`. If the codec is missing
-    or is running with the wrong dtype (e.g., due to PTL auto-downcasting),
-    the codec is reloaded by calling `setup_audio_codec()`.
-
-    Intended to be called at runtime boundaries such as:
-      - `on_train_epoch_start`
-      - `on_validation_epoch_start`
-
-    Args:
-        model: Model instance of DuplexEARTTS
-
-    """
-    if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == model.audio_codec_run_dtype:
-        model.audio_codec.eval()
-        return  # already correct precision → no-op
-
-    setup_audio_codec(model)
 
 
 def setup_audio_codec(model):

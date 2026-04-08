@@ -285,6 +285,45 @@ def attach_dtype_counter(model):
 
     return handles, stats, examples
 
+def report_dtype_stats(handles, stats, examples):
+    """
+    Cleans up monitoring hooks and logs a detailed report of the tensor precisions 
+    (dtypes) observed during the model forward pass.
+
+    This function should be called after at least one inference iteration has 
+    completed while hooks are attached. It removes the hooks to prevent 
+    performance overhead and prints a structured summary of which module groups 
+    executed in which dtypes.
+
+    Args:
+        handles (List[torch.utils.hooks.RemovableHandle]): The list of hooks 
+            returned by `attach_dtype_counter`.
+        stats (Dict): Nested dictionary containing dtype counts per module group.
+        examples (Dict): Dictionary containing example module names for each 
+            observed dtype.
+    """
+    for h in handles:
+        h.remove()
+
+    logging.info("\n=== DTYPE USAGE PER MODULE ===")
+
+    for group, group_stats in stats.items():
+        total = sum(group_stats.values())
+        if total == 0:
+            continue
+
+        logging.info(f"\n--- {group} ---")
+        for dtype, count in group_stats.items():
+            if count > 0:
+                logging.info(f"{dtype}: {count} ({100*count/total:.2f}%)")
+
+    logging.info("\n=== EXAMPLES ===")
+    for group, group_examples in examples.items():
+        logging.info(f"\n--- {group} ---")
+        for dtype, mods in group_examples.items():
+            if mods:
+                logging.info(f"{dtype}: {mods}")
+
 
 class EvalJSONLDataset(Dataset):
     """
@@ -517,7 +556,7 @@ def inference(cfg):
     if target_dtype != torch.float32:
         if cfg.get("keep_codec_original_dtype", True):
             model.tts_model.to(dtype=target_dtype)
-            model.on_train_epoch_start()  # ensures that codec is in the right precision
+            model.ensures_codec_target_dtype()  # ensures that codec is in the right precision
         else:
             model.audio_codec_run_dtype = target_dtype
             model.to(dtype=target_dtype)
@@ -587,27 +626,7 @@ def inference(cfg):
             )
 
         if cfg.get("debug_dtype", False) and batch_id == 0:
-            for h in handles:
-                h.remove()
-
-            logging.info("\n=== DTYPE USAGE PER MODULE ===")
-
-            for group, group_stats in stats.items():
-                total = sum(group_stats.values())
-                if total == 0:
-                    continue
-
-                logging.info(f"\n--- {group} ---")
-                for dtype, count in group_stats.items():
-                    if count > 0:
-                        logging.info(f"{dtype}: {count} ({100*count/total:.2f}%)")
-
-            logging.info("\n=== EXAMPLES ===")
-            for group, group_examples in examples.items():
-                logging.info(f"\n--- {group} ---")
-                for dtype, mods in group_examples.items():
-                    if mods:
-                        logging.info(f"{dtype}: {mods}")
+            report_dtype_stats(handles, stats, examples)
 
         with fp32_precision():
             audio = audio.float()

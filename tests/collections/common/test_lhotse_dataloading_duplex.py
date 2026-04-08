@@ -239,6 +239,7 @@ def test_data_input_cfg_magpietts(cutset_shar_magpietts_path):
         assert cut.task == "lhotse_magpietts_data_as_continuation"
         assert hasattr(cut, "target_audio")
         assert hasattr(cut, "context_audio")
+        assert hasattr(cut, "recording")
         assert len(cut.supervisions) == 2
 
         # Verify synthetic user/agent split behavior

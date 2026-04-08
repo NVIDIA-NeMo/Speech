@@ -127,7 +127,6 @@ class BufferedSALMPipeline(BasePipeline):
         state.set_global_offset(0)
         new_options = options.augment_with_defaults(
             default_enable_itn=False,
-            default_enable_pnc=False,
             default_enable_nmt=False,
             default_source_language=None,
             default_target_language=None,

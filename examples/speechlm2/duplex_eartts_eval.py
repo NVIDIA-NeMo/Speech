@@ -285,21 +285,22 @@ def attach_dtype_counter(model):
 
     return handles, stats, examples
 
+
 def report_dtype_stats(handles, stats, examples):
     """
-    Cleans up monitoring hooks and logs a detailed report of the tensor precisions 
+    Cleans up monitoring hooks and logs a detailed report of the tensor precisions
     (dtypes) observed during the model forward pass.
 
-    This function should be called after at least one inference iteration has 
-    completed while hooks are attached. It removes the hooks to prevent 
-    performance overhead and prints a structured summary of which module groups 
+    This function should be called after at least one inference iteration has
+    completed while hooks are attached. It removes the hooks to prevent
+    performance overhead and prints a structured summary of which module groups
     executed in which dtypes.
 
     Args:
-        handles (List[torch.utils.hooks.RemovableHandle]): The list of hooks 
+        handles (List[torch.utils.hooks.RemovableHandle]): The list of hooks
             returned by `attach_dtype_counter`.
         stats (Dict): Nested dictionary containing dtype counts per module group.
-        examples (Dict): Dictionary containing example module names for each 
+        examples (Dict): Dictionary containing example module names for each
             observed dtype.
     """
     for h in handles:

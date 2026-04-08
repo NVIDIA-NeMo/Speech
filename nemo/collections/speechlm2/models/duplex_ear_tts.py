@@ -572,7 +572,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         setup_audio_codec(self)
 
     def on_train_epoch_start(self) -> None:
-        self.ensures_codec_target_dtype() # potentially reloads the audio codec to make sure it's in target codec precision
+        self.ensures_codec_target_dtype()  # potentially reloads the audio codec to make sure it's in target codec precision
 
     def on_train_epoch_end(self) -> None:
         # log model stats to debug gradient weights issues

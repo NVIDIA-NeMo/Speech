@@ -32,7 +32,7 @@ from nemo.collections.speechlm2.parts.automodel_lora import ensure_lora_trainabl
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
-    load_pretrained_automodel,
+    load_pretrained_automodel_llm,
     setup_speech_encoder,
     update_perception_output_dim,
 )
@@ -533,7 +533,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if peft_config is not None and device_mesh is not None:
             automodel_kwargs["peft_config"] = peft_config
 
-        self.llm = load_pretrained_automodel(
+        self.llm = load_pretrained_automodel_llm(
             self.cfg.pretrained_llm,
             pretrained_weights=self.cfg.pretrained_weights,
             dtype=dtype,

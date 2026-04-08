@@ -65,7 +65,7 @@ def load_pretrained_hf(
         return AutoModelForCausalLM.from_config(config, torch_dtype=dtype, trust_remote_code=trust_remote_code)
 
 
-def load_pretrained_automodel(
+def load_pretrained_automodel_llm(
     model_path_or_name: str,
     pretrained_weights: bool = True,
     dtype=torch.float32,

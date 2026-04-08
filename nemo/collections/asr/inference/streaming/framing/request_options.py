@@ -26,6 +26,7 @@ class ASRRequestOptions:
     Immutable dataclass representing options for a request
     None value means that the option is not set and the default value will be used
     """
+
     enable_itn: bool | None = None
     stop_history_eou: int | None = None
     asr_output_granularity: ASROutputGranularity | str | None = None

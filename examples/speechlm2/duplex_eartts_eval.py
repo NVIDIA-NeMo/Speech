@@ -83,13 +83,64 @@ Args:
     out_dir (str):
         Directory where generated audio samples will be saved.
 
+    inference_dtype (str, optional):
+        Target dtype used during inference. This controls the precision
+        of model weights and operations.
+
+        Supported values:
+            - "float32" (default)
+            - "float16"
+            - "bfloat16"
+
+        Notes:
+            - If set to a lower precision (e.g., float16), the model weights
+              and/or execution dtype will be adjusted accordingly.
+            - Internally mapped via `getattr(torch, inference_dtype)`.
+
+    keep_codec_original_dtype (bool, optional):
+        Controls whether the audio codec module keeps its original dtype
+        when `inference_dtype` is not float32.
+
+        If True (default):
+            - Only the TTS backbone (`model.tts_model`) is cast to the target dtype.
+            - The codec remains in its original precision (typically float32).
+            - Useful to isolate precision effects and avoid degradation from
+              codec quantization.
+
+        If False:
+            - The entire model (including codec) is cast to `inference_dtype`.
+            - `model.audio_codec_run_dtype` is also set accordingly.
+
+    debug_dtype (bool, optional):
+        Enables runtime inspection of tensor dtypes flowing through the model.
+
+        If True:
+            - Forward hooks are attached to all leaf modules.
+            - During the first batch, dtype usage statistics are collected
+              and logged.
+            - Outputs include:
+                - Per-module-group dtype distribution
+                - Example module names per dtype
+
 Usage:
-    python duplex_eartts_eval.py \
-        --config-path=conf/ \
-        --config-name=duplex_eartts.yaml \
-        ++checkpoint_path=duplex_eartts_results/duplex_eartts/model.ckpt \
-        ++datasets_json_path=/path/to/evalset_config.jsonl \
-        ++out_dir=duplex_eartts_results/duplex_eartts/audio_samples/dummy_dataset
+    # Example with fp32 inference
+        python duplex_eartts_eval.py \
+            --config-path=conf/ \
+            --config-name=duplex_eartts.yaml \
+            ++checkpoint_path=duplex_eartts_results/duplex_eartts/model.ckpt \
+            ++datasets_json_path=/path/to/evalset_config.jsonl \
+            ++out_dir=duplex_eartts_results/duplex_eartts/audio_samples/dummy_dataset
+
+    # Example with fp16 inference and dtype debugging
+        python duplex_eartts_eval.py \
+            --config-path=conf/ \
+            --config-name=duplex_eartts.yaml \
+            ++checkpoint_path=duplex_eartts_results/duplex_eartts/model.ckpt \
+            ++datasets_json_path=/path/to/evalset_config.jsonl \
+            ++out_dir=uplex_eartts_results/duplex_eartts/audio_samples/dummy_dataset \
+            ++inference_dtype=float16 \
+            ++keep_codec_original_dtype=True \
+            ++debug_dtype=True
 """
 
 import json
@@ -124,6 +175,58 @@ if torch.cuda.is_available():
 
 
 def attach_dtype_counter(model):
+    """
+    Attaches forward hooks to all leaf modules of a model to track the dtype
+    of their outputs during inference.
+
+    This utility is designed for debugging precision behavior, especially when
+    using mixed precision or reduced precision (fp16 / bf16).
+
+    Behavior:
+        - Registers a forward hook on each leaf module (modules with no children).
+        - For each forward pass, records the dtype of the module output.
+        - Aggregates statistics grouped by top-level module name.
+        - Stores a few example module class names per dtype.
+
+    Returns:
+        handles (List[RemovableHandle]):
+            List of hook handles. These must be removed manually to avoid
+            memory leaks or performance degradation.
+
+        stats (Dict[str, Dict[str, int]]):
+            Nested dictionary containing dtype counts per module group.
+            Structure:
+                stats[module_group][dtype] = count
+
+            Example:
+                {
+                    "tts_model": {
+                        "torch.float16": 120,
+                        "torch.float32": 0,
+                        "torch.bfloat16": 0,
+                        "other": 2
+                    }
+                }
+
+        examples (Dict[str, Dict[str, List[str]]]):
+            Stores up to 3 example module class names per dtype per group.
+            Useful for quickly identifying which layers are running in
+            unexpected precision.
+
+    Notes:
+        - Only inspects outputs (not inputs or parameters).
+        - Dtype is inferred from the first tensor found in the output.
+        - Non-floating dtypes are categorized as "other".
+        - Grouping is based on the top-level module name (prefix before first dot).
+
+    Typical usage:
+        handles, stats, examples = attach_dtype_counter(model)
+
+        # Run inference ...
+
+        for h in handles:
+            h.remove()
+    """
     handles = []
 
     # structure: stats[module_group][dtype] = count
@@ -276,7 +379,6 @@ def collate_and_tokenize_custom(
                 full_ids.extend(seg_ids)
                 full_ids.extend(pad_ids)
 
-            # Convert to CPU tensor (Modified for DataLoader)
             tokenized_list.append(torch.as_tensor(full_ids, dtype=torch.long))
 
         else:
@@ -300,7 +402,7 @@ def collate_and_tokenize_custom(
     target_num_frames = []
 
     for i, s in enumerate(batch):
-        # 1. Load Context Audio (Conditioning)
+        # Load Context Audio
         audio_path = s["context_audio_filepath"]
         if root_path is not None:
             audio_path = os.path.join(root_path, audio_path)
@@ -316,7 +418,7 @@ def collate_and_tokenize_custom(
         audio_list.append(wav)
         audio_lengths.append(len(wav))
 
-        # 2. Handle Target Audio / Duration
+        # Handle Target Audio / Duration
         tdur_audio_path = s["audio_filepath"]
         if root_path is not None:
             tdur_audio_path = os.path.join(root_path, tdur_audio_path)

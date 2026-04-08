@@ -15,11 +15,7 @@
 
 import pytest
 
-from nemo.collections.asr.inference.utils.text_segment import (
-    TextSegment,
-    Word,
-    join_segments,
-)
+from nemo.collections.asr.inference.utils.text_segment import TextSegment, Word, join_segments
 
 
 class TestTextSegment:

@@ -289,4 +289,3 @@ def join_segments(segments: list[list[TextSegment]], sep: str) -> list[str]:
         List of transcriptions, one for each text segment sequence
     """
     return [sep.join([s.text for s in items]) for items in segments]
-

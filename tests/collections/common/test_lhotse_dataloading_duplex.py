@@ -28,6 +28,7 @@ from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_confi
 
 class Identity(torch.utils.data.Dataset):
     """Dummy dataset class to return the raw CutSet for testing dataloader output."""
+
     def __getitem__(self, cuts: lhotse.CutSet) -> lhotse.CutSet:
         return cuts
 
@@ -40,16 +41,17 @@ def create_wav_file(path: Path, duration: float, sample_rate: int = 16000):
 
 # --- Fixtures for Formatter Data ---
 
+
 @pytest.fixture(scope="session")
 def cutset_shar_s2s_overlap_path(tmp_path_factory) -> Path:
     """5 utterances representing conversational overlap data as Lhotse Shar."""
     tmp_dir = tmp_path_factory.mktemp("overlap_audio")
     cuts = []
-    
+
     for i in range(5):
         main_path = tmp_dir / f"ov_main_{i}.wav"
         create_wav_file(main_path, duration=5.0)
-        
+
         c = lhotse.MonoCut(
             id=f"ov_cut_{i}",
             start=0.0,
@@ -61,7 +63,7 @@ def cutset_shar_s2s_overlap_path(tmp_path_factory) -> Path:
         c.supervisions = []
         c.custom = {
             "agent_segments": [{"start": 0.5, "end": 2.0, "text": "agent speaking"}],
-            "user_segments": [{"start": 1.0, "end": 3.0, "text": "user speaking"}]
+            "user_segments": [{"start": 1.0, "end": 3.0, "text": "user speaking"}],
         }
         cuts.append(c)
 
@@ -76,16 +78,16 @@ def cutset_shar_magpietts_path(tmp_path_factory) -> Path:
     """5 utterances representing MagpieTTS data with target and context audio."""
     tmp_dir = tmp_path_factory.mktemp("magpie_audio")
     cuts = []
-    
+
     for i in range(5):
         main_path = tmp_dir / f"mag_main_{i}.wav"
         tgt_path = tmp_dir / f"mag_target_{i}.wav"
         ctx_path = tmp_dir / f"mag_context_{i}.wav"
-        
+
         create_wav_file(main_path, duration=2.0)
         create_wav_file(tgt_path, duration=2.0)
         create_wav_file(ctx_path, duration=1.0)
-        
+
         c = lhotse.MonoCut(
             id=f"mag_cut_{i}",
             start=0.0,
@@ -93,12 +95,12 @@ def cutset_shar_magpietts_path(tmp_path_factory) -> Path:
             channel=0,
             recording=lhotse.Recording.from_file(main_path, recording_id=f"mag_main_{i}"),
         )
-        
+
         c.custom = {
             "target_audio": lhotse.Recording.from_file(tgt_path, recording_id=f"mag_target_{i}"),
-            "context_audio": lhotse.Recording.from_file(ctx_path, recording_id=f"mag_context_{i}")
+            "context_audio": lhotse.Recording.from_file(ctx_path, recording_id=f"mag_context_{i}"),
         }
-        
+
         c.supervisions = [
             SupervisionSegment(
                 id=f"sup_{i}",
@@ -107,7 +109,7 @@ def cutset_shar_magpietts_path(tmp_path_factory) -> Path:
                 duration=2.0,
                 text="hello",
                 speaker="agent",
-                custom={"cer": 0.01, "context_speaker_similarity": 0.9, "validation_status": "pass"}
+                custom={"cer": 0.01, "context_speaker_similarity": 0.9, "validation_status": "pass"},
             )
         ]
         cuts.append(c)
@@ -123,14 +125,14 @@ def regular_duplex_s2s_format(tmp_path_factory) -> Path:
     """5 utterances representing duplex conversational data for role reversal."""
     tmp_dir = tmp_path_factory.mktemp("reverse_role_audio")
     cuts = []
-    
+
     for i in range(5):
         main_path = tmp_dir / f"rr_main_{i}.wav"
         tgt_path = tmp_dir / f"rr_target_{i}.wav"
-        
+
         create_wav_file(main_path, duration=3.0)
         create_wav_file(tgt_path, duration=3.0)
-        
+
         c = lhotse.MonoCut(
             id=f"rr_cut_{i}",
             start=0.0,
@@ -138,17 +140,17 @@ def regular_duplex_s2s_format(tmp_path_factory) -> Path:
             channel=0,
             recording=lhotse.Recording.from_file(main_path, recording_id=f"rr_main_{i}"),
         )
-        
+
         # Store an alternative target recording in the custom field
         c.custom = {"target_audio": lhotse.Recording.from_file(tgt_path, recording_id=f"rr_target_{i}")}
-        
+
         c.supervisions = [
             SupervisionSegment(
                 id=f"sup_{i}_1", recording_id=c.recording.id, start=0.0, duration=1.0, speaker="user", text="hello"
             ),
             SupervisionSegment(
                 id=f"sup_{i}_2", recording_id=c.recording.id, start=1.5, duration=1.0, speaker="agent", text="hi"
-            )
+            ),
         ]
         cuts.append(c)
 
@@ -192,16 +194,16 @@ def test_data_input_cfg_s2s_overlap(cutset_shar_s2s_overlap_path):
     b = batches[0]
     assert isinstance(b, lhotse.CutSet)
     assert all(c.custom["dataset_name"] == "OverlapData" for c in b)
-    
+
     for cut in b:
         assert cut.task == "s2s_duplex_overlap_as_s2s_duplex"
         assert len(cut.supervisions) == 2
-        
+
         # Verify chronological sorting and offsets applied correctly
         sups = sorted(cut.supervisions, key=lambda s: s.start)
         assert sups[0].speaker == "agent"  # agent starts at 0.5 - 0.1 = 0.4
         assert sups[0].start == pytest.approx(0.4)
-        assert sups[1].speaker == "user"   # user starts at 1.0
+        assert sups[1].speaker == "user"  # user starts at 1.0
 
 
 def test_data_input_cfg_magpietts(cutset_shar_magpietts_path):
@@ -242,7 +244,7 @@ def test_data_input_cfg_magpietts(cutset_shar_magpietts_path):
         assert hasattr(cut, "target_audio")
         assert hasattr(cut, "context_audio")
         assert len(cut.supervisions) == 2
-        
+
         # Verify synthetic user/agent split behavior
         assert cut.supervisions[0].speaker == "user"
         assert cut.supervisions[0].duration == pytest.approx(0.08)
@@ -284,12 +286,12 @@ def test_data_input_cfg_reverse_role(regular_duplex_s2s_format):
 
     for cut in b:
         assert cut.task == "s2s_duplex_reverse_role"
-        
+
         # Verify the roles have been inverted according to configuration overrides
         sups = sorted(cut.supervisions, key=lambda s: s.start)
-        assert sups[0].speaker == "swapped_agent" # Originally "user"
+        assert sups[0].speaker == "swapped_agent"  # Originally "user"
         assert sups[1].speaker == "swapped_user"  # Originally "agent"
-        
+
         # Ensure the recording streams were swapped
         assert cut.recording.id.startswith("rr_target")
         assert cut.target_audio.id.startswith("rr_main")

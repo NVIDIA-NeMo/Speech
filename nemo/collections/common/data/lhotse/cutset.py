@@ -32,6 +32,7 @@ from lhotse.cut import Cut, MixedCut, PaddingCut
 from lhotse.lazy import LazyIteratorChain
 from lhotse.serialization import load_yaml
 from lhotse.utils import fastcopy
+from copy import deepcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.nemo_adapters import (
@@ -925,7 +926,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
     def convert_cut_fn(cut: Cut) -> Cut:
         """Convert a single cut into the continuation format."""
-        orig_agent_sup = fastcopy(cut.supervisions[0])
+        orig_agent_sup = deepcopy(cut.supervisions[0])
         target_audio_orig_dur = cut.target_audio.duration
 
         # Resample audios
@@ -1073,13 +1074,13 @@ def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
 
     def convert_cut_fn(cut: Cut) -> Cut:
         """Convert a single cut by swapping supervisions and audio streams."""
-        new_cut = fastcopy(cut)
+        new_cut = deepcopy(cut)
 
         # swap supervisions
         if getattr(new_cut, "supervisions", None):
             new_sups = []
             for s in new_cut.supervisions:
-                s2 = fastcopy(s)
+                s2 = deepcopy(s)
                 s2.speaker = swap_speaker(getattr(s2, "speaker", None))
                 new_sups.append(s2)
             new_cut.supervisions = new_sups

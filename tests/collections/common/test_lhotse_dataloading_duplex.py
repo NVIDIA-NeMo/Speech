@@ -39,9 +39,6 @@ def create_wav_file(path: Path, duration: float, sample_rate: int = 16000):
     sf.write(str(path), samples.T, sample_rate, format='WAV')
 
 
-# --- Fixtures for Formatter Data ---
-
-
 @pytest.fixture(scope="session")
 def cutset_shar_s2s_overlap_path(tmp_path_factory) -> Path:
     """5 utterances representing conversational overlap data as Lhotse Shar."""
@@ -160,7 +157,6 @@ def regular_duplex_s2s_format(tmp_path_factory) -> Path:
     return p
 
 
-# --- Tests for Custom Formatters ---
 def test_data_input_cfg_s2s_overlap(cutset_shar_s2s_overlap_path):
     config = OmegaConf.create(
         {

@@ -835,7 +835,7 @@ class MagpieTTSModel(ModelPT):
         Check if the configuration is compatible with frame stacking.
         """
         if self.frame_stacking_factor > 1:
-            # The settings below are not supported with frame stacking.
+            # Reject configurations that are not supported with frame stacking.
             # Some of them may work - but they have not been tested.
 
             # disallow alignment encoder
@@ -847,9 +847,22 @@ class MagpieTTSModel(ModelPT):
             # disallow training prior
             if self.cfg.prior_scaling_factor is not None and self.cfg.prior_scaling_factor > 0:
                 raise ValueError("Training-time attention prior is not supported for frame stacking")
-            # disallow text conditioning
+            # With frame stacking, the audio context sequence length is divided by the
+            # frame stacking factor (e.g., 108 tokens at 21fps --> 54 positions with 2x stacking).
+            # The text context is NOT stacked but must fit within the same sequence length
+            # as the audio context. If needed, this constraint could be likey be removed by also
+            # stacking the text context, but that would require some experimentation.
             if self.use_text_conditioning_encoder:
-                raise ValueError("Text conditioning is not supported for frame stacking")
+                # Use 5 seconds as the baseline context length since it is known to fit
+                # existing text contexts.
+                min_required_context_sec = 5.0 * self.frame_stacking_factor
+                actual_context_length_sec = self.cfg.get('context_duration_max')
+                if actual_context_length_sec < min_required_context_sec:
+                    raise ValueError(
+                        f"With text context and a frame stacking factor of {self.frame_stacking_factor}, "
+                        f"context_duration_max must be >= {min_required_context_sec} seconds "
+                        f"(5 seconds x frame_stacking_factor); got context_duration_max={actual_context_length_sec}"
+                    )
 
     @property
     def has_baked_context_embedding(self) -> bool:

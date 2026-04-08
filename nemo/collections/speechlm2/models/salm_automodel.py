@@ -488,7 +488,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         else:
             device_mesh = self.device_mesh
 
-        # Derive dtype from trainer precision (e.g. "bf16-true" -> bfloat16).
+        # Derive dtype from trainer precision (e.g. "bf16-flash" -> bfloat16).
         dtype = torch.float32
         if self._trainer is not None:
             precision = str(self._trainer.precision)

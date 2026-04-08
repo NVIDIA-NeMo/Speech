@@ -12,68 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytest
 import torch
 import torch.nn as nn
+from lightning.pytorch.plugins import HalfPrecision
 from omegaconf import DictConfig
 
-from nemo.utils.trainer_utils import AutomodelPrecision, resolve_trainer_cfg
-
-
-# ---------------------------------------------------------------------------
-# AutomodelPrecision — forward_context does NOT mutate global state
-# ---------------------------------------------------------------------------
+from nemo.utils.trainer_utils import AutomodelPrecision, FlashPrecision, HalfPrecisionForAudio, resolve_trainer_cfg
 
 
 class TestForwardContext:
     def test_default_dtype_remains_fp32_during_forward(self):
-        """torch.get_default_dtype() == float32 inside forward_context."""
-        plugin = AutomodelPrecision("bf16-automodel")
+        plugin = FlashPrecision("bf16-flash")
         with plugin.forward_context():
             assert torch.get_default_dtype() == torch.float32
 
     def test_implicit_tensor_creation_is_fp32(self):
-        """torch.zeros/ones/empty create fp32 tensors inside forward_context."""
-        plugin = AutomodelPrecision("bf16-automodel")
+        plugin = FlashPrecision("bf16-flash")
         with plugin.forward_context():
             assert torch.zeros(10).dtype == torch.float32
             assert torch.ones(10).dtype == torch.float32
             assert torch.empty(10).dtype == torch.float32
 
 
-# ---------------------------------------------------------------------------
-# AutomodelPrecision — convert_module does nothing
-# ---------------------------------------------------------------------------
-
-
 class TestConvertModule:
-    def test_convert_module_does_nothing(self):
-        """Linear layer parameters are cast to bf16."""
+    def test_convert_module_casts_plain_fp32_module(self):
         model = nn.Sequential(nn.Linear(10, 10), nn.Linear(10, 5))
-        plugin = AutomodelPrecision("bf16-automodel")
+        plugin = FlashPrecision("bf16-flash")
         plugin.convert_module(model)
-        assert model[0].weight.dtype == torch.float32
-        assert model[0].bias.dtype == torch.float32
+        assert model[0].weight.dtype == torch.bfloat16
+        assert model[0].bias.dtype == torch.bfloat16
+        assert model[1].weight.dtype == torch.bfloat16
+
+    def test_convert_module_skips_models_with_existing_dtype_policy(self):
+        model = nn.Sequential(nn.Linear(10, 10), nn.Linear(10, 5))
+        model[0].to(dtype=torch.bfloat16)
+        plugin = FlashPrecision("bf16-flash")
+        plugin.convert_module(model)
+        assert model[0].weight.dtype == torch.bfloat16
         assert model[1].weight.dtype == torch.float32
-
-
-# ---------------------------------------------------------------------------
-# AutomodelPrecision — convert_input preserves audio tensors
-# ---------------------------------------------------------------------------
 
 
 class TestConvertInput:
     def test_preserves_audio_tensors(self):
-        """Audio tensors in batch dict are not downcast to bf16."""
-        plugin = AutomodelPrecision("bf16-automodel")
+        plugin = FlashPrecision("bf16-flash")
         batch = {"audio": torch.randn(1, 16000), "tokens": torch.randn(1, 10)}
         converted = plugin.convert_input(batch)
         assert converted["audio"].dtype == torch.float32
         assert converted["tokens"].dtype == torch.bfloat16
 
     def test_handles_nested_dicts(self):
-        """Nested dict values are converted, audio keys preserved at any depth."""
-        plugin = AutomodelPrecision("bf16-automodel")
+        plugin = FlashPrecision("bf16-flash")
         batch = {
             "inputs": {"audio_signal": torch.randn(1, 16000), "text_ids": torch.randn(1, 10)},
             "labels": torch.randn(1, 5),
@@ -84,68 +72,67 @@ class TestConvertInput:
         assert converted["labels"].dtype == torch.bfloat16
 
     def test_non_dict_input_converted(self):
-        """Non-dict tensor input is converted to bf16."""
-        plugin = AutomodelPrecision("bf16-automodel")
+        plugin = FlashPrecision("bf16-flash")
         t = torch.randn(4, 8)
         converted = plugin.convert_input(t)
         assert converted.dtype == torch.bfloat16
 
     def test_non_float_tensors_unchanged(self):
-        """Integer tensors in dicts are not modified."""
-        plugin = AutomodelPrecision("bf16-automodel")
+        plugin = FlashPrecision("bf16-flash")
         batch = {"ids": torch.tensor([1, 2, 3], dtype=torch.long), "values": torch.randn(3)}
         converted = plugin.convert_input(batch)
         assert converted["ids"].dtype == torch.long
         assert converted["values"].dtype == torch.bfloat16
 
 
-# ---------------------------------------------------------------------------
-# Regression guard — HalfPrecision DOES change default dtype
-# ---------------------------------------------------------------------------
+class TestCompatibility:
+    def test_automodel_precision_alias_points_to_flash_precision(self):
+        assert AutomodelPrecision is FlashPrecision
 
 
 class TestHalfPrecisionRegression:
     def test_half_precision_does_change_default_dtype(self):
-        """Verify the problem we're solving: HalfPrecision sets default dtype to bf16."""
-        from lightning.pytorch.plugins import HalfPrecision
-
         plugin = HalfPrecision("bf16-true")
         with plugin.forward_context():
             assert torch.get_default_dtype() == torch.bfloat16
             assert torch.zeros(10).dtype == torch.bfloat16
-        # Restored after context exit
+
         assert torch.get_default_dtype() == torch.float32
 
 
-# ---------------------------------------------------------------------------
-# resolve_trainer_cfg integration
-# ---------------------------------------------------------------------------
-
-
 class TestResolveTrainerCfg:
-    def test_bf16_automodel_creates_automodel_precision(self):
-        """precision: bf16-automodel installs AutomodelPrecision plugin."""
-        cfg = DictConfig({"precision": "bf16-automodel"})
+    def test_bf16_flash_creates_flash_precision(self):
+        cfg = DictConfig({"precision": "bf16-flash"})
         resolved = resolve_trainer_cfg(cfg)
-        assert "precision" not in resolved
         plugins = resolved["plugins"]
+        assert "precision" not in resolved
         assert len(plugins) == 1
-        assert isinstance(plugins[0], AutomodelPrecision)
-        assert plugins[0].precision == "bf16-automodel"
+        assert isinstance(plugins[0], FlashPrecision)
+        assert plugins[0].precision == "bf16-flash"
         assert plugins[0]._desired_input_dtype == torch.bfloat16
 
-    def test_fp16_automodel_creates_automodel_precision(self):
-        """precision: fp16-automodel installs AutomodelPrecision plugin with fp16."""
+    def test_fp16_flash_creates_flash_precision(self):
+        cfg = DictConfig({"precision": "fp16-flash"})
+        resolved = resolve_trainer_cfg(cfg)
+        plugins = resolved["plugins"]
+        assert isinstance(plugins[0], FlashPrecision)
+        assert plugins[0].precision == "fp16-flash"
+        assert plugins[0]._desired_input_dtype == torch.float16
+
+    def test_legacy_automodel_aliases_resolve_to_flash_precision(self):
+        cfg = DictConfig({"precision": "bf16-automodel"})
+        resolved = resolve_trainer_cfg(cfg)
+        plugins = resolved["plugins"]
+        assert isinstance(plugins[0], FlashPrecision)
+        assert plugins[0].precision == "bf16-flash"
+
         cfg = DictConfig({"precision": "fp16-automodel"})
         resolved = resolve_trainer_cfg(cfg)
         plugins = resolved["plugins"]
-        assert isinstance(plugins[0], AutomodelPrecision)
-        assert plugins[0]._desired_input_dtype == torch.float16
+        assert isinstance(plugins[0], FlashPrecision)
+        assert plugins[0].precision == "fp16-flash"
 
     def test_bf16_true_still_creates_half_precision_for_audio(self):
-        """Existing bf16-true path is unchanged — still uses HalfPrecisionForAudio."""
-        from nemo.utils.trainer_utils import HalfPrecisionForAudio
-
         cfg = DictConfig({"precision": "bf16-true"})
         resolved = resolve_trainer_cfg(cfg)
         plugins = resolved["plugins"]

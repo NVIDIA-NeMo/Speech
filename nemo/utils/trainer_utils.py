@@ -26,6 +26,15 @@ from torch import Tensor
 from typing_extensions import override
 
 
+_FLASH_PRECISION_ALIASES = {
+    "fp16-flash": "fp16-flash",
+    "bf16-flash": "bf16-flash",
+    # Temporary backward-compatible aliases retained during migration.
+    "fp16-automodel": "fp16-flash",
+    "bf16-automodel": "bf16-flash",
+}
+
+
 def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
     """
     Resolves and processes a trainer configuration.
@@ -43,14 +52,15 @@ def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
     """
     trainer_cfg = OmegaConf.to_container(trainer_cfg, resolve=True)
 
-    # Avoids downcasting 'audio' tensors in 'true' half precision setups.
+    # Avoids downcasting 'audio' tensors in half precision setups and enables
+    # the specialized flash precision plugin without mutating global dtype state.
     precision = trainer_cfg.get("precision")
     if precision in ("fp16-true", "bf16-true"):
         trainer_cfg.pop("precision", None)
         trainer_cfg["plugins"] = [HalfPrecisionForAudio(precision)]
-    elif precision in ("fp16-automodel", "bf16-automodel"):
+    elif (flash_precision := _normalize_flash_precision(precision)) is not None:
         trainer_cfg.pop("precision", None)
-        trainer_cfg["plugins"] = [AutomodelPrecision(precision)]
+        trainer_cfg["plugins"] = [FlashPrecision(flash_precision)]
 
     # Allows customizable strategies (eg ModelParallelStrategy) in YAML configs.
     if (strategy := trainer_cfg.get("strategy", None)) is not None and isinstance(strategy, Mapping):
@@ -128,33 +138,41 @@ class HalfPrecisionForAudio(HalfPrecision):
         return _convert_audio_preserving(data, self._desired_input_dtype)
 
 
-class AutomodelPrecision(Precision):
-    """Precision plugin for Automodel-based training.
+class FlashPrecision(Precision):
+    """Precision plugin for flash optimizer training.
 
     Unlike Lightning's :class:`HalfPrecision`, this does **not** call
     :func:`torch.set_default_dtype` and does **not** use :func:`torch.autocast`.
-    Parameter casting is assumed to have been handled by ``configure_model()``.
     It's recommended to use this class together with ``flashoptim`` optimizers.
 
-    This ensures that Automodel's fp32 escaping (``Float32RMSNorm``, Gate
-    softmax) and FlashOptim's master-weight correction terms are never
+    This ensures that model-specific fp32 escapes (for example custom norms or
+    gating layers) and FlashOptim's master-weight correction terms are never
     silently downcast by a global dtype override.
 
-    Opt in by setting ``trainer.precision: bf16-automodel`` in the YAML config.
+    Note: it won't downcast your model's weights to half precision if some of them
+    have already been downcast (manual downcasting) or if the model is using DTensor
+    (in that case you have to downcast them yourself, typically in configure_model()).
+
+    Opt in by setting ``trainer.precision: bf16-flash`` in the YAML config.
     """
 
-    precision: str = "bf16-automodel"
+    precision: str = "bf16-flash"
 
-    def __init__(self, precision: str = "bf16-automodel") -> None:
-        self.precision = precision
-        self._desired_input_dtype = torch.bfloat16 if "bf16" in precision else torch.float16
+    def __init__(self, precision: str = "bf16-flash") -> None:
+        normalized = _normalize_flash_precision(precision) or precision
+        self.precision = normalized
+        self._desired_input_dtype = torch.bfloat16 if "bf16" in normalized else torch.float16
 
     @override
     def convert_module(self, module: torch.nn.Module) -> torch.nn.Module:
-        # Lightning calls convert_module AFTER configure_model().  When FSDP2
-        # is in use, parameters are already DTensors and casting was done
-        # inside configure_model() (before fully_shard) using .to(dtype)
-        # — so this is a no-op.
+        # Some models manage dtype explicitly inside configure_model() and may
+        # intentionally keep select parameters in fp32. Only cast modules that
+        # are still entirely plain fp32 tensors.
+        if _should_skip_flash_module_conversion(module):
+            return module
+
+        from flashoptim import cast_model
+        cast_model(module, dtype=self._desired_input_dtype)
         return module
 
     @override
@@ -187,3 +205,44 @@ def _convert_audio_preserving(data: dict, dtype: torch.dtype) -> dict:
         return v
 
     return _convert(data)
+
+
+def _normalize_flash_precision(precision: str | None) -> str | None:
+    if precision is None:
+        return None
+
+    return _FLASH_PRECISION_ALIASES.get(precision)
+
+
+def _should_skip_flash_module_conversion(module: torch.nn.Module) -> bool:
+    """Return True when a module should keep its existing parameter dtype policy."""
+
+    saw_fp_tensor = False
+    for tensor in _iter_module_tensors(module):
+        if not torch.is_floating_point(tensor):
+            continue
+
+        saw_fp_tensor = True
+        if _is_distributed_tensor(tensor):
+            return True
+        if tensor.dtype != torch.float32:
+            return True
+
+    return not saw_fp_tensor
+
+
+def _iter_module_tensors(module: torch.nn.Module):
+    yield from module.parameters()
+    yield from module.buffers()
+
+
+def _is_distributed_tensor(tensor: Tensor) -> bool:
+    if hasattr(tensor, "device_mesh") or hasattr(tensor, "placements"):
+        return True
+
+    try:
+        from torch.distributed.tensor import DTensor
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+    return isinstance(tensor, DTensor)

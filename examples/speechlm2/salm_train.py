@@ -14,7 +14,7 @@
 import os
 
 import torch
-from lightning.pytorch import Trainer
+from lightning.pytorch import Trainer, seed_everything
 from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2 import SALM, DataModule, SALMDataset
@@ -31,6 +31,7 @@ def train(cfg):
     OmegaConf.resolve(cfg)
     if torch.cuda.is_available():
         torch.distributed.init_process_group(backend="nccl")
+    seed_everything(cfg.data.train_ds.seed)
     torch.set_float32_matmul_precision("medium")
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))

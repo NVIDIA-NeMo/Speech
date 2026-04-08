@@ -13,6 +13,12 @@
         "manifest_path": "/home/TestData/an4_dataset/an4_val_context_v1_longform_tiny.json",
         "audio_dir": "/",
         "feature_dir": null
+    },
+    "an4_val_ci_nemotronTokenizer": {
+        "manifest_path": "/home/TestData/an4_dataset/an4_val_context_v1.json",
+        "audio_dir": "/",
+        "feature_dir": null,
+        "tokenizer_names": ["nemotron_nano_30b"]
     }
 }
 

@@ -35,6 +35,7 @@ class LSTMDecoder(NeuralModule, Exportable):
         vocabulary (vocab): The vocabulary
         bidirectional (bool): default is False. Whether LSTMs are bidirectional or not
         num_layers (int): default is 1. Number of LSTM layers stacked
+        add_blank (bool): default is True. Whether to add a blank token to the vocabulary.
     """
 
     @property
@@ -45,7 +46,16 @@ class LSTMDecoder(NeuralModule, Exportable):
     def output_types(self):
         return OrderedDict({"logprobs": NeuralType(('B', 'T', 'D'), LogprobsType())})
 
-    def __init__(self, feat_in, num_classes, lstm_hidden_size, vocabulary=None, bidirectional=False, num_layers=1):
+    def __init__(
+        self,
+        feat_in,
+        num_classes,
+        lstm_hidden_size,
+        vocabulary=None,
+        bidirectional=False,
+        num_layers=1,
+        add_blank=True,
+    ):
         super().__init__()
 
         if vocabulary is not None:
@@ -57,7 +67,7 @@ class LSTMDecoder(NeuralModule, Exportable):
             self.__vocabulary = vocabulary
         self._feat_in = feat_in
         # Add 1 for blank char
-        self._num_classes = num_classes + 1
+        self._num_classes = num_classes + 1 if add_blank else num_classes
 
         self.lstm_layer = nn.LSTM(
             input_size=feat_in,

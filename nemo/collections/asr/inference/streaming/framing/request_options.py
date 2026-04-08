@@ -27,14 +27,14 @@ class ASRRequestOptions:
     None value means that the option is not set and the default value will be used
     """
 
-    enable_itn: bool = None
-    enable_pnc: bool = None
-    stop_history_eou: int = None
-    asr_output_granularity: ASROutputGranularity | str = None
+    enable_itn: bool | None = None
+    enable_pnc: bool | None = None
+    stop_history_eou: int | None = None
+    asr_output_granularity: ASROutputGranularity | str | None = None
     language_code: str | None = None
-    enable_nmt: bool = None
-    source_language: str = None
-    target_language: str = None
+    enable_nmt: bool | None = None
+    source_language: str | None = None
+    target_language: str | None = None
     biasing_cfg: BiasingRequestItemConfig | None = None
 
     def __post_init__(self) -> None:

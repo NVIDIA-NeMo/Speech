@@ -73,7 +73,7 @@ class ASRRequestOptions:
         """
         return default if value is None else value
 
-    def augment_with_defaults(
+    def fill_defaults(
         self,
         default_enable_itn: bool,
         default_enable_nmt: bool,

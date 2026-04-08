@@ -18,6 +18,7 @@ import logging
 import random
 import re
 import warnings
+from copy import deepcopy
 from functools import partial
 from itertools import repeat
 from pathlib import Path
@@ -32,7 +33,6 @@ from lhotse.cut import Cut, MixedCut, PaddingCut
 from lhotse.lazy import LazyIteratorChain
 from lhotse.serialization import load_yaml
 from lhotse.utils import fastcopy
-from copy import deepcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.nemo_adapters import (

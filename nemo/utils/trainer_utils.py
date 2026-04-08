@@ -172,6 +172,7 @@ class FlashPrecision(Precision):
             return module
 
         from flashoptim import cast_model
+
         cast_model(module, dtype=self._desired_input_dtype)
         return module
 

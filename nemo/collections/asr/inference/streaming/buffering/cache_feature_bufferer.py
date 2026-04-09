@@ -111,6 +111,8 @@ class BatchedCacheFeatureBufferer:
             slot_ids (list[int]): list of slot ids
         """
         for slot_id in slot_ids:
+            if slot_id not in self.slotidx2streamidx:
+                continue
             self.available_slots.put(slot_id)
             stream_id = self.slotidx2streamidx[slot_id]
             del self.slotidx2streamidx[slot_id], self.streamidx2slotidx[stream_id]
@@ -148,7 +150,7 @@ class BatchedCacheFeatureBufferer:
         right_padding = torch.floor(right_paddings / self.sample_rate / self.timestep_duration)  # B
         return features, right_padding
 
-    def _update_feature_buffer(self, slot_ids: int, feat_chunk: Tensor) -> None:
+    def _update_feature_buffer(self, slot_ids: list[int], feat_chunk: Tensor) -> None:
         """
         Add an extracted feature to `feature_buffer`
         Args:

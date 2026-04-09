@@ -17,7 +17,7 @@ import torch.nn as nn
 from lightning.pytorch.plugins import HalfPrecision
 from omegaconf import DictConfig
 
-from nemo.utils.trainer_utils import AutomodelPrecision, FlashPrecision, HalfPrecisionForAudio, resolve_trainer_cfg
+from nemo.utils.trainer_utils import FlashPrecision, HalfPrecisionForAudio, resolve_trainer_cfg
 
 
 class TestForwardContext:
@@ -83,11 +83,6 @@ class TestConvertInput:
         converted = plugin.convert_input(batch)
         assert converted["ids"].dtype == torch.long
         assert converted["values"].dtype == torch.bfloat16
-
-
-class TestCompatibility:
-    def test_automodel_precision_alias_points_to_flash_precision(self):
-        assert AutomodelPrecision is FlashPrecision
 
 
 class TestHalfPrecisionRegression:

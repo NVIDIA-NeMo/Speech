@@ -20,7 +20,11 @@ from nemo.collections.asr.modules.audio_preprocessing import (  # noqa: F401
     SpectrogramAugmentation,
 )
 from nemo.collections.asr.modules.beam_search_decoder import BeamSearchDecoderWithLM  # noqa: F401
-from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder, ConformerEncoderAdapter  # noqa: F401
+from nemo.collections.asr.modules.conformer_encoder import (  # noqa: F401
+    ConformerEncoder,
+    ConformerEncoderAdapter,
+    ConformerMultiLayerFeatureExtractor,
+)
 from nemo.collections.asr.modules.conv_asr import (  # noqa: F401
     ConvASRDecoder,
     ConvASRDecoderClassification,
@@ -41,11 +45,42 @@ from nemo.collections.asr.modules.rnnt import (  # noqa: F401
     SampledRNNTJoint,
     StatelessTransducerDecoder,
 )
-from nemo.collections.asr.modules.ssl_modules import (  # noqa: F401
-    ConformerMultiLayerFeatureExtractor,
+from nemo.collections.asr.modules.ssl_modules import (
     ConformerMultiLayerFeaturePreprocessor,
     ConvFeatureMaksingWrapper,
     MultiSoftmaxDecoder,
     RandomBlockMasking,
     RandomProjectionVectorQuantizer,
 )
+
+__all__ = [
+    'AudioToMelSpectrogramPreprocessor',
+    'AudioToMFCCPreprocessor',
+    'CropOrPadSpectrogramAugmentation',
+    'MaskedPatchAugmentation',
+    'SpectrogramAugmentation',
+    'BeamSearchDecoderWithLM',
+    'ConformerEncoder',
+    'ConformerEncoderAdapter',
+    'ConformerMultiLayerFeatureExtractor',
+    'ConvASRDecoder',
+    'ConvASRDecoderClassification',
+    'ConvASRDecoderReconstruction',
+    'ConvASREncoder',
+    'ConvASREncoderAdapter',
+    'ECAPAEncoder',
+    'ParallelConvASREncoder',
+    'SpeakerDecoder',
+    'HATJoint',
+    'LSTMDecoder',
+    'RNNTDecoder',
+    'RNNTDecoderJointSSL',
+    'RNNTJoint',
+    'SampledRNNTJoint',
+    'StatelessTransducerDecoder',
+    'ConformerMultiLayerFeaturePreprocessor',
+    'ConvFeatureMaksingWrapper',
+    'MultiSoftmaxDecoder',
+    'RandomBlockMasking',
+    'RandomProjectionVectorQuantizer',
+]

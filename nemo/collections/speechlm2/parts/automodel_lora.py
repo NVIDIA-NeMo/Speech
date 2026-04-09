@@ -15,6 +15,8 @@
 
 See ``lora.py`` for the HF-PEFT variant used by other speechlm2 models.
 """
+from typing import Optional
+
 from omegaconf import DictConfig, ListConfig, open_dict
 
 from nemo.utils import logging
@@ -22,7 +24,7 @@ from nemo.utils import logging
 LORA_PARAM_PATTERN = r"^.+\.lora_.+$"
 
 
-def make_peft_config(lora_cfg: DictConfig):
+def make_peft_config(lora_cfg: Optional[DictConfig]):
     """Create an Automodel ``PeftConfig`` from the ``model.lora`` config section.
 
     Automodel's ``ModuleMatcher`` matches target-module patterns against the
@@ -34,6 +36,8 @@ def make_peft_config(lora_cfg: DictConfig):
     """
     from nemo_automodel.components._peft.lora import PeftConfig
 
+    if lora_cfg is None or not lora_cfg:
+        return None
     kwargs = {k: list(v) if isinstance(v, ListConfig) else v for k, v in lora_cfg.items()}
     if "target_modules" in kwargs:
         kwargs["target_modules"] = [f"*.{m}" if "*" not in m and "." not in m else m for m in kwargs["target_modules"]]

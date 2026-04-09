@@ -152,6 +152,15 @@ markers = [
     "pleasefixme: marks tests that are broken and need fixing",
 ]
 
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cu12" },
+        { extra = "cu13" },
+    ],
+]
+
 # --- uv configuration ---
 # Match nemo_automodel's torch index sources so uv doesn't see conflicting
 # indexes when resolving the speechlm2 extra (which pulls nemo_automodel

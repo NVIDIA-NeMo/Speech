@@ -167,7 +167,7 @@ class LLMTranslator:
             model = LLM(model=self.model_name, **llm_params)
             return model
         except Exception as e:
-            raise RuntimeError(f"Model loading failed: {str(e)}")
+            raise RuntimeError(f"Model loading failed: {str(e)}") from e
 
     def translate_batch(
         self,

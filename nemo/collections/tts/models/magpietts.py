@@ -619,6 +619,10 @@ class MagpieTTSModel(ModelPT):
             self.register_buffer('_baked_embedding_T', None)  # Time dimension
             self.register_buffer('_baked_embedding_D', None)  # Embedding dimension
             self.register_buffer('baked_context_embedding_len', None)  # Per-speaker lengths (N,)
+            # Probability of bypassing the context encoder during training and instead feeding
+            # batch-shuffled raw context embeddings, so the model learns not to clone voices
+            # from untransformed (i.e. not encoded by the context encoder) input.
+            self.train_shuffle_context_embedding_prob = cfg.get('train_shuffle_context_embedding_prob', 0.0)
         else:
             raise ValueError(f"Unsupported model type {self.model_type}")
 
@@ -831,7 +835,7 @@ class MagpieTTSModel(ModelPT):
         Check if the configuration is compatible with frame stacking.
         """
         if self.frame_stacking_factor > 1:
-            # The settings below are not supported with frame stacking.
+            # Reject configurations that are not supported with frame stacking.
             # Some of them may work - but they have not been tested.
 
             # disallow alignment encoder
@@ -843,9 +847,22 @@ class MagpieTTSModel(ModelPT):
             # disallow training prior
             if self.cfg.prior_scaling_factor is not None and self.cfg.prior_scaling_factor > 0:
                 raise ValueError("Training-time attention prior is not supported for frame stacking")
-            # disallow text conditioning
+            # With frame stacking, the audio context sequence length is divided by the
+            # frame stacking factor (e.g., 108 tokens at 21fps --> 54 positions with 2x stacking).
+            # The text context is NOT stacked but must fit within the same sequence length
+            # as the audio context. If needed, this constraint could be likey be removed by also
+            # stacking the text context, but that would require some experimentation.
             if self.use_text_conditioning_encoder:
-                raise ValueError("Text conditioning is not supported for frame stacking")
+                # Use 5 seconds as the baseline context length since it is known to fit
+                # existing text contexts.
+                min_required_context_sec = 5.0 * self.frame_stacking_factor
+                actual_context_length_sec = self.cfg.get('context_duration_max')
+                if actual_context_length_sec < min_required_context_sec:
+                    raise ValueError(
+                        f"With text context and a frame stacking factor of {self.frame_stacking_factor}, "
+                        f"context_duration_max must be >= {min_required_context_sec} seconds "
+                        f"(5 seconds x frame_stacking_factor); got context_duration_max={actual_context_length_sec}"
+                    )
 
     @property
     def has_baked_context_embedding(self) -> bool:
@@ -1051,6 +1068,7 @@ class MagpieTTSModel(ModelPT):
             'eval_speaker_verification_model',
             'whisper_model',
             'squim_objective_model',
+            '_teacher_model',
         ]
         # Skip context_encoder if checkpoint has baked embedding (weights won't be in checkpoint)
         if has_baked_embedding_in_ckpt:
@@ -1773,9 +1791,24 @@ class MagpieTTSModel(ModelPT):
                 context_input_lens = context_input_lens.to(text.device)
                 context_mask = get_mask_from_lengths(context_input_lens)
             else:
-                context_embeddings = self.context_encoder(
-                    context_input_embedded, context_mask, cond=None, cond_mask=None
-                )['output']
+                # Zero-shot disable: with some probability, bypass the context encoder and feed
+                # batch-shuffled raw embeddings so the model learns to not clone from untransformed input.
+                # Skip when batch_size == 1: rolling a single sample maps it back to itself,
+                # so the context would remain matched to the correct speaker.
+                batch_size = context_input_embedded.size(0)
+                if (
+                    self.training
+                    and batch_size > 1
+                    and self.train_shuffle_context_embedding_prob > 0
+                    and random.random() < self.train_shuffle_context_embedding_prob
+                ):
+                    shift = random.randint(1, batch_size - 1)
+                    context_embeddings = context_input_embedded.roll(shift, dims=0)
+                    context_mask = context_mask.roll(shift, dims=0)
+                else:
+                    context_embeddings = self.context_encoder(
+                        context_input_embedded, context_mask, cond=None, cond_mask=None
+                    )['output']
         else:
             raise ValueError(f"Unsupported model type for decoder context: {self.model_type}")
 
@@ -4210,9 +4243,9 @@ class MagpieTTSModel(ModelPT):
             prior_weights = self.chunked_inference_config.prior_weights_init
             _attn_prior[_idx, :, :current_starting_point] = prior_epsilon * prior_epsilon
             for offset, weight in enumerate(prior_weights[:5]):
-                idx = current_starting_point + offset
-                if idx < max_text_len:
-                    _attn_prior[_idx, :, idx] = weight
+                current_offset_idx = current_starting_point + offset
+                if current_offset_idx < max_text_len:
+                    _attn_prior[_idx, :, current_offset_idx] = weight
 
         return _attn_prior
 

@@ -565,6 +565,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 2.a. Noise mixing.
     if config.noise_path is not None:
         noise = guess_parse_cutset(config.noise_path)
+        # make sure the noise is resampled to the same sample rate as the audio cuts
+        noise = noise.resample(config.sample_rate)
         cuts = cuts.mix(
             cuts=noise,
             snr=tuple(config.noise_snr),

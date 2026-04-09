@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=C0116
 
 from contextlib import nullcontext
 from typing import Any, ContextManager, Mapping, Sequence
@@ -172,6 +173,7 @@ class FlashPrecision(Precision):
             return module
 
         from flashoptim import cast_model
+
         cast_model(module, dtype=self._desired_input_dtype)
         return module
 

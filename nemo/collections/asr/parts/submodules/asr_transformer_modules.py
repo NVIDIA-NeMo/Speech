@@ -77,6 +77,7 @@ class ASRTransformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMi
         post_ln=False,
     ):
         super().__init__()
+        AccessMixin.__init__(self)
 
         self.use_pytorch_sdpa = use_pytorch_sdpa
         if use_pytorch_sdpa_backends is None:

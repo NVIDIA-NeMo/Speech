@@ -5,6 +5,12 @@ model:
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
 
+  # Fine-tune from a previous training checkpoint (model weights only — optimizer,
+  # scheduler, and step counter start fresh). Supports DCP directories (from
+  # FSDP2/TP training), HuggingFace directories (model.safetensors), and
+  # single-file .ckpt checkpoints. Set to null to train from pretrained_llm/asr.
+  init_from_checkpoint: null
+
   # Set to true to use SALMAutomodel (NeMo Automodel backend) instead of SALM (HF Transformers backend).
   use_nemo_automodel: true
 
@@ -33,6 +39,33 @@ model:
   #   # dropout_position: post
   #   # lora_A_init: xavier
   #   # use_triton: false
+
+  # MoE auxiliary load balancing loss coefficient. Set > 0 to enable.
+  # Gradients are injected automatically during backward — does not change reported CE loss.
+  # Typical range: 0.001 - 0.01.
+  aux_loss_coeff: 0.0
+
+  # MoE router/gate trainability. When true, unfreezes Gate.weight so the
+  # router can adapt to the new data distribution during fine-tuning.
+  # Default false — pretrained routing is kept frozen.
+  train_gate: false
+
+  # MoE expert balance/utilization metrics logging.
+  moe_metrics:
+    enabled: true
+    mode: brief            # "brief" or "detailed" (adds per-layer breakdowns)
+    detailed_every_steps: null  # null = every step when mode=detailed
+    top_k_experts: 5       # top/bottom utilization experts to report
+
+  # torch.compile configuration. When enabled, the LLM is compiled via
+  # Automodel's CompileConfig. Set dynamic=true for variable sequence lengths.
+  # compile:
+  #   enabled: false
+  #   mode: default          # "default", "reduce-overhead", or "max-autotune"
+  #   fullgraph: false       # Compile the full computation graph
+  #   dynamic: true          # Enable dynamic shapes (recommended for variable-length audio)
+  #   backend: null           # Compilation backend (null = inductor)
+  #   dynamo_cache_size_limit: 256  # Triton compilation cache limit
 
   perception:
      target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
@@ -99,8 +132,11 @@ trainer:
 
     # --- MoE config (plain dict, resolved to MoEParallelizerConfig automatically) ---
     # moe_config:
-    #   activation_checkpointing: false  # Checkpoint activations in MoE blocks
-    #   reshard_after_forward: false      # Reshard params after forward (saves memory, more comms)
+    #   activation_checkpointing: false   # Checkpoint activations in MoE transformer blocks
+    #   ignore_router_for_ac: false       # Selective AC: save router outputs, recompute the rest
+    #   reshard_after_forward: false       # Reshard params after forward (saves memory, more comms)
+    #   lm_head_precision: null            # Override LM head precision (e.g., "float32" for stability)
+    #   wrap_outer_model: true             # Apply FSDP to the outer model wrapper
 
 data:
   train_ds:

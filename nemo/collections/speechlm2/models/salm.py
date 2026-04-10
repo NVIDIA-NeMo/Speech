@@ -41,7 +41,7 @@ from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, move_embedding, setup_speech_encoder
+from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, maybe_load_pretrained_models, move_embedding, setup_speech_encoder
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 
@@ -74,6 +74,9 @@ class SALM(LightningModule, HFHubMixin):
         maybe_install_lora(self)
         # Load the pretrained streaming ASR model and copy its parameters into the audio perception module.
         setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
+        # Optionally initialize weights from a previous checkpoint (fresh optimizer/scheduler).
+        # Set model.pretrained_s2s_model or model.pretrained_perception_from_s2s in the config.
+        maybe_load_pretrained_models(self)
 
         self._use_fsdp = False
         self._use_tp = False

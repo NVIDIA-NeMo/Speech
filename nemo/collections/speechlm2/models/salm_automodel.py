@@ -33,6 +33,7 @@ from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_automodel_llm,
+    maybe_load_pretrained_models,
     setup_speech_encoder,
     update_perception_output_dim,
 )
@@ -223,6 +224,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         }
 
     def training_step(self, batch: dict, batch_idx: int):
+        self._current_batch_idx = batch_idx
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
             if is_frozen(m):
                 m.eval()
@@ -255,6 +257,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         }
         self.log("loss", loss, on_step=True, prog_bar=True)
         self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True)
+        self.maybe_log_moe_metrics(batch_idx)
         return ans
 
     def on_validation_epoch_start(self) -> None:
@@ -316,8 +319,32 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         return self.validation_step(*args, **kwargs)
 
     def backward(self, *args, **kwargs):
+        self._setup_moe_fsdp_sync()
         with loss_parallel():
             super().backward(*args, **kwargs)
+
+    def _setup_moe_fsdp_sync(self):
+        """Configure MoE FSDP gradient sync for gradient accumulation.
+
+        When ``accumulate_grad_batches > 1``, disables gradient all-reduce and
+        resharding on intermediate backward passes and re-enables them on the
+        final backward before ``optimizer.step()``.  This avoids redundant
+        communication during gradient accumulation.
+
+        Delegates to the LLM's ``MoEFSDPSyncMixin`` methods.  No-op when the
+        LLM lacks the mixin or gradient accumulation is not active.
+        """
+        if not self._use_fsdp or not hasattr(self.llm, 'prepare_for_grad_accumulation'):
+            return
+        acc = self.trainer.accumulate_grad_batches if self._trainer else 1
+        if acc <= 1:
+            return
+        batch_idx = getattr(self, '_current_batch_idx', 0)
+        is_final = (batch_idx + 1) % acc == 0 or (batch_idx + 1) == self.trainer.num_training_batches
+        if is_final:
+            self.llm.prepare_for_final_backward()
+        else:
+            self.llm.prepare_for_grad_accumulation()
 
     def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm=None):
         """Override Lightning's gradient clipping to handle mixed FSDP device meshes.
@@ -472,6 +499,97 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             )
         return answer_tokens
 
+    def setup_moe_options(self):
+        """Apply MoE config overrides and enable load balance tracking.
+
+        Must be called after ``self.llm`` is created.  Iterates over all Gate
+        modules in the LLM and overrides their settings.  Also enables
+        load balance tracking when ``moe_metrics.enabled`` is set.
+
+        Safe no-op when the LLM has no Gate modules (non-MoE backbone).
+        """
+        from nemo_automodel.components.moe.layers import Gate
+
+        aux_loss_coeff = self.cfg.get("aux_loss_coeff", 0.0)
+        if aux_loss_coeff > 0:
+            for module in self.llm.modules():
+                if isinstance(module, Gate):
+                    module.aux_loss_coeff = aux_loss_coeff
+
+        train_gate = self.cfg.get("train_gate", False)
+        if train_gate:
+            for module in self.llm.modules():
+                if isinstance(module, Gate):
+                    module.train_gate = True
+                    module.weight.requires_grad_(True)
+                    if module.bias is not None:
+                        module.bias.requires_grad_(True)
+
+        moe_metrics_cfg = self.cfg.get("moe_metrics", None)
+        if moe_metrics_cfg is not None and moe_metrics_cfg.get("enabled", False):
+            from nemo_automodel.components.moe.load_balance_metrics import enable_load_balance_tracking
+
+            enable_load_balance_tracking(self.llm)
+
+    def maybe_log_moe_metrics(self, step: int):
+        """Collect and log MoE load balance metrics.
+
+        All ranks must call this method (the all-reduce inside
+        ``collect_expert_loads`` is collective).  Metrics are logged via
+        Lightning's ``self.log_dict`` which respects ``log_every_n_steps``.
+
+        Args:
+            step: Current ``batch_idx``, used to decide brief vs detailed mode.
+        """
+        moe_metrics_cfg = self.cfg.get("moe_metrics", None)
+        if moe_metrics_cfg is None or not moe_metrics_cfg.get("enabled", False):
+            return
+
+        from nemo_automodel.components.moe.load_balance_metrics import (
+            collect_expert_loads,
+            compute_brief_metrics,
+            compute_detailed_metrics,
+        )
+
+        dp_group = self._get_moe_dp_group()
+        layer_loads = collect_expert_loads(self.llm, dp_group=dp_group)
+        if not layer_loads:
+            return
+
+        mode = moe_metrics_cfg.get("mode", "brief")
+        top_k = moe_metrics_cfg.get("top_k_experts", 5)
+
+        if mode == "detailed":
+            detailed_every = moe_metrics_cfg.get("detailed_every_steps", None)
+            if detailed_every is not None and step % detailed_every != 0:
+                metrics = compute_brief_metrics(layer_loads, top_k=top_k)
+            else:
+                metrics = compute_detailed_metrics(layer_loads, top_k=top_k)
+        else:
+            metrics = compute_brief_metrics(layer_loads, top_k=top_k)
+
+        self.log_dict(metrics, on_step=True)
+
+    def _get_moe_dp_group(self):
+        """Return the DP process group for MoE metrics all-reduce.
+
+        Mirrors Automodel's ``_get_dp_group(include_cp=True)`` pattern: prefers
+        the ``dp_cp`` submesh (includes context parallelism) for the broadest
+        reduction, falling back to ``dp``.
+
+        Returns ``None`` when no device mesh is available (e.g. DDP training),
+        causing ``collect_expert_loads`` to skip all-reduce (rank-local view).
+        """
+        device_mesh = getattr(self, "_device_mesh", None)
+        if device_mesh is None:
+            return None
+        dim_names = device_mesh.mesh_dim_names
+        if "dp_cp" in dim_names:
+            return device_mesh["dp_cp"].get_group()
+        if "dp" in dim_names:
+            return device_mesh["dp"].get_group()
+        return None
+
     def configure_optimizers(self):
         return configure_optimizers(self)
 
@@ -533,6 +651,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if peft_config is not None and device_mesh is not None:
             automodel_kwargs["peft_config"] = peft_config
 
+        # Pass compile_config through to automodel for torch.compile support.
+        compile_cfg = self.cfg.get("compile", None)
+        if compile_cfg is not None:
+            from nemo_automodel.components.utils.compile_utils import CompileConfig
+
+            compile_dict = dict(compile_cfg)
+            automodel_kwargs["compile_config"] = CompileConfig(**compile_dict)
+
         self.llm = load_pretrained_automodel_llm(
             self.cfg.pretrained_llm,
             pretrained_weights=self.cfg.pretrained_weights,
@@ -540,6 +666,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             trust_remote_code=self.cfg.get("trust_remote_code", False),
             **automodel_kwargs,
         )
+
+        # Apply MoE options (aux_loss_coeff override, load balance tracking)
+        self.setup_moe_options()
 
         # Create perception module (must happen after LLM so output_dim matches)
         setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
@@ -558,6 +687,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             ensure_lora_trainable(self)
 
         if device_mesh is None:
+            maybe_load_pretrained_models(self)
             return
 
         # Cast perception to training dtype BEFORE FSDP2 wrapping.
@@ -582,6 +712,19 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if fsdp_mesh.size() > 1:
             self._use_fsdp = True
             self.perception = fully_shard(self.perception, mesh=fsdp_mesh)
+
+        # Enable MoE FSDP gradient accumulation optimization.
+        # The MoEFSDPSyncMixin on the LLM defers gradient sync/resharding on
+        # intermediate backward passes — _setup_moe_fsdp_sync() drives it.
+        # TODO(pzelasko): causes issue in torch's FSDP backward, investigate later:
+        # AttributeError: 'FSDPParam' object has no attribute '_unsharded_param'. Did you mean: 'unsharded_param'?
+        # if self._use_fsdp and hasattr(self.llm, 'prepare_for_grad_accumulation'):
+        #     self.llm.backend.enable_fsdp_optimizations = True
+
+        # Optionally initialize weights from a previous training checkpoint
+        # (fresh optimizer/scheduler). Must happen after FSDP wrapping so that
+        # DCP loading can fill DTensor parameters with correct shards.
+        maybe_load_pretrained_models(self)
 
     @property
     def oomptimizer_schema(self) -> dict:

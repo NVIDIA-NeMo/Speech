@@ -40,7 +40,10 @@ See the `SALM paper <https://arxiv.org/abs/2310.09424>`_ for more details.
       pretrained_llm: "TinyLlama/TinyLlama_v1.1"  # HF model path
       pretrained_asr: "stt_en_fastconformer_hybrid_large_streaming_80ms"  # NeMo checkpoint name
       pretrained_weights: True  # Whether to load weights or just architecture
-      
+
+      # Fine-tune from a previous training checkpoint (weights only, fresh optimizer)
+      init_from_checkpoint: null  # path to .ckpt, DCP dir, or HF dir
+
       # Special token settings
       audio_locator_tag: "<audio>"  # Tag to replace with audio embeddings
       
@@ -326,6 +329,7 @@ Model Parameters
 - **pretrained_llm**: Path to the pretrained HuggingFace LLM
 - **pretrained_asr**: Name of the pretrained NeMo ASR model used for perception
 - **pretrained_audio_codec**: Path to the pretrained audio codec model (for speech generation)
+- **init_from_checkpoint**: Path to a training checkpoint to initialize model weights from (see :ref:`fine-tuning-from-checkpoint` below)
 - **freeze_params**: Regex patterns of parameters to freeze during training
 - **audio_loss_weight/text_loss_weight**: Weighting of different loss components
 
@@ -383,4 +387,59 @@ You can also override configuration values from the command line:
       --config-name=salm \
       model.pretrained_llm="different/llm/path" \
       trainer.max_steps=1000 \
-      data.train_ds.batch_size=8 
+      data.train_ds.batch_size=8
+
+.. _fine-tuning-from-checkpoint:
+
+Fine-Tuning from a Previous Checkpoint
+---------------------------------------
+
+To start a new training run initialized from a previous checkpoint — with a fresh
+optimizer, LR scheduler, and step counter — set ``model.init_from_checkpoint``:
+
+.. code-block:: yaml
+
+    model:
+      init_from_checkpoint: /path/to/checkpoints/step=6375.ckpt
+
+Or pass it as a Hydra override:
+
+.. code-block:: bash
+
+    python examples/speechlm2/salm_train.py \
+      --config-name=salm_automodel \
+      ++model.init_from_checkpoint=/path/to/checkpoints/step=6375.ckpt
+
+This differs from ``exp_manager.resume_from_checkpoint`` which restores the
+**full** training state (optimizer, scheduler, step counter) to continue an
+interrupted run. ``init_from_checkpoint`` only loads model weights, giving you a
+clean starting point for fine-tuning on different data or with different
+hyperparameters.
+
+Supported Checkpoint Formats
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Three checkpoint formats are supported:
+
+* **Distributed checkpoints (DCP)**: Directories with a ``.metadata`` file, produced
+  by ``ModelParallelStrategy`` / ``AutomodelParallelStrategy``. This is the default
+  format when training with FSDP2 or TP. DCP loading handles automatic resharding
+  when the parallelism configuration differs between the source and target runs.
+
+* **HuggingFace model directories**: Directories containing ``model.safetensors``,
+  such as the output of ``to_hf.py``.
+
+* **Single-file checkpoints**: Standard ``.ckpt`` or ``.pt`` files with a
+  ``state_dict`` key.
+
+The model architecture is still defined by ``pretrained_llm`` and ``pretrained_asr``
+(needed for config and tokenizer initialization), but all weights are overridden by
+the checkpoint.
+
+This feature works with both ``SALM`` and ``SALMAutomodel``.
+
+.. note::
+   ``init_from_checkpoint`` requires the source and target models to use the
+   same model class (e.g., both ``SALMAutomodel``). Cross-model loading
+   (e.g., ``SALM`` checkpoint into ``SALMAutomodel``) will encounter state dict
+   key mismatches because the two classes structure the embedding layer differently.

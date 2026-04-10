@@ -307,6 +307,25 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     # Load NemotronVoiceChat (Inference Only)
     voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("path/to/checkpoint")
 
+Fine-Tuning from a Checkpoint
+------------------------------
+
+To fine-tune a model starting from a previous training checkpoint (with a fresh
+optimizer and step counter), set ``model.init_from_checkpoint`` in the config:
+
+.. code-block:: python
+
+    # Via Hydra override:
+    # ++model.init_from_checkpoint=/path/to/step=6375.ckpt
+
+This loads only model weights from the checkpoint — optimizer state, LR scheduler,
+and training step are discarded. Supports DCP directories (from FSDP2/TP training),
+HuggingFace directories, and single-file ``.ckpt`` files. Works with both ``SALM``
+and ``SALMAutomodel``.
+
+See :ref:`fine-tuning-from-checkpoint` in the configuration documentation for full
+details.
+
 Model Configuration
 -------------------
 

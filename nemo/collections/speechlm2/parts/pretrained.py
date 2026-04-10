@@ -351,16 +351,69 @@ def load_pretrained_model(model: torch.nn.Module, checkpoint_path: str):
         init_model_from_checkpoint(model, checkpoint_path)
 
 
+def _is_dcp_checkpoint(path: str) -> bool:
+    """Check if a path is a distributed checkpoint (DCP) directory."""
+    import os
+
+    return os.path.isdir(path) and os.path.exists(os.path.join(path, ".metadata"))
+
+
+def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
+    """Initialize model weights from a previous training checkpoint.
+
+    Only model weights are loaded — optimizer state, LR scheduler, and training
+    step are NOT restored, enabling a fresh fine-tuning start from the checkpoint.
+
+    Supports three checkpoint formats:
+    - **Distributed checkpoints** (DCP): directories with a ``.metadata`` file,
+      produced by ``ModelParallelStrategy`` / ``AutomodelParallelStrategy``.
+      Handles resharding when parallelism differs between the source and target runs.
+      Works with both FSDP2-wrapped (DTensor) and regular parameters.
+    - **HuggingFace model directories**: contain ``model.safetensors``
+      (e.g. output of ``to_hf.py``).
+    - **Single-file checkpoints**: ``.ckpt`` or ``.pt`` files with a
+      ``state_dict`` key.
+
+    Args:
+        model: The model to initialize.
+        checkpoint_path: Path to the checkpoint (directory or file).
+    """
+    if checkpoint_path is None:
+        return
+
+    logging.info(f"Initializing model weights from training checkpoint: {checkpoint_path}")
+
+    if _is_dcp_checkpoint(checkpoint_path):
+        import torch.distributed.checkpoint as dcp
+
+        # Lightning saves model weights under the "state_dict" key in DCP.
+        # Wrapping with the same structure lets DCP match keys correctly.
+        # Optimizer states and other trainer state are ignored automatically
+        # because we only provide the model's state_dict.
+        state_dict = {"state_dict": model.state_dict()}
+        dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
+        model.load_state_dict(state_dict["state_dict"])
+        logging.info(f"Loaded distributed checkpoint from {checkpoint_path}")
+    else:
+        init_model_from_checkpoint(model, checkpoint_path)
+
+
 def maybe_load_pretrained_models(model: torch.nn.Module):
     """
     Optionally load pretrained model weights based on configuration.
 
-    Checks for and loads:
+    Checks for and loads (in order):
     - ``pretrained_perception_from_s2s``: Perception module weights from another S2S checkpoint
     - ``pretrained_s2s_model``: Full S2S model weights from a checkpoint (supports incremental loading)
+    - ``init_from_checkpoint``: Full model weights from a training checkpoint
+      (DCP, HuggingFace directory, or single-file format). Only model weights
+      are loaded; optimizer/scheduler state is discarded for a fresh fine-tuning start.
     """
     if model.cfg.get("pretrained_perception_from_s2s", None):
         init_perception_from_checkpoint(model, model.cfg.pretrained_perception_from_s2s)
 
     if model.cfg.get("pretrained_s2s_model", None):
         load_pretrained_model(model, model.cfg.pretrained_s2s_model)
+
+    if model.cfg.get("init_from_checkpoint", None):
+        init_from_training_checkpoint(model, model.cfg.init_from_checkpoint)

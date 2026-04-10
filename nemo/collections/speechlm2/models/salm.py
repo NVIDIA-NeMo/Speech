@@ -41,7 +41,12 @@ from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, maybe_load_pretrained_models, move_embedding, setup_speech_encoder
+from nemo.collections.speechlm2.parts.pretrained import (
+    load_pretrained_hf,
+    maybe_load_pretrained_models,
+    move_embedding,
+    setup_speech_encoder,
+)
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 

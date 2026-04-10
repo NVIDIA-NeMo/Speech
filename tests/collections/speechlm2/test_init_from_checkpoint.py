@@ -36,6 +36,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class SimpleModel(torch.nn.Module):
     """Tiny model used for fast, self-contained unit tests."""
 
@@ -77,6 +78,7 @@ def _assert_state_dicts_not_equal(sd1, sd2):
 # _is_dcp_checkpoint
 # ---------------------------------------------------------------------------
 
+
 class TestIsDcpCheckpoint:
     def test_with_metadata(self, tmp_path):
         ckpt_dir = tmp_path / "step=100.ckpt"
@@ -108,6 +110,7 @@ class TestIsDcpCheckpoint:
 # ---------------------------------------------------------------------------
 # init_from_training_checkpoint — non-DCP paths
 # ---------------------------------------------------------------------------
+
 
 class TestInitFromTrainingCheckpoint:
     def test_none_is_noop(self):
@@ -148,6 +151,7 @@ class TestInitFromTrainingCheckpoint:
 # init_from_training_checkpoint — DCP path (mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestInitFromTrainingCheckpointDCP:
     def test_dcp_calls_distributed_load(self, tmp_path):
         """Verify DCP checkpoint triggers torch.distributed.checkpoint.load."""
@@ -186,6 +190,7 @@ class TestInitFromTrainingCheckpointDCP:
 # ---------------------------------------------------------------------------
 # maybe_load_pretrained_models — init_from_checkpoint config key
 # ---------------------------------------------------------------------------
+
 
 class TestMaybeLoadPretrainedModels:
     def test_init_from_checkpoint_loads_weights(self, tmp_path):

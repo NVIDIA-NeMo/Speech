@@ -20,6 +20,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
+    INDIC_CHARS_ALL,
     LATIN_CHARS_ALL,
     any_locale_word_tokenize,
     english_word_tokenize,
@@ -29,13 +30,16 @@ from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.collections.tts.g2p.utils import GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER, set_grapheme_case
 from nemo.utils import logging
 
+# Compiled regex pattern for Indic scripts (used in dictionary parsing)
+_INDIC_PATTERN = re.compile(f'^[{INDIC_CHARS_ALL}]')
+
 
 class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]
     # Regex for roman characters, accented characters, and locale-agnostic numbers/digits
-    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}\d]")
-    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}\d]")
+    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\d]")
+    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\d]")
     # fmt: on
 
     def __init__(
@@ -190,6 +194,7 @@ class IpaG2p(BaseG2p):
                         or 'À' <= line[0] <= 'Ö'
                         or 'Ø' <= line[0] <= 'ö'
                         or 'ø' <= line[0] <= 'ÿ'
+                        or _INDIC_PATTERN.match(line[0])
                         or line[0] == "'"
                     ):
                         parts = line.strip().split(maxsplit=1)

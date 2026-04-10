@@ -45,15 +45,17 @@ class WebsocketClientApp {
   private currentBotMessage: string = '';
 
   // Server configurations
+  // Use window.location.origin so all requests go through the Vite dev server proxy.
+  // This supports remote access where only port 5173 is forwarded to the browser.
   private readonly serverConfigs = {
     websocket: {
       name: 'WebSocket Server',
-      baseUrl: `http://${window.location.hostname}:7860`,
+      baseUrl: window.location.origin,
       port: 8765
     },
     fastapi: {
-      name: 'FastAPI Server', 
-      baseUrl: `http://${window.location.hostname}:8000`,
+      name: 'FastAPI Server',
+      baseUrl: `http://127.0.0.1:8000`,
       port: 8000
     }
   };
@@ -204,12 +206,29 @@ class WebsocketClientApp {
 
       //const transport = new DailyTransport();
       const transport = new WebSocketTransport();
+      const selectedConfig = this.getSelectedServerConfig();
       const RTVIConfig: RTVIClientOptions = {
         transport,
         params: {
-          // The baseURL and endpoint of your bot server that the client will connect to
-          baseUrl: this.getSelectedServerConfig().baseUrl,
+          baseUrl: selectedConfig.baseUrl,
           endpoints: { connect: '/connect' },
+        },
+        // Override ws_url to route WebSocket through the Vite proxy at /ws
+        // so remote browsers (where only port 5173 is forwarded) can connect.
+        customConnectHandler: async (params, _timeout, _abort) => {
+          const connectUrl = `${params.baseUrl}/connect`;
+          const resp = await fetch(connectUrl, {
+            method: 'POST',
+            mode: 'cors',
+            headers: new Headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ config: params.config ?? [], ...params.requestData }),
+          });
+          if (!resp.ok) throw resp;
+          const authBundle = await resp.json();
+          // Replace ws_url with the proxied path through Vite's dev server
+          const wsProxyUrl = `${window.location.origin.replace(/^http/, 'ws')}/ws`;
+          this.log(`WebSocket URL: ${wsProxyUrl} (proxied from ${authBundle.ws_url})`);
+          return { ...authBundle, ws_url: wsProxyUrl };
         },
         enableMic: true,
         enableCam: false,
@@ -307,7 +326,9 @@ class WebsocketClientApp {
       const timeTaken = Date.now() - startTime;
       this.log(`Connection complete, timeTaken: ${timeTaken}`);
     } catch (error) {
-      this.log(`Error connecting: ${(error as Error).message}`);
+      const err = error as any;
+      this.log(`Error connecting: ${err.message} | type: ${err?.constructor?.name} | status: ${err?.status}`);
+      console.error('Full connect error:', error);
       this.updateStatus('Error');
       // Clean up if there's an error
       await this.cleanupOnError();

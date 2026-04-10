@@ -497,8 +497,16 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
 
-        # Build the command with the determined port
-        cmd_parts = ["vllm", "serve", model]
+        # Build the command with the determined port.
+        # Use the vllm binary from the same conda env as the running Python, so
+        # it is found even when the env was not activated (PATH doesn't include
+        # the env's bin directory).
+        import sys
+        _bin_dir = os.path.dirname(sys.executable)
+        _vllm_bin = os.path.join(_bin_dir, "vllm")
+        if not os.path.isfile(_vllm_bin):
+            _vllm_bin = "vllm"  # fall back to PATH
+        cmd_parts = [_vllm_bin, "serve", model]
 
         # Parse and modify vllm_server_params to use the correct port
         if vllm_server_params:
@@ -539,6 +547,14 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
         elif self._device == "cpu":
             env["CUDA_VISIBLE_DEVICES"] = ""
             logger.info("Setting CUDA_VISIBLE_DEVICES='' to use CPU")
+
+        # flash_attn_2_cuda.so in this environment requires GLIBC_2.32 which is
+        # unavailable on this system (max GLIBC_2.30).  Force vllm to use the V0
+        # engine and disable eager+chunked-prefill to avoid the flash_attn import
+        # path that triggers the GLIBC check.
+        if "VLLM_USE_V1" not in env:
+            env["VLLM_USE_V1"] = "0"
+            logger.info("Setting VLLM_USE_V1=0 to avoid flash_attn GLIBC_2.32 requirement")
 
         try:
             # Start the vLLM server process with environment variables
@@ -744,8 +760,10 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
         else:
             llm_params = OpenAILLMService.InputParams()
         llm_thinking_budget = config.get("thinking_budget", 0)
+        llm_device = config.get("device", "cuda")
         return VLLMService(
             model=llm_model,
+            device=llm_device,
             api_key=llm_api_key,
             base_url=llm_base_url,
             organization=llm_organization,

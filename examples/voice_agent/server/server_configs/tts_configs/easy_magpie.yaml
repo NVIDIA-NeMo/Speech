@@ -1,0 +1,39 @@
+type: nemo
+main_model_id: "/datap/misc/EasyMagpieAssets/EMTTS_Pretraining_Qwen_WithCrossLingual_3_5_Delay.nemo"
+codec_model_path: "/datap/misc/EasyMagpieAssets/25fps_spectral_codec_with_bandwidth_extension.nemo"
+phoneme_tokenizer_path: "/datap/misc/EasyMagpieAssets/bpe_ipa_tokenizer_2048_en_de_es_fr_hi_it_vi_zh.json"
+
+# ── Backbone mode (choose one) ────────────────────────────────────────────────
+# Option A (active): TRT-LLM backbone (~11ms/step decoder, ~2.4x vs HF eager).
+#   LT uses torch.compile (not TRT engine) → no Myelin conflict with TRT-LLM.
+#   STT can be anywhere since LT TRT engine is not loaded.
+trt_backbone_engine_dir: "/home/subhankarg/Projects/open_source/em_trtllm_engine_backbone"
+compile_backbone: false  # irrelevant with TRT-LLM backbone (backbone is TRT, not HF)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# TRT direct local-transformer engine
+# Disabled: using torch.compile for LT to avoid Myelin conflict with TRT-LLM backbone.
+# (TRT-LLM loads libnvinfer_plugin_tensorrt_llm.so via RTLD_GLOBAL which corrupts
+#  the Myelin kernel context needed by a vanilla TRT LT engine.)
+trt_lt_engine_path: null
+trt_lt_run_device: null
+
+# Context conditioning: use context_text (style tag) OR context_audio_path (voice cloning), not both
+context_text: "Speaker and Emotion: | Language:en Dataset:rivaLindyRodney Speaker:Lindy_WIZWIKI |"
+# context_audio_path: null
+
+# Streaming decode: emit audio every N codec frames (6 frames @ 25fps = 240ms first chunk)
+decode_every_n_frames: 8
+
+# Inference parameters
+temperature: 0.7
+topk: 80
+# CFG doubles compute per step (runs 2x batch). Disable for ~2x speed improvement.
+# Set to true only if voice quality is insufficient without it.
+use_cfg: false
+cfg_scale: 2.5
+max_steps: 300
+
+# Text segmentation
+extra_separator: [',', '\n', '.', '?', '!', ';']
+think_tokens: ['<think>', '</think>']

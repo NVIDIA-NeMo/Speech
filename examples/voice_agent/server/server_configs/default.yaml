@@ -5,7 +5,7 @@
 
 transport:
   audio_out_10ms_chunks: 10  # use 4 as websocket default, but increasing to a larger number might have less glitches in TTS output
-  record_audio_data: false
+  record_audio_data: true
   audio_log_dir: "./audio_logs"
 
 vad:
@@ -18,36 +18,35 @@ vad:
 stt:
   type: nemo # choices in ['nemo'] currently only NeMo is supported
   model: "nvidia/parakeet_realtime_eou_120m-v1"
-  # model: "nvidia/nemotron-speech-streaming-en-0.6b"
   model_config: "./server_configs/stt_configs/nemo_cache_aware_streaming.yaml"
-  device: "cuda"
+  device: "cuda:0"  # LT TRT not used (compile LT instead), so cuda:0 is free for STT
 
 diar:
   type: nemo
-  enabled: true # set to false to disable
+  enabled: false # disabled to reduce GIL contention with TTS (re-enable if speaker diarization is needed)
   model: "nvidia/diar_streaming_sortformer_4spk-v2.1"
   device: "cuda"
   threshold: 0.4  # threshold value used to determine if a speaker exists or not, setting it to a lower value will increaset the sensitivity of the model
   frame_len_in_secs: 0.08  # default for Sortformer, do not change unless using other architechtures
 
 turn_taking:
-  backchannel_phrases_path: "./server/backchannel_phrases.yaml"  # set it to the actual path of the file, or specify a list of backchannel phrases here
+  backchannel_phrases_path: "./backchannel_phrases.yaml"  # set it to the actual path of the file, or specify a list of backchannel phrases here
   max_buffer_size: 2  # num of words more than this amount will interrupt the LLM immediately if not backchannel phrases
   bot_stop_delay: 0.5  # a delay in seconds allowed between server and client audio output, so that the BotStopSpeaking signal is handled not too far away from the actual time that the user hears all audio output
 
 llm:
   type: auto  # choices in ['auto', 'hf', 'vllm'], if `auto`, it will try to use vllm and fall back to hf if vllm not available
-  model: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
-  model_config: "./server_configs/llm_configs/nemotron_nano_v2.yaml"
+  model: "Qwen/Qwen2.5-7B-Instruct"
+  model_config: "./server_configs/llm_configs/qwen2.5-7B.yaml"
   # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
   # model_config: "./server_configs/llm_configs/nemotron_nano_v3.yaml"
   # if `model_config` is not specified, and the llm.model is not in model_registry.yaml, it will use `llm_configs/hf_llm_generic.yaml`
-  # model: "Qwen/Qwen2.5-7B-Instruct" 
+  # model: "Qwen/Qwen2.5-7B-Instruct"
   # model_config: "./server_configs/llm_configs/qwen2.5-7B.yaml"
   # model: "Qwen/Qwen3-8B"
   # model_config: "./server_configs/llm_configs/qwen3-8B.yaml"
   # model: meta-llama/Llama-3.1-8B-Instruct
-  device: "cuda"
+  device: "cuda:1"  # Option B: vLLM on cuda:1 alongside HF+compiled backbone; STT gets cuda:0 exclusively
   enable_reasoning: false  # it's best to turn-off reasoning for lowest latency, setting it to True will use the same config ending with `_think.yaml` instead
   # `system_prompt` is used as the sytem prompt to the LLM, please refer to differnt LLM webpage for spcial functions like enabling/disabling thinking
   # system_prompt: /path/to/prompt.txt  # or use path to a txt file that contains a long prompt, for example in `../example_prompts/fast_bite.txt`
@@ -55,9 +54,9 @@ llm:
 
 tts:
   type: nemo
-  model: "kokoro"
-  model_config: "./server_configs/tts_configs/kokoro_82M.yaml"
-  device: "cuda"
+  model: "easy_magpie"
+  model_config: "./server_configs/tts_configs/easy_magpie.yaml"
+  device: "cuda:1"
   ignore_strings:  # strings/characters to ignore in TTS
     - "*"
     - "<unk>"

@@ -45,6 +45,10 @@ from plotly import express as px
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
 
+from sde.dataloader.dataset import Dataset
+from sde.dataloader.engines.cudf_engine import cuDF
+from sde.pages.statistics.plot import gpu_plot_histogram, gpu_plot_word_accuracy
+
 # number of items in a table per page
 DATA_PAGE_SIZE = 10
 
@@ -118,6 +122,12 @@ def parse_args():
         '-shst',
         type=str,
         help='field name for which you want to see statistics (optional). Example: pred_text_contextnet.',
+    )
+    parser.add_argument(
+        '--gpu',
+        '-gpu',
+        action='store_true',
+        help='use GPU-acceleration',
     )
     args = parser.parse_args()
 
@@ -314,7 +324,7 @@ def load_data(
                     if k not in data[-1]:
                         data[-1][k] = item[k]
 
-            vocabulary_data = [{'word': word, 'count': vocabulary[word]} for word in vocabulary]
+            vocabulary_data = [{'Word': word, 'Count': vocabulary[word]} for word in vocabulary]
             return (
                 vocabulary_data,
                 metrics_available,
@@ -393,7 +403,7 @@ def load_data(
     if not comparison_mode:
         if vocab is not None:
             for item in vocabulary_data:
-                item['OOV'] = item['word'] not in vocabulary_ext
+                item['OOV'] = item['Word'] not in vocabulary_ext
 
     if metrics_available or comparison_mode:
         if metrics_available:
@@ -429,10 +439,10 @@ def load_data(
 
         acc_sum = 0
         for item in vocabulary_data:
-            w = item['word']
+            w = item['Word']
             word_accuracy = match_vocab[w] / vocabulary[w] * 100.0
             acc_sum += word_accuracy
-            item['accuracy'] = round(word_accuracy, 1)
+            item['Accuracy'] = round(word_accuracy, 1)
         mwa = acc_sum / len(vocabulary_data)
 
     num_hours /= 3600.0
@@ -481,8 +491,10 @@ def load_data(
 
 # plot histogram of specified field in data list
 def plot_histogram(data, key, label):
+    data_frame = [item[key] for item in data]
+
     fig = px.histogram(
-        data_frame=[item[key] for item in data],
+        data_frame=data_frame,
         nbins=50,
         log_y=True,
         labels={'value': label},
@@ -497,13 +509,19 @@ def plot_histogram(data, key, label):
 def plot_word_accuracy(vocabulary_data):
     labels = ['Unrecognized', 'Sometimes recognized', 'Always recognized']
     counts = [0, 0, 0]
-    for word in vocabulary_data:
-        if word['accuracy'] == 0:
-            counts[0] += 1
-        elif word['accuracy'] < 100:
-            counts[1] += 1
-        else:
-            counts[2] += 1
+
+    if args.gpu:
+        counts[0] = (vocabulary_data['Accuracy'] == 0).sum()
+        counts[1] = (vocabulary_data['Accuracy'] < 100).sum()
+        counts[2] = (vocabulary_data['Accuracy'] == 100).sum()
+    else:
+        for word in vocabulary_data:
+            if word['Accuracy'] == 0:
+                counts[0] += 1
+            elif word['Accuracy'] < 100:
+                counts[1] += 1
+            else:
+                counts[2] += 1
     colors = ['red', 'orange', 'green']
 
     fig = go.Figure(
@@ -557,54 +575,90 @@ if comparison_mode:
 
 
 print('Loading data...')
-if not comparison_mode:
-    data, wer, cer, wmr, mwa, num_hours, vocabulary, alphabet, metrics_available = load_data(
-        args.manifest,
-        args.disable_caching_metrics,
-        args.estimate_audio_metrics,
-        args.vocab,
-        args.audio_base_path,
-        comparison_mode,
-        args.names_compared,
+if args.gpu:
+    if args.names_compared is not None:
+        raise Exception(f"Currently, comparison mode is not available with GPU acceleration.")
+
+    hypothesis_fields = ["pred_text"]
+    if args.show_statistics is not None:
+        hypothesis_fields = [args.show_statistics]
+
+    enable_pkl = True
+    if args.disable_caching_metrics:
+        enable_pkl = False
+
+    cu_df = cuDF()
+
+    dataset = Dataset(
+        manifest_filepath=args.manifest,
+        data_engine=cu_df,
+        hypothesis_fields=hypothesis_fields,
+        estimate_audio_metrics=args.estimate_audio_metrics,
+        enable_pkl=enable_pkl,
     )
+
+    dataset = dataset.process()
+
+    data = dataset.samples_data
+    num_hours = dataset.duration
+    vocabulary = dataset.vocabulary_data
+    vocabulary_data = dataset.vocabulary_data
+    alphabet = dataset.charset
+    metrics_available = len(dataset.hypotheses) != 0
+    if metrics_available:
+        wer = dataset.hypotheses[hypothesis_fields[0]].wer
+        cer = dataset.hypotheses[hypothesis_fields[0]].cer
+        wmr = dataset.hypotheses[hypothesis_fields[0]].wmr
+        mwa = dataset.hypotheses[hypothesis_fields[0]].mwa
 else:
-    (
-        data,
-        wer,
-        cer,
-        wmr,
-        mwa,
-        num_hours,
-        vocabulary,
-        alphabet,
-        metrics_available,
-        data_1,
-        wer_1,
-        cer_1,
-        wmr_1,
-        mwa_1,
-        num_hours_1,
-        vocabulary_1,
-        alphabet_1,
-        metrics_available_1,
-        data_2,
-        wer_2,
-        cer_2,
-        wmr_2,
-        mwa_2,
-        num_hours_2,
-        vocabulary_2,
-        alphabet_2,
-        metrics_available_2,
-    ) = load_data(
-        args.manifest,
-        args.disable_caching_metrics,
-        args.estimate_audio_metrics,
-        args.vocab,
-        args.audio_base_path,
-        comparison_mode,
-        args.names_compared,
-    )
+    if not comparison_mode:
+        data, wer, cer, wmr, mwa, num_hours, vocabulary, alphabet, metrics_available = load_data(
+            args.manifest,
+            args.disable_caching_metrics,
+            args.estimate_audio_metrics,
+            args.vocab,
+            args.audio_base_path,
+            comparison_mode,
+            args.names_compared,
+        )
+    else:
+        (
+            data,
+            wer,
+            cer,
+            wmr,
+            mwa,
+            num_hours,
+            vocabulary,
+            alphabet,
+            metrics_available,
+            data_1,
+            wer_1,
+            cer_1,
+            wmr_1,
+            mwa_1,
+            num_hours_1,
+            vocabulary_1,
+            alphabet_1,
+            metrics_available_1,
+            data_2,
+            wer_2,
+            cer_2,
+            wmr_2,
+            mwa_2,
+            num_hours_2,
+            vocabulary_2,
+            alphabet_2,
+            metrics_available_2,
+        ) = load_data(
+            args.manifest,
+            args.disable_caching_metrics,
+            args.estimate_audio_metrics,
+            args.vocab,
+            args.audio_base_path,
+            comparison_mode,
+            args.names_compared,
+        )
 
 print('Starting server...')
 app = dash.Dash(
@@ -630,21 +684,38 @@ figures_labels = {
     'level_db': ['Peak Level', 'Level, dB'],
 }
 figures_hist = {}
-for k in data[0]:
-    val = data[0][k]
-    if isinstance(val, (int, float)) and not isinstance(val, bool):
-        if k in figures_labels:
-            ylabel = figures_labels[k][0]
-            xlabel = figures_labels[k][1]
-        else:
-            title = k.replace('_', ' ')
-            title = title[0].upper() + title[1:].lower()
-            ylabel = title
-            xlabel = title
-        figures_hist[k] = [ylabel + ' (per utterance)', plot_histogram(data, k, xlabel)]
 
-if metrics_available:
-    figure_word_acc = plot_word_accuracy(vocabulary)
+if args.gpu:
+    fields = data.columns
+    for field in fields:
+        val = data[field][0]
+        if isinstance(val, (int, float, np.int64, np.float64)) and not isinstance(val, bool):
+            if field in figures_labels:
+                title = figures_labels[field][0] + ' (per utterance)'
+            else:
+                title = field.replace('_', ' ')
+                title = title[0].upper() + title[1:].lower()
+            figures_hist[field] = [title, gpu_plot_histogram(data, field)]
+    if metrics_available:
+        figure_word_acc = gpu_plot_word_accuracy(vocabulary_data, "Accuracy")
+
+else:
+    fields = data[0].keys()
+    for k in fields:
+        val = data[0][k]
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            if k in figures_labels:
+                ylabel = figures_labels[k][0]
+                xlabel = figures_labels[k][1]
+            else:
+                title = k.replace('_', ' ')
+                title = title[0].upper() + title[1:].lower()
+                ylabel = title
+                xlabel = title
+            figures_hist[k] = [ylabel + ' (per utterance)', plot_histogram(data, k, xlabel)]
+
+    if metrics_available:
+        figure_word_acc = plot_word_accuracy(vocabulary)
 
 stats_layout = [
     dbc.Row(dbc.Col(html.H5(children='Global Statistics'), class_name='text-secondary'), class_name='mt-3'),
@@ -763,6 +834,7 @@ stats_layout += [
         class_name='mt-2 bg-light font-monospace rounded border',
     ),
 ]
+
 for k in figures_hist:
     stats_layout += [
         dbc.Row(dbc.Col(html.H5(figures_hist[k][0]), class_name='text-secondary'), class_name='mt-3'),
@@ -783,11 +855,19 @@ if metrics_available:
         ),
     ]
 
-wordstable_columns = [{'name': 'Word', 'id': 'word'}, {'name': 'Count', 'id': 'count'}]
-if 'OOV' in vocabulary[0]:
-    wordstable_columns.append({'name': 'OOV', 'id': 'OOV'})
+wordstable_columns = [{'name': 'Word', 'id': 'Word'}, {'name': 'Count', 'id': 'Count'}]
+
+if args.gpu:
+    vocabulary_columns = vocabulary.columns
+else:
+    vocabulary_columns = vocabulary[0].keys()
+
+
+if not args.gpu:
+    if 'OOV' in vocabulary[0]:
+        wordstable_columns.append({'name': 'OOV', 'id': 'OOV'})
 if metrics_available:
-    wordstable_columns.append({'name': 'Accuracy, %', 'id': 'accuracy'})
+    wordstable_columns.append({'name': 'Accuracy, %', 'id': 'Accuracy'})
 
 
 stats_layout += [
@@ -806,7 +886,7 @@ stats_layout += [
                 page_size=DATA_PAGE_SIZE,
                 cell_selectable=False,
                 page_count=math.ceil(len(vocabulary) / DATA_PAGE_SIZE),
-                sort_by=[{'column_id': 'word', 'direction': 'asc'}],
+                sort_by=[{'column_id': 'Word', 'direction': 'asc'}],
                 style_cell={'maxWidth': 0, 'textAlign': 'left'},
                 style_header={'color': 'text-primary'},
                 css=[
@@ -867,20 +947,40 @@ def update_wordstable(page_current, sort_by, filter_query):
         col_name, op, filter_value = split_filter_part(filter_part)
 
         if op in ('eq', 'ne', 'lt', 'le', 'gt', 'ge'):
-            vocabulary_view = [x for x in vocabulary_view if getattr(operator, op)(x[col_name], filter_value)]
+            if args.gpu:
+                vocabulary_view = vocabulary_view.loc[getattr(operator, op)(vocabulary_view[col_name], filter_value)]
+            else:
+                vocabulary_view = [x for x in vocabulary_view if getattr(operator, op)(x[col_name], filter_value)]
         elif op == 'contains':
             vocabulary_view = [x for x in vocabulary_view if filter_value in str(x[col_name])]
 
     if len(sort_by):
         col = sort_by[0]['column_id']
-        descending = sort_by[0]['direction'] == 'desc'
-        vocabulary_view = sorted(vocabulary_view, key=lambda x: x[col], reverse=descending)
+        ascending = sort_by[0]['direction'] != 'desc'
+
+        if args.gpu:
+            vocabulary_view = vocabulary_view.sort_values(col, ascending=ascending)
+        else:
+            vocabulary_view = sorted(vocabulary_view, key=lambda x: x[col], reverse=ascending)
     if page_current * DATA_PAGE_SIZE >= len(vocabulary_view):
         page_current = len(vocabulary_view) // DATA_PAGE_SIZE
-    return [
-        vocabulary_view[page_current * DATA_PAGE_SIZE : (page_current + 1) * DATA_PAGE_SIZE],
-        math.ceil(len(vocabulary_view) / DATA_PAGE_SIZE),
-    ]
+
+    if args.gpu:
+        return [
+            vocabulary_view[page_current * DATA_PAGE_SIZE : (page_current + 1) * DATA_PAGE_SIZE].to_dict('records'),
+            math.ceil(len(vocabulary_view) / DATA_PAGE_SIZE),
+        ]
+    else:
+        return [
+            vocabulary_view[page_current * DATA_PAGE_SIZE : (page_current + 1) * DATA_PAGE_SIZE],
+            math.ceil(len(vocabulary_view) / DATA_PAGE_SIZE),
+        ]
+
+
+if args.gpu:
+    col_names = data.columns
+else:
+    col_names = data[0].keys()
 
 
 samples_layout = [
@@ -890,7 +990,7 @@ samples_layout = [
         dbc.Col(
             dash_table.DataTable(
                 id='datatable',
-                columns=[{'name': k.replace('_', ' '), 'id': k, 'hideable': True} for k in data[0]],
+                columns=[{'name': k.replace('_', ' '), 'id': k, 'hideable': True} for k in col_names],
                 filter_action='custom',
                 filter_query='',
                 sort_action='custom',
@@ -928,7 +1028,7 @@ samples_layout = [
             dbc.Col(html.Div(id='_' + k), class_name='mt-1 bg-light font-monospace text-break small rounded border'),
         ]
     )
-    for k in data[0]
+    for k in col_names
 ]
 
 if metrics_available:
@@ -967,7 +1067,7 @@ samples_layout += [
 # updating vocabulary to show
 
 
-wordstable_columns_tool = [{'name': 'Word', 'id': 'word'}, {'name': 'Count', 'id': 'count'}]
+wordstable_columns_tool = [{'name': 'Word', 'id': 'Word'}, {'name': 'Count', 'id': 'Amount'}]
 wordstable_columns_tool.append({'name': 'Accuracy_1, %', 'id': 'accuracy_1'})
 wordstable_columns_tool.append({'name': 'Accuracy_2, %', 'id': 'accuracy_2'})
 
@@ -1550,20 +1650,34 @@ def update_datatable(page_current, sort_by, filter_query):
         col_name, op, filter_value = split_filter_part(filter_part)
 
         if op in ('eq', 'ne', 'lt', 'le', 'gt', 'ge'):
-            data_view = [x for x in data_view if getattr(operator, op)(x[col_name], filter_value)]
+            if args.gpu:
+                data_view = data_view.loc[getattr(operator, op)(data_view[col_name], filter_value)]
+            else:
+                data_view = [x for x in data_view if getattr(operator, op)(x[col_name], filter_value)]
         elif op == 'contains':
             data_view = [x for x in data_view if filter_value in str(x[col_name])]
 
     if len(sort_by):
         col = sort_by[0]['column_id']
-        descending = sort_by[0]['direction'] == 'desc'
-        data_view = sorted(data_view, key=lambda x: x[col], reverse=descending)
+        ascending = sort_by[0]['direction'] != 'desc'
+
+        if args.gpu:
+            data_view = data_view.sort_values(col, ascending=ascending)
+        else:
+            data_view = sorted(data_view, key=lambda x: x[col], reverse=descending)
     if page_current * DATA_PAGE_SIZE >= len(data_view):
         page_current = len(data_view) // DATA_PAGE_SIZE
-    return [
-        data_view[page_current * DATA_PAGE_SIZE : (page_current + 1) * DATA_PAGE_SIZE],
-        math.ceil(len(data_view) / DATA_PAGE_SIZE),
-    ]
+
+    if args.gpu:
+        return [
+            data_view[page_current * DATA_PAGE_SIZE : (page_current + 1) * DATA_PAGE_SIZE].to_dict('records'),
+            math.ceil(len(data_view) / DATA_PAGE_SIZE),
+        ]
+    else:
+        return [
+            data_view[page_current * DATA_PAGE_SIZE : (page_current + 1) * DATA_PAGE_SIZE],
+            math.ceil(len(data_view) / DATA_PAGE_SIZE),
+        ]
 
 
 if comparison_mode:
@@ -1640,7 +1754,7 @@ else:
 
 
 @app.callback(
-    [Output('_' + k, 'children') for k in data[0]], [Input('datatable', 'selected_rows'), Input('datatable', 'data')]
+    [Output('_' + k, 'children') for k in col_names], [Input('datatable', 'selected_rows'), Input('datatable', 'data')]
 )
 def show_item(idx, data):
     if len(idx) == 0:

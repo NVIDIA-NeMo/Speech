@@ -45,22 +45,8 @@ if __name__ == '__main__':
         default=None,
         help="Path to save the converted NeMo version Hugging Face checkpoint directory.",
     )
-    parser.add_argument(
-        "--nemo_class",
-        type=str,
-        default=None,
-        help="If input is a local checkpoint path, specify the corresponding NeMo model class (e.g., 'vlm.LlavaModel').",
-    )
     args = parser.parse_args()
 
     model_name_or_path = args.input_name_or_path
-    local_path = Path(model_name_or_path)
-    if local_path.exists():
-        try:
-            model_class = eval(args.nemo_class)
-        except Exception as e:
-            raise ValueError(f"Could not import the specified NeMo class '{args.nemo_class}': {e}")
-    else:
-        model_class = HF_MODEL_ID_TO_NEMO_CLASS[model_name_or_path]
-
+    model_class = HF_MODEL_ID_TO_NEMO_CLASS[model_name_or_path]
     import_ckpt(model_class(), f"hf://{model_name_or_path}", output_path=args.output_path)

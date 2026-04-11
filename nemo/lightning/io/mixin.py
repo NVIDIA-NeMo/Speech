@@ -15,7 +15,9 @@
 import dataclasses
 import functools
 import inspect
+import io
 import json
+import pickle
 import shutil
 import threading
 import types
@@ -29,7 +31,6 @@ import fiddle as fdl
 import fiddle._src.experimental.dataclasses as fdl_dc
 import lightning.pytorch as pl
 from cloudpickle import dump
-from cloudpickle import load as pickle_load
 from fiddle._src import config as config_lib
 from fiddle._src import partial
 from fiddle._src.experimental import serialization
@@ -45,6 +46,81 @@ from nemo.utils import logging
 ConnT = TypeVar("ConnT", bound=ModelConnector)
 CkptType = TypeVar("CkptType")
 _enable_ext()
+
+# Modules allowed during pickle deserialization of IO artifacts.
+# This restricts what can be loaded to prevent arbitrary code execution
+# (see ZDI-CAN-28677).
+_PICKLE_ALLOWED_MODULES = frozenset(
+    {
+        "nemo",
+        "megatron",
+        "fiddle",
+        "lightning",
+        "torch",
+        "numpy",
+        "cloudpickle",
+        "collections",
+        "pathlib",
+        "enum",
+        "signal",
+        "functools",
+        "copy",
+        "dataclasses",
+        "typing",
+        "typing_extensions",
+        "transformers",
+    }
+)
+
+_PICKLE_ALLOWED_BUILTINS = frozenset(
+    {
+        "builtins.True",
+        "builtins.False",
+        "builtins.None",
+        "builtins.int",
+        "builtins.float",
+        "builtins.str",
+        "builtins.bytes",
+        "builtins.bool",
+        "builtins.complex",
+        "builtins.list",
+        "builtins.tuple",
+        "builtins.dict",
+        "builtins.set",
+        "builtins.frozenset",
+        "builtins.slice",
+        "builtins.type",
+        "builtins.range",
+        "builtins.enumerate",
+        "builtins.map",
+        "builtins.filter",
+        "builtins.zip",
+        "builtins.object",
+        "builtins.bytearray",
+        "builtins.getattr",
+    }
+)
+
+
+class RestrictedUnpickler(pickle.Unpickler):
+    """Unpickler that only allows known-safe modules to prevent code execution attacks."""
+
+    def find_class(self, module: str, name: str) -> type:
+        class_path = f"{module}.{name}"
+        if class_path in _PICKLE_ALLOWED_BUILTINS:
+            return super().find_class(module, name)
+        top_level = module.split(".")[0]
+        if top_level in _PICKLE_ALLOWED_MODULES:
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"Deserialization of '{class_path}' is not allowed. "
+            "Only known NeMo, PyTorch, and related framework classes are permitted."
+        )
+
+
+def _safe_pickle_load(f: io.BufferedIOBase) -> Any:
+    """Load a pickle file using RestrictedUnpickler to block dangerous classes."""
+    return RestrictedUnpickler(f).load()
 
 
 # Thread-local storage for artifacts directory
@@ -637,7 +713,7 @@ def _io_unflatten_object(values, metadata):
     if len(values) == 1:
         pickle_path = values[0]
         with open(Path(output_dir) / pickle_path, "rb") as f:
-            return pickle_load(f)
+            return _safe_pickle_load(f)
 
     return fdl.Config.__unflatten__(values, metadata)
 

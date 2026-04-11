@@ -104,9 +104,7 @@ class RestrictedUnpickler(pickle.Unpickler):
                 "Only known NeMo, PyTorch, and related framework classes are permitted."
             )
         if module == "builtins" and name in _PICKLE_DENIED_BUILTINS:
-            raise pickle.UnpicklingError(
-                f"Deserialization of 'builtins.{name}' is not allowed for security reasons."
-            )
+            raise pickle.UnpicklingError(f"Deserialization of 'builtins.{name}' is not allowed for security reasons.")
         return super().find_class(module, name)
 
 

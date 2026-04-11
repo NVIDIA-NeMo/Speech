@@ -49,55 +49,46 @@ _enable_ext()
 
 # Modules allowed during pickle deserialization of IO artifacts.
 # This restricts what can be loaded to prevent arbitrary code execution
-# (see ZDI-CAN-28677).
 _PICKLE_ALLOWED_MODULES = frozenset(
     {
-        "nemo",
-        "megatron",
-        "fiddle",
-        "lightning",
-        "torch",
-        "numpy",
+        "builtins",
         "cloudpickle",
         "collections",
-        "pathlib",
-        "enum",
-        "signal",
-        "functools",
         "copy",
         "dataclasses",
+        "enum",
+        "fiddle",
+        "functools",
+        "lightning",
+        "megatron",
+        "nemo",
+        "numpy",
+        "pathlib",
+        "signal",
+        "torch",
+        "transformers",
         "typing",
         "typing_extensions",
-        "transformers",
     }
 )
 
-_PICKLE_ALLOWED_BUILTINS = frozenset(
+# Builtins that must never be deserialized even though the builtins module is allowed.
+_PICKLE_DENIED_BUILTINS = frozenset(
     {
-        "builtins.True",
-        "builtins.False",
-        "builtins.None",
-        "builtins.int",
-        "builtins.float",
-        "builtins.str",
-        "builtins.bytes",
-        "builtins.bool",
-        "builtins.complex",
-        "builtins.list",
-        "builtins.tuple",
-        "builtins.dict",
-        "builtins.set",
-        "builtins.frozenset",
-        "builtins.slice",
-        "builtins.type",
-        "builtins.range",
-        "builtins.enumerate",
-        "builtins.map",
-        "builtins.filter",
-        "builtins.zip",
-        "builtins.object",
-        "builtins.bytearray",
-        "builtins.getattr",
+        "eval",
+        "exec",
+        "compile",
+        "globals",
+        "locals",
+        "vars",
+        "__import__",
+        "breakpoint",
+        "exit",
+        "quit",
+        "open",
+        "input",
+        "memoryview",
+        "help",
     }
 )
 
@@ -106,16 +97,17 @@ class RestrictedUnpickler(pickle.Unpickler):
     """Unpickler that only allows known-safe modules to prevent code execution attacks."""
 
     def find_class(self, module: str, name: str) -> type:
-        class_path = f"{module}.{name}"
-        if class_path in _PICKLE_ALLOWED_BUILTINS:
-            return super().find_class(module, name)
         top_level = module.split(".")[0]
-        if top_level in _PICKLE_ALLOWED_MODULES:
-            return super().find_class(module, name)
-        raise pickle.UnpicklingError(
-            f"Deserialization of '{class_path}' is not allowed. "
-            "Only known NeMo, PyTorch, and related framework classes are permitted."
-        )
+        if top_level not in _PICKLE_ALLOWED_MODULES:
+            raise pickle.UnpicklingError(
+                f"Deserialization of '{module}.{name}' is not allowed. "
+                "Only known NeMo, PyTorch, and related framework classes are permitted."
+            )
+        if module == "builtins" and name in _PICKLE_DENIED_BUILTINS:
+            raise pickle.UnpicklingError(
+                f"Deserialization of 'builtins.{name}' is not allowed for security reasons."
+            )
+        return super().find_class(module, name)
 
 
 def _safe_pickle_load(f: io.BufferedIOBase) -> Any:

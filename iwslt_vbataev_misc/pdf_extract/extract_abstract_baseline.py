@@ -1,9 +1,11 @@
-import os
-import json
 import argparse
-import pymupdf.layout
+import json
+import os
+
 import pymupdf4llm
+import pymupdf.layout
 from tqdm import tqdm
+
 
 def extract_abstract_from_pdf(pdf_path):
     """Extract named entities from a PDF file."""

@@ -12,14 +12,14 @@ Usage:
     python ner_llm.py data/abstract_results.json -o data/ner_llm_results.json
     python ner_llm.py data/abstract_results.json -n 16 -k 8 -o data/ner_llm_results.json
 """
+import argparse
+import json
+import logging
 import os
 import re
-import json
-import argparse
-import logging
 from collections import Counter
-from tqdm import tqdm
 
+from tqdm import tqdm
 from vllm import LLM, SamplingParams
 from vllm.sampling_params import StructuredOutputsParams
 

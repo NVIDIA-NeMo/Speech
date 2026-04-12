@@ -47,9 +47,6 @@ ConnT = TypeVar("ConnT", bound=ModelConnector)
 CkptType = TypeVar("CkptType")
 _enable_ext()
 
-# Top-level modules allowed during pickle deserialization of IO artifacts.
-# This restricts what can be loaded to prevent arbitrary code execution
-# (see ZDI-CAN-28677).
 _PICKLE_ALLOWED_MODULES = frozenset(
     {
         "cloudpickle",
@@ -73,7 +70,6 @@ _PICKLE_ALLOWED_MODULES = frozenset(
     }
 )
 
-# Explicitly allowed builtins (safe data types and accessors only).
 _PICKLE_ALLOWED_BUILTINS = frozenset(
     {
         "True",

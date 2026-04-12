@@ -96,6 +96,18 @@ class EuroLLMTranslatorPromptTemplate(PromptTemplate):
         return response.split('\n')[0]
 
 
+class EuroLLMTranslatorPromptTemplateV2(EuroLLMTranslatorPromptTemplate):
+    PROMPT_TEMPLATE = (
+        "<|im_start|>system\n<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Translate the following {src_lang} source text to {tgt_lang}. "
+        "Preserve all named entities, such as person names, model names, dataset names, and metric names, exactly as they appear in the input text:\n"
+        "{src_lang}: {src_text}\n"
+        "{tgt_lang}: <|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "{tgt_text}"
+    )
+
 # class EuroLLMChatTranslatorPromptTemplate(PromptTemplate):
 #     """
 #     Chat-style prompt template for EuroLLM translation, matching the format used

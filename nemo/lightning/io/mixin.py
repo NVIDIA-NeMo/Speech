@@ -47,13 +47,14 @@ ConnT = TypeVar("ConnT", bound=ModelConnector)
 CkptType = TypeVar("CkptType")
 _enable_ext()
 
-# Modules allowed during pickle deserialization of IO artifacts.
+# Top-level modules allowed during pickle deserialization of IO artifacts.
 # This restricts what can be loaded to prevent arbitrary code execution
+# (see ZDI-CAN-28677).
 _PICKLE_ALLOWED_MODULES = frozenset(
     {
-        "builtins",
         "cloudpickle",
         "collections",
+        "fsspec",
         "copy",
         "dataclasses",
         "enum",
@@ -72,23 +73,33 @@ _PICKLE_ALLOWED_MODULES = frozenset(
     }
 )
 
-# Builtins that must never be deserialized even though the builtins module is allowed.
-_PICKLE_DENIED_BUILTINS = frozenset(
+# Explicitly allowed builtins (safe data types and accessors only).
+_PICKLE_ALLOWED_BUILTINS = frozenset(
     {
-        "eval",
-        "exec",
-        "compile",
-        "globals",
-        "locals",
-        "vars",
-        "__import__",
-        "breakpoint",
-        "exit",
-        "quit",
-        "open",
-        "input",
-        "memoryview",
-        "help",
+        "True",
+        "False",
+        "None",
+        "bool",
+        "bytearray",
+        "bytes",
+        "complex",
+        "dict",
+        "enumerate",
+        "filter",
+        "float",
+        "frozenset",
+        "getattr",
+        "int",
+        "list",
+        "map",
+        "object",
+        "range",
+        "set",
+        "slice",
+        "str",
+        "tuple",
+        "type",
+        "zip",
     }
 )
 
@@ -97,14 +108,18 @@ class RestrictedUnpickler(pickle.Unpickler):
     """Unpickler that only allows known-safe modules to prevent code execution attacks."""
 
     def find_class(self, module: str, name: str) -> type:
+        if module == "builtins":
+            if name not in _PICKLE_ALLOWED_BUILTINS:
+                raise pickle.UnpicklingError(
+                    f"Deserialization of 'builtins.{name}' is not allowed for security reasons."
+                )
+            return super().find_class(module, name)
         top_level = module.split(".")[0]
         if top_level not in _PICKLE_ALLOWED_MODULES:
             raise pickle.UnpicklingError(
                 f"Deserialization of '{module}.{name}' is not allowed. "
                 "Only known NeMo, PyTorch, and related framework classes are permitted."
             )
-        if module == "builtins" and name in _PICKLE_DENIED_BUILTINS:
-            raise pickle.UnpicklingError(f"Deserialization of 'builtins.{name}' is not allowed for security reasons.")
         return super().find_class(module, name)
 
 

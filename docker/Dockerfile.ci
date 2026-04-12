@@ -17,7 +17,7 @@
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
 
 FROM ${BASE_IMAGE} as base-image
-ENV PIP_CONSTRAINT="" 
+ENV PIP_CONSTRAINT=""
 ENV TRANSFORMERS_OFFLINE=0
 ENV HYDRA_FULL_ERROR=1
 ENV PYTHONUNBUFFERED=1
@@ -35,7 +35,7 @@ ARG TE_REPO
 ARG TE_TAG
 RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh \
   --mount=type=bind,source=external/patches,target=/tmp/NeMo/external/patches <<"EOF" bash -ex
-  
+
   bash /tmp/NeMo/install_dep.sh --library te --mode build
   ls -al /tmp/Megatron-LM || true
 EOF
@@ -45,15 +45,15 @@ WORKDIR /tmp/NeMo
 ARG MLM_REPO
 ARG MLM_TAG
 RUN --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh <<"EOF" bash -ex
-  
+
   bash /tmp/NeMo/install_dep.sh --library mcore --mode build
   ls -al /tmp/Megatron-LM || true
 EOF
 
-FROM base-image 
+FROM base-image
 WORKDIR /tmp/NeMo
 ENV INSTALL_DIR="/opt"
-RUN \  
+RUN \
   --mount=type=bind,from=te-wheel,source=/opt/wheels/te,target=/opt/wheels/te \
   --mount=type=bind,from=mcore-wheel,source=/opt/wheels/mcore,target=/opt/wheels/mcore \
   --mount=type=bind,source=requirements,target=/tmp/NeMo/requirements \
@@ -64,11 +64,11 @@ RUN \
   --mount=type=bind,source=README.md,target=/tmp/NeMo/README.md \
   --mount=type=bind,source=nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
   --mount=type=bind,source=nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
-    
+
   bash /tmp/NeMo/install_dep.sh --library te --mode install
   bash /tmp/NeMo/install_dep.sh --library mcore --mode install
   bash /tmp/NeMo/install_dep.sh --library extra --mode install
-  pip install --no-cache-dir ".[all,cu12]"
+  pip install --no-cache-dir ".[all,cu13]"
   rm -rf $NEMO_DIR || true
 EOF
 

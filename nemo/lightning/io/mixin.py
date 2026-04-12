@@ -70,46 +70,11 @@ _PICKLE_ALLOWED_MODULES = frozenset(
     }
 )
 
-_PICKLE_ALLOWED_BUILTINS = frozenset(
-    {
-        "True",
-        "False",
-        "None",
-        "bool",
-        "bytearray",
-        "bytes",
-        "complex",
-        "dict",
-        "enumerate",
-        "filter",
-        "float",
-        "frozenset",
-        "getattr",
-        "int",
-        "list",
-        "map",
-        "object",
-        "range",
-        "set",
-        "slice",
-        "str",
-        "tuple",
-        "type",
-        "zip",
-    }
-)
-
 
 class RestrictedUnpickler(pickle.Unpickler):
     """Unpickler that only allows known-safe modules to prevent code execution attacks."""
 
     def find_class(self, module: str, name: str) -> type:
-        if module == "builtins":
-            if name not in _PICKLE_ALLOWED_BUILTINS:
-                raise pickle.UnpicklingError(
-                    f"Deserialization of 'builtins.{name}' is not allowed for security reasons."
-                )
-            return super().find_class(module, name)
         top_level = module.split(".")[0]
         if top_level not in _PICKLE_ALLOWED_MODULES:
             raise pickle.UnpicklingError(

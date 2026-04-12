@@ -39,7 +39,7 @@ RUN \
   --mount=type=bind,source=nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
   --mount=type=bind,source=nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
 
-  pip install --no-cache-dir ".[all,cu13]"
+  pip install --no-cache-dir --ignore-installed PyYAML ".[all,cu13]"
   rm -rf $NEMO_DIR || true
 EOF
 

@@ -310,7 +310,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             if self.cfg.strategy in ['greedy', 'greedy_batch']:
                 self.preserve_alignments = self.cfg.greedy.get('preserve_alignments', False)
 
-            elif self.cfg.strategy in ['beam', 'tsd', 'alsd', 'maes']:
+            elif self.cfg.strategy in ['beam', 'tsd', 'alsd', 'maes', 'malsd_batch', 'maes_batch']:
                 self.preserve_alignments = self.cfg.beam.get('preserve_alignments', False)
 
         # Update compute timestamps
@@ -318,7 +318,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             if self.cfg.strategy in ['greedy', 'greedy_batch']:
                 self.compute_timestamps = self.cfg.greedy.get('compute_timestamps', False)
 
-            elif self.cfg.strategy in ['beam', 'tsd', 'alsd', 'maes']:
+            elif self.cfg.strategy in ['beam', 'tsd', 'alsd', 'maes', 'malsd_batch', 'maes_batch']:
                 self.compute_timestamps = self.cfg.beam.get('compute_timestamps', False)
 
         # Check if the model supports punctuation

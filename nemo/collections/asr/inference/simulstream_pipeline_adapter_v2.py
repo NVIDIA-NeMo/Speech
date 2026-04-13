@@ -33,21 +33,29 @@ Key Insight:
 """
 
 import atexit
+import copy
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Any, Optional
 
+import nltk
 import numpy as np
 import torch
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
+from tqdm.auto import tqdm
+from vllm import LLM, SamplingParams
 from vllm.distributed import destroy_model_parallel
 
-from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder
-from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame
-from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
+from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
+from nemo.collections.asr.parts.utils.streaming_utils import (
+    ContextSize,
+    StreamingBatchedAudioBuffer,
+)
+from nemo.collections.asr.parts.utils.transcribe_utils import get_inference_device, get_inference_dtype, setup_model
 from nemo.utils import logging
 
 try:
@@ -60,38 +68,158 @@ except ImportError:
     SpeechProcessor = object
     SAMPLE_RATE = 16000
 
-    # Mock IncrementalOutput for type hints when simulstream not available
-    class IncrementalOutput:
-        def __init__(self, asr_partial="", asr_final="", translation_partial="", translation_final=""):
-            pass
+os.environ["HF_HOME"] = "/home/vbataev/hf_models"
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 
-def load_nemo_config(config_path: str):
-    """
-    Load NeMo config using OmegaConf (NeMo's native config system).
-
-    Args:
-        config_path: Path to YAML config file
-
-    Returns:
-        DictConfig: OmegaConf configuration object
-    """
-    return OmegaConf.load(config_path)
+def make_divisible_by(num, factor: int) -> int:
+    """Make num divisible by factor"""
+    return (num // factor) * factor
 
 
-def create_nemo_pipeline_from_config(config_path: str):
-    """
-    Create NeMo streaming pipeline directly from config file.
+def get_llm_model(model_name: str = "Qwen/Qwen3-4B-Instruct-2507", model_params: dict[str, Any] | None = None):
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    if model_params is None:
+        model_params = {
+            "dtype": "auto",
+            "seed": 42,
+            "gpu_memory_utilization": 0.5,
+            "max_model_len": 8192,
+        }
+    llm = LLM(model_name, **model_params)
+    return llm
 
-    Args:
-        config_path: Path to NeMo YAML config
 
-    Returns:
-        BasePipeline: NeMo streaming pipeline
-    """
+def get_asr_model(asr_cfg: DictConfig):
+    # setup device
+    map_location = get_inference_device(cuda=asr_cfg.device_id, allow_mps=True)
+    compute_dtype = get_inference_dtype(asr_cfg.compute_dtype, device=map_location)
 
-    cfg = load_nemo_config(config_path)
-    return PipelineBuilder.build_pipeline(cfg)
+    logging.info(f"Inference will be done on device : {map_location} with compute_dtype: {compute_dtype}")
+
+    if asr_cfg.model_name.lower().endswith(".nemo"):
+        asr_cfg.model_path = asr_cfg.model_name
+    else:
+        asr_cfg.pretrained_name = asr_cfg.model_name
+    asr_model, model_name = setup_model(asr_cfg, map_location)
+
+    model_cfg = copy.deepcopy(asr_model._cfg)
+    OmegaConf.set_struct(model_cfg.preprocessor, False)
+    # some changes for streaming scenario
+    model_cfg.preprocessor.dither = 0.0
+    model_cfg.preprocessor.pad_to = 0
+
+    if model_cfg.preprocessor.normalize != "per_feature":
+        logging.error("Only EncDecRNNTBPEModel models trained with per_feature normalization are supported currently")
+
+    # Disable config overwriting
+    OmegaConf.set_struct(model_cfg.preprocessor, True)
+
+    asr_model.freeze()
+    asr_model = asr_model.to(asr_model.device)
+    asr_model.to(compute_dtype)
+
+    with open_dict(asr_cfg.decoding):
+        asr_cfg.decoding.greedy.enable_per_stream_biasing = True
+        asr_cfg.decoding.beam.enable_per_stream_biasing = True
+        if asr_cfg.decoding.strategy != "greedy_batch" or asr_cfg.decoding.greedy.loop_labels is not True:
+            raise NotImplementedError(
+                "This script currently supports only `greedy_batch` strategy with Label-Looping algorithm"
+            )
+        asr_cfg.decoding.tdt_include_token_duration = asr_cfg.timestamps
+        asr_cfg.decoding.greedy.preserve_alignments = False
+        asr_cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
+        asr_cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
+
+    # Setup decoding strategy
+    if hasattr(asr_model, 'change_decoding_strategy'):
+        if not isinstance(asr_model, EncDecRNNTModel) and not isinstance(asr_model, EncDecHybridRNNTCTCModel):
+            raise ValueError("The script supports rnnt model and hybrid model with rnnt decodng!")
+        else:
+            # rnnt model
+            if isinstance(asr_model, EncDecRNNTModel):
+                asr_model.change_decoding_strategy(asr_cfg.decoding)
+
+            # hybrid ctc rnnt model with decoder_type = rnnt
+            if hasattr(asr_model, 'cur_decoder'):
+                asr_model.change_decoding_strategy(asr_cfg.decoding, decoder_type='rnnt')
+
+    asr_model.preprocessor.featurizer.dither = 0.0
+    asr_model.preprocessor.featurizer.pad_to = 0
+    asr_model.eval()
+
+    # decoding_computer = asr_model.decoding.decoding.decoding_computer
+    return asr_model
+
+
+def get_model_context(asr_model, cfg: DictConfig):
+    audio_sample_rate = asr_model.cfg.preprocessor['sample_rate']
+    assert audio_sample_rate == SAMPLE_RATE
+
+    feature_stride_sec = asr_model.cfg.preprocessor['window_stride']
+    features_per_sec = 1.0 / feature_stride_sec
+    encoder_subsampling_factor = asr_model.encoder.subsampling_factor
+
+    features_frame2audio_samples = make_divisible_by(
+        int(audio_sample_rate * feature_stride_sec), factor=encoder_subsampling_factor
+    )
+    encoder_frame2audio_samples = features_frame2audio_samples * encoder_subsampling_factor
+
+    context_encoder_frames = ContextSize(
+        left=int(cfg.left_padding_size * features_per_sec / encoder_subsampling_factor),
+        chunk=int(cfg.chunk_size * features_per_sec / encoder_subsampling_factor),
+        right=int(cfg.right_padding_size * features_per_sec / encoder_subsampling_factor),
+    )
+    context_samples = ContextSize(
+        left=context_encoder_frames.left * encoder_subsampling_factor * features_frame2audio_samples,
+        chunk=context_encoder_frames.chunk * encoder_subsampling_factor * features_frame2audio_samples,
+        right=context_encoder_frames.right * encoder_subsampling_factor * features_frame2audio_samples,
+    )
+
+    logging.info(
+        "Corrected contexts (sec): "
+        f"Left {context_samples.left / audio_sample_rate:.2f}, "
+        f"Chunk {context_samples.chunk / audio_sample_rate:.2f}, "
+        f"Right {context_samples.right / audio_sample_rate:.2f}"
+    )
+    logging.info(f"Corrected contexts (subsampled encoder frames): {context_encoder_frames}")
+    logging.info(f"Corrected contexts (in audio samples): {context_samples}")
+    latency_secs = (context_samples.chunk + context_samples.right) / audio_sample_rate
+    logging.info(f"Theoretical latency: {latency_secs:.2f} seconds")
+    return context_samples, context_encoder_frames, encoder_frame2audio_samples
+
+
+def translate_manifest(
+    manifest,
+    llm,
+    sampling_params,
+    prompt_template,
+    target_language: str,
+    source_language: str = "English",
+    num_keep_sentences=5,
+    text_key="pred_text",
+) -> list[str]:
+    translations = []
+    for record in tqdm(manifest):
+        text = record[text_key]
+        sentences = nltk.sent_tokenize(text)
+        per_sentence_translations = []
+        for i, sentence in enumerate(tqdm(sentences, leave=False)):
+            llm_input = prompt_template.format(
+                source_language,
+                target_language,
+                src_prefix=sentence,
+                tgt_prefix="",
+                src_context=" ".join(sentences[max(i - num_keep_sentences, 0) : i]),
+                tgt_context=" ".join(per_sentence_translations[max(i - num_keep_sentences, 0) : i]),
+            )
+            llm_output = llm.generate([llm_input], sampling_params, use_tqdm=False)
+            output_text = llm_output[0].outputs[0].text
+            output_text = prompt_template.extract(output_text).strip()
+            per_sentence_translations.append(output_text)
+        translation = " ".join(per_sentence_translations)
+        translations.append(translation)
+    return translations
 
 
 class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
@@ -109,7 +237,12 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         - State management per stream
     """
 
-    pipeline = None  # Class-level pipeline (shared across instances)
+    asr_model = None
+    nmt_model = None
+    context_samples = None
+    context_encoder_frames = None
+    encoder_frame2audio_samples = None
+    asr_device = None
     output_manifest_path: Optional[str] = None
     wav_names: list[str] = []
     per_stream_boosting_requests: list[BiasingRequestItemConfig] | None = None
@@ -136,10 +269,10 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         self._final_translation_acc = ""
         self._last_partial_transcript = ""
         self._last_partial_translation = ""
-        # Determine request type from config
-        self.request_type = getattr(config, 'request_type', 'frame')
-        if hasattr(config, 'streaming') and hasattr(config.streaming, 'request_type'):
-            self.request_type = config.streaming.request_type
+        # # Determine request type from config
+        # self.request_type = getattr(config, 'request_type', 'frame')
+        # if hasattr(config, 'streaming') and hasattr(config.streaming, 'request_type'):
+        #     self.request_type = config.streaming.request_type
         self.latency_unit = getattr(config, 'latency_unit', 'word')
         if isinstance(self.latency_unit, str):
             self.latency_unit = self.latency_unit.lower()
@@ -151,6 +284,16 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         self.src_lang = None
         self.tgt_lang = None
 
+        self.buffer = StreamingBatchedAudioBuffer(
+            batch_size=1,
+            context_samples=self.context_samples,
+            dtype=torch.float32,
+            device=self.asr_model.device,
+        )
+        self.decoding_state = None
+        self.all_tokens = []
+        self.all_timestamps = []
+
     @classmethod
     def load_model(cls, config: SimpleNamespace):
         """
@@ -159,16 +302,28 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         Args:
             config: Configuration from simulstream
         """
-        if cls.pipeline is not None:
+        if cls.asr_model is not None or cls.nmt_model is not None:
             return  # Already loaded
+
+        torch.set_float32_matmul_precision("high")
 
         # Convert SimpleNamespace to DictConfig
         # SimulStream uses SimpleNamespace for configuration, so we need to convert it to use in NeMo.
         cfg = OmegaConf.create(cls._namespace_to_dict(config))
 
-        # Build pipeline using NeMo's factory
-        cls.pipeline = PipelineBuilder.build_pipeline(cfg)
-        cls.pipeline.open_session()
+        # setup LLM
+        cls.nmt_model = get_llm_model(
+            cfg.nmt.model_name, model_params=OmegaConf.to_container(cfg.nmt.llm_params, resolve=True)
+        )
+        cls.nmt_sampling_params = SamplingParams(**OmegaConf.to_container(cfg.nmt.sampling_params))
+        cls.asr_model = get_asr_model(cfg.asr)
+        self.asr_device = cls.asr_model.device
+        # TODO: fix chunk masking
+        cls.context_samples, cls.context_encoder_frames, cls.encoder_frame2audio_samples = get_model_context(
+            cls.asr_model, cfg.streaming
+        )
+        if cls.context_samples.chunk != cls.context_samples.right:
+            raise NotImplementedError
 
         cls.detailed_log_path = getattr(config, "detailed_log_path", None)
 
@@ -247,7 +402,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         """Set target language (simulstream interface)."""
         self.tgt_lang = language
 
-    def process_chunk(self, audio: np.ndarray) -> IncrementalOutput:
+    def process_chunk(self, audio: np.ndarray) -> "IncrementalOutput":
         """
         Process audio chunk using NeMo's native streaming API.
 
@@ -269,51 +424,70 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         if audio.ndim > 1:
             raise ValueError("Simulstream processes only one audio at a time (batch size 1).")
 
-        expected_chunk_size = int(16000 * self.speech_chunk_size)
+        expected_chunk_size = int(16000 * self.context_samples.chunk)
         audio_length = len(audio)
-        if audio_length < expected_chunk_size:
-            audio = np.concatenate([audio, np.zeros(expected_chunk_size - audio_length)])
+        is_last_chunk = audio_length < expected_chunk_size
+        #     audio = np.concatenate([audio, np.zeros(expected_chunk_size - audio_length)])
         # Convert audio to torch tensor
-        audio_tensor = torch.from_numpy(audio).float().to(self.pipeline.device)
+        audio_tensor = torch.from_numpy(audio).float().to(self.asr_device)
 
         if self.is_first_chunk and self.per_stream_boosting_requests is not None:
             biasing_cfg = self.per_stream_boosting_requests[self.stream_id]
         else:
             biasing_cfg = None
 
-        # Create request based on config's request_type
-        if self.request_type == "feature_buffer":
-            # Extract features first, then create FeatureBuffer
-            features = self.pipeline.preprocessor(
-                input_signal=audio_tensor.unsqueeze(0),
-                length=torch.tensor([audio_length], device=self.pipeline.device),
-            )[0].squeeze(0)
+        if biasing_cfg is not None:
+            # TODO: implement
+            raise NotImplementedError
 
-            request = FeatureBuffer(
-                stream_id=self.stream_id,
-                features=features,
-                is_first=self.is_first_chunk,
-                is_last=False,
-                # simulstream does not tell wether chunk is last or not, we handle right context with return_full_right_context
-                length=features.shape[1],  # Valid feature length
-                options=ASRRequestOptions(biasing_cfg=biasing_cfg) if self.is_first_chunk else None,
-            )
-        else:  # frame
-            # Create Frame request (NeMo's native streaming input)
-            request = Frame(
-                stream_id=self.stream_id,
-                samples=audio_tensor,
-                is_first=self.is_first_chunk,
-                is_last=False,
-                # simulstream does not tell wether chunk is last or not, we handle right context with return_full_right_context
-                length=audio_length,  # Valid audio length (without padding)
-                options=ASRRequestOptions(biasing_cfg=biasing_cfg) if self.is_first_chunk else None,
-            )
+        is_last_chunk_batch = (torch.full([1], fill_value=is_last_chunk, device=self.asr_device),)
+        self.buffer.add_audio_batch_(
+            audio_tensor,
+            audio_lengths=torch.full([1], fill_value=audio_length, device=self.asr_device),
+            is_last_chunk=is_last_chunk,
+            is_last_chunk_batch=is_last_chunk_batch,
+        )
 
-        # Call NeMo's native streaming API
-        # This internally handles: buffering → encoding → decoding → translation
-        step_outputs = self.pipeline.transcribe_step([request])
-        step_output = step_outputs[0]
+        # get encoder output using full buffer [left-chunk-right]
+        encoder_output, encoder_output_len = self.asr_model(
+            input_signal=self.buffer.samples,
+            input_signal_length=self.buffer.context_size_batch.total(),
+        )
+        encoder_output = encoder_output.transpose(1, 2)  # [B, T, C]
+        # remove extra context from encoder_output (leave only frames corresponding to the chunk)
+        encoder_context = self.buffer.context_size.subsample(factor=self.encoder_frame2audio_samples)
+        encoder_context_batch = self.buffer.context_size_batch.subsample(factor=self.encoder_frame2audio_samples)
+        # remove left context
+        encoder_output = encoder_output[:, encoder_context.left :]
+        encoder_output_len_to_decode = torch.where(
+            is_last_chunk_batch,
+            encoder_output_len - encoder_context_batch.left,
+            encoder_context_batch.chunk,
+        )
+        chunk_batched_hyps, _, self.decoding_state = self.asr_model.decoding.decoding.decoding_computer(
+            x=encoder_output,
+            out_len=encoder_output_len_to_decode,
+            prev_batched_state=self.decoding_state,
+            multi_biasing_ids=None,  # multi_biasing_ids,
+        )
+        # merge hyps with previous hyps
+        hyp_len = chunk_batched_hyps.current_lengths[0].cpu().item()
+        transcript = chunk_batched_hyps.transcript[0, :hyp_len].cpu().tolist()
+        timestamps = chunk_batched_hyps.timestamps[0, :hyp_len].cpu().tolist()
+        text = self.asr_model.tokenizer.ids_to_text(transcript)
+        text_rc = ""
+
+        if not is_last_chunk:
+            ...
+
+        logging.warning(f"Text: {text}" + (f"[{text_rc}]" if text_rc else ""))
+
+        return IncrementalOutput(
+            new_tokens=[],
+            new_string="",
+            deleted_tokens=[],
+            deleted_string="",
+        )
 
         # Track final and latest partial outputs to write a NeMo-style prediction manifest line.
         self._final_transcript_acc += step_output.final_transcript or ""
@@ -350,7 +524,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
 
         return result
 
-    def _convert_to_incremental_output(self, step_output) -> IncrementalOutput:
+    def _convert_to_incremental_output(self, step_output) -> "IncrementalOutput":
         """
         Convert NeMo's TranscribeStepOutput to simulstream's IncrementalOutput.
 
@@ -406,7 +580,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
             deleted_string=deleted_string,
         )
 
-    def end_of_stream(self) -> IncrementalOutput:
+    def end_of_stream(self) -> "IncrementalOutput":
         """
         Called at the end of audio stream to finalize output.
 
@@ -425,7 +599,6 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
 
         # NOTE: Last chunk was already processed with is_last=False in process_chunk().
         # We only finalize stream state and emit empty incremental output here.
-        self.pipeline.delete_state(self.stream_id)
         return IncrementalOutput(
             new_tokens=[],
             new_string="",
@@ -452,6 +625,14 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         self._last_partial_transcript = ""
         self._last_partial_translation = ""
 
+        self.buffer = StreamingBatchedAudioBuffer(
+            batch_size=1,
+            context_samples=self.context_samples,
+            dtype=torch.float32,
+            device=self.asr_model.device,
+        )
+        self.decoding_state = None
+
     def _write_prediction_manifest_line(self, pred_text: str, pred_translation: str) -> None:
         """Write one NeMo-style manifest line with model predictions."""
         if not self.output_manifest_path:
@@ -471,19 +652,19 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         with open(self.output_manifest_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    def tokens_to_string(self, tokens: List[str]) -> str:
+    def tokens_to_string(self, tokens: list[str]) -> str:
         """
         Convert tokens to string using NeMo's tokenizer.
 
         Args:
-            tokens: List of token strings (BPE/SentencePiece tokens)
+            tokens: list of token strings (BPE/SentencePiece tokens)
 
         Returns:
             Detokenized string
         """
         return self._join_tokens(tokens)
 
-    def _tokenize_text(self, text: Optional[str]) -> List[str]:
+    def _tokenize_text(self, text: Optional[str]) -> list[str]:
         """Tokenize text according to configured latency unit. For char-level, removes
         all spaces so emitted token count matches simulstream eval (MWER path does
         .replace(" ", "") on resegmented text, so delay count must be non-space chars only)."""
@@ -495,7 +676,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
             return list(text.strip())
         return text.strip().split()
 
-    def _join_tokens(self, tokens: List[str]) -> str:
+    def _join_tokens(self, tokens: list[str]) -> str:
         """Join tokens according to configured latency unit."""
         if not tokens:
             return ""
@@ -509,17 +690,12 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         Explicitly cleanup vLLM and release resources.
         Call this when done with inference to properly shutdown vLLM engine.
         """
-        if cls.pipeline is not None and cls.pipeline.nmt_model is not None:
+        if cls.nmt_model is not None:
             try:
                 # vLLM cleanup - destroy the engine to release Ray resources
-                if hasattr(cls.pipeline.nmt_model, 'nmt_model'):
-                    vllm_engine = cls.pipeline.nmt_model.nmt_model
-                    if hasattr(vllm_engine, 'llm_engine'):
-                        # Destroy the engine core
-                        destroy_model_parallel()
-                    del vllm_engine
-                    cls.pipeline.nmt_model.nmt_model = None
-                    print("[NeMo Adapter] vLLM engine cleaned up")
+                if hasattr(cls.nmt_model, 'llm_engine'):
+                    # Destroy the engine core
+                    destroy_model_parallel()
             except Exception as e:
                 print(f"[NeMo Adapter] Warning during vLLM cleanup: {e}")
 

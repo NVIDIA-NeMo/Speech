@@ -57,6 +57,7 @@ from nemo.collections.asr.parts.utils.streaming_utils import (
 )
 from nemo.collections.asr.parts.utils.transcribe_utils import get_inference_device, get_inference_dtype, setup_model
 from nemo.utils import logging
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 
 try:
     from simulstream.server.speech_processors import SAMPLE_RATE, SpeechProcessor
@@ -119,17 +120,25 @@ def get_asr_model(asr_cfg: DictConfig):
     asr_model = asr_model.to(asr_model.device)
     asr_model.to(compute_dtype)
 
-    with open_dict(asr_cfg.decoding):
-        asr_cfg.decoding.greedy.enable_per_stream_biasing = True
-        asr_cfg.decoding.beam.enable_per_stream_biasing = True
-        if asr_cfg.decoding.strategy != "greedy_batch" or asr_cfg.decoding.greedy.loop_labels is not True:
+    if "max_symbols" in asr_cfg.decoding.greedy:
+        # rename max_symbols -> max_symbols_per_step, as used in NeMo
+        with open_dict(asr_cfg.decoding.greedy):
+            asr_cfg.decoding.greedy.max_symbols_per_step = asr_cfg.decoding.greedy.max_symbols
+            del asr_cfg.decoding.greedy.max_symbols
+
+    decoding_cfg = OmegaConf.merge(OmegaConf.structured(RNNTDecodingConfig), asr_cfg.decoding)
+
+    with open_dict(decoding_cfg):
+        decoding_cfg.greedy.enable_per_stream_biasing = True
+        decoding_cfg.beam.enable_per_stream_biasing = True
+        if decoding_cfg.strategy != "greedy_batch" or decoding_cfg.greedy.loop_labels is not True:
             raise NotImplementedError(
                 "This script currently supports only `greedy_batch` strategy with Label-Looping algorithm"
             )
-        asr_cfg.decoding.tdt_include_token_duration = asr_cfg.timestamps
-        asr_cfg.decoding.greedy.preserve_alignments = False
-        asr_cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
-        asr_cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
+        decoding_cfg.tdt_include_token_duration = True
+        decoding_cfg.greedy.preserve_alignments = False
+        decoding_cfg.fused_batch_size = -1  # temporarily stop fused batch during inference.
+        decoding_cfg.beam.return_best_hypothesis = True  # return and write the best hypothsis only
 
     # Setup decoding strategy
     if hasattr(asr_model, 'change_decoding_strategy'):
@@ -138,11 +147,11 @@ def get_asr_model(asr_cfg: DictConfig):
         else:
             # rnnt model
             if isinstance(asr_model, EncDecRNNTModel):
-                asr_model.change_decoding_strategy(asr_cfg.decoding)
+                asr_model.change_decoding_strategy(decoding_cfg)
 
             # hybrid ctc rnnt model with decoder_type = rnnt
             if hasattr(asr_model, 'cur_decoder'):
-                asr_model.change_decoding_strategy(asr_cfg.decoding, decoder_type='rnnt')
+                asr_model.change_decoding_strategy(decoding_cfg, decoder_type='rnnt')
 
     asr_model.preprocessor.featurizer.dither = 0.0
     asr_model.preprocessor.featurizer.pad_to = 0
@@ -312,12 +321,12 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         cfg = OmegaConf.create(cls._namespace_to_dict(config))
 
         # setup LLM
-        cls.nmt_model = get_llm_model(
-            cfg.nmt.model_name, model_params=OmegaConf.to_container(cfg.nmt.llm_params, resolve=True)
-        )
+        # cls.nmt_model = get_llm_model(
+        #     cfg.nmt.model_name, model_params=OmegaConf.to_container(cfg.nmt.llm_params, resolve=True)
+        # )
         cls.nmt_sampling_params = SamplingParams(**OmegaConf.to_container(cfg.nmt.sampling_params))
         cls.asr_model = get_asr_model(cfg.asr)
-        self.asr_device = cls.asr_model.device
+        cls.asr_device = cls.asr_model.device
         # TODO: fix chunk masking
         cls.context_samples, cls.context_encoder_frames, cls.encoder_frame2audio_samples = get_model_context(
             cls.asr_model, cfg.streaming
@@ -356,11 +365,10 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         # TODO: Find a better way to gracefully shut down vLLM engine.
         atexit.register(cls.cleanup_model)
 
-        logging.info(f"Loaded NeMo pipeline: {type(cls.pipeline).__name__}")
-        logging.info(f"  ASR model: {cfg.asr.model_name}")
-        if cfg.get('enable_nmt', False):
-            logging.info(f"  NMT model: {cfg.nmt.model_name}")
-            logging.info(f"  Translation: {cfg.nmt.source_language} → {cfg.nmt.target_language}")
+        # logging.info(f"  ASR model: {cfg.asr.model_name}")
+        # if cfg.get('enable_nmt', False):
+        #     logging.info(f"  NMT model: {cfg.nmt.model_name}")
+        #     logging.info(f"  Translation: {cfg.nmt.source_language} → {cfg.nmt.target_language}")
 
         if cfg.get("per_stream_boosting") and cfg.per_stream_boosting.get("phrases_file"):
             boosting_model_alpha = cfg.per_stream_boosting.get("alpha", 1.0)

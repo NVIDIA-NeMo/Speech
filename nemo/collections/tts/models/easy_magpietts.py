@@ -32,6 +32,8 @@ from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
+
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel, TrainingMode
 from nemo.collections.tts.modules.magpietts_modules import (
     LocalTransformerType,
@@ -1393,27 +1395,53 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     def get_lhotse_dataloader(self, dataset_cfg, mode='train') -> torch.utils.data.DataLoader:
         # TODO @xueyang: better to distinguish cfg. self.cfg is the model cfg, while cfg here is train_ds cfg. Also
         #   cfg is a classifier-free guidance.
-        dataset = MagpieTTSLhotseDataset(
-            sample_rate=self.sample_rate,
-            volume_norm=dataset_cfg.volume_norm,
-            codec_model_samples_per_frame=self.codec_model_samples_per_frame,
-            num_audio_codebooks=self.data_num_audio_codebooks,
-            prior_scaling_factor=0.0,
-            load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
-            dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
-            load_16khz_audio=False,
-            pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
-            context_duration_min=self.cfg.context_duration_min,
-            context_duration_max=self.cfg.context_duration_max,
-            use_text_conditioning_tokenizer=True,
-            text_conditioning_tokenizer_name=self.text_conditioning_tokenizer_name,
-            tokenizer_config=self.cfg.text_tokenizers,
-            phoneme_tokenizer_config=self.cfg.get("phoneme_tokenizer", None),
-            ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
-            phoneme_as_text_prob=self.phoneme_as_text_prob if mode == 'train' else 0.0,
-            pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
-            add_language_to_context_text=self.add_language_to_context_text,
-        )
+        if self.cfg.get("use_multiturn_dataset", False):
+            dataset = MagpieTTSLhotseMultiturnDataset(
+                sample_rate=self.sample_rate,
+                volume_norm=dataset_cfg.volume_norm,
+                codec_model_samples_per_frame=self.codec_model_samples_per_frame,
+                num_audio_codebooks=self.data_num_audio_codebooks,
+                prior_scaling_factor=0.0,
+                load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
+                dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
+                load_16khz_audio=False,
+                pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
+                context_duration_min=self.cfg.context_duration_min,
+                context_duration_max=self.cfg.context_duration_max,
+                use_text_conditioning_tokenizer=True,
+                text_conditioning_tokenizer_name=self.text_conditioning_tokenizer_name,
+                tokenizer_config=self.cfg.text_tokenizers,
+                phoneme_tokenizer_config=self.cfg.get("phoneme_tokenizer", None),
+                ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
+                add_language_to_context_text=self.add_language_to_context_text,
+                source_sample_rate=self.sample_rate,
+                input_roles=["user", "User"],
+                output_roles=["assistant", "Assistant", "agent", "Agent"],
+                add_text_bos_and_eos_in_each_turn=self.cfg.get("add_text_bos_and_eos_in_each_turn", False),
+                # pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
+            )
+        else:
+            dataset = MagpieTTSLhotseDataset(
+                sample_rate=self.sample_rate,
+                volume_norm=dataset_cfg.volume_norm,
+                codec_model_samples_per_frame=self.codec_model_samples_per_frame,
+                num_audio_codebooks=self.data_num_audio_codebooks,
+                prior_scaling_factor=0.0,
+                load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
+                dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
+                load_16khz_audio=False,
+                pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
+                context_duration_min=self.cfg.context_duration_min,
+                context_duration_max=self.cfg.context_duration_max,
+                use_text_conditioning_tokenizer=True,
+                text_conditioning_tokenizer_name=self.text_conditioning_tokenizer_name,
+                tokenizer_config=self.cfg.text_tokenizers,
+                phoneme_tokenizer_config=self.cfg.get("phoneme_tokenizer", None),
+                ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
+                phoneme_as_text_prob=self.phoneme_as_text_prob if mode == 'train' else 0.0,
+                pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
+                add_language_to_context_text=self.add_language_to_context_text,
+            )
 
         data_loader = get_lhotse_dataloader_from_config(
             config=dataset_cfg.dataset,
@@ -1421,6 +1449,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             world_size=self.world_size,
             dataset=dataset,
         )
+
         return data_loader
 
     def setup_training_data(self, dataset_cfg):
@@ -1452,7 +1481,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             )
 
     def _setup_test_dataloader(self, dataset_cfg) -> torch.utils.data.DataLoader:
-        if dataset_cfg.get("use_lhotse", False):
+        if self.cfg.get("use_lhotse", False):
             data_loader = self.get_lhotse_dataloader(dataset_cfg, mode='test')
         else:
             dataset = self.get_dataset(dataset_cfg, dataset_type='test')

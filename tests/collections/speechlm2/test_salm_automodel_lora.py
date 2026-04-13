@@ -136,9 +136,7 @@ class TestMakePeftConfig:
     def test_defaults(self):
         cfg = DictConfig({})
         pc = make_peft_config(cfg)
-        assert pc.dim == 8
-        assert pc.alpha == 32
-        assert pc.dropout == 0.0
+        assert pc is None
 
     def test_all_fields(self):
         cfg = DictConfig(

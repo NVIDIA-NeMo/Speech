@@ -44,7 +44,6 @@ class BatchedCacheFeatureBufferer:
         preprocessor_cfg: DictConfig,
         device: torch.device,
         fill_value: float = LOG_MEL_ZERO,
-        right_padding_ratio: float = 0.8,
     ):
         """
         Args:
@@ -55,7 +54,6 @@ class BatchedCacheFeatureBufferer:
             preprocessor_cfg (DictConfig): preprocessor configuration
             device (torch.device): device
             fill_value (float): fill value for the feature buffer
-            right_padding_ratio (float): right padding ratio
         """
         if buffer_size_in_secs < chunk_size_in_secs:
             raise ValueError(
@@ -68,7 +66,6 @@ class BatchedCacheFeatureBufferer:
         self.chunk_size_in_secs = chunk_size_in_secs
         self.preprocessor_cfg = preprocessor_cfg
         self.device = device
-        self.right_padding_ratio = right_padding_ratio
 
         self.is_buffer_size_equal_to_chunk_size = math.isclose(self.buffer_size_in_secs, self.chunk_size_in_secs)
         self.plus_one = 0 if self.is_buffer_size_equal_to_chunk_size else 1
@@ -142,12 +139,12 @@ class BatchedCacheFeatureBufferer:
         """
         signals = torch.vstack(audio_buffers).to(self.device)  # B x T
         signals_len = torch.tensor([signals.shape[1]] * signals.shape[0], device=self.device, dtype=torch.long)  # B
-        right_paddings = right_paddings * self.right_padding_ratio
         signals_len = signals_len - right_paddings.long()
-        features, _ = self.preprocessor(input_signal=signals, length=signals_len)
+        features, feature_lens = self.preprocessor(input_signal=signals, length=signals_len)
         if features.shape[2] > expected_feat_len:
             features = features[:, :, :expected_feat_len]  # B x F x T
-        right_padding = torch.floor(right_paddings / self.sample_rate / self.timestep_duration)  # B
+            feature_lens = feature_lens.clamp(max=expected_feat_len)
+        right_padding = (features.shape[2] - feature_lens).clamp(min=0).to(torch.long)
         return features, right_padding
 
     def _update_feature_buffer(self, slot_ids: list[int], feat_chunk: Tensor) -> None:

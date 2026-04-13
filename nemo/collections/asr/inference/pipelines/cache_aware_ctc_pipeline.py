@@ -143,6 +143,9 @@ class CacheAwareCTCPipeline(BasePipeline):
         # Expected feature buffer length for trimming (safeguard for feature buffer inputs)
         self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
+        # Extra padding (in samples) to treat as valid speech on the last frame
+        self.tail_margin_size = int(cfg.streaming.tail_margin_size * self.sample_rate)
+
     def init_greedy_ctc_decoder(self) -> None:
         """Initialize the CTC decoder."""
         check_existance_of_required_attributes(self, ['vocabulary', 'conf_func'])
@@ -428,5 +431,6 @@ class CacheAwareCTCPipeline(BasePipeline):
             buffer_size_in_secs=self.buffer_size_in_secs,
             device=self.device,
             pad_last_frame=True,
+            tail_margin_size=self.tail_margin_size,
         )
         return request_generator

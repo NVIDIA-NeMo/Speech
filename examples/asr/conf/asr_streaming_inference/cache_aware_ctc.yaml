@@ -71,6 +71,7 @@ streaming:
   sample_rate: 16000                          # Audio sample rate in Hz
   batch_size: 256                             # Number of audio frames per batch
   word_boundary_tolerance: 4                  # Tolerance for word boundaries
+  tail_margin_size: 0.4                       # Extra padding (in seconds) to treat as valid speech on the last frame
   att_context_size: [70,13]                   # Attention context size: [70,13],[70,6],[70,1],[70,0]
   use_cache: true                             # Whether to use cache for streaming
   use_feat_cache: true                        # Whether to cache mel-spec features, set false to re-calculate all mel-spec features in audio buffer

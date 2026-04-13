@@ -102,6 +102,7 @@ class ContinuousBatchedFrameStreamer:
         batch_size: int,
         n_frames_per_stream: int,
         pad_last_frame: bool = False,
+        tail_margin_size: int = 0,
     ):
         """
         Args:
@@ -110,12 +111,14 @@ class ContinuousBatchedFrameStreamer:
             batch_size (int): The batch size
             n_frames_per_stream (int): The number of frames per stream
             pad_last_frame (bool): Whether to pad the last frame
+            tail_margin_size (int): Number of zero-padding samples to treat as valid speech on the last frame
         """
 
         self.sample_rate = sample_rate
         self.frame_size_in_secs = frame_size_in_secs
         self.batch_size = batch_size
         self.pad_last_frame = pad_last_frame
+        self.tail_margin_size = tail_margin_size
 
         self.multi_streamer = MultiStream(n_frames_per_stream=n_frames_per_stream)
         self.stream_id = 0
@@ -175,7 +178,11 @@ class ContinuousBatchedFrameStreamer:
 
         # Create a new stream
         stream = MonoStream(
-            self.sample_rate, self.frame_size_in_secs, stream_id=self.stream_id, pad_last_frame=self.pad_last_frame
+            self.sample_rate,
+            self.frame_size_in_secs,
+            stream_id=self.stream_id,
+            pad_last_frame=self.pad_last_frame,
+            tail_margin_size=self.tail_margin_size,
         )
         # Load the next audio file
         audio_filepath = self.audio_filepaths[self.stream_id]
@@ -243,7 +250,7 @@ class ContinuousBatchedRequestStreamer:
         device: torch.device = None,
         pad_last_frame: bool = False,
         right_pad_features: bool = False,
-        tail_padding_in_samples: int = 0,
+        tail_margin_size: int = 0,
     ):
         """
         Args:
@@ -257,7 +264,7 @@ class ContinuousBatchedRequestStreamer:
             device (torch.device): The device to use, required for request type FEATURE_BUFFER
             pad_last_frame (bool): Whether to pad the last frame
             right_pad_features (bool): Whether to right pad the features, optional for request type FEATURE_BUFFER
-            tail_padding_in_samples (int): The tail padding in samples, optional for request type FEATURE_BUFFER
+            tail_margin_size (int): The tail padding in samples, optional for request type FEATURE_BUFFER
         """
 
         if request_type is RequestType.FEATURE_BUFFER:
@@ -275,6 +282,7 @@ class ContinuousBatchedRequestStreamer:
             batch_size=batch_size,
             n_frames_per_stream=n_frames_per_stream,
             pad_last_frame=pad_last_frame,
+            tail_margin_size=tail_margin_size,
         )
 
         if self.request_type is RequestType.FEATURE_BUFFER:
@@ -284,7 +292,6 @@ class ContinuousBatchedRequestStreamer:
                 sample_rate=sample_rate, buffer_size_in_secs=buffer_size_in_secs
             )
             self.right_pad_features = right_pad_features
-            self.tail_padding_in_samples = tail_padding_in_samples
 
     def set_audio_filepaths(self, audio_filepaths: list[str], options: list[RequestOptions]) -> None:
         """
@@ -351,10 +358,9 @@ class ContinuousBatchedRequestStreamer:
         buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
 
         # Calculate right paddings and subtract from buffer lens
-        # tail_padding_in_samples is used to keep some amount of padding at the end of the buffer
-        # some models perform better with this padding
+        # tail_margin_size is already included in frame.valid_size by MonoStream
         right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
+            [frame.size - frame.valid_size for frame in frames], device=self.device
         ).clamp(min=0)
 
         # Subtract right paddings from buffer lens

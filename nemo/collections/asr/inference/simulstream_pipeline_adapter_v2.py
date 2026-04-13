@@ -94,7 +94,7 @@ def create_nemo_pipeline_from_config(config_path: str):
     return PipelineBuilder.build_pipeline(cfg)
 
 
-class NeMoStreamingPipelineAdapter(SpeechProcessor):
+class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
     """
     Adapter to use NeMo's streaming pipelines with simulstream evaluation.
 

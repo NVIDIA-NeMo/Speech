@@ -61,7 +61,7 @@ def get_latency_unit(code: str) -> str:
     return LANGUAGE_CODE_TO_LATENCY_UNIT.get(code, "word")
 
 
-def add_simulstream_fields(cfg_path: str, output_dir: str, src_lang: str = None, tgt_lang: str = None, overrides: list = None) -> str:
+def add_simulstream_fields(cfg_path: str, output_dir: str, src_lang: str = None, tgt_lang: str = None, overrides: list = None, use_adapter_v2: bool = False) -> str:
     """
     Load NeMo config and add simulstream-required fields.
 
@@ -113,7 +113,10 @@ def add_simulstream_fields(cfg_path: str, output_dir: str, src_lang: str = None,
         
         # Add required fields (including detokenizer for evaluation)
         simulstream_fields = OmegaConf.create({
-            'type': 'nemo.collections.asr.inference.simulstream_pipeline_adapter.NeMoStreamingPipelineAdapter',
+            'type': (
+                'nemo.collections.asr.inference.simulstream_pipeline_adapter.NeMoStreamingPipelineAdapterV2'
+                if use_adapter_v2 else
+                'nemo.collections.asr.inference.simulstream_pipeline_adapter.NeMoStreamingPipelineAdapter'),
             'speech_chunk_size': speech_chunk_size,
             'detokenizer_type': 'simuleval',  # For metrics evaluation
             'latency_unit': get_latency_unit(tgt_lang),  # For metrics evaluation
@@ -171,6 +174,11 @@ def main():
         required=True,
         help='Target language code (e.g., "en", "es")'
     )
+
+    parser.add_argument(
+        '--use-adapter-v2',
+        action="store_true"
+    )
     
     # Optional arguments
     parser.add_argument(
@@ -208,7 +216,7 @@ def main():
 
         metrics_log_dir = str(Path(args.metrics_log).parent)
         config_path = add_simulstream_fields(
-            args.config, metrics_log_dir, args.src_lang, args.tgt_lang, overrides
+            args.config, metrics_log_dir, args.src_lang, args.tgt_lang, overrides, use_adapter_v2=args.use_adapter_v2,
         )
 
         simulstream_cmd = shutil.which('simulstream_inference')

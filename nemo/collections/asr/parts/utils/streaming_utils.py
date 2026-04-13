@@ -2209,7 +2209,7 @@ class ContextSize:
             # move all samples to chunk, empty right part
             self.chunk = self.right
             self.right = 0
-        else:
+        elif self.right > expected_context.chunk:
             self.chunk = expected_context.chunk
             self.right -= expected_context.chunk
         extra_samples = max(self.total() - expected_context.total(), 0)
@@ -2268,8 +2268,15 @@ class ContextSizeBatch:
         self.chunk.fill_(0)
         self.right += num_frames_batch
 
-        self.chunk = torch.where(is_last_chunk_batch, self.right, expected_context.chunk)
-        self.right = torch.where(is_last_chunk_batch, 0, self.right - expected_context.chunk)
+        right_context_has_extra = self.right > expected_context.right
+        self.chunk = torch.where(
+            is_last_chunk_batch, self.right, torch.where(right_context_has_extra, expected_context.chunk, 0)
+        )
+        self.right = torch.where(
+            is_last_chunk_batch,
+            0,
+            torch.where(right_context_has_extra, self.right - expected_context.chunk, self.right),
+        )
 
         # fix left context
         self.left = torch.where(self.chunk > 0, self.left, 0)

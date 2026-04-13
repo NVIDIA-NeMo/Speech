@@ -51,13 +51,10 @@ from vllm.distributed import destroy_model_parallel
 from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
-from nemo.collections.asr.parts.utils.streaming_utils import (
-    ContextSize,
-    StreamingBatchedAudioBuffer,
-)
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
+from nemo.collections.asr.parts.utils.streaming_utils import ContextSize, StreamingBatchedAudioBuffer
 from nemo.collections.asr.parts.utils.transcribe_utils import get_inference_device, get_inference_dtype, setup_model
 from nemo.utils import logging
-from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 
 try:
     from simulstream.server.speech_processors import SAMPLE_RATE, SpeechProcessor
@@ -432,63 +429,89 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         if audio.ndim > 1:
             raise ValueError("Simulstream processes only one audio at a time (batch size 1).")
 
-        expected_chunk_size = int(16000 * self.context_samples.chunk)
         audio_length = len(audio)
-        is_last_chunk = audio_length < expected_chunk_size
-        #     audio = np.concatenate([audio, np.zeros(expected_chunk_size - audio_length)])
+        is_last_chunk = audio_length < self.context_samples.chunk
         # Convert audio to torch tensor
-        audio_tensor = torch.from_numpy(audio).float().to(self.asr_device)
+        audio_tensor = torch.from_numpy(audio[None, :]).float().to(self.asr_device)
 
         if self.is_first_chunk and self.per_stream_boosting_requests is not None:
             biasing_cfg = self.per_stream_boosting_requests[self.stream_id]
         else:
             biasing_cfg = None
 
+        multi_biasing_ids = None
         if biasing_cfg is not None:
             # TODO: implement
             raise NotImplementedError
 
-        is_last_chunk_batch = (torch.full([1], fill_value=is_last_chunk, device=self.asr_device),)
-        self.buffer.add_audio_batch_(
-            audio_tensor,
-            audio_lengths=torch.full([1], fill_value=audio_length, device=self.asr_device),
-            is_last_chunk=is_last_chunk,
-            is_last_chunk_batch=is_last_chunk_batch,
-        )
+        is_last_chunk_batch = torch.full([1], fill_value=is_last_chunk, device=self.asr_device)
+        with torch.inference_mode(), torch.no_grad():
+            self.buffer.add_audio_batch_(
+                audio_tensor,
+                audio_lengths=torch.full([1], fill_value=audio_length, device=self.asr_device),
+                is_last_chunk=is_last_chunk,
+                is_last_chunk_batch=is_last_chunk_batch,
+            )
 
-        # get encoder output using full buffer [left-chunk-right]
-        encoder_output, encoder_output_len = self.asr_model(
-            input_signal=self.buffer.samples,
-            input_signal_length=self.buffer.context_size_batch.total(),
-        )
-        encoder_output = encoder_output.transpose(1, 2)  # [B, T, C]
-        # remove extra context from encoder_output (leave only frames corresponding to the chunk)
-        encoder_context = self.buffer.context_size.subsample(factor=self.encoder_frame2audio_samples)
-        encoder_context_batch = self.buffer.context_size_batch.subsample(factor=self.encoder_frame2audio_samples)
-        # remove left context
-        encoder_output = encoder_output[:, encoder_context.left :]
-        encoder_output_len_to_decode = torch.where(
-            is_last_chunk_batch,
-            encoder_output_len - encoder_context_batch.left,
-            encoder_context_batch.chunk,
-        )
-        chunk_batched_hyps, _, self.decoding_state = self.asr_model.decoding.decoding.decoding_computer(
-            x=encoder_output,
-            out_len=encoder_output_len_to_decode,
-            prev_batched_state=self.decoding_state,
-            multi_biasing_ids=None,  # multi_biasing_ids,
-        )
+            # get encoder output using full buffer [left-chunk-right]
+            encoder_output, encoder_output_len = self.asr_model(
+                input_signal=self.buffer.samples,
+                input_signal_length=self.buffer.context_size_batch.total(),
+            )
+            encoder_output = encoder_output.transpose(1, 2)  # [B, T, C]
+            # remove extra context from encoder_output (leave only frames corresponding to the chunk)
+            encoder_context = self.buffer.context_size.subsample(factor=self.encoder_frame2audio_samples)
+            encoder_context_batch = self.buffer.context_size_batch.subsample(factor=self.encoder_frame2audio_samples)
+            # remove left context
+            encoder_output = encoder_output[:, encoder_context.left :]
+            encoder_output_len_to_decode = torch.where(
+                is_last_chunk_batch,
+                encoder_output_len - encoder_context_batch.left,
+                encoder_context_batch.chunk,
+            )
+            batched_hyps_chunk, _, self.decoding_state = self.asr_model.decoding.decoding.decoding_computer(
+                x=encoder_output,
+                out_len=encoder_output_len_to_decode,
+                prev_batched_state=self.decoding_state,
+                multi_biasing_ids=multi_biasing_ids,
+            )
         # merge hyps with previous hyps
-        hyp_len = chunk_batched_hyps.current_lengths[0].cpu().item()
-        transcript = chunk_batched_hyps.transcript[0, :hyp_len].cpu().tolist()
-        timestamps = chunk_batched_hyps.timestamps[0, :hyp_len].cpu().tolist()
-        text = self.asr_model.tokenizer.ids_to_text(transcript)
+        hyp_len = batched_hyps_chunk.current_lengths[0].cpu().item()
+        if hyp_len:
+            transcript = batched_hyps_chunk.transcript[0, :hyp_len].cpu().tolist()
+            timestamps = batched_hyps_chunk.timestamps[0, :hyp_len].cpu().tolist()
+            text = self.asr_model.tokenizer.ids_to_text(transcript)
+        else:
+            transcript = []
+            timestamps = []
+            text = ""
+
         text_rc = ""
-
         if not is_last_chunk:
-            ...
+            with torch.inference_mode(), torch.no_grad():
+                decoded_len = encoder_output_len_to_decode[0].item()
+                encoder_output = encoder_output[:, decoded_len:]
+                # shift_indices = torch.arange(max_time, device=self.asr_device, dtype=torch.long)[None, :] + enc_lens_chunk[:, None]
+                # # pad with zeros everything beyond needed context
+                # shift_indices = torch.where(shift_indices < max_time, shift_indices, torch.zeros_like(shift_indices))
+                batched_hyps_rc, _, _ = self.asr_model.decoding.decoding.decoding_computer(
+                    # torch.gather(encs_dim_last, dim=1, index=shift_indices[:, :, None].expand(-1, -1, feat_dim)),
+                    x=encoder_output,
+                    out_len=encoder_context_batch.right,
+                    prev_batched_state=self.decoding_state,
+                    multi_biasing_ids=multi_biasing_ids,
+                )
+            hyp_len_rc = batched_hyps_rc.current_lengths[0].cpu().item()
+            if hyp_len_rc > 0:
+                transcript_rc = batched_hyps_rc.transcript[0, :hyp_len_rc].cpu().tolist()
+                timestamps_rc = batched_hyps_rc.timestamps[0, :hyp_len_rc].cpu().tolist()
+                text_rc = self.asr_model.tokenizer.ids_to_text(transcript_rc)
+            else:
+                transcript_rc = []
+                timestamps_rc = []
+                text_rc = ""
 
-        logging.warning(f"Text: {text}" + (f"[{text_rc}]" if text_rc else ""))
+        logging.warning(f"Text: {text}" + (f" [{text_rc}]" if text_rc else ""))
 
         return IncrementalOutput(
             new_tokens=[],

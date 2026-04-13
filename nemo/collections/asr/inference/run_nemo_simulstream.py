@@ -114,7 +114,7 @@ def add_simulstream_fields(cfg_path: str, output_dir: str, src_lang: str = None,
         # Add required fields (including detokenizer for evaluation)
         simulstream_fields = OmegaConf.create({
             'type': (
-                'nemo.collections.asr.inference.simulstream_pipeline_adapter.NeMoStreamingPipelineAdapterV2'
+                'nemo.collections.asr.inference.simulstream_pipeline_adapter_v2.NeMoStreamingPipelineAdapterV2'
                 if use_adapter_v2 else
                 'nemo.collections.asr.inference.simulstream_pipeline_adapter.NeMoStreamingPipelineAdapter'),
             'speech_chunk_size': speech_chunk_size,

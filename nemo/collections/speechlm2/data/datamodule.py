@@ -160,6 +160,7 @@ class DataModule(LightningDataModule):
                     dp_rank = (
                         dm["dp_replicate"].get_local_rank() * dm["dp_shard"].size() + dm["dp_shard"].get_local_rank()
                     )
+                return dp_rank
             else:
                 return torch.distributed.get_rank()  # plain ol' DDP
         else:
@@ -178,6 +179,7 @@ class DataModule(LightningDataModule):
                     "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
                 ):  # AutomodelParallelStrategy
                     dp_size = dm["dp_replicate", "dp_shard"].size()
+                return dp_size
             else:  # plain ol' DDP
                 return torch.distributed.get_world_size()
         else:

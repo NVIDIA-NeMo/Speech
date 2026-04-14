@@ -21,10 +21,8 @@ from lhotse import CutSet
 from lhotse.testing.dummies import DummyManifest
 from omegaconf import DictConfig
 
-_TORCH_VERSION = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
-pytestmark = pytest.mark.skipif(
-    _TORCH_VERSION < (2, 10),
-    reason="LocalTensorMode requires PyTorch >= 2.10",
+_local_tensor = pytest.importorskip(
+    "torch.distributed._local_tensor", reason="Local tensor mode requires PyTorch >= 2.10"
 )
 
 from lightning.pytorch.strategies.model_parallel import _setup_device_mesh

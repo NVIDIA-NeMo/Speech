@@ -14,8 +14,9 @@ weight checkpoints and demos!
 ## Updates
 
 > The first release of NeMo Speech after NeMo repository split is scheduled for June 2026, as the repo undergoes transformation.
-> For the latest stable released version, please use [the 26.02 NGC container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=26.02.nemotron_3_super).
+> For the latest stable released version, please use [the 26.02 NGC container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=26.02).
 
+- 2026-04: [Parakeet-unified-en-0.6b](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) has been released with high-quality offline and streaming (with a minimum latency of 160ms) inference in one model for English language with punctuation and capitalization support. 
 - 2026-03: [Nemotron 3 VoiceChat](https://build.nvidia.com/nvidia/nemotron-voicechat/modelcard) is now released in Early Access. Built on the Nemotron Nano v2 LLM backbone with Nemotron speech and TTS decoder, VoiceChat delivers full-duplex, natural, interruptible conversations with low latency. Try out [the demo](https://build.nvidia.com/nvidia/nemotron-voicechat) and apply for [early access](https://developer.nvidia.com/nemotron-voicechat-early-access).
 - 2026-03: [Nemotron-Speech-Streaming v2603](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) has been
     updated. It has been trained on a larger and more diverse corpus, resulting in lower WER across all latency modes.
@@ -40,8 +41,7 @@ weight checkpoints and demos!
 
 NVIDIA NeMo Speech is built for researchers and PyTorch developers working on Speech models including Automatic Speech
 Recognition (ASR), Text to Speech (TTS), and Speech LLMs. It is designed to help you efficiently create, customize, and
-deploy new It is designed to help you efficiently create, customize, and deploy new AI models by leveraging existing
-code and pre-trained model checkpoints.
+deploy new AI models by leveraging existing code and pre-trained model checkpoints.
 
 For technical documentation, please see the
 [NeMo Framework User Guide](https://docs.nvidia.com/nemo/speech/nightly/).

@@ -221,6 +221,14 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             else:
                 batch_tokenizer_names.append("english_phoneme")
 
+        def _align_codebooks(t):
+            C = t.shape[1]
+            if C < self.num_audio_codebooks:
+                return F.pad(t, (0, self.num_audio_codebooks - C))
+            elif C > self.num_audio_codebooks:
+                return t[:, :self.num_audio_codebooks]
+            return t
+
         with fp32_precision():
             target_audio, target_audio_lens = collate_audio(
                 cuts.resample(self.sample_rate, recording_field="target_audio"), recording_field="target_audio"
@@ -287,7 +295,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if not speaker_found:
                 dataset_name = "unknown"
             dataset_name_list.append(dataset_name)
-            print("Language is available?", cut.has_custom("lang"), " Has codes?", cut.has_custom("target_codes"), "Has context audio?", cut.has_custom("context_audio"), "Has context codes?", cut.has_custom("context_codes"))
+            # print("Language is available?", cut.has_custom("lang"), " Has codes?", cut.has_custom("target_codes"), "Has context audio?", cut.has_custom("context_audio"), "Has context codes?", cut.has_custom("context_codes"))
 
             language = cut.lang if cut.has_custom("lang") else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
             language_list.append(language)
@@ -314,8 +322,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                     _num_repeats = int(np.ceil(_num_frames_to_slice / context_audio_codes.shape[1]))
                     context_audio_codes = context_audio_codes.repeat(1, _num_repeats)[:, :_num_frames_to_slice]
 
-                context_audio_codes_list.append(context_audio_codes.T)
-                context_audio_codes_len_list.append(context_audio_codes.T.shape[0])
+                context_audio_codes = _align_codebooks(context_audio_codes.T)
+                context_audio_codes_list.append(context_audio_codes)
+                context_audio_codes_len_list.append(context_audio_codes.shape[0])
                 
             elif cut.has_custom("context_audio"):
                 with fp32_precision():
@@ -348,6 +357,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                         start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)
                         num_frames = int(sup.duration * self.sample_rate / self.codec_model_samples_per_frame)
                         context_audio_codes = torch.from_numpy(codes_array)[:, start_frame : start_frame + num_frames].T
+                        context_audio_codes = _align_codebooks(context_audio_codes)
                     else:
                         context_audio_codes = torch.zeros([0, self.num_audio_codebooks], dtype=torch.int32)
                     context_audio_codes_list.append(context_audio_codes)

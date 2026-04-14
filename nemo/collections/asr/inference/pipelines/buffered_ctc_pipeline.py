@@ -100,8 +100,6 @@ class BufferedCTCPipeline(BasePipeline):
         self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
         self.return_tail_result = cfg.return_tail_result
 
-        # Extra padding (in samples) to treat as valid speech on the last frame
-        self.tail_margin_size = int(cfg.streaming.tail_margin_size * self.sample_rate)
         self.zero_log_probs = self.init_zero_log_probs() if self.right_padding else None
 
     def init_endpointer(self) -> None:
@@ -239,7 +237,7 @@ class BufferedCTCPipeline(BasePipeline):
             buffers.append(buffer.unsqueeze_(0))
 
         # Only final frames have right padding
-        # Calculate right paddings (tail_margin_size is already included in frame.valid_size by MonoStream)
+        # Calculate right paddings
         right_paddings = torch.tensor(
             [frame.size - frame.valid_size for frame in frames], device=self.device
         ).clamp(min=0)
@@ -442,6 +440,5 @@ class BufferedCTCPipeline(BasePipeline):
             device=self.device,
             pad_last_frame=True,
             right_pad_features=self.right_padding,
-            tail_margin_size=self.tail_margin_size,
         )
         return request_generator

@@ -149,9 +149,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
 
-        # Extra padding (in samples) to treat as valid speech on the last frame
-        self.tail_margin_size = int(cfg.streaming.tail_margin_size * self.sample_rate)
-
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
         check_existance_of_required_attributes(self, ['vocabulary', 'conf_func'])
@@ -493,6 +490,5 @@ class CacheAwareRNNTPipeline(BasePipeline):
             buffer_size_in_secs=self.buffer_size_in_secs,
             device=self.device,
             pad_last_frame=True,
-            tail_margin_size=self.tail_margin_size,
         )
         return request_generator

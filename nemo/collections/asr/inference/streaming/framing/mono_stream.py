@@ -25,28 +25,18 @@ class MonoStream(Stream):
     Iterates over the frames of the audio file
     """
 
-    def __init__(
-        self,
-        rate: int,
-        frame_size_in_secs: float,
-        stream_id: int,
-        pad_last_frame: bool = False,
-        tail_margin_size: int = 0,
-    ):
+    def __init__(self, rate: int, frame_size_in_secs: float, stream_id: int, pad_last_frame: bool = False):
         """
         Initialize the MonoStream
         Args:
             rate (int): sampling rate
             frame_size_in_secs (int): frame length in seconds
             stream_id (int): stream id
-            pad_last_frame (bool): whether to pad the last frame to full frame size
-            tail_margin_size (int): number of zero-padding samples to treat as valid speech on the last frame
         """
 
         self.rate = rate
         self.frame_size = int(frame_size_in_secs * rate)
         self.pad_last_frame = pad_last_frame
-        self.tail_margin_size = tail_margin_size
 
         self.samples = None
         self.n_samples = None
@@ -106,20 +96,12 @@ class MonoStream(Stream):
 
             # Package the frame
             is_first = self.frame_count == 0
-
-            # For the last frame, include tail padding in the valid length
-            # so downstream code treats that portion of zero-padding as speech.
-            if is_end and self.tail_margin_size > 0:
-                effective_length = min(chunk_length + self.tail_margin_size, chunk_samples.shape[0])
-            else:
-                effective_length = chunk_length
-
             frame = Frame(
                 samples=chunk_samples,
                 stream_id=self.stream_id,
                 is_first=is_first,
                 is_last=is_end,
-                length=effective_length,
+                length=chunk_length,
                 options=self.options if is_first else None,
             )
 

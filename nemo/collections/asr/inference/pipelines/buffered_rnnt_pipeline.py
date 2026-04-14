@@ -132,8 +132,6 @@ class BufferedRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
         self.tokens_to_move = self.punctuation_ids.union(self.language_token_ids)
 
-        # Extra padding (in samples) to treat as valid speech on the last frame
-        self.tail_margin_size = int(cfg.streaming.tail_margin_size * self.sample_rate)
         self.zero_encoded = self.init_zero_enc() if self.right_padding else None
 
     def init_endpointer(self) -> None:
@@ -314,7 +312,7 @@ class BufferedRNNTPipeline(BasePipeline):
             buffers.append(buffer.unsqueeze_(0))
 
         # Only final frames have right padding
-        # Calculate right paddings (tail_margin_size is already included in frame.valid_size by MonoStream)
+        # Calculate right paddings
         right_paddings = torch.tensor(
             [frame.size - frame.valid_size for frame in frames], device=self.device
         ).clamp(min=0)
@@ -808,6 +806,5 @@ class BufferedRNNTPipeline(BasePipeline):
             device=self.device,
             pad_last_frame=True,
             right_pad_features=self.right_padding,
-            tail_margin_size=self.tail_margin_size,
         )
         return request_generator

@@ -420,6 +420,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
                     BiasingRequestItemConfig(
                         BoostingTreeModelConfig(key_phrases_list=item["key_phrases_list"]),
                         boosting_model_alpha=boosting_model_alpha,
+                        auto_manage_multi_model=False,
                     )
                     for item in boosting_requests_raw
                 ]
@@ -518,15 +519,23 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         # Convert audio to torch tensor
         audio_tensor = torch.from_numpy(audio[None, :]).float().to(self.asr_device)
 
-        if self.is_first_chunk and self.per_stream_boosting_requests is not None:
-            biasing_cfg = self.per_stream_boosting_requests[self.stream_id]
+        if self.per_stream_boosting_requests is not None:
+            biasing_request = self.per_stream_boosting_requests[self.stream_id]
         else:
-            biasing_cfg = None
+            biasing_request = None
 
-        multi_biasing_ids = None
-        if biasing_cfg is not None:
-            # TODO: implement
-            raise NotImplementedError
+        if biasing_request is not None and (not biasing_request.is_empty()):
+            if self.is_first_chunk:
+                biasing_request.add_to_multi_model(
+                    tokenizer=self.asr_model.tokenizer,
+                    biasing_multi_model=self.asr_model.decoding.decoding.decoding_computer.biasing_multi_model,
+                )
+
+            multi_biasing_ids = torch.full(
+                [1], fill_value=biasing_request.multi_model_id, dtype=torch.long, device=self.asr_device
+            )
+        else:
+            multi_biasing_ids = None
 
         is_last_chunk_batch = torch.full([1], fill_value=is_last_chunk, device=self.asr_device)
         with torch.inference_mode(), torch.no_grad():
@@ -804,6 +813,16 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         # Finalize current stream if we've processed anything
         if not self.is_first_chunk:
             self.end_of_stream()
+
+        if self.per_stream_boosting_requests is not None:
+            biasing_request = self.per_stream_boosting_requests[self.stream_id]
+        else:
+            biasing_request = None
+        if biasing_request is not None and (not biasing_request.is_empty()):
+            assert biasing_request.multi_model_id is not None
+            self.asr_model.decoding.decoding.decoding_computer.biasing_multi_model.remove_model(
+                biasing_request.multi_model_id
+            )
 
         logging.info(f"Finished transcribing stream {self.stream_id}")
 

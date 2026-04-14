@@ -27,9 +27,8 @@ pytestmark = pytest.mark.skipif(
     reason="LocalTensorMode requires PyTorch >= 2.10",
 )
 
-from torch.distributed._local_tensor import LocalTensorMode  # noqa: E402
-
 from lightning.pytorch.strategies.model_parallel import _setup_device_mesh
+from torch.distributed._local_tensor import LocalTensorMode  # noqa: E402
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
@@ -39,7 +38,6 @@ nemo_automodel = pytest.importorskip("nemo_automodel")
 from nemo_automodel.components.distributed.config import FSDP2Config  # noqa: E402
 
 from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -178,9 +176,9 @@ def test_dp_rank_via_strategy(fake_dist, pp, dp_rep, dp_shard, cp, tp):
         for ds in range(dp_shard):
             ranks_in_group = mesh_tensor[:, dr, ds, :, :].flatten().tolist()
             dp_ranks_in_group = {manual[r] for r in ranks_in_group}
-            assert len(dp_ranks_in_group) == 1, (
-                f"DP group (dp_rep={dr}, dp_shard={ds}) maps to multiple dp_ranks: {dp_ranks_in_group}"
-            )
+            assert (
+                len(dp_ranks_in_group) == 1
+            ), f"DP group (dp_rep={dr}, dp_shard={ds}) maps to multiple dp_ranks: {dp_ranks_in_group}"
 
 
 def test_non_dp_dims_share_dp_rank(fake_dist):
@@ -365,9 +363,9 @@ def test_dp_rank_via_lightning_model_parallel(fake_dist, dp_size, tp_size):
     for dp_coord in range(dp_size):
         ranks_in_group = mesh_tensor[dp_coord, :].flatten().tolist()
         dp_ranks_in_group = {rank_to_dp[r] for r in ranks_in_group}
-        assert len(dp_ranks_in_group) == 1, (
-            f"DP group (data_parallel={dp_coord}) maps to multiple dp_ranks: {dp_ranks_in_group}"
-        )
+        assert (
+            len(dp_ranks_in_group) == 1
+        ), f"DP group (data_parallel={dp_coord}) maps to multiple dp_ranks: {dp_ranks_in_group}"
 
 
 def test_lightning_tp_variation_does_not_change_dp_rank(fake_dist):

@@ -31,6 +31,7 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 
@@ -1420,6 +1421,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 add_text_bos_and_eos_in_each_turn=self.cfg.get("add_text_bos_and_eos_in_each_turn", False),
                 # pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
             )
+            dataset = FallbackDataset(dataset)
         else:
             dataset = MagpieTTSLhotseDataset(
                 sample_rate=self.sample_rate,
@@ -1481,7 +1483,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             )
 
     def _setup_test_dataloader(self, dataset_cfg) -> torch.utils.data.DataLoader:
-        if self.cfg.get("use_lhotse", False):
+        if dataset_cfg.get("use_lhotse", False):
             data_loader = self.get_lhotse_dataloader(dataset_cfg, mode='test')
         else:
             dataset = self.get_dataset(dataset_cfg, dataset_type='test')

@@ -812,131 +812,92 @@ def cut_to_conversation(
     )
 
 
-@data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
-def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
-    """
-    Convert a CutSet with overlapping agent/user segments into a standard S2S duplex format.
+def _filter_cer_fn(cut: Cut, max_cer: float) -> bool:
+    return (
+        len(cut.supervisions) == 0
+        or not cut.supervisions[0].has_custom("cer")
+        or cut.supervisions[0].cer <= max_cer
+    )
 
-    Use Case:
-        This parser is designed for conversational data where agent and user speech can overlap
-        in time (e.g., natural turn-taking with interruptions or backchanneling). The input
-        format stores agent and user segments separately as `agent_segments` and `user_segments`
-        attributes on each cut. This function converts them into a unified timeline of sequential
-        SupervisionSegments, which is the standard format expected by DuplexS2S models.
+def _filter_val_flag_fn(cut: Cut, keep_flag: str) -> bool:
+    return not cut.has_custom("validation_status") or cut.validation_status == keep_flag
 
-    Expected Input Data Format:
-        Each cut should have:
-        - cut.agent_segments: List[Dict] with keys:
-            - "start" (float): Start time in seconds
-            - "end" (float): End time in seconds
-            - "text" (str): Agent's transcription
-        - cut.user_segments: List[Dict] with keys:
-            - "start" (float): Start time in seconds
-            - "end" (float): End time in seconds
-            - "text" (str): User's transcription
+def _filter_secs_fn(cut: Cut, min_sim: float) -> bool:
+    return (
+        len(cut.supervisions) == 0
+        or not cut.supervisions[0].has_custom("context_speaker_similarity")
+        or cut.supervisions[0].context_speaker_similarity >= min_sim
+    )
 
-    Example:
-        Input cut with overlapping segments:
-            cut.agent_segments = [
-                {"start": 0.5, "end": 2.0, "text": "Hello, how can I help?"},
-                {"start": 3.0, "end": 4.5, "text": "Sure, I can do that."}
-            ]
-            cut.user_segments = [
-                {"start": 1.8, "end": 3.2, "text": "I need assistance"},
-                {"start": 4.0, "end": 5.5, "text": "Thank you"}
-            ]
+def _filter_target_speaker_fn(cut: Cut, target_speaker: str) -> bool:
+    return len(cut.supervisions) == 0 or target_speaker is None or target_speaker in cut.supervisions[0].speaker
 
-        Output cut.supervisions (sorted by start time):
-            [
-                SupervisionSegment(start=0.5, duration=1.5, text="Hello, how can I help?", speaker="agent"),
-                SupervisionSegment(start=1.8, duration=1.4, text="I need assistance", speaker="user"),
-                SupervisionSegment(start=3.0, duration=1.5, text="Sure, I can do that.", speaker="agent"),
-                SupervisionSegment(start=4.0, duration=1.5, "Thank you", speaker="user")
-            ]
+def _create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
+    with io.BytesIO() as buffer:
+        sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
+        buffer.seek(0)
+        return Recording.from_bytes(buffer.read(), recording_id=recording_id)
 
-    Args:
-        config: Dictionary containing parser options:
-            - move_agent_text_back_by (float): Time offset to shift agent text back (default: 0).
-                Useful for aligning agent text with earlier audio timing.
-            - filter_samples_starting_with_agent (bool): Whether to remove samples starting with agent (default: False).
-                When True, only keeps samples where the first speaker is a user.
-            - agent_roles (List[str]): Roles considered as agent (default: ["agent", "Assistant", "assistant"]).
+def _convert_cut_fn(cut: Cut, sample_rate: int, add_extra_end_sil: bool, extra_end_silence_range: list) -> Cut:
+    orig_agent_sup = fastcopy(cut.supervisions[0])
+    target_audio_orig_dur = cut.target_audio.duration
 
-    Returns:
-        Tuple[CutSet, bool]: Converted cuts with unified supervisions, and a flag indicating if the data was tarred.
-    """
-    move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
-    filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
-    agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
+    cut.target_audio = cut.target_audio.resample(sample_rate)
+    cut.context_audio = cut.context_audio.resample(sample_rate)
+    total_duration = cut.target_audio.duration
 
-    cuts, is_tarred = read_cutset_from_config(config)
+    cut_target = MonoCut(
+        id=f"{cut.id}_target",
+        start=0.0,
+        duration=total_duration,
+        channel=0,
+        recording=cut.target_audio,
+        supervisions=[],
+    )
 
-    def filter_cuts_starting_with_agent_fn(cuts: CutSet, agent_roles: Tuple[str, ...]) -> CutSet:
-        """Remove cuts where the first supervision belongs to an agent role."""
+    zero_audio = np.zeros((1, int(total_duration * sample_rate)), dtype=np.float32)
+    source_recording = _create_recording_from_array(zero_audio, sample_rate, recording_id=f"{cut.id}_source")
 
-        def _filter_fn(cut: Cut) -> bool:
-            if not cut.supervisions:
-                return False
-            cut.supervisions = sorted(cut.supervisions, key=lambda s: s.start)
-            return cut.supervisions[0].speaker not in agent_roles
+    cut_source = MonoCut(
+        id=f"{cut.id}_source",
+        start=0.0,
+        duration=total_duration,
+        channel=0,
+        recording=source_recording,
+        supervisions=[],
+        custom=deepcopy(cut.custom) if cut.custom is not None else None,
+    )
 
-        return cuts.filter(_filter_fn)
+    cut_source = cut_source.move_to_memory(audio_format='wav')
+    cut_target = cut_target.move_to_memory(audio_format='wav')
 
-    def convert_overlap_cut_fn(cut: Cut) -> Cut:
-        """Convert agent/user overlapping segments into sequential SupervisionSegments."""
-        agent_segments = [
-            SupervisionSegment(
-                id=cut.id,
-                recording_id=cut.id,
-                start=seg["start"] - move_agent_text_back_by,
-                duration=seg["end"] - seg["start"] + move_agent_text_back_by,
-                text=seg["text"],
-                speaker="agent",
-            )
-            for seg in cut.agent_segments
-        ]
+    user_sup = fastcopy(orig_agent_sup, start=0.0, duration=0.08, speaker="user", text="dummy text")
+    agent_sup = fastcopy(orig_agent_sup, start=0.0, duration=target_audio_orig_dur - 0.08, speaker="agent")
 
-        user_segments = [
-            SupervisionSegment(
-                id=cut.id,
-                recording_id=cut.id,
-                start=seg["start"],
-                duration=seg["end"] - seg["start"],
-                text=seg["text"],
-                speaker="user",
-            )
-            for seg in cut.user_segments
-        ]
+    if user_sup.custom is not None and "ipa" in user_sup.custom:
+        user_sup.custom = deepcopy(user_sup.custom)
+        user_sup.custom["ipa"] = ""
 
-        cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
-        cut.task = "s2s_duplex_overlap_as_s2s_duplex"
-        return cut
+    if add_extra_end_sil:
+        sil_duration = random.uniform(*extra_end_silence_range)
+        cut_target = cut_target.pad(duration=total_duration + sil_duration, direction="right")
+        cut_source = cut_source.pad(duration=total_duration + sil_duration, direction="right")
+        cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')
+        cut_target = cut_target.to_mono().move_to_memory(audio_format='wav')
+        agent_sup.duration += sil_duration + 1.0
+        user_sup.duration += sil_duration
 
-    cuts = cuts.map(convert_overlap_cut_fn)
-    if filter_samples_starting_with_agent:
-        cuts = filter_cuts_starting_with_agent_fn(cuts, tuple(agent_roles))
+    cut_source.supervisions = [user_sup, agent_sup]
+    cut_source.target_audio = cut_target.recording
+    cut_source.duration = cut_target.duration
+    cut_source.context_audio = cut.context_audio
+    cut_source.task = "lhotse_magpietts_data_as_continuation"
 
-    return cuts, is_tarred
+    return cut_source
 
 
 @data_type_parser(["lhotse_magpietts_data_as_continuation"])
 def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
-    """
-    Convert MagpieTTS dataset cuts into the Duplex S2S format, with optional
-    `context_audio` that can be used as a speaker reference.
-
-    Args:
-        config: Dictionary containing parser options:
-            - add_extra_end_silence (bool): Whether to add extra silence at the end.
-            - extra_end_silence_range (List[float]): Range of extra silence duration.
-            - max_cer (float): Maximum allowed character error rate.
-            - min_context_speaker_similarity (float): Minimum similarity score.
-            - target_speaker (str, optional): Target speaker filter.
-            - sample_rate (int): Audio sample rate for resampling.
-
-    Returns:
-        Tuple[CutSet, bool]: Converted cuts and a flag indicating if data was tarred.
-    """
     cuts, is_tarred = read_cutset_from_config(config)
 
     add_extra_end_sil = config.get("add_extra_end_silence", False)
@@ -948,24 +909,78 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     target_speaker = config.get("target_speaker", None)
     keep_flag = "pass"
 
-    def create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
-        """Convert a numpy array into a Lhotse Recording object."""
-        with io.BytesIO() as buffer:
-            sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
-            buffer.seek(0)
-            return Recording.from_bytes(buffer.read(), recording_id=recording_id)
+    cuts = (
+        cuts.filter(partial(_filter_cer_fn, max_cer=max_cer))
+        .filter(partial(_filter_val_flag_fn, keep_flag=keep_flag))
+        .filter(partial(_filter_secs_fn, min_sim=min_context_speaker_similarity))
+        .filter(partial(_filter_target_speaker_fn, target_speaker=target_speaker))
+    )
 
-    def convert_cut_fn(cut: Cut) -> Cut:
-        """Convert a single cut into the continuation format."""
-        orig_agent_sup = deepcopy(cut.supervisions[0])
+    cuts = cuts.map(partial(_convert_cut_fn, sample_rate=sample_rate, add_extra_end_sil=add_extra_end_sil, extra_end_silence_range=extra_end_silence_range))
+
+    return cuts, is_tarred
+
+
+class FilterCER:
+    def __init__(self, max_cer: float):
+        self.max_cer = max_cer
+
+    def __call__(self, cut: Cut) -> bool:
+        return (
+            len(cut.supervisions) == 0
+            or not cut.supervisions[0].has_custom("cer")
+            or cut.supervisions[0].cer <= self.max_cer
+        )
+
+class FilterValFlag:
+    def __init__(self, keep_flag: str):
+        self.keep_flag = keep_flag
+
+    def __call__(self, cut: Cut) -> bool:
+        return not cut.has_custom("validation_status") or cut.validation_status == self.keep_flag
+
+class FilterSecs:
+    def __init__(self, min_sim: float):
+        self.min_sim = min_sim
+
+    def __call__(self, cut: Cut) -> bool:
+        return (
+            len(cut.supervisions) == 0
+            or not cut.supervisions[0].has_custom("context_speaker_similarity")
+            or cut.supervisions[0].context_speaker_similarity >= self.min_sim
+        )
+
+class FilterTargetSpeaker:
+    def __init__(self, target_speaker: str):
+        self.target_speaker = target_speaker
+
+    def __call__(self, cut: Cut) -> bool:
+        return len(cut.supervisions) == 0 or self.target_speaker is None or self.target_speaker in cut.supervisions[0].speaker
+
+def _create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
+    with io.BytesIO() as buffer:
+        sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
+        buffer.seek(0)
+        return Recording.from_bytes(buffer.read(), recording_id=recording_id)
+
+class ConvertCutFn:
+    def __init__(self, sample_rate: int, add_extra_end_sil: bool, extra_end_silence_range: list):
+        self.sample_rate = sample_rate
+        self.add_extra_end_sil = add_extra_end_sil
+        self.extra_end_silence_range = extra_end_silence_range
+
+    def __call__(self, cut: Cut) -> Cut:
+        orig_agent_sup = fastcopy(cut.supervisions[0])
         target_audio_orig_dur = cut.target_audio.duration
 
-        # Resample audios
-        cut.target_audio = cut.target_audio.resample(sample_rate)
-        cut.context_audio = cut.context_audio.resample(sample_rate)
+        cut.target_audio = cut.target_audio.resample(self.sample_rate)
+        
+        # --- SAFELY CHECK FOR CONTEXT AUDIO ---
+        if cut.has_custom("context_audio"):
+            cut.context_audio = cut.context_audio.resample(self.sample_rate)
+            
         total_duration = cut.target_audio.duration
 
-        # Prepare MonoCuts
         cut_target = MonoCut(
             id=f"{cut.id}_target",
             start=0.0,
@@ -975,10 +990,9 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
             supervisions=[],
         )
 
-        zero_audio = np.zeros((1, int(total_duration * sample_rate)), dtype=np.float32)
-        source_recording = create_recording_from_array(zero_audio, sample_rate, recording_id=f"{cut.id}_source")
+        zero_audio = np.zeros((1, int(total_duration * self.sample_rate)), dtype=np.float32)
+        source_recording = _create_recording_from_array(zero_audio, self.sample_rate, recording_id=f"{cut.id}_source")
 
-        # Create source cut, preserving cut.custom safely
         cut_source = MonoCut(
             id=f"{cut.id}_source",
             start=0.0,
@@ -989,22 +1003,18 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
             custom=deepcopy(cut.custom) if cut.custom is not None else None,
         )
 
-        # Save to memory
         cut_source = cut_source.move_to_memory(audio_format='wav')
         cut_target = cut_target.move_to_memory(audio_format='wav')
 
-        # Create user and agent supervisions
         user_sup = fastcopy(orig_agent_sup, start=0.0, duration=0.08, speaker="user", text="dummy text")
         agent_sup = fastcopy(orig_agent_sup, start=0.0, duration=target_audio_orig_dur - 0.08, speaker="agent")
 
-        # Safely wipe IPA from dummy user text if it exists
         if user_sup.custom is not None and "ipa" in user_sup.custom:
             user_sup.custom = deepcopy(user_sup.custom)
             user_sup.custom["ipa"] = ""
 
-        # Optionally add extra silence
-        if add_extra_end_sil:
-            sil_duration = random.uniform(*extra_end_silence_range)
+        if self.add_extra_end_sil:
+            sil_duration = random.uniform(*self.extra_end_silence_range)
             cut_target = cut_target.pad(duration=total_duration + sil_duration, direction="right")
             cut_source = cut_source.pad(duration=total_duration + sil_duration, direction="right")
             cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')
@@ -1012,43 +1022,40 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
             agent_sup.duration += sil_duration + 1.0
             user_sup.duration += sil_duration
 
-        # Assemble final cut
         cut_source.supervisions = [user_sup, agent_sup]
         cut_source.target_audio = cut_target.recording
         cut_source.duration = cut_target.duration
-        cut_source.context_audio = cut.context_audio
+
+        if cut.has_custom("context_audio"):
+            cut_source.context_audio = cut.context_audio
+            
         cut_source.task = "lhotse_magpietts_data_as_continuation"
 
         return cut_source
 
-    # Filters
-    def filter_cer_fn(cut: Cut) -> bool:
-        return (
-            len(cut.supervisions) == 0
-            or not cut.supervisions[0].has_custom("cer")
-            or cut.supervisions[0].cer <= max_cer
-        )
 
-    def filter_val_flag_fn(cut: Cut) -> bool:
-        return not cut.has_custom("validation_status") or cut.validation_status == keep_flag
+@data_type_parser(["lhotse_magpietts_data_as_continuation"])
+def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
+    cuts, is_tarred = read_cutset_from_config(config)
 
-    def filter_secs_fn(cut: Cut) -> bool:
-        return (
-            len(cut.supervisions) == 0
-            or not cut.supervisions[0].has_custom("context_speaker_similarity")
-            or cut.supervisions[0].context_speaker_similarity >= min_context_speaker_similarity
-        )
+    add_extra_end_sil = config.get("add_extra_end_silence", False)
+    extra_end_silence_range = config.get("extra_end_silence_range", [0.5, 6.0])
+    sample_rate = config.get("sample_rate", 22050)
 
-    def filter_target_speaker_fn(cut: Cut) -> bool:
-        return len(cut.supervisions) == 0 or target_speaker is None or target_speaker in cut.supervisions[0].speaker
+    max_cer = config.get("max_cer", 0.03)
+    min_context_speaker_similarity = config.get("min_context_speaker_similarity", 0.6)
+    target_speaker = config.get("target_speaker", None)
+    keep_flag = "pass"
 
-    # Apply filters
+    # Use the globally defined classes
     cuts = (
-        cuts.filter(filter_cer_fn).filter(filter_val_flag_fn).filter(filter_secs_fn).filter(filter_target_speaker_fn)
+        cuts.filter(FilterCER(max_cer))
+        .filter(FilterValFlag(keep_flag))
+        .filter(FilterSecs(min_context_speaker_similarity))
+        .filter(FilterTargetSpeaker(target_speaker))
     )
 
-    # Convert cuts
-    cuts = cuts.map(convert_cut_fn)
+    cuts = cuts.map(ConvertCutFn(sample_rate, add_extra_end_sil, extra_end_silence_range))
 
     return cuts, is_tarred
 

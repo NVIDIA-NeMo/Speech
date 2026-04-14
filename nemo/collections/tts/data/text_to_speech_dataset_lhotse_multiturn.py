@@ -222,11 +222,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 batch_tokenizer_names.append("english_phoneme")
 
         with fp32_precision():
-            source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
             target_audio, target_audio_lens = collate_audio(
                 cuts.resample(self.sample_rate, recording_field="target_audio"), recording_field="target_audio"
             )
-            
+            source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
+
             # Apply volume norm if requested
             if self.volume_norm:
                 source_audio = torch.stack([torch.from_numpy(normalize_volume(a.numpy())) for a in source_audio])
@@ -276,7 +276,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             effective_duration_max = max(self.context_duration_min, effective_duration_max)
             return random.uniform(self.context_duration_min, effective_duration_max)
 
-        for cut in cuts:
+        for i, cut in enumerate(cuts):
             speaker_found = False
             for sup in reversed(cut.supervisions):
                 if check_speaker_format(sup.speaker):
@@ -287,6 +287,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if not speaker_found:
                 dataset_name = "unknown"
             dataset_name_list.append(dataset_name)
+            print("Language is available?", cut.has_custom("lang"), " Has codes?", cut.has_custom("target_codes"), "Has context audio?", cut.has_custom("context_audio"), "Has context codes?", cut.has_custom("context_codes"))
 
             language = cut.lang if cut.has_custom("lang") else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
             language_list.append(language)
@@ -425,7 +426,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
             # Align Prior (Note: Using full target length to preserve shape compatibility)
             if self.include_align_prior:
-                full_text_len = sum([len(self.text_tokenizer.encode(sup.text)) for sup in cut.supervisions if sup.speaker in self.output_roles])
+                tok_name = batch_tokenizer_names[i]
+                full_text_len = sum([len(self.text_tokenizer.encode(sup.text, tokenizer_name=tok_name)) for sup in cut.supervisions if sup.speaker in self.output_roles])
                 spec_len = int(cut.duration * self.sample_rate / self.codec_model_samples_per_frame) + 1
                 align_prior = beta_binomial_prior_distribution(phoneme_count=full_text_len, mel_count=spec_len, scaling_factor=self.prior_scaling_factor)
                 prior_list.append(torch.tensor(align_prior, dtype=torch.float32))
@@ -434,20 +436,19 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if reward is not None:
                 reward_list.append(reward)
 
-        # --- ASSEMBLE FINAL BATCH DICTIONARY ---
         batch_dict = {
             "sample_id": [str(cut.id) for cut in cuts],
             "dataset_names": dataset_name_list,
             "languages": language_list,
             "source_audio": source_audio,
             "source_audio_lens": source_audio_lens,
-            "target_audio": target_audio,
-            "target_audio_lens": target_audio_lens,
+            "audio": target_audio,
+            "audio_lens": target_audio_lens,
             "source_tokens": source_tokens,
             "source_token_lens": source_token_lens,
-            "target_text_tokens": target_text_tokens,
-            "target_token_lens": target_token_lens,
-            "target_texts": [" ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts],
+            "text": target_text_tokens,
+            "text_lens": target_token_lens,
+            "raw_texts": [" ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts],
             "dataset_type": [getattr(c, "type", "") for c in cuts],
         }
 

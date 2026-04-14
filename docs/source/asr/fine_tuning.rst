@@ -97,6 +97,26 @@ When changing the tokenizer (e.g., for a new language or domain), you need to:
       - joint
 
 
+Enforcing a Single Language During Inference
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For multilingual Canary models, you can enforce a specific output language by explicitly setting ``source_lang`` and
+``target_lang`` in every ``model.transcribe()`` call or in every manifest entry. When both are set to the same language,
+the model will transcribe in that language only:
+
+.. code-block:: python
+
+    results = model.transcribe(
+        audio=["audio.wav"],
+        source_lang="de",
+        target_lang="de",
+    )
+
+This prevents phonetic drift where the model may switch languages mid-utterance.
+For fine-tuning, ensure all training manifest entries have consistent ``source_lang`` / ``target_lang`` values
+for your target language.
+
+
 Fine-Tuning with HuggingFace Datasets
 ---------------------------------------
 
@@ -130,7 +150,7 @@ The most important parameters for fine-tuning:
      - Number of fine-tuning epochs (typically 50-100 for domain adaptation)
    * - ``model.optim.lr``
      - Learning rate (use lower than training from scratch, e.g., 1e-4 to 1e-5)
-   * - ``model.train_ds.manifest_filepath``
+   * - ``model.train_ds.manifest_filepath``     
      - Path to training manifest (NeMo JSON format)
    * - ``model.train_ds.batch_size``
      - Batch size per GPU
@@ -147,15 +167,14 @@ Execution Flow
 
 The fine-tuning execution flow for CTC and Transducer models is documented in:
 
-* `CTC Fine-tuning README <https://github.com/NVIDIA/NeMo/tree/main/examples/asr/conf/asr_finetune>`_
-* `Transducer Fine-tuning README <https://github.com/NVIDIA/NeMo/tree/main/examples/asr/conf/asr_finetune>`_
+* `CTC model execution overview <https://github.com/NVIDIA/NeMo/tree/main/examples/asr/asr_ctc>`_
+* `Transducer model execution overview <https://github.com/NVIDIA/NeMo/tree/main/examples/asr/asr_transducer>`_
 
 
 Tips
 ----
 
-1. **Start with a low learning rate** — fine-tuning with too high a learning rate can destroy pretrained features.
+1. **Start with a low learning rate** — fine-tuning with too high a learning rate can destroy pretrained features. Typical fine-tuning LRs are 1e-4 to 1e-5. If your pretrained config uses the Noam (warmup + decay) scheduler, override it with a constant or cosine-annealing schedule to avoid the warmup phase resetting to a high LR.
 2. **Use Lhotse dataloading** for efficient training with dynamic batching. See :doc:`Lhotse Dataloading </dataloaders>`.
-3. **Monitor validation WER** closely — fine-tuning can overfit quickly on small datasets.
-4. **Use spec augmentation** during fine-tuning to improve robustness.
-5. **For multilingual fine-tuning**, consider using ``AggregateTokenizer`` and the Hybrid model with prompt conditioning.
+3. **Use spec augmentation** during fine-tuning to improve robustness. See :ref:`Augmentation Configurations <asr-configs-augmentation-configurations>`.
+4. **For multilingual fine-tuning**, consider using ``AggregateTokenizer`` (see :doc:`Configs <./configs>`) and the :ref:`Hybrid model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model__Config>`.

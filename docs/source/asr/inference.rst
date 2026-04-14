@@ -27,10 +27,6 @@ Loading Checkpoints
     # NGC (no prefix)
     model = nemo_asr.models.ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
 
-.. note::
-
-    For resuming an unfinished training experiment, use the Experiment Manager with ``resume_if_exists=True`` instead.
-
 
 Basic Transcription
 -------------------
@@ -61,15 +57,52 @@ Audio must be 16 kHz mono-channel.
         pretrained_name="nvidia/parakeet-tdt-0.6b-v2" \
         audio_dir=<path_to_audio_dir>
 
-**Batch generator (for large datasets):**
+**Batch generator (for incremental processing):**
+
+``model.transcribe()`` already handles large file lists internally via batching. Use ``transcribe_generator`` only when you need to process results incrementally (e.g., writing to disk batch-by-batch to avoid holding all outputs in memory):
 
 .. code-block:: python
 
     config = model.get_transcribe_config()
     config.batch_size = 32
-    for batch_outputs in model.transcribe_generator(audio_files, config):
-        # process each batch of results
+    for batch_outputs in model.transcribe_generator(audio_files, override_config=config):
+        # write batch results to disk immediately
         ...
+
+``TranscribeConfig`` fields:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Field
+     - Default
+     - Description
+   * - ``batch_size``
+     - 4
+     - Batch size for inference. Larger = better throughput but more memory.
+   * - ``return_hypotheses``
+     - False
+     - If True, return ``Hypothesis`` objects (with timestamps, scores) instead of plain strings.
+   * - ``use_lhotse``
+     - True
+     - Use Lhotse dataloading for inference.
+   * - ``num_workers``
+     - None
+     - Number of DataLoader workers.
+   * - ``channel_selector``
+     - None
+     - Select channel(s) from multi-channel audio. ``'average'`` to average across channels.
+   * - ``timestamps``
+     - None
+     - If True, return word/segment timestamps (requires ``return_hypotheses=True``).
+   * - ``augmentor``
+     - None
+     - Optional augmentation config to apply during transcription.
+   * - ``verbose``
+     - True
+     - Show progress bar.
+
+For multi-task models (Canary), ``MultiTaskTranscriptionConfig`` extends this with ``prompt``, ``text_field``, ``lang_field``, and ``enable_chunking``.
 
 **Alignments:**
 
@@ -97,6 +130,8 @@ Obtain word, segment, or character timestamps with Parakeet models (CTC/RNNT/TDT
         print(f"{stamp['start']}s - {stamp['end']}s : {stamp['segment']}")
 
 **Advanced configuration:**
+
+See :doc:`Configs <./configs>` for all available ``decoding`` options and :doc:`ASR Language Modeling and Customization <./asr_language_modeling_and_customization>` for decoding customization (confidence, CUDA graphs, language models, word boosting).
 
 .. code-block:: python
 
@@ -164,7 +199,7 @@ For very long files where even the subsampling module runs out of memory:
 Multi-task Inference (Canary)
 -----------------------------
 
-Canary models require task tokens. Use a manifest or specify task parameters directly:
+Canary models use prompt slots to control transcription behavior.
 
 **Via manifest:**
 
@@ -179,11 +214,15 @@ Canary models require task tokens. Use a manifest or specify task parameters dir
 
     results = canary.transcribe("manifest.json", batch_size=16)
 
-Manifest format:
+Manifest format (Canary Flash / v2 — only ``source_lang`` and ``target_lang`` are required):
 
 .. code-block:: json
 
-    {"audio_filepath": "/path/to/audio.wav", "duration": null, "taskname": "asr", "source_lang": "en", "target_lang": "en", "pnc": "yes", "answer": "na"}
+    {"audio_filepath": "/path/to/audio.wav", "duration": null, "source_lang": "en", "target_lang": "en", "pnc": "yes", "answer": "na"}
+
+.. note::
+
+    For the original Canary v1, ``task`` (``"asr"`` or ``"ast"``) is also required in the manifest.
 
 **Via direct parameters:**
 
@@ -192,7 +231,6 @@ Manifest format:
     results = canary.transcribe(
         audio=["audio.wav"],
         batch_size=4,
-        task="asr",
         source_lang="en",
         target_lang="en",
         pnc=True,

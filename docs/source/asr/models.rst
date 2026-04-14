@@ -9,6 +9,18 @@ For config file details, see :doc:`Configuration Files <./configs>`.
 Spotlight Models
 ----------------
 
+Parakeet
+~~~~~~~~
+
+Parakeet is a family of ASR models with a :ref:`FastConformer Encoder <Fast-Conformer>` and CTC, RNN-T, or TDT decoders.
+
+* `Parakeet-TDT-0.6B V3 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>`__ — Latest, highest accuracy
+* `Parakeet-TDT-0.6B V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`__ — Top of `OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`__
+* `Parakeet-TDT/CTC-110M <https://huggingface.co/nvidia/parakeet-tdt_ctc-110m>`__ — Edge deployment
+* `Nemotron-Speech-Streaming <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`__ — Real-time streaming
+* `Multitalker-Parakeet <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__ — Multi-speaker streaming
+
+
 Canary
 ~~~~~~
 
@@ -20,18 +32,6 @@ They support ASR in 25 EU languages, speech translation (AST), and punctuation/c
 * `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`__ / `180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`__ — Optimized for speed
 
 Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/NeMo/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.
-
-
-Parakeet
-~~~~~~~~
-
-Parakeet is a family of English ASR models with a :ref:`FastConformer Encoder <Fast-Conformer>` and CTC, RNN-T, or TDT decoders.
-
-* `Parakeet-TDT-0.6B V3 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>`__ — Latest, highest accuracy
-* `Parakeet-TDT-0.6B V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`__ — Top of `OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`__
-* `Parakeet-TDT/CTC-110M <https://huggingface.co/nvidia/parakeet-tdt_ctc-110m>`__ — Edge deployment
-* `Nemotron-Speech-Streaming <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`__ — Real-time streaming
-* `Multitalker-Parakeet <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__ — Multi-speaker streaming
 
 
 .. _Conformer_model:

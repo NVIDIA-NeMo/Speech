@@ -593,8 +593,8 @@ For Canary-1B, we'll also provide the special tokens tokenizer. Example:
         --sub-buckets 5 \
         input_cfg.yaml
 
-OOMptimizer
-------------
+Pushing GPU utilization to the limits with bucketing and OOMptimizer
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The default approach of specifying a ``batch_duration``, ``bucket_duration_bins`` and ``quadratic_duration``
 is quite flexible, but is not maximally efficient. We observed that in practice it often leads to under-utilization

@@ -33,10 +33,6 @@ Glossary
      - Punctuation and Capitalization in the output
    * - **Streaming**
      - Real-time / cache-aware inference capability
-   * - **EU4**
-     - Multilingual: English, German, Spanish, French
-   * - **EU25**
-     - Multilingual: English + 24 European languages (de, es, fr, it, pl, pt, nl, ru, uk, be, hr, cs, bg, da, et, fi, el, hu, lv, lt, mt, ro, sk, sl, sv)
 
 
 Canary Models (AED)
@@ -54,29 +50,31 @@ Multi-task encoder-decoder models supporting ASR, AST, PnC, and timestamps acros
    * - `canary-1b-v2 <https://huggingface.co/nvidia/canary-1b-v2>`__
      - AED
      - ASR, AST, PnC, timestamps
-     - EU25
+     - English + 24 European languages
    * - `canary-qwen-2.5b <https://huggingface.co/nvidia/canary-qwen-2.5b>`__
      - AED
      - ASR, AST, PnC, timestamps
-     - EU25
+     - English + 24 European languages
    * - `canary-1b-flash <https://huggingface.co/nvidia/canary-1b-flash>`__
      - AED
      - ASR, AST, PnC, timestamps, fast
-     - EU4
+     - English, German, Spanish, French
    * - `canary-180m-flash <https://huggingface.co/nvidia/canary-180m-flash>`__
      - AED
      - ASR, AST, PnC, timestamps, fast
-     - EU4
+     - English, German, Spanish, French
    * - `canary-1b <https://huggingface.co/nvidia/canary-1b>`__
      - AED
      - ASR, AST, PnC, timestamps
-     - EU4
+     - English, German, Spanish, French
 
 
-Parakeet Models (English)
---------------------------
+Parakeet Models
+-----------------
 
-High-accuracy English ASR models with FastConformer encoder.
+High-accuracy ASR models built on the FastConformer encoder architecture.
+Parakeet, Nemotron Speech, and the ``stt_*_fastconformer_*`` models below all share the same underlying FastConformer encoder;
+the different names reflect release branding, not architectural differences.
 
 .. list-table::
    :header-rows: 1
@@ -125,6 +123,10 @@ High-accuracy English ASR models with FastConformer encoder.
      - CTC
      - ASR
      - 0.6B
+   * - `parakeet-ctc-0.6b-Vietnamese <https://huggingface.co/nvidia/parakeet-ctc-0.6b-Vietnamese>`__
+     - CTC
+     - ASR
+     - 0.6B (Vietnamese)
    * - `parakeet-rnnt-110m-da-dk <https://huggingface.co/nvidia/parakeet-rnnt-110m-da-dk>`__
      - RNN-T
      - ASR
@@ -142,39 +144,39 @@ Cache-aware models for real-time / low-latency inference.
    * - Model
      - Decoder
      - Capabilities
-     - Languages
+     - Language
    * - `nemotron-speech-streaming-en-0.6b <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`__
      - Hybrid
      - ASR, streaming
-     - en
+     - English
    * - `multitalker-parakeet-streaming-0.6b-v1 <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__
      - RNN-T
      - ASR, multitalker, streaming
-     - en
+     - English
    * - `parakeet_realtime_eou_120m-v1 <https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1>`__
      - RNN-T
      - ASR, end-of-utterance, streaming
-     - en
+     - English
    * - `stt_en_fastconformer_hybrid_large_streaming_multi <https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_large_streaming_multi>`__
      - Hybrid
      - ASR, streaming, multiple look-aheads
-     - en
+     - English
    * - `stt_en_fastconformer_hybrid_medium_streaming_80ms_pc <https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms_pc>`__
      - Hybrid
      - ASR, PnC, streaming
-     - en
+     - English
    * - `stt_en_fastconformer_hybrid_medium_streaming_80ms <https://huggingface.co/nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms>`__
      - Hybrid
      - ASR, streaming
-     - en
+     - English
    * - `stt_ka_fastconformer_hybrid_transducer_ctc_large_streaming_80ms_pc <https://huggingface.co/nvidia/stt_ka_fastconformer_hybrid_transducer_ctc_large_streaming_80ms_pc>`__
      - Hybrid
      - ASR, PnC, streaming
-     - ka
+     - Georgian
    * - `stt_en_fastconformer_hybrid_large_streaming_1040ms <https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_en_fastconformer_hybrid_large_streaming_1040ms>`__
      - Hybrid
      - ASR, streaming
-     - en
+     - English
 
 
 FastConformer English Models (Non-Streaming)
@@ -224,97 +226,74 @@ FastConformer English Models (Non-Streaming)
 FastConformer Multilingual Models
 ----------------------------------
 
+Single-language FastConformer Hybrid models. Models with ``_pc`` suffix support punctuation and capitalization.
+
 .. list-table::
    :header-rows: 1
 
-   * - Model
-     - Decoder
-     - Capabilities
-     - Language
-   * - `stt_multilingual_fastconformer_hybrid_large_pc_blend_eu <https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_multilingual_fastconformer_hybrid_large_pc_blend_eu>`__
-     - Hybrid
-     - ASR, PnC
-     - Multilingual EU
-   * - `stt_de_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_de_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - de
-   * - `stt_es_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_es_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - es
-   * - `stt_es_fastconformer_hybrid_large_pc_nc <https://huggingface.co/nvidia/stt_es_fastconformer_hybrid_large_pc_nc>`__
-     - Hybrid
-     - ASR, PnC
-     - es
-   * - `stt_fr_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_fr_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - fr
-   * - `stt_it_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_it_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - it
-   * - `stt_ru_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_ru_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - ru
-   * - `stt_ua_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_ua_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - uk
-   * - `stt_pl_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_pl_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - pl
-   * - `stt_hr_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_hr_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - hr
-   * - `stt_be_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_be_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - be
-   * - `stt_nl_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_nl_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - nl
-   * - `stt_pt_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_pt_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - pt
-   * - `stt_fa_fastconformer_hybrid_large <https://huggingface.co/nvidia/stt_fa_fastconformer_hybrid_large>`__
-     - Hybrid
-     - ASR
-     - fa
-   * - `stt_ka_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_ka_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - ka
-   * - `stt_hy_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_hy_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - hy
-   * - `stt_ar_fastconformer_hybrid_large_pc_v1.0 <https://huggingface.co/nvidia/stt_ar_fastconformer_hybrid_large_pc_v1.0>`__
-     - Hybrid
-     - ASR, PnC
-     - ar
-   * - `stt_ar_fastconformer_hybrid_large_pcd_v1.0 <https://huggingface.co/nvidia/stt_ar_fastconformer_hybrid_large_pcd_v1.0>`__
-     - Hybrid
-     - ASR, PnC, diacritization
-     - ar
-   * - `stt_uz_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_uz_fastconformer_hybrid_large_pc>`__
-     - Hybrid
-     - ASR, PnC
-     - uz
-   * - `stt_kk_ru_fastconformer_hybrid_large <https://huggingface.co/nvidia/stt_kk_ru_fastconformer_hybrid_large>`__
-     - Hybrid
-     - ASR
-     - kk, ru
-   * - `parakeet-ctc-0.6b-Vietnamese <https://huggingface.co/nvidia/parakeet-ctc-0.6b-Vietnamese>`__
-     - CTC
-     - ASR
-     - vi
+   * - Language
+     - Model
+     - PnC
+   * - Multilingual EU
+     - `stt_multilingual_fastconformer_hybrid_large_pc_blend_eu <https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_multilingual_fastconformer_hybrid_large_pc_blend_eu>`__
+     - Yes
+   * - German
+     - `stt_de_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_de_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Spanish
+     - `stt_es_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_es_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Spanish (no-caps)
+     - `stt_es_fastconformer_hybrid_large_pc_nc <https://huggingface.co/nvidia/stt_es_fastconformer_hybrid_large_pc_nc>`__
+     - Punctuation only
+   * - French
+     - `stt_fr_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_fr_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Italian
+     - `stt_it_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_it_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Russian
+     - `stt_ru_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_ru_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Ukrainian
+     - `stt_ua_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_ua_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Polish
+     - `stt_pl_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_pl_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Croatian
+     - `stt_hr_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_hr_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Belarusian
+     - `stt_be_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_be_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Dutch
+     - `stt_nl_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_nl_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Portuguese
+     - `stt_pt_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_pt_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Farsi
+     - `stt_fa_fastconformer_hybrid_large <https://huggingface.co/nvidia/stt_fa_fastconformer_hybrid_large>`__
+     - No
+   * - Georgian
+     - `stt_ka_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_ka_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Armenian
+     - `stt_hy_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_hy_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Arabic
+     - `stt_ar_fastconformer_hybrid_large_pc_v1.0 <https://huggingface.co/nvidia/stt_ar_fastconformer_hybrid_large_pc_v1.0>`__
+     - Yes
+   * - Arabic (diacritized)
+     - `stt_ar_fastconformer_hybrid_large_pcd_v1.0 <https://huggingface.co/nvidia/stt_ar_fastconformer_hybrid_large_pcd_v1.0>`__
+     - Yes
+   * - Uzbek
+     - `stt_uz_fastconformer_hybrid_large_pc <https://huggingface.co/nvidia/stt_uz_fastconformer_hybrid_large_pc>`__
+     - Yes
+   * - Kazakh + Russian
+     - `stt_kk_ru_fastconformer_hybrid_large <https://huggingface.co/nvidia/stt_kk_ru_fastconformer_hybrid_large>`__
+     - No
 
 
 Loading Models

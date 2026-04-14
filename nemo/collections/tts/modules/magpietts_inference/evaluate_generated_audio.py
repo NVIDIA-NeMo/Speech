@@ -279,7 +279,9 @@ def load_evaluation_models(
     }
 
     if language == "en":
-        if asr_model_name.startswith("nvidia/") or asr_model_name in ["stt_en_conformer_transducer_large"]:
+        if os.path.isfile(asr_model_name) and asr_model_name.endswith('.nemo'):
+            models['asr_model'] = nemo_asr.models.ASRModel.restore_from(restore_path=asr_model_name).to(device).eval()
+        elif asr_model_name.startswith("nvidia/") or asr_model_name in ["stt_en_conformer_transducer_large"]:
             models['asr_model'] = nemo_asr.models.ASRModel.from_pretrained(model_name=asr_model_name).to(device).eval()
         else:
             raise ValueError(f"ASR model {asr_model_name} not supported")
@@ -338,6 +340,7 @@ def evaluate_dir(
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
+    eou_model_name=None,
 ):
     """Compute per-file evaluation metrics for a directory of generated audio.
 
@@ -376,7 +379,13 @@ def evaluate_dir(
     speaker_verification_model_alternate = models['sv_model_alternate']
 
     # 3. EoU classifier (support for English only)
-    eou_classifier = EoUClassifier(device=device) if language == "en" else None
+    if language == "en":
+        eou_kwargs = {"device": device}
+        if eou_model_name is not None:
+            eou_kwargs["model_name"] = eou_model_name
+        eou_classifier = EoUClassifier(**eou_kwargs)
+    else:
+        eou_classifier = None
 
     # 4. Compute UTMOSv2 scores
     utmosv2_scores = None
@@ -583,6 +592,7 @@ def evaluate(
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
+    eou_model_name=None,
 ):
     """Evaluate generated audio, computing both per-file and global metrics.
 
@@ -617,6 +627,7 @@ def evaluate(
         asr_batch_size=asr_batch_size,
         eou_batch_size=eou_batch_size,
         device=device,
+        eou_model_name=eou_model_name,
     )
 
     gt_audio_paths = None

@@ -27,14 +27,13 @@ class ASRRequestOptions:
     None value means that the option is not set and the default value will be used
     """
 
-    enable_itn: bool = None
-    enable_pnc: bool = None
-    stop_history_eou: int = None
-    asr_output_granularity: ASROutputGranularity | str = None
+    enable_itn: bool | None = None
+    stop_history_eou: int | None = None
+    asr_output_granularity: ASROutputGranularity | str | None = None
     language_code: str | None = None
-    enable_nmt: bool = None
-    source_language: str = None
-    target_language: str = None
+    enable_nmt: bool | None = None
+    source_language: str | None = None
+    target_language: str | None = None
     biasing_cfg: BiasingRequestItemConfig | None = None
 
     def __post_init__(self) -> None:
@@ -74,10 +73,9 @@ class ASRRequestOptions:
         """
         return default if value is None else value
 
-    def augment_with_defaults(
+    def fill_defaults(
         self,
         default_enable_itn: bool,
-        default_enable_pnc: bool,
         default_enable_nmt: bool,
         default_source_language: str,
         default_target_language: str,
@@ -90,7 +88,6 @@ class ASRRequestOptions:
         Fill unset fields with the passed default values.
         Args:
             default_enable_itn (bool): Default enable ITN.
-            default_enable_pnc (bool): Default enable PNC.
             default_enable_nmt (bool): Default enable NMT.
             default_source_language (str): Default source language.
             default_target_language (str): Default target language.
@@ -105,7 +102,6 @@ class ASRRequestOptions:
             default_asr_output_granularity = ASROutputGranularity.from_str(default_asr_output_granularity)
 
         enable_itn = self._with_default(self.enable_itn, default_enable_itn)
-        enable_pnc = self._with_default(self.enable_pnc, default_enable_pnc)
         enable_nmt = self._with_default(self.enable_nmt, default_enable_nmt)
         if not enable_nmt:
             # Forcibly set the source and target languages to None
@@ -120,7 +116,6 @@ class ASRRequestOptions:
 
         return ASRRequestOptions(
             enable_itn=enable_itn,
-            enable_pnc=enable_pnc,
             enable_nmt=enable_nmt,
             source_language=source_language,
             target_language=target_language,

@@ -152,6 +152,14 @@ markers = [
     "pleasefixme: marks tests that are broken and need fixing",
 ]
 
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cu12" },
+        { extra = "cu13" },
+    ],
+]
+
 [dependency-groups]
 docs = [
     "myst-parser>=4.0.1",

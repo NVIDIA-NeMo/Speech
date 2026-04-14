@@ -85,7 +85,7 @@ class SALMASRInferenceWrapper:
             model.to(device)
             return model
         except Exception as e:
-            raise RuntimeError(f"Failed to load model {model_name}: {str(e)}")
+            raise RuntimeError(f"Failed to load model {model_name}: {str(e)}") from e
 
     def get_window_stride(self) -> float:
         """Returns the window stride of the model."""

@@ -244,7 +244,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
     per_stream_boosting_requests: list[BiasingRequestItemConfig] | None = None
     detailed_log_path: str | None = None
     use_lcp: bool = True
-    num_prev_sentences_for_translation: int = 1
+    num_prev_sentences_for_translation: int = 5
 
     def __init__(self, config: SimpleNamespace):
         """
@@ -446,18 +446,24 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
                 text_repr += f" [{text_rc}]"
         return text_repr
 
-    def get_translation(self, text: str, translation_lcp=""):
+    def get_translation(self, text: str, translation_lcp="", verbose=False):
         llm_input = self.prompt_template.format(
             self.src_lang,
             self.tgt_lang,
             src_prefix=text,
             tgt_prefix=translation_lcp,
-            src_context=" ".join(self.prev_sentences_asr[-self.num_prev_sentences_for_translation:]),
-            tgt_context=" ".join(self.prev_sentences_translated[-self.num_prev_sentences_for_translation:]),
+            src_context=" ".join(self.prev_sentences_asr[-self.num_prev_sentences_for_translation :]),
+            tgt_context=" ".join(self.prev_sentences_translated[-self.num_prev_sentences_for_translation :]),
         )
         llm_output = self.nmt_model.generate([llm_input], self.nmt_sampling_params, use_tqdm=False)
         output_text = llm_output[0].outputs[0].text
         output_text = self.prompt_template.extract(output_text).strip()
+        if verbose:
+            print(f"Input: {llm_input}")
+            print('-' * 15)
+            print(f"Text: {text}")
+            print(f"LCP: {translation_lcp}")
+            print(f"Output: {output_text}")
         return output_text
 
     def process_chunk(self, audio: np.ndarray) -> "IncrementalOutput":
@@ -597,13 +603,13 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         if fixed_part or non_fixed_part:
             prev_partial_translation_initial = self.prev_partial_translation
             if fixed_part:
-                self.prev_sentences_asr.append(fixed_part)
                 fixed_part_translated = join_texts(
                     [
                         self.prev_partial_translation_lcp,
                         self.get_translation(fixed_part, translation_lcp=self.prev_partial_translation_lcp),
                     ]
                 )
+                self.prev_sentences_asr.append(fixed_part)
                 self.prev_sentences_translated.append(fixed_part_translated)
                 self.prev_partial_translation_lcp = ""
                 self.prev_partial_translation = ""

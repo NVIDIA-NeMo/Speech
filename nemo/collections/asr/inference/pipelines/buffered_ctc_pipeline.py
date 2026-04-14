@@ -238,9 +238,9 @@ class BufferedCTCPipeline(BasePipeline):
 
         # Only final frames have right padding
         # Calculate right paddings
-        right_paddings = torch.tensor(
-            [frame.size - frame.valid_size for frame in frames], device=self.device
-        ).clamp(min=0)
+        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
+            min=0
+        )
 
         # Create and adjust the buffer lens
         buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)

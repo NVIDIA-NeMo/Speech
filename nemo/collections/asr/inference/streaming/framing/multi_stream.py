@@ -348,9 +348,9 @@ class ContinuousBatchedRequestStreamer:
         buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
 
         # Calculate right paddings and subtract from buffer lens
-        right_paddings = torch.tensor(
-            [frame.size - frame.valid_size for frame in frames], device=self.device
-        ).clamp(min=0)
+        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
+            min=0
+        )
 
         # Subtract right paddings from buffer lens
         buffer_lens = buffer_lens - right_paddings

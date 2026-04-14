@@ -507,6 +507,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     """Create a CutSampler from a dataloader config."""
     # 1. Load a manifest as a Lhotse CutSet.
     cuts, use_iterable_dataset = read_cutset_from_config(config)
+    cuts = cuts.filter(DurationFilter(0.1))  # Try to avoid broken manifests with duration=0.
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
 
     _auto_detect_bucketing_and_validate_batch_size(config)

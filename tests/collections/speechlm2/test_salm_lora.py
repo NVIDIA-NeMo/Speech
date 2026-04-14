@@ -13,6 +13,7 @@
 # limitations under the License.
 from types import SimpleNamespace
 
+import pytest
 from omegaconf import DictConfig
 from peft import PeftModel
 from transformers import Qwen3Config, Qwen3ForCausalLM
@@ -50,7 +51,18 @@ def _make_qwen3_stub():
     )
 
 
+def _check_peft_torchao_compat():
+    """Check that peft's torchao version requirement is satisfied."""
+    try:
+        from peft.tuners.lora.torchao import dispatch_torchao  # noqa: F401
+    except ImportError as e:
+        if "torchao" in str(e).lower():
+            pytest.skip(f"peft requires a newer torchao: {e}")
+        raise
+
+
 def test_maybe_install_lora_restores_qwen3_input_embeddings_temporarily():
+    _check_peft_torchao_compat()
     model = _make_qwen3_stub()
     del model.llm.model.embed_tokens
 

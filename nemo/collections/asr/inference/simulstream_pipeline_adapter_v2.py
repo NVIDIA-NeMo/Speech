@@ -47,7 +47,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from vllm import LLM, SamplingParams
 from vllm.distributed import destroy_model_parallel
 
-from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplateV2
+from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplate
 from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
@@ -195,6 +195,28 @@ def get_model_context(asr_model, cfg: DictConfig):
     return context_samples, context_encoder_frames, encoder_frame2audio_samples
 
 
+def join_texts(texts: list[str]):
+    result = ""
+    for text in texts:
+        text = text.strip()
+        if text:
+            if result:
+                result += " " + text
+            else:
+                result = text
+    return result
+
+
+def get_common_prefix(sequence1: list, sequence2):
+    common_prefix_len = 0
+    for i in range(min(len(sequence1), len(sequence2))):
+        if sequence1[i] == sequence2[i]:
+            common_prefix_len += 1
+        else:
+            break
+    return common_prefix_len
+
+
 class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
     """
     Adapter to use NeMo's streaming pipelines with simulstream evaluation.
@@ -221,6 +243,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
     wav_names: list[str] = []
     per_stream_boosting_requests: list[BiasingRequestItemConfig] | None = None
     detailed_log_path: str | None = None
+    use_lcp: bool = True
 
     def __init__(self, config: SimpleNamespace):
         """
@@ -272,6 +295,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         self.prev_sentences_asr = []
         self.prev_sentences_translated = []
         self.prev_partial_translation = ""
+        self.prev_partial_translation_lcp = ""
 
     def reset_stream_state(self):
         self.buffer = StreamingBatchedAudioBuffer(
@@ -288,6 +312,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
         self.prev_sentences_asr = []
         self.prev_sentences_translated = []
         self.prev_partial_translation = ""
+        self.prev_partial_translation_lcp = ""
 
     @classmethod
     def load_model(cls, config: SimpleNamespace):
@@ -311,7 +336,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
             cfg.nmt.model_name, model_params=OmegaConf.to_container(cfg.nmt.llm_params, resolve=True)
         )
         cls.nmt_sampling_params = SamplingParams(**OmegaConf.to_container(cfg.nmt.sampling_params))
-        cls.prompt_template = EuroLLMTranslatorPromptTemplateV2()
+        cls.prompt_template = EuroLLMTranslatorPromptTemplate()
         cls.asr_model = get_asr_model(cfg.asr)
         cls.asr_device = cls.asr_model.device
         # TODO: fix chunk masking
@@ -420,12 +445,12 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
                 text_repr += f" [{text_rc}]"
         return text_repr
 
-    def get_translation(self, text: str):
+    def get_translation(self, text: str, translation_lcp=""):
         llm_input = self.prompt_template.format(
             self.src_lang,
             self.tgt_lang,
             src_prefix=text,
-            tgt_prefix="",
+            tgt_prefix=translation_lcp,
             src_context=" ".join(self.prev_sentences_asr[-5:]),
             tgt_context=" ".join(self.prev_sentences_translated[-5:]),
         )
@@ -550,60 +575,79 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
             self.accumulated_tokens = []
         else:
             tokens_repr = self.asr_model.tokenizer.ids_to_tokens(self.accumulated_tokens)
-            stop = None
+            incomplete_part_i = None
             for i in range(len(self.accumulated_tokens) - 1, 0, -1):
-                if tokens_repr[i].startswith("▁") and (tokens_repr[i-1].endswith(".") or tokens_repr[i-1].endswith("?") or tokens_repr[i-1].endswith("!")):
-                    stop = i
+                if tokens_repr[i].startswith("▁") and (
+                    tokens_repr[i - 1].endswith(".")
+                    or tokens_repr[i - 1].endswith("?")
+                    or tokens_repr[i - 1].endswith("!")
+                ):
+                    incomplete_part_i = i
                     break
-            if stop is not None:
-                fixed_part = self.asr_model.tokenizer.ids_to_text(self.accumulated_tokens[:stop])
-                self.accumulated_tokens = self.accumulated_tokens[stop:]
+            if incomplete_part_i is not None:
+                fixed_part = self.asr_model.tokenizer.ids_to_text(self.accumulated_tokens[:incomplete_part_i])
+                self.accumulated_tokens = self.accumulated_tokens[incomplete_part_i:]
             else:
                 fixed_part = ""
 
         non_fixed_part = self.asr_model.tokenizer.ids_to_text(self.accumulated_tokens + tokens_rc)
         # logging.info(f"Split for translation: {self.get_hyp_repr_with_temp(fixed_part, non_fixed_part)}")
 
-        if fixed_part:
-            fixed_part_translated = self.get_translation(fixed_part)
-            self.prev_sentences_asr.append(fixed_part)
-            self.prev_sentences_translated.append(fixed_part_translated)
+        if fixed_part or non_fixed_part:
+            prev_partial_translation_initial = self.prev_partial_translation
+            if fixed_part:
+                self.prev_sentences_asr.append(fixed_part)
+                fixed_part_translated = join_texts(
+                    [
+                        self.prev_partial_translation_lcp,
+                        self.get_translation(fixed_part, translation_lcp=self.prev_partial_translation_lcp),
+                    ]
+                )
+                self.prev_sentences_translated.append(fixed_part_translated)
+                self.prev_partial_translation_lcp = ""
+                self.prev_partial_translation = ""
+            else:
+                fixed_part_translated = ""
+
+            if non_fixed_part:
+                non_fixed_part_translated = join_texts(
+                    [
+                        self.prev_partial_translation_lcp,
+                        self.get_translation(non_fixed_part, translation_lcp=self.prev_partial_translation_lcp),
+                    ]
+                )
+
+                if self.use_lcp and non_fixed_part_translated and self.prev_partial_translation:
+                    tokens_non_fixed = self._tokenize_text(non_fixed_part_translated)
+                    tokens_previous_partial = self._tokenize_text(self.prev_partial_translation)
+                    common_non_fixed_prefix_len = get_common_prefix(tokens_non_fixed, tokens_previous_partial)
+                    if common_non_fixed_prefix_len > 0:
+                        self.prev_partial_translation_lcp = self._join_tokens(
+                            tokens_non_fixed[:common_non_fixed_prefix_len]
+                        )
+                self.prev_partial_translation = non_fixed_part_translated
+            else:
+                non_fixed_part_translated = ""
+            # logging.info(f"Translation: {self.get_hyp_repr_with_temp(fixed_part_translated, non_fixed_part_translated)}")
+
+            full_translation_to_output = join_texts([fixed_part_translated, non_fixed_part_translated])
+            curr_tokens = self._tokenize_text(full_translation_to_output)
+            prev_tokens = self._tokenize_text(prev_partial_translation_initial)
+            common_prefix_len = get_common_prefix(curr_tokens, prev_tokens)
+
+            # Calculate deleted and generated token lists
+            deleted_tokens = prev_tokens[common_prefix_len:]  # Tokens removed from previous
+            generated_tokens = curr_tokens[common_prefix_len:]  # Tokens added in current
+            # Construct strings from token lists
+            deleted_string = self._join_tokens(deleted_tokens)
+            generated_string = self._join_tokens(generated_tokens)
         else:
             fixed_part_translated = ""
-
-        if non_fixed_part:
-            non_fixed_part_translated = self.get_translation(non_fixed_part)
-        else:
             non_fixed_part_translated = ""
-        # logging.info(f"Translation: {self.get_hyp_repr_with_temp(fixed_part_translated, non_fixed_part_translated)}")
-
-        full_translation_to_output = ""
-        if fixed_part_translated:
-            full_translation_to_output = fixed_part_translated
-        if non_fixed_part_translated:
-            if not full_translation_to_output:
-                full_translation_to_output = non_fixed_part_translated
-            else:
-                full_translation_to_output += " " + non_fixed_part_translated
-
-        curr_tokens = self._tokenize_text(full_translation_to_output)
-        prev_tokens = self._tokenize_text(self.prev_partial_translation)
-        common_prefix_len = 0
-        for i in range(min(len(prev_tokens), len(curr_tokens))):
-            if prev_tokens[i] == curr_tokens[i]:
-                common_prefix_len += 1
-            else:
-                break
-
-        # Calculate deleted and generated token lists
-        deleted_tokens = prev_tokens[common_prefix_len:]  # Tokens removed from previous
-        generated_tokens = curr_tokens[common_prefix_len:]  # Tokens added in current
-
-        # Construct strings from token lists
-        deleted_string = self._join_tokens(deleted_tokens)
-        generated_string = self._join_tokens(generated_tokens)
-
-        self.prev_partial_translation = non_fixed_part_translated
+            generated_tokens = []
+            generated_string = ""
+            deleted_tokens = []
+            deleted_string = ""
 
         if self.detailed_log_path is not None:
             with open(self.detailed_log_path, "a", encoding="utf-8") as f:
@@ -616,6 +660,7 @@ class NeMoStreamingPipelineAdapterV2(SpeechProcessor):
                             "non_fixed_asr_text": non_fixed_part,
                             "fixed_part_translated": fixed_part_translated,
                             "non_fixed_part_translated": non_fixed_part_translated,
+                            "translation_lcp": self.prev_partial_translation_lcp,
                             "new_tokens": generated_tokens,
                             "new_string": generated_string,
                             "deleted_tokens": deleted_tokens,

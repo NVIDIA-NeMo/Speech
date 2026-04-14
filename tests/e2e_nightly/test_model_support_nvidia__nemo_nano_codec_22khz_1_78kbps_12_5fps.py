@@ -72,7 +72,7 @@ def test_model_training_step():
     # _process_batch runs encoder → (optional) quantizer → decoder and returns
     # the (padded) reference audio, its lengths, the generated audio, the
     # commit loss from the quantizer, and the encoded representation.
-    audio_ref, audio_ref_len, audio_gen, commit_loss, _ = model._process_batch(batch)
+    audio_ref, audio_ref_len, audio_gen, commit_loss, *_ = model._process_batch(batch)
 
     # Compute the mel reconstruction losses (the primary generator losses).
     # mel_loss_fn returns (loss_l1, loss_l2); both are scalar tensors.

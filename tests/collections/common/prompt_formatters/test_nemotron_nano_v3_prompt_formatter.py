@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+
 import pytest
 
 from nemo.collections.common.prompts.nemotron_nano_v3 import NemotronNanoV3PromptFormatter
@@ -177,6 +179,7 @@ def test_nemotron_nano_v3_inference_keys(bpe_tokenizer_with_think):
 # ──────────────────────────────────────────────────────────────────────
 
 MODEL_ID = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+CI_CACHED_MODEL_PATH = "/home/TestData_/HF_HOME/hub/models--nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 
 
 @pytest.fixture(scope="module")
@@ -184,6 +187,8 @@ def nemo_auto_tokenizer():
     pytest.importorskip("transformers")
     from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
+    if os.path.exists(CI_CACHED_MODEL_PATH):
+        return AutoTokenizer(CI_CACHED_MODEL_PATH, trust_remote_code=True)
     return AutoTokenizer(MODEL_ID, trust_remote_code=True)
 
 

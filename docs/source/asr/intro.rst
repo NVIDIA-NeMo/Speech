@@ -2,7 +2,7 @@ Automatic Speech Recognition (ASR)
 ==================================
 
 Automatic Speech Recognition (ASR), also known as Speech To Text (STT), refers to the problem of automatically transcribing spoken language.
-NeMo provides open-sourced pretrained models in 14+ languages. Browse the full list in :doc:`ASR Model Checkpoints <./asr_checkpoints>`.
+NeMo provides open-sourced pretrained models in 25+ languages. Browse the full list in :doc:`ASR Model Checkpoints <./asr_checkpoints>`.
 
 
 Quick Start

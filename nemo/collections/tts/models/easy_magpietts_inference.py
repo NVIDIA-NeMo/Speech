@@ -362,6 +362,26 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         else:
             self.audio_in_projection = nn.Identity()
 
+        # Speaker/context encoder for context audio embeddings.
+        # This enables keeping the zero-shot conditioning module private at release time.
+        speaker_encoder_cfg = cfg.get('speaker_encoder', cfg.get('context_encoder', None))
+        if speaker_encoder_cfg is not None:
+            speaker_encoder_cfg = dict(speaker_encoder_cfg)
+            speaker_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
+            speaker_encoder_cfg.pop('router_z_loss_coeff', None)
+        else:
+            speaker_encoder_cfg = {
+                'n_layers': cfg.get('speaker_encoder_n_layers', 2),
+                'd_model': cfg.embedding_dim,
+                'd_ffn': cfg.get('speaker_encoder_d_ffn', cfg.embedding_dim * 2),
+                'sa_n_heads': cfg.get('speaker_encoder_n_heads', 4),
+                'kernel_size': cfg.get('speaker_encoder_kernel_size', 1),
+                'p_dropout': cfg.get('speaker_encoder_p_dropout', 0.0),
+                'is_causal': False,
+                'use_learnable_pos_emb': True,
+            }
+        self.speaker_encoder = transformer_2501.Transformer(**speaker_encoder_cfg)
+
         if self.phoneme_tokenizer is not None:
             phoneme_embeddings = []
             for _ in range(self.phoneme_stacking_factor):
@@ -590,6 +610,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # Project from audio_embedding_dim to embedding_dim
         audio_embedding = self.audio_in_projection(audio_embedding)
         return audio_embedding
+
+    def encode_context_audio_embeddings(self, context_audio_embedded: torch.Tensor, context_audio_lens: torch.Tensor):
+        """Encode context audio embeddings with the speaker encoder."""
+        context_mask = get_mask_from_lengths(context_audio_lens)
+        return self.speaker_encoder(context_audio_embedded, context_mask, cond=None, cond_mask=None)['output']
 
     def embed_phoneme_tokens(self, phoneme_tokens):
         # phoneme_tokens: (B, S, T')
@@ -839,6 +864,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.num_audio_codebooks,
         )
         context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
+        context_audio_embedded = self.encode_context_audio_embeddings(
+            context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
+        )
 
         # Context Text
         context_text_lens = context_text_tokens_lens

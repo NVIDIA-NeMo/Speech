@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import logging
 import os
 import random
 import re
@@ -779,6 +780,12 @@ def normalize_text_by_pattern(text, pattern, replacement):
 
     This function will search for and replace any string matching the input 'pattern' surrounded by any punctuation.
 
+    Example:
+        >>> text = "Mr holmes told mr. watson to be careful."
+        >>> normalized_text = normalize_text_by_pattern(text=text, pattern="[mM]r\.?", replacement="mister")
+        >>> normalized_text
+        "mister holmes told mister watson to be careful."
+
     Args:
         text: Text to normalize
         pattern: Text pattern to find and replace
@@ -788,6 +795,7 @@ def normalize_text_by_pattern(text, pattern, replacement):
         The normalized text string
 
     """
+    # Finds all occurrences of the pattern, capturing any punctuation before and after it (including start and end of sentence).
     regex = re.compile(f"(^|[^A-Za-zÀ-ÖØ-öø-ÿ]){pattern}($|[^A-Za-zÀ-ÖØ-öø-ÿ])")
     match = regex.findall(string=text)
 
@@ -800,14 +808,35 @@ def normalize_text_by_pattern(text, pattern, replacement):
 
 
 class TextProcessor(ABC):
-    """Interface for preprocessing text for TTS training and evaluation"""
+    """Interface for preprocessing text for TTS training, inference, and evaluation"""
 
     @abstractmethod
     def normalize_text(self, text):
+        """
+        Preprocess text for model training and inference.
+            Usually this involves language-specific rules for converting written text to spoken form.
+
+        Args:
+            text: Raw text string
+
+        Returns:
+            Normalized text string
+        """
         pass
 
     @abstractmethod
     def process_text_for_wer(self, text):
+        """
+        Preprocess text for calculating word error rate and character error rate.
+            This should include conversion of text to lower case, removal of punctuation, normalization,
+            and possible post-processing steps for ASR model output.
+
+        Args:
+            text: Raw text string
+
+        Returns:
+            Processed text string
+        """
         pass
 
 
@@ -823,8 +852,11 @@ class DefaultTextProcessor(TextProcessor):
         text = text.replace("-", " ")
         # Replace whitespace with a single space
         text = re.sub(pattern=r"\s\s+", string=text, repl=" ")
-        # Remove all non-alphanumeric characters.
+        # Remove all non-alphanumeric characters, making sure to keep accented and foreign characters
         text = "".join([c for c in text if c == " " or c.isalnum()])
+        # Fix common ASR transcript artifacts
+        text = text.replace("h t t p", "http")
+        text = text.replace("w w w", "www")
         text = text.strip()
         return text
 
@@ -861,4 +893,5 @@ def get_text_processor(language):
     if language == "en":
         return EnglishTextProcessor()
     else:
+        logging.info(f"Text processing not implemented for language {language}; using default processor")
         return DefaultTextProcessor()

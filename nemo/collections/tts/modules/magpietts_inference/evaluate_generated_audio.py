@@ -22,7 +22,8 @@ import tempfile
 import time
 from collections import Counter
 from functools import partial
-from typing import Union
+from pathlib import Path
+from typing import Optional, Union
 
 import librosa
 import numpy as np
@@ -67,13 +68,37 @@ FILEWISE_METRICS_TO_SAVE = [
 ]
 
 
-def load_evalset_config(config_path: str = None) -> dict:
+def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Optional[Path] = None) -> dict:
     """Load dataset meta info from JSON config file."""
     if config_path is None or not os.path.exists(config_path):
         raise ValueError("No dataset_json_path provided, please provide a valid path to the evalset config file.")
+
     logging.info(f"Loading evalset config from {config_path}")
     with open(config_path, 'r') as f:
-        return json.load(f)
+        dataset_meta_info = json.load(f)
+
+    # Validate that all evaluation datasets exist
+    for dataset_name, info in dataset_meta_info.items():
+        manifest_path = Path(info["manifest_path"])
+        audio_dir = Path(info["audio_dir"])
+
+        if dataset_base_path:
+            # Replace relative paths with absolute paths where appropriate
+            if not manifest_path.is_absolute():
+                manifest_path = dataset_base_path / manifest_path
+                info["manifest_path"] = str(manifest_path)
+
+            if not audio_dir.is_absolute():
+                audio_dir = dataset_base_path / audio_dir
+                info["audio_dir"] = str(audio_dir)
+
+        if not manifest_path.exists():
+            raise ValueError(f"Manifest does not exist for dataset {dataset_name}: {manifest_path}")
+
+        if not audio_dir.exists():
+            raise ValueError(f"Audio directory does not exist for dataset {dataset_name}: {audio_dir}")
+
+    return dataset_meta_info
 
 
 def _resolve_path(audio_dir, path):

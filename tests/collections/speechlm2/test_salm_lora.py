@@ -15,10 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 from omegaconf import DictConfig
-from peft import PeftModel
 from transformers import Qwen3Config, Qwen3ForCausalLM
-
-from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 
 
 def _make_qwen3_stub():
@@ -51,18 +48,21 @@ def _make_qwen3_stub():
     )
 
 
-def _check_peft_torchao_compat():
-    """Check that peft's torchao version requirement is satisfied."""
+def _import_peft_lora_dependencies():
+    """Import peft-dependent symbols, skipping when CI has an older torchao stack."""
     try:
+        from peft import PeftModel
         from peft.tuners.lora.torchao import dispatch_torchao  # noqa: F401
+        from nemo.collections.speechlm2.parts.lora import maybe_install_lora
     except ImportError as e:
         if "torchao" in str(e).lower():
             pytest.skip(f"peft requires a newer torchao: {e}")
         raise
+    return PeftModel, maybe_install_lora
 
 
 def test_maybe_install_lora_restores_qwen3_input_embeddings_temporarily():
-    _check_peft_torchao_compat()
+    PeftModel, maybe_install_lora = _import_peft_lora_dependencies()
     model = _make_qwen3_stub()
     del model.llm.model.embed_tokens
 

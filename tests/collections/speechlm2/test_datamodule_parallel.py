@@ -21,12 +21,12 @@ from lhotse import CutSet
 from lhotse.testing.dummies import DummyManifest
 from omegaconf import DictConfig
 
-_local_tensor = pytest.importorskip(
-    "torch.distributed._local_tensor", reason="Local tensor mode requires PyTorch >= 2.10"
-)
+try:
+    from torch.distributed._local_tensor import LocalTensorMode  # noqa: E402
+except ImportError:
+    pytest.skip("Local tensor mode requires PyTorch >= 2.10", allow_module_level=True)
 
 from lightning.pytorch.strategies.model_parallel import _setup_device_mesh
-from torch.distributed._local_tensor import LocalTensorMode  # noqa: E402
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model

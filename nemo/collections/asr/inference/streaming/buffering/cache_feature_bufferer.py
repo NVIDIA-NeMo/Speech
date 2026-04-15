@@ -162,7 +162,8 @@ class BatchedCacheFeatureBufferer:
             if chunk_len > self.feature_buffer_len:
                 raise ValueError(f"feat_chunk ({chunk_len}) longer than buffer ({self.feature_buffer_len})")
 
-            self.feature_buffer[slot_id, :, :-chunk_len].copy_(self.feature_buffer[slot_id, :, chunk_len:])
+            shifted = self.feature_buffer[slot_id, :, chunk_len:].clone()
+            self.feature_buffer[slot_id, :, :-chunk_len].copy_(shifted)
             self.feature_buffer[slot_id, :, -chunk_len:].copy_(feat_chunk[i])
 
     def update(self, frames: list[Frame]) -> tuple[list[Tensor], list[int]]:

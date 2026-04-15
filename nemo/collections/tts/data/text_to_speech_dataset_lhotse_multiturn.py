@@ -438,7 +438,17 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if self.include_align_prior:
                 tok_name = batch_tokenizer_names[i]
                 full_text_len = sum([len(self.text_tokenizer.encode(sup.text, tokenizer_name=tok_name)) for sup in cut.supervisions if sup.speaker in self.output_roles])
-                spec_len = int(cut.duration * self.sample_rate / self.codec_model_samples_per_frame) + 1
+
+                if self.add_text_bos_and_eos_in_each_turn:
+                    full_text_len += 2 * sum([1 for sup in cut.supervisions if sup.speaker in self.output_roles])
+
+                full_text_len = max(1, full_text_len)
+
+                if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
+                    spec_len = int(target_codes_list[-1].shape[0]) + 1
+                else:
+                    spec_len = int(target_audio_lens[i] / self.codec_model_samples_per_frame) + 2 # +1 extra in case it was truncated
+
                 align_prior = beta_binomial_prior_distribution(phoneme_count=full_text_len, mel_count=spec_len, scaling_factor=self.prior_scaling_factor)
                 prior_list.append(torch.tensor(align_prior, dtype=torch.float32))
 

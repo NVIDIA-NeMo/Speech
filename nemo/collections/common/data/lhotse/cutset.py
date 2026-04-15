@@ -14,6 +14,8 @@
 """Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
 import io
+import os
+import json
 import logging
 import random
 import re
@@ -57,6 +59,9 @@ from nemo.collections.common.data.lhotse.text_adapters import (
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 
+from lhotse import Recording, AudioSource, SupervisionSegment, MonoCut, CutSet
+
+from pydub.utils import mediainfo
 
 def temperature_reweighting(weights: List[Union[float, int]], temperature: float = 1.0) -> List[float]:
     """
@@ -812,115 +817,6 @@ def cut_to_conversation(
     )
 
 
-def _filter_cer_fn(cut: Cut, max_cer: float) -> bool:
-    return (
-        len(cut.supervisions) == 0
-        or not cut.supervisions[0].has_custom("cer")
-        or cut.supervisions[0].cer <= max_cer
-    )
-
-def _filter_val_flag_fn(cut: Cut, keep_flag: str) -> bool:
-    return not cut.has_custom("validation_status") or cut.validation_status == keep_flag
-
-def _filter_secs_fn(cut: Cut, min_sim: float) -> bool:
-    return (
-        len(cut.supervisions) == 0
-        or not cut.supervisions[0].has_custom("context_speaker_similarity")
-        or cut.supervisions[0].context_speaker_similarity >= min_sim
-    )
-
-def _filter_target_speaker_fn(cut: Cut, target_speaker: str) -> bool:
-    return len(cut.supervisions) == 0 or target_speaker is None or target_speaker in cut.supervisions[0].speaker
-
-def _create_recording_from_array(samples: np.ndarray, sampling_rate: int, recording_id: str) -> Recording:
-    with io.BytesIO() as buffer:
-        sf.write(buffer, samples.T, samplerate=sampling_rate, format='WAV')
-        buffer.seek(0)
-        return Recording.from_bytes(buffer.read(), recording_id=recording_id)
-
-def _convert_cut_fn(cut: Cut, sample_rate: int, add_extra_end_sil: bool, extra_end_silence_range: list) -> Cut:
-    orig_agent_sup = fastcopy(cut.supervisions[0])
-    target_audio_orig_dur = cut.target_audio.duration
-
-    cut.target_audio = cut.target_audio.resample(sample_rate)
-    cut.context_audio = cut.context_audio.resample(sample_rate)
-    total_duration = cut.target_audio.duration
-
-    cut_target = MonoCut(
-        id=f"{cut.id}_target",
-        start=0.0,
-        duration=total_duration,
-        channel=0,
-        recording=cut.target_audio,
-        supervisions=[],
-    )
-
-    zero_audio = np.zeros((1, int(total_duration * sample_rate)), dtype=np.float32)
-    source_recording = _create_recording_from_array(zero_audio, sample_rate, recording_id=f"{cut.id}_source")
-
-    cut_source = MonoCut(
-        id=f"{cut.id}_source",
-        start=0.0,
-        duration=total_duration,
-        channel=0,
-        recording=source_recording,
-        supervisions=[],
-        custom=deepcopy(cut.custom) if cut.custom is not None else None,
-    )
-
-    cut_source = cut_source.move_to_memory(audio_format='wav')
-    cut_target = cut_target.move_to_memory(audio_format='wav')
-
-    user_sup = fastcopy(orig_agent_sup, start=0.0, duration=0.08, speaker="user", text="dummy text")
-    agent_sup = fastcopy(orig_agent_sup, start=0.0, duration=target_audio_orig_dur - 0.08, speaker="agent")
-
-    if user_sup.custom is not None and "ipa" in user_sup.custom:
-        user_sup.custom = deepcopy(user_sup.custom)
-        user_sup.custom["ipa"] = ""
-
-    if add_extra_end_sil:
-        sil_duration = random.uniform(*extra_end_silence_range)
-        cut_target = cut_target.pad(duration=total_duration + sil_duration, direction="right")
-        cut_source = cut_source.pad(duration=total_duration + sil_duration, direction="right")
-        cut_source = cut_source.to_mono().move_to_memory(audio_format='wav')
-        cut_target = cut_target.to_mono().move_to_memory(audio_format='wav')
-        agent_sup.duration += sil_duration + 1.0
-        user_sup.duration += sil_duration
-
-    cut_source.supervisions = [user_sup, agent_sup]
-    cut_source.target_audio = cut_target.recording
-    cut_source.duration = cut_target.duration
-    cut_source.context_audio = cut.context_audio
-    cut_source.task = "lhotse_magpietts_data_as_continuation"
-
-    return cut_source
-
-
-@data_type_parser(["lhotse_magpietts_data_as_continuation"])
-def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
-    cuts, is_tarred = read_cutset_from_config(config)
-
-    add_extra_end_sil = config.get("add_extra_end_silence", False)
-    extra_end_silence_range = config.get("extra_end_silence_range", [0.5, 6.0])
-    sample_rate = config.get("sample_rate", 22050)
-
-    max_cer = config.get("max_cer", 0.03)
-    min_context_speaker_similarity = config.get("min_context_speaker_similarity", 0.6)
-    target_speaker = config.get("target_speaker", None)
-    keep_flag = "pass"
-
-    cuts = (
-        cuts.filter(partial(_filter_cer_fn, max_cer=max_cer))
-        .filter(partial(_filter_val_flag_fn, keep_flag=keep_flag))
-        .filter(partial(_filter_secs_fn, min_sim=min_context_speaker_similarity))
-        .filter(partial(_filter_target_speaker_fn, target_speaker=target_speaker))
-    )
-
-    cuts = cuts.map(partial(_convert_cut_fn, sample_rate=sample_rate, add_extra_end_sil=add_extra_end_sil, extra_end_silence_range=extra_end_silence_range))
-
-    return cuts, is_tarred
-
-
 class FilterCER:
     def __init__(self, max_cer: float):
         self.max_cer = max_cer
@@ -1032,6 +928,7 @@ class ConvertCutFn:
         cut_source.task = "lhotse_magpietts_data_as_continuation"
 
         return cut_source
+
 
 
 @data_type_parser(["lhotse_magpietts_data_as_continuation"])

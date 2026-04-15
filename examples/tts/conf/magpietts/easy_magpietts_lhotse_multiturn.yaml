@@ -178,7 +178,7 @@ model:
         weight: 1.0
         tags:
           tokenizer_names: ["english_phoneme"]
-  
+
   optim:
     _target_: torch.optim.AdamW
     lr: 1e-4

@@ -473,8 +473,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         }
 
         if target_codes_list:
-            batch_dict["target_codes"] = collate_matrices(target_codes_list, padding_value=0).transpose(1, 2)
-            batch_dict["target_codes_lens"] = torch.IntTensor([c.shape[0] for c in target_codes_list])
+            batch_dict["audio_codes"] = collate_matrices(target_codes_list, padding_value=0).transpose(1, 2)
+            batch_dict["audio_codes_lens"] = torch.IntTensor([c.shape[0] for c in target_codes_list])
             
         if source_codes_list:
             batch_dict["source_codes"] = collate_matrices(source_codes_list, padding_value=0).transpose(1, 2)

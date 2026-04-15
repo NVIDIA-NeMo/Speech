@@ -41,14 +41,6 @@ jobs:
         run: |
           BUILD_ARGS=$(cat << EOF
           BASE_IMAGE=$(cat requirements/manifest.json | jq -r '."ngc-pytorch"')
-          TRTLLM_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."trt-llm".repo')
-          TRTLLM_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."trt-llm".ref')
-          MLM_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".repo')
-          MLM_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".ref')
-          TE_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".transformer_engine.repo')
-          TE_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".transformer_engine.ref')
-          APEX_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".apex.repo')
-          APEX_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".apex.ref')
           EOF
           )
 

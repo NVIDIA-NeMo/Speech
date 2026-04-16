@@ -1,21 +1,36 @@
-# PR Babysitter — stateful CI fix loop driven by the "Has Babysitter" label.
+# PR Babysitter — half-autonomous CI fix loop with a human approval gate.
+#
+# Master switch: the "Has Babysitter" label. Adding it activates, removing
+# it deactivates and cancels any in-flight work.
 #
 # Lifecycle:
-#   1. Someone adds "Has Babysitter" to a PR
-#   2. activate job posts a takeover comment and adds "Run CICD" to start CI
-#   3. CI runs (CICD NeMo workflow)
-#   4. If all checks pass  -> babysitter stays quiet, done
-#      If a check fails    -> check_run event triggers fix-ci-failure
-#      (unless it's black+isort, fixed by another action)
-#   5. Claude inspects ALL failing checks, pushes a fix, then re-adds "Run CICD"
-#      -> back to step 3 (the loop)
-#   6. If Claude cannot fix -> it @-mentions the author and removes "Has Babysitter"
-#      If the job crashes   -> ping-author-on-failure does the same
-#   7. Removing "Has Babysitter" at any time deactivates the babysitter and
-#      cancels any in-progress fix via a shared concurrency group.
+#   1. "Has Babysitter" added  -> activate posts a takeover comment and adds
+#                                 "Run CICD" to start the pipeline.
+#   2. CI runs (CICD NeMo workflow).
+#   3. If all checks pass      -> babysitter stays silent, done.
+#      If a check fails        -> check_run event triggers investigate-and-propose
+#                                 (formatting check skipped — the Isort+Black
+#                                 action auto-pushes its own fixes).
+#   4. investigate-and-propose: Claude investigates root cause, posts a *plan
+#      comment* on the PR, and adds "Agent Plan Awaiting Approval".
+#      **It does NOT push code.**
+#   5. The PR author approves via either:
+#        a) reply on the PR that mentions `@claude` and is affirmative
+#           -> evaluate-comment-approval classifies and, if approve,
+#              swaps "Agent Plan Awaiting Approval" for "Agent Plan Approved".
+#        b) 👍 reaction on Claude's plan comment
+#           -> poll-reaction-approvals (cron every 5 min) does the same swap.
+#   6. "Agent Plan Approved" added -> execute-fix reads the approved plan from
+#      the PR thread, pushes the fix, re-adds "Run CICD", and goes back to #2.
 #
-# Additionally, anyone can @claude in a PR review comment on a babysitter-enabled
-# PR to ask questions or request changes (gated by speech_team membership).
+# Termination:
+#   - "Has Babysitter" removed at any time -> deactivate cancels in-progress
+#     work via a shared concurrency group and clears plan-state labels.
+#   - Claude can't investigate or can't execute -> ping-author-on-failure pings
+#     the author and clears labels.
+#
+# Additionally, speech_team members can @claude in a PR review comment on a
+# babysitter-enabled PR to ask questions or request changes.
 #
 # Required secrets: ANTHROPIC_API_KEY, ORG_TEAM_READ_TOKEN, NEMO_RELABEL_TOKEN
 
@@ -30,6 +45,10 @@ on:
     types: [submitted]
   check_run:
     types: [completed]
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: '*/5 * * * *'
 
 permissions:
   contents: write
@@ -58,7 +77,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: "I'll monitor and fix this PR until the CI is green. I'll ping the author if I can't figure it out."
+              body: "I'll monitor this PR until CI is green. I'll post a plan for any fix and wait for your approval before pushing anything. Ping me by removing 'Has Babysitter' to cancel."
             });
 
       - name: Checkout for GH CLI
@@ -70,7 +89,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: gh pr edit "$PR_NUMBER" --add-label "Run CICD"
 
-  # ---- Path A: Respond to @claude mentions in PR reviews ----
+  # ---- @claude mentions in PR reviews (speech_team only) ----
 
   authorize-review:
     if: >-
@@ -132,7 +151,7 @@ jobs:
           # No prompt — Claude reads the @claude mention and responds in context
           claude_args: "--max-turns 15 --model claude-sonnet-4-6"
 
-  # ---- Path B: Auto-fix CI failures (the retry loop) ----
+  # ---- CI failure: investigate, propose a plan, DO NOT push ----
 
   check-label-for-ci:
     # Skip formatting checks — the "Isort and Black Formatting" action auto-pushes fixes.
@@ -144,12 +163,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pr_number: ${{ steps.lookup.outputs.pr_number }}
-      has_label: ${{ steps.lookup.outputs.has_label }}
+      should_propose: ${{ steps.lookup.outputs.should_propose }}
       head_ref: ${{ steps.lookup.outputs.head_ref }}
       head_sha: ${{ steps.lookup.outputs.head_sha }}
       author_login: ${{ steps.lookup.outputs.author_login }}
     steps:
-      - name: Look up PR and check for Has Babysitter label
+      - name: Look up PR and assess state
         id: lookup
         uses: actions/github-script@v8
         with:
@@ -160,23 +179,27 @@ jobs:
               repo: context.repo.repo,
               pull_number: prNumber,
             });
-            const hasLabel = pr.labels.some(l => l.name === 'Has Babysitter');
-            // Skip stale failures: if the PR head has moved past this check_run's
-            // commit, a fix was already pushed and this failure is outdated.
+            const labels = pr.labels.map(l => l.name);
+            const hasBabysitter = labels.includes('Has Babysitter');
+            const hasPending = labels.includes('Agent Plan Awaiting Approval');
+            const hasApproved = labels.includes('Agent Plan Approved');
             const failedSha = context.payload.check_run.head_sha;
             const isStale = pr.head.sha !== failedSha;
+            // Propose a new plan only if: babysitter is on, no plan is already
+            // in flight, and the failure isn't stale.
+            const shouldPropose = hasBabysitter && !hasPending && !hasApproved && !isStale;
             core.setOutput('pr_number', prNumber);
-            core.setOutput('has_label', (hasLabel && !isStale) ? 'true' : 'false');
+            core.setOutput('should_propose', shouldPropose ? 'true' : 'false');
             core.setOutput('head_ref', pr.head.ref);
             core.setOutput('head_sha', pr.head.sha);
             core.setOutput('author_login', pr.user.login);
-            if (isStale) {
-              core.info(`Skipping stale failure: check_run SHA ${failedSha} != PR head ${pr.head.sha}`);
+            if (!shouldPropose) {
+              core.info(`Skipping investigate-and-propose: babysitter=${hasBabysitter}, pending=${hasPending}, approved=${hasApproved}, stale=${isStale}`);
             }
 
-  fix-ci-failure:
+  investigate-and-propose:
     needs: check-label-for-ci
-    if: needs.check-label-for-ci.outputs.has_label == 'true'
+    if: needs.check-label-for-ci.outputs.should_propose == 'true'
     runs-on: ubuntu-latest
     concurrency:
       group: babysit-fix-${{ needs.check-label-for-ci.outputs.pr_number }}
@@ -190,68 +213,266 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            The CI check "${{ github.event.check_run.name }}" just failed on this PR.
+            The CI check "${{ github.event.check_run.name }}" just failed on
+            PR #${{ needs.check-label-for-ci.outputs.pr_number }}.
+
+            You are in HALF-AUTONOMOUS mode. You MUST NOT edit files, commit,
+            or push code in this job. Investigation and planning only.
 
             Instructions:
-            1. Inspect the failure logs for ALL currently failing CI checks on this
-               PR, not just the one named above.
-            2. Check `git log` for recent commits — if you see a previous babysitter
-               fix attempt that addressed the same failure and it is still failing,
-               do NOT retry. Instead, post a comment on the PR mentioning
-               @${{ needs.check-label-for-ci.outputs.author_login }} explaining what
-               you tried and that the issue needs human attention.
-            3. Otherwise, identify the root cause, fix the code, and push to the
-               same branch. Do not create a new PR.
-            4. If you are unable to fix the issue for any reason, post a comment on
-               the PR mentioning @${{ needs.check-label-for-ci.outputs.author_login }}
-               explaining what you found and asking for help.
+            1. Inspect the failure logs for ALL currently failing CI checks on
+               this PR, not just the one named above.
+            2. Check `git log` for recent commits — if a prior babysitter plan
+               already tried the same approach and it's still failing, call
+               that out in your plan so the author can reconsider.
+            3. Identify the root cause and draft a concrete fix plan covering:
+               - What's broken and why
+               - Which files/lines you'd change
+               - The minimal diff you'd apply
+            4. Post a SINGLE PR comment with this exact structure:
+
+               **CI Fix Plan** — awaiting approval from @${{ needs.check-label-for-ci.outputs.author_login }}
+
+               <your analysis and proposed change>
+
+               ---
+               To approve, either **reply with an affirmative comment that mentions `@claude`**
+               (e.g., `@claude go ahead`) or **react 👍 to this comment**. Remove the
+               `Has Babysitter` label to cancel.
+
+               <!-- babysit-plan -->
+
+               The `<!-- babysit-plan -->` marker MUST be the last line — later
+               jobs use it to find the approved plan.
+            5. If you conclude the issue cannot be fixed from this PR alone,
+               DO NOT include the `<!-- babysit-plan -->` marker. Instead post
+               a comment that mentions @${{ needs.check-label-for-ci.outputs.author_login }}
+               describing what you found and asking for help.
+          claude_args: "--max-turns 10 --model claude-sonnet-4-6"
+
+      - name: Mark plan awaiting approval (or stop if Claude gave up)
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Detect whether Claude actually posted a plan comment.
+          PLAN_COUNT=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '[.[] | select(.body | contains("<!-- babysit-plan -->"))] | length')
+          if [ "$PLAN_COUNT" -gt 0 ]; then
+            echo "Plan comment posted; adding 'Agent Plan Awaiting Approval'"
+            gh pr edit "$PR_NUMBER" --add-label "Agent Plan Awaiting Approval"
+          else
+            echo "No plan posted; Claude decided it couldn't fix. Disabling babysitter."
+            gh pr edit "$PR_NUMBER" --remove-label "Has Babysitter"
+          fi
+
+  # ---- Approval Path A: affirmative comment from PR author mentioning @claude ----
+
+  evaluate-comment-approval:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.action == 'created' &&
+      github.event.issue.pull_request != null &&
+      contains(github.event.issue.labels.*.name, 'Has Babysitter') &&
+      contains(github.event.issue.labels.*.name, 'Agent Plan Awaiting Approval') &&
+      github.event.comment.user.type != 'Bot' &&
+      github.event.comment.user.login == github.event.issue.user.login &&
+      contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: babysit-fix-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Decide whether the PR author has approved the fix plan, then act.
+
+            Context:
+            - PR #${{ github.event.issue.number }} has label "Agent Plan Awaiting Approval".
+            - The PR author (@${{ github.event.issue.user.login }}) just posted a reply.
+            - The approved plan is a previous PR comment containing `<!-- babysit-plan -->`.
+
+            Steps:
+            1. Read the latest `<!-- babysit-plan -->` comment on the PR for the plan.
+            2. Read the PR author's reply (use `gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}`).
+            3. Classify the reply as exactly one of:
+               - APPROVE: the author clearly agrees to proceed with the plan.
+               - REJECT: the author clearly disagrees or wants changes.
+               - NEITHER: the reply is a question, side remark, or ambiguous.
+            4. Take action:
+               - APPROVE: run exactly
+                 `gh pr edit $PR_NUMBER --remove-label "Agent Plan Awaiting Approval" --add-label "Agent Plan Approved"`
+                 and do nothing else.
+               - REJECT: post a short PR comment acknowledging the rejection
+                 and suggesting they either remove `Has Babysitter` to cancel
+                 or reply with a new direction. Do NOT change labels.
+               - NEITHER: post a short PR comment asking for an explicit
+                 approve/reject. Do NOT change labels.
+            5. Do not push any code. Do not edit files in the repository.
+          claude_args: "--max-turns 8 --model claude-sonnet-4-6"
+
+  # ---- Approval Path B: 👍 reaction from PR author (scheduled poll) ----
+
+  poll-reaction-approvals:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find PRs with 👍 approval from author
+        id: find
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'Has Babysitter,Agent Plan Awaiting Approval',
+              per_page: 50,
+            });
+            const approved = [];
+            for (const issue of issues) {
+              if (!issue.pull_request) continue;
+              const prNumber = issue.number;
+              const authorLogin = issue.user.login;
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100,
+              });
+              const planComment = [...comments].reverse().find(c => c.body.includes('<!-- babysit-plan -->'));
+              if (!planComment) {
+                core.info(`PR #${prNumber}: no plan comment`);
+                continue;
+              }
+              const reactions = await github.paginate(github.rest.reactions.listForIssueComment, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: planComment.id,
+                per_page: 100,
+              });
+              if (reactions.some(r => r.content === '+1' && r.user.login === authorLogin)) {
+                approved.push(prNumber);
+                core.info(`PR #${prNumber}: +1 from @${authorLogin} detected`);
+              }
+            }
+            core.setOutput('approved_prs', JSON.stringify(approved));
+
+      - name: Checkout for GH CLI
+        if: steps.find.outputs.approved_prs != '[]'
+        uses: actions/checkout@v6
+
+      - name: Swap labels for approved PRs
+        if: steps.find.outputs.approved_prs != '[]'
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          APPROVED_PRS: ${{ steps.find.outputs.approved_prs }}
+        run: |
+          echo "$APPROVED_PRS" | jq -r '.[]' | while read -r pr; do
+            echo "Approving PR #$pr"
+            gh pr edit "$pr" --remove-label "Agent Plan Awaiting Approval" --add-label "Agent Plan Approved"
+          done
+
+  # ---- Execute the approved plan (the only job allowed to push code) ----
+
+  execute-fix:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'Agent Plan Approved' &&
+      contains(github.event.pull_request.labels.*.name, 'Has Babysitter')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: babysit-fix-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Record starting SHA
+        id: start
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            The PR author has approved your previously posted fix plan. Execute it now.
+
+            Instructions:
+            1. Read the PR comment thread and find the most recent comment
+               containing the marker `<!-- babysit-plan -->`. That is the
+               approved plan.
+            2. Implement exactly what the plan described. Do not expand scope.
+               Do not refactor code outside the plan.
+            3. Commit with DCO sign-off and push to the same branch.
+            4. If the plan is no longer applicable (e.g., merge conflicts, the
+               code has moved on, the reproduction no longer triggers the bug):
+               post a PR comment mentioning @${{ github.event.pull_request.user.login }}
+               explaining what changed and DO NOT push.
           claude_args: "--max-turns 10 --model claude-sonnet-4-6"
 
       - name: Re-trigger CI or stop loop
         env:
           GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
-          PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
-          ORIGINAL_SHA: ${{ needs.check-label-for-ci.outputs.head_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ORIGINAL_SHA: ${{ steps.start.outputs.sha }}
         run: |
+          # Clear "Agent Plan Approved" so the next iteration can re-use it.
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true
           NEW_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid -q '.headRefOid')
           if [ "$NEW_SHA" != "$ORIGINAL_SHA" ]; then
-            echo "Fix was pushed (SHA changed), re-triggering CI"
+            echo "Fix pushed (SHA changed); re-triggering CI"
             gh pr edit "$PR_NUMBER" --add-label "Run CICD"
           else
-            echo "No fix was pushed (SHA unchanged), removing babysitter label"
+            echo "No fix pushed; disabling babysitter"
             gh pr edit "$PR_NUMBER" --remove-label "Has Babysitter"
           fi
 
+  # ---- Safety net: ping author and clear state if investigate-and-propose crashes ----
+
   ping-author-on-failure:
-    needs: [check-label-for-ci, fix-ci-failure]
-    if: failure()
+    needs: [check-label-for-ci, investigate-and-propose]
+    if: failure() && needs.check-label-for-ci.outputs.should_propose == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Ping PR author
         uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
+          CHECK_NAME: ${{ github.event.check_run.name }}
+          AUTHOR_LOGIN: ${{ needs.check-label-for-ci.outputs.author_login }}
         with:
           script: |
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: parseInt(process.env.PR_NUMBER, 10),
-              body: `I wasn't able to fix the CI failure in \`${process.env.CHECK_NAME}\`. @${process.env.AUTHOR_LOGIN}, could you take a look?`
+              body: `I wasn't able to investigate the CI failure in \`${process.env.CHECK_NAME}\`. @${process.env.AUTHOR_LOGIN}, could you take a look?`
             });
-        env:
-          PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
-          CHECK_NAME: ${{ github.event.check_run.name }}
-          AUTHOR_LOGIN: ${{ needs.check-label-for-ci.outputs.author_login }}
 
       - name: Checkout for GH CLI
         uses: actions/checkout@v6
 
-      - name: Remove babysitter label to stop the loop
+      - name: Clear all babysitter labels
         env:
           GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
           PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
-        run: gh pr edit "$PR_NUMBER" --remove-label "Has Babysitter"
+        run: |
+          gh pr edit "$PR_NUMBER" --remove-label "Has Babysitter" || true
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Awaiting Approval" || true
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true
 
-  # ---- Deactivation: cancel in-progress fixes and notify ----
+  # ---- Deactivation: cancel in-progress fixes and clear state ----
 
   deactivate:
     if: >-
@@ -273,3 +494,14 @@ jobs:
               issue_number: context.payload.pull_request.number,
               body: "Babysitter deactivated for this PR."
             });
+
+      - name: Checkout for GH CLI
+        uses: actions/checkout@v6
+
+      - name: Clear plan-state labels
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Awaiting Approval" || true
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true

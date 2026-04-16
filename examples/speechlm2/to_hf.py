@@ -42,6 +42,10 @@ class HfExportConfig:
     # Dtype used for stored parameters
     dtype: str = "bfloat16"
 
+    # If True, patch the checkpoint for vLLM inference (add tokenizer, chat template,
+    # model_type/architectures, generation_config). Requires HuggingFace transformers.
+    vllm: bool = False
+
 
 def load_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     if Path(checkpoint_path).is_dir():
@@ -102,8 +106,99 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
     save_file(state_dict, output_dir / "model.safetensors")
 
     config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else model.cfg
+    # Ensure HF-compatible fields are present so vLLM / transformers can identify the model.
+    config.setdefault("model_type", "nemo_speechlm")
+    config.setdefault("architectures", ["NeMoSpeechLMForConditionalGeneration"])
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
+
+
+_HYBRID_ARCHITECTURES = {"NemotronHForCausalLM", "NemotronHybridForCausalLM"}
+_AUDIO_TOKEN = "<|audio|>"
+
+
+def _detect_vllm_architecture(model_cfg: dict) -> str:
+    """Determine the vLLM plugin model class from the pretrained LLM backbone."""
+    pretrained_llm = model_cfg.get("pretrained_llm", "")
+    try:
+        from transformers import AutoConfig
+
+        llm_cfg = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        archs = getattr(llm_cfg, "architectures", [])
+    except Exception:
+        archs = []
+    if set(archs) & _HYBRID_ARCHITECTURES:
+        return "NeMoSpeechLMHybridForConditionalGeneration"
+    return "NeMoSpeechLMForConditionalGeneration"
+
+
+def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
+    """Patch a saved checkpoint to be vLLM-ready.
+
+    Adds tokenizer (with audio token and chat template), patches config.json
+    with model_type/architectures, and writes generation_config.json.
+
+    Args:
+        output_dir: Path to the HuggingFace checkpoint directory.
+        model_cfg: Model config dict (from experiment YAML).
+
+    Raises:
+        ValueError: If ``prompt_format`` or ``pretrained_llm`` is missing.
+    """
+    from transformers import AutoTokenizer
+
+    from nemo.utils import logging as LOG
+
+    output_dir = Path(output_dir)
+    prompt_format = model_cfg.get("prompt_format")
+    if not prompt_format:
+        raise ValueError("model config has no 'prompt_format'; cannot prepare for vLLM")
+    pretrained_llm = model_cfg.get("pretrained_llm", "")
+    if not pretrained_llm:
+        raise ValueError("model config has no 'pretrained_llm'; cannot load tokenizer for vLLM")
+
+    # 1. Detect architecture and patch config.json
+    arch = _detect_vllm_architecture(model_cfg)
+    config_path = output_dir / "config.json"
+    config = json.loads(config_path.read_text())
+    config["model_type"] = "nemo_speechlm"
+    config["architectures"] = [arch]
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+
+    # 2. Generate chat template from PromptFormatter
+    from nemo.collections.common.prompts.formatter import PromptFormatter
+
+    formatter_cls = PromptFormatter.resolve(prompt_format)
+    jinja_template = formatter_cls.to_jinja(audio_token=_AUDIO_TOKEN)
+    LOG.info("Generated chat template for prompt_format=%s", prompt_format)
+
+    # 3. Save tokenizer with audio token and chat template
+    existing = [
+        f.name
+        for f in output_dir.iterdir()
+        if f.name in ("tokenizer_config.json", "tokenizer.json", "generation_config.json")
+    ]
+    if existing:
+        LOG.info("Overwriting existing files in %s: %s", output_dir, existing)
+    tok = AutoTokenizer.from_pretrained(pretrained_llm, trust_remote_code=True)
+    if _AUDIO_TOKEN not in tok.get_vocab():
+        tok.add_special_tokens({"additional_special_tokens": [_AUDIO_TOKEN]})
+    tok.save_pretrained(str(output_dir))
+    # Remove chat_template.jinja (overrides tokenizer_config.json)
+    jinja_file = output_dir / "chat_template.jinja"
+    if jinja_file.exists():
+        jinja_file.unlink()
+    # Write template into tokenizer_config.json
+    tok_cfg_path = output_dir / "tokenizer_config.json"
+    tok_cfg = json.loads(tok_cfg_path.read_text())
+    tok_cfg["chat_template"] = jinja_template
+    tok_cfg_path.write_text(json.dumps(tok_cfg, indent=2) + "\n")
+
+    # 4. Write generation_config.json (model-specific EOS only; inference
+    #    params like temperature/max_tokens are task-specific and should be
+    #    passed via server args, not baked into the checkpoint)
+    gen_cfg = {"eos_token_id": [tok.eos_token_id]}
+    (output_dir / "generation_config.json").write_text(json.dumps(gen_cfg, indent=2) + "\n")
 
 
 def _uses_automodel_parallel(strategy_cfg: dict) -> bool:
@@ -184,6 +279,8 @@ def main(cfg: HfExportConfig):
         consolidated = consolidate_state_dict(model)
         if dist.get_rank() == 0:
             save_hf_checkpoint(model, consolidated, cfg)
+            if cfg.vllm:
+                prepare_for_vllm(cfg.output_dir, model_cfg)
 
         dist.barrier()
         dist.destroy_process_group()
@@ -194,6 +291,8 @@ def main(cfg: HfExportConfig):
         model = model.to(getattr(torch, cfg.dtype))
         model_cfg["pretrained_weights"] = False
         model.save_pretrained(cfg.output_dir)
+        if cfg.vllm:
+            prepare_for_vllm(cfg.output_dir, model_cfg)
 
 
 if __name__ == "__main__":

@@ -903,6 +903,8 @@ class CharAwareSubwordEncoder(nn.Module):
         if self.use_bos_eos_emb:
             self.bos_eos_emb = BOSEOSEmbedding(tokenizer, self.hidden_size)
 
+        self.use_tts_subword_cache = False
+
     def prepare_inputs(self, subword_ids: Tensor, padding_mask: Tensor) -> tuple[Tensor, Tensor]:
         """
         Converts a batch of subword IDs into a padded batch of character IDs.
@@ -937,6 +939,10 @@ class CharAwareSubwordEncoder(nn.Module):
         """
         Performs the forward pass to get character-aware subword embeddings.
 
+        When use_tts_subword_cache is True and the module is in eval mode, a
+        per-subword-ID cache skips the expensive char encoding + backbone +
+        pooling path for previously seen tokens.
+
         Args:
             subword_ids (Tensor): A tensor of subword IDs. Shape: `[batch, seq_len]`.
             subword_mask (Tensor | None): A boolean mask for padding. Defaults to None.
@@ -946,6 +952,19 @@ class CharAwareSubwordEncoder(nn.Module):
         """
         if subword_mask is None:
             subword_mask = torch.ones_like(subword_ids, dtype=torch.bool)
+
+        # Inference cache: return cached embeddings if all valid IDs have been seen
+        if not self.training and self.use_tts_subword_cache:
+            if not hasattr(self, '_inference_cache'):
+                self._inference_cache = {}
+            valid_ids = torch.masked_select(subword_ids, subword_mask).tolist()
+            if all(sid in self._inference_cache for sid in valid_ids):
+                cached = torch.stack([self._inference_cache[sid] for sid in valid_ids])
+                out = torch.zeros(
+                    subword_ids.shape + (cached.size(-1),), device=subword_ids.device, dtype=cached.dtype
+                )
+                out[subword_mask] = cached
+                return out
 
         # 1. Convert subword IDs to character IDs
         char_ids, char_lengths = self.prepare_inputs(subword_ids, subword_mask)
@@ -977,6 +996,13 @@ class CharAwareSubwordEncoder(nn.Module):
 
         if self.use_bos_eos_emb:
             subword_embeds = self.bos_eos_emb(subword_embeds, subword_ids)
+
+        # Cache results for future lookups
+        if not self.training and self.use_tts_subword_cache:
+            valid_ids = torch.masked_select(subword_ids, subword_mask).tolist()
+            valid_embeds = subword_embeds[subword_mask].detach()
+            for idx, sid in enumerate(valid_ids):
+                self._inference_cache[sid] = valid_embeds[idx]
 
         return subword_embeds
 
@@ -1146,15 +1172,13 @@ class RVQEARTTSModel(nn.Module):
         ret: [b, t, h]
         """
         b, t, d = code.size()
-        _, v, h = self.rvq_embs.size()
-        device = code.device
-
-        ret = torch.zeros((b, t, h), device=device)
         embs = F.pad(self.rvq_embs, [0, 0, 0, 1])
-        for i in range(d):
-            emb = embs[i]
-            ret = ret + F.embedding(code[..., i], emb)
-        return ret
+        v_padded = embs.shape[1]
+        offsets = torch.arange(d, device=code.device).view(1, 1, d) * v_padded
+        flat_indices = (code + offsets).reshape(b * t * d)
+        flat_embs = embs.reshape(d * v_padded, -1)
+        gathered = F.embedding(flat_indices, flat_embs).reshape(b, t, d, -1)
+        return gathered.sum(dim=2)
 
     def prepare_training_inputs(self, code: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """Prepares masked and dropped-out versions of the code for training."""
@@ -1638,11 +1662,13 @@ class RVQEARTTSModel(nn.Module):
         num_maskings = torch.ceil(masking_rates * self.config.num_quantizers).long()
 
         ks = num_maskings - F.pad(num_maskings[1:], [0, 0, 0, 1])
+        ks_list = ks.squeeze(-1).tolist()
 
         # 4. Iteratively unmask the continuous part of the code
         cnt = 0
-        for i, k in enumerate(ks):
-            if torch.all(k == 0):
+        for i, k_val in enumerate(ks_list):
+            k_val = int(k_val)
+            if k_val == 0:
                 continue
 
             # Prepare input for the MoG head
@@ -1652,7 +1678,7 @@ class RVQEARTTSModel(nn.Module):
 
             mog_input_embeds = self.embed_code(self.depthsum_embedding(code))
             if self.config.random_target_masking:
-                mog_input_embeds += self.embed_target_mask(cnt + k - 1)
+                mog_input_embeds += self.embed_target_mask(cnt + k_val - 1)
             if guidance_scale_i > 0.0:
                 mog_input_embeds = torch.cat(
                     [mog_input_embeds + hidden_states, mog_input_embeds + uncond_hidden_states], 0
@@ -1666,8 +1692,8 @@ class RVQEARTTSModel(nn.Module):
                 top_p_or_k=top_p_or_k_i,
             )
             z = mog_mu + torch.exp(mog_logs) * torch.randn_like(mog_mu) * noise_scale_i
-            code = depthsum_encoding_step(self.rvq_embs, z, code, cnt, k[0].item())
-            cnt += k[0].item()
+            code = depthsum_encoding_step(self.rvq_embs, z, code, cnt, k_val)
+            cnt += k_val
         return code, lm_logits, eos_flag
 
     def load_state_dict(self, state_dict, strict: bool = True):

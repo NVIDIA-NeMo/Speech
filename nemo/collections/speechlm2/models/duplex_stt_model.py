@@ -14,7 +14,8 @@
 import copy
 import os
 import re
-
+import warnings
+from pathlib import Path
 import torch
 from lightning import LightningModule
 from omegaconf import DictConfig
@@ -45,6 +46,7 @@ from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, i
 from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     maybe_load_pretrained_models,
+    resolve_pretrained_config,
     set_model_dict_for_partial_init,
     setup_speech_encoder,
 )
@@ -59,7 +61,7 @@ def maybe_rename_llm_kwargs_for_nemotron(kwargs: dict, model_cfg) -> dict:
         return kwargs
     cache = kwargs.pop("past_key_values")
     if cache is not None:
-        cache_key = model_cfg.get("cache_key", "past_key_values")
+        cache_key = model_cfg.get("cache_key", "cache_params")
         kwargs[cache_key] = cache
     return kwargs
 
@@ -79,16 +81,19 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         self.predict_user_text = self.cfg.get("predict_user_text", False)
 
+        pretrained_weights, tokenizer_path = resolve_pretrained_config(self.cfg)
+
         # Load LLM first
         llm = load_pretrained_hf(
             self.cfg.pretrained_llm,
-            pretrained_weights=self.cfg.pretrained_weights,
+            pretrained_weights=pretrained_weights,
             trust_remote_code=self.cfg.get("trust_remote_code", True),
+            use_meta_device=self.cfg.get("use_meta_device", False),
         ).train()
 
         # Initialize tokenizer with optional special tokens from config
         self.tokenizer = AutoTokenizer(
-            self.cfg.pretrained_llm,
+            tokenizer_path,
             use_fast=True,
             bos_token=self.cfg.get("bos_token", None),
             eos_token=self.cfg.get("eos_token", None),
@@ -109,10 +114,17 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.asr_head = copy.deepcopy(self.lm_head)
             self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
 
+        self.use_function_head = self.cfg.get("use_function_head", False)
+        if self.use_function_head:
+            self.function_head = copy.deepcopy(self.lm_head)
+            logging.info("[Function Calling] Initialized function_head (deep copy of lm_head)")
+        else:
+            self.function_head = None
+
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model
-        setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
+        setup_speech_encoder(self, pretrained_weights=pretrained_weights)
 
         maybe_load_pretrained_models(self)
 
@@ -121,6 +133,24 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         # Initialize streaming inference engine
         self.streaming_inference = DuplexSTTStreamingInference(self)
+
+    def save_pretrained(
+        self,
+        save_directory: str | Path,
+        **kwargs,
+    ) -> str | None:
+        """Save model and also export LLM artifacts (config + tokenizer) for offline inference."""
+        result = super().save_pretrained(save_directory, **kwargs)
+
+        try:
+            llm_dir = Path(save_directory) / "llm_artifacts"
+            llm_dir.mkdir(parents=True, exist_ok=True)
+            self.tokenizer.tokenizer.save_pretrained(str(llm_dir))
+            logging.info(f"Saved LLM tokenizer to {llm_dir}")
+        except Exception as e:
+            warnings.warn(f"Failed to save LLM tokenizer: {e}. Inference will fall back to downloading from HF.")
+
+        return result
 
     @property
     def text_vocab_size(self):
@@ -167,12 +197,15 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self,
         input_embeds: Tensor,
         cache=None,
+        cache_position=None,
     ) -> dict[str, Tensor]:
         """
         Text prediction only (audio_loss_weight=0).
         """
         kwargs = dict(inputs_embeds=input_embeds, past_key_values=cache, use_cache=cache is not None, return_dict=True)
         kwargs = maybe_rename_llm_kwargs_for_nemotron(kwargs, self.cfg)
+        if cache_position is not None:
+            kwargs["cache_position"] = cache_position
         out = self.llm(**kwargs)
 
         B, T = input_embeds.shape[:2]
@@ -191,9 +224,22 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if self.cfg.get("inference_eos_boost", None):
                 text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
 
+            if self.predict_user_text:
+                if self.cfg.get("inference_user_pad_boost", None):
+                    asr_logits[:, :, self.text_pad_id] += self.cfg.inference_user_pad_boost
+                if self.cfg.get("inference_user_bos_boost", None):
+                    asr_logits[:, :, self.text_bos_id] += self.cfg.inference_user_bos_boost
+                if self.cfg.get("inference_user_eos_boost", None):
+                    asr_logits[:, :, self.text_eos_id] += self.cfg.inference_user_eos_boost
+
         ans = {"text_logits": text_logits}
         if self.predict_user_text:
             ans["asr_logits"] = asr_logits
+        if self.function_head is not None:
+            function_in = out['last_hidden_state']
+            if function_in.dtype != self.function_head.weight.dtype:
+                function_in = function_in.to(self.function_head.weight.dtype)
+            ans["function_logits"] = self.function_head(function_in)
 
         if cache is not None:
             if 'Nemotron' in self.cfg.pretrained_llm:
@@ -728,3 +774,148 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             logging.info("Error loading model state_dict !! Retrying with partial initialization!")
             model_dict = set_model_dict_for_partial_init(state_dict, self.state_dict())
             return super().load_state_dict(model_dict, strict=False)
+
+    def _create_nemotron_cache(self, batch_size: int = 1):
+        """Create a HybridMambaAttentionDynamicCache for Nemotron hybrid Mamba2/Attention models."""
+        import importlib
+        cache_cls = None
+        llm = self.llm
+        if hasattr(llm, '_orig_mod'):
+            llm = llm._orig_mod
+        model_module = type(llm).__module__
+        if model_module:
+            mod = importlib.import_module(model_module)
+            cache_cls = getattr(mod, "HybridMambaAttentionDynamicCache", None)
+        if cache_cls is None:
+            raise RuntimeError(
+                "Could not find HybridMambaAttentionDynamicCache in the Nemotron model's module. "
+                "Ensure the model was loaded with trust_remote_code=True."
+            )
+
+        # Newer transformers defines key_cache/value_cache as read-only
+        # properties on DynamicCache, but the Nemotron __init__ tries to set
+        # them as regular attributes. Create a patched subclass that shadows
+        # the properties so the assignment succeeds.
+        needs_patch = any(
+            isinstance(cls.__dict__.get(attr), property)
+            for cls in cache_cls.__mro__
+            for attr in ('key_cache', 'value_cache')
+        )
+        if needs_patch:
+            patched = type(cache_cls.__name__, (cache_cls,), {
+                'key_cache': None,
+                'value_cache': None,
+            })
+        else:
+            patched = cache_cls
+
+        config = llm.config
+        cache = patched(
+            config=config,
+            batch_size=batch_size,
+            dtype=llm.dtype if hasattr(llm, 'dtype') else torch.float32,
+            device=self.device,
+        )
+        if not hasattr(cache, 'conv_kernel_size'):
+            cache.conv_kernel_size = config.conv_kernel
+
+        intermediate_size = config.mamba_num_heads * config.mamba_head_dim
+        conv_dim = intermediate_size + 2 * config.n_groups * config.ssm_state_size
+        if conv_dim != intermediate_size:
+            conv_kernel = config.conv_kernel
+            dtype = llm.dtype if hasattr(llm, 'dtype') else torch.float32
+            for i, pattern in enumerate(config.hybrid_override_pattern):
+                if pattern == "M" and i < len(cache.conv_states):
+                    cache.conv_states[i] = torch.zeros(
+                        batch_size, conv_dim, conv_kernel, device=self.device, dtype=dtype,
+                    )
+
+        self._patch_nemotron_cache_bugs(cache)
+        self._patch_nemotron_block_forward(llm)
+        return cache
+
+    @staticmethod
+    def _patch_nemotron_block_forward(llm):
+        """Patch NemotronHBlock.forward to pass cache and mask to attention layers.
+
+        The upstream HF code only passes cache_position to the attention mixer,
+        omitting past_key_value and attention_mask. Without this fix, attention
+        layers never see the KV cache and only attend to the current token.
+        """
+        import types
+
+        if hasattr(llm, '_orig_mod'):
+            llm = llm._orig_mod
+
+        layers = getattr(llm, 'layers', None)
+        if layers is None:
+            return
+
+        def _patched_block_forward(
+            self,
+            hidden_states,
+            cache_params=None,
+            cache_position=None,
+            attention_mask=None,
+        ):
+            with torch.cuda.stream(torch.cuda.default_stream(hidden_states.device)):
+                residual = hidden_states
+                hidden_states = self.norm(hidden_states.to(dtype=self.norm.weight.dtype))
+                if self.residual_in_fp32:
+                    residual = residual.to(torch.float32)
+
+                if self.block_type == "mamba":
+                    hidden_states = self.mixer(
+                        hidden_states, cache_params=cache_params, cache_position=cache_position
+                    )
+                elif self.block_type == "attention":
+                    hidden_states = self.mixer(
+                        hidden_states,
+                        past_key_value=cache_params,
+                        attention_mask=attention_mask,
+                        cache_position=cache_position,
+                    )
+                    hidden_states = hidden_states[0]
+                elif self.block_type == "mlp":
+                    hidden_states = self.mixer(hidden_states)
+                else:
+                    raise ValueError(f"Invalid block_type: {self.block_type}")
+
+                hidden_states = residual + hidden_states
+                return hidden_states
+
+        patched_count = 0
+        for layer in layers:
+            block_type = getattr(layer, 'block_type', None)
+            if block_type == "attention":
+                layer.forward = types.MethodType(_patched_block_forward, layer)
+                patched_count += 1
+
+        if patched_count > 0:
+            logging.info(f"Patched {patched_count} NemotronHBlock attention layers to pass KV cache")
+
+    @staticmethod
+    def _patch_nemotron_cache_bugs(cache):
+        """Patch bugs in HybridMambaAttentionDynamicCache from the HF model code.
+
+        The upstream code references self.conv_states.device and self.ssm_states.device,
+        but these are Python lists, not tensors. We monkey-patch the affected methods.
+        """
+        import types
+
+        def update_conv_state(self, layer_idx, new_conv_state, cache_init=False):
+            if cache_init:
+                self.conv_states[layer_idx] = new_conv_state.to(self.conv_states[layer_idx].device)
+            else:
+                self.conv_states[layer_idx] = self.conv_states[layer_idx].roll(shifts=-1, dims=-1)
+                self.conv_states[layer_idx][:, :, -1] = new_conv_state[:, 0, :].to(
+                    self.conv_states[layer_idx].device
+                )
+            return self.conv_states[layer_idx]
+
+        def update_ssm_state(self, layer_idx, new_ssm_state):
+            self.ssm_states[layer_idx] = new_ssm_state.to(self.ssm_states[layer_idx].device)
+            return self.ssm_states[layer_idx]
+
+        cache.update_conv_state = types.MethodType(update_conv_state, cache)
+        cache.update_ssm_state = types.MethodType(update_ssm_state, cache)

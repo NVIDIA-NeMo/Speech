@@ -111,8 +111,13 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         # compute samples per frame
         self.source_samples_per_frame = int(self.source_sample_rate * cfg.data.frame_length)
 
-        # get codec silence tokens
-        codec_silence_tokens = self.get_codec_silence_frame()
+        # get codec silence tokens (skip when codec has random weights — the
+        # buffer will be overwritten from the checkpoint)
+        if self.cfg.get('pretrained_codec_model', None) is not None:
+            codec_silence_tokens = self.get_codec_silence_frame()
+        else:
+            num_q = self.tts_model.config.num_quantizers
+            codec_silence_tokens = torch.zeros(num_q, dtype=torch.long)
         self.register_buffer("codec_silence_tokens", codec_silence_tokens)
 
         # cached for quicker audio decoding

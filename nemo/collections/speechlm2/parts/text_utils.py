@@ -16,6 +16,62 @@ import torch
 from nemo.collections.common.tokenizers import AutoTokenizer
 
 
+def _decode_tokens_with_specials(
+    token_strings: list[str],
+    tokenizer,
+    pad_token_str: str = '<SPECIAL_12>',
+    keep_pad: bool = False,
+) -> str:
+    """Decode token strings with proper byte-level BPE handling.
+
+    Groups consecutive non-special tokens and decodes each group via
+    ``tokenizer.tokens_to_text()`` (HF ``convert_tokens_to_string``), which
+    properly reverses byte-level BPE encoding (e.g. ``âĢĻ`` -> ``'``).
+    Special tokens (BOS, EOS, PAD) are never passed to
+    ``convert_tokens_to_string``.  BOS/EOS are always kept as literal
+    strings so that turn boundaries are visible.  PAD tokens are kept
+    only when *keep_pad* is True.
+
+    Args:
+        token_strings: Raw token strings from ``tokenizer.ids_to_tokens()``.
+        tokenizer: Tokenizer with ``tokens_to_text``, ``bos_token``, and
+            ``eos_token`` attributes (NeMo ``AutoTokenizer`` or similar).
+        pad_token_str: String representation of the pad token.
+        keep_pad: If True, preserve all special tokens as literal strings
+            in the output.  If False, strip them.
+    """
+    bos = getattr(tokenizer, 'bos_token', None)
+    eos = getattr(tokenizer, 'eos_token', None)
+
+    # All tokens that must not go through convert_tokens_to_string.
+    special_tokens = {pad_token_str}
+    if bos:
+        special_tokens.add(bos)
+    if eos:
+        special_tokens.add(eos)
+
+    result_parts: list[str] = []
+    segment: list[str] = []
+
+    for tok in token_strings:
+        if tok in special_tokens:
+            if segment:
+                result_parts.append(tokenizer.tokens_to_text(segment))
+                segment = []
+            if tok == pad_token_str:
+                if keep_pad:
+                    result_parts.append(tok)
+            else:
+                result_parts.append(tok)
+        else:
+            segment.append(tok)
+
+    if segment:
+        result_parts.append(tokenizer.tokens_to_text(segment))
+
+    return ''.join(result_parts)
+
+
 def tokens_to_str(
     tokens: torch.Tensor,
     lengths: torch.Tensor,
@@ -23,9 +79,10 @@ def tokens_to_str(
     pad_id: int,
     eval_text_turn_taking: bool = False,
     show_eot_timestamps: bool = False,
+    keep_pad: bool = False,
 ) -> list[str]:
     """
-    Convert token IDs to text strings, filtering out special tokens.
+    Convert token IDs to text strings with proper byte-level BPE decoding.
 
     Args:
         tokens: Token IDs tensor (B, T)
@@ -34,14 +91,18 @@ def tokens_to_str(
         pad_id: Pad token ID to filter out
         eval_text_turn_taking: If True, insert timestamps at bos/eos positions
         show_eot_timestamps: If True, also insert timestamps at end-of-text (first pad after BOS)
+        keep_pad: If True, preserve all special tokens (including pad) as literal
+            strings in the output.  Useful for "raw" output that shows the full
+            token stream.  If False (default), special tokens are stripped.
 
     Returns:
         List of decoded text strings
     """
+    pad_token_str = tokenizer.ids_to_tokens([pad_id])[0]
     ans = []
 
-    # Helper function to filter special tokens from token IDs
-    # This filtering is applied regardless of eval_text_turn_taking mode
+    # Helper function to filter special tokens from token IDs.
+    # This filtering is applied regardless of eval_text_turn_taking mode.
     def filter_special_tokens(token_ids):
         # Filter out pad
         token_ids = token_ids[token_ids != pad_id]
@@ -102,8 +163,9 @@ def tokens_to_str(
             out_str.append(tokenizer.ids_to_text(remaining_ids))
             ans.append(" ".join(out_str))
         else:
-            # For non-turn-taking mode: filter out ALL special tokens, return only pure text
             hyp_ids = hyp_ids[:hyp_len]
-            hyp_ids = filter_special_tokens(hyp_ids)
-            ans.append(tokenizer.ids_to_text(hyp_ids))
+            toks = tokenizer.ids_to_tokens(hyp_ids.tolist())
+            ans.append(
+                _decode_tokens_with_specials(toks, tokenizer, pad_token_str=pad_token_str, keep_pad=keep_pad)
+            )
     return ans

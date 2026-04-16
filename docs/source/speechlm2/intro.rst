@@ -246,7 +246,35 @@ You can evaluate and run full-duplex inference using the `NemotronVoiceChat` pip
     
     print(f"Agent response: {generated_text}")
     # generated_speech can now be saved or played (sampled at model.target_sample_rate)
-    
+
+NemotronVoiceChat Streaming Inference
+*************************************
+
+For real-time, chunk-by-chunk inference (as opposed to the offline mode shown
+above), use the Streaming S2S Pipeline:
+
+.. code-block:: python
+
+    from nemo.collections.speechlm2.inference import S2SPipelineBuilder
+
+    pipeline = S2SPipelineBuilder.build_pipeline(cfg)
+    output = pipeline.run(audio_filepaths, options=options)
+
+Or from the command line:
+
+.. code-block:: bash
+
+    python examples/speechlm2/nemo_inference_pipelines/s2s_streaming_infer.py \
+        audio_file=/path/to/audio \
+        s2s.model_path=/path/to/checkpoint \
+        s2s.speaker_name="<speaker>" \
+        s2s.engine_type=native \
+        s2s.system_prompt="You are a helpful assistant." \
+        streaming.chunk_size_in_secs=0.24 \
+        streaming.buffer_size_in_secs=1.68
+
+See :doc:`streaming_inference` for full details on configuration, architecture,
+and server integration.
 
 Training a Model
 ----------------
@@ -341,3 +369,4 @@ For more information, see additional sections in the SpeechLM2 docs:
    datasets
    configs
    training_and_scaling
+   streaming_inference

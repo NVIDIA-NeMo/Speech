@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import gc
+import json
 import os
+import warnings
 from pathlib import Path
-from typing import Optional, Union
-
 import torch
 from huggingface_hub import CONFIG_NAME
 from lightning import LightningModule
@@ -120,8 +120,10 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Load Duplex TTS model
         self.tts_model = DuplexEARTTS(OmegaConf.to_container(self.cfg.speech_generation, resolve=True))
 
-        # reset silence tokens to avoid inference issues
-        self.tts_model.codec_silence_tokens = self.tts_model.get_codec_silence_frame()
+        # reset silence tokens to avoid inference issues (skip when codec
+        # has random weights — the buffer will be loaded from checkpoint)
+        if self.tts_model.cfg.get('pretrained_codec_model', None) is not None:
+            self.tts_model.codec_silence_tokens = self.tts_model.get_codec_silence_frame()
         self.target_fps = self.tts_model.target_fps
         # compute source fps
         self.source_fps = self.source_sample_rate / (
@@ -130,6 +132,39 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
+
+    def save_pretrained(
+        self,
+        save_directory: str | Path,
+        **kwargs,
+    ) -> str | None:
+        """Save model and export LLM artifacts (tokenizer + perception config) for offline inference."""
+        result = super().save_pretrained(save_directory, **kwargs)
+
+        # Save tokenizer for offline loading
+        try:
+            llm_dir = Path(save_directory) / "llm_artifacts"
+            llm_dir.mkdir(parents=True, exist_ok=True)
+            self.stt_model.tokenizer.tokenizer.save_pretrained(str(llm_dir))
+            logging.info(f"Saved LLM tokenizer to {llm_dir}")
+        except Exception as e:
+            warnings.warn(f"Failed to save LLM tokenizer: {e}. Inference will fall back to downloading from HF.")
+
+        # Save full perception config at the top level of config.json so that
+        # resolve_pretrained_config() can skip pretrained ASR/LLM downloads.
+        try:
+            config_path = Path(save_directory) / "config.json"
+            if config_path.exists():
+                with open(config_path) as f:
+                    config = json.load(f)
+                config["perception"] = OmegaConf.to_container(self.stt_model.cfg.perception, resolve=True)
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=2)
+                logging.info(f"Saved perception config to {config_path}")
+        except Exception as e:
+            warnings.warn(f"Failed to save perception config: {e}")
+
+        return result
 
     def init_from_model_from_ckpt(self, checkpoint_path):
         if checkpoint_path is not None:
@@ -144,13 +179,13 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         cls,
         *,
         model_id: str,
-        revision: Optional[str],
-        cache_dir: Optional[Union[str, Path]],
+        revision: str | None,
+        cache_dir: str | Path | None,
         force_download: bool,
-        proxies: Optional[dict],
-        resume_download: Optional[bool],
+        proxies: dict | None,
+        resume_download: bool | None,
         local_files_only: bool,
-        token: Union[str, bool, None],
+        token: str | bool | None,
         map_location: str = "cpu",
         strict: bool = False,
         **model_kwargs,
@@ -183,6 +218,25 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Skip loading child module weights natively
         model_kwargs['cfg']['pretrained_weights'] = False
 
+        # Propagate pretrained_weights=False into nested configs so child
+        # modules skip downloading pretrained ASR, LLM, and codec models.
+        cfg = model_kwargs['cfg']
+        try:
+            stt_model_cfg = cfg['model']['stt']['model']
+            stt_model_cfg['pretrained_weights'] = False
+            stt_model_cfg['use_meta_device'] = True
+            if 'perception' in cfg:
+                stt_model_cfg['perception'] = cfg['perception']
+                logging.info("Injected saved perception config into STT model config")
+        except (KeyError, TypeError):
+            logging.warning("Could not propagate pretrained_weights=False into nested STT config")
+        try:
+            tts_model_cfg = cfg['model']['speech_generation']['model']
+            tts_model_cfg['pretrained_model'] = None
+            tts_model_cfg['pretrained_codec_model'] = None
+        except (KeyError, TypeError):
+            logging.warning("Could not nullify pretrained TTS/codec paths in nested TTS config")
+
         # Instantiate the empty model skeleton
         model = cls(model_kwargs['cfg'])
 
@@ -204,11 +258,31 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         if resolved_weights_file is None:
             raise RuntimeError(f"Missing model.safetensors file for {model_id=}")
 
-        # Stream the weights safely using your custom memory-efficient loader!
+        # Stream the weights from safetensors
         ckpt_dir = os.path.dirname(resolved_weights_file)
         model.init_from_safetensors_ckpt(ckpt_dir)
 
         return model
+
+    def _replace_tensor(self, full_key, value):
+        """Replace a parameter or buffer on its parent module.
+
+        Meta-device tensors (from torch.device('meta')) have no storage, so the
+        usual ``target.data.copy_(tensor)`` raises an error.  Instead we walk
+        the module tree to find the parent and swap the entry directly in
+        ``module._parameters`` or ``module._buffers``.
+        """
+        parts = full_key.split(".")
+        module = self
+        for part in parts[:-1]:
+            module = getattr(module, part)
+        name = parts[-1]
+        if name in module._parameters:
+            module._parameters[name] = torch.nn.Parameter(
+                value, requires_grad=module._parameters[name].requires_grad
+            )
+        elif name in module._buffers:
+            module._buffers[name] = value
 
     def init_from_safetensors_ckpt(self, ckpt_path, prefix=""):
         """
@@ -251,6 +325,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
                     if target.shape != tensor.shape:
                         logging.warning(f"Shape mismatch for {key}: " f"model {target.shape} vs ckpt {tensor.shape}")
+                    elif target.is_meta:
+                        self._replace_tensor(prefix + key, tensor)
                     else:
                         target.data.copy_(tensor)
 
@@ -263,6 +339,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                         logging.warning(
                             f"Buffer shape mismatch for {key}: " f"model {target.shape} vs ckpt {tensor.shape}"
                         )
+                    elif target.is_meta:
+                        self._replace_tensor(prefix + key, tensor)
                     else:
                         target.data.copy_(tensor)
 
@@ -280,6 +358,35 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         if missing_keys:
             logging.warning(f"{len(missing_keys)} keys in checkpoint not found in model")
+
+        # Fail if any *parameters* are still on meta device — those genuinely
+        # need weights from the checkpoint and their absence is an error.
+        meta_params = [n for n, p in self.named_parameters() if p.is_meta]
+        if meta_params:
+            raise RuntimeError(
+                f"{len(meta_params)} parameters still on meta device after checkpoint load "
+                f"(missing from checkpoint): {meta_params[:20]}"
+            )
+
+        # Buffers on meta device are typically non-persistent computed values
+        # (e.g. rotary_emb.inv_freq registered with persistent=False) that
+        # save_pretrained / safetensors intentionally omit.  Reinitialize
+        # them by moving the owning module to CPU then back, which triggers
+        # the buffer's factory function.
+        meta_buffers = [(n, b) for n, b in self.named_buffers() if b.is_meta]
+        if meta_buffers:
+            logging.info(
+                f"Reinitializing {len(meta_buffers)} non-persistent meta buffer(s): "
+                f"{[n for n, _ in meta_buffers[:10]]}"
+            )
+            for buf_name, buf in meta_buffers:
+                parts = buf_name.split(".")
+                module = self
+                for part in parts[:-1]:
+                    module = getattr(module, part)
+                module.to_empty(device="cpu")
+                module.to(device="cpu")
+            logging.info("Meta buffers reinitialised on CPU")
 
         gc.collect()
 
@@ -437,6 +544,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         incremental_audio_decoding: bool = False,
         generation_config: dict = None,
         guidance_enabled: bool = True,
+        return_logits: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
         Runs full offline duplex speech-to-speech inference.
@@ -485,6 +593,12 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             guidance_enabled (bool, optional):
                 Enables classifier-free guidance.
 
+            return_logits (bool, optional):
+                When True, collect per-step text and ASR logits and
+                include them in the returned dict as ``"text_logits"``
+                (B, T, V_text) and ``"asr_logits"`` (B, T, V_asr).
+                Useful for parity testing against incremental inference.
+
         Returns:
             dict[str, torch.Tensor]:
 
@@ -508,6 +622,12 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     Tensor (B,) — waveform lengths in samples
                     (if decode_audio=True).
 
+                • "text_logits" (only when return_logits=True):
+                    Tensor (B, T, V_text) — per-step text head logits.
+
+                • "asr_logits" (only when return_logits=True):
+                    Tensor (B, T, V_asr) — per-step ASR head logits.
+
         Notes:
             • Uses streaming inference backend of DuplexSTTModel.
             • Uses autoregressive codec generation from DuplexEARTTS.
@@ -524,6 +644,10 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
 
         B = inference_state["B"]
         T = inference_state["T"]
+
+        if return_logits:
+            _text_logits = [ans["text_logits"][:, -1].detach()]
+            _asr_logits = [ans["asr_logits"][:, -1].detach()] if "asr_logits" in ans else []
 
         # if speaker_name is provided uses it, if not uses the speaker_audio provided, if speaker_audio is None load it from inference_speaker_reference
         if speaker_audio is None:
@@ -572,7 +696,12 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Autoregressive loop
         for t in range(1, T):
             # do one step inference on Duplex STT model
-            _ = self.stt_model.streaming_inference._step_inference(t, inference_state, ans)
+            ans = self.stt_model.streaming_inference._step_inference(t, inference_state, ans)
+
+            if return_logits:
+                _text_logits.append(ans["text_logits"][:, -1].detach())
+                if "asr_logits" in ans:
+                    _asr_logits.append(ans["asr_logits"][:, -1].detach())
 
             # do one step inference on Duplex TTS model
             # current subword id is always seem
@@ -609,7 +738,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     audio_pred = torch.cat([audio_pred, audio_pred_i], dim=1)
                 audio_pred_len += audio_pred_i_len
 
-            logging.info(f"Autoregressive inference step: {t} of {T} !")
+            logging.debug(f"Autoregressive inference step: {t} of {T} !")
 
         # Trim back to local length if padded
         if self._use_fsdp and T > inference_state["T_local"]:
@@ -628,6 +757,11 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     )
             ans["audio"] = audio_pred.squeeze(1)
             ans["audio_len"] = audio_pred_len
+
+        if return_logits:
+            ans["text_logits"] = torch.stack(_text_logits, dim=1)
+            if _asr_logits:
+                ans["asr_logits"] = torch.stack(_asr_logits, dim=1)
 
         return ans
 

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict
@@ -42,7 +43,11 @@ def load_pretrained_nemo(cls, model_path_or_name: str):
 
 
 def load_pretrained_hf(
-    model_path_or_name: str, pretrained_weights: bool = True, dtype=torch.float32, trust_remote_code: bool = False
+    model_path_or_name: str,
+    pretrained_weights: bool = True,
+    dtype=torch.float32,
+    trust_remote_code: bool = False,
+    use_meta_device: bool = False,
 ):
     """
     Load pretrained HuggingFace AutoModelForCausalLM.
@@ -55,6 +60,8 @@ def load_pretrained_hf(
         pretrained_weights: Whether to load pretrained weights (True) or random init (False)
         dtype: Data type for the model
         trust_remote_code: Whether to trust remote code when loading model (needed for some models like Nemotron)
+        use_meta_device: If True, create the model on the meta device (no memory allocation).
+            The caller must handle materializing meta tensors from a checkpoint.
     """
     if pretrained_weights:
         return AutoModelForCausalLM.from_pretrained(
@@ -62,7 +69,45 @@ def load_pretrained_hf(
         )
     else:
         config = AutoConfig.from_pretrained(model_path_or_name, trust_remote_code=trust_remote_code)
+        if use_meta_device:
+            with torch.device('meta'):
+                return AutoModelForCausalLM.from_config(config, torch_dtype=dtype, trust_remote_code=trust_remote_code)
         return AutoModelForCausalLM.from_config(config, torch_dtype=dtype, trust_remote_code=trust_remote_code)
+
+
+def resolve_pretrained_config(cfg):
+    """Resolve pretrained config when pretrained_s2s_model points to an HF checkpoint.
+
+    When the HF checkpoint contains a config.json with perception config, this function:
+    - Sets pretrained_weights to False (weights will be loaded from pretrained_s2s_model)
+    - Loads the perception config from the HF checkpoint into cfg
+    - Resolves the tokenizer path to local llm_artifacts if available
+
+    Args:
+        cfg: DictConfig with model configuration (modified in-place for perception config).
+
+    Returns:
+        Tuple of (pretrained_weights, tokenizer_path).
+    """
+    tokenizer_path = cfg.pretrained_llm
+    pretrained_weights = cfg.pretrained_weights
+    pretrained_s2s = cfg.get("pretrained_s2s_model", None)
+    if pretrained_s2s is not None:
+        hf_config_path = Path(pretrained_s2s) / "config.json"
+        if hf_config_path.exists():
+            with open(hf_config_path) as f:
+                hf_config = json.load(f)
+            if "perception" in hf_config:
+                pretrained_weights = False
+                with open_dict(cfg):
+                    cfg.perception = hf_config["perception"]
+                logging.info(f"Loaded perception config from {hf_config_path}, skipping pretrained downloads")
+                # Use local tokenizer if available
+                llm_artifacts_dir = Path(pretrained_s2s) / "llm_artifacts"
+                if llm_artifacts_dir.is_dir():
+                    tokenizer_path = str(llm_artifacts_dir)
+                    logging.info(f"Using local tokenizer from {llm_artifacts_dir}")
+    return pretrained_weights, tokenizer_path
 
 
 @contextmanager

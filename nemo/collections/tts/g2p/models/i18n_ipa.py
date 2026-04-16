@@ -21,6 +21,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     INDIC_CHARS_ALL,
+    KOREAN_CHARS,
     LATIN_CHARS_ALL,
     any_locale_word_tokenize,
     english_word_tokenize,

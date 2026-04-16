@@ -67,7 +67,7 @@ KANNADA_CHARS = r'\u0C80-\u0CFF'  # Kannada
 GUJARATI_CHARS = r'\u0A80-\u0AFF'  # Gujarati
 INDIC_CHARS_ALL = f"{DEVANAGARI_CHARS}{BENGALI_CHARS}{TAMIL_CHARS}{TELUGU_CHARS}{KANNADA_CHARS}{GUJARATI_CHARS}"
 
-# Korean  
+# Korean
 # ref: https://en.wikipedia.org/wiki/Hangul_Syllables   (U+AC00–U+D7A3)
 # ref: https://en.wikipedia.org/wiki/Hangul_Jamo_(Unicode_block)   (U+1100–U+11FF)
 # ref: https://en.wikipedia.org/wiki/Hangul_Compatibility_Jamo   (U+3130–U+318F)

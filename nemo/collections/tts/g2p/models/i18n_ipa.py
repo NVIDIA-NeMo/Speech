@@ -33,6 +33,8 @@ from nemo.utils import logging
 # Compiled regex pattern for Indic scripts (used in dictionary parsing)
 _INDIC_PATTERN = re.compile(f'^[{INDIC_CHARS_ALL}]')
 _KOREAN_PATTERN = re.compile(f'^[{KOREAN_CHARS}]')
+
+
 class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]

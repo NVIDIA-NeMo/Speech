@@ -273,7 +273,7 @@ class TestTTSTokenizers:
         tokenizer = IPATokenizer(g2p=g2p, locale="hi-IN")
         chars, tokens = self._parse_text(tokenizer, input_text)
         assert chars == expected_output
-        
+
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_ipa_tokenizer_ko_kr(self):

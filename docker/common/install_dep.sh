@@ -215,7 +215,11 @@ echo 'Uninstalling stuff'
 ${PIP} uninstall -y nemo_toolkit sacrebleu nemo_asr nemo_nlp nemo_tts
 
 echo 'Upgrading tools'
-${PIP} install -U --no-cache-dir "setuptools==76.0.0" pybind11 wheel ${PIP}
+# wheel is installed via debian without a RECORD file in pytorch:26.03-py3, so pip
+# can't uninstall it during -U. Use --ignore-installed so pip puts a newer version
+# in the higher-priority /usr/local site-packages directory.
+${PIP} install --no-cache-dir --ignore-installed wheel
+${PIP} install -U --no-cache-dir "setuptools==76.0.0" pybind11 ${PIP}
 
 if [ "${NVIDIA_PYTORCH_VERSION}" != "" ]; then
   echo "Installing NeMo in NVIDIA PyTorch container: ${NVIDIA_PYTORCH_VERSION}"

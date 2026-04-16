@@ -30,6 +30,7 @@ __all__ = [
     "english_word_tokenize",
     "LATIN_CHARS_ALL",
     "INDIC_CHARS_ALL",
+    "KOREAN_CHARS",
     "normalize_unicode_text",
     "japanese_text_preprocessing",
 ]
@@ -66,11 +67,17 @@ KANNADA_CHARS = r'\u0C80-\u0CFF'  # Kannada
 GUJARATI_CHARS = r'\u0A80-\u0AFF'  # Gujarati
 INDIC_CHARS_ALL = f"{DEVANAGARI_CHARS}{BENGALI_CHARS}{TAMIL_CHARS}{TELUGU_CHARS}{KANNADA_CHARS}{GUJARATI_CHARS}"
 
+# Korean  
+# ref: https://en.wikipedia.org/wiki/Hangul_Syllables   (U+AC00–U+D7A3)
+# ref: https://en.wikipedia.org/wiki/Hangul_Jamo_(Unicode_block)   (U+1100–U+11FF)
+# ref: https://en.wikipedia.org/wiki/Hangul_Compatibility_Jamo   (U+3130–U+318F)
+KOREAN_CHARS = r'\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F'
+
 _WORDS_RE_EN = re.compile(
     fr"([{LATIN_ALPHABET_BASIC}]+(?:[{LATIN_ALPHABET_BASIC}\-']*[{LATIN_ALPHABET_BASIC}]+)*)|(\|[^|]*\|)|([^{LATIN_ALPHABET_BASIC}|]+)"
 )
 _WORDS_RE_ANY_LOCALE = re.compile(
-    fr"([{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}]+(?:[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\-']*[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}|]+)"
+    fr"([{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}]+(?:[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}\-']*[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}]+)*)|(\|[^|]*\|)|([^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}|]+)"
 )
 
 

@@ -21,7 +21,11 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     INDIC_CHARS_ALL,
+<<<<<<< HEAD
     LATIN_CHARS_ALL,
+=======
+    KOREAN_CHARS,
+>>>>>>> f4a275ba92 (Add Korean IPA support)
     any_locale_word_tokenize,
     english_word_tokenize,
     normalize_unicode_text,
@@ -32,14 +36,18 @@ from nemo.utils import logging
 
 # Compiled regex pattern for Indic scripts (used in dictionary parsing)
 _INDIC_PATTERN = re.compile(f'^[{INDIC_CHARS_ALL}]')
+<<<<<<< HEAD
 
 
+=======
+_KOREAN_PATTERN = re.compile(f'^[{KOREAN_CHARS}]')
+>>>>>>> f4a275ba92 (Add Korean IPA support)
 class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]
     # Regex for roman characters, accented characters, and locale-agnostic numbers/digits
-    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\d]")
-    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}\d]")
+    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}\d]")
+    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}\d]")
     # fmt: on
 
     def __init__(
@@ -204,6 +212,7 @@ class IpaG2p(BaseG2p):
                         or 'Ø' <= line[0] <= 'ö'
                         or 'ø' <= line[0] <= 'ÿ'
                         or _INDIC_PATTERN.match(line[0])
+                        or _KOREAN_PATTERN.match(line[0])
                         or line[0] == "'"
                     ):
                         parts = line.strip().split(maxsplit=1)

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import time
+import random
 from dataclasses import dataclass, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -381,6 +382,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 'use_learnable_pos_emb': True,
             }
         self.speaker_encoder = transformer_2501.Transformer(**speaker_encoder_cfg)
+        # Train-only probability to bypass speaker encoder and feed batch-shuffled
+        # raw context embeddings, matching Magpie behavior.
+        self.train_shuffle_context_embedding_prob = cfg.get('train_shuffle_context_embedding_prob', 0.0)
 
         if self.phoneme_tokenizer is not None:
             phoneme_embeddings = []
@@ -864,9 +868,21 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.num_audio_codebooks,
         )
         context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
-        context_audio_embedded = self.encode_context_audio_embeddings(
-            context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
-        )
+        batch_size = context_audio_embedded.size(0)
+        if (
+            self.training
+            and batch_size > 1
+            and self.train_shuffle_context_embedding_prob > 0
+            and random.random() < self.train_shuffle_context_embedding_prob
+        ):
+            # Feed shuffled raw context embeddings (without speaker encoder) so
+            # the decoder cannot rely on direct unencoded speaker identity cues.
+            shift = random.randint(1, batch_size - 1)
+            context_audio_embedded = context_audio_embedded.roll(shift, dims=0)
+        else:
+            context_audio_embedded = self.encode_context_audio_embeddings(
+                context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
+            )
 
         # Context Text
         context_text_lens = context_text_tokens_lens

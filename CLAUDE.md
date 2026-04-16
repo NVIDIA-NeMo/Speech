@@ -14,7 +14,7 @@ pip install -e '.[asr]'       # ASR only
 pip install -e '.[test]'      # With test deps
 ```
 
-Requires Python 3.10+, PyTorch 2.6+. Works well with  
+Requires Python 3.10+, PyTorch 2.6+.
 
 ## Code Style
 

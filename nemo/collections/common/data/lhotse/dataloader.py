@@ -620,10 +620,10 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         )
 
     if config.cut_into_windows_duration is not None:
-        if config.use_ais_get_batch:
-            cuts = CutSet(AISBatchedDataPrefetcher(cuts, buffer_size=config.ais_batch_prefetch_buffer_size))
-        else:
-            cuts = cuts.map(prefetch_data)
+        # if config.use_ais_get_batch:
+        #     cuts = CutSet(AISBatchedDataPrefetcher(cuts, buffer_size=config.ais_batch_prefetch_buffer_size))
+        # else:
+        #     cuts = cuts.map(prefetch_data)
         cuts = cuts.cut_into_windows(
             duration=config.cut_into_windows_duration,
             hop=config.cut_into_windows_hop,

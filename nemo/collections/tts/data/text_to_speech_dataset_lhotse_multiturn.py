@@ -243,23 +243,21 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         target_text_tokens, target_token_lens = collate_token_channel(
             cuts, self.text_tokenizer, self.frame_length, roles=self.output_roles,
             add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
-            tokenizer_names=batch_tokenizer_names,
+            tokenizer_names=batch_tokenizer_names, pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id,
         )
         source_tokens, source_token_lens = collate_token_channel(
             cuts, self.text_tokenizer, self.frame_length, roles=self.input_roles,
             add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
-            tokenizer_names=batch_tokenizer_names,
+            tokenizer_names=batch_tokenizer_names, pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id,
         )
 
         if self.phoneme_tokenizer is not None:
             target_phoneme_tokens, target_phoneme_lens = collate_phoneme_channel(
                 cuts, self.phoneme_tokenizer, self.frame_length, roles=self.output_roles,
-                ignore_phoneme_languages=self.ignore_phoneme_languages,
-                add_text_bos_and_eos_in_each_turn=False,
+                ignore_phoneme_languages=self.ignore_phoneme_languages, pad_id=self.phoneme_tokenizer.pad, eos_id=self.phoneme_tokenizer.eos_token_id, bos_id=self.phoneme_tokenizer.bos_token_id,
             )
         else:
             target_phoneme_tokens, target_phoneme_lens = None, None
-
 
         dataset_name_list = []
         audio_list_16khz = []
@@ -522,16 +520,18 @@ def collate_token_channel(
     roles: set[str],
     add_text_bos_and_eos_in_each_turn: bool = True,
     tokenizer_names: list[str] = None,
+    pad_id: int = None,
+    eos_id: int = None,
+    bos_id: int = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build and collate token channels aligned to the audio frame grid."""
-    pad_id = getattr(tokenizer, 'pad', -1)
     tokens = []
-    
+
     for i, c in enumerate(cuts):
         tok_name = tokenizer_names[i] if tokenizer_names else "english_phoneme"
         tokens.append(
             build_token_channel(
-                c, tokenizer, frame_length, roles, pad_id,
+                c, tokenizer, frame_length, roles, pad_id, eos_id, bos_id,
                 add_text_bos_and_eos_in_each_turn, tok_name
             )
         )
@@ -545,13 +545,13 @@ def build_token_channel(
     frame_length: Seconds,
     roles: set[str],
     pad_id: int = -1,
+    eos_id: int = -2,
+    bos_id: int = -3,
     add_text_bos_and_eos_in_each_turn: bool = True,
     tokenizer_name: str = "english_phoneme",
 ) -> torch.Tensor:
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
-    bos_id = getattr(tokenizer, 'bos', 0)
-    eos_id = getattr(tokenizer, 'eos', 1)
 
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
@@ -565,7 +565,7 @@ def build_token_channel(
             else:
                 raw_ids = tokenizer.text_to_ids(text)
 
-            text_ids = torch.as_tensor([bos_id] + raw_ids) if add_text_bos_and_eos_in_each_turn else torch.as_tensor(raw_ids)
+            text_ids = torch.as_tensor(raw_ids + [eos_id])
 
             pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
             if pos >= len(tokens):
@@ -590,13 +590,15 @@ def collate_phoneme_channel(
     frame_length: Seconds,
     roles: set[str],
     ignore_phoneme_languages: list[str],
-    add_text_bos_and_eos_in_each_turn: bool = True,
+    pad_id: int = -1,
+    eos_id: int = -2,
+    bos_id: int = -3,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     pad_id = phoneme_tokenizer.pad
     tokens = [
         build_phoneme_channel(
             c, phoneme_tokenizer, frame_length, roles,
-            ignore_phoneme_languages, pad_id, add_text_bos_and_eos_in_each_turn
+            ignore_phoneme_languages, pad_id, eos_id, bos_id
         ) for c in cuts
     ]
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -610,7 +612,8 @@ def build_phoneme_channel(
     roles: set[str],
     ignore_phoneme_languages: list[str],
     pad_id: int = -1,
-    add_text_bos_and_eos_in_each_turn: bool = True,
+    eos_id: int = -2,
+    bos_id: int = -3,
 ) -> torch.Tensor:
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
@@ -627,8 +630,7 @@ def build_phoneme_channel(
                 ipa_text = supervision.text
 
             phoneme_ids = phoneme_tokenizer.encode(ipa_text)
-            if add_text_bos_and_eos_in_each_turn:
-                phoneme_ids = [phoneme_tokenizer.bos_token_id] + phoneme_ids
+            phoneme_ids = [bos_id] + phoneme_ids + [eos_id]
             
             phoneme_ids = torch.as_tensor(phoneme_ids, dtype=torch.long)
             pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
@@ -639,10 +641,5 @@ def build_phoneme_channel(
             if endpos > len(tokens):
                 phoneme_ids = phoneme_ids[:len(tokens) - pos]
             tokens[pos:pos+len(phoneme_ids)] = phoneme_ids
-
-            if add_text_bos_and_eos_in_each_turn:
-                eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
-                if eospos < len(tokens):
-                    tokens[eospos] = phoneme_tokenizer.eos_token_id
 
     return tokens

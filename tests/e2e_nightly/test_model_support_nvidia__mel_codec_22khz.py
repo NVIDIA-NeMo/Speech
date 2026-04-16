@@ -71,7 +71,7 @@ def test_model_training_step():
     }
 
     # _process_batch runs encoder -> (optional) vector quantizer -> decoder.
-    audio, audio_len, audio_gen, commit_loss, codes = model._process_batch(batch)
+    audio, audio_len, audio_gen, commit_loss, codes, *_ = model._process_batch(batch)
 
     # Compute the L1 mel loss, which is always enabled (mel_loss_l1_scale > 0
     # by default) and is the primary reconstruction objective.

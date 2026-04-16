@@ -86,6 +86,10 @@ class AISBatchedDataPrefetcher:
         yield from buffer
 
 
+def prefetch_data(cut: Cut) -> Cut:
+    return cut.move_to_memory()
+
+
 @dataclass
 class LhotseDataLoadingConfig:
     """
@@ -274,6 +278,7 @@ class LhotseDataLoadingConfig:
     # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
     slice_length: Optional[int] = None
     ais_batch_prefetch_buffer_size: int = 10
+    use_ais_get_batch: bool = False
 
 
 def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
@@ -615,7 +620,10 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         )
 
     if config.cut_into_windows_duration is not None:
-        cuts = CutSet(AISBatchedDataPrefetcher(cuts, buffer_size=config.ais_batch_prefetch_buffer_size))
+        if config.use_ais_get_batch:
+            cuts = CutSet(AISBatchedDataPrefetcher(cuts, buffer_size=config.ais_batch_prefetch_buffer_size))
+        else:
+            cuts = cuts.map(prefetch_data)
         cuts = cuts.cut_into_windows(
             duration=config.cut_into_windows_duration,
             hop=config.cut_into_windows_hop,

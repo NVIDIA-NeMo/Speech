@@ -14,7 +14,7 @@ pip install -e '.[asr]'       # ASR only
 pip install -e '.[test]'      # With test deps
 ```
 
-Requires Python 3.10+, PyTorch 2.6+.
+Requires Python 3.10+, PyTorch 2.6+. Works well with  
 
 ## Code Style
 
@@ -42,6 +42,7 @@ Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skip
 - E2E nightly tests: only when really needed. Add both **"Run e2e nightly"** and **"Run CICD"** labels
 - `skip-linting` / `skip-docs` labels bypass those checks
 - Formatting CI auto-commits black/isort fixes back to the PR branch
+- CI: GitHub Actions in `.github/workflows/`
 
 ## Documentation
 
@@ -64,11 +65,11 @@ Entry-point scripts live under `examples/<collection>/`.
 All scripts follow the same Hydra pattern — a `@hydra_runner` decorator points to a YAML config in a nearby `conf/` directory:
 
 ```python
-@hydra_runner(config_path="conf", config_name="conformer_ctc_char")
+@hydra_runner(config_path="conf", config_name="fast-conformer_transducer_bpe")
 def main(cfg):
     trainer = pl.Trainer(**resolve_trainer_cfg(cfg.trainer))
     exp_manager(trainer, cfg.get("exp_manager", None))
-    model = EncDecCTCModel(cfg=cfg.model, trainer=trainer)
+    model = EncDecRNNTBPEModel(cfg=cfg.model, trainer=trainer)
     trainer.fit(model)
 ```
 
@@ -95,3 +96,17 @@ Four frequently used data/training helpers:
 ## Subdirectory Instructions
 
 Module-specific instructions can be added as `CLAUDE.md` or `AGENTS.md` files in subdirectories.
+
+## Issue Reproduction
+
+When fixing a bug, always:
+1. First reproduce the issue with a minimal test case
+2. Add the reproduction as a unit test
+3. Then fix the issue
+4. Verify the test passes
+
+## Forbidden Operations
+
+- Never push directly to `main`
+- Never modify `.github/workflows/` without explicit instruction
+- Never delete test files without explicit instruction

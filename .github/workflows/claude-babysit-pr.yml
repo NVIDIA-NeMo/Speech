@@ -46,6 +46,9 @@ jobs:
       github.event.action == 'labeled' &&
       github.event.label.name == 'Has Babysitter'
     runs-on: ubuntu-latest
+    concurrency:
+      group: babysit-activate-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
       - name: Post takeover comment
         uses: actions/github-script@v8
@@ -55,7 +58,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: "I'm taking over this PR. I'll ping the author if I can't figure it out."
+              body: "I'll monitor and fix this PR until the CI is green. I'll ping the author if I can't figure it out."
             });
 
       - name: Checkout for GH CLI

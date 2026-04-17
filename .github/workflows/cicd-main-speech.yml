@@ -83,6 +83,7 @@ jobs:
           is_unit_test: true
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ needs.build.outputs.image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
           timeout: ${{ matrix.timeout || 10 }}
           cpu-only: ${{ matrix.cpu-only || false }}
           is_optional: ${{ matrix.is-optional || false }}
@@ -231,6 +232,7 @@ jobs:
           script: ${{ matrix.script }}
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ needs.build.outputs.image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
           timeout: ${{ matrix.timeout || 10 }}
           is_optional: ${{ matrix.is-optional || false }}
 
@@ -497,5 +499,6 @@ jobs:
           script: ${{ matrix.script }}
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ needs.build.outputs.image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
           timeout: ${{ matrix.timeout || 10 }}
           test_dir: e2e_nightly

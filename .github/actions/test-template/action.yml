@@ -44,6 +44,10 @@ inputs:
   image:
     description: "Full image URL with tag (e.g., 766267172432.dkr.ecr.us-east-1.amazonaws.com/nemo-speech:nemo_container-12345)"
     required: true
+  test-data-path:
+    description: "Host path to mount as /home/TestData inside the container"
+    required: false
+    default: /mnt/datadrive/TestData
   cpu-only:
     description: "Run tests on CPU only"
     required: false
@@ -121,7 +125,7 @@ runs:
           --env HF_HOME=/home/TestData/HF_HOME \
           --env RUN_ID=${{ github.run_id }} \
           --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
-          --volume /mnt/datadrive/TestData:/home/TestData ${{ inputs.image }} \
+          --volume ${{ inputs.test-data-path }}:/home/TestData ${{ inputs.image }} \
           bash -c "sleep $(( ${{ inputs.timeout }} * 60 + 60 ))"
         RUN_TEST_EOF
         )

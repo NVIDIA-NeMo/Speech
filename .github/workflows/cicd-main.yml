@@ -312,6 +312,7 @@ jobs:
           script: L0_Setup_Test_Data_And_Models
           tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
           image: ${{ needs.cicd-test-container-build.outputs.image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
 
   cicd-main-unit-tests:
     needs: [is-not-external-contributor, pre-flight, cicd-test-container-build]

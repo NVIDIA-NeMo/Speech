@@ -50,20 +50,15 @@ jobs:
       DISABLE_EXTERNAL_CONTRIBUTOR: ${{ vars.DISABLE_EXTERNAL_CONTRIBUTOR }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ env.GITHUB_TOKEN }}
-
-      - name: Get PR info
-        id: get-pr-info
-        if: github.event_name == 'pull_request'
-        uses: nv-gha-runners/get-pr-info@main
 
       - name: Check NVIDIA SSO membership
         id: check-sso
         uses: ./.github/actions/check-nvidia-sso-membership
         with:
-          username: ${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').user.login }}
+          username: ${{ github.event.pull_request.user.login }}
           github_token: ${{ secrets.NVIDIA_MANAGEMENT_ORG_PAT }}
           sso_users_filename: ${{ vars.SSO_USERS_FILENAME }}
 
@@ -82,7 +77,7 @@ jobs:
           IS_MEMBER="${{ steps.check-sso.outputs.is_member }}"
 
           if [ "${{ env.DISABLE_EXTERNAL_CONTRIBUTOR }}" == "true" ] && [ "${{ steps.check-sso.outputs.is_member }}" != "true" ]; then
-            PR_AUTHOR=${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').user.login }}
+            PR_AUTHOR=${{ github.event.pull_request.user.login }}
 
             echo "Checking if $PR_AUTHOR is a repo collaborator..."
             API_URL="https://api.github.com/repos/$REPO/collaborators/$PR_AUTHOR"

@@ -89,11 +89,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Get PR info
-        id: get-pr-info
-        if: startsWith(github.ref, 'refs/heads/pull-request/')
-        uses: nv-gha-runners/get-pr-info@main
-
       - name: Compute image tag
         id: image-tag
         run: |
@@ -102,7 +97,7 @@ jobs:
       - name: Compute cache keys
         id: cache-keys
         run: |
-          PR_NUMBER="${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').number }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             KEY="main"
           elif [[ -n "$PR_NUMBER" ]]; then
@@ -129,7 +124,7 @@ jobs:
             ${{ needs.pre-flight.outputs.build_args }}
           cache-from: |
             type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-main,mode=max
-            type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').number || 0 }},mode=max
+            type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-${{ github.event.pull_request.number || 0 }},mode=max
             ${{ needs.pre-flight.outputs.cache-from }}
           cache-to: ${{ steps.cache-keys.outputs.cache-to }}
           tags: |

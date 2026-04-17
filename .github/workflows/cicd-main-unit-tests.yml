@@ -23,6 +23,10 @@ on:
         default: nemo-ci-aws-gpu-x2
         type: string
         description: "Runner to use for GPU jobs"
+      container-image:
+        required: true
+        type: string
+        description: "Full image URL with tag for the NeMo container"
 
 jobs:
   collections-common-tests:
@@ -40,15 +44,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: ${{ matrix.script }}
           is_unit_test: true
           tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.container-image }}
           cpu-only: ${{ matrix.cpu-only || false }}
 
   core-tests:
@@ -71,15 +78,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: ${{ matrix.script }}
           is_unit_test: true
           tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.container-image }}
           cpu-only: ${{ matrix.cpu-only || false }}
 
   other-tests:
@@ -97,14 +107,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: ${{ matrix.script }}
           is_unit_test: true
           tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.container-image }}
           cpu-only: ${{ matrix.cpu-only || false }}
           is_optional: ${{ matrix.is-optional || false }}

@@ -271,7 +271,7 @@ jobs:
             --shm-size=8g \
             --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
             --env TRANSFORMERS_OFFLINE=0 \
-            --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 nemoci.azurecr.io/nemo_container:${{ github.run_id }} bash -c '\
+            --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 ${{ needs.cicd-test-container-build.outputs.image }} bash -c '\
             # PyTorch Lightning version
             python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
 
@@ -300,15 +300,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
 
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: L0_Setup_Test_Data_And_Models
           tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
+          image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   cicd-main-unit-tests:
     needs: [is-not-external-contributor, pre-flight, cicd-test-container-build]
@@ -327,6 +330,7 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
       runner: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
+      container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   cicd-main-speech:
     needs: [is-not-external-contributor, pre-flight, cicd-test-container-build, cicd-main-unit-tests]

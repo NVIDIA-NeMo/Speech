@@ -2223,7 +2223,7 @@ class ContextSize:
                     f"Curr: {self.left} - {self.chunk} - {self.right}\n"
                     f"Expected context <any> - {expected_context.chunk} - {expected_context.right}"
                 )
-            # assert self.right == expected_context.right
+            assert self.right == expected_context.right
         return extra_samples
 
     def __str__(self):

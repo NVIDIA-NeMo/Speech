@@ -11,7 +11,7 @@ on:
         type: string
       runner:
         required: false
-        default: self-hosted-azure-builder
+        default: nemo-ci-aws-gpu-x2
         type: string
         description: "The runner to use for the build"
 

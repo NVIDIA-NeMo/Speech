@@ -1,0 +1,139 @@
+name: 'Check NVIDIA SSO Membership'
+description: 'Check if a GitHub username exists in the NVIDIA SSO users list from github-audits'
+author: 'NVIDIA'
+
+inputs:
+  username:
+    description: 'GitHub username to check'
+    required: true
+  github_audits_repo:
+    description: 'Repository containing SSO users file'
+    required: false
+    default: 'NVIDIA-GitHub-Management/github-audits'
+  github_audits_version:
+    description: 'Release version tag'
+    required: false
+    default: 'v0.1.0'
+  sso_users_filename:
+    description: 'Filename of SSO users JSON'
+    required: false
+    default: 'users_sso.json'
+  github_token:
+    description: 'GitHub token with access to github-audits repo'
+    required: true
+
+outputs:
+  is_member:
+    description: 'Boolean - true if user is in NVIDIA SSO list, false otherwise'
+    value: ${{ steps.check-membership.outputs.is_member }}
+  is_org_member:
+    description: 'Boolean - true if user has NVIDIA or NVIDIA-NeMo in org_roles'
+    value: ${{ steps.check-membership.outputs.is_org_member }}
+  user_orgs:
+    description: 'Comma-separated list of orgs user is member of'
+    value: ${{ steps.check-membership.outputs.user_orgs }}
+  sso_file_available:
+    description: 'Boolean - true if SSO file was successfully downloaded'
+    value: ${{ steps.download-sso.outputs.sso_file_available }}
+  user_count:
+    description: 'Number of users in the SSO file (0 if download failed)'
+    value: ${{ steps.download-sso.outputs.user_count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download NVIDIA SSO users from github-audits
+      id: download-sso
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        echo "Downloading ${{ inputs.sso_users_filename }} from ${{ inputs.github_audits_repo }} ${{ inputs.github_audits_version }} release..."
+
+        # Download the release asset using gh CLI
+        gh release download ${{ inputs.github_audits_version }} \
+          --repo ${{ inputs.github_audits_repo }} \
+          --pattern ${{ inputs.sso_users_filename }} \
+          --clobber 2>&1 || {
+            echo "ERROR: Failed to download ${{ inputs.sso_users_filename }} from github-audits release"
+            echo "sso_file_available=false" >> $GITHUB_OUTPUT
+            echo "user_count=0" >> $GITHUB_OUTPUT
+            exit 0
+          }
+
+        # Verify file was downloaded and is valid JSON
+        if [ ! -f ${{ inputs.sso_users_filename }} ]; then
+          echo "ERROR: ${{ inputs.sso_users_filename }} file not found after download"
+          echo "sso_file_available=false" >> $GITHUB_OUTPUT
+          echo "user_count=0" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Validate JSON structure
+        if ! jq -e 'type == "object"' ${{ inputs.sso_users_filename }} > /dev/null 2>&1; then
+          echo "ERROR: ${{ inputs.sso_users_filename }} is not a valid JSON object"
+          echo "sso_file_available=false" >> $GITHUB_OUTPUT
+          echo "user_count=0" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        USER_COUNT=$(jq 'length' ${{ inputs.sso_users_filename }})
+        echo "Successfully downloaded ${{ inputs.sso_users_filename }} with $USER_COUNT NVIDIA SSO users"
+        echo "sso_file_available=true" >> $GITHUB_OUTPUT
+        echo "user_count=$USER_COUNT" >> $GITHUB_OUTPUT
+
+    - name: Check if user is in SSO list
+      id: check-membership
+      shell: bash
+      run: |
+        USERNAME="${{ inputs.username }}"
+        SSO_FILE="${{ inputs.sso_users_filename }}"
+
+        echo "Checking if $USERNAME is in NVIDIA SSO users list..."
+
+        # Check if SSO file is available
+        if [ "${{ steps.download-sso.outputs.sso_file_available }}" != "true" ] || [ ! -f "$SSO_FILE" ]; then
+          echo "ERROR: $SSO_FILE not available - cannot check membership"
+          echo "is_member=false" >> $GITHUB_OUTPUT
+          echo "is_org_member=false" >> $GITHUB_OUTPUT
+          echo "user_orgs=" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Check if username exists as a key in the JSON object
+        if jq -e --arg user "$USERNAME" 'has($user)' "$SSO_FILE" > /dev/null 2>&1; then
+          echo "$USERNAME found in NVIDIA SSO users"
+          echo "is_member=true" >> $GITHUB_OUTPUT
+
+          # Extract and check org membership
+          IS_ORG_MEMBER=$(jq -r --arg user "$USERNAME" '
+            .[$user].org_roles // [] |
+            map(select(test("^(NVIDIA|NVIDIA-NeMo):Member$"))) |
+            length > 0
+          ' "$SSO_FILE")
+
+          USER_ORGS=$(jq -r --arg user "$USERNAME" '
+            .[$user].org_roles // [] |
+            map(split(":")[0]) |
+            unique |
+            join(",")
+          ' "$SSO_FILE")
+
+          echo "is_org_member=$IS_ORG_MEMBER" >> $GITHUB_OUTPUT
+          echo "user_orgs=$USER_ORGS" >> $GITHUB_OUTPUT
+
+          if [ "$IS_ORG_MEMBER" == "true" ]; then
+            echo "$USERNAME is a member of NVIDIA or NVIDIA-NeMo org"
+          else
+            echo "$USERNAME has @nvidia.com email but is not in NVIDIA or NVIDIA-NeMo org (orgs: $USER_ORGS)"
+          fi
+        else
+          echo "$USERNAME NOT found in NVIDIA SSO users"
+          echo "is_member=false" >> $GITHUB_OUTPUT
+          echo "is_org_member=false" >> $GITHUB_OUTPUT
+          echo "user_orgs=" >> $GITHUB_OUTPUT
+        fi
+
+branding:
+  icon: 'shield'
+  color: 'green'

@@ -35,6 +35,92 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  is-not-external-contributor:
+    runs-on: ubuntu-latest
+    outputs:
+      is_external_contributor: ${{ github.event.pull_request.user.type == 'User' }}
+      is_maintainer: ${{ steps.check-membership.outputs.is_maintainer }}
+      selected_runner: ${{ steps.check-membership.outputs.is_maintainer == 'true' && 'nemo-ci-aws-gpu-x2' || 'nemo-ci-aws-gpu-x2-ephemeral' }}
+    permissions:
+      issues: write
+      pull-requests: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.PAT }}
+      REPO: ${{ github.repository }}
+      DISABLE_EXTERNAL_CONTRIBUTOR: ${{ vars.DISABLE_EXTERNAL_CONTRIBUTOR }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ env.GITHUB_TOKEN }}
+
+      - name: Get PR info
+        id: get-pr-info
+        if: github.event_name == 'pull_request'
+        uses: nv-gha-runners/get-pr-info@main
+
+      - name: Check NVIDIA SSO membership
+        id: check-sso
+        uses: ./.github/actions/check-nvidia-sso-membership
+        with:
+          username: ${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').user.login }}
+          github_token: ${{ secrets.NVIDIA_MANAGEMENT_ORG_PAT }}
+          sso_users_filename: ${{ vars.SSO_USERS_FILENAME }}
+
+      - name: Set maintainer status
+        id: check-membership
+        env:
+          IS_MERGE_GROUP: ${{ github.event_name == 'merge_group' }}
+          SCHEDULED_JOB: ${{ github.event_name == 'schedule' }}
+          IS_WORKFLOW_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "${SCHEDULED_JOB}" == "true" ] || [ "${IS_MERGE_GROUP}" == "true" ] || [ "${IS_WORKFLOW_DISPATCH}" == "true" ]; then
+            echo "is_maintainer=true" | tee -a $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          IS_MEMBER="${{ steps.check-sso.outputs.is_member }}"
+
+          if [ "${{ env.DISABLE_EXTERNAL_CONTRIBUTOR }}" == "true" ] && [ "${{ steps.check-sso.outputs.is_member }}" != "true" ]; then
+            PR_AUTHOR=${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').user.login }}
+
+            echo "Checking if $PR_AUTHOR is a repo collaborator..."
+            API_URL="https://api.github.com/repos/$REPO/collaborators/$PR_AUTHOR"
+            REPO_MEMBERSHIP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              $API_URL)
+
+            echo "Checking if $PR_AUTHOR is an org collaborator to NVIDIA-NeMo..."
+            API_URL="https://api.github.com/orgs/NVIDIA-NeMo/members/$PR_AUTHOR"
+            ORG_NVIDIA_NEMO_MEMBERSHIP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              $API_URL)
+
+            echo "Checking if $PR_AUTHOR is an org collaborator to NVIDIA..."
+            API_URL="https://api.github.com/orgs/NVIDIA/members/$PR_AUTHOR"
+            ORG_NVIDIA_MEMBERSHIP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              $API_URL)
+
+            if [ "$REPO_MEMBERSHIP_RESPONSE" -eq 204 ] || [ "$ORG_NVIDIA_NEMO_MEMBERSHIP_RESPONSE" -eq 204 ] || [ "$ORG_NVIDIA_MEMBERSHIP_RESPONSE" -eq 204 ]; then
+              IS_MEMBER="true"
+            else
+              exit 1
+            fi
+          fi
+
+          if [ "$IS_MEMBER" == "true" ]; then
+            echo "is_maintainer=true" | tee -a $GITHUB_OUTPUT
+          else
+            echo "is_maintainer=false" | tee -a $GITHUB_OUTPUT
+          fi
+
   pre-flight:
     runs-on: ubuntu-latest
     outputs:
@@ -134,7 +220,7 @@ jobs:
 
   cicd-test-container-build:
     uses: ./.github/workflows/_build_container.yml
-    needs: [pre-flight, code-linting, cicd-wait-in-queue]
+    needs: [is-not-external-contributor, pre-flight, code-linting, cicd-wait-in-queue]
     if: |
       needs.pre-flight.outputs.test_to_run != '[]'
       && needs.pre-flight.outputs.components_to_run != '[]'
@@ -149,6 +235,7 @@ jobs:
     with:
       image-name: nemo_container
       dockerfile: docker/Dockerfile.ci
+      runner: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
 
   cicd-import-tests:
     if: |
@@ -162,8 +249,8 @@ jobs:
         )
       )
       && !cancelled()
-    needs: [cicd-test-container-build, pre-flight]
-    runs-on: self-hosted-azure-gpus-1
+    needs: [cicd-test-container-build, pre-flight, is-not-external-contributor]
+    runs-on: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
     steps:
       - name: Create UUID
         id: uuid
@@ -197,8 +284,8 @@ jobs:
           '
 
   L0_Setup_Test_Data_And_Models:
-    needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue]
-    runs-on: self-hosted-azure
+    needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue, is-not-external-contributor]
+    runs-on: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
     if: |
       needs.pre-flight.outputs.test_to_run != '[]'
       && needs.pre-flight.outputs.components_to_run != '[]'
@@ -224,7 +311,7 @@ jobs:
           tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
 
   cicd-main-unit-tests:
-    needs: [pre-flight, cicd-test-container-build]
+    needs: [is-not-external-contributor, pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-unit-tests.yml
     if: |
       needs.pre-flight.outputs.test_to_run != '[]'
@@ -239,9 +326,10 @@ jobs:
       && !cancelled()
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+      runner: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
 
   cicd-main-speech:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+    needs: [is-not-external-contributor, pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-speech.yml
     if: |
       (
@@ -260,6 +348,7 @@ jobs:
       && !cancelled()
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+      runner: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
 
   Nemo_CICD_Test:
     needs:

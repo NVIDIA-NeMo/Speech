@@ -137,6 +137,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         sample_rate: int,
         volume_norm: bool = True,
         codec_model_samples_per_frame: int = None,
+        codec_model_input_sample_rate: int = None,
+        frame_stacking_factor: int = None,
         num_audio_codebooks: int = None,
         prior_scaling_factor: float = None,
         load_cached_codes_if_available: bool = True,
@@ -156,7 +158,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         source_sample_rate: int = 16000,
         input_roles: List[str] = ["user", "User"],
         output_roles: List[str] = ["assistant", "Assistant", "agent", "Agent"],
-        add_text_bos_and_eos_in_each_turn: bool = False,
+        add_text_bos: bool = False,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -187,9 +189,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.source_sample_rate = source_sample_rate
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
-        self.add_text_bos_and_eos_in_each_turn = add_text_bos_and_eos_in_each_turn
+        self.add_text_bos = add_text_bos
 
-        self.frame_length = self.codec_model_samples_per_frame / self.sample_rate
+        self.frame_length = (self.codec_model_samples_per_frame / codec_model_input_sample_rate) * frame_stacking_factor
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -205,8 +207,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 all_tokenizers_config=self.tokenizer_config,
                 mode=self.dataset_type,
             )
-            self.bos_id = len(self.text_tokenizer.tokens)
-            self.eos_id = self.bos_id + 1
+            num_tokens = len(self.text_tokenizer.tokens)
+            self.bos_id = num_tokens
+            self.eos_id = num_tokens + 1
+            self.cfg_unk_token_id = num_tokens + 2
+            self.interruption_token_id = num_tokens + 3
             self.pad_id = self.text_tokenizer.pad
 
         if self.phoneme_tokenizer is None and self.phoneme_tokenizer_config is not None:
@@ -242,13 +247,13 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         target_text_tokens, target_token_lens = collate_token_channel(
             cuts, self.text_tokenizer, self.frame_length, roles=self.output_roles,
-            add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
-            tokenizer_names=batch_tokenizer_names, pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id,
+            add_text_bos=self.add_text_bos, tokenizer_names=batch_tokenizer_names,
+            pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id, interruption_token_id=self.interruption_token_id,
         )
         source_tokens, source_token_lens = collate_token_channel(
             cuts, self.text_tokenizer, self.frame_length, roles=self.input_roles,
-            add_text_bos_and_eos_in_each_turn=self.add_text_bos_and_eos_in_each_turn,
-            tokenizer_names=batch_tokenizer_names, pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id,
+            add_text_bos=self.add_text_bos, tokenizer_names=batch_tokenizer_names,
+            pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id, interruption_token_id=self.interruption_token_id,
         )
 
         if self.phoneme_tokenizer is not None:
@@ -437,8 +442,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 tok_name = batch_tokenizer_names[i]
                 full_text_len = sum([len(self.text_tokenizer.encode(sup.text, tokenizer_name=tok_name)) for sup in cut.supervisions if sup.speaker in self.output_roles])
 
-                if self.add_text_bos_and_eos_in_each_turn:
+                if self.add_text_bos:
                     full_text_len += 2 * sum([1 for sup in cut.supervisions if sup.speaker in self.output_roles])
+                else:
+                    # cont eos token
+                    full_text_len += sum([1 for sup in cut.supervisions if sup.speaker in self.output_roles])
 
                 full_text_len = max(1, full_text_len)
 
@@ -518,11 +526,12 @@ def collate_token_channel(
     tokenizer,
     frame_length: Seconds,
     roles: set[str],
-    add_text_bos_and_eos_in_each_turn: bool = True,
+    add_text_bos: bool = True,
     tokenizer_names: list[str] = None,
     pad_id: int = None,
     eos_id: int = None,
     bos_id: int = None,
+    interruption_token_id: int = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build and collate token channels aligned to the audio frame grid."""
     tokens = []
@@ -531,8 +540,8 @@ def collate_token_channel(
         tok_name = tokenizer_names[i] if tokenizer_names else "english_phoneme"
         tokens.append(
             build_token_channel(
-                c, tokenizer, frame_length, roles, pad_id, eos_id, bos_id,
-                add_text_bos_and_eos_in_each_turn, tok_name
+                c, tokenizer, frame_length, roles, pad_id, eos_id, bos_id, interruption_token_id,
+                add_text_bos, tok_name
             )
         )
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -547,7 +556,8 @@ def build_token_channel(
     pad_id: int = -1,
     eos_id: int = -2,
     bos_id: int = -3,
-    add_text_bos_and_eos_in_each_turn: bool = True,
+    interruption_token_id: int = -4,
+    add_text_bos: bool = True,
     tokenizer_name: str = "english_phoneme",
 ) -> torch.Tensor:
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
@@ -565,7 +575,10 @@ def build_token_channel(
             else:
                 raw_ids = tokenizer.text_to_ids(text)
 
-            text_ids = torch.as_tensor(raw_ids + [eos_id])
+            if add_text_bos:
+                text_ids = torch.as_tensor([bos_id] + raw_ids + [eos_id])
+            else:
+                text_ids = torch.as_tensor(raw_ids + [eos_id])
 
             pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
             if pos >= len(tokens):
@@ -576,10 +589,10 @@ def build_token_channel(
                 text_ids = text_ids[:len(tokens) - pos]
             tokens[pos:pos+len(text_ids)] = text_ids
 
-            if add_text_bos_and_eos_in_each_turn:
-                eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
-                if eospos < len(tokens):
-                    tokens[eospos] = eos_id
+            # add interruption token, used for add speech eos and interrupt the model
+            interruption_pos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
+            if interruption_pos < len(tokens):
+                tokens[interruption_pos] = interruption_token_id
 
     return tokens
 

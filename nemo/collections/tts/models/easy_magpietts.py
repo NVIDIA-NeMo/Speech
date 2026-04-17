@@ -539,6 +539,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes: torch.Tensor,
         audio_codes_lens: torch.Tensor,
         delay: torch.Tensor,
+        speech_eos_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Prepare audio embeddings as a channel input with delay handling.
@@ -587,6 +588,25 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             self.frame_stacking_factor,
             self.num_audio_codebooks,
         )
+
+        if speech_eos_mask is not None:
+            # 1. Shift the mask +1 to the right to account for the <BOS> token and +1 for the EOS
+            #    prepended by add_special_tokens.
+            B_mask, T_mask = speech_eos_mask.shape
+            shifted_mask = torch.zeros((B_mask, T_mask + 2), dtype=torch.bool, device=device)
+            shifted_mask[:, 2:] = speech_eos_mask
+
+            # 2. Find the minimum overlapping time dimension
+            t_mask = shifted_mask.size(1)
+            t_audio = audio_codes.size(2)
+            min_t = min(t_mask, t_audio)
+
+            # 3. Slice both to the valid overlap and broadcast the C dimension
+            valid_mask = shifted_mask[:, :min_t]
+            expanded_mask = valid_mask.unsqueeze(1).expand(-1, audio_codes.size(1), -1)
+
+            # Inject the EOS token only into the overlapping region
+            audio_codes[:, :, :min_t][expanded_mask] = self.audio_eos_id
 
         # Prepare input and target for autoregressive training
         # Input: all tokens except the last (teacher forcing)
@@ -731,6 +751,13 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             # Streaming mode: context_lens + speech_delay
             audio_delay = context_lens + current_streaming_speech_delay
 
+        speech_eos_mask = None
+        if self.cfg.get("use_multiturn_dataset", False):
+            speech_eos_mask = (text == self.interruption_token_id)  # (B, T)
+            # ToDo: do not remove from interruption data
+            text[speech_eos_mask] = self.tokenizer.pad  # Clean up the text channel
+
+
         # 3. Prepare text channel embeddings
         text_channel_embedding, text_channel_lens = self.prepare_text_channel_embeddings(
             text=text,
@@ -738,7 +765,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             delay=text_delay,
             dropout_text_input=dropout_text_input or dropout_conditional_input,
             is_multiturn=self.cfg.get("use_multiturn_dataset", False),
-            text_pad_id=self.tokenizer.pad,
+            text_pad_id=self.pad_id,
         )
 
         # 4. Prepare phoneme channel embeddings (if phoneme tokenizer is configured)
@@ -788,6 +815,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_codes=audio_codes,
             audio_codes_lens=audio_codes_lens,
             delay=audio_delay,
+            speech_eos_mask=speech_eos_mask,
         )
 
         # 6. Sum the channel embeddings element-wise
@@ -1423,6 +1451,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 sample_rate=self.sample_rate,
                 volume_norm=dataset_cfg.volume_norm,
                 codec_model_samples_per_frame=self.codec_model_samples_per_frame,
+                codec_model_input_sample_rate=self.codec_model_input_sample_rate,
+                frame_stacking_factor=self.frame_stacking_factor,
                 num_audio_codebooks=self.data_num_audio_codebooks,
                 prior_scaling_factor=0.0,
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
@@ -1440,7 +1470,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 source_sample_rate=self.sample_rate,
                 input_roles=["user", "User"],
                 output_roles=["assistant", "Assistant", "agent", "Agent"],
-                add_text_bos_and_eos_in_each_turn=self.cfg.get("add_text_bos_and_eos_in_each_turn", False),
+                add_text_bos=self.cfg.get("add_text_bos", False),
                 # pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
             )
             dataset = FallbackDataset(dataset)

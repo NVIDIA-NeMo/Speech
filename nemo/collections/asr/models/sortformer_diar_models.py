@@ -71,6 +71,28 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             List of available pre-trained models.
         """
         result = []
+
+        model = PretrainedModelInfo(
+            pretrained_model_name="diar_sortformer_4spk-v1",
+            description="For details about this model, please visit https://huggingface.co/nvidia/diar_sortformer_4spk-v1",
+            location="https://huggingface.co/nvidia/diar_sortformer_4spk-v1",
+        )
+        result.append(model)
+
+        model = PretrainedModelInfo(
+            pretrained_model_name="diar_streaming_sortformer_4spk-v2",
+            description="For details about this model, please visit https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2",
+            location="https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2",
+        )
+        result.append(model)
+
+        model = PretrainedModelInfo(
+            pretrained_model_name="diar_streaming_sortformer_4spk-v2.1",
+            description="For details about this model, please visit https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1",
+            location="https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1",
+        )
+        result.append(model)
+
         return result
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):

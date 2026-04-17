@@ -10,13 +10,6 @@ EN
 .. csv-table::
     :header-rows: 1
     :align: left
-    :file: data/scores/en/citrinet_en.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
     :file: data/scores/en/conformer_en.csv
 
 --------------------
@@ -24,35 +17,7 @@ EN
 .. csv-table::
     :header-rows: 1
     :align: left
-    :file: data/scores/en/contextnet_en.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
     :file: data/scores/en/fastconformer_en.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/en/jasper10x5dr_en.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/en/quartznet15x5_en.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/en/squeezeformer_en.csv
 
 --------------------
 
@@ -86,22 +51,8 @@ CA
 
 --------------------
 
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/ca/quartznet15x5_ca.csv
-
---------------------
-
 DE
 ^^
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/de/citrinet_de.csv
-
---------------------
 
 .. csv-table::
     :header-rows: 1
@@ -113,21 +64,7 @@ DE
 .. csv-table::
     :header-rows: 1
     :align: left
-    :file: data/scores/de/contextnet_de.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
     :file: data/scores/de/fastconformer_de.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/de/quartznet15x5_de.csv
 
 --------------------
 
@@ -138,13 +75,6 @@ ENES
     :header-rows: 1
     :align: left
     :file: data/scores/enes/conformer_enes.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/enes/contextnet_enes.csv
 
 --------------------
 
@@ -164,21 +94,7 @@ ES
 .. csv-table::
     :header-rows: 1
     :align: left
-    :file: data/scores/es/citrinet_es.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
     :file: data/scores/es/conformer_es.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/es/contextnet_es.csv
 
 --------------------
 
@@ -189,41 +105,13 @@ ES
 
 --------------------
 
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/es/quartznet15x5_es.csv
-
---------------------
-
 FR
 ^^
 
 .. csv-table::
     :header-rows: 1
     :align: left
-    :file: data/scores/fr/citrinet_fr.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
     :file: data/scores/fr/conformer_fr.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/fr/contextnet_fr.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/fr/quartznet15x5_fr.csv
 
 --------------------
 
@@ -261,13 +149,6 @@ IT
 
 --------------------
 
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/it/quartznet15x5_it.csv
-
---------------------
-
 KAB
 ^^^
 
@@ -298,13 +179,6 @@ PL
 
 --------------------
 
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/pl/quartznet15x5_pl.csv
-
---------------------
-
 RU
 ^^
 
@@ -312,13 +186,6 @@ RU
     :header-rows: 1
     :align: left
     :file: data/scores/ru/conformer_ru.csv
-
---------------------
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/ru/quartznet15x5_ru.csv
 
 --------------------
 
@@ -344,13 +211,6 @@ UA
 
 ZH
 ^^
-
-.. csv-table::
-    :header-rows: 1
-    :align: left
-    :file: data/scores/zh/citrinet_zh.csv
-
---------------------
 
 .. csv-table::
     :header-rows: 1

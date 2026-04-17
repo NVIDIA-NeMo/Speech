@@ -333,8 +333,7 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
 class RNNTLoss(Loss):
     @property
     def input_types(self):
-        """Input types definitions for CTCLoss.
-        """
+        """Input types definitions for RNNTLoss."""
         return {
             "log_probs": NeuralType(('B', 'T', 'T', 'D'), LogprobsType()),
             "targets": NeuralType(('B', 'T'), LabelsType()),
@@ -344,7 +343,7 @@ class RNNTLoss(Loss):
 
     @property
     def output_types(self):
-        """Output types definitions for CTCLoss.
+        """Output types definitions for RNNTLoss.
         loss:
             NeuralType(None)
         """
@@ -395,7 +394,7 @@ class RNNTLoss(Loss):
                                  standard blank, and the standard blank is the last symbol in the vocab)
                 TDT: num_classes = V. Note, V here does not include any of the "duration outputs".
 
-            reduction: Type of reduction to perform on loss. Possible values are 
+            reduction: Type of reduction to perform on loss. Possible values are
                 `mean_batch`, 'mean_volume`, `mean`, `sum` or None.
                 `None` will return a torch vector comprising the individual loss values of the batch.
                 `mean_batch` will average the losses in the batch
@@ -463,9 +462,7 @@ class RNNTLoss(Loss):
                 self._fp16_compat_checked = True
 
             # Upcast the activation tensor and compute loss and grads in fp32
-            logits_orig = log_probs
             log_probs = log_probs.float()
-            del logits_orig  # save memory *before* computing the loss
 
         # Ensure that shape mismatch does not occur due to padding
         # Due to padding and subsequent downsampling, it may be possible that

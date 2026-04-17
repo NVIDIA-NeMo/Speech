@@ -12,16 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 import torch.distributed
 import torch.nn as nn
 
-from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor, ConformerEncoder
+from nemo.collections.asr.modules import (
+    AudioToMelSpectrogramPreprocessor,
+    ConformerEncoder,
+    ConformerMultiLayerFeatureExtractor,
+)
 from nemo.core.classes import Exportable, NeuralModule
 from nemo.core.classes.mixins import AccessMixin
-from nemo.utils import logging
 
 
 class Aggregator(nn.Module):
@@ -81,85 +84,12 @@ class Aggregator(nn.Module):
             raise ValueError(f"Unknown mode {self.mode}")
 
 
-class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable):
-    def __init__(self, encoder, aggregator: Optional[Callable] = None, layer_idx_list: Optional[List[int]] = None):
-        """
-        Args:
-            encoder: ConformerEncoder instance.
-            aggregator: Aggregator instance.
-            layer_idx_list: List of layer indices to extract features from.
-        """
-        super().__init__()
-        self.encoder = encoder
-        self.aggregator = aggregator
-        self.layer_idx_list = (
-            [int(l) for l in layer_idx_list]
-            if layer_idx_list is not None
-            else [i for i in range(len(self.encoder.layers))]
-        )
-        for x in self.layer_idx_list:
-            if x < 0 or x >= len(self.encoder.layers):
-                raise ValueError(f"layer index {x} out of range [0, {len(self.encoder.layers)})")
-        logging.info(f"Extracting features from layers {self.layer_idx_list}")
-        self.access_cfg = {
-            "interctc": {
-                "capture_layers": self.layer_idx_list,
-            },
-            "detach": False,
-            "convert_to_cpu": False,
-        }
-        self._is_access_enabled = False
-
-    def forward(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            same interface as ConformerEncoder.forward()
-        Returns:
-            tuple of aggregated features of shape [B, D, T] and lengths of shape [B]
-        """
-        self.encoder.update_access_cfg(self.access_cfg, guid=getattr(self, "model_guid", None))
-        self.encoder.set_access_enabled(access_enabled=True, guid=getattr(self, "model_guid", None))
-
-        _ = self.encoder(
-            audio_signal=audio_signal,
-            length=length,
-            cache_last_channel=cache_last_channel,
-            cache_last_time=cache_last_time,
-            cache_last_channel_len=cache_last_channel_len,
-        )
-
-        total_registry = {}
-        for module_registry in self.encoder.get_module_registry(self.encoder).values():
-            for key in module_registry:
-                if key.startswith("interctc/") and key in total_registry:
-                    raise RuntimeError(f"layer {key} has been logged multiple times!")
-            total_registry.update(module_registry)
-
-        encoded_list = []
-        encoded_len_list = []
-        for layer_idx in self.layer_idx_list:
-            try:
-                layer_outputs = total_registry[f"interctc/layer_output_{layer_idx}"]
-                layer_lengths = total_registry[f"interctc/layer_length_{layer_idx}"]
-            except KeyError:
-                raise RuntimeError(
-                    f"Intermediate layer {layer_idx} was not captured! Check the layer index and the number of "
-                    "ConformerEncoder layers."
-                )
-            if len(layer_outputs) > 1 or len(layer_lengths) > 1:
-                raise RuntimeError("Make sure encoder.forward is called exactly one time")
-            encoded_list.append(layer_outputs[0])  # [B, D, T]
-            encoded_len_list.append(layer_lengths[0])  # [B]
-
-        self.encoder.reset_registry()
-        if self.aggregator is None:
-            return encoded_list, encoded_len_list
-        return self.aggregator(encoded_list, encoded_len_list)
-
-
 class ConformerMultiLayerFeaturePreprocessor(NeuralModule, Exportable, AccessMixin):
+    """
+    This class is used to replace the AudioToMelSpectrogramPreprocessor such that
+    the input to the actual model encoder is the multi-layer features from a pre-trained ConformerEncoder.
+    """
+
     def __init__(
         self,
         aggregator: nn.Module,

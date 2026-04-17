@@ -25,4 +25,5 @@ NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 coverage run -a --data-file=/works
     --ignore=tests/hydra \
     --ignore=tests/lightning \
     --ignore=tests/export \
-    --ignore=tests/deploy
+    --ignore=tests/deploy \
+    --ignore=tests/functional_tests

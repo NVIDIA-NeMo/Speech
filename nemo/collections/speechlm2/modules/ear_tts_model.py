@@ -93,123 +93,26 @@ class MLPLayer(nn.Module):
 
 
 # ==============================================================================
-# Triton-accelerated and Fallback Functions
-# ==============================================================================
-
-TRITON_IMPORTED = False
-try:
-    import triton
-    import triton.language as tl
-
-    TRITON_IMPORTED = True
-except ImportError:
-    TRITON_IMPORTED = False
-
-USE_TRITON = TRITON_IMPORTED and torch.cuda.is_available()
-
-if USE_TRITON:
-    logging.info("Triton available & CUDA detected. Using Triton kernel for batch_matmul.")
-
-    @triton.jit
-    def batch_matmul_kernel(
-        x_ptr,
-        w_ptr,
-        y_ptr,
-        result_ptr,
-        b,
-        d_in,
-        d_out,
-        n,
-        BLOCK_SIZE_DIN: tl.constexpr,
-        BLOCK_SIZE_DOUT: tl.constexpr,
-    ):
-        batch_id = tl.program_id(axis=0)
-        dout_block_id = tl.program_id(axis=1)
-
-        if batch_id >= b:
-            return
-
-        idx = tl.load(y_ptr + batch_id)
-
-        x_offset = x_ptr + batch_id * d_in
-        w_offset = w_ptr + idx * d_out * d_in
-
-        dout_offsets = dout_block_id * BLOCK_SIZE_DOUT + tl.arange(0, BLOCK_SIZE_DOUT)
-        dout_mask = dout_offsets < d_out
-
-        result_block = tl.zeros([BLOCK_SIZE_DOUT], dtype=tl.float32)
-
-        for din_start in range(0, d_in, BLOCK_SIZE_DIN):
-            din_offsets = din_start + tl.arange(0, BLOCK_SIZE_DIN)
-            din_mask = din_offsets < d_in
-
-            x_i = tl.load(x_offset + din_offsets, mask=din_mask, other=0.0)
-
-            w_i_block = tl.load(
-                w_offset + dout_offsets[:, None] * d_in + din_offsets[None, :],
-                mask=(dout_mask[:, None] & din_mask[None, :]),
-                other=0.0,
-            )
-
-            result_block += tl.sum(w_i_block * x_i[None, :], axis=1)
-
-        result_offset = result_ptr + batch_id * d_out + dout_offsets
-        tl.store(result_offset, result_block, mask=dout_mask)
-
-    def batch_matmul_triton(x, w, y, BLOCK_SIZE_DIN: int = 16, BLOCK_SIZE_DOUT: int = 64):
-        assert x.is_contiguous() and w.is_contiguous() and y.is_contiguous()
-
-        b, d_in = x.shape
-        n, d_out, _ = w.shape
-        result = torch.empty(b, d_out, device=x.device, dtype=torch.float32)
-
-        batch_matmul_kernel[lambda meta: (b, triton.cdiv(d_out, meta["BLOCK_SIZE_DOUT"]))](
-            x.float(),
-            w.float(),
-            y,
-            result,
-            b,
-            d_in,
-            d_out,
-            n,
-            BLOCK_SIZE_DIN=BLOCK_SIZE_DIN,
-            BLOCK_SIZE_DOUT=BLOCK_SIZE_DOUT,
-        )
-
-        return result.to(dtype=x.dtype)
-
-    batch_matmul = batch_matmul_triton
-
-else:
-    logging.info("Using PyTorch fallback (Triton unavailable or no CUDA).")
-
-    # Fallback to PyTorch implementation if Triton is not available
-    def batch_matmul_pytorch(x: Tensor, w: Tensor, y: Tensor, *args, **kwargs) -> Tensor:
-        """
-        Performs a batched matrix multiplication using PyTorch's native functions.
-
-        This function serves as a fallback when Triton is not available. It achieves
-        the same result by gathering the appropriate weight matrices and using `torch.bmm`.
-
-        Args:
-            x (Tensor): The input tensor of shape `[batch_size, d_in]`.
-            w (Tensor): The weight tensor of shape `[num_weights, d_out, d_in]`.
-            y (Tensor): The index tensor of shape `[batch_size]`.
-
-        Returns:
-            Tensor: The result of the multiplication, shape `[batch_size, d_out]`.
-        """
-        # w[y] gathers the weight matrices for each item in the batch.
-        # x.unsqueeze(2) reshapes x to [batch_size, d_in, 1] for bmm.
-        # The result is squeezed to remove the trailing dimension of size 1.
-        return torch.bmm(w[y], x.unsqueeze(2)).squeeze(2)
-
-    batch_matmul = batch_matmul_pytorch
-
-
-# ==============================================================================
 # Core Mathematical and Masking Functions
 # ==============================================================================
+
+
+def batch_matmul(x: Tensor, w: Tensor, y: Tensor, *args, **kwargs) -> Tensor:
+    """
+    Performs a batched matrix multiplication using PyTorch's native functions.
+
+    Args:
+        x (Tensor): The input tensor of shape `[batch_size, d_in]`.
+        w (Tensor): The weight tensor of shape `[num_weights, d_out, d_in]`.
+        y (Tensor): The index tensor of shape `[batch_size]`.
+
+    Returns:
+        Tensor: The result of the multiplication, shape `[batch_size, d_out]`.
+    """
+    # w[y] gathers the weight matrices for each item in the batch.
+    # x.unsqueeze(2) reshapes x to [batch_size, d_in, 1] for bmm.
+    # The result is squeezed to remove the trailing dimension of size 1.
+    return torch.bmm(w[y], x.unsqueeze(2)).squeeze(2)
 
 
 def gumbel_like(tensor: Tensor, eps: float = 1e-8) -> Tensor:
@@ -350,6 +253,7 @@ class RVQEARTTSOutput:
 
     hidden_states: Tensor | None = None
     past_key_values: Tensor | None = None
+    audio_prompt_lantent: Tensor | None = None
 
     codes: Tensor | None = None
     lm_logits: Tensor | None = None
@@ -467,7 +371,7 @@ def build_vocabs(
     return subword_id_to_char_ids, char_vocab, subword_padding_idx
 
 
-@torch.compile
+@torch._dynamo.disable
 def depthsum_encoding_step(
     embs: Tensor,
     r: Tensor,
@@ -580,8 +484,11 @@ class MoGHead(nn.Module):
                 ).view_as(logits)
             )
 
+            logits = logits.to(x.dtype)
+
         # Sample a mixture component using the Gumbel-Max trick
-        mixture_indices = (F.log_softmax(logits, dim=-1) + gumbel_like(logits)).argmax(-1)
+        with fp32_precision():
+            mixture_indices = (F.log_softmax(logits, dim=-1) + gumbel_like(logits)).argmax(-1)
 
         # Select the mean corresponding to the sampled component
         mu = batch_matmul(
@@ -604,10 +511,10 @@ class MoGHead(nn.Module):
 
             mu_res = self.proj_else(x)
         else:
-            mu_res = torch.zeros((b, t, d), device=x.device)
+            mu_res = torch.zeros((b, t, d), device=x.device, dtype=x.dtype)
 
         logs = self.proj_logs(x).clamp_min(self.min_log_std)
-        return mu * torch.exp(logs) + mu_res, logs
+        return mu * torch.exp(logs.float()).to(logs.dtype) + mu_res, logs
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
@@ -948,7 +855,6 @@ class CharAwareSubwordEncoder(nn.Module):
         # 1. Convert subword IDs to character IDs
         char_ids, char_lengths = self.prepare_inputs(subword_ids, subword_mask)
 
-        # char_mask = sequence_mask(char_lengths).float()
         char_mask = sequence_mask(char_lengths)
 
         # 2. Get character embeddings and pass them through the backbone
@@ -1013,7 +919,7 @@ class GatedProjectedSumRMSNorm(nn.Module):
 
         h = gate.to(dtype) * audio_h + (1 - gate).to(dtype) * text_h
         h = res.to(dtype) * h
-        h = self.final_norm(h.float()).to(dtype)
+        h = self.final_norm(h).to(dtype)
 
         return h
 
@@ -1114,6 +1020,15 @@ class RVQEARTTSModel(nn.Module):
                 self.hidden_size, self.hidden_size, self.hidden_size, self.config.num_quantizers
             )
 
+        if self.config.get("use_audio_prompt_frozen_projection", False):
+            with fp32_precision():
+                U, _ = torch.linalg.qr(torch.randn(self.hidden_size, self.hidden_size))
+                V, _ = torch.linalg.qr(torch.randn(self.hidden_size, self.hidden_size))
+                smin, smax = 0.4, 2.5
+                s = smin + (smax - smin) * torch.rand(self.hidden_size)
+                W = U @ torch.diag(s) @ V.T
+                self.register_buffer("audio_prompt_projection_W", W)  # register as buffer to avoid weight update
+
         # Prediction Heads
         if not self.config.disable_eos_prediction:
             self.lm_head = nn.Linear(self.hidden_size, 2, bias=False)
@@ -1138,7 +1053,7 @@ class RVQEARTTSModel(nn.Module):
         _, v, h = self.rvq_embs.size()
         device = code.device
 
-        ret = torch.zeros((b, t, h), device=device)
+        ret = torch.zeros((b, t, h), device=device, dtype=self.rvq_embs.dtype)
         embs = F.pad(self.rvq_embs, [0, 0, 0, 1])
         for i in range(d):
             emb = embs[i]
@@ -1192,7 +1107,7 @@ class RVQEARTTSModel(nn.Module):
         asr_speech_tokens_emb: Tensor | None,
     ) -> Tensor:
         """Computes the final conditioning tensor by combining all sources."""
-        cond = torch.zeros((1, 1, self.hidden_size), device=uncond_dec_flag.device)
+        cond = torch.zeros((1, 1, self.hidden_size), device=uncond_dec_flag.device, dtype=self.rvq_embs.dtype)
 
         if self.embed_context is not None and context_hidden_state is not None:
             cond = cond + self.embed_context(context_hidden_state)
@@ -1248,30 +1163,32 @@ class RVQEARTTSModel(nn.Module):
             mog_mus = mog_mus.float()
             mog_mu_res = mog_mu_res.float()
             mog_logs = mog_logs.float()
-
-            # Log probability of the true code under each Gaussian component
-            logp_code = (-0.5 * math.log(2 * math.pi) - mog_logs) * self.config.latent_size - 0.5 * self.mog_head.dist(
-                mog_mus, (cont_code_target - mog_mu_res) * torch.exp(-mog_logs)
-            )
-
-            # Compute posterior q(k|c)
-            q_kc = (
-                torch.softmax(
-                    logp_code,
-                    -1,
+            with fp32_precision():
+                # Log probability of the true code under each Gaussian component
+                logp_code = (
+                    -0.5 * math.log(2 * math.pi) - mog_logs
+                ) * self.config.latent_size - 0.5 * self.mog_head.dist(
+                    mog_mus, (cont_code_target - mog_mu_res) * torch.exp(-mog_logs)
                 )
-                * (1 - self.config.label_smoothing)
-                + self.config.label_smoothing / self.mog_head.num_predictions
-            ).detach()
-            log_q_kc = torch.log(q_kc + 1e-8).detach()
 
-            #  Continuous Loss (negative log-likelihood)
-            c_loss = (-(q_kc * logp_code).sum(-1) * reduced_target_mask).sum() / target_mask.sum().clamp_min(1)
+                # Compute posterior q(k|c)
+                q_kc = (
+                    torch.softmax(
+                        logp_code,
+                        -1,
+                    )
+                    * (1 - self.config.label_smoothing)
+                    + self.config.label_smoothing / self.mog_head.num_predictions
+                ).detach()
+                log_q_kc = torch.log(q_kc + 1e-8).detach()
 
-            # KL Divergence Loss
-            k_loss = (
-                (q_kc * (log_q_kc - F.log_softmax(mog_logits, -1))).sum(-1) * reduced_target_mask
-            ).sum() / target_mask.sum().clamp_min(1)
+                #  Continuous Loss (negative log-likelihood)
+                c_loss = (-(q_kc * logp_code).sum(-1) * reduced_target_mask).sum() / target_mask.sum().clamp_min(1)
+
+                # KL Divergence Loss
+                k_loss = (
+                    (q_kc * (log_q_kc - F.log_softmax(mog_logits, -1))).sum(-1) * reduced_target_mask
+                ).sum() / target_mask.sum().clamp_min(1)
 
         return lm_loss, c_loss, k_loss
 
@@ -1293,6 +1210,8 @@ class RVQEARTTSModel(nn.Module):
         teacher_forcing_inference: bool = False,
         ignore_eos_flag_stop: bool = False,
         asr_speech_tokens_emb: Tensor | None = None,
+        audio_prompt_lantent: Tensor | None = None,
+        dataset_type: list[str] | None = None,
     ) -> RVQEARTTSOutput:
         """
         Performs a forward pass handling training, generation, or single-step inference.
@@ -1332,10 +1251,50 @@ class RVQEARTTSModel(nn.Module):
                 dropped_code = code
                 uncond_dec_flag = torch.zeros(code.size(0), 1, 1, device=code.device, dtype=torch.bool)
 
-            code_embeds = (
-                self.embed_code(self.depthsum_embedding(F.pad(dropped_code[:, :-1], [0, 0, 1, 0])))
-                + (audio_mask & (~F.pad(audio_mask[:, :-1], [1, 0]))).unsqueeze(-1) * self.bos_emb
-            )
+            # Shifted code
+            shifted_code = F.pad(dropped_code[:, :-1], [0, 0, 1, 0])
+
+            # Base embeddings
+            code_embed = self.depthsum_embedding(shifted_code)
+
+            # BOS mask
+            bos_mask = audio_mask & (~F.pad(audio_mask[:, :-1], [1, 0]))  # [B, T]
+            bos_mask = bos_mask.unsqueeze(-1)  # [B, T, 1]
+
+            # Mask for tokens BEFORE BOS
+            pre_bos_mask = bos_mask.cumsum(dim=1) == 0  # [B, T, 1]
+
+            # Apply projection to model size
+            code_embed = self.embed_code(code_embed)
+            # audio frozen projection
+            if self.config.get("use_audio_prompt_frozen_projection", False):
+                if audio_prompt_lantent is None:
+                    # Training-only anti-cloning augmentation for pure TTS batches.
+                    all_tts = (
+                        training
+                        and dataset_type is not None
+                        and len(dataset_type) == code_embed.size(0)
+                        and all(str(p).strip().lower() == "tts" for p in dataset_type)
+                    )
+                    if (
+                        self.config.get("force_no_audio_cond_latent_on_prompt", False)
+                        and all_tts
+                        and torch.rand(1, device=code_embed.device).item() < 0.3
+                    ):
+                        perm = torch.randperm(code_embed.size(0), device=code_embed.device)
+                        audio_prompt_lantent = code_embed[perm]
+                    else:
+                        W = self.audio_prompt_projection_W.to(code_embed.device, code_embed.dtype)
+                        audio_prompt_lantent = torch.nn.functional.linear(code_embed, W.T)
+
+                code_embed = torch.where(
+                    pre_bos_mask,
+                    audio_prompt_lantent,
+                    code_embed,
+                )
+
+            # Add BOS embedding
+            code_embeds = code_embed + bos_mask * self.bos_emb
 
         else:  # Inference
             code_embeds = self.embed_code(self.depthsum_embedding(code))
@@ -1402,13 +1361,19 @@ class RVQEARTTSModel(nn.Module):
             total_loss = lm_loss + c_loss + k_loss
 
             return RVQEARTTSOutput(
-                loss=total_loss, lm_loss=lm_loss, c_loss=c_loss, k_loss=k_loss, hidden_states=hidden_states
+                loss=total_loss,
+                lm_loss=lm_loss,
+                c_loss=c_loss,
+                k_loss=k_loss,
+                hidden_states=hidden_states,
+                audio_prompt_lantent=audio_prompt_lantent,
             )
         else:  # Inference
             if not generation_config:
                 return RVQEARTTSOutput(
                     hidden_states=hidden_states,
                     past_key_values=backbone_outputs.past_key_values,
+                    audio_prompt_lantent=audio_prompt_lantent,
                 )
             else:
                 if teacher_forcing_inference:
@@ -1553,7 +1518,10 @@ class RVQEARTTSModel(nn.Module):
                         lm_logits.view(-1, lm_logits.size(-1)),
                     ).view_as(lm_logits)
                 )
-            lm_logits = F.log_softmax(lm_logits, -1)
+
+            with fp32_precision():
+                lm_logits = F.log_softmax(lm_logits, -1)
+
             if eos_threshold is not None:
                 eos_flag = lm_logits[..., -1] > eos_threshold
             else:

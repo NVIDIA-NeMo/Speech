@@ -15,10 +15,7 @@ import copy
 import json
 import os
 import random
-import string
-from typing import Optional
 
-import librosa
 import numpy as np
 import soundfile as sf
 import torch
@@ -27,7 +24,12 @@ from omegaconf import DictConfig, open_dict
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
-from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
+from nemo.collections.tts.parts.utils.helpers import (
+    get_speaker_embeddings_from_filepaths,
+    process_text_for_cer,
+    transcribe_with_whisper,
+    transcribe_with_whisper_from_filepaths,
+)
 from nemo.utils import logging
 
 try:
@@ -47,6 +49,7 @@ except (ImportError, ModuleNotFoundError):
     PYNINI_AVAILABLE = False
 
 from nemo.collections.tts.models import MagpieTTSModel
+from nemo.collections.tts.modules.magpietts_modules import add_eos_token
 
 
 class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
@@ -432,7 +435,7 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         self.log('train_sft_loss', dpo_outputs['sft_loss'], prog_bar=True, sync_dist=True)
         return dpo_outputs['loss']
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
         dpo_outputs = self.process_batch_dpo(batch)
 
         val_loss = dpo_outputs['loss']
@@ -440,7 +443,7 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         val_sft_loss = dpo_outputs['sft_loss']
         val_alignment_loss = dpo_outputs['alignment_loss']
 
-        self.validation_step_outputs.append(
+        self.validation_step_outputs[dataloader_idx].append(
             {
                 'val_loss': val_loss,
                 'val_pref_loss': val_pref_loss,
@@ -452,11 +455,12 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
     def on_validation_epoch_end(self):
         def collect(key):
             values = []
-            for x in self.validation_step_outputs:
-                if x[key] is not None:
-                    values.append(x[key])
-                else:
-                    values.append(torch.tensor(0.0, device=self.device))
+            for val_outputs in self.validation_step_outputs:
+                for x in val_outputs:
+                    if x[key] is not None:
+                        values.append(x[key])
+                    else:
+                        values.append(torch.tensor(0.0, device=self.device))
             stacked_values = torch.stack(values)
             return stacked_values.mean()
 
@@ -469,7 +473,8 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         self.log("val_sft_loss", val_sft_loss, prog_bar=True, sync_dist=True)
         if val_alignment_loss is not None:
             self.log("val_alignment_loss", val_alignment_loss, prog_bar=True, sync_dist=True)
-        self.validation_step_outputs.clear()
+        for val_outputs in self.validation_step_outputs:
+            val_outputs.clear()
 
 
 class MagpieTTSModelOnlinePO(MagpieTTSModel):
@@ -656,14 +661,25 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
                 )
                 pred_transcripts = [process_text_for_cer(transcript.text) for transcript in pred_transcripts]
             elif self.cfg.get("reward_asr_model", "nemo") == "whisper":
-                pred_transcripts = []
+                pred_transcripts = [""] * len(predicted_audio_paths)
+                language_groups = {}
                 for item_idx, audio_path in enumerate(predicted_audio_paths):
                     language = batch_repeated['languages'][item_idx]
+                    language_groups.setdefault(language, []).append((item_idx, audio_path))
+
+                for language, grouped_items in language_groups.items():
                     normalizer = self._get_cached_normalizer(language) if self._normalize_whisper_transcript else None
-                    transcript = transcribe_with_whisper(
-                        audio_path, language, self.whisper_processor, self.whisper_model, self.device, normalizer
+                    grouped_paths = [audio_path for _, audio_path in grouped_items]
+                    grouped_transcripts = transcribe_with_whisper_from_filepaths(
+                        audio_filepaths=grouped_paths,
+                        language=language,
+                        whisper_processor=self.whisper_processor,
+                        whisper_model=self.whisper_model,
+                        device=self.device,
+                        normalizer=normalizer,
                     )
-                    pred_transcripts.append(transcript)
+                    for (item_idx, _), transcript in zip(grouped_items, grouped_transcripts):
+                        pred_transcripts[item_idx] = transcript
                 pred_transcripts = [process_text_for_cer(transcript) for transcript in pred_transcripts]
             else:
                 # Address CodeQL issue where pred_transcripts might be undefined for future code
@@ -887,7 +903,7 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             with torch.no_grad():
                 reference_model_output = self._reference_model.process_batch(batch_repeated)
 
-        codebook_targets, _ = self.add_eos_token(
+        codebook_targets, _ = add_eos_token(
             codes=predicted_codes, codes_len=predicted_codes_lens, eos_id=self.audio_eos_id
         )
 
@@ -972,14 +988,14 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         self.log('train_std_reward', po_outputs['std_reward'], prog_bar=True, sync_dist=True)
         return po_outputs['loss']
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
         po_outputs = self.process_batch_online_po(batch, 1, mode='val')
         batch_metrics = po_outputs['batch_metrics']
         mean_reward = po_outputs['mean_reward']
         val_loss = po_outputs['loss']
         val_kl_loss = po_outputs['kl_loss']
 
-        self.validation_step_outputs.append(
+        self.validation_step_outputs[dataloader_idx].append(
             {
                 'mean_reward': mean_reward,
                 'std_reward': po_outputs['std_reward'],
@@ -992,11 +1008,12 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
     def on_validation_epoch_end(self):
         def collect(key):
             values = []
-            for x in self.validation_step_outputs:
-                if x[key] is not None:
-                    values.append(x[key])
-                else:
-                    values.append(torch.tensor(0.0, device=self.device))
+            for val_outputs in self.validation_step_outputs:
+                for x in val_outputs:
+                    if x[key] is not None:
+                        values.append(x[key])
+                    else:
+                        values.append(torch.tensor(0.0, device=self.device))
             stacked_values = torch.stack(values)
             return stacked_values.mean()
 
@@ -1011,86 +1028,19 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         self.log("val_std_reward", std_reward, prog_bar=True, sync_dist=True)
 
         mean_metrics = {}
-        for val_output in self.validation_step_outputs:
-            batch_metrics = val_output['batch_metrics']
-            for item_metrics in batch_metrics:
-                for key, value in item_metrics.items():
-                    if "transcript" not in key:
-                        if key not in mean_metrics:
-                            mean_metrics[key] = []
-                        mean_metrics[key].append(value)
+        for val_outputs in self.validation_step_outputs:
+            for val_output in val_outputs:
+                batch_metrics = val_output['batch_metrics']
+                for item_metrics in batch_metrics:
+                    for key, value in item_metrics.items():
+                        if "transcript" not in key:
+                            if key not in mean_metrics:
+                                mean_metrics[key] = []
+                            mean_metrics[key].append(value)
 
         for key, values in mean_metrics.items():
             mean_metrics[key] = np.mean(values)
             self.log(f"val_{key}", mean_metrics[key], prog_bar=True, sync_dist=True)
 
-        self.validation_step_outputs.clear()
-
-
-# Utility functions
-def process_text_for_cer(input_text):
-    """
-    Normalizes text for CER/WER calculation.
-    Taken from hallucination_eval.py
-    """
-    # Convert text to lowercase
-    lower_case_text = input_text.lower()
-
-    # Remove commas from text
-    no_comma_text = lower_case_text.replace(",", "")
-    # Replace "-" with spaces
-    no_dash_text = no_comma_text.replace("-", " ")
-    no_dash_text = no_dash_text.replace("'", "")
-    no_dash_text = no_dash_text.replace(";", "")
-    no_dash_text = no_dash_text.replace(".", "")
-
-    # Replace double spaces with single space
-    single_space_text = " ".join(no_dash_text.split())
-
-    single_space_text = single_space_text.translate(str.maketrans('', '', string.punctuation))
-
-    # @shehzeen: Added this to handle some common errors in ASR transcripts
-    single_space_text = single_space_text.replace("h t t p", "http")
-    single_space_text = single_space_text.replace("w w w", "www")
-
-    return single_space_text
-
-
-def get_speaker_embeddings_from_filepaths(filepaths, speaker_verification_model, device):
-    audio_batch = []
-    audio_lengths = []
-    for filepath in filepaths:
-        audio, sr = sf.read(filepath)
-        if sr != 16000:
-            audio = librosa.core.resample(audio, orig_sr=sr, target_sr=16000)
-        audio_tensor = torch.tensor(audio, dtype=torch.float32, device=device)
-        audio_batch.append(audio_tensor)
-        audio_lengths.append(audio_tensor.size(0))
-
-    batch_audio_lens = torch.tensor(audio_lengths, device=device).long()
-    max_audio_len = int(batch_audio_lens.max().item())
-    audio_batch = stack_tensors(audio_batch, max_lens=[max_audio_len])
-
-    _, speaker_embeddings = speaker_verification_model.forward(
-        input_signal=audio_batch, input_signal_length=batch_audio_lens
-    )
-
-    return speaker_embeddings
-
-
-def transcribe_with_whisper(
-    audio_filepath, language, whisper_processor, whisper_model, device, normalizer: Optional[Normalizer] = None
-):
-    speech_array, sampling_rate = librosa.load(audio_filepath, sr=16000)
-    forced_decoder_ids = (
-        whisper_processor.get_decoder_prompt_ids(language=language, task="transcribe") if language else None
-    )
-    inputs = whisper_processor(speech_array, sampling_rate=sampling_rate, return_tensors="pt").input_features
-    inputs = inputs.to(device)
-    with torch.no_grad():
-        predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
-    transcription = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-    result = transcription[0]
-    if normalizer is not None:
-        result = normalizer.normalize(result)
-    return result
+        for val_outputs in self.validation_step_outputs:
+            val_outputs.clear()

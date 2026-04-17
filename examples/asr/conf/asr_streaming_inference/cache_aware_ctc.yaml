@@ -93,7 +93,6 @@ asr_decoding_type: ctc                        # Decoding method: ctc or rnnt
 audio_file: null                              # Path to audio file, directory, or manifest JSON
 output_filename: null                         # Path to output transcription JSON file
 output_dir: null                              # Directory to save time-aligned output
-enable_pnc: false                             # Whether to apply punctuation & capitalization
 enable_itn: false                             # Whether to apply inverse text normalization
 enable_nmt: false                             # Whether to apply neural machine translation
 asr_output_granularity: segment               # Output granularity: word or segment

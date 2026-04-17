@@ -18,7 +18,6 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     output_filename="/tmp/buffered_ctc_test_res.json" \
     output_dir="/tmp/buffered_ctc_test_dir" \
     lang=en \
-    enable_pnc=False \
     enable_itn=False \
     enable_nmt=False \
     asr_output_granularity=segment
@@ -30,7 +29,28 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     output_filename="/tmp/buffered_rnnt_test_res.json" \
     output_dir="/tmp/buffered_rnnt_test_dir" \
     lang=en \
-    enable_pnc=False \
+    enable_itn=False \
+    enable_nmt=False \
+    asr_output_granularity=segment
+
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_streaming_inference/asr_streaming_infer.py \
+    --config-path="../conf/asr_streaming_inference/" \
+    --config-name=cache_aware_ctc.yaml \
+    audio_file="/home/TestData/an4_transcribe/test_subset/" \
+    output_filename="/tmp/cache_aware_ctc_test_res.json" \
+    output_dir="/tmp/cache_aware_ctc_test_dir" \
+    lang=en \
+    enable_itn=False \
+    enable_nmt=False \
+    asr_output_granularity=segment
+
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_streaming_inference/asr_streaming_infer.py \
+    --config-path="../conf/asr_streaming_inference/" \
+    --config-name=cache_aware_rnnt.yaml \
+    audio_file="/home/TestData/an4_transcribe/test_subset/" \
+    output_filename="/tmp/cache_aware_rnnt_test_res.json" \
+    output_dir="/tmp/cache_aware_rnnt_test_dir" \
+    lang=en \
     enable_itn=False \
     enable_nmt=False \
     asr_output_granularity=segment

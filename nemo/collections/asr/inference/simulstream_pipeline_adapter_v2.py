@@ -106,8 +106,8 @@ def get_llm_model(model_name: str = "Qwen/Qwen3-4B-Instruct-2507", model_params:
             "gpu_memory_utilization": 0.5,
             "max_model_len": 8192,
         }
-    # local_model_path = get_local_model_path(model_name)
-    local_model_path = None
+    local_model_path = get_local_model_path(model_name)
+    # local_model_path = None
     if local_model_path:
         logging.info(f"Found model in local path {local_model_path}, will not download")
     else:

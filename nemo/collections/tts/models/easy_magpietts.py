@@ -1471,7 +1471,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 input_roles=["user", "User"],
                 output_roles=["assistant", "Assistant", "agent", "Agent"],
                 add_text_bos=self.cfg.get("add_text_bos", False),
-                # pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
+                remove_user_turns_prob=self.cfg.get("remove_user_turns_prob", None),
             )
             dataset = FallbackDataset(dataset)
         else:

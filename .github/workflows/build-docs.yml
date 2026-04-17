@@ -43,7 +43,7 @@ jobs:
     with:
       docs-directory: docs/source
       sync-all: true
-      no-extras: "--no-extra cu12"
+      no-extras: "--no-extra cu13"
 
   build-docs-summary:
     needs: [pre-flight, build-docs]

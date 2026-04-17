@@ -68,6 +68,7 @@ class BaseBuilder:
                 batch_size=cfg.nmt.batch_size,
                 llm_params=cfg.nmt.llm_params,
                 sampling_params=cfg.nmt.sampling_params,
+                prompt_params=cfg.nmt.get("prompt_params", None),
             )
             logging.info(f"NMT model `{cfg.nmt.model_name}` loaded")
         return nmt_model

@@ -45,6 +45,7 @@ import torch
 from omegaconf import OmegaConf
 
 from nemo.utils import logging
+from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
 
@@ -112,9 +113,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
     pipeline = None  # Class-level pipeline (shared across instances)
     output_manifest_path: Optional[str] = None
     wav_names: list[str] = []
-    per_stream_boosting_requests: list[BiasingRequestItemConfig] | None = None
-    detailed_log_path: str | None = None
-
+    
     def __init__(self, config: SimpleNamespace):
         """
         Initialize adapter.
@@ -169,6 +168,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         # Convert SimpleNamespace to DictConfig
         # SimulStream uses SimpleNamespace for configuration, so we need to convert it to use in NeMo.
         cfg = OmegaConf.create(cls._namespace_to_dict(config))
+        cls.cfg = cfg
 
         # Build pipeline using NeMo's factory
         cls.pipeline = PipelineBuilder.build_pipeline(cfg)
@@ -191,6 +191,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             # Truncate at start of run.
             Path(cls.output_manifest_path).write_text("", encoding="utf-8")
             logging.info(f"Prediction manifest output: {cls.output_manifest_path}")
+        cls._wer_calculated = False
 
         # Load wav names from wav list if available.
         cls.wav_names = []
@@ -198,6 +199,8 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         if wav_list_file and Path(wav_list_file).exists():
             with open(wav_list_file, 'r', encoding='utf-8') as f:
                 cls.wav_names = [line.strip() for line in f if line.strip()]
+
+        cls._load_reference_manifest(config)
 
         # Register cleanup handler to properly shutdown vLLM on exit
         # Attempting to gracefully shut down vLLM engine, to get "ERROR 02-09 16:53:28 [core_client.py:610] Engine core proc EngineCore_DP0 died unexpectedly, shutting down client."
@@ -231,6 +234,64 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
                 "Per-stream boosting disabled; to enable, "
                 "specify `per_stream_boosting.phrases_file` and `per_stream_boosting.alpha`"
             )
+
+
+    @classmethod
+    def _load_reference_manifest(cls, config: SimpleNamespace) -> None:
+        """Load optional input manifest to copy reference text fields and enable WER calculation."""
+        cls.reference_manifest_by_audio = {}
+        cls.reference_manifest_by_basename = {}
+        cls.reference_manifest_items_ordered = []
+
+        # import pdb; pdb.set_trace()
+
+        manifest_path = None
+        for key in (
+            "manifest",
+            "manifest_file",
+            "input_manifest",
+            "input_manifest_file",
+            "reference_manifest",
+        ):
+            value = getattr(config, key, None)
+            if value:
+                manifest_path = value
+                break
+
+        # import pdb; pdb.set_trace()
+        if not manifest_path:
+            return
+
+        manifest_path = str(manifest_path)
+        if not Path(manifest_path).exists():
+            logging.warning(f"Reference manifest path not found: {manifest_path}")
+            return
+
+        manifest_dir = Path(manifest_path).parent
+        loaded = 0
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                audio = item.get("audio_filepath", "")
+                if not audio:
+                    continue
+                audio_path = Path(audio)
+                if not audio_path.is_absolute():
+                    audio_path = manifest_dir / audio_path
+                audio_abs = str(audio_path.resolve())
+                cls.reference_manifest_by_audio[audio_abs] = item
+                cls.reference_manifest_by_basename[audio_path.name] = item
+                cls.reference_manifest_items_ordered.append(item)
+                loaded += 1
+
+        # import pdb; pdb.set_trace()
+        logging.info(f"Loaded reference manifest entries: {loaded}")
 
     @staticmethod
     def _namespace_to_dict(obj):
@@ -466,15 +527,109 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         if self.stream_id < len(self.wav_names):
             audio_filepath = self.wav_names[self.stream_id]
 
+        reference_item = self._get_reference_item(audio_filepath)
+        if not audio_filepath and reference_item is not None:
+            audio_filepath = str(reference_item.get("audio_filepath", "") or "")
+        reference_text = ""
+        reference_translation = ""
+        if reference_item is not None:
+            reference_text = reference_item.get("text", "")
+            reference_translation = reference_item.get("answer", "")
+
         item = {
             "audio_filepath": audio_filepath,
+            # Reference fields
+            "text": reference_text,
+            "translation": reference_translation,
+            # Prediction fields
             "pred_text": pred_text,
             "pred_translation": pred_translation,
-            # Keep plural alias for compatibility with downstream scripts expecting this key.
-            "pred_translations": pred_translation,
         }
+
+        if reference_item is not None:
+            for key, value in reference_item.items():
+                if key not in item:
+                    item[key] = value
+
         with open(self.output_manifest_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+        # Compute WER once when we flush the final stream.
+        if self.wav_names and self.stream_id == len(self.wav_names) - 1:
+            self._calculate_and_write_wer()
+
+    def _get_reference_item(self, audio_filepath: str) -> Optional[dict]:
+        """Get reference manifest item by absolute path, basename, or stream order."""
+        if not audio_filepath:
+            if self.stream_id < len(self.reference_manifest_items_ordered):
+                return self.reference_manifest_items_ordered[self.stream_id]
+            return None
+        try:
+            audio_abs = str(Path(audio_filepath).resolve())
+        except Exception:
+            audio_abs = audio_filepath
+        item = self.reference_manifest_by_audio.get(audio_abs)
+        if item is not None:
+            return item
+        item = self.reference_manifest_by_basename.get(Path(audio_filepath).name)
+        if item is not None:
+            return item
+        if self.stream_id < len(self.reference_manifest_items_ordered):
+            return self.reference_manifest_items_ordered[self.stream_id]
+        return None
+
+    @classmethod
+    def _calculate_and_write_wer(cls) -> None:
+        """Calculate WER from output manifest and write summary artifacts."""
+        if cls._wer_calculated or not cls.output_manifest_path:
+            return
+
+        gt_text_attr_name = "text"
+        clean_groundtruth_text = False
+        langid = "en"
+        use_cer = False
+        ignore_capitalization = False
+        ignore_punctuation = False
+
+        try:
+            if cls.cfg is not None and cls.cfg.get("metrics") and cls.cfg.metrics.get("asr"):
+                asr_cfg = cls.cfg.metrics.asr
+                gt_text_attr_name = asr_cfg.get("gt_text_attr_name", gt_text_attr_name)
+                clean_groundtruth_text = asr_cfg.get("clean_groundtruth_text", clean_groundtruth_text)
+                langid = asr_cfg.get("langid", langid)
+                use_cer = asr_cfg.get("use_cer", use_cer)
+                ignore_capitalization = asr_cfg.get("ignore_capitalization", ignore_capitalization)
+                ignore_punctuation = asr_cfg.get("ignore_punctuation", ignore_punctuation)
+        except Exception as e:
+            logging.warning(f"Failed to read ASR metric config, using defaults: {e}")
+
+        try:
+            output_manifest_w_wer, total_res, _ = cal_write_wer(
+                pred_manifest=cls.output_manifest_path,
+                gt_text_attr_name=gt_text_attr_name,
+                pred_text_attr_name="pred_text",
+                output_filename=None,
+                clean_groundtruth_text=clean_groundtruth_text,
+                langid=langid,
+                use_cer=use_cer,
+                ignore_capitalization=ignore_capitalization,
+                ignore_punctuation=ignore_punctuation,
+            )
+
+            if output_manifest_w_wer:
+                metrics_summary_path = str(Path(cls.output_manifest_path).with_suffix(".wer.txt"))
+                with open(metrics_summary_path, "w", encoding="utf-8") as f:
+                    f.write(str(total_res) + "\n")
+                logging.info(f"WER manifest: {output_manifest_w_wer}")
+                logging.info(f"WER summary: {metrics_summary_path}")
+            else:
+                logging.warning(
+                    "WER calculation skipped because ground-truth text is unavailable in output manifest."
+                )
+        except Exception as e:
+            logging.warning(f"Failed to calculate WER: {e}")
+        finally:
+            cls._wer_calculated = True
 
     def tokens_to_string(self, tokens: List[str]) -> str:
         """
@@ -514,6 +669,8 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         Explicitly cleanup vLLM and release resources.
         Call this when done with inference to properly shutdown vLLM engine.
         """
+        if cls.pipeline is not None:
+            cls._calculate_and_write_wer()
         if cls.pipeline is not None and cls.pipeline.nmt_model is not None:
             try:
                 # vLLM cleanup - destroy the engine to release Ray resources

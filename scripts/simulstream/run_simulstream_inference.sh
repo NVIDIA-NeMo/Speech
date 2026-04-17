@@ -44,6 +44,7 @@ TGT_LANG=""
 NEMO_CONFIG=""
 
 LLM_MODEL="Qwen/Qwen3-4B-Instruct-2507"
+ASR_MODEL=""
 EUROLLM_MAX_SEQ_LENGTH="${EUROLLM_MAX_SEQ_LENGTH:-4096}"
 
 CACHE_ATT_CONTEXT_SIZE="13"
@@ -51,8 +52,12 @@ BUFFERED_CHUNK_SIZE="1.12"
 BUFFERED_LEFT_PADDING_SIZE="5.6"
 BUFFERED_RIGHT_PADDING_SIZE="0.56"
 ENDPOINT_STOP_HISTORY_EOU=""
+BOOSTING_KEY_PHRASES_FILE=""
 
 FORCE="false"
+# Optional phrase boosting overrides for ASR decoding.
+# Current streaming configs use asr.decoding.strategy=greedy_batch by default.
+BOOSTING_ENABLED="false"
 
 usage() {
   echo "Usage: $0 (manifest=PATH | wav-list=PATH) output-dir=DIR src-lang=LANG tgt-lang=LANG nemo-config=YAML [OPTIONS]"
@@ -60,6 +65,7 @@ usage() {
   echo "Input (one required):"
   echo "  manifest=PATH   NeMo manifest JSONL (audio_filepath per line)"
   echo "  wav-list=PATH   Text file with one wav path per line"
+  echo "  asr-model=PATH   ASR model (default: /lustre/fsw/portfolios/convai/users/lgrigoryan/iwslt26/components/Granary--draco_oci-xg8xn4--ms100000-ws15000-lr0.0005--bf16--fc-xl_rnnt_tdtv3-ft_czech-only_uni-dm-cr0.3.yaml.nemo)"
   echo ""
   echo "Required:"
   echo "  output-dir=DIR   Base directory for outputs (subdir will be created)"
@@ -75,6 +81,7 @@ usage() {
   echo "  buffered-left-padding-size=FLOAT  Required for buffered_rnnt naming/override"
   echo "  buffered-right-padding-size=FLOAT Required for buffered_rnnt naming/override"
   echo "  endpoint-stop-history-eou=INT Optional buffered_rnnt override for endpointing.stop_history_eou"
+  echo "  boosting-key-phrases=PATH     Context-biasing phrases file (one phrase per line)"
   exit 1
 }
 
@@ -82,6 +89,7 @@ for arg in "$@"; do
   case "$arg" in
     manifest=*)      MANIFEST="${arg#*=}" ;;
     wav-list=*)      WAV_LIST="${arg#*=}" ;;
+    asr-model=*)     ASR_MODEL="${arg#*=}" ;;
     output-dir=*)    OUTPUT_DIR_BASE="${arg#*=}" ;;
     src-lang=*)      SRC_LANG="${arg#*=}" ;;
     tgt-lang=*)      TGT_LANG="${arg#*=}" ;;
@@ -92,6 +100,7 @@ for arg in "$@"; do
     buffered-left-padding-size=*) BUFFERED_LEFT_PADDING_SIZE="${arg#*=}" ;;
     buffered-right-padding-size=*) BUFFERED_RIGHT_PADDING_SIZE="${arg#*=}" ;;
     endpoint-stop-history-eou=*) ENDPOINT_STOP_HISTORY_EOU="${arg#*=}" ;;
+    boosting-key-phrases=*) BOOSTING_KEY_PHRASES_FILE="${arg#*=}" ;;
     force=*)
       FORCE_VALUE="${arg#*=}"
       case "${FORCE_VALUE,,}" in
@@ -118,6 +127,15 @@ fi
 if [[ -z "$MANIFEST" && -z "$WAV_LIST" ]]; then
   echo "Error: provide either manifest=PATH or wav-list=PATH."
   usage
+fi
+
+if [[ -z "$ASR_MODEL" ]]; then
+  echo "Error: missing required argument: asr-model=PATH"
+  usage
+fi
+if [[ ! -f "$ASR_MODEL" ]]; then
+  echo "Error: asr model not found: $ASR_MODEL"
+  exit 1
 fi
 
 if [[ -n "$MANIFEST" ]]; then
@@ -169,7 +187,11 @@ if [[ "$CONFIG_NAME" == "buffered_rnnt" ]]; then
     echo "Error: buffered-chunk-size, buffered-left-padding-size, and buffered-right-padding-size are required for buffered_rnnt."
     exit 1
   fi
-  OUTPUT_DIR="$OUTPUT_DIR_BASE/${INPUT_NAME}/${CONFIG_NAME}_c${BUFFERED_CHUNK_SIZE}_l${BUFFERED_LEFT_PADDING_SIZE}_r${BUFFERED_RIGHT_PADDING_SIZE}/${LLM_MODEL_SAFE}"
+  if [[ "$BOOSTING_ENABLED" == "true" ]]; then
+    OUTPUT_DIR="$OUTPUT_DIR_BASE/${INPUT_NAME}/${CONFIG_NAME}_c${BUFFERED_CHUNK_SIZE}_l${BUFFERED_LEFT_PADDING_SIZE}_r${BUFFERED_RIGHT_PADDING_SIZE}/boosting/${LLM_MODEL_SAFE}"
+  else
+    OUTPUT_DIR="$OUTPUT_DIR_BASE/${INPUT_NAME}/${CONFIG_NAME}_c${BUFFERED_CHUNK_SIZE}_l${BUFFERED_LEFT_PADDING_SIZE}_r${BUFFERED_RIGHT_PADDING_SIZE}/${LLM_MODEL_SAFE}"
+  fi
   EXTRA_OVERRIDES+=(
     "streaming.chunk_size=${BUFFERED_CHUNK_SIZE}"
     "streaming.left_padding_size=${BUFFERED_LEFT_PADDING_SIZE}"
@@ -184,12 +206,26 @@ if [[ "${LLM_MODEL,,}" == *"eurollm"* ]]; then
   EXTRA_OVERRIDES+=("nmt.llm_params.max_model_len=${EUROLLM_MAX_SEQ_LENGTH}")
 fi
 
+if [[ -n "$BOOSTING_KEY_PHRASES_FILE" ]]; then
+  if [[ ! -f "$BOOSTING_KEY_PHRASES_FILE" ]]; then
+    echo "Error: boosting key phrases file not found: $BOOSTING_KEY_PHRASES_FILE"
+    exit 1
+  fi
+  BOOSTING_KEY_PHRASES_FILE="$(realpath "$BOOSTING_KEY_PHRASES_FILE")"
+  EXTRA_OVERRIDES+=("asr.decoding.greedy.boosting_tree.key_phrases_file=$BOOSTING_KEY_PHRASES_FILE")
+  BOOSTING_ENABLED="true"
+
+  EXTRA_OVERRIDES+=("asr.decoding.greedy.boosting_tree_alpha=0.3")
+  EXTRA_OVERRIDES+=("asr.decoding.greedy.boosting_tree.source_lang=$SRC_LANG")
+fi
+
 mkdir -p "$OUTPUT_DIR"
 cd "$NEMO_ROOT"
 
 INPUT_ABS="$(realpath "$INPUT_PATH")"
 OUTPUT_DIR_ABS="$(realpath "$OUTPUT_DIR")"
 HYPOTHESIS_JSON="$OUTPUT_DIR_ABS/simulstream_output.json"
+PRED_MANIFEST_JSONL="$OUTPUT_DIR_ABS/simulstream_output_pred_manifest.jsonl"
 INFERENCE_DONE_MARKER="$OUTPUT_DIR_ABS/.simulstream_inference_done"
 
 echo "========== Run NeMo simulstream =========="
@@ -224,7 +260,9 @@ if [[ -n "$MANIFEST" ]]; then
     --src-lang "$SRC_LANG" \
     --tgt-lang "$TGT_LANG" \
     --metrics-log "$HYPOTHESIS_JSON" \
+    --output-manifest "$PRED_MANIFEST_JSONL" \
     "nmt.model_name=$LLM_MODEL" \
+    "asr.model_name=$ASR_MODEL" \
     "${EXTRA_OVERRIDES[@]}"
 else
   python nemo/collections/asr/inference/run_nemo_simulstream.py \
@@ -233,11 +271,14 @@ else
     --src-lang "$SRC_LANG" \
     --tgt-lang "$TGT_LANG" \
     --metrics-log "$HYPOTHESIS_JSON" \
+    --output-manifest "$PRED_MANIFEST_JSONL" \
     "nmt.model_name=$LLM_MODEL" \
+    "asr.model_name=$ASR_MODEL" \
     "${EXTRA_OVERRIDES[@]}"
 fi
 touch "$INFERENCE_DONE_MARKER"
 echo "Simulstream output written to: $HYPOTHESIS_JSON"
+echo "Prediction manifest written to: $PRED_MANIFEST_JSONL"
 
 echo ""
 echo "Done. Output directory: $OUTPUT_DIR_ABS"

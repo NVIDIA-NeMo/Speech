@@ -29,6 +29,7 @@ SRC_LANG=""
 TGT_LANG=""
 NEMO_CONFIG=""
 LLM_MODEL="Qwen/Qwen3-4B-Instruct-2507"
+ASR_MODEL=""
 
 LATENCY_UNIT="word"
 SACREBLEU_TOKENIZER="13a"
@@ -50,6 +51,7 @@ usage() {
   echo "  output-dir=DIR       Base directory for outputs (subdir will be created)"
   echo "  src-lang=LANG        Source language code (e.g. en, ru)"
   echo "  tgt-lang=LANG        Target language code (e.g. ru, en)"
+  echo "  asr-model=PATH       ASR model path (e.g. Granary--draco_oci-xg8xn4--ms100000-ws15000-lr0.0005--bf16--fc-xl_rnnt_tdtv3-ft_czech-only_uni-dm-cr0.3.yaml.nemo)"
   echo "  nemo-config=YAML     NeMo streaming config (e.g. cache_aware_rnnt.yaml)"
   echo ""
   echo "Optional:"
@@ -74,6 +76,7 @@ for arg in "$@"; do
     output-dir=*)          OUTPUT_DIR_BASE="${arg#*=}" ;;
     src-lang=*)            SRC_LANG="${arg#*=}" ;;
     tgt-lang=*)            TGT_LANG="${arg#*=}" ;;
+    asr-model=*)           ASR_MODEL="${arg#*=}" ;;
     nemo-config=*)         NEMO_CONFIG="${arg#*=}" ;;
     llm-model=*)           LLM_MODEL="${arg#*=}" ;;
     latency-unit=*)        LATENCY_UNIT="${arg#*=}" ;;
@@ -109,6 +112,7 @@ done
 [[ -z "$OUTPUT_DIR_BASE" ]] && echo "Error: missing required argument: output-dir=DIR" && usage
 [[ -z "$SRC_LANG" ]] && echo "Error: missing required argument: src-lang=LANG" && usage
 [[ -z "$TGT_LANG" ]] && echo "Error: missing required argument: tgt-lang=LANG" && usage
+[[ -z "$ASR_MODEL" ]] && echo "Error: missing required argument: asr-model=PATH" && usage
 [[ -z "$NEMO_CONFIG" ]] && echo "Error: missing required argument: nemo-config=YAML" && usage
 
 if [[ ! -f "$NEMO_CONFIG" ]] && [[ -f "$NEMO_ROOT/$NEMO_CONFIG" ]]; then
@@ -154,6 +158,7 @@ INFERENCE_ARGS=(
   "tgt-lang=$TGT_LANG"
   "nemo-config=$NEMO_CONFIG_ABS"
   "llm-model=$LLM_MODEL"
+  "asr-model=$ASR_MODEL"
   "force=$FORCE"
 )
 [[ -n "$CACHE_ATT_CONTEXT_SIZE" ]] && INFERENCE_ARGS+=("cache-att-context-size=$CACHE_ATT_CONTEXT_SIZE")

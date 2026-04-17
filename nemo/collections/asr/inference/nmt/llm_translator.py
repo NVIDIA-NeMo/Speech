@@ -36,10 +36,13 @@ from nemo.utils import logging
 
 EURO_LLM_INSTRUCT_SMALL = "utter-project/EuroLLM-1.7B-Instruct"
 EURO_LLM_INSTRUCT_LARGE = "utter-project/EuroLLM-9B-Instruct"
-QWEN_3_5_9B = "Qwen/Qwen3.5-9B"
 QWEN_3_8B = "Qwen/Qwen3-8B"
 QWEN_3_4B = "Qwen/Qwen3-4B-Instruct-2507"
-SUPPORTED_TRANSLATION_MODELS = [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE, QWEN_3_5_9B, QWEN_3_8B, QWEN_3_4B]
+QWEN_3_5_4B = "Qwen/Qwen3.5-4B"
+QWEN_3_5_9B = "Qwen/Qwen3.5-9B"
+QWEN_3_5_27B = "Qwen/Qwen3.5-27B"
+QWEN_3_5_35B = "Qwen/Qwen3.5-35B-A3B"
+SUPPORTED_TRANSLATION_MODELS = [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE, QWEN_3_5_4B, QWEN_3_5_9B, QWEN_3_8B, QWEN_3_4B, QWEN_3_5_27B, QWEN_3_5_35B]
 
 
 class LLMTranslator:
@@ -59,6 +62,7 @@ class LLMTranslator:
         batch_size: int = -1,
         llm_params: dict | DictConfig | None = None,
         sampling_params: dict | DictConfig | None = None,
+        prompt_params: dict | DictConfig | None = None,
     ):
         """
         A model for translating ASR transcripts with LLM.
@@ -76,6 +80,7 @@ class LLMTranslator:
             batch_size: (int) batch size for the LLM model, in case of -1, the batch size is set to the number of ASR transcripts
             llm_params: (dict | DictConfig | None) parameters for the LLM model
             sampling_params: (dict | DictConfig | None) parameters for the sampling
+            prompt_params: (dict | DictConfig | None) prompt customization parameters
         """
         self.model_name = model_name
         if model_name not in SUPPORTED_TRANSLATION_MODELS:
@@ -85,6 +90,7 @@ class LLMTranslator:
 
         llm_params = self.convert_to_dict(llm_params)
         sampling_params = self.convert_to_dict(sampling_params)
+        prompt_params = self.convert_to_dict(prompt_params)
 
         self.device_str, self.device_id = self.setup_device(device, device_id)
 
@@ -97,6 +103,7 @@ class LLMTranslator:
         self.source_language = source_language
         self.target_language = target_language
         self.prompt_template = self.get_prompt_template(model_name)
+        self.prompt_params = prompt_params
         self.waitk = waitk
 
     @staticmethod
@@ -177,13 +184,13 @@ class LLMTranslator:
         """
         try:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device_id)
-            local_path=self.get_local_model_path(self.model_name)
-            # if local_path is not None and os.path.exists(local_path):
-            #     model = LLM(model=local_path, **llm_params)
-            # else:
-            #     model = LLM(model=self.model_name, **llm_params)
-            # return model
-            model = LLM(model=self.model_name, **llm_params)
+            local_path = self.get_local_model_path(self.model_name)
+            if local_path is not None and os.path.exists(local_path):
+                logging.info(f"Loading LLM from local cache path: {local_path}")
+                model = LLM(model=local_path, **llm_params)
+            else:
+                logging.info(f"Loading LLM from model name: {self.model_name}")
+                model = LLM(model=self.model_name, **llm_params)
             return model
         except Exception as e:
             raise RuntimeError(f"Model loading failed: {str(e)}")
@@ -218,11 +225,25 @@ class LLMTranslator:
         Returns:
             list[str] translations of ASR transcripts
         """
+        use_system = self.prompt_params.get("use_system", True)
+        system_content = self.prompt_params.get("system_content", None)
+        user_content_template = self.prompt_params.get("user_content_template", None)
+
         input_texts = []
         for src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context in zip(
             src_langs, tgt_langs, asr_transcripts, prefixes, src_contexts, tgt_contexts
         ):
-            text = self.prompt_template.format(src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context)
+            text = self.prompt_template.format(
+                src_lang,
+                tgt_lang,
+                src_prefix,
+                tgt_prefix,
+                src_context,
+                tgt_context,
+                system_content=system_content,
+                user_content_template=user_content_template,
+                use_system=use_system,
+            )
             input_texts.append(text)
 
         outputs = self.nmt_model.generate(input_texts, self.sampling_params, use_tqdm=False)

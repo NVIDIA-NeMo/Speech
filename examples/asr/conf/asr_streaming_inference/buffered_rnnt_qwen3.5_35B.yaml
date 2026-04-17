@@ -57,13 +57,14 @@ nmt:
   device_id: 0                                       # GPU device ID for translation
   batch_size: 1                                     # Batch size for translation, if -1, the batch size is equal to the ASR batch size
   llm_params:                                        # See https://docs.vllm.ai/en/v0.8.1/api/offline_inference/llm.html for more details
-    dtype: "auto"                                    # Compute precision
+    dtype: bfloat16                                    # Compute precision
     seed: 42                          # The seed to initialize the random number generator for sampling
-    gpu_memory_utilization: 0.85
+    gpu_memory_utilization: 0.90
     max_model_len: 8192
-  sampling_params:   # https://huggingface.co/Qwen/Qwen3.5-27B#using-qwen35-via-the-chat-completions-api                             # See https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html for more details
-    max_tokens: 1024
-    min_tokens: 1                                # Maximum number of tokens to generate with LLM
+    max_num_seqs: 1
+    kv_cache_dtype: fp8
+  sampling_params:                                   # https://huggingface.co/Qwen/Qwen3.5-27B#using-qwen35-via-the-chat-completions-api                             # See https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html for more details
+    max_tokens: 100                                  # Maximum number of tokens to generate with LLM
     temperature: 0.7                                 # LLM sampling temperature, default for translation is 0 (greedy)
     top_p: 0.8                                       # The cumulative probability threshold for nucleus sampling
     top_k: 20                                       # The number of top tokens to sample from
@@ -73,8 +74,7 @@ nmt:
     seed: 42                                         # The seed to initialize the random number generator for sampling
     stop:
       - "<|im_end|>"
-      - "\u200d"   
-      # - </think>                                  # The seed to initialize the random number generator for sampling
+      - "\u200d"                                     # The seed to initialize the random number generator for sampling
   prompt_params:
     use_system: true
     system_content: |
@@ -84,7 +84,9 @@ nmt:
       Translate the following {src_lang} source text to {tgt_lang}:
       {src_lang}: {src_text}
       {tgt_lang}:
-  # nmt_max_context_sentences: 5                       # Maximum number of context sentences for NMT
+  # nmt_max_context_sentences: 2                       # Keep only the last 2 completed context sentences
+  # nmt_include_unfinished_context_sentence: true      # Also keep trailing unfinished context text
+  # nmt_context_sentence_stop: "."                     # Sentence stop marker used for context clipping
   # nmt_max_source_sentences: 1                       # Maximum number of source sentences to translate for NMT
 
 
@@ -169,12 +171,3 @@ metrics:
     ignore_capitalization: false                # Whether to ignore capitalization
     ignore_punctuation: false                   # Whether to ignore punctuation
     strip_punc_space: false                     # Whether to strip punctuation and space
-
-# ========================
-# Pipeline V2 Params
-# ========================
-pipeline_v2:
-  att_context_size_as_chunk: false
-  num_prev_sentences_for_translation: 5
-  use_lcp: true
-  from_asr_manifest: null  # manifest with timestamps to check

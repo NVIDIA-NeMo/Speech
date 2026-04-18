@@ -52,7 +52,7 @@ Multi-task encoder-decoder models supporting ASR, AST, PnC, and timestamps acros
      - ASR, AST, PnC, timestamps
      - English + 24 European languages
    * - `canary-qwen-2.5b <https://huggingface.co/nvidia/canary-qwen-2.5b>`__
-     - AED
+     - SALM
      - ASR, AST, PnC, timestamps
      - English + 24 European languages
    * - `canary-1b-flash <https://huggingface.co/nvidia/canary-1b-flash>`__

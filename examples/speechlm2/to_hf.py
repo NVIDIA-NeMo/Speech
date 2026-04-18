@@ -11,11 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from omegaconf import OmegaConf
+import torch.distributed as dist
+from omegaconf import DictConfig, OmegaConf
+from safetensors.torch import save_file
 
 from nemo.core.config import hydra_runner
 from nemo.utils.model_utils import import_class_by_path
@@ -23,7 +27,7 @@ from nemo.utils.model_utils import import_class_by_path
 
 @dataclass
 class HfExportConfig:
-    # Name of the model class to be imported, e.g. nemo.collections.speechlm2.models.DuplexS2SModel
+    # Name of the model class to be imported, e.g. nemo.collections.speechlm2.models.SALM
     class_path: str
 
     # Path to PyTorch Lightning checkpoint file (normal ckpt) or directory (distributed ckpt)
@@ -51,21 +55,149 @@ def load_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         model.load_state_dict(ckpt_data["state_dict"])
 
 
+def setup_distributed_from_config(strategy_cfg: dict):
+    """Initialize torch.distributed and create a device mesh from a Hydra strategy config.
+
+    Instantiates the strategy from the trainer config dict (as found in the
+    experiment YAML), initializes the process group, resolves automodel
+    configs, and calls :meth:`strategy.create_device_mesh`.
+
+    Returns:
+        An :class:`AutomodelParallelStrategy` with device_mesh ready.
+    """
+    import hydra
+
+    from nemo.utils.trainer_utils import _resolve_automodel_configs
+
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    torch.cuda.set_device(local_rank)
+
+    strategy = hydra.utils.instantiate(strategy_cfg)
+    _resolve_automodel_configs(strategy)
+    strategy.create_device_mesh()
+    return strategy
+
+
+def consolidate_state_dict(model: torch.nn.Module):
+    """Gather a full (non-sharded) state dict from a model with DTensor parameters."""
+    from torch.distributed.tensor import DTensor
+
+    consolidated = {}
+    for key, value in model.state_dict().items():
+        if isinstance(value, DTensor):
+            consolidated[key] = value.full_tensor().cpu()
+        else:
+            consolidated[key] = value.cpu()
+    return consolidated
+
+
+def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportConfig):
+    """Save a consolidated state dict and model config in HuggingFace Hub format."""
+    output_dir = Path(cfg.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    target_dtype = getattr(torch, cfg.dtype)
+    state_dict = {k: v.to(target_dtype) for k, v in state_dict.items()}
+
+    save_file(state_dict, output_dir / "model.safetensors")
+
+    config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else model.cfg
+    with open(output_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2)
+
+
+def _uses_automodel_parallel(strategy_cfg: dict) -> bool:
+    """Check if the strategy config targets AutomodelParallelStrategy."""
+    target = strategy_cfg.get("_target_", "")
+    return "AutomodelParallelStrategy" in target
+
+
 @hydra_runner(config_name="HfExportConfig", schema=HfExportConfig)
 def main(cfg: HfExportConfig):
     """
     Read PyTorch Lightning checkpoint and export the model to HuggingFace Hub format.
     The resulting model can be then initialized via ModelClass.from_pretrained(path).
 
-    Also supports distributed checkpoints for models trained with FSDP2/TP.
+    Also supports distributed checkpoints for models trained with FSDP2/TP
+    via AutomodelParallelStrategy.  Parallelism sizes (tp_size, pp_size, etc.)
+    are read automatically from the ``trainer.strategy`` section of the
+    experiment config (``ckpt_config``).
+
+    When the checkpoint is a distributed checkpoint (a directory), launch this
+    script via ``torchrun`` with the same number of GPUs used for training.
+
+    Examples:
+        # Single-file checkpoint — original SALM (HF Transformers backend):
+        python to_hf.py \\
+            class_path=nemo.collections.speechlm2.models.SALM \\
+            ckpt_path=/path/to/checkpoint.ckpt \\
+            ckpt_config=/path/to/config.yaml \\
+            output_dir=/path/to/hf_output
+
+        # Single-file checkpoint — SALMAutomodel (NeMo Automodel backend):
+        python to_hf.py \\
+            class_path=nemo.collections.speechlm2.models.SALMAutomodel \\
+            ckpt_path=/path/to/checkpoint.ckpt \\
+            ckpt_config=/path/to/config.yaml \\
+            output_dir=/path/to/hf_output
+
+        # Distributed checkpoint (parallelism read from config automatically):
+        torchrun --nproc-per-node=8 to_hf.py \\
+            class_path=nemo.collections.speechlm2.models.SALMAutomodel \\
+            ckpt_path=/path/to/distributed_ckpt_dir \\
+            ckpt_config=/path/to/config.yaml \\
+            output_dir=/path/to/hf_output
     """
-    model_cfg = OmegaConf.to_container(OmegaConf.load(cfg.ckpt_config).model, resolve=True)
+    if not Path(cfg.ckpt_path).exists():
+        raise RuntimeError(f"No such file or directory: {cfg.ckpt_path}")
+
+    full_cfg = OmegaConf.to_container(OmegaConf.load(cfg.ckpt_config), resolve=True)
+    model_cfg = full_cfg["model"]
     model_cfg["torch_dtype"] = cfg.dtype
     cls = import_class_by_path(cfg.class_path)
-    model = cls(model_cfg)
-    load_checkpoint(model, cfg.ckpt_path)
-    model = model.to(getattr(torch, cfg.dtype))
-    model.save_pretrained(cfg.output_dir)
+
+    strategy_cfg = full_cfg.get("trainer", {}).get("strategy", {})
+
+    _is_torchrun = "RANK" in os.environ
+    if _is_torchrun and dist.is_available() and not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+    is_distributed = (
+        _is_torchrun
+        and Path(cfg.ckpt_path).is_dir()
+        and _uses_automodel_parallel(strategy_cfg)
+        and dist.get_world_size() > 1
+    )
+
+    if is_distributed:
+        strategy = setup_distributed_from_config(strategy_cfg)
+
+        # Don't call configure_model() inside __init__ — we set device_mesh first.
+        model_cfg["init_configure_model"] = False
+        model = cls(model_cfg)
+        model.configure_model(
+            device_mesh=strategy.device_mesh,
+            distributed_config=strategy.distributed_config,
+            moe_config=strategy.moe_config,
+            moe_mesh=strategy.moe_mesh,
+        )
+        model_cfg["pretrained_weights"] = False
+
+        load_checkpoint(model, cfg.ckpt_path)
+
+        # Consolidate DTensors to regular tensors and save on rank 0.
+        consolidated = consolidate_state_dict(model)
+        if dist.get_rank() == 0:
+            save_hf_checkpoint(model, consolidated, cfg)
+
+        dist.barrier()
+        dist.destroy_process_group()
+    else:
+        model_cfg["init_configure_model"] = True
+        model = cls(model_cfg)
+        load_checkpoint(model, cfg.ckpt_path)
+        model = model.to(getattr(torch, cfg.dtype))
+        model_cfg["pretrained_weights"] = False
+        model.save_pretrained(cfg.output_dir)
 
 
 if __name__ == "__main__":

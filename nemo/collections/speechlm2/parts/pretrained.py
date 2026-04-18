@@ -65,6 +65,51 @@ def load_pretrained_hf(
         return AutoModelForCausalLM.from_config(config, torch_dtype=dtype, trust_remote_code=trust_remote_code)
 
 
+def load_pretrained_automodel_llm(
+    model_path_or_name: str,
+    pretrained_weights: bool = True,
+    dtype=torch.float32,
+    trust_remote_code: bool = False,
+    **kwargs,
+):
+    """
+    Load a causal LM using NeMo Automodel (``NeMoAutoModelForCausalLM``).
+
+    Automodel is a drop-in HuggingFace replacement that provides Liger kernel +
+    SDPA attention optimizations and model-type-aware parallelization.
+
+    Setting ``pretrained_weights=False`` returns a model that has identical architecture
+    with the checkpoint, but is randomly initialized.
+
+    Extra ``kwargs`` (e.g. ``device_mesh``, ``distributed_config``, ``moe_mesh``,
+    ``moe_config``) are forwarded to the underlying ``from_pretrained`` /
+    ``from_config`` call so that parallelization happens during loading.
+    """
+    from nemo_automodel import NeMoAutoModelForCausalLM
+
+    if pretrained_weights:
+        return NeMoAutoModelForCausalLM.from_pretrained(model_path_or_name, torch_dtype=dtype, **kwargs)
+    else:
+        config = AutoConfig.from_pretrained(model_path_or_name, trust_remote_code=trust_remote_code)
+        return NeMoAutoModelForCausalLM.from_config(config, torch_dtype=dtype, **kwargs)
+
+
+def update_perception_output_dim(model):
+    """
+    Align the perception module's output projection with the actual LLM hidden size.
+
+    When the LLM is loaded after the perception module (deferred init in
+    ``configure_model``), the projection layer may have been created with an
+    ``output_dim`` from the YAML config that doesn't match the LLM.  This
+    helper replaces ``perception.proj`` with a correctly-sized ``nn.Linear``
+    when the dimensions disagree.
+    """
+    hidden_size = model.llm.config.hidden_size
+    proj = model.perception.proj
+    if isinstance(proj, torch.nn.Linear) and proj.out_features != hidden_size:
+        model.perception.proj = torch.nn.Linear(proj.in_features, hidden_size, bias=proj.bias is not None)
+
+
 @contextmanager
 def move_embedding(model):
     """Temporarily restores the embedding layer into HF LLM. Supports LoRA models."""
@@ -114,7 +159,8 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
         with open_dict(model.cfg):
             model.cfg.perception.preprocessor = asr.cfg.preprocessor
             model.cfg.perception.encoder = asr.cfg.encoder
-            model.cfg.perception.output_dim = model.llm.config.hidden_size
+            if model.llm is not None:
+                model.cfg.perception.output_dim = model.llm.config.hidden_size
             # Override with user-specified encoder parameters, e.g. initializiing a non-causal encoder for causal setup.
             if user_encoder_config:
                 for key, value in user_encoder_config.items():
@@ -305,16 +351,69 @@ def load_pretrained_model(model: torch.nn.Module, checkpoint_path: str):
         init_model_from_checkpoint(model, checkpoint_path)
 
 
+def _is_dcp_checkpoint(path: str) -> bool:
+    """Check if a path is a distributed checkpoint (DCP) directory."""
+    import os
+
+    return os.path.isdir(path) and os.path.exists(os.path.join(path, ".metadata"))
+
+
+def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
+    """Initialize model weights from a previous training checkpoint.
+
+    Only model weights are loaded — optimizer state, LR scheduler, and training
+    step are NOT restored, enabling a fresh fine-tuning start from the checkpoint.
+
+    Supports three checkpoint formats:
+    - **Distributed checkpoints** (DCP): directories with a ``.metadata`` file,
+      produced by ``ModelParallelStrategy`` / ``AutomodelParallelStrategy``.
+      Handles resharding when parallelism differs between the source and target runs.
+      Works with both FSDP2-wrapped (DTensor) and regular parameters.
+    - **HuggingFace model directories**: contain ``model.safetensors``
+      (e.g. output of ``to_hf.py``).
+    - **Single-file checkpoints**: ``.ckpt`` or ``.pt`` files with a
+      ``state_dict`` key.
+
+    Args:
+        model: The model to initialize.
+        checkpoint_path: Path to the checkpoint (directory or file).
+    """
+    if checkpoint_path is None:
+        return
+
+    logging.info(f"Initializing model weights from training checkpoint: {checkpoint_path}")
+
+    if _is_dcp_checkpoint(checkpoint_path):
+        import torch.distributed.checkpoint as dcp
+
+        # Lightning saves model weights under the "state_dict" key in DCP.
+        # Wrapping with the same structure lets DCP match keys correctly.
+        # Optimizer states and other trainer state are ignored automatically
+        # because we only provide the model's state_dict.
+        state_dict = {"state_dict": model.state_dict()}
+        dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
+        model.load_state_dict(state_dict["state_dict"])
+        logging.info(f"Loaded distributed checkpoint from {checkpoint_path}")
+    else:
+        init_model_from_checkpoint(model, checkpoint_path)
+
+
 def maybe_load_pretrained_models(model: torch.nn.Module):
     """
     Optionally load pretrained model weights based on configuration.
 
-    Checks for and loads:
+    Checks for and loads (in order):
     - ``pretrained_perception_from_s2s``: Perception module weights from another S2S checkpoint
     - ``pretrained_s2s_model``: Full S2S model weights from a checkpoint (supports incremental loading)
+    - ``init_from_checkpoint``: Full model weights from a training checkpoint
+      (DCP, HuggingFace directory, or single-file format). Only model weights
+      are loaded; optimizer/scheduler state is discarded for a fresh fine-tuning start.
     """
     if model.cfg.get("pretrained_perception_from_s2s", None):
         init_perception_from_checkpoint(model, model.cfg.pretrained_perception_from_s2s)
 
     if model.cfg.get("pretrained_s2s_model", None):
         load_pretrained_model(model, model.cfg.pretrained_s2s_model)
+
+    if model.cfg.get("init_from_checkpoint", None):
+        init_from_training_checkpoint(model, model.cfg.init_from_checkpoint)

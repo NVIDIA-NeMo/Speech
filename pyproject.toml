@@ -152,6 +152,7 @@ markers = [
     "pleasefixme: marks tests that are broken and need fixing",
 ]
 
+
 [tool.uv]
 conflicts = [
     [
@@ -159,6 +160,32 @@ conflicts = [
         { extra = "cu13" },
     ],
 ]
+
+# --- uv configuration ---
+# Match nemo_automodel's torch index sources so uv doesn't see conflicting
+# indexes when resolving the speechlm2 extra (which pulls nemo_automodel
+# from git as a source dependency — uv treats these as workspace members).
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
+  { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+  { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
 
 [dependency-groups]
 docs = [

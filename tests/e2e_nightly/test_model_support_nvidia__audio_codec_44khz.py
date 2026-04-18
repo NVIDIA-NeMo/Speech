@@ -73,7 +73,7 @@ def test_model_training_step():
     }
 
     # Forward pass through encoder -> VQ -> decoder (same as training_step).
-    audio, audio_len, audio_gen, commit_loss, codes = model._process_batch(batch)
+    audio, audio_len, audio_gen, commit_loss, codes, *_ = model._process_batch(batch)
 
     generator_losses = []
 

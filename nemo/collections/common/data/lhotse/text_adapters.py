@@ -508,7 +508,7 @@ def _compute_num_audio_tokens(example: NeMoMultimodalConversation, mode: Literal
 
 
 @registered_prompt_format_fn(NeMoMultimodalConversation)
-def default_multimodal_conversation_prompt_format_fn(example: NeMoMultimodalConversation, prompt):
+def default_multimodal_conversation_prompt_format_fn(example: NeMoMultimodalConversation, prompt, **prompt_kwargs):
     # Collapse consecutive same-role turns into single turn for proper prompt formatting.
     turns = groupby(
         [
@@ -525,7 +525,7 @@ def default_multimodal_conversation_prompt_format_fn(example: NeMoMultimodalConv
         {"role": role, "slots": {"message": " ".join(t["slots"]["message"] for t in turn_grp)}}
         for role, turn_grp in turns
     ]
-    return prompt.encode_dialog(turns)
+    return prompt.encode_dialog(turns, **prompt_kwargs)
 
 
 @dataclass

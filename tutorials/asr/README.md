@@ -52,6 +52,8 @@ Please refer to the `asr_adapter` sub-folder which contains tutorials on the use
 
 3) `Buffered_Transducer_Inference_with_LCS_Merge`: This is an optional notebook, that discusses a different merge algorithm that can be utilized for streaming/buffered inference for Transducer models. It is not a required tutorial, but is useful for researchers who wish to analyse and improve buffered inference algorithms.
 
+4) `Streaming_ASR_Pipelines`: This tutorial introduces the ASR Inference Pipeline API for building real-time streaming speech recognition systems. It covers the core abstractions (Frame, Stream, Pipeline, TranscribeStepOutput) and demonstrates how to construct pipelines for buffered inference (CTC, RNNT, TDT) and cache-aware streaming models (CTC, RNNT). Advanced features such as continuous batching with per-stream options, End-of-Utterance (EoU) detection, word timestamps, Inverse Text Normalization (ITN), and Neural Machine Translation (NMT) for streaming speech translation are also explored.
+
 ----------------
 
 # Speech Command Recognition

@@ -92,7 +92,7 @@ class ASRInferenceWrapper:
             asr_model.eval()
             return asr_model
         except Exception as e:
-            raise RuntimeError(f"Failed to load model {model_name}: {str(e)}")
+            raise RuntimeError(f"Failed to load model {model_name}: {str(e)}") from e
 
     @property
     def word_separator(self) -> str:

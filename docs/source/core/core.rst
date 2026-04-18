@@ -27,13 +27,13 @@ Pretrained
 NeMo comes with many pretrained models for each of our collections: ASR, TTS, Audio, and SpeechLM2. Every pretrained NeMo model can be downloaded 
 and used with the ``from_pretrained()`` method.
 
-As an example, we can instantiate QuartzNet with the following:
+As an example, we can instantiate a Parakeet model with the following:
 
 .. code-block:: Python
 
     import nemo.collections.asr as nemo_asr
 
-    model = nemo_asr.models.EncDecCTCModel.from_pretrained(model_name="QuartzNet15x5Base-En")
+    model = nemo_asr.models.ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
 
 To see all available pretrained models for a specific NeMo model, use the ``list_available_models()`` method:
 
@@ -337,8 +337,8 @@ We can specify configuration files using the ``--config-path`` and ``--config-na
 .. code-block:: bash
 
     python examples/asr/asr_ctc/speech_to_text_ctc.py \
-        --config-path=conf/quartznet \
-        --config-name=quartznet_15x5 \
+        --config-path=conf/conformer \
+        --config-name=conformer_ctc_bpe \
         model.train_ds.manifest_filepath=/path/to/my/train/manifest.json \
         model.validation_ds.manifest_filepath=/path/to/my/validation/manifest.json \
         ~model.test_ds \
@@ -409,8 +409,8 @@ Optimizers can be configured from the CLI as well:
 .. code-block:: bash
 
     python examples/asr/asr_ctc/speech_to_text_ctc.py \
-        --config-path=conf/quartznet \
-        --config-name=quartznet_15x5 \
+        --config-path=conf/conformer \
+        --config-name=conformer_ctc_bpe \
         ...
         # train with the adam optimizer
         model.optim=adam \

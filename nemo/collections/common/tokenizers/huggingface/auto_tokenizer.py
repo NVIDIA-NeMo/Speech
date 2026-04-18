@@ -361,12 +361,7 @@ class AutoTokenizer(TokenizerSpec):
         Returns:
             str: The reconstructed text.
         """
-        tokens = self.ids_to_tokens(ids)
-        if remove_special_tokens:
-            tokens_clean = [t for t in tokens if t not in self.tokenizer.all_special_tokens]
-        else:
-            tokens_clean = tokens
-        text = self.tokens_to_text(tokens_clean)
+        text = self.tokenizer.decode(ids, skip_special_tokens=remove_special_tokens)
         return text
 
     @property

@@ -17,6 +17,7 @@ We will illustrate details in the following sections.
     configs
     g2p
     magpietts
+    magpietts-finetuning
     magpietts-po
     magpietts-longform
 

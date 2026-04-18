@@ -190,7 +190,7 @@ Try different ASR models
 
 NeMo offers a variety of open-sourced pretrained ASR models that vary by model architecture:
 
-* **encoder architecture** (FastConformer, Conformer, Citrinet, etc.),
+* **encoder architecture** (FastConformer, Conformer, etc.),
 * **decoder architecture** (Transducer, CTC & hybrid of the two),
 * **size** of the model (small, medium, large, etc.).
 

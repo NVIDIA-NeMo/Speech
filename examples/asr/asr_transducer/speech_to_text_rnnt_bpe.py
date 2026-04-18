@@ -69,7 +69,7 @@ from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 
-@hydra_runner(config_path="experimental/contextnet_rnnt", config_name="config_rnnt_bpe")
+@hydra_runner(config_path="../conf/fastconformer", config_name="fast-conformer_transducer_bpe")
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 

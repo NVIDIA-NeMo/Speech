@@ -19,6 +19,8 @@ from huggingface_hub.hub_mixin import DataclassInstance
 from omegaconf import DictConfig, OmegaConf
 from transformers.utils import cached_file
 
+SAFETENSORS_SINGLE_FILE = "model.safetensors"
+
 
 class HFHubMixin(
     PyTorchModelHubMixin,
@@ -43,10 +45,27 @@ class HFHubMixin(
         """
         Load Pytorch pretrained weights and return the loaded model.
         Wrapper over PyTorchModelHubMixin that auto-handles config in **model_kwargs.
+
+        Supports distributed model-parallel loading via ``device_mesh``:
+
+            >>> from nemo.collections.speechlm2.parts.parallel import setup_distributed
+            >>> strategy = setup_distributed(tp_size=2)
+            >>> model = SALM.from_pretrained(
+            ...     "nvidia/salm-model",
+            ...     device_mesh=strategy.device_mesh,
+            ...     distributed_config=strategy.distributed_config,
+            ...     moe_config=strategy.moe_config,
+            ...     moe_mesh=strategy.moe_mesh,
+            ... )
         """
-        resolved_config_file = cached_file(
-            model_id,
-            CONFIG_NAME,
+        # Pop distributed kwargs before they reach the constructor.
+        device_mesh = model_kwargs.pop("device_mesh", None)
+        distributed_config = model_kwargs.pop("distributed_config", None)
+        moe_config = model_kwargs.pop("moe_config", None)
+        moe_mesh = model_kwargs.pop("moe_mesh", None)
+        torch_dtype = model_kwargs.pop("torch_dtype", None)
+
+        _cached_file_kwargs = dict(
             cache_dir=cache_dir,
             force_download=force_download,
             local_files_only=local_files_only,
@@ -56,6 +75,8 @@ class HFHubMixin(
             _raise_exceptions_for_missing_entries=False,
             _raise_exceptions_for_connection_errors=False,
         )
+
+        resolved_config_file = cached_file(model_id, CONFIG_NAME, **_cached_file_kwargs)
         if resolved_config_file is None:
             raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
         model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
@@ -65,16 +86,44 @@ class HFHubMixin(
         # this setting skips loading the original pretrained ASR and LLM weights, and loads the
         # final trained model weights directly.
         model_kwargs['cfg']['pretrained_weights'] = False
-        return super()._from_pretrained(
+
+        if device_mesh is None:
+            # Non-distributed: for Automodel checkpoints we must build the modules
+            # before ``PyTorchModelHubMixin`` applies checkpoint weights.
+            if model_kwargs['cfg'].get("use_nemo_automodel", False):
+                model_kwargs['cfg']['init_configure_model'] = True
+            if torch_dtype is not None:
+                model_kwargs['cfg']['torch_dtype'] = (
+                    torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
+                )
+            return super()._from_pretrained(
+                model_id=model_id,
+                revision=revision,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                local_files_only=local_files_only,
+                token=token,
+                map_location=map_location,
+                strict=strict,
+                **model_kwargs,
+            )
+
+        # --- Distributed flow ---
+        # Delegate to a module-level function so that ``cls(...)`` is not called
+        # from a frame that has ``__class__`` in its closure (which our classmethod
+        # has due to the ``super()`` call above).  Lightning's
+        # ``save_hyperparameters()`` walks the call stack and mistakes such frames
+        # for ``__init__`` frames, causing a ``KeyError: 'self'``.
+        return _distributed_from_pretrained(
+            cls=cls,
             model_id=model_id,
-            revision=revision,
-            cache_dir=cache_dir,
-            force_download=force_download,
-            local_files_only=local_files_only,
-            token=token,
-            map_location=map_location,
-            strict=strict,
-            **model_kwargs,
+            model_kwargs=model_kwargs,
+            torch_dtype=torch_dtype,
+            device_mesh=device_mesh,
+            distributed_config=distributed_config,
+            moe_config=moe_config,
+            moe_mesh=moe_mesh,
+            cached_file_kwargs=_cached_file_kwargs,
         )
 
     def save_pretrained(
@@ -120,3 +169,82 @@ class HFHubMixin(
             model_card_kwargs=model_card_kwargs,
             **push_to_hub_kwargs,
         )
+
+
+def _distributed_from_pretrained(
+    cls,
+    model_id,
+    model_kwargs,
+    torch_dtype,
+    device_mesh,
+    distributed_config,
+    moe_config,
+    moe_mesh,
+    cached_file_kwargs,
+):
+    """Create a distributed model instance outside of a classmethod frame.
+
+    Lightning's ``save_hyperparameters()`` walks the call stack looking for
+    ``__init__`` frames.  Our ``_from_pretrained`` classmethod has ``__class__``
+    in its closure (due to a ``super()`` call), which Lightning mistakes for an
+    ``__init__`` frame, causing ``KeyError: 'self'``.  By moving the constructor
+    call here (a plain module-level function), the problematic frame is avoided.
+    """
+    model_kwargs['cfg']['init_configure_model'] = False
+    if torch_dtype is not None:
+        model_kwargs['cfg']['torch_dtype'] = (
+            torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
+        )
+
+    # 1. Create instance (tokenizer only; llm=None, perception=None)
+    instance = cls(**model_kwargs)
+
+    # 2. Build parallelized architecture
+    instance.configure_model(
+        device_mesh=device_mesh,
+        distributed_config=distributed_config,
+        moe_config=moe_config,
+        moe_mesh=moe_mesh,
+    )
+
+    # 3. Load weights
+    weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)
+    if weight_file is None:
+        raise RuntimeError(f"Missing {SAFETENSORS_SINGLE_FILE} file for {model_id=}")
+    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent))
+
+    return instance
+
+
+def _load_state_dict_with_dtensors(model, weight_dir):
+    """Load safetensors weights into a model with DTensor parameters using DCP.
+
+    Uses ``torch.distributed.checkpoint`` with ``_HuggingFaceStorageReader``
+    to load weights directly into model parameters in-place.  This mirrors
+    the loading path used by ``NeMoAutoModelForCausalLM``.
+
+    Args:
+        model: The model with DTensor parameters (after ``configure_model``).
+        weight_dir: Directory containing ``.safetensors`` file(s).
+    """
+    from itertools import chain
+
+    import torch.distributed.checkpoint as dcp
+    from nemo_automodel.components.checkpoint._backports.hf_storage import _HuggingFaceStorageReader
+
+    # Build state dict from named_parameters/named_buffers.
+    # This avoids FSDP2 state-dict hooks that model.state_dict() triggers.
+    # DCP will write directly into these tensors in-place.
+    all_params = dict(chain(model.named_parameters(), model.named_buffers()))
+
+    # DCP is strict by default — it errors on model keys missing from the
+    # checkpoint (e.g. positional-encoding buffers computed at init).
+    # Read the checkpoint metadata first and keep only matching keys.
+    reader = _HuggingFaceStorageReader(path=weight_dir)
+    checkpoint_keys = reader.read_metadata().state_dict_metadata.keys()
+    state_dict = {k: v for k, v in all_params.items() if k in checkpoint_keys}
+
+    # DCP + HF storage reader: parses safetensors header for byte offsets,
+    # the planner narrows each tensor to the local DTensor shard,
+    # and copies directly into model parameter storage.
+    dcp.load(state_dict, storage_reader=reader)

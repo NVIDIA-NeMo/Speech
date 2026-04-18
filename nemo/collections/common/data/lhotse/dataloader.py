@@ -565,6 +565,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # 2.a. Noise mixing.
     if config.noise_path is not None:
         noise = guess_parse_cutset(config.noise_path)
+        # make sure the noise is resampled to the same sample rate as the audio cuts
+        noise = noise.resample(config.sample_rate)
         cuts = cuts.mix(
             cuts=noise,
             snr=tuple(config.noise_snr),
@@ -912,11 +914,11 @@ def tokenize(example, tokenizer):
     return example
 
 
-def tokenize_with_prompt(example, tokenizer, prompt_format: str | PromptFormatter):
+def tokenize_with_prompt(example, tokenizer, prompt_format: str | PromptFormatter, **prompt_kwargs):
     """Tokenize the example with the provided tokenizer and prompt format."""
     if isinstance(prompt_format, str):
         prompt_format = PromptFormatter.resolve(prompt_format)(tokenizer)
-    encoded = apply_prompt_format_fn(example, prompt_format)
+    encoded = apply_prompt_format_fn(example, prompt_format, **prompt_kwargs)
     for key, value in encoded.items():
         setattr(example, key, value)
     return example

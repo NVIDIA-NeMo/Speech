@@ -97,6 +97,70 @@ The collection supports multiple parallelism strategies:
 3. **Sequence Parallelism (SP)**: Splits sequence processing across GPUs
 4. **2D Parallelism**: Combination of FSDP2 with TP/SP
 
+AutomodelParallelStrategy (SALMAutomodel)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For ``SALMAutomodel``, the collection provides ``AutomodelParallelStrategy`` which
+delegates device mesh creation and parallelism to NeMo Automodel. This strategy
+supports FSDP2, TP, PP, CP, EP (MoE), and HSDP.
+
+.. code-block:: yaml
+
+    trainer:
+      strategy:
+        _target_: nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy
+        dp_size: null       # inferred from world_size / other dims
+        dp_replicate_size: 1  # HSDP replication group size
+        tp_size: 1
+        pp_size: 1
+        cp_size: 1
+        ep_size: 8          # Expert parallelism for MoE models
+
+The model's ``configure_model()`` receives the device mesh and passes it to
+Automodel's ``from_pretrained`` for memory-efficient loading (each GPU only
+loads its own shard).
+
+The speech encoder / perception module currently only supports FSDP2 (controlled via ``dp_size``).
+
+.. note::
+   Expert Parallelism (EP) reuses the FSDP2 data-parallel axis (``dp_size``).
+   Dense layers are sharded via FSDP2, while MoE expert layers use EP for
+   all-to-all expert routing — both operate on the same set of GPUs.
+   Setting ``ep_size`` controls how many GPUs participate in expert routing;
+   it does not add a separate dimension.
+
+Training with MoE LLM Backbones
+""""""""""""""""""""""""""""""""
+
+SALMAutomodel enables efficient training of Speech LLMs with Mixture-of-Experts
+backbones like `NVIDIA Nemotron Nano V3 <https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16>`_
+(30B total parameters, 3B active). NeMo Automodel provides two key MoE
+optimizations:
+
+* **Grouped GEMM**: Fuses all expert computations within a single MoE layer into
+  one batched matrix multiplication, maximizing GPU utilization and throughput.
+* **DeepEP** (Deep Expert Parallelism): An efficient all-to-all communication
+  primitive for routing tokens to experts across GPUs, significantly reducing the
+  communication overhead of Expert Parallelism.
+
+Example: training SALMAutomodel with Nemotron Nano V3 on 8 GPUs with EP=8:
+
+.. code-block:: bash
+
+    torchrun --nproc_per_node=8 examples/speechlm2/salm_train.py \
+      --config-name=salm_automodel \
+      model.pretrained_llm=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
+      trainer.strategy.ep_size=8
+
+For distributed inference, launch with ``torchrun``:
+
+.. code-block:: bash
+
+    torchrun --nproc_per_node=8 examples/speechlm2/salm_eval.py \
+      pretrained_name=path/to/checkpoint \
+      inputs=path/to/manifest \
+      ep_size=2
+
 Configuration
 ^^^^^^^^^^^^^
 
@@ -117,8 +181,8 @@ To configure parallelism, modify the ``trainer.strategy`` section in your YAML c
 
 The model's ``configure_model`` method automatically sets up the appropriate parallelization based on this configuration.
 
-FSDP2 Configuration
-^^^^^^^^^^^^^^^^^^^
+FSDP2 Configuration (HF Automodel)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For Fully Sharded Data Parallel training:
 
@@ -128,8 +192,8 @@ For Fully Sharded Data Parallel training:
 FSDP2 shards the model parameters across GPUs, all-gathers them for forward/backward passes, and then de-allocates after computation. This allows training of larger models with limited GPU memory.
 See `PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
 
-Tensor Parallelism Configuration
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Tensor Parallelism Configuration (HF Automodel)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For Tensor Parallelism:
 

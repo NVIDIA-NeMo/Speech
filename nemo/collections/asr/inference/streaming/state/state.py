@@ -85,12 +85,8 @@ class StreamingState:
 
         # Word-level ASR output attributes (cleared after cleanup_after_response):
         # - words: Raw word-level ASR output
-        # - pnc_words: Words with punctuation and capitalization applied
-        #   * When automatic punctuation is ENABLED: Contains punctuation marks and capitalization
-        #     (from either external PnC model or built-in ASR model PnC)
-        #   * When automatic punctuation is DISABLED: No punctuation or capitalization
-        #     (any punctuation in raw ASR output will be removed)
-        # - itn_words: Words after applying both PnC and ITN (Inverse Text Normalization)
+        # - pnc_words: Words with punctuation and capitalization
+        # - itn_words: Words after applying ITN
         # - word_alignment: ITN word alignment
         # Segment-level ASR output attributes (cleared after cleanup_after_response):
         # - segments: Raw segment-level ASR output

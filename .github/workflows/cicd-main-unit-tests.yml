@@ -34,7 +34,7 @@ jobs:
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main
@@ -65,7 +65,7 @@ jobs:
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main
@@ -91,7 +91,7 @@ jobs:
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main

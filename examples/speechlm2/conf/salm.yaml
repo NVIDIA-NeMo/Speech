@@ -5,6 +5,12 @@ model:
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
 
+  # Fine-tune from a previous training checkpoint (model weights only — optimizer,
+  # scheduler, and step counter start fresh). Supports DCP directories (from
+  # FSDP2/TP training), HuggingFace directories (model.safetensors), and
+  # single-file .ckpt checkpoints. Set to null to train from pretrained_llm/asr.
+  init_from_checkpoint: null
+
   # Regexp (re.compile) patterns matching parameters to be frozen.
   freeze_params:
     # Frozen LLM

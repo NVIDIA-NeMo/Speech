@@ -953,7 +953,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         )
         context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
         batch_size = context_audio_embedded.size(0)
-
         if self.use_speaker_encoder:
             if (
                 self.training

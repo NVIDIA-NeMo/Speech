@@ -365,26 +365,30 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         # Speaker/context encoder for context audio embeddings.
         # This enables keeping the zero-shot conditioning module private at release time.
-        speaker_encoder_cfg = cfg.get('speaker_encoder', cfg.get('context_encoder', None))
-        if speaker_encoder_cfg is not None:
-            speaker_encoder_cfg = dict(speaker_encoder_cfg)
-            speaker_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
-            speaker_encoder_cfg.pop('router_z_loss_coeff', None)
-        else:
-            speaker_encoder_cfg = {
-                'n_layers': cfg.get('speaker_encoder_n_layers', 2),
-                'd_model': cfg.embedding_dim,
-                'd_ffn': cfg.get('speaker_encoder_d_ffn', cfg.embedding_dim * 2),
-                'sa_n_heads': cfg.get('speaker_encoder_n_heads', 4),
-                'kernel_size': cfg.get('speaker_encoder_kernel_size', 1),
-                'p_dropout': cfg.get('speaker_encoder_p_dropout', 0.0),
-                'is_causal': False,
-                'use_learnable_pos_emb': True,
-            }
-        self.speaker_encoder = transformer_2501.Transformer(**speaker_encoder_cfg)
-        # Train-only probability to bypass speaker encoder and feed batch-shuffled
-        # raw context embeddings, matching Magpie behavior.
-        self.train_shuffle_context_embedding_prob = cfg.get('train_shuffle_context_embedding_prob', 0.0)
+
+        self.use_speaker_encoder = cfg.get('use_speaker_encoder', False)
+        self.train_shuffle_context_embedding_prob = 0.0
+        if self.use_speaker_encoder:
+            speaker_encoder_cfg = cfg.get('speaker_encoder', cfg.get('context_encoder', None))
+            if speaker_encoder_cfg is not None:
+                speaker_encoder_cfg = dict(speaker_encoder_cfg)
+                speaker_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
+                speaker_encoder_cfg.pop('router_z_loss_coeff', None)
+            else:
+                speaker_encoder_cfg = {
+                    'n_layers': cfg.get('speaker_encoder_n_layers', 1),
+                    'd_model': cfg.embedding_dim,
+                    'd_ffn': cfg.get('speaker_encoder_d_ffn', cfg.embedding_dim * 2),
+                    'sa_n_heads': cfg.get('speaker_encoder_n_heads', 12),
+                    'kernel_size': cfg.get('speaker_encoder_kernel_size', 1),
+                    'p_dropout': cfg.get('speaker_encoder_p_dropout', 0.0),
+                    'is_causal': False,
+                    'use_learnable_pos_emb': True,
+                }
+            self.speaker_encoder = transformer_2501.Transformer(**speaker_encoder_cfg)
+            # Train-only probability to bypass speaker encoder and feed batch-shuffled
+            # raw context embeddings, matching Magpie behavior.
+            self.train_shuffle_context_embedding_prob = cfg.get('train_shuffle_context_embedding_prob', 0.0)
 
         if self.phoneme_tokenizer is not None:
             phoneme_embeddings = []
@@ -869,20 +873,22 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         )
         context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
         batch_size = context_audio_embedded.size(0)
-        if (
-            self.training
-            and batch_size > 1
-            and self.train_shuffle_context_embedding_prob > 0
-            and random.random() < self.train_shuffle_context_embedding_prob
-        ):
-            # Feed shuffled raw context embeddings (without speaker encoder) so
-            # the decoder cannot rely on direct unencoded speaker identity cues.
-            shift = random.randint(1, batch_size - 1)
-            context_audio_embedded = context_audio_embedded.roll(shift, dims=0)
-        else:
-            context_audio_embedded = self.encode_context_audio_embeddings(
-                context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
-            )
+        
+        if self.use_speaker_encoder:
+            if (
+                self.training
+                and batch_size > 1
+                and self.train_shuffle_context_embedding_prob > 0
+                and random.random() < self.train_shuffle_context_embedding_prob
+            ):
+                # Feed shuffled raw context embeddings (without speaker encoder) so
+                # the decoder cannot rely on direct unencoded speaker identity cues.
+                shift = random.randint(1, batch_size - 1)
+                context_audio_embedded = context_audio_embedded.roll(shift, dims=0)
+            else:
+                context_audio_embedded = self.encode_context_audio_embeddings(
+                    context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
+                )
 
         # Context Text
         context_text_lens = context_text_tokens_lens

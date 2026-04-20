@@ -171,8 +171,8 @@ class Actions:
     def to_prompt_section(self) -> str:
         sections = ["# Actions"]
         if self.instructions:
-            header = "You must follow the following instructions one by one in the given order to complete the task, do not perform multiple instructions in a single turn:\n"
-            numbered = "\n".join(f"{i+1}. {inst}" for i, inst in enumerate(self.instructions))
+            header = "You must follow the following instructions step by step in the given order to complete the task, do not perform multiple instructions in a single turn:\n"
+            numbered = "\n".join(f"Step {i+1}: {inst}" for i, inst in enumerate(self.instructions))
             sections.append(f"## Instructions\n{header}{numbered}")
         if self.guidelines:
             header = "You must always comply with the following guidelines during the task:\n"

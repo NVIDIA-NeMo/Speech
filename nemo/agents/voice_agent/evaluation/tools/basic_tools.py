@@ -161,7 +161,7 @@ class PlaceOrderTool(SendScenarioSummaryTool):
             },
             "customer_phone": {
                 "type": "string",
-                "description": "The phone number of the customer.",
+                "description": "The phone number of the customer. The format should be like '123-456-7890'.",
             },
             "total_price": {
                 "type": "float",

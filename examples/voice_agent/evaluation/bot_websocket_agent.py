@@ -307,11 +307,11 @@ async def run_bot_websocket_server(
 
             # save previous log file by renaming it to a new file with the current timestamp if it exists
             # so that new logs will be written to a new file.
-            if os.path.exists(log_file):
-                new_log_file = log_file.replace(".log", f".{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-                os.rename(log_file, new_log_file)
-                logger.info(f"Renamed existing log file: {log_file} to {new_log_file}")
-            setup_logging(log_file=log_file, log_level=log_level)
+            # if os.path.exists(log_file):
+            #     new_log_file = log_file.replace(".log", f".{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+            #     os.rename(log_file, new_log_file)
+            #     logger.info(f"Renamed existing log file: {log_file} to {new_log_file}")
+            # setup_logging(log_file=log_file, log_level=log_level)
 
             new_prompt = arguments.get("prompt", "")
             new_tools = arguments.get("tools", "{}")
@@ -346,9 +346,12 @@ async def run_bot_websocket_server(
             if server_config.llm.get("enable_tool_calling", False) and new_tools:
                 logger.info("Registering new tools...")
                 new_tools = json.loads(new_tools)
+                shared_state = {}  # Shared mutable state for tools in this scenario
                 new_schema_tools = []
                 for tool_name, tool_args in new_tools.items():
-                    new_schema_tools.append(get_schema_tool_for_eval(tool_name, rtvi=rtvi, **tool_args))
+                    new_schema_tools.append(
+                        get_schema_tool_for_eval(tool_name, rtvi=rtvi, shared_state=shared_state, **tool_args)
+                    )
                 register_schema_tools_to_llm(
                     llm=llm,
                     context=context,
@@ -415,9 +418,9 @@ async def run_bot_websocket_server(
         try:
             messages = assistant_context_aggregator._context.get_messages()
             log_content = ""
-            if os.path.exists(log_file):
-                with open(log_file, "r") as f:
-                    log_content = f.read()
+            # if os.path.exists(log_file):
+            #     with open(log_file, "r") as f:
+            #         log_content = f.read()
             logger.debug(f"Returning context history: {len(messages)} messages, {len(log_content)} log characters")
             return {"context": str(messages), "logs": log_content}
         except Exception as e:

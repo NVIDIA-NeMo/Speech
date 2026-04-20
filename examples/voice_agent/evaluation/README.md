@@ -65,5 +65,5 @@ cd examples/voice_agent/evaluation
 python run_evaluation.py \
     --agent-url ws://localhost:8765 \
     --user-url ws://localhost:8766 \
-    --duration 300
+    --domain restaurant
 ```

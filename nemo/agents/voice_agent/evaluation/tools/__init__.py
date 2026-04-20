@@ -40,13 +40,17 @@ def register_schema_tool_for_eval(cls):
     return cls
 
 
-def get_schema_tool_for_eval(name: str, rtvi: Optional[RTVIProcessor] = None, **kwargs) -> StandardSchemaTool:
+def get_schema_tool_for_eval(
+    name: str, rtvi: Optional[RTVIProcessor] = None, shared_state: Optional[dict] = None, **kwargs
+) -> StandardSchemaTool:
     """
     Get a schema tool for evaluation by name, and initialize the tool with the given arguments.
 
     Args:
         name: The name of the tool.
         rtvi: The RTVI processor to use for sending messages to the evaluator.
+        shared_state: A shared mutable dict for tools within the same scenario to exchange state.
+            Created once per scenario and passed to all tools that accept it.
         kwargs: The additional keyword arguments to pass to the tool constructor.
 
     Returns:
@@ -55,10 +59,13 @@ def get_schema_tool_for_eval(name: str, rtvi: Optional[RTVIProcessor] = None, **
     if name not in ALL_SCHEMA_TOOLS_FOR_EVAL:
         return None
     tool_class = ALL_SCHEMA_TOOLS_FOR_EVAL[name]
-    # if `rtvi` is in class signature, pass it to the tool constructor
-    if "rtvi" in inspect.signature(tool_class).parameters:
-        return tool_class(rtvi=rtvi, **kwargs)
-    return tool_class(**kwargs)
+    sig = inspect.signature(tool_class)
+    inject_kwargs = {}
+    if "rtvi" in sig.parameters:
+        inject_kwargs["rtvi"] = rtvi
+    if "shared_state" in sig.parameters:
+        inject_kwargs["shared_state"] = shared_state
+    return tool_class(**inject_kwargs, **kwargs)
 
 
 def list_schema_tools_for_eval() -> List[StandardSchemaTool]:
@@ -69,7 +76,10 @@ def list_schema_tools_for_eval() -> List[StandardSchemaTool]:
 
 
 import nemo.agents.voice_agent.evaluation.tools.basic_tools
+import nemo.agents.voice_agent.evaluation.tools.customer_service_tools  # noqa: E402, F401
+import nemo.agents.voice_agent.evaluation.tools.restaurant_tools  # noqa: E402, F401
 
 # Import subpackages to trigger @register_schema_tool_for_eval decorators.
 # Must be at the end to avoid circular imports (data modules import register_schema_tool_for_eval).
 import nemo.agents.voice_agent.evaluation.tools.rtvi_control
+import nemo.agents.voice_agent.evaluation.tools.waitlist_tools  # noqa: E402, F401

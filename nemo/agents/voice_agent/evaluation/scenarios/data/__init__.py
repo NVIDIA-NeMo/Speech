@@ -12,5 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import nemo.agents.voice_agent.evaluation.scenarios.data.customer_service  # noqa: E402, F401
+import nemo.agents.voice_agent.evaluation.scenarios.data.qa  # noqa: E402, F401
+import nemo.agents.voice_agent.evaluation.scenarios.data.restaurant  # noqa: E402, F401
 from nemo.agents.voice_agent.evaluation.scenarios.data.fastbite import FastBiteScenario
 from nemo.agents.voice_agent.evaluation.scenarios.data.simple_qa import SimpleQA

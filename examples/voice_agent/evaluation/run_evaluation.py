@@ -79,6 +79,13 @@ Examples:
     )
     parser.add_argument("--list", action="store_true", help="List all available scenarios and exit")
     parser.add_argument(
+        "--domain",
+        type=str,
+        default=None,
+        help="Run all scenarios in a domain (e.g., 'restaurant', 'customer_service', 'qa'). Filters by '{domain}__' prefix.",
+    )
+    parser.add_argument("--list-domains", action="store_true", help="List all available domains and exit")
+    parser.add_argument(
         "--duration",
         type=int,
         default=120,
@@ -100,19 +107,58 @@ Examples:
 
     args = parser.parse_args()
 
+    # List domains mode
+    if args.list_domains:
+        available = list_eval_scenarios()
+        domains = sorted({name.split("__")[0] for name in available if "__" in name})
+        legacy = [name for name in available if "__" not in name]
+        if domains:
+            print("Available domains:")
+            for domain in domains:
+                count = sum(1 for name in available if name.startswith(f"{domain}__"))
+                print(f"  - {domain} ({count} scenarios)")
+        if legacy:
+            print(f"\nLegacy scenarios (no domain): {', '.join(legacy)}")
+        if not domains and not legacy:
+            print("No scenarios registered.")
+        return 0
+
     # List mode
     if args.list:
         available = list_eval_scenarios()
         if not available:
             print("No scenarios registered.")
         else:
-            print("Available scenarios:")
+            # Group by domain
+            domains = {}
+            legacy = []
             for name in available:
-                print(f"  - {name}")
+                if "__" in name:
+                    domain = name.split("__")[0]
+                    domains.setdefault(domain, []).append(name)
+                else:
+                    legacy.append(name)
+            if legacy:
+                print("Legacy scenarios:")
+                for name in legacy:
+                    print(f"  - {name}")
+            for domain in sorted(domains):
+                print(f"\n{domain} domain:")
+                for name in sorted(domains[domain]):
+                    print(f"  - {name}")
         return 0
 
     # Resolve which scenarios to run
-    scenario_names = args.scenarios if args.scenarios else list_eval_scenarios()
+    if args.scenarios:
+        scenario_names = args.scenarios
+    elif args.domain:
+        prefix = f"{args.domain}__"
+        scenario_names = [name for name in list_eval_scenarios() if name.startswith(prefix)]
+        if not scenario_names:
+            print(f"No scenarios found for domain '{args.domain}'.", file=sys.stderr)
+            return 1
+    else:
+        scenario_names = list_eval_scenarios()
 
     if not scenario_names:
         print("No scenarios available. Register scenarios using @register_eval_scenario.", file=sys.stderr)
@@ -142,12 +188,12 @@ Examples:
             url=args.judge_url,
             model=args.judge_model,
             api_key=args.judge_api_key,
-            max_tokens=1024,
+            max_tokens=2048,
             temperature=0.7,
             top_p=0.95,
             seed=42,
             chat_template_kwargs={"enable_thinking": True},
-            vllm_xargs={"thinking_budget": 512},
+            thinking_token_budget=1800,
         )
     else:
         judge = None

@@ -143,9 +143,7 @@ def get_s3_client(s3cfg):
         authn_token = os.environ.get('AIS_AUTHN_TOKEN')
         missing = [n for n, v in (('AIS_ENDPOINT', endpoint_url), ('AIS_AUTHN_TOKEN', authn_token)) if not v]
         if missing:
-            raise ValueError(
-                f"--s3cfg=AIS requires environment variables: {', '.join(missing)} not set"
-            )
+            raise ValueError(f"--s3cfg=AIS requires environment variables: {', '.join(missing)} not set")
         _s3_client = AISClient(endpoint_url, authn_token)
         return _s3_client
 
@@ -1235,9 +1233,7 @@ def merge_manifests(path1, path2, name1, name2):
             dup_count += 1
         map2[key] = item
     if dup_count:
-        logging.warning(
-            f"Second manifest had {dup_count} duplicate audio_filepath entries; last occurrence wins"
-        )
+        logging.warning(f"Second manifest had {dup_count} duplicate audio_filepath entries; last occurrence wins")
 
     unmatched = 0
     merged_count = 0
@@ -1272,9 +1268,7 @@ def merge_manifests(path1, path2, name1, name2):
         tmp_file.close()
 
     if unmatched:
-        logging.warning(
-            f"{unmatched} entries from first manifest had no match in second manifest; skipped"
-        )
+        logging.warning(f"{unmatched} entries from first manifest had no match in second manifest; skipped")
     logging.info(f"Merged {merged_count} entries into temporary file: {tmp_file.name}")
     return tmp_file.name
 

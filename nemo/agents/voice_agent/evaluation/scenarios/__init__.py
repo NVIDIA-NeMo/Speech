@@ -14,6 +14,7 @@
 
 from typing import Dict, List, Optional
 from nemo.agents.voice_agent.evaluation.scenarios.classes import Scenario
+
 ALL_EVAL_SCENARIOS: Dict[str, Scenario] = {}
 
 
@@ -24,6 +25,7 @@ def register_eval_scenario(cls):
     key = getattr(cls, "name", cls.__name__)
     ALL_EVAL_SCENARIOS[key] = cls
     return cls
+
 
 def get_eval_scenario(name: str, **kwargs) -> Optional[Scenario]:
     """
@@ -39,6 +41,7 @@ def list_eval_scenarios() -> List[str]:
     List all evaluation scenarios.
     """
     return list(ALL_EVAL_SCENARIOS.keys())
+
 
 # Import data subpackage to trigger @register_eval_scenario decorators.
 # Must be at the end to avoid circular imports (data modules import register_eval_scenario).

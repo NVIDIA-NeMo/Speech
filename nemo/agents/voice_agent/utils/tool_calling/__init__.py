@@ -35,6 +35,7 @@ def register_standard_schema_tool(cls):
     ALL_STANDARD_SCHEMA_TOOLS[key] = cls
     return cls
 
+
 def get_standard_schema_tool(name: str, **kwargs) -> StandardSchemaTool:
     """
     Get a schema tool for evaluation by name.

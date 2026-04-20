@@ -106,7 +106,7 @@ GRAPHEME_CHARACTER_SETS = {
         'ॅ', 'ॉ', 'ँ', 'ं', 'ः', '्', '़', 'ॊ', 'ॢ', 'ॣ', 'ॆ',
         # Danda (period)
         '।',
-    )
+    ),
 }
 
 IPA_CHARACTER_SETS = {

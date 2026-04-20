@@ -41,8 +41,6 @@ from vllm import SamplingParams
 from vllm.v1.sample.logits_processor import BatchUpdate
 
 from nemo.agents.voice_agent.vllm.v1.sample.logits_processor.reasoning_budget_logits_processor import (
-    _DEFAULT_GRACE_RATIO,
-    _GRACE_LOGIT_BOOST,
     ReasoningBudgetLogitsProcessor,
 )
 

@@ -359,10 +359,6 @@ class AudioStream:
         """
         # Resample the audio chunk to output sample rate
         await self.audio_cache.put(audio_chunk)
-        audio_len_in_seconds = len(audio_chunk) / 2 / self.input_sample_rate
-        # logger.debug(
-        #     f"[{self.tag}] Put {len(audio_chunk)} bytes ({audio_len_in_seconds:.4f} seconds) into AudioStream"
-        # )
 
     def resample(self, audio_chunk: bytes) -> bytes:
         """

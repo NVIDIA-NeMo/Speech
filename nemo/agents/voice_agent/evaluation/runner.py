@@ -129,8 +129,8 @@ async def run_dynamic_evaluation(
         if not os.path.exists(reference_file):
             logger.info(f"Reference file {reference_file} not found, skipping checking for task success...")
             is_successful = "N/A"
-        if not os.path.exists(prediction_file):
-            logger.info(f"Prediction file {prediction_file} not found, skipping checking for task success...")
+        elif not os.path.exists(prediction_file):
+            logger.info(f"Prediction file {prediction_file} not found, setting task success to False...")
             is_successful = False
             success_results.append(False)
         elif judge is not None:

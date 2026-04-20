@@ -23,7 +23,6 @@ from datetime import datetime
 from typing import Any, Dict
 
 import uvicorn
-from bot_websocket import run_bot_websocket_server
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -413,22 +412,22 @@ app.add_middleware(
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("WebSocket connection accepted")
+    logger.info("WebSocket connection accepted")
     try:
         # TODO: [heh] Implement FastAPI websocket endpoint
         # await run_bot_fastapi_server(websocket)
         raise NotImplementedError("FastAPI websocket endpoint is not implemented")
     except Exception as e:
-        print(f"Exception in run_bot: {e}")
+        logger.info(f"Exception in run_bot: {e}")
 
 
 @app.post("/connect")
 async def bot_connect(request: Request) -> Dict[Any, Any]:
-    print("Received /connect request")
+    logger.info("Received /connect request")
     # Use the host that the client connected to (from the request)
     server_host = request.url.hostname or request.headers.get("host", "").split(":")[0]
     ws_url = f"ws://{server_host}:{WEBSOCKET_PORT}"
-    print(f"Returning WebSocket URL: {ws_url}")
+    logger.info(f"Returning WebSocket URL: {ws_url}")
     return {"ws_url": ws_url}
 
 

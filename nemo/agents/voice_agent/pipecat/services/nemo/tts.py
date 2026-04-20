@@ -88,13 +88,17 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         self._pending_requests = {}
         self._have_seen_think_tokens = False
 
-        self.setup_tool_calling()
+        self._initialize_tool_calling()
 
     def reset(self):
         """Reset the TTS service."""
         self._text_aggregator.reset()
         self._tts_queue = asyncio.Queue()
         logger.debug("TTS service reset complete")
+
+    def _initialize_tool_calling(self):
+        """Initialize the tool calling mixin by registering all available tools."""
+        self.setup_tool_calling()
 
     def setup_tool_calling(self):
         """

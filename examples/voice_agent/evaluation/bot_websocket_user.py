@@ -17,9 +17,14 @@ import asyncio
 import copy
 import json
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Any, Dict
 
+import uvicorn
 from dotenv import load_dotenv
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from omegaconf import OmegaConf
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -44,6 +49,12 @@ from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import 
 )
 from nemo.agents.voice_agent.utils import ConfigManager, setup_logging
 from nemo.agents.voice_agent.utils.tool_calling import register_schema_tools_to_llm
+
+load_dotenv(override=True)
+SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
+WEBSOCKET_PORT = int(os.getenv("WEBSOCKET_PORT", 8766))
+FASTAPI_PORT = int(os.getenv("FASTAPI_PORT", 7861))
+SERVER_CONFIG_PATH = os.getenv("SERVER_CONFIG_PATH", "server_configs/user.yaml")
 
 
 async def run_bot_websocket_server(
@@ -266,14 +277,6 @@ async def run_bot_websocket_server(
             if task_running:
                 await task.queue_frames([EndTaskFrame()])
 
-            # save previous log file by renaming it to a new file with the current timestamp if it exists
-            # so that new logs will be written to a new file.
-            # if os.path.exists(log_file):
-            #     new_log_file = log_file.replace(".log", f".{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-            #     os.rename(log_file, new_log_file)
-            #     logger.info(f"Renamed existing log file: {log_file} to {new_log_file}")
-            # setup_logging(log_file=log_file, log_level=log_level)
-
             new_prompt = arguments.get("prompt", "")
             new_tools = arguments.get("tools", "{}")
             if not new_prompt:
@@ -376,15 +379,11 @@ async def run_bot_websocket_server(
             await task.queue_frames([EndTaskFrame()])
         try:
             messages = assistant_context_aggregator._context.get_messages()
-            log_content = ""
-            # if os.path.exists(log_file):
-            #     with open(log_file, "r") as f:
-            #         log_content = f.read()
-            logger.debug(f"Returning context history: {len(messages)} messages, {len(log_content)} log characters")
-            return {"context": str(messages), "logs": log_content}
+            logger.debug(f"Returning context history: {len(messages)} messages")
+            return {"context": str(messages)}
         except Exception as e:
             logger.error(f"Error getting context history: {e}")
-            return {"context": [], "logs": ""}
+            return {"context": []}
 
     get_context_history_action = RTVIAction(
         service="context",
@@ -512,12 +511,72 @@ async def run_bot_websocket_server(
         task_running = False
 
 
-if __name__ == "__main__":
-    load_dotenv(override=True)
-    asyncio.run(
-        run_bot_websocket_server(
-            server_config_path=os.getenv("SERVER_CONFIG_PATH", "server_configs/user.yaml"),
-            host=os.getenv("SERVER_HOST", "0.0.0.0"),
-            port=int(os.getenv("WEBSOCKET_PORT", 8765)),
-        )
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handles FastAPI startup and shutdown."""
+    yield  # Run app
+
+
+# Initialize FastAPI app with lifespan manager
+app = FastAPI(lifespan=lifespan)
+
+# Configure CORS to allow requests from any origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    logger.info("WebSocket connection accepted")
+    try:
+        # TODO: [heh] Implement FastAPI websocket endpoint
+        # await run_bot_fastapi_server(websocket)
+        raise NotImplementedError("FastAPI websocket endpoint is not implemented")
+    except Exception as e:
+        logger.info(f"Exception in run_bot: {e}")
+
+
+@app.post("/connect")
+async def bot_connect(request: Request) -> Dict[Any, Any]:
+    logger.info("Received /connect request")
+    # Use the host that the client connected to (from the request)
+    server_host = request.url.hostname or request.headers.get("host", "").split(":")[0]
+    ws_url = f"ws://{server_host}:{WEBSOCKET_PORT}"
+    logger.info(f"Returning WebSocket URL: {ws_url}")
+    return {"ws_url": ws_url}
+
+
+async def main():
+    """Main function to run both websocket server and FastAPI server concurrently."""
+    logger.info(
+        f"Starting servers with config path {SERVER_CONFIG_PATH}, WebSocket on port {WEBSOCKET_PORT}, FastAPI on port {FASTAPI_PORT}"
     )
+    tasks = []
+    try:
+        # Start websocket server
+        tasks.append(
+            run_bot_websocket_server(
+                server_config_path=SERVER_CONFIG_PATH,
+                host=SERVER_HOST,
+                port=WEBSOCKET_PORT,
+            )
+        )
+
+        # Start FastAPI server
+        config = uvicorn.Config(app, host=SERVER_HOST, port=FASTAPI_PORT)
+        server = uvicorn.Server(config)
+        tasks.append(server.serve())
+
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        logger.info("Tasks cancelled (probably due to shutdown).")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

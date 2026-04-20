@@ -1379,7 +1379,7 @@ class VoiceAgentEvaluationBridge:
         logger.info(f"        Right (AGENT→USER): {len(self.sent_to_user_chunks)} chunks")
         logger.info(f"        Duration: {duration:.2f}s, Sample rate: {target_rate}Hz")
 
-    def _save_bot_server_history(self, output_dir: Union[str, Path], context_history: dict):
+    def _save_bot_server_history(self, output_dir: Union[str, Path], context_history: dict, role: str = ""):
         """Save the bot server context history to a JSON file under the output directory."""
         if not output_dir:
             return
@@ -1393,15 +1393,11 @@ class VoiceAgentEvaluationBridge:
                 context = json.loads(context)
             except Exception as e:
                 logger.error(f"Error loading context into json object: {e}. Context: {context}")
-        else:
-            context = context
-        logs = context_history.get("logs", "")
-        context_file = output_dir / "context.json"
-        log_file = output_dir / "logs.txt"
+
+        file_name = f"llm_context_{role}.json" if role else "llm_context.json"
+        context_file = output_dir / file_name
         with open(context_file, "w") as f:
             json.dump(context, f, indent=2)
-        with open(log_file, "w") as f:
-            f.write(logs)
 
     def _save_user_agent_history(self):
         """Save the user and agent context history to a JSON file under the output directory."""

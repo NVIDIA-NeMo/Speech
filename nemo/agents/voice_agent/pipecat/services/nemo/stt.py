@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import asyncio
-import time
 from datetime import datetime
 from typing import AsyncGenerator, List, Optional
 

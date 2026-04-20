@@ -694,6 +694,17 @@ def parse_args():
         help='Field name for which you want to see statistics (optional). Example: pred_text_contextnet.',
     )
     parser.add_argument(
+        '--force',
+        '-f',
+        action='store_true',
+        help=(
+            'Tolerate manifest entries missing required fields. Missing "text", '
+            '"duration", "audio_filepath" default to "", 0, "" respectively; rows '
+            'with non-string "text" are also coerced. WER/CER for rows with empty '
+            'reference text are meaningless but the dashboard will still load.'
+        ),
+    )
+    parser.add_argument(
         '--s3cfg',
         '-s3c',
         type=str,
@@ -764,6 +775,7 @@ def load_data(
     names=None,
     tar_base_path=None,
     dali_index_base=None,
+    force=False,
 ):
     if comparison_mode:
         if names is None:
@@ -863,6 +875,10 @@ def load_data(
             desc = f"Shard {manifest_idx}" if len(manifest_paths) > 1 else manifest_path
             for line in tqdm.tqdm(manifest_lines, desc=desc):
                 item = json.loads(line)
+                if force:
+                    item.setdefault('text', '')
+                    item.setdefault('duration', 0)
+                    item.setdefault('audio_filepath', '')
                 if not isinstance(item['text'], str):
                     item['text'] = ''
                 num_chars = len(item['text'])
@@ -874,7 +890,7 @@ def load_data(
                     alphabet.add(char)
                 num_hours += item['duration']
 
-                if field_name in item:
+                if field_name in item and item['text']:
                     metrics_available = True
                     pred = item[field_name].split()
                     measures = jiwer.compute_measures(item['text'], item[field_name])
@@ -890,6 +906,8 @@ def load_data(
                         for word_idx in range(m[0], m[0] + m[2]):
                             match_vocab[orig[word_idx]] += 1
                     wmr_count += measures['hits']
+                elif field_name in item:
+                    pass
                 else:
                     if comparison_mode:
                         if field_name != 'pred_text':
@@ -925,12 +943,18 @@ def load_data(
                     data[-1]['D'] = measures['deletions']
                     data[-1]['D-I'] = measures['deletions'] - measures['insertions']
                 if estimate_audio:
-                    signal, sr = load_audio_data(
-                        item['audio_filepath'], audio_base_path, resolved_tar_path, dali_index_base
-                    )
-                    bw = eval_bandwidth(signal, sr)
-                    item['freq_bandwidth'] = int(bw)
-                    item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
+                    try:
+                        signal, sr = load_audio_data(
+                            item['audio_filepath'], audio_base_path, resolved_tar_path, dali_index_base
+                        )
+                        bw = eval_bandwidth(signal, sr)
+                        item['freq_bandwidth'] = int(bw)
+                        item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
+                    except (FileNotFoundError, OSError, ValueError) as e:
+                        if force:
+                            logging.warning(f"skip audio metrics for {item.get('audio_filepath','?')}: {e}")
+                        else:
+                            raise
                 for k in item:
                     if k not in data[-1] and not isinstance(item[k], (list, dict)):
                         data[-1][k] = item[k]
@@ -1054,7 +1078,7 @@ def load_data(
             word_accuracy = match_vocab[w] / vocabulary[w] * 100.0
             acc_sum += word_accuracy
             item['accuracy'] = round(word_accuracy, 1)
-        mwa = acc_sum / len(vocabulary_data)
+        mwa = acc_sum / len(vocabulary_data) if vocabulary_data else 0
 
     num_hours /= 3600.0
 
@@ -1095,7 +1119,7 @@ def load_data(
 # plot histogram of specified field in data list
 def plot_histogram(data, key, label):
     fig = px.histogram(
-        data_frame=[item[key] for item in data],
+        data_frame=[item[key] for item in data if key in item],
         nbins=50,
         log_y=True,
         labels={'value': label},
@@ -1311,6 +1335,7 @@ if not comparison_mode:
         args.names_compared,
         tar_base_path=args.tar_base_path,
         dali_index_base=args.dali_index_base,
+        force=args.force,
     )
 else:
     (
@@ -1350,6 +1375,7 @@ else:
         args.names_compared,
         tar_base_path=args.tar_base_path,
         dali_index_base=args.dali_index_base,
+        force=args.force,
     )
 
 logging.info('Starting server')
@@ -1530,7 +1556,7 @@ if metrics_available:
     ]
 
 wordstable_columns = [{'name': 'Word', 'id': 'word'}, {'name': 'Count', 'id': 'count'}]
-if 'OOV' in vocabulary[0]:
+if vocabulary and 'OOV' in vocabulary[0]:
     wordstable_columns.append({'name': 'OOV', 'id': 'OOV'})
 if metrics_available:
     wordstable_columns.append({'name': 'Accuracy, %', 'id': 'accuracy'})
@@ -1727,11 +1753,15 @@ if comparison_mode:
     def _wer_(grnd, pred):
         grnd_words = grnd.split()
         pred_words = pred.split()
+        if not grnd_words:
+            return 0.0
         edit_distance = editdistance.eval(grnd_words, pred_words)
         wer = edit_distance / len(grnd_words)
         return wer
 
     def metric(a, b, met=None):
+        if not a:
+            return 0.0, 0.0
         cer = editdistance.distance(a, b) / len(a)
         wer = _wer_(a, b)
         return round(float(wer) * 100, 2), round(float(cer) * 100, 2)

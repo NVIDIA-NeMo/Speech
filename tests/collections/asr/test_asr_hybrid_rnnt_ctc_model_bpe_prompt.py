@@ -280,8 +280,8 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
             assert isinstance(new_model.tokenizer, tokenizers.AggregateTokenizer)
 
             # should be double
-            assert new_model.tokenizer.tokenizer.vocab_size == 254
-            assert len(new_model.tokenizer.tokenizer.get_vocab()) == 254
+            assert new_model.tokenizer.tokenizer.vocab_size == 264
+            assert len(new_model.tokenizer.tokenizer.get_vocab()) == 264
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

@@ -51,7 +51,7 @@ class NeMoTurnTakingService(FrameProcessor):
         language: Language = Language.EN_US,
         use_vad: bool = True,
         use_diar: bool = False,
-        max_buffer_size: int = 3,
+        max_buffer_size: int = 2,
         bot_stop_delay: float = 0.5,
         audio_logger: Optional[AudioLogger] = None,
         can_create_user_frames: bool = True,
@@ -69,6 +69,7 @@ class NeMoTurnTakingService(FrameProcessor):
         self.backchannel_phrases = self._load_backchannel_phrases(backchannel_phrases)
         self.backchannel_phrases_nopc = set([self.clean_text(phrase) for phrase in self.backchannel_phrases])
         self.bot_stop_delay = bot_stop_delay
+        self.can_create_user_frames = can_create_user_frames
         # internal data
         self._current_speaker_id = None
         self._prev_speaker_id = None
@@ -161,9 +162,9 @@ class NeMoTurnTakingService(FrameProcessor):
         if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
             await self._handle_transcription(frame, direction)
         elif isinstance(frame, VADUserStartedSpeakingFrame):
-            await self._handle_user_started_speaking(frame, direction)
+            await self._handle_vad_user_started_speaking(frame, direction)
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
-            await self._handle_user_stopped_speaking(frame, direction)
+            await self._handle_vad_user_stopped_speaking(frame, direction)
         elif isinstance(frame, BotStartedSpeakingFrame):
             logger.debug("BotStartedSpeakingFrame received")
             self._bot_speaking = True
@@ -244,9 +245,8 @@ class NeMoTurnTakingService(FrameProcessor):
                         f"`{self._user_speaking_buffer}`"
                     )
                     self._user_speaking_buffer = self._user_speaking_buffer[: -len(self.eob_string)].strip()
-                completed_words = self._user_speaking_buffer.strip().split()[
-                    :-1
-                ]  # assume the last word is not completed
+                # assume the last word is not completed
+                completed_words = self._user_speaking_buffer.strip().split()[:-1]
                 if len(completed_words) >= self.max_buffer_size:
                     completed_text = " ".join(completed_words)
                     await self._handle_completed_text(completed_text, direction, is_final=False)
@@ -323,7 +323,19 @@ class NeMoTurnTakingService(FrameProcessor):
         logger.debug(f"Pushing text frame: {text_frame}")
         await self.push_frame(text_frame, direction)
 
-    async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame, direction: FrameDirection):
+    def _contains_only_speaker_tags(self, text: str) -> bool:
+        """
+        Check if the text contains only speaker tags.
+        """
+        return text.strip().startswith("<speaker_") and text.strip().endswith(">")
+
+    async def _handle_vad_user_started_speaking(self, frame: VADUserStartedSpeakingFrame, direction: FrameDirection):
+        """
+        Handle the user started speaking frame.
+
+        If there are no backchannel phrases and we haven't sent the user started speaking frame, we send it now
+        so that the bot can be interrupted and be ready to respond to the new user turn
+        """
         self._vad_user_speaking = True
         logger.debug("NeMoTurnTakingService: VADUserStartedSpeakingFrame")
         await self.push_frame(frame, direction)
@@ -331,13 +343,7 @@ class NeMoTurnTakingService(FrameProcessor):
             await self._handle_user_interruption(UserStartedSpeakingFrame())
             self._have_sent_user_started_speaking = True
 
-    def _contains_only_speaker_tags(self, text: str) -> bool:
-        """
-        Check if the text contains only speaker tags.
-        """
-        return text.strip().startswith("<speaker_") and text.strip().endswith(">")
-
-    async def _handle_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame, direction: FrameDirection):
+    async def _handle_vad_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame, direction: FrameDirection):
         """
         Handle the user stopped speaking frame.
 
@@ -407,6 +413,8 @@ class NeMoTurnTakingService(FrameProcessor):
             if self.can_create_user_frames:
                 logger.debug("Pushing UserStoppedSpeakingFrame")
                 await self.push_frame(frame)
+            else:
+                logger.debug("Skipping UserStoppedSpeakingFrame because can_create_user_frames is False")
         else:
             logger.debug(f"Unknown frame type for _handle_user_interruption: {type(frame)}")
 

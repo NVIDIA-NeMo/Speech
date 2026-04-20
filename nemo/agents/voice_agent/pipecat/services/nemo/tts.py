@@ -64,6 +64,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         sample_rate: int = 22050,
         think_tokens: Optional[List[str]] = None,
         audio_logger: Optional[AudioLogger] = None,
+        ignore_strings: Optional[List[str]] = None,
         **kwargs,
     ):
         super().__init__(sample_rate=sample_rate, **kwargs)
@@ -77,7 +78,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
             assert (
                 isinstance(think_tokens, list) and len(think_tokens) == 2
             ), f"think_tokens must be a list of two strings, but got type {type(think_tokens)}: {think_tokens}"
-
+        self._ignore_strings = set(ignore_strings) if ignore_strings is not None else None
         # Background processing infrastructure - no response handler needed
         self._tts_queue = asyncio.Queue()
         self._processing_task = None
@@ -221,7 +222,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
             If the LLM starts thinking, return the text before the start of thinking tokens.
             If the LLM is not thinking, return the text as is.
         """
-        if not self._think_tokens:
+        if not self._think_tokens or not text:
             return text
         elif self._think_tokens[0] in text and self._think_tokens[1] in text:
             # LLM finishes thinking in one chunk or outputs dummy thinking tokens
@@ -260,13 +261,30 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
             # LLM is not thinking
             return text
 
+    def _drop_special_tokens(self, text: str) -> Optional[str]:
+        """
+        Drop the special tokens from the text.
+        """
+        if self._ignore_strings is None:
+            return text
+        for ignore_string in self._ignore_strings:
+            if ignore_string in text:
+                logger.debug(f"Dropping string `{ignore_string}` from text: `{text}`")
+                text = text.replace(ignore_string, "")
+        return text
+
     async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
         """Generate speech from text using the Nemo TTS model."""
-        text = self._handle_think_tokens(text)
+
+        if self._think_tokens is not None:
+            text = self._handle_think_tokens(text)
 
         if not text:
             yield None
             return
+
+        if self._ignore_strings is not None:
+            text = self._drop_special_tokens(text)
 
         logger.debug(f"{self}: Generating TTS [{text}]")
 
@@ -398,30 +416,20 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         if isinstance(audio_data, (bytes, bytearray)):
             return bytes(audio_data)
 
-        # Handle numpy arrays
-        try:
-            import numpy as np
-
-            if isinstance(audio_data, np.ndarray):
-                # Ensure it's in the right format (16-bit PCM)
-                if audio_data.dtype in [np.float32, np.float64]:
-                    # Convert float [-1, 1] to int16 [-32768, 32767]
-                    audio_data = np.clip(audio_data, -1.0, 1.0)  # Ensure values are in range
-                    audio_data = (audio_data * 32767).astype(np.int16)
-                elif audio_data.dtype != np.int16:
-                    # Convert other integer types to int16
-                    audio_data = audio_data.astype(np.int16)
-                return audio_data.tobytes()
-            elif hasattr(audio_data, 'tobytes'):
-                return audio_data.tobytes()
-            else:
-                return bytes(audio_data)
-        except ImportError:
-            # Fallback if numpy is not available
-            if hasattr(audio_data, 'tobytes'):
-                return audio_data.tobytes()
-            else:
-                return bytes(audio_data)
+        if isinstance(audio_data, np.ndarray):
+            # Ensure it's in the right format (16-bit PCM)
+            if audio_data.dtype in [np.float32, np.float64]:
+                # Convert float [-1, 1] to int16 [-32768, 32767]
+                audio_data = np.clip(audio_data, -1.0, 1.0)  # Ensure values are in range
+                audio_data = (audio_data * 32767).astype(np.int16)
+            elif audio_data.dtype != np.int16:
+                # Convert other integer types to int16
+                audio_data = audio_data.astype(np.int16)
+            return audio_data.tobytes()
+        elif hasattr(audio_data, 'tobytes'):
+            return audio_data.tobytes()
+        else:
+            return bytes(audio_data)
 
 
 class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
@@ -447,9 +455,12 @@ class NeMoFastPitchHiFiGANTTSService(BaseNemoTTSService):
         self._fastpitch_model_name = fastpitch_model
         self._hifigan_model_name = hifigan_model
         super().__init__(model=model_name, device=device, **kwargs)
+        self.setup_tool_calling()
 
     def _setup_model(self):
-        print("Loading model...")
+        logger.info(
+            f"Loading FastPitch model={self._fastpitch_model_name} and HiFiGAN model={self._hifigan_model_name}"
+        )
         self._fastpitch_model = self._setup_fastpitch_model(self._fastpitch_model_name)
         self._hifigan_model = self._setup_hifigan_model(self._hifigan_model_name)
         return self._fastpitch_model, self._hifigan_model
@@ -520,6 +531,8 @@ class KokoroTTSService(BaseNemoTTSService):
             self._model_maps = self._download_all_models(
                 lang_code=["a", "b"], device=device, repo_id=model, cache_models=cache_models
             )
+        else:
+            self._model_maps = {}
         super().__init__(model=model, device=device, sample_rate=sample_rate, **kwargs)
 
     def _setup_model(self, lang_code: Optional[str] = None, voice: Optional[str] = None):
@@ -830,8 +843,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
 
     Args:
         config: The DictConfig object containing the TTS configuration.
-        text_aggregator: The text aggregator to use for text segmentation.
-
+        audio_logger: The audio logger to use for audio logging.
     Returns:
         The TTS service.
     """
@@ -860,6 +872,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             text_aggregator=text_aggregator,
             think_tokens=config.get("think_tokens", None),
             audio_logger=audio_logger,
+            ignore_strings=config.get("ignore_strings", None),
         )
     elif model == "magpie":
         return MagpieTTSService(
@@ -871,6 +884,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             text_aggregator=text_aggregator,
             think_tokens=config.get("think_tokens", None),
             audio_logger=audio_logger,
+            ignore_strings=config.get("ignore_strings", None),
         )
     elif model == "kokoro":
         return KokoroTTSService(
@@ -882,6 +896,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             think_tokens=config.get("think_tokens", None),
             sample_rate=24000,
             audio_logger=audio_logger,
+            ignore_strings=config.get("ignore_strings", None),
         )
     else:
         raise ValueError(f"Invalid model: {model}, only 'fastpitch-hifigan', 'magpie' and 'kokoro' are supported")

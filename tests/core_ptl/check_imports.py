@@ -168,12 +168,6 @@ def test_domain_lightning(args):
     # Test lightning module imports
     all_passed = _test_domain_module_imports(nemo_lightning, domain=args.domain, subdomains=[])
 
-    # Test lightning submodules
-    all_passed = _test_domain_module_imports(nemo_lightning, domain=args.domain, subdomains=["pytorch"]) and all_passed
-    all_passed = _test_domain_module_imports(nemo_lightning, domain=args.domain, subdomains=["fabric"]) and all_passed
-    all_passed = _test_domain_module_imports(nemo_lightning, domain=args.domain, subdomains=["io"]) and all_passed
-    all_passed = _test_domain_module_imports(nemo_lightning, domain=args.domain, subdomains=["run"]) and all_passed
-
     if not all_passed:
         exit(1)
 

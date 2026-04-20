@@ -1,0 +1,616 @@
+# PR Babysitter — half-autonomous CI fix loop, speech_team-only.
+#
+# Master switch: the "Has Babysitter" label. Adding it activates, removing
+# it deactivates and cancels any in-flight work.
+#
+# Authorization model:
+#   - The entire workflow is restricted to the NVIDIA-NeMo/speech_team team.
+#     Every job that mutates state starts with a preflight that verifies the
+#     acting user (label sender / comment author / review author) is an active
+#     speech_team member. Non-members cause the job to post a refusal comment
+#     and revert the triggering label, leaving no misleading state behind.
+#   - The workflow never runs for PRs from forks. Every PR-scoped job
+#     fork-guards on head.repo.full_name == github.repository.
+#
+# Lifecycle (all participants must be speech_team members):
+#   1. "Has Babysitter" added  -> activate posts a takeover comment and adds
+#                                 "Run CICD" to start the pipeline.
+#   2. CI runs (CICD NeMo workflow).
+#   3. If all checks pass      -> babysitter stays silent, done.
+#      If a check fails        -> check_run event triggers investigate-and-propose
+#                                 (formatting check skipped — the Isort+Black
+#                                 action auto-pushes its own fixes).
+#   4. investigate-and-propose: Claude investigates root cause, posts a *plan
+#      comment* on the PR (tagged with `<!-- babysit-plan -->`), and adds
+#      "Agent Plan Awaiting Approval". It does NOT push code.
+#   5. The PR author (who must also be speech_team) approves by replying with a
+#      comment that mentions `@claude` affirmatively (e.g. `@claude go ahead`).
+#      evaluate-comment-approval classifies the reply via an LLM and, on APPROVE,
+#      swaps "Agent Plan Awaiting Approval" for "Agent Plan Approved".
+#   6. "Agent Plan Approved" added -> execute-fix verifies the sender is
+#      speech_team, verifies a bot-authored plan comment exists, then reads the
+#      plan, pushes the fix, re-adds "Run CICD", and goes back to #2.
+#
+# Termination:
+#   - "Has Babysitter" removed at any time -> deactivate cancels in-progress
+#     work via a shared concurrency group and clears plan-state labels.
+#   - Claude can't investigate or can't execute -> ping-author-on-failure pings
+#     the author and clears labels.
+#
+# Additionally, speech_team members can @claude in a PR review comment on a
+# babysitter-enabled PR to ask questions or request changes.
+#
+# Required secrets: ANTHROPIC_API_KEY, ORG_TEAM_READ_TOKEN, NEMO_RELABEL_TOKEN
+
+name: Claude Code — PR Babysitter
+
+on:
+  pull_request:
+    types: [labeled, unlabeled]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  check_run:
+    types: [completed]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  # ---- Activation: one-time setup when "Has Babysitter" is added ----
+
+  activate:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'Has Babysitter' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    concurrency:
+      group: babysit-activate-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # Preflight: only speech_team members may enable the babysitter. If a
+      # non-member adds the label, revert it and explain.
+      - name: Verify label sender is speech_team
+        id: authz
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
+          script: |
+            const username = context.payload.sender.login;
+            try {
+              const res = await github.rest.teams.getMembershipForUserInOrg({
+                org: 'NVIDIA-NeMo',
+                team_slug: 'speech_team',
+                username,
+              });
+              if (res.data.state !== 'active') {
+                core.setOutput('authorized', 'false');
+                return;
+              }
+              core.setOutput('authorized', 'true');
+            } catch (e) {
+              core.setOutput('authorized', 'false');
+            }
+
+      - name: Checkout for GH CLI
+        uses: actions/checkout@v6
+
+      - name: Refuse activation from non-speech_team sender
+        if: steps.authz.outputs.authorized != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body \
+            "@${SENDER} the PR Babysitter is restricted to the NVIDIA-NeMo \`speech_team\`. Removing the \`Has Babysitter\` label."
+          gh pr edit "$PR_NUMBER" --remove-label "Has Babysitter"
+          exit 0
+
+      - name: Post takeover comment
+        if: steps.authz.outputs.authorized == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: "I'll monitor this PR until CI is green. I'll post a plan for any fix and wait for your approval before pushing anything. Ping me by removing 'Has Babysitter' to cancel."
+            });
+
+      - name: Trigger CI
+        if: steps.authz.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr edit "$PR_NUMBER" --add-label "Run CICD"
+
+  # ---- @claude mentions in PR reviews (speech_team only) ----
+
+  authorize-review:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        contains(github.event.pull_request.labels.*.name, 'Has Babysitter')) ||
+       (github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@claude') &&
+        contains(github.event.pull_request.labels.*.name, 'Has Babysitter')))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check team membership
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
+          script: |
+            const username =
+              context.payload.comment?.user?.login ||
+              context.payload.review?.user?.login;
+            try {
+              const res = await github.rest.teams.getMembershipForUserInOrg({
+                org: 'NVIDIA-NeMo',
+                team_slug: 'speech_team',
+                username,
+              });
+              if (res.data.state !== 'active') {
+                core.setFailed(`${username} is not an active member of NVIDIA Speech Team`);
+              }
+            } catch (e) {
+              core.setFailed(`${username} is not a member of NVIDIA Speech Team`);
+            }
+
+  acknowledge-review:
+    needs: authorize-review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add eyes reaction
+        uses: actions/github-script@v8
+        with:
+          script: |
+            if (context.payload.comment) {
+              await github.rest.reactions.createForPullRequestReviewComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: 'eyes'
+              });
+            }
+
+  respond-to-review:
+    needs: acknowledge-review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # No prompt — Claude reads the @claude mention and responds in context
+          claude_args: "--max-turns 15 --model claude-sonnet-4-6"
+
+  # ---- CI failure: investigate, propose a plan, DO NOT push ----
+
+  check-label-for-ci:
+    # Skip formatting checks — the "Isort and Black Formatting" action auto-pushes fixes.
+    if: >-
+      github.event_name == 'check_run' &&
+      github.event.check_run.conclusion == 'failure' &&
+      github.event.check_run.pull_requests[0] != null &&
+      !contains(github.event.check_run.name, 'reformat_with_isort_and_black')
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.lookup.outputs.pr_number }}
+      should_propose: ${{ steps.lookup.outputs.should_propose }}
+      head_ref: ${{ steps.lookup.outputs.head_ref }}
+      head_sha: ${{ steps.lookup.outputs.head_sha }}
+      author_login: ${{ steps.lookup.outputs.author_login }}
+    steps:
+      - name: Look up PR and assess state
+        id: lookup
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prNumber = context.payload.check_run.pull_requests[0].number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const labels = pr.labels.map(l => l.name);
+            const hasBabysitter = labels.includes('Has Babysitter');
+            const hasPending = labels.includes('Agent Plan Awaiting Approval');
+            const hasApproved = labels.includes('Agent Plan Approved');
+            const failedSha = context.payload.check_run.head_sha;
+            const isStale = pr.head.sha !== failedSha;
+            // Fork-guard: the babysitter never runs on PRs from forks.
+            const isFork = pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`;
+            // Propose a new plan only if: babysitter is on, no plan is already
+            // in flight, the failure isn't stale, and the PR is not from a fork.
+            const shouldPropose = hasBabysitter && !hasPending && !hasApproved && !isStale && !isFork;
+            core.setOutput('pr_number', prNumber);
+            core.setOutput('should_propose', shouldPropose ? 'true' : 'false');
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('author_login', pr.user.login);
+            if (!shouldPropose) {
+              core.info(`Skipping investigate-and-propose: babysitter=${hasBabysitter}, pending=${hasPending}, approved=${hasApproved}, stale=${isStale}, fork=${isFork}`);
+            }
+
+  investigate-and-propose:
+    needs: check-label-for-ci
+    if: needs.check-label-for-ci.outputs.should_propose == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: babysit-fix-${{ needs.check-label-for-ci.outputs.pr_number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.check-label-for-ci.outputs.head_ref }}
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            The CI check "${{ github.event.check_run.name }}" just failed on
+            PR #${{ needs.check-label-for-ci.outputs.pr_number }}.
+
+            You are in HALF-AUTONOMOUS mode. You MUST NOT edit files, commit,
+            or push code in this job. Investigation and planning only.
+
+            Instructions:
+            1. Inspect the failure logs for ALL currently failing CI checks on
+               this PR, not just the one named above.
+            2. Check `git log` for recent commits — if a prior babysitter plan
+               already tried the same approach and it's still failing, call
+               that out in your plan so the author can reconsider.
+            3. Identify the root cause and draft a concrete fix plan covering:
+               - What's broken and why
+               - Which files/lines you'd change
+               - The minimal diff you'd apply
+            4. Post a SINGLE PR comment with this exact structure:
+
+               **CI Fix Plan** — awaiting approval from @${{ needs.check-label-for-ci.outputs.author_login }}
+
+               <your analysis and proposed change>
+
+               ---
+               To approve, **reply with an affirmative comment that mentions `@claude`**
+               (e.g., `@claude go ahead`). Approval is restricted to the PR author.
+               Remove the `Has Babysitter` label to cancel.
+
+               <!-- babysit-plan -->
+
+               The `<!-- babysit-plan -->` marker MUST be the last line — later
+               jobs use it to find the approved plan.
+            5. If you conclude the issue cannot be fixed from this PR alone,
+               DO NOT include the `<!-- babysit-plan -->` marker. Instead post
+               a comment that mentions @${{ needs.check-label-for-ci.outputs.author_login }}
+               describing what you found and asking for help.
+          claude_args: "--max-turns 10 --model claude-sonnet-4-6"
+
+      - name: Mark plan awaiting approval (or stop if Claude gave up)
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Detect whether Claude actually posted a plan comment.
+          PLAN_COUNT=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '[.[] | select(.body | contains("<!-- babysit-plan -->"))] | length')
+          if [ "$PLAN_COUNT" -gt 0 ]; then
+            echo "Plan comment posted; adding 'Agent Plan Awaiting Approval'"
+            gh pr edit "$PR_NUMBER" --add-label "Agent Plan Awaiting Approval"
+          else
+            echo "No plan posted; Claude decided it couldn't fix. Disabling babysitter."
+            gh pr edit "$PR_NUMBER" --remove-label "Has Babysitter"
+          fi
+
+  # ---- Approval Path A: affirmative comment from PR author mentioning @claude ----
+
+  evaluate-comment-approval:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.action == 'created' &&
+      github.event.issue.pull_request != null &&
+      contains(github.event.issue.labels.*.name, 'Has Babysitter') &&
+      contains(github.event.issue.labels.*.name, 'Agent Plan Awaiting Approval') &&
+      github.event.comment.user.type != 'Bot' &&
+      github.event.comment.user.login == github.event.issue.user.login &&
+      contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: babysit-fix-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      # Preflight: the commenter is the PR author (enforced by `if:`) AND must
+      # be an active speech_team member. Also fork-guard by fetching the PR.
+      - name: Verify commenter is speech_team and PR is not a fork
+        id: authz
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
+          script: |
+            const prNumber = context.payload.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const isFork = pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`;
+            if (isFork) {
+              core.info(`PR #${prNumber} is a fork; babysitter does not operate on forks.`);
+              core.setOutput('authorized', 'false');
+              core.setOutput('reason', 'fork');
+              return;
+            }
+            const username = context.payload.comment.user.login;
+            try {
+              const res = await github.rest.teams.getMembershipForUserInOrg({
+                org: 'NVIDIA-NeMo',
+                team_slug: 'speech_team',
+                username,
+              });
+              if (res.data.state !== 'active') {
+                core.setOutput('authorized', 'false');
+                core.setOutput('reason', 'not-speech-team');
+                return;
+              }
+              core.setOutput('authorized', 'true');
+            } catch (e) {
+              core.setOutput('authorized', 'false');
+              core.setOutput('reason', 'not-speech-team');
+            }
+
+      - name: Checkout for GH CLI
+        uses: actions/checkout@v6
+
+      - name: Refuse non-speech_team approval
+        if: steps.authz.outputs.authorized != 'true' && steps.authz.outputs.reason == 'not-speech-team'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          SENDER: ${{ github.event.comment.user.login }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body \
+            "@${SENDER} only NVIDIA-NeMo \`speech_team\` members can approve the babysitter's plan. Ignoring this reply."
+
+      - uses: anthropics/claude-code-action@v1
+        if: steps.authz.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Decide whether the PR author has approved the fix plan, then act.
+
+            Context:
+            - PR #${{ github.event.issue.number }} has label "Agent Plan Awaiting Approval".
+            - The PR author (@${{ github.event.issue.user.login }}) just posted a reply.
+            - The approved plan is a previous PR comment containing `<!-- babysit-plan -->`.
+
+            Steps:
+            1. Read the latest `<!-- babysit-plan -->` comment on the PR for the plan.
+            2. Read the PR author's reply (use `gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}`).
+            3. Classify the reply as exactly one of:
+               - APPROVE: the author clearly agrees to proceed with the plan.
+               - REJECT: the author clearly disagrees or wants changes.
+               - NEITHER: the reply is a question, side remark, or ambiguous.
+            4. Take action:
+               - APPROVE: run exactly
+                 `gh pr edit $PR_NUMBER --remove-label "Agent Plan Awaiting Approval" --add-label "Agent Plan Approved"`
+                 and do nothing else.
+               - REJECT: post a short PR comment acknowledging the rejection
+                 and suggesting they either remove `Has Babysitter` to cancel
+                 or reply with a new direction. Do NOT change labels.
+               - NEITHER: post a short PR comment asking for an explicit
+                 approve/reject. Do NOT change labels.
+            5. Do not push any code. Do not edit files in the repository.
+          claude_args: "--max-turns 8 --model claude-sonnet-4-6"
+
+  # ---- Execute the approved plan (the only job allowed to push code) ----
+
+  execute-fix:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'Agent Plan Approved' &&
+      contains(github.event.pull_request.labels.*.name, 'Has Babysitter') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    concurrency:
+      group: babysit-fix-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # Preflight 1: the sender (who added `Agent Plan Approved`) must be
+      # speech_team. Defense-in-depth against a non-member adding the label.
+      - name: Verify label sender is speech_team
+        id: authz
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
+          script: |
+            const username = context.payload.sender.login;
+            try {
+              const res = await github.rest.teams.getMembershipForUserInOrg({
+                org: 'NVIDIA-NeMo',
+                team_slug: 'speech_team',
+                username,
+              });
+              core.setOutput('authorized', res.data.state === 'active' ? 'true' : 'false');
+            } catch (e) {
+              core.setOutput('authorized', 'false');
+            }
+
+      # Preflight 2: there must exist a bot-authored `<!-- babysit-plan -->`
+      # comment on this PR. Prevents execution when someone adds the approved
+      # label manually without an investigator-posted plan.
+      - name: Verify a bot-authored plan comment exists
+        id: plan
+        if: steps.authz.outputs.authorized == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const planComment = [...comments].reverse().find(c =>
+              c.body.includes('<!-- babysit-plan -->') && c.user && c.user.type === 'Bot'
+            );
+            core.setOutput('found', planComment ? 'true' : 'false');
+
+      - name: Checkout for GH CLI (refusal paths)
+        if: steps.authz.outputs.authorized != 'true' || steps.plan.outputs.found != 'true'
+        uses: actions/checkout@v6
+
+      - name: Refuse execution from non-speech_team sender
+        if: steps.authz.outputs.authorized != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body \
+            "@${SENDER} only NVIDIA-NeMo \`speech_team\` members can approve the babysitter's plan. Removing the \`Agent Plan Approved\` label."
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true
+          exit 0
+
+      - name: Refuse execution without a plan comment
+        if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body \
+            "No approved plan found for execution. Remove \`Agent Plan Approved\` and wait for the investigator to post a plan first."
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true
+          exit 0
+
+      - uses: actions/checkout@v6
+        if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Record starting SHA
+        id: start
+        if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: anthropics/claude-code-action@v1
+        if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            The PR author has approved your previously posted fix plan. Execute it now.
+
+            Instructions:
+            1. Read the PR comment thread and find the most recent comment
+               containing the marker `<!-- babysit-plan -->`. That is the
+               approved plan.
+            2. Implement exactly what the plan described. Do not expand scope.
+               Do not refactor code outside the plan.
+            3. Commit with DCO sign-off and push to the same branch.
+            4. If the plan is no longer applicable (e.g., merge conflicts, the
+               code has moved on, the reproduction no longer triggers the bug):
+               post a PR comment mentioning @${{ github.event.pull_request.user.login }}
+               explaining what changed and DO NOT push.
+          claude_args: "--max-turns 10 --model claude-sonnet-4-6"
+
+      - name: Re-trigger CI or stop loop
+        if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ORIGINAL_SHA: ${{ steps.start.outputs.sha }}
+        run: |
+          # Clear "Agent Plan Approved" so the next iteration can re-use it.
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true
+          NEW_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid -q '.headRefOid')
+          if [ "$NEW_SHA" != "$ORIGINAL_SHA" ]; then
+            echo "Fix pushed (SHA changed); re-triggering CI"
+            gh pr edit "$PR_NUMBER" --add-label "Run CICD"
+          else
+            echo "No fix pushed; disabling babysitter"
+            gh pr edit "$PR_NUMBER" --remove-label "Has Babysitter"
+          fi
+
+  # ---- Safety net: ping author and clear state if investigate-and-propose crashes ----
+
+  ping-author-on-failure:
+    needs: [check-label-for-ci, investigate-and-propose]
+    if: failure() && needs.check-label-for-ci.outputs.should_propose == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping PR author
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
+          CHECK_NAME: ${{ github.event.check_run.name }}
+          AUTHOR_LOGIN: ${{ needs.check-label-for-ci.outputs.author_login }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: parseInt(process.env.PR_NUMBER, 10),
+              body: `I wasn't able to investigate the CI failure in \`${process.env.CHECK_NAME}\`. @${process.env.AUTHOR_LOGIN}, could you take a look?`
+            });
+
+      - name: Checkout for GH CLI
+        uses: actions/checkout@v6
+
+      - name: Clear all babysitter labels
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --remove-label "Has Babysitter" || true
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Awaiting Approval" || true
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true
+
+  # ---- Deactivation: cancel in-progress fixes and clear state ----
+
+  deactivate:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'unlabeled' &&
+      github.event.label.name == 'Has Babysitter'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: babysit-fix-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Post deactivation comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: "Babysitter deactivated for this PR."
+            });
+
+      - name: Checkout for GH CLI
+        uses: actions/checkout@v6
+
+      - name: Clear plan-state labels
+        env:
+          GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Awaiting Approval" || true
+          gh pr edit "$PR_NUMBER" --remove-label "Agent Plan Approved" || true

@@ -48,7 +48,8 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'qn.onnx')
             model.export(
-                output=filename, check_trace=True,
+                output=filename,
+                check_trace=True,
             )
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
@@ -62,7 +63,8 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'edc.onnx')
             model.export(
-                output=filename, check_trace=True,
+                output=filename,
+                check_trace=True,
             )
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
@@ -105,19 +107,10 @@ class TestExportable:
             input_example = torch.randn(4, model.encoder._feat_in, 777, device=device)
             input_example_length = torch.full(size=(input_example.shape[0],), fill_value=777, device=device)
             model.export(
-                output=filename, input_example=tuple([input_example, input_example_length]), check_trace=True,
+                output=filename,
+                input_example=tuple([input_example, input_example_length]),
+                check_trace=True,
             )
-
-    @pytest.mark.run_only_on('GPU')
-    @pytest.mark.unit
-    def test_SqueezeformerModel_export_to_onnx(self, squeezeformer_model):
-        model = squeezeformer_model.cuda()
-        with tempfile.TemporaryDirectory() as tmpdir, torch.cuda.amp.autocast():
-            filename = os.path.join(tmpdir, 'squeeze.ts')
-            device = next(model.parameters()).device
-            input_example = torch.randn(4, model.encoder._feat_in, 777, device=device)
-            input_example_length = torch.full(size=(input_example.shape[0],), fill_value=777, device=device)
-            model.export(output=filename, input_example=tuple([input_example, input_example_length]), check_trace=True)
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
@@ -128,7 +121,8 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir, torch.cuda.amp.autocast():
             filename = os.path.join(tmpdir, 'citri_se.onnx')
             model.export(
-                output=filename, check_trace=True,
+                output=filename,
+                check_trace=True,
             )
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
@@ -261,7 +255,8 @@ class TestExportable:
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'qn.onnx')
             model.export(
-                output=filename, check_trace=True,
+                output=filename,
+                check_trace=True,
             )
             onnx_model = onnx.load(filename)
             onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
@@ -364,7 +359,10 @@ def speech_classification_model():
 
     decoder = {
         'cls': 'nemo.collections.asr.modules.ConvASRDecoderClassification',
-        'params': {'feat_in': 32, 'num_classes': 30,},
+        'params': {
+            'feat_in': 32,
+            'num_classes': 30,
+        },
     }
 
     modelConfig = DictConfig(
@@ -613,48 +611,6 @@ def conformer_model():
             'conv_kernel_size': 31,
             'dropout': 0.1,
             'dropout_pre_encoder': 0.1,
-            'dropout_emb': 0.0,
-            'dropout_att': 0.1,
-        },
-    }
-
-    decoder = {
-        'cls': 'nemo.collections.asr.modules.ConvASRDecoder',
-        'params': {'feat_in': 256, 'num_classes': 1024, 'vocabulary': list(chr(i % 28) for i in range(0, 1024))},
-    }
-
-    modelConfig = DictConfig(
-        {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder)}
-    )
-    conformer_model = EncDecCTCModel(cfg=modelConfig)
-    return conformer_model
-
-
-@pytest.fixture()
-def squeezeformer_model():
-    preprocessor = {'cls': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor', 'params': dict({})}
-    encoder = {
-        'cls': 'nemo.collections.asr.modules.SqueezeformerEncoder',
-        'params': {
-            'feat_in': 80,
-            'feat_out': -1,
-            'n_layers': 2,
-            'adaptive_scale': True,
-            'time_reduce_idx': 1,
-            'time_recovery_idx': None,
-            'd_model': 256,
-            'subsampling': 'dw_striding',
-            'subsampling_factor': 4,
-            'subsampling_conv_channels': 512,
-            'ff_expansion_factor': 4,
-            'self_attention_model': 'rel_pos',
-            'n_heads': 8,
-            'att_context_size': [-1, -1],
-            'xscaling': True,
-            'untie_biases': True,
-            'pos_emb_max_len': 500,
-            'conv_kernel_size': 31,
-            'dropout': 0.1,
             'dropout_emb': 0.0,
             'dropout_att': 0.1,
         },

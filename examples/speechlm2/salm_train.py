@@ -14,7 +14,7 @@
 import os
 
 import torch
-from lightning.pytorch import Trainer
+from lightning.pytorch import Trainer, seed_everything
 from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2 import SALM, DataModule, SALMDataset
@@ -22,20 +22,29 @@ from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
-torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+if torch.cuda.is_available():
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
 @hydra_runner(config_path="conf", config_name="salm")
 def train(cfg):
     OmegaConf.resolve(cfg)
-    torch.distributed.init_process_group(backend="nccl")
+    if torch.cuda.is_available():
+        torch.distributed.init_process_group(backend="nccl")
+    seed_everything(cfg.data.train_ds.seed)
     torch.set_float32_matmul_precision("medium")
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
+    model_cls = SALM
+    if cfg.model.get("use_nemo_automodel", False):
+        from nemo.collections.speechlm2 import SALMAutomodel
+
+        model_cls = SALMAutomodel
+
     with trainer.init_module():
-        model = SALM(OmegaConf.to_container(cfg.model, resolve=True))
+        model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
 
     dataset = SALMDataset(tokenizer=model.tokenizer)
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)

@@ -19,15 +19,16 @@ from pipecat.frames.frames import LLMTextFrame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
+HTTP_REQUEST_TIMEOUT = 10.0
 
-async def tool_get_city_weather(params: FunctionCallParams, city_name: str, timeout: float = 15.0):
+
+async def tool_get_city_weather(params: FunctionCallParams, city_name: str):
     """Get the current weather of a city. The result includes city name, weather description,
     temperature, wind speed, wind direction, precipitation, humidity, visibility, and UV index.
 
     Args:
         city_name: The name of the city to get the weather of. For example, "London", "Beijing", "Paris".
                 Other examples are: "Paris, TX, US", "Paris, FR" and "Tokyo, JP".
-        timeout: The timeout in seconds to wait for the weather API call, default to 15 seconds.
     """
     message = f"Looking up weather data for {city_name}. Please wait a moment..."
     # Send the message to upstream so that RTVI can log it while doesn't block the actual tool call.
@@ -43,10 +44,10 @@ async def tool_get_city_weather(params: FunctionCallParams, city_name: str, time
         try:
             weather: python_weather.Forecast = await asyncio.wait_for(
                 client.get(city_name),
-                timeout=timeout,
+                timeout=HTTP_REQUEST_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            error_msg = f"python_weather API request timed out after {timeout} seconds for `{city_name}`"
+            error_msg = f"python_weather API request timed out after {HTTP_REQUEST_TIMEOUT} seconds for `{city_name}`"
             logger.error(error_msg)
             await params.result_callback({"error": error_msg})
             return

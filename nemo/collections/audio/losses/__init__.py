@@ -13,3 +13,5 @@
 # limitations under the License.
 
 from nemo.collections.audio.losses.audio import MAELoss, MSELoss, SDRLoss
+
+__all__ = ["MAELoss", "MSELoss", "SDRLoss"]

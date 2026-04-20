@@ -1,3 +1,2 @@
 Model,Model Base Class
-`stt_zh_citrinet_1024_gamma_0_25 <https://huggingface.co/nvidia/stt_zh_citrinet_1024_gamma_0_25>`_,EncDecCTCModel
 `stt_zh_conformer_transducer_large <https://huggingface.co/nvidia/stt_zh_conformer_transducer_large>`_,EncDecRNNTBPEModel

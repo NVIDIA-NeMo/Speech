@@ -1,4 +1,4 @@
-# This is an example config for setting up nemotron_nano_v2 model for a NeMo Voice Agent server.
+# This is an example config for setting up nemotron_nano_v3 model for a NeMo Voice Agent server.
 # Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
 
 # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
@@ -58,7 +58,5 @@ vllm_generation_params:
   max_completion_tokens: ${llm.max_new_tokens}  # max number of tokens to generate
   extra:  # additional model specific params can be specified in dict format
     extra_body:
-      vllm_xargs:
-        thinking_budget: 128  # max thinking tokens budget, enforced by ReasoningBudgetLogitsProcessor
       chat_template_kwargs:
         enable_thinking: False  # disable thinking

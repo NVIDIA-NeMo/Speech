@@ -48,25 +48,14 @@ jobs:
       HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
     steps:
       - name: Checkout branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Select components to run
         id: components_to_run
         run: |
-          pip install -U pip
-          pip install git-python
-
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
-          else
-            echo '["nemo2", "export-deploy", "speech"]' | tee -a test_modules.json
-          fi
-
-          components_to_run=$(cat test_modules.json)
-
-          echo "main=${components_to_run}" | tee -a "$GITHUB_OUTPUT"
+          echo "main=[\"speech\"]" | tee -a "$GITHUB_OUTPUT"
 
       - name: Select tests to run
         id: test_to_run
@@ -182,7 +171,7 @@ jobs:
           echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout NeMo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
@@ -223,7 +212,7 @@ jobs:
       && !cancelled()
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
 
@@ -272,28 +261,6 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-nemo2:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-nemo2.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
-          || needs.pre-flight.outputs.components_to_run == '["all"]'
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
-
   Nemo_CICD_Test:
     needs:
       - pre-flight
@@ -301,14 +268,13 @@ jobs:
       - cicd-import-tests
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
-      - cicd-main-nemo2
       - cicd-main-speech
     if: always()
     runs-on: ubuntu-latest
     permissions: write-all
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Get workflow result
         id: result
@@ -335,7 +301,7 @@ jobs:
           echo "code=$RESULT" | tee -a $GITHUB_OUTPUT
 
       - name: Checkout for GH CLI
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Remove label if not cancelled
         if: |
@@ -366,27 +332,6 @@ jobs:
 
             So it might be time to merge this PR or get some approvals.
 
-            //cc @chtruong814 @ko3n1g @pablo-garay @thomasdhc
-
-      - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"
-        if: |
-          steps.result.outputs.code == 'failure'
-          && github.event.label.name == 'Run CICD'
-          && env.SLACK_WEBHOOK != ''
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPOSITORY: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          PR_NUMBER: ${{ github.event.number }}
-          SERVER_URL: ${{ github.server_url }}
-        run: |
-          set -x
-          pip install PyGithub
-          export BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
-
-          python .github/scripts/notify.py
-
       - name: Exit
         if: ${{ always() }}
         env:
@@ -414,10 +359,10 @@ jobs:
         flag: [unit-test, e2e]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download coverage reports of current branch
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: coverage-${{ matrix.flag }}-*
 
@@ -442,7 +387,7 @@ jobs:
           flags: ${{ matrix.flag }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-${{ matrix.flag }}-aggregated
           path: |

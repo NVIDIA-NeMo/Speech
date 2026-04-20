@@ -27,16 +27,6 @@ If there is a local ``.nemo`` checkpoint that you'd like to load, use the :code:
 Where the model base class is the ASR model class of the original checkpoint, or the general ``ASRModel`` class.
 
 
-Hybrid ASR-TTS Models Checkpoints
----------------------------------
-
-:ref:`Hybrid ASR-TTS model <Hybrid-ASR-TTS_model>` is a transparent wrapper for the ASR model, text-to-mel-spectrogram generator, and optional enhancer.
-The model is saved as a solid ``.nemo`` checkpoint containing all these parts.
-Due to transparency, the ASR model can be extracted after training/finetuning separately by using the ``asr_model`` attribute (NeMo submodel)
-:code:`hybrid_model.asr_model.save_to(<asr_checkpoint_path>.nemo)` or by using a wrapper
-made for convenience purpose :code:`hybrid_model.save_asr_model_to(<asr_checkpoint_path>.nemo)`
-
-
 Pretrained Checkpoints
 --------------------------
 
@@ -54,14 +44,14 @@ the ASR Model class. In general, you can load any of these models with code in t
 
 Where the model name is the value under "Model Name" entry in the tables below.
 
-For example, to load the base English QuartzNet model for speech recognition, run:
+For example, to load the Parakeet TDT model for speech recognition, run:
 
 .. code-block:: python
 
-  model = nemo_asr.models.ASRModel.from_pretrained(model_name="QuartzNet15x5Base-En")
+  model = nemo_asr.models.ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
 
-You can also call :code:`from_pretrained()` from the specific model class (such as :code:`EncDecCTCModel`
-for QuartzNet) if you need to access a specific model functionality.
+You can also call :code:`from_pretrained()` from the specific model class (such as :code:`EncDecRNNTBPEModel`
+for Parakeet) if you need to access a specific model functionality.
 
 If you would like to programmatically list the models available for a particular base class, you can use the
 :code:`list_available_models()` method.

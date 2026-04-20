@@ -92,6 +92,23 @@ class DataModule(LightningDataModule):
         cfg = self.cfg.test_ds
         return self._build_test_dataloader(cfg)
 
+    def predict_dataloader(self):
+        if "predict_ds" not in self.cfg:
+            return None
+        cfg = self.cfg.predict_ds
+
+        base_cfg = cfg.copy()
+        with open_dict(base_cfg):
+            del base_cfg.datasets
+        dloaders = {}
+        for name, item in cfg.datasets.items():
+            with open_dict(base_cfg):
+                item = OmegaConf.merge(base_cfg, item)
+            dloaders[name] = self._build_test_dataloader(item)
+        # NOTE(yifan): `trainer.predict()` only supports the `CombinedLoader(mode="sequential")` mode
+        # so we cannot reuse the `_build_test_dataloader` function here
+        return CombinedLoader(dloaders, mode="sequential")
+
     def _build_test_dataloader(self, cfg: DictConfig) -> torch.utils.data.DataLoader | CombinedLoader:
         # Single validation/test dataloader.
         # This is internal-only: the config has to specify multiple dataloaders via "datasets" key,
@@ -133,9 +150,17 @@ class DataModule(LightningDataModule):
             if (
                 hasattr(self.trainer, "model")
                 and hasattr(self.trainer.model, "device_mesh")
-                and self.trainer.model.device_mesh is not None
+                and (dm := self.trainer.model.device_mesh) is not None
             ):  # model parallelism
-                return self.trainer.model.device_mesh.get_coordinate()[0]
+                if "data_parallel" in dm.mesh_dim_names:  # Lightning's built-in ModelParallelStrategy
+                    dp_rank = dm["data_parallel"].get_local_rank()
+                elif (
+                    "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
+                ):  # AutomodelParallelStrategy
+                    dp_rank = (
+                        dm["dp_replicate"].get_local_rank() * dm["dp_shard"].size() + dm["dp_shard"].get_local_rank()
+                    )
+                return dp_rank
             else:
                 return torch.distributed.get_rank()  # plain ol' DDP
         else:
@@ -146,9 +171,15 @@ class DataModule(LightningDataModule):
             if (
                 hasattr(self.trainer, "model")
                 and hasattr(self.trainer.model, "device_mesh")
-                and self.trainer.model.device_mesh is not None
+                and (dm := self.trainer.model.device_mesh) is not None
             ):  # model parallelism
-                return self.trainer.model.device_mesh.shape[0]
+                if "data_parallel" in dm.mesh_dim_names:  # Lightning's built-in ModelParallelStrategy
+                    dp_size = dm["data_parallel"].size()
+                elif (
+                    "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
+                ):  # AutomodelParallelStrategy
+                    dp_size = dm["dp_replicate", "dp_shard"].size()
+                return dp_size
             else:  # plain ol' DDP
                 return torch.distributed.get_world_size()
         else:

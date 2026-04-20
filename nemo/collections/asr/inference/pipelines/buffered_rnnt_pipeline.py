@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch import Tensor
@@ -39,6 +40,8 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     update_punctuation_and_language_tokens_timestamps,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis as NemoHypothesis
+from nemo.collections.asr.parts.utils.rnnt_utils import batched_hyps_to_hypotheses
+from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
@@ -129,8 +132,6 @@ class BufferedRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
         self.tokens_to_move = self.punctuation_ids.union(self.language_token_ids)
 
-        # Keep small amount of extra padding
-        self.tail_padding_in_samples = max(int(self.chunk_size * self.sample_rate * 0.45), 6400)
         self.zero_encoded = self.init_zero_enc() if self.right_padding else None
 
     def init_endpointer(self) -> None:
@@ -225,9 +226,8 @@ class BufferedRNNTPipeline(BasePipeline):
         """
         state = RNNTStreamingState()
         state.set_global_offset(-self.initial_delay)
-        new_options = options.augment_with_defaults(
-            default_enable_itn=self.text_processor.is_itn_enabled(),
-            default_enable_pnc=self.text_processor.is_pnc_enabled(),
+        new_options = options.fill_defaults(
+            default_enable_itn=self.text_processor.itn_enabled,
             default_enable_nmt=self.nmt_enabled,
             default_source_language=self.nmt_model.source_language if self.nmt_enabled else None,
             default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
@@ -311,10 +311,10 @@ class BufferedRNNTPipeline(BasePipeline):
             buffers.append(buffer.unsqueeze_(0))
 
         # Only final frames have right padding
-        # Keep some amount of extra padding to avoid the performance degradation
-        right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
-        ).clamp(min=0)
+        # Calculate right paddings
+        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
+            min=0
+        )
 
         # Create and adjust the buffer lens
         buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
@@ -520,41 +520,96 @@ class BufferedRNNTPipeline(BasePipeline):
         states = [self.get_state(request.stream_id) for request in requests]
         partial_hypotheses, rnnt_states = [], []
         all_rnnt_states_are_none = True
-        for state in states:
+        all_multi_biasing_models_empty = True
+        multi_biasing_ids = np.full([len(states)], fill_value=-1)
+        for i, state in enumerate(states):
             hyp_state = state.hyp_decoding_state
+            rnnt_states.append(hyp_state)
             if hyp_state is not None:
-                partial_hypotheses.append(
-                    NemoHypothesis(score=0.0, y_sequence=torch.zeros([0], dtype=torch.long), dec_state=hyp_state)
-                )
-                rnnt_states.append(hyp_state)
                 all_rnnt_states_are_none = False
+            if state.has_biasing_request():
+                if state.options.biasing_cfg.multi_model_id is not None:
+                    all_multi_biasing_models_empty = False
+                    multi_biasing_ids[i] = state.options.biasing_cfg.multi_model_id
+                elif state.options.biasing_cfg.auto_manage_multi_model:
+                    state.options.biasing_cfg.add_to_multi_model(
+                        tokenizer=self.asr_model.tokenizer,
+                        biasing_multi_model=self.decoding_computer.biasing_multi_model,
+                    )
+                    multi_biasing_ids[i] = state.options.biasing_cfg.multi_model_id
+                    all_multi_biasing_models_empty = False
+                else:
+                    logging.warning("Biasing request is not empty, not auto managed and not compiled. Skipping")
+            if hyp_state is not None or state.has_biasing_request():
+                partial_hypotheses.append(
+                    NemoHypothesis(
+                        score=0.0,
+                        y_sequence=torch.zeros([0], dtype=torch.long),
+                        dec_state=hyp_state,
+                        biasing_cfg=state.options.biasing_cfg,
+                    )
+                )
             else:
                 partial_hypotheses.append(None)
-                rnnt_states.append(None)
 
         batched_rnnt_states = None
         if not all_rnnt_states_are_none:
             batched_rnnt_states = self.decoding_computer.merge_to_batched_state(rnnt_states)
 
-        batched_state = None
-        if self.tokens_per_right_padding > 0:
-            with torch.inference_mode(), torch.no_grad():
-                best_hyp_chunk, alignments, batched_state = self.decoding_computer(
-                    encs.transpose(1, 2), enc_lens_chunk, batched_rnnt_states
-                )
-
-        best_hyp = self.asr_model.decode(encs, enc_lens, partial_hypotheses=partial_hypotheses)
-        if self.tokens_per_right_padding > 0 and batched_state is not None:
-            for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):
-                state.hyp_decoding_state = rnnt_state
+        if all_multi_biasing_models_empty:
+            multi_biasing_ids = None
         else:
-            for state, hyp in zip(states, best_hyp):
-                state.hyp_decoding_state = hyp.dec_state
+            multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=enc_lens_chunk.device)
 
-        ready_states = self.decode_step(best_hyp, requests, states)
+        encs_dim_last = encs.transpose(1, 2)
+        # decode chunk
+        with torch.inference_mode(), torch.no_grad():
+            best_batched_hyps_chunk, _, batched_state = self.decoding_computer(
+                encs_dim_last,
+                enc_lens_chunk,
+                batched_rnnt_states,
+                multi_biasing_ids=multi_biasing_ids,
+            )
+        best_hyps = batched_hyps_to_hypotheses(best_batched_hyps_chunk, batch_size=enc_lens.shape[0])
+
+        # save state (after chunk)
+        for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):
+            state.hyp_decoding_state = rnnt_state
+
+        if self.tokens_per_right_padding > 0:
+            # decode right context
+            _, max_time, feat_dim = encs_dim_last.shape
+            device = encs.device
+            # we are indexing `encs_dim_last` with `shift_indices` to get a tensor where right context is at the start
+            # everything after right context is padded with `0` index (first encoder vector)
+            # padding will be ignored by decoder_computer since we pass the lengths
+            shift_indices = torch.arange(max_time, device=device, dtype=torch.long)[None, :] + enc_lens_chunk[:, None]
+            # pad with zeros everything beyond needed context
+            shift_indices = torch.where(shift_indices < max_time, shift_indices, torch.zeros_like(shift_indices))
+            with torch.inference_mode(), torch.no_grad():
+                best_batched_hyps_rc, _, _ = self.decoding_computer(
+                    torch.gather(encs_dim_last, dim=1, index=shift_indices[:, :, None].expand(-1, -1, feat_dim)),
+                    enc_lens - enc_lens_chunk,
+                    batched_state,
+                    multi_biasing_ids=multi_biasing_ids,
+                )
+                best_hyps_rc = batched_hyps_to_hypotheses(best_batched_hyps_rc, batch_size=enc_lens.shape[0])
+            # merge right context to chunk hypothesis
+            for hyp, hyp_rc in zip(best_hyps, best_hyps_rc):
+                hyp.merge_(hyp_rc)
+
+        ready_states = self.decode_step(best_hyps, requests, states)
         for curr_state in states:
             curr_state.timestamp_offset += self.tokens_per_frame_float
         ready_state_ids.update(ready_states)
+
+        for request, state in zip(requests, states):
+            # only the first request contains biasing options; biasing options for the stream are stored in state
+            if request.is_last and state.has_biasing_request():
+                if state.options.biasing_cfg.auto_manage_multi_model:
+                    state.options.biasing_cfg.remove_from_multi_model(
+                        biasing_multi_model=self.decoding_computer.biasing_multi_model
+                    )
 
     def decode_step(self, best_hyp: list, requests: list[Request], states: list[RNNTStreamingState]) -> set:
         """
@@ -750,6 +805,5 @@ class BufferedRNNTPipeline(BasePipeline):
             device=self.device,
             pad_last_frame=True,
             right_pad_features=self.right_padding,
-            tail_padding_in_samples=self.tail_padding_in_samples,
         )
         return request_generator

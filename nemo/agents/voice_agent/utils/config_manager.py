@@ -162,11 +162,13 @@ class ConfigManager:
 
         logger.info(f"Final STT config: {self.server_config.stt}")
 
+        audio_chunk_size_in_secs = self.server_config.stt.get("audio_chunk_size_in_secs", 0.08)
+        buffer_size = audio_chunk_size_in_secs // self.RAW_AUDIO_FRAME_LEN_IN_SECS
         self.stt_params = NeMoSTTInputParams(
             att_context_size=self.server_config.stt.att_context_size,
             frame_len_in_secs=self.server_config.stt.frame_len_in_secs,
             raw_audio_frame_len_in_secs=self.RAW_AUDIO_FRAME_LEN_IN_SECS,
-            buffer_size=self.server_config.stt.get("buffer_size", 5),  # FC has 80ms frame, which is 5 * 16ms
+            buffer_size=self.server_config.stt.get("buffer_size", buffer_size),  # FC has 80ms frame, which is 5 * 16ms
         )
 
     def _configure_diarization(self):

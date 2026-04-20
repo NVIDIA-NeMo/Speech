@@ -37,7 +37,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 @dataclass
-class ClearMLParams:
+class ClearMLParams:  # pylint: disable=C0115
     project: Optional[str] = None
     task: Optional[str] = None
     connect_pytorch: Optional[bool] = False
@@ -48,23 +48,23 @@ class ClearMLParams:
     log_metrics: Optional[bool] = False
 
 
-class ClearMLLogger(Logger):
+class ClearMLLogger(Logger):  # pylint: disable=C0115
     @property
-    def name(self) -> str:
+    def name(self) -> str:  # pylint: disable=C0116
         return self.clearml_task.name
 
     @property
-    def version(self) -> str:
+    def version(self) -> str:  # pylint: disable=C0116
         return self.clearml_task.id
 
     def __init__(
         self, clearml_cfg: DictConfig, log_dir: str, prefix: str, save_best_model: bool, postfix: str = ".nemo"
-    ) -> None:
+    ) -> None:  # pylint: disable=C0116
         if not HAVE_CLEARML_LOGGER:
             raise ImportError(
                 "Found create_clearml_logger is True."
                 "But ClearML not found. Please see the README for installation instructions:"
-                "https://github.com/allegroai/clearml"
+                "https://github.com/clearml/clearml"
             )
 
         self.clearml_task = None
@@ -106,7 +106,7 @@ class ClearMLLogger(Logger):
                 name=model_name, task=self.clearml_task, tags=tags, framework="NeMo"
             )
 
-    def log_hyperparams(self, params, *args, **kwargs) -> None:
+    def log_hyperparams(self, params, *args, **kwargs) -> None:  # pylint: disable=C0116
         if self.clearml_model and self.clearml_cfg.log_cfg:
             if isinstance(params, Namespace):
                 params = vars(params)
@@ -117,7 +117,7 @@ class ClearMLLogger(Logger):
             params = OmegaConf.to_yaml(params)
             self.clearml_model.update_design(config_text=params)
 
-    def log_metrics(self, metrics: Mapping[str, float], step: Optional[int] = None) -> None:
+    def log_metrics(self, metrics: Mapping[str, float], step: Optional[int] = None) -> None:  # pylint: disable=C0116
         if self.clearml_model and self.clearml_cfg.log_metrics:
             metrics = {
                 k: {
@@ -128,6 +128,7 @@ class ClearMLLogger(Logger):
             }
             self.last_metrics = metrics
 
+    # pylint: disable=C0116
     def log_table(
         self,
         key: str,
@@ -151,7 +152,7 @@ class ClearMLLogger(Logger):
         if table is not None:
             self.clearml_task.logger.report_table(title=key, series=key, iteration=step, table_plot=table)
 
-    def after_save_checkpoint(self, checkpoint_callback: Checkpoint) -> None:
+    def after_save_checkpoint(self, checkpoint_callback: Checkpoint) -> None:  # pylint: disable=C0116
         if self.clearml_model:
             if self.save_best_model:
                 if self.save_blocked:
@@ -164,7 +165,7 @@ class ClearMLLogger(Logger):
                 self.previos_best_model_path = checkpoint_callback.best_model_path
             self._log_model(self.path_nemo_model)
 
-    def finalize(self, status: Literal["success", "failed", "aborted"] = "success") -> None:
+    def finalize(self, status: Literal["success", "failed", "aborted"] = "success") -> None:  # pylint: disable=C0116
         if status == "success":
             self.clearml_task.mark_completed()
         elif status == "failed":
@@ -172,7 +173,7 @@ class ClearMLLogger(Logger):
         elif status == "aborted":
             self.clearml_task.mark_stopped()
 
-    def _log_model(self, save_path: str) -> None:
+    def _log_model(self, save_path: str) -> None:  # pylint: disable=C0116
         if self.clearml_model:
             if os.path.exists(save_path):
                 self.clearml_model.update_weights(

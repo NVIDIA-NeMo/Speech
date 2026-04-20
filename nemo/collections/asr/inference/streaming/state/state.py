@@ -35,6 +35,8 @@ class StreamingState:
     Generic state for the streaming ASR pipeline
     """
 
+    options: RequestOptions | None
+
     def __init__(self):
         """
         Initialize the StreamingState
@@ -83,12 +85,8 @@ class StreamingState:
 
         # Word-level ASR output attributes (cleared after cleanup_after_response):
         # - words: Raw word-level ASR output
-        # - pnc_words: Words with punctuation and capitalization applied
-        #   * When automatic punctuation is ENABLED: Contains punctuation marks and capitalization
-        #     (from either external PnC model or built-in ASR model PnC)
-        #   * When automatic punctuation is DISABLED: No punctuation or capitalization
-        #     (any punctuation in raw ASR output will be removed)
-        # - itn_words: Words after applying both PnC and ITN (Inverse Text Normalization)
+        # - pnc_words: Words with punctuation and capitalization
+        # - itn_words: Words after applying ITN
         # - word_alignment: ITN word alignment
         # Segment-level ASR output attributes (cleared after cleanup_after_response):
         # - segments: Raw segment-level ASR output
@@ -377,3 +375,7 @@ class StreamingState:
             decoded_words = decoded_words[1:]
 
         self.words.extend(decoded_words)
+
+    def has_biasing_request(self) -> bool:
+        """Return True if options contains non-empty biasing request"""
+        return self.options is not None and self.options.has_biasing_request()

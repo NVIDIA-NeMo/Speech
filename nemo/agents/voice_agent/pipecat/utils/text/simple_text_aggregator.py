@@ -244,5 +244,5 @@ class SimpleSegmentedTextAggregator(SimpleTextAggregator):
             for ignore_mark in self._ignore_marks:
                 if ignore_mark in result:
                     logger.debug(f"Ignoring string: `{ignore_mark}` in result: `{result}`")
-                result = result.replace(ignore_mark, "")
+                    result = result.replace(ignore_mark, "")
             yield Aggregation(text=result, type=AggregationType.SENTENCE)

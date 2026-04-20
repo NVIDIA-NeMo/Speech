@@ -403,7 +403,6 @@ class BasePipeline(PipelineInterface):
             asr_supports_punctuation=self.supports_punctuation,
             confidence_aggregator=self.confidence_aggregator,
             sep=self.sep,
-            enable_pnc=cfg.enable_pnc,
             enable_itn=cfg.enable_itn,
         )
 

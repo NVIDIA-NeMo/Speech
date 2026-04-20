@@ -93,7 +93,6 @@ asr_decoding_type: ctc                        # Decoding method: ctc or rnnt
 audio_file: null                              # Path to audio file, directory, or manifest JSON
 output_filename: null                         # Path to output transcription JSON file
 output_dir: null                              # Directory to save time-aligned output
-enable_pnc: false                             # Whether to apply punctuation & capitalization
 enable_itn: false                             # Whether to apply inverse text normalization
 enable_nmt: false                             # Whether to apply neural machine translation
 asr_output_granularity: segment               # Output granularity: word or segment
@@ -102,6 +101,8 @@ lang: null                                    # Language code for ASR model
 return_tail_result: false                     # Whether to return the tail labels left in the right padded side of the buffer
 calculate_wer: true                           # Whether to calculate WER
 calculate_bleu: true                          # Whether to calculate BLEU score
+warmup_steps: 0                               # Number of warmup steps for RTFx and LAAL calculation
+run_steps: 1                                  # Number of run steps for RTFx and LAAL calculation
 
 
 # ========================

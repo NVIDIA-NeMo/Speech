@@ -88,6 +88,7 @@ instance/
 
 # Sphinx documentation
 docs/build
+docs/source/_build
 
 # PyBuilder
 target/
@@ -182,6 +183,7 @@ nemo_experiments/
 
 slurm*.out
 
+# Onelogger
 onelogger.*
 
 # voice agent
@@ -192,3 +194,8 @@ eval_results/
 audio_logs/
 audio_logs_user/
 audio_logs_agent/
+audio_logs/
+eval_results/
+
+# agents
+.claude/settings.local.json

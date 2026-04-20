@@ -26,7 +26,7 @@
 * [Speaker Recognition](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speaker_recognition/intro.html): TitaNet, ECAPA_TDNN, SpeakerNet
 * [Speaker Diarization](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speaker_diarization/intro.html)
     * Clustering Diarizer: TitaNet, ECAPA_TDNN, SpeakerNet
-    * Neural Diarizer: MSDD (Multi-scale Diarization Decoder)
+    * Neural Diarizer: Sortformer
 * [Speech Intent Detection and Slot Filling](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speech_intent_slot/intro.html): Conformer-Transformer
 
 You can also get a high-level overview of NeMo ASR by watching the talk *NVIDIA NeMo: Toolkit for Conversational AI*, presented at PyData Yerevan 2022:

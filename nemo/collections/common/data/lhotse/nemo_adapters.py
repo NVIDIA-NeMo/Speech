@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Lhotse adapters for NeMo datasets including Parquet support."""
 import os
 import random
 import re
@@ -21,6 +22,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import Generator, Iterable, List, Literal
 
+try:
+    import pyarrow.parquet as pq
+
+    HAVE_PYARROW = True
+except ImportError:
+    HAVE_PYARROW = False
 import soundfile
 from cytoolz import groupby
 from lhotse import AudioSource, MonoCut, Recording, SupervisionSegment
@@ -47,7 +54,8 @@ class LazyNeMoIterator:
     - "text" (overridable with ``text_field`` argument)
 
     Specially supported keys are:
-    - [recommended] "sampling_rate" allows us to provide a valid Lhotse ``Recording`` object without checking the audio file
+    - [recommended] "sampling_rate" allows us to provide a valid Lhotse
+     ``Recording`` object without checking the audio file
     - "offset" for partial recording reads
     - "lang" is mapped to Lhotse superivsion's language (overridable with ``lang_field`` argument)
 
@@ -292,10 +300,10 @@ class LazyNeMoTarredIterator:
         self.paths = expand_sharded_filepaths(manifest_path)
         if len(self.paths) == 1:
             logging.warning(
-                f"""You are using Lhotse dataloading for tarred audio with a non-sharded manifest.
-                            This will incur significant memory overhead and slow-down training. To prevent this error message
-                            please shard file '{self.paths[0]}' using 'scripts/speech_recognition/convert_to_tarred_audio_dataset.py'
-                            WITHOUT '--no_shard_manifest'"""
+                f"You are using Lhotse dataloading for tarred audio with a non-sharded manifest. "
+                f"This will incur significant memory overhead. To prevent this, please shard file "
+                f"'{self.paths[0]}' using 'scripts/speech_recognition/convert_to_tarred_audio_dataset.py' "
+                f"WITHOUT '--no_shard_manifest'"
             )
             self.source = LazyJsonlIterator(self.paths[0])
             self.shard_id_to_manifest = groupby("shard_id", self.source)
@@ -727,3 +735,104 @@ def expand_sharded_filepaths(paths: str | Path | list[str]) -> list[str]:
 
 def _to_custom_attr_dict(d: dict, _excluded_fields: set[str] = {"duration", "audio_filepath"}) -> dict:
     return {k: v for k, v in d.items() if k not in _excluded_fields}
+
+
+class LazyParquetIterator:
+    """
+    LazyParquetIterator reads a Parquet file (local or remote) and yields Lhotse Cut objects.
+    It streams data using PyArrow's iter_batches to avoid loading the full file into memory.
+
+    Args:
+        path (str | Path): Path to the .parquet file.
+        audio_field (str): Name of the column containing audio bytes (default: "audio").
+        text_field (str): Name of the column containing transcript (default: "text").
+        duration_field (str): Name of the column containing duration (default: "duration").
+        lang_field (str): Name of the column containing language (default: "lang").
+        sampling_rate (int): Fallback sampling rate if not found in metadata (default: 16000).
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        audio_field: str = "audio",
+        text_field: str = "text",
+        duration_field: str = "duration",
+        lang_field: str = "lang",
+        sampling_rate: int = 16000,
+    ) -> None:
+        # SAFETY CHECK: Ensure pyarrow is actually installed
+        if not HAVE_PYARROW:
+            raise ImportError(
+                "PyArrow is required to read Parquet manifests. Please install it using: pip install pyarrow"
+            )
+
+        self.path = str(path)
+        self.audio_field = audio_field
+        self.text_field = text_field
+        self.duration_field = duration_field
+        self.lang_field = lang_field
+        self.sampling_rate = sampling_rate
+
+    def __iter__(self) -> Generator[Cut, None, None]:
+        # Open Parquet file in streaming mode inside __iter__
+        # This ensures each DataLoader worker gets its own file handle.
+        try:
+            parquet_file = pq.ParquetFile(self.path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to open Parquet file: {self.path}") from e
+
+        # Stream batches to keep memory usage low
+        for batch in parquet_file.iter_batches():
+            df = batch.to_pandas()
+
+            for idx, row in df.iterrows():
+                # 1. Extract Audio Bytes
+                # Handle HuggingFace format: {'bytes': b'...', 'path': '...'} or raw bytes
+                audio_data = row.get(self.audio_field)
+                if isinstance(audio_data, dict) and 'bytes' in audio_data:
+                    audio_bytes = audio_data['bytes']
+                elif isinstance(audio_data, bytes):
+                    audio_bytes = audio_data
+                else:
+                    logging.warning(f"Skipping row {idx}: Audio column '{self.audio_field}' format unrecognized.")
+                    continue
+
+                # 2. Extract Metadata
+                text = row.get(self.text_field, "")
+                language = row.get(self.lang_field, None)
+
+                # 3. Create Unique ID
+                # Use 'id' column if exists, else combine filename + index
+                row_id = str(row.get('id', f"{Path(self.path).stem}_{idx}"))
+
+                # 4. Create Lhotse Recording
+                try:
+                    recording = Recording.from_bytes(
+                        data=audio_bytes,
+                        recording_id=row_id,
+                    )
+                except (RuntimeError, ValueError, TypeError) as e:
+                    logging.warning(f"Skipping row {row_id}: Failed to decode audio bytes. {e}")
+                    continue
+
+                # 5. Create Cut
+                cut = recording.to_cut()
+
+                # Add Supervision (Transcript)
+                cut.supervisions.append(
+                    SupervisionSegment(
+                        id=row_id,
+                        recording_id=row_id,
+                        start=0.0,
+                        duration=cut.duration,
+                        channel=0,
+                        text=text,
+                        language=language,
+                    )
+                )
+
+                # Attach any extra metadata from the row to cut.custom
+                # (Exclude the heavy audio bytes to save RAM)
+                cut.custom = {k: v for k, v in row.items() if k != self.audio_field}
+
+                yield cut

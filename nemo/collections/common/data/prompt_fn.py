@@ -17,7 +17,7 @@ import torch
 
 
 PromptFormatFnReturnType = dict[str, list[torch.Tensor]]
-PromptFormatSignature = Callable[[object, object], PromptFormatFnReturnType]
+PromptFormatSignature = Callable[..., PromptFormatFnReturnType]
 PROMPT_FORMAT_FNS: dict[tuple[Type, Type] | Type, PromptFormatSignature] = {}
 
 
@@ -82,10 +82,10 @@ def get_prompt_format_fn(example: Type | object, prompt: Type | object = None) -
     )
 
 
-def apply_prompt_format_fn(example: object | Type, prompt: object | Type) -> PromptFormatFnReturnType:
+def apply_prompt_format_fn(example: object | Type, prompt: object | Type, **prompt_kwargs) -> PromptFormatFnReturnType:
     """
     Utility for resolving the prompt format function and applying it to an example in one go.
     See the documentation of ``text_prompt_formatter`` above.
     """
     fn = get_prompt_format_fn(example, prompt)
-    return fn(example, prompt)
+    return fn(example, prompt, **prompt_kwargs)

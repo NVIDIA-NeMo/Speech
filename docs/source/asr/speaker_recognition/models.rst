@@ -14,7 +14,7 @@ The Checkpoints page also contains benchmark results for the available speaker r
 TitaNet
 -----------
 
-TitaNet model :cite:`sr-models-koluguri2021titanet` is based on the ContextNet architecture :cite:`sr-models-han2020contextnet`  for extracting speaker representations.
+TitaNet model :cite:`sr-models-koluguri2021titanet` is based on the ContextNet architecture :cite:`sr-models-han2020contextnet` for extracting speaker representations.
 We employ 1D depth-wise separable convolutions with Squeeze-and-Excitation (SE) layers with global context followed by channel attention based statistics pooling layer to map
 variable-length utterances to a fixed-length embedding (tvector). TitaNet is a scalable architecture and achieves state-of-the-art performance on speaker verification and diarization tasks.
 

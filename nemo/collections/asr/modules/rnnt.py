@@ -321,12 +321,10 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         Args:
             decoder_states (list of list of torch.Tensor): list of decoder states
-                [B, 1, C]
-                    - B: Batch size.
-                    - C: Dimensionality of the hidden state.
+                of shape ``[B, 1, C]`` where B is batch size and C is hidden state dim.
 
         Returns:
-            batch_states (list of torch.Tensor): batch of decoder states [[B x C]]
+            batch_states (list of torch.Tensor): batch of decoder states ``[[B x C]]``.
         """
         new_state = torch.stack([s[0] for s in decoder_states])
 
@@ -388,7 +386,7 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
         Replaces states in `dst_states` with states from `src_states` based on the given `mask`.
 
         Args:
-            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states`(if provided).
+            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states` (if provided).
             src_states (tuple[torch.Tensor, torch.Tensor]): Values selected at indices where `mask` is True.
             dst_states (tuple[torch.Tensor, torch.Tensor], optional): The output states.
             other_src_states (tuple[torch.Tensor, torch.Tensor], optional): Values selected at indices where `mask` is False.
@@ -1016,19 +1014,17 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
 
     def batch_initialize_states(self, decoder_states: List[List[torch.Tensor]]) -> List[torch.Tensor]:
         """
-        Creates a stacked decoder states to be passed to prediction network
+        Creates a stacked decoder states to be passed to prediction network.
 
         Args:
             decoder_states (list of list of list of torch.Tensor): list of decoder states
-                [B, C, L, H]
-                    - B: Batch size.
-                    - C: e.g., for LSTM, this is 2: hidden and cell states
-                    - L: Number of layers in prediction RNN.
-                    - H: Dimensionality of the hidden state.
+                of shape ``[B, C, L, H]`` where B is batch size, C is the number of state
+                types (e.g., 2 for LSTM: hidden and cell), L is number of layers, and
+                H is the hidden state dimensionality.
 
         Returns:
             batch_states (list of torch.Tensor): batch of decoder states
-                [C x torch.Tensor[L x B x H]
+                ``[C x torch.Tensor[L x B x H]]``.
         """
         # stack decoder states into tensor of shape [B x layers x L x H]
         # permute to the target shape [layers x L x B x H]
@@ -1066,6 +1062,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Aggregates decoder states based on the given indices.
+
         Args:
             src_states (Tuple[torch.Tensor, torch.Tensor]): source states of
                 shape `([L x (batch_size * beam_size, H)], [L x (batch_size * beam_size, H)])`
@@ -1075,10 +1072,12 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
                 the indices in beam that map the source states to the destination states.
             dst_states (Optional[Tuple[torch.Tensor, torch.Tensor]]): If provided, the method
                 updates these tensors in-place.
+
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
+            Tuple[torch.Tensor, torch.Tensor]: The aggregated states.
+
         Note:
-            - The `indices` tensor is expanded to match the shape of the source states
+            The `indices` tensor is expanded to match the shape of the source states
             during the gathering operation.
         """
         layers_num = src_states[0].shape[0]
@@ -1148,7 +1147,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
         Replaces states in `dst_states` with states from `src_states` based on the given `mask`.
 
         Args:
-            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states`(if provided).
+            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states` (if provided).
             src_states (Tuple[torch.Tensor, torch.Tensor]): Values selected at indices where `mask` is True.
             dst_states (Tuple[torch.Tensor, torch.Tensor])): The output states.
             other_src_states (Tuple[torch.Tensor, torch.Tensor], optional): Values selected at indices where `mask` is False.
@@ -1333,6 +1332,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
                 - compute_wer (bool, default false). Whether to compute WER or not for the fused batch.
 
+                - keep_hypotheses (bool, default false). Whether to keep the hypotheses of the decoded outputs.
+
             Output - instead of the usual `joint` log prob tensor, the following results can be returned.
 
                 - loss (optional). Returned if decoder_outputs, transcripts and transript_lengths are not None.
@@ -1358,6 +1359,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             "transcripts": NeuralType(('B', 'T'), LabelsType(), optional=True),
             "transcript_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
             "compute_wer": NeuralType(optional=True),
+            "keep_hypotheses": NeuralType(optional=True),
         }
 
     @property
@@ -1470,6 +1472,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         # to change, requires running ``model.temperature = T`` explicitly
         self.temperature = 1.0
 
+        self.hypotheses = None
+
     @typecheck()
     def forward(
         self,
@@ -1479,6 +1483,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         transcripts: Optional[torch.Tensor] = None,
         transcript_lengths: Optional[torch.Tensor] = None,
         compute_wer: bool = False,
+        keep_hypotheses: bool = False,
     ) -> Union[torch.Tensor, List[Optional[torch.Tensor]]]:
         # encoder = (B, D, T)
         # decoder = (B, D, U) if passed, else None
@@ -1516,6 +1521,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             wers, wer_nums, wer_denoms = [], [], []
             target_lengths = []
             batch_size = int(encoder_outputs.size(0))  # actual batch size
+            hypotheses = []
 
             # Iterate over batch using fused_batch_size steps
             for batch_idx in range(0, batch_size, self._fused_batch_size):
@@ -1600,6 +1606,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                         targets=sub_transcripts,
                         targets_lengths=sub_transcript_lens,
                     )
+
+                    hyp = self.wer.get_hypotheses() if keep_hypotheses else []
+
                     # Sync and all_reduce on all processes, compute global WER
                     wer, wer_num, wer_denom = self.wer.compute()
                     self.wer.reset()
@@ -1610,6 +1619,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     wers.append(wer)
                     wer_nums.append(wer_num)
                     wer_denoms.append(wer_denom)
+                    hypotheses.extend(hyp)
 
                 del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
 
@@ -1627,7 +1637,18 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 wer_num = None
                 wer_denom = None
 
+            self.hypotheses = hypotheses if keep_hypotheses else None
             return losses, wer, wer_num, wer_denom
+
+    def get_hypotheses(self):
+        """
+        Returns the hypotheses generated during the last forward pass.
+        """
+        if self.hypotheses is None:
+            raise ValueError(
+                "No hypotheses were generated during the last forward pass. Did you set keep_hypotheses=True in forward()?"
+            )
+        return self.hypotheses
 
     def project_encoder(self, encoder_output: torch.Tensor) -> torch.Tensor:
         """

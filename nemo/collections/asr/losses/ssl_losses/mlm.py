@@ -65,11 +65,14 @@ class MLMLoss(Loss):
         if masks is None:
             masks = spec_masks
 
-        # B,D,T -> B,T,D
-        masks = masks.transpose(1, 2)
+        if masks is None:
+            masks = torch.ones_like(decoder_outputs, dtype=torch.bool)
+        else:
+            # B,D,T -> B,T,D
+            masks = masks.transpose(1, 2)
 
-        masks = masks.reshape(masks.shape[0], masks.shape[1] // self.combine_time_steps, -1)
-        masks = masks.mean(-1) > self.mask_threshold
+            masks = masks.reshape(masks.shape[0], masks.shape[1] // self.combine_time_steps, -1)
+            masks = masks.mean(-1) > self.mask_threshold
 
         out_masked_only = decoder_outputs[masks]
         targets = F.pad(targets, (0, masks.shape[-1] - targets.shape[-1]))

@@ -87,8 +87,7 @@ class NemoSTTService(STTService):
         super().__init__(**kwargs)
         self._queue = asyncio.Queue()
         self._sample_rate = sample_rate
-
-        self._params = params
+        self._params = params or NeMoSTTInputParams()
         self._model_name = model
         self._ignore_eou_eob = ignore_eou_eob
         self._input_sample_rate = None
@@ -100,8 +99,7 @@ class NemoSTTService(STTService):
         self._decoder_type = decoder_type
         self._audio_logger = audio_logger
         self._is_vad_active = False
-        if not params:
-            raise ValueError("params is required")
+        logger.info(f"NeMoSTTInputParams: {self._params}")
 
         self._device = device
 

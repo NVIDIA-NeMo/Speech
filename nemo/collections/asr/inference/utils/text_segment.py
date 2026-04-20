@@ -289,31 +289,3 @@ def join_segments(segments: list[list[TextSegment]], sep: str) -> list[str]:
         List of transcriptions, one for each text segment sequence
     """
     return [sep.join([s.text for s in items]) for items in segments]
-
-
-def normalize_segments_inplace(
-    segments: list[TextSegment] | list[list[TextSegment]], punct_marks: set[str], sep: str = ' '
-) -> None:
-    """
-    Normalize text in text segments by removing punctuation and converting to lowercase.
-
-    This function modifies the text segments in-place by calling normalize_text_inplace
-    on each TextSegment object. It handles both flat lists of text segments and nested lists.
-
-    Args:
-        segments (list[TextSegment] | list[list[TextSegment]]): List of TextSegment objects or list of lists of TextSegment objects
-        punct_marks (set[str]): Set of punctuation marks to be processed
-        sep (str): Separator to replace certain punctuation marks (default: ' ')
-
-    Note:
-        This function modifies the input text segments in-place. The original text
-        content of the text segments will be permanently changed.
-    """
-    for item in segments:
-        if isinstance(item, list):
-            for segment in item:
-                segment.normalize_text_inplace(punct_marks, sep)
-        elif isinstance(item, TextSegment):
-            item.normalize_text_inplace(punct_marks, sep)
-        else:
-            raise ValueError(f"Invalid item type: {type(item)}. Expected `TextSegment` or `List[TextSegment]`.")

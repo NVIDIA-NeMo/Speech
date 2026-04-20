@@ -19,11 +19,10 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
-from packaging import version
 
-from nemo.collections.asr.parts.numba.spec_augment import SpecAugmentNumba, spec_augment_launch_heuristics
-from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, FilterbankFeaturesTA
+from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
 from nemo.collections.asr.parts.submodules.spectr_augment import SpecAugment, SpecCutout
+from nemo.collections.audio.parts.utils.transforms import MFCC
 from nemo.core.classes import Exportable, NeuralModule, typecheck
 from nemo.core.neural_types import (
     AudioSignal,
@@ -33,21 +32,11 @@ from nemo.core.neural_types import (
     NeuralType,
     SpectrogramType,
 )
-from nemo.core.utils import numba_utils
-from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
+from nemo.core.utils.optional_libs import NUMBA_CUDA_AVAILABLE
 from nemo.utils import logging, logging_mode
 
-try:
-    import torchaudio
-    import torchaudio.functional
-    import torchaudio.transforms
-
-    TORCHAUDIO_VERSION = version.parse(torchaudio.__version__)
-    TORCHAUDIO_VERSION_MIN = version.parse('0.5')
-
-    HAVE_TORCHAUDIO = True
-except ModuleNotFoundError:
-    HAVE_TORCHAUDIO = False
+if NUMBA_CUDA_AVAILABLE:
+    from nemo.collections.asr.parts.numba.spec_augment import SpecAugmentNumba, spec_augment_launch_heuristics
 
 __all__ = [
     'AudioToMelSpectrogramPreprocessor',
@@ -171,7 +160,6 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
             Defaults to 0.0
         nb_max_freq (int) : Frequency above which all frequencies will be masked for narrowband augmentation.
             Defaults to 4000
-        use_torchaudio: Whether to use the `torchaudio` implementation.
         mel_norm: Normalization used for mel filterbank weights.
             Defaults to 'slaney' (area normalization)
         stft_exact_pad: Deprecated argument, kept for compatibility with older checkpoints.
@@ -237,8 +225,8 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         rng=None,
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
-        use_torchaudio: bool = False,
         mel_norm="slaney",
+        use_torchaudio: bool = False,  # Deprecated arguments; kept for config compatibility
         stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
         stft_conv=False,  # Deprecated arguments; kept for config compatibility
     ):
@@ -256,11 +244,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         super().__init__(n_window_size, n_window_stride)
 
         # Given the long and similar argument list, point to the class and instantiate it by reference
-        if not use_torchaudio:
-            featurizer_class = FilterbankFeatures
-        else:
-            featurizer_class = FilterbankFeaturesTA
-        self.featurizer = featurizer_class(
+        self.featurizer = FilterbankFeatures(
             sample_rate=self._sample_rate,
             n_window_size=n_window_size,
             n_window_stride=n_window_stride,
@@ -306,7 +290,6 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
 
 class AudioToMFCCPreprocessor(AudioPreprocessor):
     """Preprocessor that converts wavs to MFCCs.
-    Uses torchaudio.transforms.MFCC.
 
     Args:
         sample_rate: The sample rate of the audio.
@@ -382,14 +365,6 @@ class AudioToMFCCPreprocessor(AudioPreprocessor):
         log=True,
     ):
         self._sample_rate = sample_rate
-        if not HAVE_TORCHAUDIO:
-            logging.error('Could not import torchaudio. Some features might not work.')
-
-            raise ModuleNotFoundError(
-                "torchaudio is not installed but is necessary for "
-                "AudioToMFCCPreprocessor. We recommend you try "
-                "building it from source for the PyTorch version you have."
-            )
         if window_size and n_window_size:
             raise ValueError(f"{self} received both window_size and " f"n_window_size. Only one should be specified.")
         if window_stride and n_window_stride:
@@ -425,7 +400,7 @@ class AudioToMFCCPreprocessor(AudioPreprocessor):
         mel_kwargs['window_fn'] = window_fn
 
         # Use torchaudio's implementation of MFCCs as featurizer
-        self.featurizer = torchaudio.transforms.MFCC(
+        self.featurizer = MFCC(
             sample_rate=self._sample_rate,
             n_mfcc=n_mfcc,
             dct_type=dct_type,
@@ -527,7 +502,7 @@ class SpectrogramAugmentation(NeuralModule):
             self.spec_augment = lambda input_spec, length: input_spec
 
         # Check if numba is supported, and use a Numba kernel if it is
-        if use_numba_spec_augment and numba_utils.numba_cuda_is_supported(__NUMBA_MINIMUM_VERSION__):
+        if use_numba_spec_augment and NUMBA_CUDA_AVAILABLE:
             logging.info('Numba CUDA SpecAugment kernel is being used')
             self.spec_augment_numba = SpecAugmentNumba(
                 freq_masks=freq_masks,
@@ -746,8 +721,8 @@ class AudioToMelSpectrogramPreprocessorConfig:
     rng: Optional[str] = None
     nb_augmentation_prob: float = 0.0
     nb_max_freq: int = 4000
-    use_torchaudio: bool = False
     mel_norm: str = "slaney"
+    use_torchaudio: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
     stft_exact_pad: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
     stft_conv: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
 

@@ -50,7 +50,7 @@ When doing supervised fine-tuning from unsupervised pre-trained encoder, set fla
 """
 
 
-@hydra_runner(config_path="../conf/ssl/citrinet/", config_name="citrinet_ssl_1024")
+@hydra_runner(config_path="../conf/ssl/fastconformer/", config_name="fast-conformer")
 def main(cfg):
     logging.info(f"Hydra config: {OmegaConf.to_yaml(cfg)}")
 

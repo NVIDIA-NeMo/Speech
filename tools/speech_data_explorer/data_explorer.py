@@ -23,8 +23,6 @@ import logging
 import math
 import operator
 import os
-import pickle
-import tarfile
 import tempfile
 from collections import defaultdict
 from os.path import expanduser
@@ -62,8 +60,6 @@ DATA_PAGE_SIZE = 10
 _s3_client = None
 
 import configparser
-import os
-from pathlib import Path
 
 
 def parse_s3cfg(config_path='~/.s3cfg', section='default'):
@@ -132,29 +128,44 @@ class AISClient:
 def get_s3_client(s3cfg):
     """Get or create an S3-compatible client.
     Args:
-        s3cfg: S3 configuration file path with section, e.g. ~/.s3cfg[default]
+        s3cfg: S3 configuration file path with section (e.g. ~/.s3cfg[default]),
+            or the literal string "AIS" to read credentials from AIS_ENDPOINT
+            and AIS_AUTHN_TOKEN environment variables instead of a config file.
     Returns:
         boto3.client or AISClient
     """
     global _s3_client
+    if _s3_client is not None:
+        return _s3_client
+
+    if s3cfg == 'AIS':
+        endpoint_url = os.environ.get('AIS_ENDPOINT')
+        authn_token = os.environ.get('AIS_AUTHN_TOKEN')
+        missing = [n for n, v in (('AIS_ENDPOINT', endpoint_url), ('AIS_AUTHN_TOKEN', authn_token)) if not v]
+        if missing:
+            raise ValueError(
+                f"--s3cfg=AIS requires environment variables: {', '.join(missing)} not set"
+            )
+        _s3_client = AISClient(endpoint_url, authn_token)
+        return _s3_client
+
     path, section = s3cfg.rsplit('[', 1)
     s3_config = parse_s3cfg(path, section.rstrip(']'))
     logging.debug(f"S3 config loaded: {s3_config}")
-    if _s3_client is None:
-        endpoint_url = ("https://" if s3_config['use_https'] else "http://") + s3_config['host_base']
-        authn_token = s3_config.get('authn_token')
+    endpoint_url = ("https://" if s3_config['use_https'] else "http://") + s3_config['host_base']
+    authn_token = s3_config.get('authn_token')
 
-        if authn_token:
-            _s3_client = AISClient(endpoint_url, authn_token)
-        else:
-            _s3_client = boto3.client(
-                's3',
-                endpoint_url=endpoint_url,
-                aws_access_key_id=s3_config['access_key'],
-                aws_secret_access_key=s3_config['secret_key'],
-                region_name=s3_config['bucket_location'],
-                config=Config(connect_timeout=5),
-            )
+    if authn_token:
+        _s3_client = AISClient(endpoint_url, authn_token)
+    else:
+        _s3_client = boto3.client(
+            's3',
+            endpoint_url=endpoint_url,
+            aws_access_key_id=s3_config['access_key'],
+            aws_secret_access_key=s3_config['secret_key'],
+            region_name=s3_config['bucket_location'],
+            config=Config(connect_timeout=5),
+        )
     return _s3_client
 
 
@@ -277,7 +288,6 @@ def parse_dali_index(index_content):
     for line in lines[1:]:  # Skip header line
         parts = line.split()
         if len(parts) >= 4:
-            file_type = parts[0]
             offset = int(parts[1])
             size = int(parts[2])
             filename = parts[3]
@@ -637,9 +647,6 @@ def parse_args():
     parser.add_argument('--vocab', help='optional vocabulary to highlight OOV words')
     parser.add_argument('--port', default='8050', help='serving port for establishing connection')
     parser.add_argument(
-        '--disable-caching-metrics', action='store_true', help='disable caching metrics for errors analysis'
-    )
-    parser.add_argument(
         '--estimate-audio-metrics',
         '-a',
         action='store_true',
@@ -693,7 +700,12 @@ def parse_args():
         '-s3c',
         type=str,
         default='',
-        help='Path to the s3 credentials file and section. Example: ~/.s3cfg[default]. Set to "" to disable S3 support. Default is "". ',
+        help=(
+            'Path to the s3 credentials file and section. Example: ~/.s3cfg[default]. '
+            'Or the literal string "AIS" to read credentials from AIS_ENDPOINT and '
+            'AIS_AUTHN_TOKEN environment variables. Set to "" to disable S3 support. '
+            'Default is "".'
+        ),
     )
     args = parser.parse_args()
 
@@ -747,7 +759,6 @@ def eval_bandwidth(signal, sr, threshold=-50):
 # load data from JSON manifest file
 def load_data(
     data_filename,
-    disable_caching=False,
     estimate_audio=False,
     vocab=None,
     audio_base_path=None,
@@ -774,35 +785,6 @@ def load_data(
                         # assume each line contains just a single word
                         word = line.strip()
                     vocabulary_ext[word] = 1
-
-        # Disable caching for S3 manifests (cannot get mtime)
-        if not disable_caching and not is_s3_path(data_filename):
-            pickle_filename = data_filename.split('.json')[0]
-            json_mtime = datetime.datetime.fromtimestamp(os.path.getmtime(data_filename))
-            timestamp = json_mtime.strftime('%Y%m%d_%H%M')
-            pickle_filename += '_' + timestamp + '.pkl'
-            if os.path.exists(pickle_filename):
-                with open(pickle_filename, 'rb') as f:
-                    data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available = pickle.load(f)
-                if vocab is not None:
-                    for item in vocabulary_data:
-                        item['OOV'] = item['word'] not in vocabulary_ext
-                if estimate_audio:
-                    for item in data:
-                        tar_path = item.get('_tar_path')
-                        signal, sr = load_audio_data(
-                            item['audio_filepath'], audio_base_path, tar_path, dali_index_base
-                        )
-                        bw = eval_bandwidth(signal, sr)
-                        item['freq_bandwidth'] = int(bw)
-                        item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
-                with open(pickle_filename, 'wb') as f:
-                    pickle.dump(
-                        [data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available],
-                        f,
-                        pickle.HIGHEST_PROTOCOL,
-                    )
-                return data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available
 
     data = []
     wer_count = 0
@@ -1078,14 +1060,6 @@ def load_data(
 
     num_hours /= 3600.0
 
-    if not comparison_mode and not is_s3_path(data_filename):
-        if not disable_caching:
-            with open(pickle_filename, 'wb') as f:
-                pickle.dump(
-                    [data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available],
-                    f,
-                    pickle.HIGHEST_PROTOCOL,
-                )
     if comparison_mode:
         return (
             data,
@@ -1235,69 +1209,74 @@ def load_audio_data(audio_filepath, audio_base_path=None, tar_path=None, dali_in
 def merge_manifests(path1, path2, name1, name2):
     """Merge two NeMo manifests for dual-manifest NC mode.
 
-    Each manifest must have a 'pred_text' field.  The function renames them to
-    'pred_text_{name1}' and 'pred_text_{name2}' and writes a combined manifest
-    to a temporary file.
+    Rows are aligned by audio_filepath, so manifests may be in different orders
+    (e.g. one sorted by duration, the other unsorted). Each manifest must have
+    a 'pred_text' field; they are renamed to 'pred_text_{name1}' and
+    'pred_text_{name2}' in the output. Entries present in manifest 1 but
+    missing in manifest 2 are skipped with an aggregated warning.
 
-    Returns (tmp_path: str, tmp_file: NamedTemporaryFile) — the caller must
-    hold a reference to tmp_file to prevent it from being deleted.
+    Returns the path to the merged temporary file (delete=False, so the caller
+    does not need to hold a reference).
     """
-    logging.warning(
-        "Two manifests provided. They are expected to be equivalent with only "
-        "pred_text/WER fields differing. Alignment is by line index only — "
-        "correctness is the user's responsibility."
-    )
-
-    lines1 = list(open_manifest_file(path1))
-    lines2 = list(open_manifest_file(path2))
-
-    if len(lines1) != len(lines2):
-        logging.warning(
-            f"Manifest line counts differ: {len(lines1)} vs {len(lines2)}. "
-            f"Truncating to {min(len(lines1), len(lines2))} entries."
-        )
-        n = min(len(lines1), len(lines2))
-        lines1 = lines1[:n]
-        lines2 = lines2[:n]
-
     field1 = f'pred_text_{name1}'
     field2 = f'pred_text_{name2}'
-    audio_mismatch_warned = False
 
+    map2 = {}
+    dup_count = 0
+    for raw in open_manifest_file(path2):
+        if not raw.strip():
+            continue
+        item = json.loads(raw)
+        key = item.get('audio_filepath')
+        if key is None:
+            logging.error(f"Second manifest has entry without audio_filepath: {item}")
+            raise SystemExit(1)
+        if key in map2:
+            dup_count += 1
+        map2[key] = item
+    if dup_count:
+        logging.warning(
+            f"Second manifest had {dup_count} duplicate audio_filepath entries; last occurrence wins"
+        )
+
+    unmatched = 0
+    merged_count = 0
     tmp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8')
     try:
-        for line1, line2 in zip(lines1, lines2):
-            if not line1.strip() or not line2.strip():
+        for raw in open_manifest_file(path1):
+            if not raw.strip():
                 continue
-            item1 = json.loads(line1)
-            item2 = json.loads(line2)
-
-            if not audio_mismatch_warned and item1.get('audio_filepath') != item2.get('audio_filepath'):
-                logging.warning(
-                    f"audio_filepath mismatch between manifests at the same index "
-                    f"(e.g., '{item1.get('audio_filepath')}' vs '{item2.get('audio_filepath')}'). "
-                    f"Further mismatches will not be reported. This is the user's responsibility."
-                )
-                audio_mismatch_warned = True
-
+            item1 = json.loads(raw)
+            key = item1.get('audio_filepath')
+            if key is None:
+                logging.error(f"First manifest has entry without audio_filepath: {item1}")
+                raise SystemExit(1)
+            item2 = map2.get(key)
+            if item2 is None:
+                unmatched += 1
+                continue
             if 'pred_text' not in item1:
-                logging.error(f"First manifest has no 'pred_text' field in entry: {item1}")
+                logging.error(f"First manifest has no 'pred_text' field for {key}")
                 raise SystemExit(1)
             if 'pred_text' not in item2:
-                logging.error(f"Second manifest has no 'pred_text' field in entry: {item2}")
+                logging.error(f"Second manifest has no 'pred_text' field for {key}")
                 raise SystemExit(1)
 
             merged = dict(item1)
             merged[field1] = merged.pop('pred_text')
             merged[field2] = item2['pred_text']
-
             tmp_file.write(json.dumps(merged) + '\n')
+            merged_count += 1
     finally:
         tmp_file.flush()
         tmp_file.close()
 
-    logging.info(f"Merged manifest written to temporary file: {tmp_file.name}")
-    return tmp_file.name, tmp_file
+    if unmatched:
+        logging.warning(
+            f"{unmatched} entries from first manifest had no match in second manifest; skipped"
+        )
+    logging.info(f"Merged {merged_count} entries into temporary file: {tmp_file.name}")
+    return tmp_file.name
 
 
 # parse the CLI arguments
@@ -1308,10 +1287,9 @@ if args.s3cfg:
 
 # Handle dual-manifest mode: merge the two manifests into one temp manifest
 # and rewrite names_compared to use the auto-generated pred_text_{name} field names.
-_merged_tmp = None  # keep reference so temp file is not deleted
 if dual_manifest_mode:
     model_name_1, model_name_2 = args.names_compared
-    merged_manifest_path, _merged_tmp = merge_manifests(args.manifest[0], args.manifest[1], model_name_1, model_name_2)
+    merged_manifest_path = merge_manifests(args.manifest[0], args.manifest[1], model_name_1, model_name_2)
     data_filename = merged_manifest_path
     args.names_compared = [f'pred_text_{model_name_1}', f'pred_text_{model_name_2}']
     logging.info(f"Dual-manifest mode: using merged manifest at {merged_manifest_path}")
@@ -1332,7 +1310,6 @@ logging.info('Loading data')
 if not comparison_mode:
     data, wer, cer, wmr, mwa, num_hours, vocabulary, alphabet, metrics_available = load_data(
         data_filename,
-        args.disable_caching_metrics,
         args.estimate_audio_metrics,
         args.vocab,
         args.audio_base_path,
@@ -1372,7 +1349,6 @@ else:
         metrics_available_2,
     ) = load_data(
         data_filename,
-        args.disable_caching_metrics,
         args.estimate_audio_metrics,
         args.vocab,
         args.audio_base_path,

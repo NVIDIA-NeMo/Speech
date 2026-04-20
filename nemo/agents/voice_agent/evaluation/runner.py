@@ -46,7 +46,7 @@ async def run_dynamic_evaluation(
     global_timestamp: str = None,
     logger: FileLogger = None,
     judge: Optional[LLMJudge] = None,
-    judge_threshold: float = 0.9,
+    judge_threshold: Optional[float] = None,
 ):
     """
     Run evaluation with dynamic scenario switching and latency measurement.
@@ -66,7 +66,7 @@ async def run_dynamic_evaluation(
         global_timestamp: Timestamp string for output file naming
         logger: FileLogger instance for logging
         judge: LLMJudge instance for judging the scenario
-        judge_threshold: Threshold for judging the scenario
+        judge_threshold: Threshold for judging the scenario if binary result is desired, None for score based result
     """
 
     if not logger:
@@ -140,7 +140,10 @@ async def run_dynamic_evaluation(
             )
             with open(os.path.join(scenario_dir, "judge_result.json"), "w") as f:
                 json.dump(result, f, indent=2)
-            is_successful = result["score"] >= judge_threshold
+            if judge_threshold is not None:
+                is_successful = result["score"] >= judge_threshold
+            else:
+                is_successful = result["score"]
             success_results.append(is_successful)
         else:
             is_successful = check_if_task_success(

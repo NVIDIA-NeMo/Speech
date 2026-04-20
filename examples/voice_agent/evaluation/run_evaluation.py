@@ -104,6 +104,9 @@ Examples:
         help="Model name for the judge API (default: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4)",
     )
     parser.add_argument("--judge-api-key", default=None, help="API key for the LLM judge")
+    parser.add_argument(
+        "--judge-threshold", type=float, default=0.95, help="Threshold for the LLM judge if binary result is desired"
+    )
 
     args = parser.parse_args()
 
@@ -212,6 +215,7 @@ Examples:
                 global_timestamp=session_timestamp,
                 logger=logger,
                 judge=judge,
+                judge_threshold=args.judge_threshold,
             )
         )
         return 0

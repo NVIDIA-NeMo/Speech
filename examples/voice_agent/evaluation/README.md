@@ -81,6 +81,7 @@ By default, each scenario is scored by **strict dictionary comparison** between 
 | `--judge-url <url>` | LLM judge endpoint (OpenAI-compatible chat completions) |
 | `--judge-model <model>` | Judge model name |
 | `--judge-api-key <key>` | Judge API key (defaults to env var if set) |
+| `--judge-threshold <threshold>` | Threshold for the LLM judge score if binary result is desired (default: 0.95) |
 
 If neither `--scenarios` nor `--domain` is given, all registered scenarios run.
 
@@ -105,7 +106,7 @@ Run `python run_evaluation.py --list` for the full list of scenario names, or `-
 
 ## Evaluation Methods
 
-### 1. Strict dictionary comparison (always on)
+### 1. Strict dictionary comparison (default)
 
 `check_if_task_success` performs a recursive comparison between each scenario's `reference_answer` and the agent's `<final_response>` payload:
 
@@ -115,7 +116,7 @@ Run `python run_evaluation.py --list` for the full list of scenario names, or `-
 
 String matching respects the scenario's `ignore_capitalization`, `ignore_punctuation`, and `clean_text` flags. Numeric values are compared with `np.isclose`.
 
-The boolean result is saved as `is_successful` in `metrics.json`.
+The boolean result is saved as `is_successful` in `metrics.json`. If LLM judge is enabled, the result is overwritten by the judge's score.
 
 ### 2. LLM judge (optional)
 

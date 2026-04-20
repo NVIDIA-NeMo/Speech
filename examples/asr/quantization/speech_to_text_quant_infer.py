@@ -46,9 +46,9 @@ def main():
     parser.add_argument(
         "--asr_model",
         type=str,
-        default="QuartzNet15x5Base-En",
+        default="stt_en_fastconformer_ctc_large",
         required=True,
-        help="Pass: 'QuartzNet15x5Base-En'",
+        help="Pass: 'stt_en_fastconformer_ctc_large'",
     )
     parser.add_argument("--dataset", type=str, required=True, help="path to evaluation data")
     parser.add_argument("--wer_target", type=float, default=None, help="used by test")

@@ -68,7 +68,7 @@ RUN \
   bash /tmp/NeMo/install_dep.sh --library te --mode install
   bash /tmp/NeMo/install_dep.sh --library mcore --mode install
   bash /tmp/NeMo/install_dep.sh --library extra --mode install
-  pip install --no-cache-dir ".[all]"
+  pip install --no-cache-dir ".[all,cu12]"
   rm -rf $NEMO_DIR || true
 EOF
 

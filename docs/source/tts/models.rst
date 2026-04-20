@@ -33,7 +33,7 @@ End-to-End LLM-based TTS
 
 MagpieTTS
 ~~~~~~~~~
-MagpieTTS is an encoder-decoder transformer TTS model that operates on discrete audio tokens from a neural audio codec. It uses monotonic alignment (CTC loss and attention priors) to reduce hallucinations and supports voice cloning via audio or text context conditioning. For architecture, training, inference, and preference optimization (DPO/GRPO), see :doc:`Magpie-TTS documentation <magpietts>`.
+MagpieTTS is an encoder-decoder transformer TTS model that operates on discrete audio tokens from a neural audio codec. It uses monotonic alignment (CTC loss and attention priors) to reduce hallucinations and supports voice cloning via audio or text context conditioning. For architecture, training, inference, and preference optimization (DPO/GRPO), see :doc:`Magpie-TTS documentation <magpietts>`. To adapt a pretrained checkpoint to new speakers or new languages, see :doc:`Magpie-TTS Finetuning <magpietts-finetuning>`.
 
 
 Vocoders

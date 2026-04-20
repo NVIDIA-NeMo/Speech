@@ -46,33 +46,16 @@ jobs:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
       HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
-      HAS_FORCE_SPEECH_CI_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'force-run-speech-ci') }}
-      HAS_FORCE_NEMO2_CI_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'force-run-nemo2-ci') }}
     steps:
       - name: Checkout branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Select components to run
         id: components_to_run
         run: |
-          pip install -U pip
-          pip install git-python
-
-          if [[ "$HAS_FORCE_SPEECH_CI_LABEL" == "true" ]]; then
-            echo '["speech"]' | tee -a test_modules.json
-          elif [[ "$HAS_FORCE_NEMO2_CI_LABEL" == "true" ]]; then
-            echo '["speech"]' | tee -a test_modules.json
-          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
-            python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
-          else
-            echo '["nemo2", "export-deploy", "speech"]' | tee -a test_modules.json
-          fi
-
-          components_to_run=$(cat test_modules.json)
-
-          echo "main=${components_to_run}" | tee -a "$GITHUB_OUTPUT"
+          echo "main=[\"speech\"]" | tee -a "$GITHUB_OUTPUT"
 
       - name: Select tests to run
         id: test_to_run
@@ -188,7 +171,7 @@ jobs:
           echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout NeMo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
@@ -229,7 +212,7 @@ jobs:
       && !cancelled()
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
 
@@ -291,7 +274,7 @@ jobs:
     permissions: write-all
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Get workflow result
         id: result
@@ -318,7 +301,7 @@ jobs:
           echo "code=$RESULT" | tee -a $GITHUB_OUTPUT
 
       - name: Checkout for GH CLI
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Remove label if not cancelled
         if: |
@@ -376,10 +359,10 @@ jobs:
         flag: [unit-test, e2e]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download coverage reports of current branch
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: coverage-${{ matrix.flag }}-*
 
@@ -404,7 +387,7 @@ jobs:
           flags: ${{ matrix.flag }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-${{ matrix.flag }}-aggregated
           path: |

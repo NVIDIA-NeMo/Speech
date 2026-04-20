@@ -115,7 +115,7 @@ def drop_in_memory_data(conversations: CutSet) -> CutSet:
 
 @registered_prompt_format_fn(NeMoMultimodalConversation, Llama2PromptFormatter)
 def default_multimodal_conversation_prompt_format_fn(
-    example: NeMoMultimodalConversation, prompt: Llama2PromptFormatter
+    example: NeMoMultimodalConversation, prompt: Llama2PromptFormatter, **prompt_kwargs
 ):
     # Collapse consecutive same-role turns into single turn for proper prompt formatting.
     turns = groupby(
@@ -135,4 +135,4 @@ def default_multimodal_conversation_prompt_format_fn(
     if hasattr(example, "system_prompt"):
         turns[0]["role"] = "system_and_user"
         turns[0]["slots"]["system"] = example.system_prompt
-    return prompt.encode_dialog(turns)
+    return prompt.encode_dialog(turns, **prompt_kwargs)

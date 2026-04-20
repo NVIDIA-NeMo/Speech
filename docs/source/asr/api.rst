@@ -67,11 +67,6 @@ Modules
     :show-inheritance:
     :members:
 
-.. _squeezeformer-encoder-api:
-
-.. autoclass:: nemo.collections.asr.modules.SqueezeformerEncoder
-    :show-inheritance:
-    :members:
 
 .. _rnn-encoder-api:
 
@@ -96,15 +91,6 @@ Modules
     :members:
 
 .. autoclass:: nemo.collections.asr.modules.SampledRNNTJoint
-    :show-inheritance:
-    :members:
-
-
-
-Parts
------
-
-.. autoclass:: nemo.collections.asr.parts.submodules.jasper.JasperBlock
     :show-inheritance:
     :members:
 

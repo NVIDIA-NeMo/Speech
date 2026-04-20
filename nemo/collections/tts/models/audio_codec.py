@@ -16,7 +16,7 @@ import itertools
 from contextlib import nullcontext
 from math import ceil
 from pathlib import Path
-from typing import List, Tuple
+from typing import Iterable, List, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -25,8 +25,8 @@ from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-from nemo.collections.audio.parts.utils.transforms import Resample, resample
-from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.collections.audio.parts.utils.transforms import Resample
+from nemo.collections.tts.data.vocoder_dataset import VocoderDataset
 from nemo.collections.tts.losses.audio_codec_loss import (
     FeatureMatchingLoss,
     MultiResolutionMelLoss,
@@ -39,6 +39,7 @@ from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncode
 from nemo.collections.tts.modules.common import GaussianDropout
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
+from nemo.collections.tts.parts.utils.tts_dataset_utils import resample_batch
 from nemo.core import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import (
@@ -110,7 +111,43 @@ class AudioCodecModel(ModelPT):
         self.audio_decoder = instantiate(cfg.audio_decoder)
 
         # Discriminator setup
-        self.discriminator = instantiate(cfg.discriminator)
+        if cfg.get("discriminator"):
+            self.discriminator = instantiate(cfg.discriminator)
+        else:
+            self.discriminator = None
+
+        # If 'semantic_codec_path' is provided, the semantic codec will be initialized from the provided path.
+        # It will then be registered as a submodule and automatically loaded from the 'semantic_codec' field
+        if cfg.get("semantic_codec"):
+            semantic_codec_cfg = cfg.get("semantic_codec")
+            semantic_codec = AudioCodecModel(cfg=semantic_codec_cfg)
+        elif cfg.get("semantic_codec_path"):
+            semantic_codec_path = cfg.get("semantic_codec_path")
+            semantic_codec = AudioCodecModel.restore_from(semantic_codec_path)
+        else:
+            semantic_codec = None
+
+        if semantic_codec is not None:
+            semantic_codec.eval()
+            semantic_codec.freeze()
+            self.register_nemo_submodule(name="semantic_codec", config_field="semantic_codec", model=semantic_codec)
+        else:
+            self.semantic_codec = None
+
+        # Optional config for using semantic distillation loss
+        self.use_slm_loss = cfg.get("use_slm_loss", False)
+        if self.use_slm_loss:
+            self.slm_encoder = instantiate(cfg.get("slm_encoder"))
+            self.slm_encoder.eval()
+            self.slm_encoder.freeze()
+            self.slm_predictor = instantiate(cfg.slm_predictor)
+            self.slm_loss_fn = torch.nn.MSELoss()
+            self.slm_loss_scale = cfg.get("slm_loss_scale", 1.0)
+        else:
+            self.slm_encoder = None
+            self.slm_predictor = None
+            self.slm_loss_fn = None
+            self.slm_loss_scale = None
 
         # Mel loss setup
         loss_resolutions = cfg.loss_resolutions
@@ -144,6 +181,8 @@ class AudioCodecModel(ModelPT):
         self.feature_loss_scale = cfg.get("feature_loss_scale", 1.0)
         self.gen_loss_fn = instantiate(cfg.generator_loss)
         self.disc_loss_fn = instantiate(cfg.discriminator_loss)
+
+        self.mmd_loss_start_epoch = cfg.get("mmd_loss_start_epoch", 0)
 
         if "mmd_loss" in cfg:
             self.mmd_loss_fn = instantiate(cfg.mmd_loss)
@@ -183,7 +222,8 @@ class AudioCodecModel(ModelPT):
             # load pretrained model
             # self.speaker_encoder.load_checkpoint("https://github.com/coqui-ai/TTS/releases/download/speaker_encoder_model/model_se.pth.tar")
             self.speaker_encoder.load_checkpoint(
-                "https://huggingface.co/Edresson/Speaker_Encoder_H_ASP/resolve/main/pytorch_model.bin", strict=False
+                "https://huggingface.co/Edresson/Speaker_Encoder_H_ASP/resolve/main/pytorch_model.bin",
+                strict=False,
             )
             # freeze the pretrained speaker encoder
             self.speaker_encoder.freeze()
@@ -192,16 +232,6 @@ class AudioCodecModel(ModelPT):
                 orig_freq=self.sample_rate, new_freq=self.speaker_encoder.audio_config["sample_rate"]
             )
 
-        # Disabled for now as it is not used in final model
-        self.use_asr_consitency_loss = False
-        self.acl_loss_scale = False
-        # self.use_asr_consitency_loss = cfg.get("use_asr_consitency_loss", False)
-        # self.acl_loss_scale = cfg.get("acl_loss_scale", False)
-        # if self.use_asr_consitency_loss:
-        #     self.phoneme_asr_model = PhonemeASR(input_sr=self.sample_rate)
-        #     self.phoneme_asr_model.freeze()
-        #     # self.acl_loss = CrossEntropyLoss()
-        #     print("Phoneme ASR model loaded and frozen !!")
         self.disc_start_epoch = cfg.get("disc_start_epoch", 0)
 
         # Log setup
@@ -232,21 +262,26 @@ class AudioCodecModel(ModelPT):
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         if hasattr(self, '_no_state_dict') and self._no_state_dict:
             return {}
-        # Don't save the speaker verification and codec model in the state dict
+        # Avoid saving weights of frozen pretrained models
         state_dict = super().state_dict(destination, prefix, keep_vars)
         for key in list(state_dict.keys()):
             if self.use_scl_loss and "speaker_encoder." in key:
                 del state_dict[key]
-            if "discriminator" in key and ".slm_model.ssl_model." in key:
+            if "discriminator" in key and ".slm_model.slm_model." in key:
                 del state_dict[key]
+            if key.startswith("slm_encoder."):
+                del state_dict[key]
+
         return state_dict
 
     def load_state_dict(self, state_dict, strict=True):
-        # Override to load all the keys except .speaker_encoder. and WavLM model
+        # Avoid loading weights of frozen pretrained models
         for key in list(state_dict.keys()):
             if self.use_scl_loss and "speaker_encoder." in key:
                 del state_dict[key]
-            if "discriminator" in key and ".slm_model.ssl_model." in key:
+            if "discriminator" in key and ".slm_model.slm_model." in key:
+                del state_dict[key]
+            if key.startswith("slm_encoder."):
                 del state_dict[key]
 
         super().load_state_dict(state_dict, strict=False)
@@ -284,8 +319,21 @@ class AudioCodecModel(ModelPT):
         Returns:
             Encoder output `encoded` and its length in number of frames `encoded_len`
         """
-        audio, audio_len = self.preprocess_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
-        encoded, encoded_len = self.audio_encoder(audio=audio, audio_len=audio_len)
+        if not sample_rate:
+            sample_rate = self.sample_rate
+
+        audio_preprocessed, audio_preprocessed_len = self.preprocess_audio(
+            audio=audio, audio_len=audio_len, sample_rate=sample_rate
+        )
+        encoded, encoded_len = self.audio_encoder(audio=audio_preprocessed, audio_len=audio_preprocessed_len)
+
+        if self.semantic_codec is not None:
+            with torch.no_grad():
+                semantic, _ = self.semantic_codec.encode_audio(
+                    audio=audio, audio_len=audio_len, sample_rate=sample_rate
+                )
+            encoded = torch.concat([semantic, encoded], dim=1)
+
         return encoded, encoded_len
 
     @typecheck(
@@ -489,13 +537,9 @@ class AudioCodecModel(ModelPT):
 
     def preprocess_audio(self, audio, audio_len, sample_rate):
         if sample_rate and sample_rate != self.sample_rate:
-            audio = resample(waveform=audio, orig_freq=sample_rate, new_freq=self.sample_rate)
-            audio_len_scaled = audio_len.long() * self.sample_rate
-            new_audio_len = audio_len_scaled / sample_rate
-            # To avoid rounding issues at lower precisions, do not call torch.ceil when the length is divisible by the sample rate
-            audio_len = torch.where(audio_len_scaled % sample_rate == 0, new_audio_len, torch.ceil(new_audio_len))
-            audio_len = audio_len.int()
-            audio = mask_sequence_tensor(audio, audio_len)
+            audio, audio_len = resample_batch(
+                audio=audio, audio_len=audio_len, input_sample_rate=sample_rate, output_sample_rate=self.sample_rate
+            )
 
         audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=self.samples_per_frame)
         return audio, audio_len
@@ -531,7 +575,14 @@ class AudioCodecModel(ModelPT):
         # [B, T]
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
 
-        return audio, audio_len, audio_gen, commit_loss, encoded
+        if self.training and self.use_slm_loss:
+            slm_emb = self.slm_encoder(audio=audio)
+            slm_emb_pred = self.slm_predictor(inputs=encoded)
+        else:
+            slm_emb = None
+            slm_emb_pred = None
+
+        return audio, audio_len, audio_gen, commit_loss, encoded, slm_emb, slm_emb_pred
 
     @property
     def disc_update_prob(self) -> float:
@@ -549,16 +600,20 @@ class AudioCodecModel(ModelPT):
         return disc_update_step < self.disc_updates_per_period
 
     def training_step(self, batch, batch_idx):
-        optim_gen, optim_disc = self.optimizers()
+        if self.discriminator is None:
+            optim_gen = self.optimizers()
+            optim_disc = None
+        else:
+            optim_gen, optim_disc = self.optimizers()
 
-        audio, audio_len, audio_gen, commit_loss, codes = self._process_batch(batch)
+        audio, audio_len, audio_gen, commit_loss, codes, slm_emb, slm_emb_pred = self._process_batch(batch)
 
         metrics = {
             "global_step": self.global_step,
             "lr": optim_gen.param_groups[0]['lr'],
         }
 
-        if self.should_update_disc(batch_idx):
+        if optim_disc is not None and self.should_update_disc(batch_idx):
             # Train discriminator
             disc_scores_real, disc_scores_gen, _, _ = self.discriminator(
                 audio_real=audio, audio_gen=audio_gen.detach()
@@ -599,17 +654,19 @@ class AudioCodecModel(ModelPT):
             metrics["g_loss_si_sdr"] = loss_si_sdr
             generator_losses.append(self.si_sdr_loss_scale * loss_si_sdr)
 
-        _, disc_scores_gen, fmaps_real, fmaps_gen = self.discriminator(audio_real=audio, audio_gen=audio_gen)
+        if optim_disc is not None:
 
-        if self.gen_loss_scale:
-            loss_gen = self.gen_loss_fn(disc_scores_gen=disc_scores_gen)
-            metrics["g_loss_gen"] = loss_gen
-            generator_losses.append(self.gen_loss_scale * loss_gen)
+            _, disc_scores_gen, fmaps_real, fmaps_gen = self.discriminator(audio_real=audio, audio_gen=audio_gen)
 
-        if self.feature_loss_scale:
-            loss_feature = self.feature_loss_fn(fmaps_real=fmaps_real, fmaps_gen=fmaps_gen)
-            metrics["g_loss_feature"] = loss_feature
-            generator_losses.append(self.feature_loss_scale * loss_feature)
+            if self.gen_loss_scale:
+                loss_gen = self.gen_loss_fn(disc_scores_gen=disc_scores_gen)
+                metrics["g_loss_gen"] = loss_gen
+                generator_losses.append(self.gen_loss_scale * loss_gen)
+
+            if self.feature_loss_scale:
+                loss_feature = self.feature_loss_fn(fmaps_real=fmaps_real, fmaps_gen=fmaps_gen)
+                metrics["g_loss_feature"] = loss_feature
+                generator_losses.append(self.feature_loss_scale * loss_feature)
 
         if self.commit_loss_scale:
             metrics["g_loss_commit"] = commit_loss
@@ -626,6 +683,11 @@ class AudioCodecModel(ModelPT):
             metrics["g_loss_mmd_time"] = loss_mmd_time
             if self.current_epoch >= self.mmd_loss_start_epoch:
                 generator_losses.append(self.mmd_time_loss_scale * loss_mmd_time)
+
+        if self.use_slm_loss:
+            loss_slm = self.slm_loss_fn(input=slm_emb_pred, target=slm_emb)
+            metrics["g_loss_slm"] = loss_slm
+            generator_losses.append(self.slm_loss_scale * loss_slm)
 
         # compute embeddings for speaker consistency loss
         if self.use_scl_loss:
@@ -644,19 +706,6 @@ class AudioCodecModel(ModelPT):
             metrics["g_loss_scl"] = loss_scl
             generator_losses.append(metrics["g_loss_scl"])
 
-        if self.use_asr_consitency_loss:
-            # concate generated and GT waveforms
-            audios_batch = torch.cat((audio.squeeze(1), audio_gen.squeeze(1)), dim=0)
-
-            logits, _ = self.phoneme_asr_model(audios_batch)
-
-            logits_gt, logits_pred = torch.chunk(logits, 2, dim=0)
-            # labels_gt, labels_pred = torch.chunk(labels, 2, dim=0)
-
-            loss_acl = torch.nn.functional.mse_loss(logits_pred, logits_gt) * self.acl_loss_scale
-            metrics["g_loss_acl"] = loss_acl
-            generator_losses.append(metrics["g_loss_acl"])
-
         loss_gen_all = sum(generator_losses)
 
         optim_gen.zero_grad()
@@ -672,7 +721,7 @@ class AudioCodecModel(ModelPT):
         self.update_lr("epoch")
 
     def validation_step(self, batch, batch_idx):
-        audio, audio_len, audio_gen, _, _ = self._process_batch(batch)
+        audio, audio_len, audio_gen, *_ = self._process_batch(batch)
 
         loss_mel_l1, loss_mel_l2 = self.mel_loss_fn(
             audio_real=audio.float(), audio_gen=audio_gen.float(), audio_len=audio_len
@@ -709,45 +758,34 @@ class AudioCodecModel(ModelPT):
             metrics["val_loss_scl"] = loss_scl
             metrics["val_loss"] += metrics["val_loss_scl"]
 
-        if self.use_asr_consitency_loss:
-            # concate generated and GT waveforms
-            audios_batch = torch.cat((audio.squeeze(1), audio_gen.squeeze(1)), dim=0)
-
-            logits, _ = self.phoneme_asr_model(audios_batch)
-            logits_gt, logits_pred = torch.chunk(logits, 2, dim=0)
-
-            loss_acl = torch.nn.functional.mse_loss(logits_pred, logits_gt) * self.acl_loss_scale
-            metrics["val_loss_acl"] = loss_acl
-            metrics["val_loss"] += metrics["val_loss_acl"]
-
         self.log_dict(metrics, on_epoch=True, sync_dist=True)
 
-    def get_dataset(self, cfg):
-        with open_dict(cfg):
-            is_sharded = cfg.dataset.pop('is_sharded', False)
-
+    def get_dataset(self, cfg, is_sharded=False):
         if is_sharded:
             with open_dict(cfg):
                 cfg.dataset.global_rank = self.global_rank
                 cfg.dataset.world_size = self.world_size
                 cfg.dataset._target_ = 'nemo.collections.tts.data.vocoder_dataset.TarredVocoderDataset'
-
-        dataset = instantiate(cfg.dataset)
+            dataset = instantiate(cfg.dataset)
+        elif '_target_' in cfg.dataset:
+            dataset = instantiate(cfg.dataset)
+        else:
+            dataset = VocoderDataset(**cfg.dataset.dataset_args)
 
         sampler = dataset.get_sampler(cfg.dataloader_params.batch_size, world_size=self.trainer.world_size)
-        return dataset, sampler
-
-    def _setup_train_dataloader(self, cfg):
-        dataset, sampler = self.get_dataset(cfg)
         data_loader = torch.utils.data.DataLoader(
             dataset, collate_fn=dataset.collate_fn, sampler=sampler, **cfg.dataloader_params
         )
         return data_loader
 
+    def _setup_train_dataloader(self, cfg):
+        with open_dict(cfg):
+            is_sharded = cfg.dataset.pop('is_sharded', False)
+
+        return self.get_dataset(cfg, is_sharded=is_sharded)
+
     def _setup_test_dataloader(self, cfg):
-        dataset = instantiate(cfg.dataset)
-        data_loader = torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
-        return data_loader
+        return self.get_dataset(cfg)
 
     def setup_training_data(self, cfg):
         self._train_dl = self._setup_train_dataloader(cfg)
@@ -807,20 +845,25 @@ class AudioCodecModel(ModelPT):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
-        asr_ph_params = self.phoneme_asr_model.parameters() if self.use_asr_consitency_loss else []
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
         gen_params = itertools.chain(
-            self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, asr_ph_params, se_params
+            self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params
         )
         optim_g = instantiate(optim_config, params=gen_params)
 
-        disc_params = self.discriminator.parameters()
-        optim_d = instantiate(optim_config, params=disc_params)
+        if self.discriminator is None:
+            optim_d = None
+        else:
+            disc_params = self.discriminator.parameters()
+            optim_d = instantiate(optim_config, params=disc_params)
 
         if sched_config is None:
             logging.debug('Scheduler is not used')
-            return [optim_g, optim_d]
+            if optim_d is None:
+                return optim_g
+            else:
+                return optim_g, optim_d
 
         logging.debug('Setting up schedulers')
         OmegaConf.set_struct(sched_config, False)
@@ -831,20 +874,26 @@ class AudioCodecModel(ModelPT):
             optimizer=optim_g, scheduler_config=sched_config, train_dataloader=self._train_dl
         )
 
-        scheduler_d = prepare_lr_scheduler(
-            optimizer=optim_d, scheduler_config=sched_config, train_dataloader=self._train_dl
-        )
-
         self.lr_schedule_interval = scheduler_g["interval"]
 
-        return [optim_g, optim_d], [scheduler_g, scheduler_d]
+        if optim_d is None:
+            return [optim_g], [scheduler_g]
+        else:
+            scheduler_d = prepare_lr_scheduler(
+                optimizer=optim_d, scheduler_config=sched_config, train_dataloader=self._train_dl
+            )
+            return [optim_g, optim_d], [scheduler_g, scheduler_d]
 
     def update_lr(self, interval="step"):
         schedulers = self.lr_schedulers()
-        if schedulers is not None and self.lr_schedule_interval == interval:
-            sch1, sch2 = schedulers
-            sch1.step()
-            sch2.step()
+        if schedulers is None or self.lr_schedule_interval != interval:
+            return
+
+        if not isinstance(schedulers, Iterable):
+            schedulers.step()
+        else:
+            for sch in schedulers:
+                sch.step()
 
     def configure_callbacks(self):
         if not self.log_config:

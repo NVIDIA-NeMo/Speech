@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Dict, Optional, Tuple
 
 import torch.utils.data
@@ -31,6 +32,11 @@ class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
     Specifically, it performs tokenization, I/O, augmentation, and feature extraction (if any).
     Managing data, sampling, de-duplication across workers/nodes etc. is all handled
     by Lhotse samplers instead.
+
+    NOTE:
+    If the environment variable ``USE_AIS_GET_BATCH`` is set to ``true`` (case-insensitive),
+    then batch audio loading from AIStore will be enabled for this dataset. This will use the
+    AISBatchLoader to load the audio from AIStore. This can improve data loading efficiency in some setups.
     """
 
     @property
@@ -46,7 +52,22 @@ class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
     def __init__(self, tokenizer: TokenizerSpec, return_cuts: bool = False):
         super().__init__()
         self.tokenizer = TokenizerWrapper(tokenizer)
-        self.load_audio = AudioSamples(fault_tolerant=True)
+        self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+
+        # Try to use use_batch_loader if available (Lhotse >= 1.32.0)
+        try:
+            self.load_audio = AudioSamples(fault_tolerant=True, use_batch_loader=self.use_ais_get_batch)
+        except TypeError:
+            # Lhotse < 1.32.0 doesn't support use_batch_loader
+            if self.use_ais_get_batch:
+                import logging
+
+                logging.warning(
+                    "AIS batch loading requested but not supported by this Lhotse version. "
+                    "Please upgrade to Lhotse >= 1.32.0"
+                )
+            self.load_audio = AudioSamples(fault_tolerant=True)
+
         self.return_cuts = return_cuts
 
     def __getitem__(self, cuts) -> Tuple[torch.Tensor, ...]:

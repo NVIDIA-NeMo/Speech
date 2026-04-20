@@ -30,15 +30,12 @@ from nemo.core.utils.cuda_python_utils import (
     run_nvrtc,
     with_conditional_node,
 )
+from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
 
-try:
+if CUDA_PYTHON_AVAILABLE:
     from cuda.bindings import runtime as cudart
-
-    HAVE_CUDA_PYTHON = True
-except ImportError:
-    HAVE_CUDA_PYTHON = False
 
 
 NON_EXISTENT_LABEL_VALUE = -1
@@ -574,6 +571,7 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         ):
             self._after_process_batch()
 
+    @cuda_python_required
     def _full_graph_compile(self):
         """Compile full graph for decoding"""
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.

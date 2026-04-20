@@ -1,0 +1,223 @@
+model:
+  # Every name/path here starting with 'pretrained' is used to initialize the model weights.
+  pretrained_llm: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+  pretrained_asr: nvidia/canary-1b-v2
+
+  pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
+
+  # Fine-tune from a previous training checkpoint (model weights only — optimizer,
+  # scheduler, and step counter start fresh). Supports DCP directories (from
+  # FSDP2/TP training), HuggingFace directories (model.safetensors), and
+  # single-file .ckpt checkpoints. Set to null to train from pretrained_llm/asr.
+  init_from_checkpoint: null
+
+  # Set to true to use SALMAutomodel (NeMo Automodel backend) instead of SALM (HF Transformers backend).
+  use_nemo_automodel: true
+
+  # Regexp (re.compile) patterns matching parameters to be frozen.
+  freeze_params:
+    # Frozen LLM (embed_tokens stays inside llm, so this pattern covers it too)
+    - "^llm\\..+$"
+    # Frozen pretrained ASR (only the modality adapter layers are trainable)
+    - "^perception\\.preprocessor\\..+$"
+    - "^perception\\.encoder\\..+$"
+  prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
+
+  prompt_format: nemotron-nano-v3
+  audio_locator_tag: "<|audio|>"  # placeholder token for audio turn is expected
+
+  # Uncomment the block below to enable LoRA on the LLM via Automodel.
+  # LoRA parameters are kept trainable even when the LLM is frozen.
+  # lora:
+  #   dim: 128
+  #   alpha: 256
+  #   dropout: 0.01
+  #   target_modules: ["q_proj", "v_proj"]
+  #   # match_all_linear: false
+  #   # exclude_modules: []
+  #   # use_dora: false
+  #   # dropout_position: post
+  #   # lora_A_init: xavier
+  #   # use_triton: false
+
+  # MoE auxiliary load balancing loss coefficient. Set > 0 to enable.
+  # Gradients are injected automatically during backward — does not change reported CE loss.
+  # Typical range: 0.001 - 0.01.
+  aux_loss_coeff: 0.0
+
+  # MoE router/gate trainability. When true, unfreezes Gate.weight so the
+  # router can adapt to the new data distribution during fine-tuning.
+  # Default false — pretrained routing is kept frozen.
+  train_gate: false
+
+  # MoE expert balance/utilization metrics logging.
+  moe_metrics:
+    enabled: true
+    mode: brief            # "brief" or "detailed" (adds per-layer breakdowns)
+    detailed_every_steps: null  # null = every step when mode=detailed
+    top_k_experts: 5       # top/bottom utilization experts to report
+
+  # torch.compile configuration. When enabled, the LLM is compiled via
+  # Automodel's CompileConfig. Set dynamic=true for variable sequence lengths.
+  # compile:
+  #   enabled: false
+  #   mode: default          # "default", "reduce-overhead", or "max-autotune"
+  #   fullgraph: false       # Compile the full computation graph
+  #   dynamic: true          # Enable dynamic shapes (recommended for variable-length audio)
+  #   backend: null           # Compilation backend (null = inductor)
+  #   dynamo_cache_size_limit: 256  # Triton compilation cache limit
+
+  perception:
+     target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
+     output_dim: 4096
+     modality_adapter:
+       _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+       d_model: 1024
+     # spec_augment:
+     #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+     #   freq_masks: 2 # set to zero to disable it
+     #   time_masks: 10 # set to zero to disable it
+     #   freq_width: 27
+     #   time_width: 5  # 5 frames = 50ms
+
+  optimizer:
+    _target_: flashoptim.FlashAdamW
+    lr: 1e-4
+    betas: [0.9, 0.999]
+    weight_decay: 5e-2
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
+    warmup_steps: 1000
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+trainer:
+  devices: 8
+  accelerator: gpu
+  num_nodes: 1
+  precision: bf16-flash
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_steps: 100000
+  limit_train_batches: 5000  # "epoch" size
+  val_check_interval: ${trainer.limit_train_batches}
+  limit_val_batches: 10
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    # AutomodelParallelStrategy delegates device mesh creation to nemo_automodel and supports
+    # FSDP2, TP, PP, CP, EP (MoE), and HSDP. The model's configure_model() receives the
+    # device_mesh and passes it to automodel's from_pretrained for memory-efficient loading
+    # (each GPU only loads its own shard).
+    _target_: nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy
+
+    # --- Parallelism dimensions ---
+    dp_size: null       # Data parallel size (null = inferred from world_size / other dims)
+    dp_replicate_size: 1  # HSDP replication group size (>1 enables hybrid sharding)
+    tp_size: 1          # Tensor parallel size
+    pp_size: 1          # Pipeline parallel size
+    cp_size: 1          # Context parallel size
+    ep_size: 8          # Expert parallel size (for MoE models)
+
+    # --- FSDP2 distributed config (plain dict, resolved to FSDP2Config automatically) ---
+    # distributed_config:
+    #   sequence_parallel: false    # Enable sequence parallelism (requires tp_size > 1)
+    #   activation_checkpointing: false  # Checkpoint activations to save memory
+    #   # offload_policy:           # Uncomment to enable CPU offloading
+    #   #   _target_: torch.distributed.fsdp.CPUOffloadPolicy
+
+    # --- MoE config (plain dict, resolved to MoEParallelizerConfig automatically) ---
+    # moe_config:
+    #   activation_checkpointing: false   # Checkpoint activations in MoE transformer blocks
+    #   ignore_router_for_ac: false       # Selective AC: save router outputs, recompute the rest
+    #   reshard_after_forward: false       # Reshard params after forward (saves memory, more comms)
+    #   lm_head_precision: null            # Override LM head precision (e.g., "float32" for stability)
+    #   wrap_outer_model: true             # Apply FSDP to the outer model wrapper
+
+data:
+  train_ds:
+    sample_rate: 16000
+    prompt_format: ${model.prompt_format}
+    token_equivalent_duration: 0.08
+    input_cfg:
+      - type: lhotse_as_conversation
+        cuts_path: ???  # needs to be set
+        audio_locator_tag: ${model.audio_locator_tag}
+        tags:
+          # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
+          # system_prompt: "some system prompt"
+          context: ""
+    seed: 42
+    shuffle: true
+    shard_seed: "randomized"
+    num_workers: 1
+    batch_size: 4
+    # Optional bucketing:
+    # batch_size: null
+    # use_bucketing: true
+    # use_multimodal_sampling: true
+    # measure_total_length: true
+    # Note: `batch_tokens`, `bucket_duration_bins`, and `max_tokens` all represent tokens as
+    #  the sum of input audio frames and output text tokens. Number of audio frames is
+    #  calculated using `token_equivalent_duration`.
+    # batch_tokens: 4000
+    # max_tokens: 2048
+    # bucket_duration_bins: [64, 128, 256, 384, 512, 768, 1024, 1280, 1536, 2048]
+    # num_buckets: 10
+    # bucket_buffer_size: 5000
+
+  validation_ds:
+    # The entries under 'datasets' are a list of separate dataloaders.
+    # The structure is <dataset-name>: {<dataloader-dict-config>}
+    # They inherit all settings from validation_ds, but can individually override them.
+    prompt_format: ${model.prompt_format}
+    token_equivalent_duration: 0.08
+    datasets:
+      val_set_0:  # rename to your dataset name, add more as needed
+        input_cfg:
+          - type: lhotse_as_conversation
+            cuts_path: ???  # needs to be set
+            audio_locator_tag: ${model.audio_locator_tag}
+            tags:
+              # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
+              # system_prompt: "some system prompt"
+              context: "Transcribe the following:"
+    sample_rate: 16000
+    batch_size: 1
+    seed: 42
+    shard_seed: "randomized"
+
+exp_manager:
+   exp_dir: null
+   explicit_log_dir: salm_results/
+   name: salm
+   create_tensorboard_logger: false
+   create_checkpoint_callback: true
+   use_datetime_version: true
+   max_time_per_run: 00:03:50:00
+
+   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+   # you need to set these two to True to continue the training
+   resume_if_exists: true
+   resume_ignore_no_checkpoint: true
+
+   # You may use this section to create a W&B logger
+   create_wandb_logger: false
+   wandb_logger_kwargs:
+     name: development-run
+     project: salm
+     resume: true
+
+   checkpoint_callback_params:
+     filename: "{step}"
+     monitor: val_acc
+     mode: max
+     every_n_train_steps: null
+     every_n_epochs: 1
+     save_top_k: 1
+     always_save_nemo: false
+     save_nemo_on_train_end: false

@@ -49,15 +49,15 @@ def main():
     parser.add_argument(
         "--asr_model",
         type=str,
-        default="QuartzNet15x5Base-En",
+        default="stt_en_fastconformer_ctc_large",
         required=True,
-        help="Pass: 'QuartzNet15x5Base-En'",
+        help="Pass: 'stt_en_fastconformer_ctc_large'",
     )
     parser.add_argument(
         "--asr_onnx",
         type=str,
-        default="./QuartzNet15x5Base-En-max-32.onnx",
-        help="Pass: 'QuartzNet15x5Base-En-max-32.onnx'",
+        default="./asr_model.onnx",
+        help="Pass path to exported ONNX model",
     )
     parser.add_argument("--dataset", type=str, required=True, help="path to evaluation data")
     parser.add_argument("--batch_size", type=int, default=4)

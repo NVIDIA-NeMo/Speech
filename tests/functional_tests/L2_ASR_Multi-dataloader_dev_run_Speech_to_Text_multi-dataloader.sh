@@ -18,5 +18,5 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo exampl
     trainer.accelerator="gpu" \
     trainer.max_epochs=1 \
     trainer.max_steps=1 \
-    +trainer.num_sanity_val_steps=1 \
+    ++trainer.num_sanity_val_steps=1 \
     exp_manager.exp_dir=/tmp/speech_to_text_results

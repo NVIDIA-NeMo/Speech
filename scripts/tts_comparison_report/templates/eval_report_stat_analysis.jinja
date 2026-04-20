@@ -1,0 +1,9 @@
+<div class="sub-card">
+  <h4>Analysis of Statistical Tests</h4>
+  {% if winner is none %}
+    <p>No statistically significant difference was observed between these two models.</p>
+  {% else %}
+    <p><strong>{{ winner }}</strong> performs best. 
+    Key statistically significant advantages: {{ advantages }}.</p>
+  {% endif %}
+</div>

@@ -23,7 +23,6 @@ import logging
 import math
 import operator
 import os
-import msgpack
 from collections import defaultdict
 from os.path import expanduser
 from pathlib import Path
@@ -34,6 +33,7 @@ import diff_match_patch
 import editdistance
 import jiwer
 import librosa
+import msgpack
 import numpy as np
 import pandas as pd
 import soundfile as sf

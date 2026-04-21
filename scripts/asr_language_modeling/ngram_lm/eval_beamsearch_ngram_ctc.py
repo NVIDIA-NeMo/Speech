@@ -59,12 +59,12 @@ For grid search, you can provide a list of arguments as follows -
 import contextlib
 import json
 import os
-import msgpack
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import List, Optional
 
 import editdistance
+import msgpack
 import numpy as np
 import torch
 from omegaconf import MISSING, OmegaConf
@@ -77,7 +77,6 @@ from nemo.collections.asr.parts.submodules import ctc_beam_decoding
 from nemo.collections.asr.parts.utils.transcribe_utils import PunctuationCapitalization, TextProcessingConfig
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-
 
 # fmt: off
 

@@ -40,19 +40,27 @@ RUN \
   --mount=type=bind,source=nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
   --mount=type=bind,source=nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
 
-  bash /tmp/NeMo/install_dep.sh --library extra --mode install
   # NGC PyTorch ships pre-release torch/torchvision/torchaudio with +nv local
   # version labels. Pip's default "prefer stable" behavior would replace them
   # with stable PyPI builds when resolving transitive torch>=X.Y constraints,
-  # breaking torchvision (which pins the exact NGC torch build). Pin the NV
-  # stack for this install so pip keeps the pre-installed builds.
+  # breaking torchvision (which pins the exact NGC torch ABI and emits
+  # "operator torchvision::nms does not exist" at import if mismatched).
+  #
+  # Capture the NGC-provided versions BEFORE any pip install touches them and
+  # export PIP_CONSTRAINT for the whole install — including install_dep.sh,
+  # whose `extra()` does a `pip install ${DEPS[@]}` that resolves deps of
+  # nvidia-modelopt/nemo_run and can silently swap torchvision otherwise.
+  #
   # `|| true` guards against grep exit 1 when no match, which would abort
   # the heredoc under bash -e.
   pip freeze --all | grep -E '^(torch|torchvision|torchaudio|triton|pytorch-triton)==' > /tmp/nv-pinned.txt || true
   echo "=== Pinning NV torch stack ==="
   cat /tmp/nv-pinned.txt
   echo "==============================="
-  PIP_CONSTRAINT=/tmp/nv-pinned.txt pip install --no-cache-dir ".[all,cu13]"
+  export PIP_CONSTRAINT=/tmp/nv-pinned.txt
+
+  bash /tmp/NeMo/install_dep.sh --library extra --mode install
+  pip install --no-cache-dir ".[all,cu13]"
 EOF
 
 

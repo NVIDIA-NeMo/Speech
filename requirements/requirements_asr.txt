@@ -10,8 +10,6 @@ librosa>=0.10.1
 marshmallow
 optuna
 packaging
-pyannote.core
-pyannote.metrics
 pydub
 pyloudnorm
 resampy

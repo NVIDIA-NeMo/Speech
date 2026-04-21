@@ -4726,8 +4726,6 @@ all = [
     { name = "peft" },
     { name = "pesq", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "progress" },
-    { name = "pyannote-core" },
-    { name = "pyannote-metrics" },
     { name = "pydub" },
     { name = "pyloudnorm" },
     { name = "pyopenjtalk" },
@@ -4789,8 +4787,6 @@ asr = [
     { name = "packaging" },
     { name = "pandas" },
     { name = "peft" },
-    { name = "pyannote-core" },
-    { name = "pyannote-metrics" },
     { name = "pydub" },
     { name = "pyloudnorm" },
     { name = "resampy" },
@@ -4821,8 +4817,6 @@ asr-only = [
     { name = "marshmallow" },
     { name = "optuna" },
     { name = "packaging" },
-    { name = "pyannote-core" },
-    { name = "pyannote-metrics" },
     { name = "pydub" },
     { name = "pyloudnorm" },
     { name = "resampy" },
@@ -4963,8 +4957,6 @@ slu = [
     { name = "pandas" },
     { name = "peft" },
     { name = "progress" },
-    { name = "pyannote-core" },
-    { name = "pyannote-metrics" },
     { name = "pydub" },
     { name = "pyloudnorm" },
     { name = "resampy" },
@@ -5021,8 +5013,6 @@ speechlm2 = [
     { name = "packaging" },
     { name = "pandas" },
     { name = "peft" },
-    { name = "pyannote-core" },
-    { name = "pyannote-metrics" },
     { name = "pydub" },
     { name = "pyloudnorm" },
     { name = "pyopenjtalk" },
@@ -5133,8 +5123,6 @@ tts = [
     { name = "packaging" },
     { name = "pandas" },
     { name = "peft" },
-    { name = "pyannote-core" },
-    { name = "pyannote-metrics" },
     { name = "pydub" },
     { name = "pyloudnorm" },
     { name = "pyopenjtalk" },
@@ -5453,18 +5441,6 @@ requires-dist = [
     { name = "pesq", marker = "(platform_machine != 'x86_64' and extra == 'audio') or (sys_platform != 'darwin' and extra == 'audio')" },
     { name = "progress", marker = "extra == 'all'", specifier = ">=1.5" },
     { name = "progress", marker = "extra == 'slu'", specifier = ">=1.5" },
-    { name = "pyannote-core", marker = "extra == 'all'" },
-    { name = "pyannote-core", marker = "extra == 'asr'" },
-    { name = "pyannote-core", marker = "extra == 'asr-only'" },
-    { name = "pyannote-core", marker = "extra == 'slu'" },
-    { name = "pyannote-core", marker = "extra == 'speechlm2'" },
-    { name = "pyannote-core", marker = "extra == 'tts'" },
-    { name = "pyannote-metrics", marker = "extra == 'all'" },
-    { name = "pyannote-metrics", marker = "extra == 'asr'" },
-    { name = "pyannote-metrics", marker = "extra == 'asr-only'" },
-    { name = "pyannote-metrics", marker = "extra == 'slu'" },
-    { name = "pyannote-metrics", marker = "extra == 'speechlm2'" },
-    { name = "pyannote-metrics", marker = "extra == 'tts'" },
     { name = "pydub", marker = "extra == 'all'" },
     { name = "pydub", marker = "extra == 'asr'" },
     { name = "pydub", marker = "extra == 'asr-only'" },
@@ -7143,55 +7119,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cd/05/0a34433a064256a578f1783a10da6df098ceaa4a57bbeaa96a6c0352786b/pure_eval-0.2.3.tar.gz", hash = "sha256:5f4e983f40564c576c7c8635ae88db5956bb2229d7e9237d03b3c0b0190eaf42", size = 19752, upload-time = "2024-07-21T12:58:21.801Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/37/efad0257dc6e593a18957422533ff0f87ede7c9c6ea010a2177d738fb82f/pure_eval-0.2.3-py3-none-any.whl", hash = "sha256:1db8e35b67b3d218d818ae653e27f06c3aa420901fa7b081ca98cbedc874e0d0", size = 11842, upload-time = "2024-07-21T12:58:20.04Z" },
-]
-
-[[package]]
-name = "pyannote-core"
-version = "6.0.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
-    { name = "pandas" },
-    { name = "sortedcontainers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a3/be/4a35ea31c685aef801f7f35c193e7766ca1bb948ae497a625cbfaa8c31ba/pyannote_core-6.0.1.tar.gz", hash = "sha256:4b4ada3276f6df4e073fa79166636e3597d0dcb5a0fe26014a3477867cc033fb", size = 327540, upload-time = "2025-09-16T09:24:39.081Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/57/ecf62344b9b81debd0ca95ed987135e93d1b039507f8174f52d1d19d8c6b/pyannote_core-6.0.1-py3-none-any.whl", hash = "sha256:924550d6ecf6b05ad13bf3f66f59c29fc740cf1c62a6fca860ac2e66908203e5", size = 57505, upload-time = "2025-09-16T09:24:37.798Z" },
-]
-
-[[package]]
-name = "pyannote-database"
-version = "6.1.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pandas" },
-    { name = "pyannote-core" },
-    { name = "pyyaml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/65/45/6210274c187cc457e854be8b56c6819fa14376f27e7e2b6021b2aa02449a/pyannote_database-6.1.1.tar.gz", hash = "sha256:bbe76da738257a9e64061123d9694ad7e949c4f171d91a9269606d873528cd10", size = 112225, upload-time = "2025-12-07T06:33:10.296Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/04/bf/6a6f5abaa4d9f803f34c9883ef5e316624eac6be0eaa87720216be9bba12/pyannote_database-6.1.1-py3-none-any.whl", hash = "sha256:36460c70ce9f50ff25c9ea365bc83ad625bb6b2494deccf6bd3fc750686ae684", size = 53735, upload-time = "2025-12-07T06:33:11.578Z" },
-]
-
-[[package]]
-name = "pyannote-metrics"
-version = "4.0.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
-    { name = "pandas" },
-    { name = "pyannote-core" },
-    { name = "pyannote-database" },
-    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
-    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
-    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/98/f8962bb2f5826c9798212797b0fa96ff02f81573a2d7cf1f5b678d6c55a2/pyannote_metrics-4.0.0.tar.gz", hash = "sha256:aec037eb7ca4c0ad5c5bbcc19bc04e9acf24ba42c95f025497378e31db6a0ff4", size = 879283, upload-time = "2025-09-09T14:38:27.073Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b9/d5/637f67578fd704e27ca2edc45c5b0ad6433684916c08cd7fa54d07482407/pyannote_metrics-4.0.0-py3-none-any.whl", hash = "sha256:618dd4c778cb6a92b809c9aa79ee9b93f12dbe3b11e273431b094b10c53c8dd9", size = 49749, upload-time = "2025-09-09T14:38:24.592Z" },
 ]
 
 [[package]]

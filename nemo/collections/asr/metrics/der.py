@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from itertools import permutations
-from typing import Any, Dict, IO, Iterable, List, Optional, Tuple
+from typing import IO, Any, Dict, Iterable, List, Optional, Tuple
 
 import editdistance
 import numpy as np

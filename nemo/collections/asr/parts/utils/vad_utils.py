@@ -31,11 +31,12 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
-from omegaconf import DictConfig, OmegaConf
 from lhotse import SupervisionSegment
+from omegaconf import DictConfig, OmegaConf
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import ParameterGrid
 from tqdm import tqdm
+
 from nemo.collections.asr.metrics.der import make_diar_segment
 from nemo.collections.asr.metrics.md_eval import (
     EPSILON,
@@ -951,15 +952,17 @@ class _DetectionErrorRateAccumulator:
                 uem_data = _merge_uem_dicts([_uem_list_to_uem_data(fid, uem_pairs)])
 
         _, cum = evaluate(
-            ref_data, sys_data, uem_data=uem_data,
-            collar=0.0, opt_1=False, verbose=False,
+            ref_data,
+            sys_data,
+            uem_data=uem_data,
+            collar=0.0,
+            opt_1=False,
+            verbose=False,
         )
         scored = cum.get("SCORED_SPEAKER", 0.0)
         falarm = cum.get("FALARM_SPEAKER", 0.0)
         missed = cum.get("MISSED_SPEAKER", 0.0)
-        self._files.append(
-            (fid, {"scored": scored, "false_alarm": falarm, "missed": missed})
-        )
+        self._files.append((fid, {"scored": scored, "false_alarm": falarm, "missed": missed}))
 
     def reset(self) -> None:
         """Clear the internal accumulator."""
@@ -1008,11 +1011,7 @@ class _DetectionErrorRateAccumulator:
             total_falarm += fa
             total_missed += miss
 
-        deter_total = (
-            100.0 * (total_falarm + total_missed) / total_scored
-            if total_scored > EPSILON
-            else 0.0
-        )
+        deter_total = 100.0 * (total_falarm + total_missed) / total_scored if total_scored > EPSILON else 0.0
         fa_total = 100.0 * total_falarm / total_scored if total_scored > EPSILON else 0.0
         miss_total = 100.0 * total_missed / total_scored if total_scored > EPSILON else 0.0
         rows.append(
@@ -1077,9 +1076,7 @@ def vad_tune_threshold_on_dev(
             for filename in paired_filenames:
                 groundtruth_RTTM_file = groundtruth_RTTM_dict[filename]
                 vad_table_filepath = os.path.join(vad_table_dir, filename + ".txt")
-                reference, hypothesis = vad_construct_supervisions_per_file(
-                    vad_table_filepath, groundtruth_RTTM_file
-                )
+                reference, hypothesis = vad_construct_supervisions_per_file(vad_table_filepath, groundtruth_RTTM_file)
                 metric(reference, hypothesis)  # accumulation
 
             # delete tmp table files
@@ -1755,9 +1752,7 @@ def align_labels_to_frames(probs, labels, threshold=0.2):
         return labels.long().tolist()
 
 
-def read_rttm_as_supervisions(
-    rttm_file: str, speaker_override: Optional[str] = None
-) -> List[SupervisionSegment]:
+def read_rttm_as_supervisions(rttm_file: str, speaker_override: Optional[str] = None) -> List[SupervisionSegment]:
     """Read an RTTM file and return it as a list of supervision segments.
 
     Returns a ``list`` of :class:`lhotse.SupervisionSegment`, which is the
@@ -1834,9 +1829,7 @@ def frame_vad_construct_supervisions_per_file(
     elif isinstance(groundtruth, list):
         segments = convert_labels_to_speech_segments(prediction, frame_length_in_sec)
         for segment in segments:
-            hypothesis.append(
-                make_diar_segment(float(segment[0]), float(segment[1]), 'speech', recording_id=rec_id)
-            )
+            hypothesis.append(make_diar_segment(float(segment[0]), float(segment[1]), 'speech', recording_id=rec_id))
     else:
         raise ValueError('prediction must be a path to rttm file or a list of frame labels.')
 
@@ -1846,9 +1839,7 @@ def frame_vad_construct_supervisions_per_file(
     elif isinstance(groundtruth, list):
         segments = convert_labels_to_speech_segments(groundtruth, frame_length_in_sec)
         for segment in segments:
-            reference.append(
-                make_diar_segment(float(segment[0]), float(segment[1]), 'speech', recording_id=rec_id)
-            )
+            reference.append(make_diar_segment(float(segment[0]), float(segment[1]), 'speech', recording_id=rec_id))
     else:
         raise ValueError('groundtruth must be a path to rttm file or a list of frame labels.')
     return reference, hypothesis

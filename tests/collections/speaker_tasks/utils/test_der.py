@@ -54,6 +54,7 @@ from nemo.collections.asr.metrics.der import (
     write_supervisions_to_rttm,
 )
 from nemo.collections.asr.metrics.md_eval import (
+    EPSILON,
     DiarizationErrorResult,
     _iter_annotation_segments,
     _labels_to_rttm_data,
@@ -61,9 +62,7 @@ from nemo.collections.asr.metrics.md_eval import (
     _merge_uem_dicts,
     _uem_list_to_uem_data,
     evaluate,
-    EPSILON,
 )
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -121,8 +120,12 @@ def _score_raw(
     if uem_segs:
         uem_data = _merge_uem_dicts([_uem_list_to_uem_data(file_id, uem_segs)])
     _, cum = evaluate(
-        ref_data, sys_data, uem_data=uem_data,
-        collar=collar, opt_1=ignore_overlap, verbose=False,
+        ref_data,
+        sys_data,
+        uem_data=uem_data,
+        collar=collar,
+        opt_1=ignore_overlap,
+        verbose=False,
     )
     scored = cum.get("SCORED_SPEAKER", 0.0) or EPSILON
     missed = cum.get("MISSED_SPEAKER", 0.0)
@@ -547,7 +550,8 @@ class TestScoreLabelsFromRttmLabels:
     @pytest.mark.unit
     def test_complete_miss(self):
         _, _, (DER, _, _, MISS) = _score(
-            [(0, 5, "A"), (5, 10, "B")], [],
+            [(0, 5, "A"), (5, 10, "B")],
+            [],
         )
         assert_der(DER, 1.0)
         assert_der(MISS, 1.0)
@@ -691,7 +695,11 @@ class TestMultiFile:
             ("file2", _labels((0, 5, "C"))),
         ]
         result = score_labels_from_rttm_labels(
-            ref_list, hyp_list, collar=0.0, ignore_overlap=False, verbose=False,
+            ref_list,
+            hyp_list,
+            collar=0.0,
+            ignore_overlap=False,
+            verbose=False,
         )
         assert result is not None
         metric, _, (DER, _, _, _) = result
@@ -714,7 +722,11 @@ class TestMultiFile:
             ("file2", []),
         ]
         result = score_labels_from_rttm_labels(
-            ref_list, hyp_list, collar=0.0, ignore_overlap=False, verbose=False,
+            ref_list,
+            hyp_list,
+            collar=0.0,
+            ignore_overlap=False,
+            verbose=False,
         )
         assert result is not None
         _, _, (DER, _, _, MISS) = result
@@ -944,7 +956,9 @@ class TestExternalEngineVerifiedValues:
         sys_data = _merge_rttm_dicts(sys_dicts)
         _, cum = evaluate(ref_data, sys_data, uem_data=None, collar=0.0, opt_1=False, verbose=False)
         scored = cum.get("SCORED_SPEAKER", 0.0) or EPSILON
-        DER = (cum.get("MISSED_SPEAKER", 0.0) + cum.get("FALARM_SPEAKER", 0.0) + cum.get("SPEAKER_ERROR", 0.0)) / scored
+        DER = (
+            cum.get("MISSED_SPEAKER", 0.0) + cum.get("FALARM_SPEAKER", 0.0) + cum.get("SPEAKER_ERROR", 0.0)
+        ) / scored
         assert_der(DER, 0.0)
         assert_der(scored, 10.0)
 
@@ -1035,7 +1049,10 @@ class TestNoUemAutoUnion:
         # Use a UEM that exactly equals the reference extent — should reproduce
         # the strict NIST numbers even through the high-level wrapper.
         r = _score(
-            self._REF, self._HYP_RAW, collar=0.0, ignore_overlap=False,
+            self._REF,
+            self._HYP_RAW,
+            collar=0.0,
+            ignore_overlap=False,
             uem_segs=[[0.299, 5.147]],
         )
         DER, _CER, _FA, _MISS = r[2]
@@ -1096,7 +1113,7 @@ class TestNoUemAutoUnion:
     def test_collar_lhotse_path_matches_string_path(self):
         """The lhotse-backed ``score_labels`` collar semantics must agree with ``score_labels_from_rttm_labels``."""
         for collar, expected_raw, expected_post in [
-            (0.05,  0.026093, 0.001410),
+            (0.05, 0.026093, 0.001410),
             (0.025, 0.043638, 0.016077),
         ]:
             r_raw = _score_lhotse(self._REF, self._HYP_RAW, collar=collar, ignore_overlap=False)
@@ -1108,6 +1125,7 @@ class TestNoUemAutoUnion:
     def test_default_uem_helper_builds_union(self):
         """The internal ``_default_uem_from_ref_sys`` builds the right span."""
         from nemo.collections.asr.metrics.der import _default_uem_from_ref_sys
+
         ref_data = _merge_rttm_dicts([_labels_to_rttm_data("file1", _labels(*self._REF))])
         sys_data = _merge_rttm_dicts([_labels_to_rttm_data("file1", _labels(*self._HYP_RAW))])
         uem = _default_uem_from_ref_sys(ref_data, sys_data)
@@ -1194,9 +1212,7 @@ class TestLhotseShimHelpers:
 
     @pytest.mark.unit
     def test_unique_speakers_preserves_first_seen_order(self):
-        ann = make_diar_annotation(
-            ["0 1 B", "1 2 A", "2 3 B", "3 4 C", "4 5 A"], uniq_name="r"
-        )
+        ann = make_diar_annotation(["0 1 B", "1 2 A", "2 3 B", "3 4 C", "4 5 A"], uniq_name="r")
         # First-seen order: B, A, C
         assert unique_speakers(ann) == ["B", "A", "C"]
 
@@ -1261,9 +1277,7 @@ class TestLhotseShimHelpers:
         Verifies our RTTM output is parseable by lhotse's RTTM reader,
         confirming we follow the same format conventions.
         """
-        ann = make_diar_annotation(
-            ["0.0 2.5 alice", "2.5 5.0 bob", "5.0 7.25 alice"], uniq_name="conv1"
-        )
+        ann = make_diar_annotation(["0.0 2.5 alice", "2.5 5.0 bob", "5.0 7.25 alice"], uniq_name="conv1")
         # Write to a temp file (lhotse only reads from path objects).
         import tempfile
 
@@ -1275,6 +1289,7 @@ class TestLhotseShimHelpers:
             parsed_segs = sorted(list(parsed), key=lambda s: s.start)
         finally:
             import os
+
             os.unlink(tmp_path)
         assert len(parsed_segs) == 3
         assert [s.speaker for s in parsed_segs] == ["alice", "bob", "alice"]
@@ -1301,6 +1316,7 @@ class TestIterAnnotationSegments:
     @pytest.mark.unit
     def test_iter_duck_typed_objects_with_end(self):
         """Plain dataclass-like objects with ``.start``, ``.end``, ``.speaker``."""
+
         class _DT:
             def __init__(self, start, end, speaker):
                 self.start = start
@@ -1313,6 +1329,7 @@ class TestIterAnnotationSegments:
     @pytest.mark.unit
     def test_iter_duck_typed_objects_with_duration(self):
         """Objects exposing ``.duration`` (no ``.end``) are also accepted."""
+
         class _DT:
             def __init__(self, start, duration, speaker):
                 self.start = start
@@ -1330,6 +1347,7 @@ class TestIterAnnotationSegments:
         This duck-typed fallback keeps backwards compatibility with the
         external annotation library's ``Annotation`` API.
         """
+
         class _Seg:
             def __init__(self, s, e):
                 self.start = s
@@ -1503,15 +1521,15 @@ class TestLhotseAnnotation:
     @pytest.mark.unit
     def test_accepts_supervision_set(self):
         """``score_labels`` should accept a ``SupervisionSet`` directly."""
-        ref = SupervisionSet.from_segments(
-            make_diar_annotation(["0 5 A", "5 10 B"], uniq_name="f1")
-        )
-        hyp = SupervisionSet.from_segments(
-            make_diar_annotation(["0 5 A", "5 10 B"], uniq_name="f1")
-        )
+        ref = SupervisionSet.from_segments(make_diar_annotation(["0 5 A", "5 10 B"], uniq_name="f1"))
+        hyp = SupervisionSet.from_segments(make_diar_annotation(["0 5 A", "5 10 B"], uniq_name="f1"))
         result = score_labels(
-            {"f1": {}}, [("f1", ref)], [("f1", hyp)], collar=0.0,
-            ignore_overlap=False, verbose=False,
+            {"f1": {}},
+            [("f1", ref)],
+            [("f1", hyp)],
+            collar=0.0,
+            ignore_overlap=False,
+            verbose=False,
         )
         assert result is not None
         _, _, (DER, _, _, _) = result
@@ -1528,7 +1546,9 @@ class TestLhotseAnnotation:
             {"f1": {}, "f2": {}},
             [("f1", f1_ref), ("f2", f2_ref)],
             [("f1", f1_hyp), ("f2", f2_hyp)],
-            collar=0.0, ignore_overlap=False, verbose=False,
+            collar=0.0,
+            ignore_overlap=False,
+            verbose=False,
         )
         assert result is not None
         metric, _, (DER, _, _, _) = result
@@ -1613,4 +1633,3 @@ class TestLhotseStringEquivalence:
             [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
         )
         assert string_path == pytest.approx(lhotse_path)
-

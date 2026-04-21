@@ -118,21 +118,35 @@ RTTM_DATATYPES: Dict[str, Dict[str, int]] = {
     "NOSCORE": {"<na>": 1},
     "NO_RT_METADATA": {"<na>": 1},
     "LEXEME": {
-        "lex": 1, "fp": 1, "frag": 1, "un-lex": 1,
-        "for-lex": 1, "alpha": 1, "acronym": 1,
-        "interjection": 1, "propernoun": 1, "other": 1,
+        "lex": 1,
+        "fp": 1,
+        "frag": 1,
+        "un-lex": 1,
+        "for-lex": 1,
+        "alpha": 1,
+        "acronym": 1,
+        "interjection": 1,
+        "propernoun": 1,
+        "other": 1,
     },
     "NON-LEX": {"laugh": 1, "breath": 1, "lipsmack": 1, "cough": 1, "sneeze": 1, "other": 1},
     "NON-SPEECH": {"noise": 1, "music": 1, "other": 1},
     "FILLER": {
-        "filled_pause": 1, "discourse_marker": 1, "discourse_response": 1,
-        "explicit_editing_term": 1, "other": 1,
+        "filled_pause": 1,
+        "discourse_marker": 1,
+        "discourse_response": 1,
+        "explicit_editing_term": 1,
+        "other": 1,
     },
     "EDIT": {"repetition": 1, "restart": 1, "revision": 1, "simple": 1, "complex": 1, "other": 1},
     "IP": {"edit": 1, "filler": 1, "edit&filler": 1, "other": 1},
     "SU": {
-        "statement": 1, "backchannel": 1, "question": 1,
-        "incomplete": 1, "unannotated": 1, "other": 1,
+        "statement": 1,
+        "backchannel": 1,
+        "question": 1,
+        "incomplete": 1,
+        "unannotated": 1,
+        "other": 1,
     },
     "CB": {"coordinating": 1, "clausal": 1, "other": 1},
     "A/P": {"<na>": 1},
@@ -173,9 +187,7 @@ def get_rttm_data(data: Dict[str, Dict[str, Dict[str, Any]]], rttm_file: Optiona
             if fields[0] == "":
                 fields = fields[1:]
             if len(fields) < 9:
-                raise ValueError(
-                    f"Insufficient fields in RTTM file '{rttm_file}'\n  record: {line!r}"
-                )
+                raise ValueError(f"Insufficient fields in RTTM file '{rttm_file}'\n  record: {line!r}")
 
             data_type = fields[0].upper()
             tbeg_str = fields[3].replace("*", "")
@@ -202,9 +214,9 @@ def get_rttm_data(data: Dict[str, Dict[str, Dict[str, Any]]], rttm_file: Optiona
                 token["TMID"] = token["TBEG"] + token["TDUR"] / 2.0
 
             if data_type == "SPKR-INFO":
-                (
-                    data.setdefault(file_id, {}).setdefault(chnl, {}).setdefault("SPKR-INFO", {})
-                )[token["SPKR"]] = {"GENDER": token["SUBT"]}
+                (data.setdefault(file_id, {}).setdefault(chnl, {}).setdefault("SPKR-INFO", {}))[token["SPKR"]] = {
+                    "GENDER": token["SUBT"]
+                }
 
             elif data_type == "SPEAKER":
                 (
@@ -396,12 +408,7 @@ def add_exclusion_zones_to_uem(
             tstart = min(tend_nsz + max_ext, etime)
             events.append({"TYPE": "NSZ", "EVENT": "END", "TIME": tstart})
             evaluating = 1
-        elif (
-            nsz_cnt == 1
-            and etype == "NSZ"
-            and eevt == "BEG"
-            and etime > tend_nsz + 2 * max_ext
-        ):
+        elif nsz_cnt == 1 and etype == "NSZ" and eevt == "BEG" and etime > tend_nsz + 2 * max_ext:
             events.append({"TYPE": "NSZ", "EVENT": "END", "TIME": tend_nsz + max_ext})
             events.append({"TYPE": "NSZ", "EVENT": "BEG", "TIME": etime - max_ext})
             evaluating = 0
@@ -476,9 +483,7 @@ def add_collars_to_uem(
     return uem_out
 
 
-def exclude_overlapping_speech_from_uem(
-    uem_data: List[UEMSegment], rttm_data: List[Token]
-) -> List[UEMSegment]:
+def exclude_overlapping_speech_from_uem(uem_data: List[UEMSegment], rttm_data: List[Token]) -> List[UEMSegment]:
     """Remove regions where two or more reference speakers overlap simultaneously.
 
     Args:
@@ -591,13 +596,15 @@ def create_speaker_segs(
     for ev in events:
         if evaluate and tbeg < ev["TIME"] - EPSILON:
             tend = ev["TIME"]
-            segments.append({
-                "REF": dict(ref_spkrs),
-                "SYS": dict(sys_spkrs),
-                "TBEG": tbeg,
-                "TEND": tend,
-                "TDUR": tend - tbeg,
-            })
+            segments.append(
+                {
+                    "REF": dict(ref_spkrs),
+                    "SYS": dict(sys_spkrs),
+                    "TBEG": tbeg,
+                    "TEND": tend,
+                    "TDUR": tend - tbeg,
+                }
+            )
             tbeg = tend
 
         if ev["TYPE"] == "UEM":
@@ -612,9 +619,7 @@ def create_speaker_segs(
             if ev["EVENT"] == "BEG":
                 spkrs[spkr] = spkrs.get(spkr, 0) + 1
                 if spkrs[spkr] > 1:
-                    warnings.warn(
-                        f"Speaker {spkr} speaking more than once at t={ev['TIME']}"
-                    )
+                    warnings.warn(f"Speaker {spkr} speaking more than once at t={ev['TIME']}")
             else:
                 cnt = spkrs.get(spkr, 0) - 1
                 if cnt <= 0:
@@ -672,9 +677,7 @@ def map_speakers(spkr_overlap: SpeakerOverlap) -> SpeakerMap:
 # ─── Per-segment speaker scoring ─────────────────────────────────────────
 
 
-def _speakers_match(
-    ref_spkrs: Dict[str, int], sys_spkrs: Dict[str, int], spkr_map: SpeakerMap
-) -> bool:
+def _speakers_match(ref_spkrs: Dict[str, int], sys_spkrs: Dict[str, int], spkr_map: SpeakerMap) -> bool:
     """Check whether every ref speaker in a segment maps to a present sys speaker."""
     if len(ref_spkrs) != len(sys_spkrs):
         return False
@@ -710,9 +713,7 @@ def _speaker_mapping_scores(
         st = info.get("TYPE", "unknown")
         stats["SYS"][st] = stats["SYS"].get(st, 0) + 1
         if ss not in imap:
-            stats["JOINT"].setdefault(FA_NAME, {})[st] = (
-                stats["JOINT"].get(FA_NAME, {}).get(st, 0) + 1
-            )
+            stats["JOINT"].setdefault(FA_NAME, {})[st] = stats["JOINT"].get(FA_NAME, {}).get(st, 0) + 1
 
     return stats
 
@@ -743,12 +744,8 @@ def _score_speaker_segments(
 
         stats["SCORED_TIME"] = stats.get("SCORED_TIME", 0.0) + dur
         stats["SCORED_SPEECH"] = stats.get("SCORED_SPEECH", 0.0) + (dur if nref else 0.0)
-        stats["MISSED_SPEECH"] = stats.get("MISSED_SPEECH", 0.0) + (
-            dur if nref and not nsys else 0.0
-        )
-        stats["FALARM_SPEECH"] = stats.get("FALARM_SPEECH", 0.0) + (
-            dur if nsys and not nref else 0.0
-        )
+        stats["MISSED_SPEECH"] = stats.get("MISSED_SPEECH", 0.0) + (dur if nref and not nsys else 0.0)
+        stats["FALARM_SPEECH"] = stats.get("FALARM_SPEECH", 0.0) + (dur if nsys and not nref else 0.0)
         stats["SCORED_SPEAKER"] = stats.get("SCORED_SPEAKER", 0.0) + dur * nref
         stats["MISSED_SPEAKER"] = stats.get("MISSED_SPEAKER", 0.0) + dur * max(nref - nsys, 0)
         stats["FALARM_SPEAKER"] = stats.get("FALARM_SPEAKER", 0.0) + dur * max(nsys - nref, 0)
@@ -785,9 +782,7 @@ def _score_speaker_segments(
         for rt, nrt in num_ref.items():
             tt["REF"][rt] = tt["REF"].get(rt, 0.0) + nrt * dur
             for st, nst in num_sys.items():
-                tt["JOINT"].setdefault(rt, {})[st] = (
-                    tt["JOINT"].get(rt, {}).get(st, 0.0) + min(nrt, nst) * dur
-                )
+                tt["JOINT"].setdefault(rt, {})[st] = tt["JOINT"].get(rt, {}).get(st, 0.0) + min(nrt, nst) * dur
             tt["JOINT"].setdefault(rt, {})[MISS_NAME] = (
                 tt["JOINT"].get(rt, {}).get(MISS_NAME, 0.0) + max(nrt - nsys, 0) * dur
             )
@@ -884,9 +879,7 @@ def score_speaker_diarization(
         stats["EVAL_SPEECH"] += seg["TDUR"]
         for rs in seg["REF"]:
             for ss in seg["SYS"]:
-                spkr_overlap.setdefault(rs, {})[ss] = (
-                    spkr_overlap.get(rs, {}).get(ss, 0.0) + seg["TDUR"]
-                )
+                spkr_overlap.setdefault(rs, {})[ss] = spkr_overlap.get(rs, {}).get(ss, 0.0) + seg["TDUR"]
 
     spkr_map = map_speakers(spkr_overlap)
 
@@ -896,9 +889,7 @@ def score_speaker_diarization(
         uem_score = add_exclusion_zones_to_uem(noscore_sd, uem_score, rttm_data)
         noscore_nl = noscore_sd.get("NON-LEX")
         if noscore_nl:
-            uem_score = add_exclusion_zones_to_uem(
-                {"NON-LEX": noscore_nl}, uem_score, rttm_data, max_extend
-            )
+            uem_score = add_exclusion_zones_to_uem({"NON-LEX": noscore_nl}, uem_score, rttm_data, max_extend)
 
     if opt_1:
         uem_score = exclude_overlapping_speech_from_uem(uem_score, rttm_data)
@@ -967,8 +958,7 @@ def format_sd_scores(condition: str, scores: SDStats) -> str:
         f"MISSED SPEAKER TIME ={missed:f} secs",
         f"FALARM SPEAKER TIME ={falarm:f} secs",
         f"SPEAKER ERROR TIME ={error:f} secs",
-        f" OVERALL SPEAKER DIARIZATION ERROR = {der:.2f} percent of scored speaker time"
-        f"  `({condition})",
+        f" OVERALL SPEAKER DIARIZATION ERROR = {der:.2f} percent of scored speaker time" f"  `({condition})",
         "---------------------------------------------",
         " Speaker type confusion matrix -- speaker weighted",
         _summarize_speaker_type_performance("NSPK", scores.get("TYPE", {}).get("NSPK", {})),
@@ -1083,10 +1073,20 @@ def evaluate(
     }
 
     _scalar_keys = (
-        "EVAL_TIME", "EVAL_SPEECH", "SCORED_TIME", "SCORED_SPEECH",
-        "MISSED_SPEECH", "FALARM_SPEECH", "SCORED_SPEAKER", "MISSED_SPEAKER",
-        "FALARM_SPEAKER", "SPEAKER_ERROR", "EVAL_WORDS", "SCORED_WORDS",
-        "MISSED_WORDS", "ERROR_WORDS",
+        "EVAL_TIME",
+        "EVAL_SPEECH",
+        "SCORED_TIME",
+        "SCORED_SPEECH",
+        "MISSED_SPEECH",
+        "FALARM_SPEECH",
+        "SCORED_SPEAKER",
+        "MISSED_SPEAKER",
+        "FALARM_SPEAKER",
+        "SPEAKER_ERROR",
+        "EVAL_WORDS",
+        "SCORED_WORDS",
+        "MISSED_WORDS",
+        "ERROR_WORDS",
     )
 
     for file_id in all_scores:
@@ -1102,9 +1102,7 @@ def evaluate(
                         dst[kind][t] = dst[kind].get(t, 0) + v
                 for rt, sm in src.get("JOINT", {}).items():
                     for st, v in sm.items():
-                        dst["JOINT"].setdefault(rt, {})[st] = (
-                            dst["JOINT"].get(rt, {}).get(st, 0) + v
-                        )
+                        dst["JOINT"].setdefault(rt, {})[st] = dst["JOINT"].get(rt, {}).get(st, 0) + v
 
     if verbose:
         logging.info(format_sd_scores("ALL", cum))
@@ -1166,15 +1164,17 @@ class DiarizationErrorResult:
             for chnl in sorted(all_scores[file_id].keys()):
                 s = all_scores[file_id][chnl]
                 s_scored = s.get("SCORED_SPEAKER", 0.0) or EPSILON
-                self.results_.append((
-                    file_id,
-                    {
-                        "total": s_scored,
-                        "confusion": s.get("SPEAKER_ERROR", 0.0),
-                        "false alarm": s.get("FALARM_SPEAKER", 0.0),
-                        "missed detection": s.get("MISSED_SPEAKER", 0.0),
-                    },
-                ))
+                self.results_.append(
+                    (
+                        file_id,
+                        {
+                            "total": s_scored,
+                            "confusion": s.get("SPEAKER_ERROR", 0.0),
+                            "false alarm": s.get("FALARM_SPEAKER", 0.0),
+                            "missed detection": s.get("MISSED_SPEAKER", 0.0),
+                        },
+                    )
+                )
 
     def __abs__(self) -> float:
         return self._der
@@ -1198,11 +1198,7 @@ class DiarizationErrorResult:
         if isinstance(ref_labels, str):
             key = ref_labels
         else:
-            key = (
-                getattr(ref_labels, 'uri', None)
-                or getattr(ref_labels, 'recording_id', None)
-                or str(ref_labels)
-            )
+            key = getattr(ref_labels, 'uri', None) or getattr(ref_labels, 'recording_id', None) or str(ref_labels)
         return self._mapping_dict.get(key, {})
 
     def report(self) -> str:
@@ -1217,9 +1213,7 @@ class DiarizationErrorResult:
             fa = score["false alarm"]
             miss = score["missed detection"]
             der = 100.0 * (conf + fa + miss) / total if total > 0 else 0.0
-            lines.append(
-                f"{file_id:<40} {total:>10.2f} {conf:>10.2f} {fa:>12.2f} {miss:>10.2f} {der:>7.2f}%"
-            )
+            lines.append(f"{file_id:<40} {total:>10.2f} {conf:>10.2f} {fa:>12.2f} {miss:>10.2f} {der:>7.2f}%")
         total = self._total
         lines.append("-" * len(header))
         lines.append(
@@ -1251,14 +1245,10 @@ def _iter_annotation_segments(annotation: Any) -> Iterator[Tuple[float, float, s
         elif hasattr(item, "duration"):
             end = start + float(item.duration)
         else:
-            raise TypeError(
-                f"Annotation item of type {type(item).__name__} has no 'end' or 'duration' attribute."
-            )
+            raise TypeError(f"Annotation item of type {type(item).__name__} has no 'end' or 'duration' attribute.")
         speaker = getattr(item, "speaker", None)
         if speaker is None:
-            raise TypeError(
-                f"Annotation item of type {type(item).__name__} has no 'speaker' attribute."
-            )
+            raise TypeError(f"Annotation item of type {type(item).__name__} has no 'speaker' attribute.")
         yield start, end, str(speaker)
 
 
@@ -1305,10 +1295,7 @@ def _annotation_to_rttm_data(
             "CONF": "-",
         }
         (
-            data.setdefault(uniq_id, {})
-            .setdefault(chnl, {})
-            .setdefault("SPEAKER", {})
-            .setdefault(str(speaker), [])
+            data.setdefault(uniq_id, {}).setdefault(chnl, {}).setdefault("SPEAKER", {}).setdefault(str(speaker), [])
         ).append(token)
         data[uniq_id][chnl].setdefault("RTTM", []).append(token)
 
@@ -1358,12 +1345,9 @@ def _labels_to_rttm_data(
             "SPKR": speaker,
             "CONF": "-",
         }
-        (
-            data.setdefault(uniq_id, {})
-            .setdefault(chnl, {})
-            .setdefault("SPEAKER", {})
-            .setdefault(speaker, [])
-        ).append(token)
+        (data.setdefault(uniq_id, {}).setdefault(chnl, {}).setdefault("SPEAKER", {}).setdefault(speaker, [])).append(
+            token
+        )
         data[uniq_id][chnl].setdefault("RTTM", []).append(token)
 
     for file_id in data:
@@ -1392,9 +1376,7 @@ def _uem_list_to_uem_data(
     return {uniq_id: {chnl: segs}}
 
 
-def _merge_rttm_dicts(
-    dicts: List[Dict[str, Dict[str, Dict[str, Any]]]]
-) -> Dict[str, Dict[str, Dict[str, Any]]]:
+def _merge_rttm_dicts(dicts: List[Dict[str, Dict[str, Dict[str, Any]]]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """Merge multiple single-file RTTM data dicts into one combined dict."""
     merged: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for d in dicts:
@@ -1403,9 +1385,7 @@ def _merge_rttm_dicts(
     return merged
 
 
-def _merge_uem_dicts(
-    dicts: List[Dict[str, Dict[str, List[UEMSegment]]]]
-) -> Dict[str, Dict[str, List[UEMSegment]]]:
+def _merge_uem_dicts(dicts: List[Dict[str, Dict[str, List[UEMSegment]]]]) -> Dict[str, Dict[str, List[UEMSegment]]]:
     """Merge multiple single-file UEM data dicts into one combined dict."""
     merged: Dict[str, Dict[str, List[UEMSegment]]] = {}
     for d in dicts:

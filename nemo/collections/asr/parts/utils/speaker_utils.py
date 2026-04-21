@@ -27,11 +27,7 @@ from omegaconf.listconfig import ListConfig
 from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_label import repeat_signal
-from nemo.collections.asr.metrics.der import (
-    make_diar_annotation,
-    make_uem_timeline,
-    write_supervisions_to_rttm,
-)
+from nemo.collections.asr.metrics.der import make_diar_annotation, make_uem_timeline, write_supervisions_to_rttm
 from nemo.collections.asr.parts.utils.longform_clustering import LongFormSpeakerClustering
 from nemo.utils import logging
 

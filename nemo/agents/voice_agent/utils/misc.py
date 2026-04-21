@@ -42,6 +42,7 @@ def setup_rotating_log(
     log_level: str = "DEBUG",
     create_new_log: bool = False,
     overwrite_existing: bool = False,
+    rotation: str = "1 day",
 ) -> None:
     """Roll an existing log file aside (or delete it), then call ``setup_logging``.
 
@@ -58,7 +59,7 @@ def setup_rotating_log(
             os.rename(log_file, new_log_file)
             logger.info(f"Renamed existing log file: {log_file} to {new_log_file}")
 
-    setup_logging(log_file=log_file, log_level=log_level)
+    setup_logging(log_file=log_file, log_level=log_level, rotation=rotation)
 
 
 class FileLogger:

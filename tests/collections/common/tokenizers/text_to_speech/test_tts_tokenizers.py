@@ -54,7 +54,8 @@ class TestTTSTokenizers:
     }
     PHONEME_DICT_HI = {
         "नमस्ते": ["nəmˈʌsteː"],
-        "दुनिया": ["dˈʊnɪjˌã"],
+        "दुनिया": ["dˈʊnɪjˌã"],
+        "अच्छा": ["ˈʌtʃtʃʰaː"],
     }
     PHONEME_DICT_PT_BR = {
         "Olá": ["olˈa"],

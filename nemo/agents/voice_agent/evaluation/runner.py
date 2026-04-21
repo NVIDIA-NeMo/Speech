@@ -120,6 +120,7 @@ async def run_dynamic_evaluation(
 
         # Run scenario
         duration = duration_per_scenario if duration_per_scenario is not None else scenario.max_duration
+        assert duration > 0, f"Duration per scenario must be greater than 0, got {duration}"
         logger.info(f"Running scenario for {duration} seconds...")
 
         scenario_start = datetime.now()

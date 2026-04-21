@@ -20,7 +20,7 @@ Evaluate a voice agent by having a simulated user (another voice agent) talk to 
 
 - **Two independent WebSocket bot servers.** Each runs its own Pipecat pipeline (NeMo ASR → LLM → TTS) and speaks RTVI.
 - **Bridge process.** Opens a WebSocket client to each bot, runs two threads (one per bot), and shuttles audio between them via thread-safe queues. Resamples audio at the source to match each bot's sample rate. Monitors RTVI events for transcripts, turn timing, `<final_response>` (structured result), and `<exit>` (graceful termination signal).
-- **Control plane.** The bridge uses RTVI `update_system_prompt` (inject scenario prompts and tool configs), `reset` (clear context between scenarios), and `get_context_history` (retrieve LLM context + server logs at scenario end).
+- **Control plane.** The bridge uses RTVI `update_system_prompt` (inject scenario prompts and tool configs), `reset` (clear context between scenarios), and `get_context_history` (retrieve final LLM context for current scenario).
 
 ## Quick Start
 
@@ -58,7 +58,7 @@ python bot_websocket_agent.py
 
 ### 2. Run an evaluation
 
-**Terminal 3 — Bridge**
+**Terminal 3 — Evaluation Bridge**
 
 ```bash
 cd examples/voice_agent/evaluation
@@ -106,6 +106,9 @@ If neither `--scenarios` nor `--domain` is given, all registered scenarios run.
 
 ## Available Scenarios
 
+Current scnarios are relatively simple, usually contains no more than 3 tool calls and less than 5 turns. More complex scenarios will be added later.
+
+
 | Domain | Count | Summary tool | Description |
 |--------|-------|--------------|-------------|
 | `restaurant` | 11 | `PlaceOrderTool`, `JoinWaitListTool` / `DropWaitListTool` | Ordering food at pizza, burger, and deli restaurants, plus a waitlist join/drop scenario (demonstrates shared state across tools). |
@@ -149,12 +152,12 @@ eval_results/eval_YYYYMMDD_HHMMSS/
 ├── all_summary.txt                 # Human-readable summary (per-scenario + overall stats)
 └── <scenario_name>/                # One directory per scenario
     ├── conversation_log.txt        # Timestamped transcript with latency annotations
-    ├── conversation_log.seglst.json  # segLST-format speaker segments (for ASR evaluation)
+    ├── conversation_log.seglst.json  # segLST-format speaker segments
     ├── conversation_log.wav        # Stereo audio: L=user→agent, R=agent→user
     ├── bridge_log.txt              # Bridge debug/info log
     ├── final_agent_response.json   # All <final_response> payloads captured from the agent
     ├── metrics.json                # Per-scenario metrics + is_successful flag
-    ├── judge_result.json           # LLM judge output (present only if judge was enabled)
+    ├── judge_result.json           # LLM judge output (present only if LLM judge was enabled)
     ├── scenario_config/            # Snapshot of the scenario definition used for this run
     │   ├── metadata.json           # name, description, max_duration, matching flags, noise config
     │   ├── reference_answer.json   # The expected answer that was compared against

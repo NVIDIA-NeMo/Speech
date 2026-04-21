@@ -60,6 +60,9 @@ class TestTTSTokenizers:
     PHONEME_DICT_PT_BR = {
         "Olá": ["olˈa"],
         "mundo": ["mˈũndʊ"],
+        "café": ["kafˈɛ"],
+        "está": ["iʃtˈa"],
+        "bom": ["bˈõ"],
     }
     PHONEME_DICT_KO = {
         "안녕": ["ˈɐnnjʌŋ"],

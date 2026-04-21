@@ -67,6 +67,8 @@ class TestTTSTokenizers:
     PHONEME_DICT_KO = {
         "안녕": ["ˈɐnnjʌŋ"],
         "하세요": ["hˈɐsejˌo"],
+        "감사": ["kˈɐmsɐ"],
+        "합니다": ["hˈɐmnidˌɐ"],
     }
 
     @staticmethod

@@ -41,7 +41,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.common.callbacks import EMA
 from nemo.collections.common.callbacks.ipl_epoch_stopper import IPLEpochStopper
-from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
+from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.utils import logging, timers
 from nemo.utils.app_state import AppState
 from nemo.utils.callbacks import NeMoModelCheckpoint, PreemptionCallback
@@ -664,21 +664,6 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
             "Cannot set both log_local_rank_0_only and log_global_rank_0_only to True."
             "Please set either one or neither."
         )
-
-    # This is set if the env var NEMO_TESTING is set to True.
-    nemo_testing = get_envbool(NEMO_ENV_VARNAME_TESTING, False)
-
-    # Handle logging to file
-    log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
-    if cfg.log_local_rank_0_only is True and not nemo_testing:
-        if local_rank == 0:
-            logging.add_file_handler(log_file)
-    elif cfg.log_global_rank_0_only is True and not nemo_testing:
-        if global_rank == 0:
-            logging.add_file_handler(log_file)
-    else:
-        # Logs on all ranks.
-        logging.add_file_handler(log_file)
 
     # For some reason, LearningRateLogger requires trainer to have a logger. Safer to create logger on all ranks
     # not just global rank 0.

@@ -379,7 +379,8 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
             prefix = get_uniqname_from_filepath(manifest_file)
             name = os.path.join(embedding_dir, prefix)
             self._embeddings_file = name + '_embeddings.pkl'
-            msgpack.dump(self.embeddings, open(self._embeddings_file, 'wb'))
+            with open(self._embeddings_file, 'wb') as f:
+                msgpack.dump(self.embeddings, f)
             logging.info("Saved embedding files to {}".format(embedding_dir))
 
     def diarize(self, paths2audio_files: List[str] = None, batch_size: int = 0):

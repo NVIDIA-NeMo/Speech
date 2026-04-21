@@ -73,7 +73,8 @@ def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./
 
     name = os.path.join(embedding_dir, prefix)
     embeddings_file = name + '_embeddings.pkl'
-    msgpack.dump(out_embeddings, open(embeddings_file, 'wb'))
+    with open(embeddings_file, 'wb') as f:
+        msgpack.dump(out_embeddings, f)
     logging.info("Saved embedding files to {}".format(embedding_dir))
 
 

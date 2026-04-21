@@ -252,6 +252,11 @@ class CharAwareSubwordEncoder(NeuralModule):
         if subword_mask.ndim == 3:
             subword_mask = subword_mask.squeeze(-1)
 
+        if not subword_mask.any():
+            B, T = subword_ids.shape
+            D = self.embed_tokens.embedding_dim
+            return torch.zeros((B, T, D), dtype=self.embed_tokens.weight.dtype, device=device)
+
         char_ids, char_lengths = self.prepare_inputs(subword_ids, subword_mask)
         char_mask = get_mask_from_lengths(char_lengths)
         char_emb = self.embed_tokens(char_ids)

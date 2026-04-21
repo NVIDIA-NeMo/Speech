@@ -14,7 +14,7 @@
 
 import json
 import os
-import pickle as pkl
+import msgpack
 import shutil
 import tempfile
 from copy import deepcopy

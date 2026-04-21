@@ -67,10 +67,13 @@ class IpaG2p(BaseG2p):
         `apply_to_oov_word` for handling.
 
         Args:
-            phoneme_dict (str, Path, or Dict): Path to file in CMUdict format or an IPA dict object with CMUdict-like
-                entries. For example,
-                a dictionary file: scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt;
-                a dictionary object: {..., "Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}.
+            phoneme_dict: A single phoneme dictionary source or a list of sources for multi-dictionary
+                code-switching (e.g. Hindi + English). Each source can be:
+                - a file path (str or pathlib.Path) in CMUdict format,
+                  e.g. ``scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt``
+                - a dict object with CMUdict-like entries,
+                  e.g. ``{"Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]]}``
+                When a list is provided, all sources are parsed and merged into a single dictionary.
             locale (str): Locale used to determine a locale-specific tokenization logic. Currently, it supports "en-US",
                 "de-DE", and "es-ES". Defaults to "en-US". Specify None if implementing custom logic for a new locale.
             apply_to_oov_word (Callable): Function that deals with the out-of-vocabulary (OOV) words that do not exist
@@ -245,7 +248,13 @@ class IpaG2p(BaseG2p):
         return phoneme_dict_obj
 
     def replace_dict(
-        self, phoneme_dict: Union[str, pathlib.Path, List[Union[str, pathlib.Path]], Dict[str, List[List[str]]]]
+        self,
+        phoneme_dict: Union[
+            str,
+            pathlib.Path,
+            Dict[str, List[List[str]]],
+            List[Union[str, pathlib.Path, Dict[str, List[List[str]]]]],
+        ],
     ):
         """
         Replace model's phoneme dictionary with a custom one

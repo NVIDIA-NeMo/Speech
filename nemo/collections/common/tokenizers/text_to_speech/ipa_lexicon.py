@@ -369,6 +369,6 @@ def get_ipa_punctuation_list(locale):
                 '–',
                 '〜',
             ]
-         )
+        )
     punct_list = sorted(list(punct_set))
     return punct_list

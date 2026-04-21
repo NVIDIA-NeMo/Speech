@@ -23,7 +23,7 @@ import logging
 import math
 import operator
 import os
-import pickle
+import msgpack
 from collections import defaultdict
 from os.path import expanduser
 from pathlib import Path
@@ -189,7 +189,7 @@ def load_data(
             pickle_filename += '_' + timestamp + '.pkl'
             if os.path.exists(pickle_filename):
                 with open(pickle_filename, 'rb') as f:
-                    data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available = pickle.load(f)
+                    data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available = msgpack.load(f)
                 if vocab is not None:
                     for item in vocabulary_data:
                         item['OOV'] = item['word'] not in vocabulary_ext
@@ -201,10 +201,9 @@ def load_data(
                         item['freq_bandwidth'] = int(bw)
                         item['level_db'] = 20 * np.log10(np.max(np.abs(signal)))
                 with open(pickle_filename, 'wb') as f:
-                    pickle.dump(
+                    msgpack.dump(
                         [data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available],
                         f,
-                        pickle.HIGHEST_PROTOCOL,
                     )
                 return data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available
 
@@ -440,10 +439,9 @@ def load_data(
     if not comparison_mode:
         if not disable_caching:
             with open(pickle_filename, 'wb') as f:
-                pickle.dump(
+                msgpack.dump(
                     [data, wer, cer, wmr, mwa, num_hours, vocabulary_data, alphabet, metrics_available],
                     f,
-                    pickle.HIGHEST_PROTOCOL,
                 )
     if comparison_mode:
         return (

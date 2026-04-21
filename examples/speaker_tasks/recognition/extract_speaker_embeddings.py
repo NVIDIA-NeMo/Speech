@@ -15,13 +15,13 @@
 """
 This is a helper script to extract speaker embeddings based on manifest file
 Usage:
-python extract_speaker_embeddings.py --manifest=/path/to/manifest/file' 
+python extract_speaker_embeddings.py --manifest=/path/to/manifest/file'
 --model_path='/path/to/.nemo/file'(optional)
 --embedding_dir='/path/to/embedding/directory'
 
 Args:
 --manifest: path to manifest file containing audio_file paths for which embeddings need to be extracted
---model_path(optional): path to .nemo speaker verification model file to extract embeddings, if not passed SpeakerNet-M model would 
+--model_path(optional): path to .nemo speaker verification model file to extract embeddings, if not passed SpeakerNet-M model would
     be downloaded from NGC and used to extract embeddings
 --embeddings_dir(optional): path to directory where embeddings need to stored default:'./'
 
@@ -30,7 +30,7 @@ Args:
 
 import json
 import os
-import pickle as pkl
+import msgpack
 from argparse import ArgumentParser
 
 import numpy as np
@@ -45,8 +45,8 @@ def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./
     """
     save embeddings to pickle file
     Args:
-        speaker_model: NeMo <EncDecSpeakerLabel> model 
-        manifest_file: path to the manifest file containing the audio file path from which the 
+        speaker_model: NeMo <EncDecSpeakerLabel> model
+        manifest_file: path to the manifest file containing the audio file path from which the
                        embeddings should be extracted
         batch_size: batch_size for inference
         embedding_dir: path to directory to store embeddings file
@@ -73,7 +73,7 @@ def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./
 
     name = os.path.join(embedding_dir, prefix)
     embeddings_file = name + '_embeddings.pkl'
-    pkl.dump(out_embeddings, open(embeddings_file, 'wb'))
+    msgpack.dump(out_embeddings, open(embeddings_file, 'wb'))
     logging.info("Saved embedding files to {}".format(embedding_dir))
 
 

@@ -27,7 +27,7 @@
 # limitations under the License.
 
 import os
-import pickle
+import json
 import sys
 from functools import partial
 from typing import Callable, Optional
@@ -92,9 +92,9 @@ def _class_test(
     # Instanciate lightning metric
     metric = metric_class(dist_sync_on_step=dist_sync_on_step, **metric_args)
 
-    # verify metrics work after being loaded from pickled state
-    pickled_metric = pickle.dumps(metric)
-    metric = pickle.loads(pickled_metric)
+    # verify metrics work after being loaded from saved state
+    saved_metric = json.dumps(metric)
+    metric = json.loads(saved_metric)
 
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = metric(preds[i], target[i])
@@ -309,9 +309,9 @@ def _perplexity_class_test(
             perplexity(probs, logits)
         return
 
-    # verify perplexity works after being loaded from pickled state
-    pickled_metric = pickle.dumps(perplexity)
-    perplexity = pickle.loads(pickled_metric)
+    # verify perplexity works after being loaded from saved state
+    saved_metric = json.dumps(perplexity)
+    perplexity = json.loads(saved_metric)
 
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = perplexity(None if probs is None else probs[i], None if logits is None else logits[i])
@@ -466,9 +466,9 @@ def _loss_class_test(
     # Instantiate lightning metric
     loss_metric = GlobalAverageLossMetric(dist_sync_on_step=dist_sync_on_step, take_avg_loss=take_avg_loss)
 
-    # verify loss works after being loaded from pickled state
-    pickled_metric = pickle.dumps(loss_metric)
-    loss_metric = pickle.loads(pickled_metric)
+    # verify loss works after being loaded from saved state
+    saved_metric = json.dumps(loss_metric)
+    loss_metric = json.loads(saved_metric)
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = loss_metric(loss_sum_or_avg[i], num_measurements[i])
         if loss_metric.dist_sync_on_step:

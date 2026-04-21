@@ -14,7 +14,7 @@
 
 import argparse
 import os
-import pickle as pkl
+import msgpack
 import sys
 
 import numpy as np
@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 
 """
-This script faciliates to get EER % based on cosine-smilarity 
+This script faciliates to get EER % based on cosine-smilarity
 for Voxceleb dataset.
 
 Args:
@@ -41,7 +41,7 @@ def get_acc(trial_file='', emb='', save_kaldi_emb=False):
     trial_score = open('trial_score.txt', 'w')
     dirname = os.path.dirname(trial_file)
     with open(emb, 'rb') as f:
-        emb = pkl.load(f)
+        emb = msgpack.load(f)
     trial_embs = []
     keys = []
     all_scores = []

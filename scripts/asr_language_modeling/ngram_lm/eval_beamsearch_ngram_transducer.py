@@ -59,7 +59,7 @@ For grid search, you can provide a list of arguments as follows -
 import contextlib
 import json
 import os
-import pickle
+import msgpack
 import tempfile
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
@@ -290,7 +290,7 @@ def main(cfg: EvalBeamSearchNGramConfig):
         logging.info(f"Found a pickle file of probabilities at '{cfg.probs_cache_file}'.")
         logging.info(f"Loading the cached pickle file of probabilities from '{cfg.probs_cache_file}' ...")
         with open(cfg.probs_cache_file, 'rb') as probs_file:
-            all_probs = pickle.load(probs_file)
+            all_probs = msgpack.load(probs_file)
 
         if len(all_probs) != len(audio_file_paths):
             raise ValueError(
@@ -332,7 +332,7 @@ def main(cfg: EvalBeamSearchNGramConfig):
         if cfg.probs_cache_file:
             logging.info(f"Writing pickle files of probabilities at '{cfg.probs_cache_file}'...")
             with open(cfg.probs_cache_file, 'wb') as f_dump:
-                pickle.dump(all_probs, f_dump)
+                msgpack.dump(all_probs, f_dump)
 
     if cfg.decoding_strategy == "greedy_batch":
         asr_model = asr_model.to('cpu')

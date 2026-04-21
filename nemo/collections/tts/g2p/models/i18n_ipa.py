@@ -176,8 +176,8 @@ class IpaG2p(BaseG2p):
         """
         if isinstance(phoneme_dict, list):
             merged = defaultdict(list)
-            for path in phoneme_dict:
-                parsed = IpaG2p._parse_phoneme_dict(path)
+            for source in phoneme_dict:
+                parsed = IpaG2p._parse_phoneme_dict(source)
                 for word, prons in parsed.items():
                     merged[word].extend(prons)
             return merged

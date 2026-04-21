@@ -1548,69 +1548,69 @@ class TestLhotseStringEquivalence:
 
     @staticmethod
     def _both(ref_segs, hyp_segs, **kw):
-        s = _score(ref_segs, hyp_segs, **kw)
-        l = _score_lhotse(ref_segs, hyp_segs, **kw)
-        return s[2], l[2]  # itemized errors
+        string_path = _score(ref_segs, hyp_segs, **kw)
+        lhotse_path = _score_lhotse(ref_segs, hyp_segs, **kw)
+        return string_path[2], lhotse_path[2]  # itemized errors
 
     @pytest.mark.unit
     def test_perfect(self):
-        s, l = self._both([(0, 5, "A"), (5, 10, "B")], [(0, 5, "A"), (5, 10, "B")])
-        assert s == pytest.approx(l)
+        string_path, lhotse_path = self._both([(0, 5, "A"), (5, 10, "B")], [(0, 5, "A"), (5, 10, "B")])
+        assert string_path == pytest.approx(lhotse_path)
 
     @pytest.mark.unit
     def test_complete_miss(self):
-        s, l = self._both([(0, 5, "A"), (5, 10, "B")], [])
-        assert s == pytest.approx(l)
+        string_path, lhotse_path = self._both([(0, 5, "A"), (5, 10, "B")], [])
+        assert string_path == pytest.approx(lhotse_path)
 
     @pytest.mark.unit
     def test_speaker_swap(self):
-        s, l = self._both(
+        string_path, lhotse_path = self._both(
             [(0, 5, "A"), (5, 10, "B")],
             [(0, 5, "B"), (5, 10, "A")],
         )
-        assert s == pytest.approx(l)
+        assert string_path == pytest.approx(lhotse_path)
 
     @pytest.mark.unit
     def test_collar(self):
-        s, l = self._both(
+        string_path, lhotse_path = self._both(
             [(0, 5, "A"), (5, 10, "B")],
             [(0, 4.9, "A"), (5.1, 10, "B")],
             collar=0.25,
         )
-        assert s == pytest.approx(l)
+        assert string_path == pytest.approx(lhotse_path)
 
     @pytest.mark.unit
     def test_uem(self):
-        s, l = self._both(
+        string_path, lhotse_path = self._both(
             [(0, 10, "A")],
             [(0, 5, "A"), (5, 10, "B")],
             uem_segs=[[2, 8]],
         )
-        assert s == pytest.approx(l)
+        assert string_path == pytest.approx(lhotse_path)
 
     @pytest.mark.unit
     def test_ignore_overlap(self):
-        s, l = self._both(
+        string_path, lhotse_path = self._both(
             [(0, 5, "A"), (3, 7, "B")],
             [(0, 4, "A"), (3, 7, "B")],
             ignore_overlap=True,
         )
-        assert s == pytest.approx(l)
+        assert string_path == pytest.approx(lhotse_path)
 
     @pytest.mark.unit
     def test_three_speakers(self):
-        s, l = self._both(
+        string_path, lhotse_path = self._both(
             [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
             [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
             collar=0.5,
         )
-        assert s == pytest.approx(l)
+        assert string_path == pytest.approx(lhotse_path)
 
     @pytest.mark.unit
     def test_extra_hyp_speaker(self):
-        s, l = self._both(
+        string_path, lhotse_path = self._both(
             [(0, 5, "A"), (5, 10, "B")],
             [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
         )
-        assert s == pytest.approx(l)
+        assert string_path == pytest.approx(lhotse_path)
 

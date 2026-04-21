@@ -13,11 +13,11 @@
 # limitations under the License.
 
 from itertools import permutations
-from typing import Any, Dict, IO, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, IO, Iterable, List, Optional, Tuple
 
 import editdistance
 import numpy as np
-from lhotse import SupervisionSegment, SupervisionSet
+from lhotse import SupervisionSegment
 from scipy.optimize import linear_sum_assignment as scipy_linear_sum_assignment
 
 from nemo.collections.asr.metrics.md_eval import (
@@ -246,12 +246,6 @@ def write_supervisions_to_rttm(
                 rid=recording_id, chnl=channel, start=start, dur=duration, spk=speaker
             )
         )
-
-
-# Type alias: an annotation-like object accepted across the diarization
-# stack. Either a list of ``SupervisionSegment``, a lhotse
-# ``SupervisionSet``, or any duck-typed iterable.
-DiarAnnotation = Union[List[SupervisionSegment], SupervisionSet, Iterable[SupervisionSegment]]
 
 
 def get_partial_ref_labels(pred_labels: List[str], ref_labels: List[str]) -> List[str]:

@@ -87,7 +87,7 @@ def load_postprocessing_from_yaml(postprocessing_yaml: str = None) -> PostProces
     postprocessing_params = OmegaConf.structured(PostProcessingParams())
     if postprocessing_yaml is None:
         logging.info(
-            f"No postprocessing YAML file has been provided. Default postprocessing configurations will be applied."
+            "No postprocessing YAML file has been provided. Default postprocessing configurations will be applied."
         )
     else:
         # Load postprocessing params from the provided YAML file
@@ -340,14 +340,15 @@ def generate_overlap_vad_seq(
     if num_workers is not None and num_workers > 1:
         with multiprocessing.Pool(processes=num_workers) as p:
             inputs = zip(frame_filepathlist, repeat(per_args))
-            results = list(
-                tqdm(
-                    p.imap(generate_overlap_vad_seq_per_file_star, inputs),
-                    total=len(frame_filepathlist),
-                    desc='generating preds',
-                    leave=True,
-                )
-            )
+            # Force-consume ``imap`` so the worker pool actually runs each task;
+            # the per-file results are written to disk by the worker, not returned.
+            for _ in tqdm(
+                p.imap(generate_overlap_vad_seq_per_file_star, inputs),
+                total=len(frame_filepathlist),
+                desc='generating preds',
+                leave=True,
+            ):
+                pass
 
     else:
         for frame_filepath in tqdm(frame_filepathlist, desc='generating preds', leave=False):
@@ -424,7 +425,7 @@ def generate_overlap_vad_seq_per_tensor(
                 if j <= target_len - 1:
                     preds[j] = torch.cat((preds[j], og_pred.unsqueeze(0)), 0)
 
-        preds = torch.stack([torch.nanquantile(l, q=0.5) for l in preds])
+        preds = torch.stack([torch.nanquantile(per_frame_preds, q=0.5) for per_frame_preds in preds])
         nan_idx = torch.isnan(preds)
         last_non_nan_pred = preds[~nan_idx][-1]
         preds[nan_idx] = last_non_nan_pred
@@ -751,9 +752,9 @@ def generate_vad_segment_table_per_file(pred_filepath: str, per_args: dict) -> s
     if preds.shape[0] == 0:
         with open(save_path, "w", encoding='utf-8') as fp:
             if per_args.get("use_rttm", False):
-                fp.write(f"SPEAKER <NA> 1 0 0 <NA> <NA> speech <NA> <NA>\n")
+                fp.write("SPEAKER <NA> 1 0 0 <NA> <NA> speech <NA> <NA>\n")
             else:
-                fp.write(f"0 0 speech\n")
+                fp.write("0 0 speech\n")
     else:
         with open(save_path, "w", encoding='utf-8') as fp:
             for i in preds:

@@ -240,7 +240,7 @@ def get_ipa_punctuation_list(locale):
     punct_set = set(DEFAULT_PUNCTUATION)
     # TODO @xueyang: verify potential mismatches with locale-specific punctuation sets used
     #  in nemo_text_processing.text_normalization.en.taggers.punctuation.py
-    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR", "ja-JP"]:
+    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR", "ja-JP", "pt-BR"]:
         # ref: https://en.wikipedia.org/wiki/Guillemet#Uses
         punct_set.update(['«', '»', '‹', '›'])
     if locale == "de-DE":
@@ -368,6 +368,17 @@ def get_ipa_punctuation_list(locale):
                 '—',
                 '–',
                 '〜',
+            ]
+         ),
+    elif locale == "pt-BR":
+        # ref: https://en.wikipedia.org/wiki/Portuguese_orthography#Punctuation
+        punct_set.update(
+            [
+                '—',  # em dash, U+2014 (used for dialogue in Brazilian Portuguese)
+                '–',  # en dash, U+2013
+                '…',  # horizontal ellipsis, U+2026
+                '\u201C',  # left double quotation mark, U+201C
+                '\u201D',  # right double quotation mark, U+201D
             ]
         )
     punct_list = sorted(list(punct_set))

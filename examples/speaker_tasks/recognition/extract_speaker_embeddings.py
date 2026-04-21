@@ -30,9 +30,9 @@ Args:
 
 import json
 import os
-import msgpack
 from argparse import ArgumentParser
 
+import msgpack
 import numpy as np
 import torch
 
@@ -80,7 +80,10 @@ def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./
 def main():
     parser = ArgumentParser()
     parser.add_argument(
-        "--manifest", type=str, required=True, help="Path to manifest file",
+        "--manifest",
+        type=str,
+        required=True,
+        help="Path to manifest file",
     )
     parser.add_argument(
         "--model_path",
@@ -90,7 +93,11 @@ def main():
         help="path to .nemo speaker verification model file to extract embeddings, if not passed SpeakerNet-M model would be downloaded from NGC and used to extract embeddings",
     )
     parser.add_argument(
-        "--batch_size", type=int, default=1, required=False, help="batch size",
+        "--batch_size",
+        type=int,
+        default=1,
+        required=False,
+        help="batch size",
     )
     parser.add_argument(
         "--embedding_dir",

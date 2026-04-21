@@ -14,15 +14,14 @@
 
 import argparse
 import os
-import msgpack
 import sys
 
+import msgpack
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import brentq
 from sklearn.metrics import roc_curve
 from tqdm import tqdm
-
 
 """
 This script faciliates to get EER % based on cosine-smilarity

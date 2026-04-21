@@ -258,8 +258,9 @@ class TestTTSTokenizers:
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_ipa_tokenizer_pt_br(self):
-        input_text = "Olá mundo"
-        expected_output = "olˈa mˈũndʊ"
+        """pt-BR: accented characters (á, é) + punctuation (comma, exclamation)."""
+        input_text = "Olá, café está bom!"
+        expected_output = "olˈa, kafˈɛ iʃtˈa bˈõ!"
 
         g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_PT_BR, locale="pt-BR")
         tokenizer = IPATokenizer(g2p=g2p, locale="pt-BR")

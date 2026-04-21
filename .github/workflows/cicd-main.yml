@@ -135,6 +135,9 @@ jobs:
       is_ci_workload: ${{ steps.is_ci_workload.outputs.main }}
       no_fail_fast: ${{ steps.no_fail_fast.outputs.main }}
       components_to_run: ${{ steps.components_to_run.outputs.main }}
+      run_nightly: ${{ steps.pr_labels.outputs.run_nightly }}
+      skip_docs: ${{ steps.pr_labels.outputs.skip_docs }}
+      skip_linting: ${{ steps.pr_labels.outputs.skip_linting }}
     env:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
@@ -183,11 +186,29 @@ jobs:
 
           echo "main=$is_ci_workload" | tee -a "$GITHUB_OUTPUT"
 
+      - name: Fetch PR labels
+        id: pr_labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          REF="${GITHUB_REF#refs/heads/}"
+          if [[ "$REF" =~ ^pull-request/([0-9]+)$ ]]; then
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels -q '[.labels[].name]')
+          else
+            LABELS='[]'
+          fi
+          echo "run_nightly=$(echo "$LABELS" | jq 'any(. == "Run e2e nightly")')" | tee -a "$GITHUB_OUTPUT"
+          echo "skip_docs=$(echo "$LABELS" | jq 'any(. == "skip-docs")')" | tee -a "$GITHUB_OUTPUT"
+          echo "skip_linting=$(echo "$LABELS" | jq 'any(. == "skip-linting")')" | tee -a "$GITHUB_OUTPUT"
+          echo "no_fail_fast=$(echo "$LABELS" | jq 'any(. == "no-fail-fast")')" | tee -a "$GITHUB_OUTPUT"
+
       - name: Check if no-fail-fast is set
         shell: bash
         id: no_fail_fast
         env:
-          HAS_FAIL_FAST_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'no-fail-fast') }}
+          HAS_FAIL_FAST_LABEL: ${{ steps.pr_labels.outputs.no_fail_fast }}
         run: |
           if [[ "$HAS_FAIL_FAST_LABEL" == "true" || "$EVENT_NAME" == "schedule" ]]; then
             no_fail_fast=true
@@ -201,6 +222,9 @@ jobs:
     if: needs.pre-flight.outputs.test_to_run != '[]'
     needs: [pre-flight]
     uses: ./.github/workflows/code-linting.yml
+    with:
+      skip_docs: ${{ needs.pre-flight.outputs.skip_docs }}
+      skip_linting: ${{ needs.pre-flight.outputs.skip_linting }}
 
   cicd-wait-in-queue:
     needs: [pre-flight, code-linting]
@@ -351,6 +375,7 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
       runner: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
+      run_nightly: ${{ needs.pre-flight.outputs.run_nightly }}
 
   Nemo_CICD_Test:
     needs:

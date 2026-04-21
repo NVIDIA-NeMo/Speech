@@ -27,6 +27,11 @@ on:
         default: nemo-ci-aws-gpu-x2
         type: string
         description: "Runner to use for GPU jobs"
+      run_nightly:
+        required: false
+        default: 'false'
+        type: string
+        description: "Set to 'true' to run the nightly e2e suite"
 
 jobs:
   build:
@@ -239,7 +244,7 @@ jobs:
           is_optional: ${{ matrix.is-optional || false }}
 
   e2e-nightly:
-    if: ${{ github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'Run e2e nightly') }}
+    if: ${{ github.event_name == 'schedule' || inputs.run_nightly == 'true' }}
     strategy:
       fail-fast: false
       matrix:

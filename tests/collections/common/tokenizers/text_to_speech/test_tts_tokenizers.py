@@ -271,8 +271,9 @@ class TestTTSTokenizers:
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_ipa_tokenizer_hi_in(self):
-        input_text = "नमस्ते world।"
-        expected_output = "nəmˈʌsteː ˈwɝɫd।"
+        """hi-IN: code-switching (Hindi + English) + Devanagari punctuation (danda)."""
+        input_text = "नमस्ते world, अच्छा है।"
+        expected_output = "nəmˈʌsteː ˈwɝɫd, ˈʌtʃtʃʰaː है।"
         g2p = IpaG2p(
             phoneme_dict=[self.PHONEME_DICT_HI, self.PHONEME_DICT_EN],
             locale="hi-IN",

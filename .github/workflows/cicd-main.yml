@@ -15,12 +15,12 @@ name: CICD NeMo
 on:
   schedule:
     - cron: 0 0 * * *
-  pull_request:
+  push:
     branches:
       - main
       - r**
       - weekly-bump*
-    types: [labeled]
+      - "pull-request/[0-9]+"
   workflow_dispatch:
     inputs:
       test_to_run:
@@ -31,14 +31,13 @@ on:
 
 concurrency:
   # group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}-${{ github.event_name }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   is-not-external-contributor:
     runs-on: ubuntu-latest
     outputs:
-      is_external_contributor: ${{ github.event.pull_request.user.type == 'User' }}
       is_maintainer: ${{ steps.check-membership.outputs.is_maintainer }}
       selected_runner: ${{ steps.check-membership.outputs.is_maintainer == 'true' && 'nemo-ci-aws-gpu-x2' || 'nemo-ci-aws-gpu-x2-ephemeral' }}
     permissions:
@@ -54,11 +53,25 @@ jobs:
         with:
           token: ${{ env.GITHUB_TOKEN }}
 
+      - name: Resolve PR author from branch name
+        id: pr-author
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+        run: |
+          REF="${GITHUB_REF#refs/heads/}"
+          if [[ "$REF" =~ ^pull-request/([0-9]+)$ ]]; then
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            PR_AUTHOR=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author -q '.author.login')
+          else
+            PR_AUTHOR=""
+          fi
+          echo "login=$PR_AUTHOR" | tee -a "$GITHUB_OUTPUT"
+
       - name: Check NVIDIA SSO membership
         id: check-sso
         uses: ./.github/actions/check-nvidia-sso-membership
         with:
-          username: ${{ github.event.pull_request.user.login }}
+          username: ${{ steps.pr-author.outputs.login }}
           github_token: ${{ secrets.NVIDIA_MANAGEMENT_ORG_PAT }}
           sso_users_filename: ${{ vars.SSO_USERS_FILENAME }}
 
@@ -68,8 +81,9 @@ jobs:
           IS_MERGE_GROUP: ${{ github.event_name == 'merge_group' }}
           SCHEDULED_JOB: ${{ github.event_name == 'schedule' }}
           IS_WORKFLOW_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          PR_AUTHOR: ${{ steps.pr-author.outputs.login }}
         run: |
-          if [ "${SCHEDULED_JOB}" == "true" ] || [ "${IS_MERGE_GROUP}" == "true" ] || [ "${IS_WORKFLOW_DISPATCH}" == "true" ]; then
+          if [ "${SCHEDULED_JOB}" == "true" ] || [ "${IS_MERGE_GROUP}" == "true" ] || [ "${IS_WORKFLOW_DISPATCH}" == "true" ] || [ -z "${PR_AUTHOR}" ]; then
             echo "is_maintainer=true" | tee -a $GITHUB_OUTPUT
             exit 0
           fi
@@ -77,8 +91,6 @@ jobs:
           IS_MEMBER="${{ steps.check-sso.outputs.is_member }}"
 
           if [ "${{ env.DISABLE_EXTERNAL_CONTRIBUTOR }}" == "true" ] && [ "${{ steps.check-sso.outputs.is_member }}" != "true" ]; then
-            PR_AUTHOR=${{ github.event.pull_request.user.login }}
-
             echo "Checking if $PR_AUTHOR is a repo collaborator..."
             API_URL="https://api.github.com/repos/$REPO/collaborators/$PR_AUTHOR"
             REPO_MEMBERSHIP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L \
@@ -126,7 +138,6 @@ jobs:
     env:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
-      HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
     steps:
       - name: Checkout branch
         uses: actions/checkout@v6
@@ -141,20 +152,11 @@ jobs:
       - name: Select tests to run
         id: test_to_run
         run: |
-          # For manual dispatch, we replace `all` with the actual job names
+          # For manual dispatch, use the provided input
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             TESTS_TO_RUN=$TESTS_TO_RUN
 
-          # For correctly labeled PR, we replace `all` with the actual job names
-          elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" == "true" ]]; then
-            TESTS_TO_RUN=all
-
-          # For incorrectly labeled PR, run no tests
-          elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" != "true" ]]; then
-            TESTS_TO_RUN=""
-
-          # For push events, run all tests. This is so that we can generate coverage
-          # on branch `main`.
+          # For push (PR branches via copy-pr-bot, main, release) and schedule, run all tests
           elif [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "schedule" ]]; then
             TESTS_TO_RUN=all
 
@@ -370,15 +372,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
-          HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
-          IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
         run: |
           # Get workflow run details and check job conclusions
           LATEST_ATTEMPT=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion != null) | .conclusion] | last')
           NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
           NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
 
-          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 && ("$HAS_LABEL" == "true" || "$IS_SCHEDULED" == "true") ]]; then
+          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 ]]; then
             RESULT="success"
           elif [[ $NUM_CANCELLED -gt 0 ]]; then
             RESULT="cancelled"
@@ -389,37 +389,25 @@ jobs:
           # Output the final status
           echo "code=$RESULT" | tee -a $GITHUB_OUTPUT
 
-      - name: Checkout for GH CLI
-        uses: actions/checkout@v6
-
-      - name: Remove label if not cancelled
-        if: |
-          steps.result.outputs.code != 'cancelled'
-          && github.event.label.name == 'Run CICD'
-          && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.number }}
-        run: gh pr edit "$PR_NUMBER" --remove-label "Run CICD"
-
       - name: Pipeline successful, add PR comment
         if: |
           steps.result.outputs.code == 'success'
-          && github.event_name == 'pull_request'
+          && github.event_name == 'push'
+          && startsWith(github.ref, 'refs/heads/pull-request/')
           && env.SLACK_WEBHOOK != ''
-        uses: peter-evans/create-or-update-comment@v4
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-        with:
-          issue-number: ${{ github.event.number }}
-          body: |
-            [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${GITHUB_REF#refs/heads/pull-request/}"
+          PR_AUTHOR=$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" --json author -q '.author.login')
+          gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "[🤖]: Hi @${PR_AUTHOR} 👋,
 
-            We wanted to let you know that a [CICD pipeline](https://github.com/${{ env.REPOSITORY }}/actions/runs/${{ env.RUN_ID }}) for this PR just finished successfully.
+          We wanted to let you know that a [CICD pipeline](https://github.com/${REPOSITORY}/actions/runs/${RUN_ID}) for this PR just finished successfully.
 
-            So it might be time to merge this PR or get some approvals.
+          So it might be time to merge this PR or get some approvals."
 
       - name: Exit
         if: ${{ always() }}

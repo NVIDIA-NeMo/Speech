@@ -17,9 +17,10 @@
 #                                 "Run CICD" to start the pipeline.
 #   2. CI runs (CICD NeMo workflow).
 #   3. If all checks pass      -> babysitter stays silent, done.
-#      If a check fails        -> check_run event triggers investigate-and-propose
-#                                 (formatting check skipped — the Isort+Black
-#                                 action auto-pushes its own fixes).
+#      If a CI workflow fails  -> workflow_run completion event triggers
+#                                 investigate-and-propose. The Isort+Black
+#                                 workflow isn't in the trigger list — it
+#                                 auto-pushes its own fixes.
 #   4. investigate-and-propose: Claude investigates root cause, posts a *plan
 #      comment* on the PR (tagged with `<!-- babysit-plan -->`), and adds
 #      "Agent Plan Awaiting Approval". It does NOT push code.
@@ -51,7 +52,22 @@ on:
     types: [created]
   pull_request_review:
     types: [submitted]
-  check_run:
+  # `workflow_run` rather than `check_run`: check-runs produced by GHA jobs
+  # authenticated with GITHUB_TOKEN do not fire `check_run` events on
+  # downstream workflows (GitHub's recursion guard), so the babysitter never
+  # saw real CI failures. `workflow_run` bypasses that restriction.
+  # Omitted intentionally: "Isort and Black Formatting" (auto-pushes fixes),
+  # this workflow itself, and labeler/relabel bots.
+  workflow_run:
+    workflows:
+      - "CICD NeMo"
+      - "PyLint and flake8 linting"
+      - "Build, test, and publish a PyPi wheel (to testpypi)."
+      - "Check __init__ files"
+      - "Copyright check"
+      - "CI-Install-Check"
+      - "CodeQL"
+      - "Secrets detector"
     types: [completed]
   issue_comment:
     types: [created]
@@ -200,12 +216,13 @@ jobs:
   # ---- CI failure: investigate, propose a plan, DO NOT push ----
 
   check-label-for-ci:
-    # Skip formatting checks — the "Isort and Black Formatting" action auto-pushes fixes.
+    # Fires on CI workflow completion. The `workflow_run.pull_requests` array is
+    # populated for same-repo PRs whose head SHA matches the completed run; for
+    # fork PRs it is empty, which doubles as an implicit fork-guard here.
     if: >-
-      github.event_name == 'check_run' &&
-      github.event.check_run.conclusion == 'failure' &&
-      github.event.check_run.pull_requests[0] != null &&
-      !contains(github.event.check_run.name, 'reformat_with_isort_and_black')
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.pull_requests[0] != null
     runs-on: ubuntu-latest
     outputs:
       pr_number: ${{ steps.lookup.outputs.pr_number }}
@@ -219,7 +236,7 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
-            const prNumber = context.payload.check_run.pull_requests[0].number;
+            const prNumber = context.payload.workflow_run.pull_requests[0].number;
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -229,7 +246,7 @@ jobs:
             const hasBabysitter = labels.includes('Has Babysitter');
             const hasPending = labels.includes('Agent Plan Awaiting Approval');
             const hasApproved = labels.includes('Agent Plan Approved');
-            const failedSha = context.payload.check_run.head_sha;
+            const failedSha = context.payload.workflow_run.head_sha;
             const isStale = pr.head.sha !== failedSha;
             // Fork-guard: the babysitter never runs on PRs from forks.
             const isFork = pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`;
@@ -261,8 +278,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            The CI check "${{ github.event.check_run.name }}" just failed on
-            PR #${{ needs.check-label-for-ci.outputs.pr_number }}.
+            The CI workflow "${{ github.event.workflow_run.name }}" just failed
+            on PR #${{ needs.check-label-for-ci.outputs.pr_number }}.
 
             You are in HALF-AUTONOMOUS mode. You MUST NOT edit files, commit,
             or push code in this job. Investigation and planning only.
@@ -558,7 +575,7 @@ jobs:
         uses: actions/github-script@v8
         env:
           PR_NUMBER: ${{ needs.check-label-for-ci.outputs.pr_number }}
-          CHECK_NAME: ${{ github.event.check_run.name }}
+          CHECK_NAME: ${{ github.event.workflow_run.name }}
           AUTHOR_LOGIN: ${{ needs.check-label-for-ci.outputs.author_login }}
         with:
           script: |

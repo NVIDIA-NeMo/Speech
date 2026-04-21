@@ -287,6 +287,7 @@ def collate_and_tokenize_custom(
                         turn_t_lens.append(len(seg_ids))
                         turn_t_valid.append(True)
                     else:
+                        # Dummy pad to keep shapes consistent for items with fewer turns
                         turn_t_tokens.append(torch.as_tensor([model.pad_id], dtype=torch.long))
                         turn_t_lens.append(1)
                         turn_t_valid.append(False)
@@ -424,13 +425,13 @@ def main():
         model_cfg.use_utmos = False
         model_cfg.use_meta_init_for_decoder = True
 
-        # Guarantees silence for pad tokens
+        # --- MISSING FIX: Guarantees silence for pad tokens ---
         model_cfg.use_multiturn_dataset = True 
         
         if args.phoneme_tokenizer_path and getattr(model_cfg, "phoneme_tokenizer", None) is not None:
             model_cfg.phoneme_tokenizer.tokenizer_path = args.phoneme_tokenizer_path
 
-    # Load to CPU first to prevent OOM
+    # --- MISSING FIX: Load to CPU first to prevent OOM ---
     model = EasyMagpieTTSInferenceModel.restore_from(
         args.checkpoint_path, override_config_path=model_cfg, map_location=torch.device("cpu")
     )
@@ -442,12 +443,13 @@ def main():
     model.input_samples_per_frame = int(model.codec_model_samples_per_frame * model.frame_stacking_factor)
     model.target_samples_per_frame = model.input_samples_per_frame / (model.sample_rate / model.output_sample_rate)
 
-    # Load to CPU first to prevent OOM
+    # --- MISSING FIX: Load to CPU first to prevent OOM ---
     codec_model = AudioCodecModel.restore_from(args.codec_model_path, strict=False, map_location=torch.device("cpu"))
     if hasattr(codec_model, "discriminator"):
         del codec_model.discriminator
     codec_model.freeze()
     codec_model = codec_model.to(target_device).eval()
+
 
     codec_converter = None
     if getattr(model, "_codec_converter", None) is not None:
@@ -462,6 +464,7 @@ def main():
 
     from collections import Counter
     def get_codec_silence_frame(model, device, target_sample_rate):
+        # Generate long zero waveform (silence)
         audio = torch.zeros(1, 10 * target_sample_rate).float().to(device)
         audio_len = torch.tensor([audio.size(-1)]).long().to(device)
 
@@ -474,10 +477,20 @@ def main():
                 audio_tokens=sil_codes, audio_lens=sil_codes_lens
             ).long()
 
+        # sil_codes is shape [1, C, T].
+        # Extract batch index 0 and transpose to shape [T, C]
         frames = sil_codes[0].transpose(0, 1)
+
+        # Convert each time frame (C integers) into a tuple of integers
         combos = [tuple(frame.tolist()) for frame in frames]
+
+        # Count frequencies
         counter = Counter(combos)
+
+        # Pick the most common combination
         most_common_combo, freq = counter.most_common(1)[0]
+
+        # Return as tensor [C]
         return torch.tensor(most_common_combo, device=device, dtype=torch.long)
 
     codec_sil_codes = get_codec_silence_frame(model, target_device, model.sample_rate)
@@ -524,6 +537,7 @@ def main():
             inputs["context_audio_lengths"][:] = speaker_wav.size(-1)
 
         with torch.inference_mode():
+            # 1. Base Initialization (Shared between modes)
             wav = inputs["context_audio"]
             wav_len = inputs["context_audio_lengths"]
             codes, codes_lens = model._codec_helper.audio_to_codes(wav, wav_len)
@@ -556,6 +570,9 @@ def main():
             if inputs["duplex_multiturn"]:
                 text = inputs["input_ids"].to(device)
                 text_lens = inputs["input_lengths"].to(device)
+                # print("Text lens:", text.shape, text_lens)
+                # Fetch the true silence frame codebook combo once
+                codec_sil_codes = get_codec_silence_frame(model, device, model.sample_rate)
 
                 # Trackers for our two forced-silence zones
                 in_initial_silence = torch.ones(B, dtype=torch.bool, device=device)
@@ -568,7 +585,7 @@ def main():
                     state.text_finished = state.text_finished & text_exhausted
                     if hasattr(state, "phoneme_stream_ended"):
                         state.phoneme_stream_ended = state.phoneme_stream_ended & text_exhausted
-                    
+
                     # 2. Safely index text using the model's internal pointer
                     positions = state.text_tokens_seen.clamp(max=text.size(1) - 1)
                     current_tokens = text[torch.arange(B, device=device), positions]
@@ -579,31 +596,41 @@ def main():
 
                     # 3. Update our trackers BEFORE the step
                     is_pad_or_eos = (current_tokens == model.pad_id) | (current_tokens == model.eos_id)
+                    
+                    # Initial silence turns off forever once a real word is seen
                     in_initial_silence = in_initial_silence & is_pad_or_eos
+                    
+                    # Post-speech silence turns off when a real word for the NEXT turn is seen
                     in_post_speech_silence = in_post_speech_silence & is_pad_or_eos
 
                     # 4. Step the model
                     state, audio_codes, _ = model.streaming_step(state=state, text_tokens=current_tokens, use_inference_mode=True)
-                    
-                    # 5. SILENCE FORCING INJECTION
+
+                    # 5. SILENCE FORCING INJECTION (Moved ABOVE the trigger!)
                     if audio_codes is not None and args.force_speech_sil_codes:
                         force_silence_mask = in_initial_silence | in_post_speech_silence
 
                         if force_silence_mask.any():
                             # Expand silence codes [C] -> [1, C, 1] to match audio_codes [B, C, 1]
                             expanded_sil = codec_sil_codes.view(1, -1, 1).expand_as(audio_codes)
+                            
                             # Expand mask [B] -> [B, 1, 1] for broadcasting
                             mask_3d = force_silence_mask.view(B, 1, 1)
+                            
                             # Overwrite the prediction with silence codes where the mask is True.
                             overwritten_codes = torch.where(mask_3d, expanded_sil, audio_codes)
+
                             # Inject back into the model's KV cache history
                             state.all_predictions[-1] = overwritten_codes
 
                     # 6. TRIGGER POST-SPEECH SILENCE FOR THE *NEXT* FRAME
+                    # If the audio decoder naturally predicted a speech EOS, state.finished becomes True here.
+                    # We update the tracker AFTER injection so we don't accidentally overwrite the EOS token!
                     in_post_speech_silence = in_post_speech_silence | state.finished
 
                     # Update exhaustion tracker for the next iteration
                     text_exhausted = state.text_tokens_seen >= text_lens
+
 
             # ---------------------------------------------------------
             # MODE 2: REGULAR (Turn-by-Turn Re-wakes)
@@ -614,6 +641,8 @@ def main():
                 valid_turn_masks = inputs["valid_turn_masks"]
                 
                 max_turns = len(batched_turns)
+                
+                # Tracking offset ensures sync regardless of context audio length
                 turn_offsets = torch.zeros(B, dtype=torch.long, device=device)
                 
                 for t in range(max_turns):
@@ -621,6 +650,7 @@ def main():
                     turn_lens = batched_turn_lens[t].to(device)
                     valid_mask = valid_turn_masks[t].to(device)
                     
+                    # Reset ALL finished flags for items participating in this new turn
                     state.finished = state.finished & (~valid_mask)
                     state.text_finished = state.text_finished & (~valid_mask)
 
@@ -630,40 +660,23 @@ def main():
                     if state.finished.all():
                         continue 
 
+                    # Record internal token count at start of turn
                     turn_offsets = torch.where(valid_mask, state.text_tokens_seen, turn_offsets)
                     turn_steps = 0
     
                     while not state.finished.all() and turn_steps < args.max_tts_steps:
                         turn_steps += 1
                         
+                        # Fetch token synced relative to the model's progress
                         relative_positions = state.text_tokens_seen - turn_offsets
                         positions = relative_positions.clamp(min=0, max=turn_text.size(1) - 1)
                         current_tokens = turn_text[torch.arange(B, device=device), positions]
                         
+                        # Once the text for this turn is fully fed, feed EOS so audio can finish
                         exhausted = relative_positions >= turn_lens
                         current_tokens = torch.where(exhausted, torch.full_like(current_tokens, model.eos_id), current_tokens)
                         
                         state, _, _ = model.streaming_step(state=state, text_tokens=current_tokens, use_inference_mode=True)
-
-            # Scrub Special Tokens (BOS/EOS) from Audio Codes ---
-            # Because we force-decode the entire uncropped sequence, any BOS or EOS 
-            # tokens left in the array will produce loud artifacts in the codec.
-            bos_id = model.audio_bos_id
-            eos_id = model.audio_eos_id
-            sil_injection = codec_sil_codes.view(1, -1, 1)
-
-            for step_idx in range(len(state.all_predictions)):
-                pred = state.all_predictions[step_idx]
-                # Check if any codebook in the frame has a BOS or EOS token
-                mask = (pred == bos_id) | (pred == eos_id)
-                frame_mask = mask.any(dim=1, keepdim=True) 
-                
-                if frame_mask.any():
-                    state.all_predictions[step_idx] = torch.where(
-                        frame_mask, 
-                        sil_injection.expand_as(pred), 
-                        pred
-                    )
 
             if inputs["duplex_multiturn"]:
                 # Erase the internal memory of Turn 1's EOS token so `streaming_finalize` 
@@ -683,11 +696,12 @@ def main():
             expected_audio_lens = (torch.tensor(inputs["target_num_frames"], device=device) * model.target_samples_per_frame).int()
             
             if inputs["duplex_multiturn"]:
-                # Use exact math based on the output samples multiplier!
-                audio_len = (text_lens * model.target_samples_per_frame).int()
-                
                 # Cap the expected length so it physically cannot exceed the actual generated tensor size
-                audio_len = torch.min(audio_len, torch.tensor(audio_f32.size(1), device=device))
+                # expected_audio_lens = expected_audio_lens.clamp(max=audio_f32.size(1))
+                # audio_len = torch.max(audio_len, expected_audio_lens)
+                # audio_len = torch.full_like(audio_len, audio_f32.size(1))
+                print(text_lens, text_lens * model.target_samples_per_frame)
+                audio_len = (text_lens * model.target_samples_per_frame).int()
             else:
                 audio_len = torch.min(audio_len, expected_audio_lens)
 

@@ -33,11 +33,18 @@ different environment variables to be set.
 
 CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.
 
-CI runs automatically when **all commits in the PR are signed**. If unsigned commits are present, a maintainer must authorize the run by commenting `/ok to test <sha>` on the PR, where `<sha>` is the full SHA of the HEAD commit.
+**CI runs automatically** when all of the following are true:
+- Every commit in the PR is GPG-signed
+- Every committer is a member of the NVIDIA-NeMo GitHub org (or listed as an `additional_trustee`)
+- The PR has no more than 249 commits
 
-For external contributors, a maintainer must also approve the CI run before it executes on isolated ephemeral runners.
+If any of those conditions are not met, copy-pr-bot posts a comment and waits. A maintainer (anyone with write access or greater) can unblock the run by commenting:
+```
+/ok to test <sha>
+```
+where `<sha>` is the full or abbreviated SHA of the PR's HEAD commit. The bot also accepts `/okay to test` and `/ok-to-test`.
 
-To re-run CI, push a new commit to the PR.
+To re-run CI after a new push, the bot will sync automatically if the PR is still trusted. Otherwise comment `/ok to test <sha>` again with the new HEAD SHA.
 
 The CI test suites are selectively ran based on the files that are changed. In some cases, no tests may be ran such as when docs are updated.
 

@@ -39,6 +39,8 @@ from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerInde
 from nemo.collections.tts.modules.magpietts_modules import CodecHelper
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
 
+from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume
+
 torch.set_float32_matmul_precision("medium")
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -190,6 +192,7 @@ def collate_and_tokenize_custom(
     add_interruption_token=False,
     pad_factor_text_speech=10,
     force_interruption=False,
+    normalize_context_audio_volume=True,
 ):
     main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
 
@@ -322,6 +325,8 @@ def collate_and_tokenize_custom(
 
         if os.path.exists(audio_path):
             wav, sr = librosa.load(audio_path, sr=sample_rate, mono=True)
+            if normalize_context_audio_volume:
+                wav = normalize_volume(wav)
             wav = torch.as_tensor(wav, dtype=torch.float32)
         else:
             wav = torch.zeros(1, dtype=torch.float32)
@@ -403,6 +408,7 @@ def main():
     parser.add_argument("--topk", type=int, default=80)
     parser.add_argument("--max_tts_steps", type=int, default=2000)
     parser.add_argument("--force_speech_sil_codes", action="store_true")
+    parser.add_argument("--normalize_volume", type=bool, default=False)
 
     args = parser.parse_args()
 
@@ -501,6 +507,8 @@ def main():
         add_interruption_token=args.add_interruption_token,
         pad_factor_text_speech=args.pad_factor_text_speech,
         force_interruption=args.force_interruption,
+        normalize_context_audio_volume=args.normalize_volume,
+        
     )
 
     dataloader = DataLoader(
@@ -510,6 +518,8 @@ def main():
 
     if args.user_custom_speaker_reference and args.inference_speaker_reference:
         wav, sr = librosa.load(args.inference_speaker_reference, sr=model.sample_rate, mono=True)
+        if args.normalize_volume:
+            wav = normalize_volume(wav)
         speaker_wav = torch.as_tensor(wav, dtype=target_dtype).unsqueeze(0).to(model.device)
 
     for batch_id, inputs in enumerate(dataloader):
@@ -520,8 +530,8 @@ def main():
         inputs["context_audio_lengths"] = inputs["context_audio_lengths"].to(device)
         
         if args.user_custom_speaker_reference and args.inference_speaker_reference:
-            inputs["context_audio"] = speaker_wav.expand(B, *speaker_wav.shape[1:])
-            inputs["context_audio_lengths"][:] = speaker_wav.size(-1)
+            inputs["context_audio"] = speaker_wav.repeat(B, 1)
+            inputs["context_audio_lengths"] = torch.full((B,), speaker_wav.size(-1), dtype=torch.long, device=device)
 
         with torch.inference_mode():
             wav = inputs["context_audio"]

@@ -15,7 +15,8 @@
 # limitations under the License.
 
 # base image: official PyTorch image
-ARG BASE_IMAGE=pytorch/pytorch:2.11.0-cuda13.0-cudnn9-devel
+ARG BASE_IMAGE=pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+# NB: automodel requires torch<=2.10.0, cannot use 2.11.0 for now
 
 # check imports: if flag is false, ignore result
 ARG REQUIRE_CHECK_IMPORTS=true
@@ -32,7 +33,6 @@ ENV UV_BREAK_SYSTEM_PACKAGES=true
 ENV DEBIAN_FRONTEND=noninteractive
 # libavdevice-dev required for latest torchaudio
 RUN apt-get update && \
-  apt-get upgrade -y && \
   apt-get install -y \
   git \
   libsndfile1 sox \
@@ -62,8 +62,6 @@ RUN apt-get update && \
   libgts-dev && \
   rm -rf /var/lib/apt/lists/*
 
-RUN uv pip install cmake numba-cuda[cu13] cuda-python aistore --system
-
 WORKDIR /tmp/
 
 # copy nemo source into a scratch image
@@ -74,8 +72,11 @@ COPY . .
 FROM nemo-deps as nemo
 ARG NEMO_VERSION=2.0.0
 
+RUN uv pip install cmake aistore --system
 # Install NeMo
-RUN --mount=from=nemo-src,target=/tmp/nemo,rw cd /tmp/nemo && uv pip install ".[all,cu13]" --system
+# NB: using constraints.txt is crucial to avoid breaking reinstallation of preinstalled torch ecosystem packages
+RUN --mount=from=nemo-src,target=/tmp/nemo,rw cd /tmp/nemo && uv pip freeze | grep torch > constraints.txt &&  \
+  uv pip install ".[all,cu13]" -c constraints.txt --system
 
 # Check install
 # NB: adjusting LD_LIBRARY_PATH (only here, should not be persistent!) is a temporary hack

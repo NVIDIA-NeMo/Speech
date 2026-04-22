@@ -39,7 +39,7 @@ import os
 import random
 import subprocess
 from tempfile import NamedTemporaryFile
-from typing import Any, List, Optional, Union
+from typing import List, Optional, Union
 
 import librosa
 import numpy as np

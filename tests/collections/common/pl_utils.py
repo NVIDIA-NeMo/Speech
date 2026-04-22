@@ -26,12 +26,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import msgpack
 import os
 import sys
 from functools import partial
 from typing import Callable, Optional
 
+import msgpack
 import numpy as np
 import pytest
 import torch

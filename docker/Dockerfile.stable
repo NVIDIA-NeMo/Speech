@@ -84,7 +84,8 @@ RUN --mount=from=nemo-src,target=/tmp/nemo,rw cd /tmp/nemo && uv pip freeze | gr
 # The error is raised in NeMo Core, and the main reason is reinstalled Transformer-Engine;
 RUN CHECK_MSG=$(export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${CUDA_HOME}/compat/lib.real && \
   python -c "import nemo.collections.asr as nemo_asr" && \
-  python -c "import nemo.collections.nlp as nemo_nlp" && \
+  python -c "import nemo.collections.audio as nemo_audio" && \
+  python -c "import nemo.collections.speechlm2 as nemo_speechlm2" && \
   python -c "import nemo.collections.tts as nemo_tts" && \
   python -c "import nemo_text_processing.text_normalization as text_normalization"); CHECK_CODE=$?; \
   echo ${CHECK_MSG}; \

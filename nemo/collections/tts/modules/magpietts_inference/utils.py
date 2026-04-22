@@ -149,6 +149,37 @@ class ModelLoadConfig:
             )
 
 
+def _migrate_tokenizer_punctuation(model_cfg: DictConfig) -> None:
+    """Backfill punctuation fields for tokenizers that predate them.
+
+    Old checkpoints were trained with DEFAULT_PUNCTUATION only. Without these
+    migrations, restoring those checkpoints would pick up expanded defaults
+    from new code, adding extra punctuation tokens and breaking the vocabulary.
+
+    Handles:
+      - pt-BR IPATokenizer: sets locale_specific_punct=False (old default had no guillemets/quotes).
+      - HindiCharsTokenizer: sets punct_version=1 (old default had no dandas).
+    """
+    if not hasattr(model_cfg, 'text_tokenizers'):
+        return
+    for tok_name in model_cfg.text_tokenizers:
+        tok_cfg = model_cfg.text_tokenizers[tok_name]
+        if not hasattr(tok_cfg, '_target_'):
+            continue
+        if (
+            tok_cfg._target_ == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
+            and tok_cfg.get('locale', None) == "pt-BR"
+            and not hasattr(tok_cfg, 'non_default_punct_list')
+            and not hasattr(tok_cfg, 'locale_specific_punct')
+        ):
+            tok_cfg.locale_specific_punct = False
+        if (
+            tok_cfg._target_ == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
+            and not hasattr(tok_cfg, 'punct_version')
+        ):
+            tok_cfg.punct_version = 1
+
+
 def update_config_for_inference(
     model_cfg: DictConfig,
     codecmodel_path: Optional[str],
@@ -170,6 +201,8 @@ def update_config_for_inference(
         Tuple of (updated config, sample_rate from config if present).
     """
     model_cfg.codecmodel_path = codecmodel_path
+
+    _migrate_tokenizer_punctuation(model_cfg)
 
     # Update text tokenizer paths for backward compatibility
     if hasattr(model_cfg, 'text_tokenizer'):

@@ -74,8 +74,9 @@ class IpaG2p(BaseG2p):
                 - a dict object with CMUdict-like entries,
                   e.g. ``{"Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]]}``
                 When a list is provided, all sources are parsed and merged into a single dictionary.
-            locale (str): Locale used to determine a locale-specific tokenization logic. Currently, it supports "en-US",
-                "de-DE", and "es-ES". Defaults to "en-US". Specify None if implementing custom logic for a new locale.
+            locale (str): Locale used to determine a locale-specific tokenization logic.
+                See ``SUPPORTED_LOCALES`` in ``ipa_lexicon.py`` for the full list.
+                Defaults to "en-US". Specify None if implementing custom logic for a new locale.
             apply_to_oov_word (Callable): Function that deals with the out-of-vocabulary (OOV) words that do not exist
                 in the `phoneme_dict`.
             ignore_ambiguous_words (bool): Whether to handle word via phoneme_dict with ambiguous phoneme sequences.

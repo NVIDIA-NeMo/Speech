@@ -16,6 +16,7 @@
 import itertools
 import os
 import string
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import List, Optional, Union
@@ -24,10 +25,12 @@ from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerBase
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
+    DEFAULT_PUNCTUATION,
     get_grapheme_character_set,
     get_ipa_punctuation_list,
     validate_locale,
 )
+
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     any_locale_text_preprocessing,
     chinese_text_preprocessing,
@@ -110,14 +113,7 @@ class BaseCharsTokenizer(BaseTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
     """
 
-    # fmt: off
-    # TODO @xueyang: unify definition of the default PUNCT_LIST and import from ipa_lexicon.py
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
+    PUNCT_LIST = DEFAULT_PUNCTUATION
 
     def __init__(
         self,
@@ -392,6 +388,12 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
             if None then no blank in labels.
         pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
         non_default_punct_list: List of punctuation marks which will be used instead default.
+            Overrides ``punct_version`` when explicitly provided.
+        punct_version: Punctuation set version (default 2).
+            2 — expanded set from ``get_ipa_punctuation_list("hi-IN")`` including dandas.
+            1 — legacy ``sorted(list(DEFAULT_PUNCTUATION))`` without dandas; emits
+            ``DeprecationWarning`` and will be removed in a future release.
+            Ignored when ``non_default_punct_list`` is explicitly provided.
         text_preprocessing_func: Text preprocessing function. Keeps Devanagari unchanged.
 
         Each Unicode code point becomes 1 token (not visual grapheme clusters)
@@ -404,6 +406,7 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
 
     _LOCALE = "hi-IN"
     _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
+    _PUNCT_LIST_V1 = sorted(list(DEFAULT_PUNCTUATION))
     _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="mixed")
     _CHARSET_STR += string.ascii_lowercase
 
@@ -414,9 +417,25 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
         apostrophe=True,
         add_blank_at=None,
         pad_with_space=False,
-        non_default_punct_list=_PUNCT_LIST,
+        non_default_punct_list=None,
+        punct_version=2,
         text_preprocessing_func=any_locale_text_preprocessing,
     ):
+        if non_default_punct_list is None:
+            if punct_version == 1:
+                warnings.warn(
+                    "HindiCharsTokenizer: punct_version=1 uses DEFAULT_PUNCTUATION without dandas "
+                    "and will be removed in a future release. Migrate to punct_version=2.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                non_default_punct_list = self._PUNCT_LIST_V1
+            elif punct_version == 2:
+                non_default_punct_list = self._PUNCT_LIST
+            else:
+                raise ValueError(
+                    f"HindiCharsTokenizer: unsupported punct_version={punct_version}. Use 1 (legacy) or 2."
+                )
         super().__init__(
             chars=chars,
             punct=punct,
@@ -470,14 +489,6 @@ class GermanPhonemesTokenizer(BaseCharsTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
             Currently, it only applies lower() function.
     """
-
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
 
     def __init__(
         self,
@@ -628,12 +639,9 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
             handled by g2p).
     """
 
+    PUNCT_LIST = DEFAULT_PUNCTUATION
+
     # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
     VOWELS = (
         'AA', 'AE', 'AH', 'AO', 'AW',
         'AY', 'EH', 'ER', 'EY', 'IH',
@@ -773,10 +781,14 @@ class IPATokenizer(BaseTokenizer):
     Args:
         g2p: Grapheme to phoneme module, should be IpaG2p or some subclass thereof.
         locale: Locale used to determine default text processing logic and punctuation.
-            Supports ["en-US", "de-DE", "es-ES", "fr-FR"]. Defaults to "en-US".
+            See ``SUPPORTED_LOCALES`` in ``ipa_lexicon.py`` for the full list. Defaults to "en-US".
             Specify None if implementing custom logic for a new locale.
         punct: Whether to reserve grapheme for basic punctuation or not.
         non_default_punct_list: List of punctuation marks which will be used instead default, if any.
+        locale_specific_punct: Whether to use locale-specific punctuation (via ``get_ipa_punctuation_list``)
+            or only ``DEFAULT_PUNCTUATION``. Defaults to True. Set to False to preserve the token
+            vocabulary of checkpoints trained before locale-specific punctuation was introduced.
+            Currently only affects pt-BR. Ignored when ``non_default_punct_list`` is provided.
         fixed_vocab: List of valid grapheme/phoneme tokens for the model.
             Set only if overriding the default vocab generation process (reading from G2P dict).
             If set, any dataset entries that have unincluded graphemes will be filtered out, and any words whose
@@ -799,6 +811,7 @@ class IPATokenizer(BaseTokenizer):
         locale="en-US",
         punct=True,
         non_default_punct_list=None,
+        locale_specific_punct=True,
         fixed_vocab=None,
         *,
         space=' ',
@@ -851,8 +864,10 @@ class IPATokenizer(BaseTokenizer):
         if punct:
             if non_default_punct_list is not None:
                 self.punct_list = non_default_punct_list
-            else:
+            elif locale_specific_punct:
                 self.punct_list = get_ipa_punctuation_list(locale)
+            else:
+                self.punct_list = sorted(list(DEFAULT_PUNCTUATION))
 
             tokens.update(self.punct_list)
 
@@ -964,14 +979,8 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             handled by g2p).
     """
 
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
+    PUNCT_LIST = DEFAULT_PUNCTUATION
     ZH_PUNCT_LIST = list("，。？！；：、‘’“”（）【】「」《》") + list(PUNCT_LIST)
-    # fmt: on
 
     def __init__(
         self,

@@ -35,101 +35,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  is-not-external-contributor:
-    runs-on: ubuntu-latest
-    outputs:
-      is_maintainer: ${{ steps.check-membership.outputs.is_maintainer }}
-      selected_runner: ${{ steps.check-membership.outputs.is_maintainer == 'true' && 'nemo-ci-aws-gpu-x2' || 'nemo-ci-aws-gpu-x2-ephemeral' }}
-    permissions:
-      issues: write
-      pull-requests: write
-    env:
-      GITHUB_TOKEN: ${{ secrets.PAT }}
-      REPO: ${{ github.repository }}
-      DISABLE_EXTERNAL_CONTRIBUTOR: ${{ vars.DISABLE_EXTERNAL_CONTRIBUTOR }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          token: ${{ env.GITHUB_TOKEN }}
-
-      - name: Resolve PR author from branch name
-        id: pr-author
-        env:
-          GH_TOKEN: ${{ secrets.PAT }}
-        run: |
-          REF="${GITHUB_REF#refs/heads/}"
-          if [[ "$REF" =~ ^pull-request/([0-9]+)$ ]]; then
-            PR_NUMBER="${BASH_REMATCH[1]}"
-            PR_AUTHOR=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author -q '.author.login')
-          else
-            PR_AUTHOR=""
-          fi
-          echo "login=$PR_AUTHOR" | tee -a "$GITHUB_OUTPUT"
-
-      - name: Check NVIDIA SSO membership
-        id: check-sso
-        uses: ./.github/actions/check-nvidia-sso-membership
-        with:
-          username: ${{ steps.pr-author.outputs.login }}
-          github_token: ${{ secrets.NVIDIA_MANAGEMENT_ORG_PAT }}
-          sso_users_filename: ${{ vars.SSO_USERS_FILENAME }}
-
-      - name: Set maintainer status
-        id: check-membership
-        env:
-          IS_MERGE_GROUP: ${{ github.event_name == 'merge_group' }}
-          SCHEDULED_JOB: ${{ github.event_name == 'schedule' }}
-          IS_WORKFLOW_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
-          PR_AUTHOR: ${{ steps.pr-author.outputs.login }}
-        run: |
-          if [ "${SCHEDULED_JOB}" == "true" ] || [ "${IS_MERGE_GROUP}" == "true" ] || [ "${IS_WORKFLOW_DISPATCH}" == "true" ] || [ -z "${PR_AUTHOR}" ]; then
-            echo "is_maintainer=true" | tee -a $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          IS_MEMBER="${{ steps.check-sso.outputs.is_member }}"
-
-          if [ "${{ env.DISABLE_EXTERNAL_CONTRIBUTOR }}" == "true" ] && [ "${{ steps.check-sso.outputs.is_member }}" != "true" ]; then
-            echo "Checking if $PR_AUTHOR is a repo collaborator..."
-            API_URL="https://api.github.com/repos/$REPO/collaborators/$PR_AUTHOR"
-            REPO_MEMBERSHIP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              $API_URL)
-
-            echo "Checking if $PR_AUTHOR is an org collaborator to NVIDIA-NeMo..."
-            API_URL="https://api.github.com/orgs/NVIDIA-NeMo/members/$PR_AUTHOR"
-            ORG_NVIDIA_NEMO_MEMBERSHIP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              $API_URL)
-
-            echo "Checking if $PR_AUTHOR is an org collaborator to NVIDIA..."
-            API_URL="https://api.github.com/orgs/NVIDIA/members/$PR_AUTHOR"
-            ORG_NVIDIA_MEMBERSHIP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              $API_URL)
-
-            if [ "$REPO_MEMBERSHIP_RESPONSE" -eq 204 ] || [ "$ORG_NVIDIA_NEMO_MEMBERSHIP_RESPONSE" -eq 204 ] || [ "$ORG_NVIDIA_MEMBERSHIP_RESPONSE" -eq 204 ]; then
-              IS_MEMBER="true"
-            else
-              exit 1
-            fi
-          fi
-
-          if [ "$IS_MEMBER" == "true" ]; then
-            echo "is_maintainer=true" | tee -a $GITHUB_OUTPUT
-          else
-            echo "is_maintainer=false" | tee -a $GITHUB_OUTPUT
-          fi
-
   pre-flight:
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@v0.89.0
+    with:
+      default_runner_prefix: ${{ vars.DEFAULT_RUNNER_PREFIX }}
+      non_nvidia_runner_prefix: ${{ vars.NON_NVIDIA_RUNNER_PREFIX }}
+      default_test_data_path: ${{ vars.DEFAULT_TEST_DATA_PATH }}
+      non_nvidia_test_data_path: ${{ vars.NON_NVIDIA_TEST_DATA_PATH }}
+      default_registry: ${{ vars.DEFAULT_CONTAINER_REGISTRY }}
+      non_nvidia_registry: ${{ vars.NON_NVIDIA_CONTAINER_REGISTRY }}
+      sso_users_filename: ${{ vars.SSO_USERS_FILENAME }}
+    secrets:
+      NVIDIA_MANAGEMENT_ORG_PAT: ${{ secrets.NVIDIA_MANAGEMENT_ORG_PAT }}
+
+  configure:
     runs-on: ubuntu-latest
+    needs: [pre-flight]
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
       is_ci_workload: ${{ steps.is_ci_workload.outputs.main }}
@@ -219,21 +140,21 @@ jobs:
           echo "main=$no_fail_fast" | tee -a "$GITHUB_OUTPUT"
 
   code-linting:
-    if: needs.pre-flight.outputs.test_to_run != '[]'
-    needs: [pre-flight]
+    if: needs.configure.outputs.test_to_run != '[]'
+    needs: [configure]
     uses: ./.github/workflows/code-linting.yml
     with:
-      skip_docs: ${{ needs.pre-flight.outputs.skip_docs }}
-      skip_linting: ${{ needs.pre-flight.outputs.skip_linting }}
+      skip_docs: ${{ needs.configure.outputs.skip_docs }}
+      skip_linting: ${{ needs.configure.outputs.skip_linting }}
 
   cicd-wait-in-queue:
-    needs: [pre-flight, code-linting]
+    needs: [configure, code-linting]
     runs-on: ubuntu-latest
     environment: test
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
-      && needs.pre-flight.outputs.is_ci_workload == 'false'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
+      && needs.configure.outputs.is_ci_workload == 'false'
     steps:
       - name: Running CI tests
         run: |
@@ -241,37 +162,38 @@ jobs:
 
   cicd-test-container-build:
     uses: ./.github/workflows/_build_container.yml
-    needs: [is-not-external-contributor, pre-flight, code-linting, cicd-wait-in-queue]
+    needs: [pre-flight, configure, code-linting, cicd-wait-in-queue]
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
       image-name: nemo_container
       dockerfile: docker/Dockerfile.ci
-      runner: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
+      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
+      registry: ${{ needs.pre-flight.outputs.registry }}
 
   cicd-import-tests:
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
-    needs: [cicd-test-container-build, pre-flight, is-not-external-contributor]
-    runs-on: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
+    needs: [cicd-test-container-build, configure, pre-flight]
+    runs-on: ${{ needs.pre-flight.outputs.runner_prefix }}
     steps:
       - name: Create UUID
         id: uuid
@@ -305,16 +227,16 @@ jobs:
           '
 
   L0_Setup_Test_Data_And_Models:
-    needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue, is-not-external-contributor]
-    runs-on: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
+    needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight]
+    runs-on: ${{ needs.pre-flight.outputs.runner_prefix }}
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
@@ -336,50 +258,50 @@ jobs:
           test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
 
   cicd-main-unit-tests:
-    needs: [is-not-external-contributor, pre-flight, cicd-test-container-build]
+    needs: [pre-flight, configure, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-unit-tests.yml
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
-      runner: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
+      test_to_run: ${{ needs.configure.outputs.test_to_run }}
+      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
       container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   cicd-main-speech:
-    needs: [is-not-external-contributor, pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+    needs: [pre-flight, configure, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-speech.yml
     if: |
       (
-        needs.pre-flight.outputs.test_to_run != '[]'
+        needs.configure.outputs.test_to_run != '[]'
         && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech')
+          contains(fromJson(needs.configure.outputs.components_to_run), 'speech')
         )
       )
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
-      runner: ${{ needs.is-not-external-contributor.outputs.selected_runner }}
-      run_nightly: ${{ needs.pre-flight.outputs.run_nightly }}
+      test_to_run: ${{ needs.configure.outputs.test_to_run }}
+      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
+      run_nightly: ${{ needs.configure.outputs.run_nightly }}
 
   Nemo_CICD_Test:
     needs:
-      - pre-flight
+      - configure
       - cicd-test-container-build
       - cicd-import-tests
       - L0_Setup_Test_Data_And_Models
@@ -447,10 +369,10 @@ jobs:
 
   Coverage:
     runs-on: ubuntu-latest
-    needs: [pre-flight, Nemo_CICD_Test]
+    needs: [configure, Nemo_CICD_Test]
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || needs.Nemo_CICD_Test.result == 'success'

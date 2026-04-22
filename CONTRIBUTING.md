@@ -38,7 +38,7 @@ CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirro
 - Every committer is a member of the NVIDIA-NeMo GitHub org (or listed as an `additional_trustee`)
 - The PR has no more than 249 commits
 
-If any of those conditions are not met, copy-pr-bot posts a comment and waits. A maintainer (anyone with write access or greater) can unblock the run by commenting:
+If any of those conditions are not met, copy-pr-bot posts a comment and skips branch creation — CI will not run. A maintainer (anyone with write access or greater) can trigger it manually by commenting:
 ```
 /ok to test <sha>
 ```

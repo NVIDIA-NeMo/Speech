@@ -56,6 +56,7 @@ class TestTTSTokenizers:
         "नमस्ते": ["nəmˈʌsteː"],
         "दुनिया": ["dˈʊnɪjˌã"],
         "अच्छा": ["ˈʌtʃtʃʰaː"],
+        "है": ["hɛː"],
     }
     PHONEME_DICT_PT_BR = {
         "Olá": ["olˈa"],
@@ -273,7 +274,7 @@ class TestTTSTokenizers:
     def test_ipa_tokenizer_hi_in(self):
         """hi-IN: code-switching (Hindi + English) + Devanagari punctuation (danda)."""
         input_text = "नमस्ते world, अच्छा है।"
-        expected_output = "nəmˈʌsteː ˈwɝɫd, ˈʌtʃtʃʰaː है।"
+        expected_output = "nəmˈʌsteː ˈwɝɫd, ˈʌtʃtʃʰaː hɛː।"
         g2p = IpaG2p(
             phoneme_dict=[self.PHONEME_DICT_HI, self.PHONEME_DICT_EN],
             locale="hi-IN",

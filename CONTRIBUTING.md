@@ -31,9 +31,11 @@ different environment variables to be set.
 
 ## Running the Github CI
 
-CI runs automatically on every push to a PR. This is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.
+CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.
 
-For external contributors, a maintainer must approve the CI run before it executes on isolated ephemeral runners.
+CI runs automatically when **all commits in the PR are signed**. If unsigned commits are present, a maintainer must authorize the run by commenting `/ok to test <sha>` on the PR, where `<sha>` is the full SHA of the HEAD commit.
+
+For external contributors, a maintainer must also approve the CI run before it executes on isolated ephemeral runners.
 
 To re-run CI, push a new commit to the PR.
 

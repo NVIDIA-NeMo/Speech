@@ -26,7 +26,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
+import msgpack
 import os
 import sys
 from functools import partial
@@ -93,8 +93,8 @@ def _class_test(
     metric = metric_class(dist_sync_on_step=dist_sync_on_step, **metric_args)
 
     # verify metrics work after being loaded from saved state
-    saved_metric = json.dumps(metric)
-    metric = json.loads(saved_metric)
+    saved_metric = msgpack.dumps(metric)
+    metric = msgpack.loads(saved_metric)
 
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = metric(preds[i], target[i])
@@ -310,8 +310,8 @@ def _perplexity_class_test(
         return
 
     # verify perplexity works after being loaded from saved state
-    saved_metric = json.dumps(perplexity)
-    perplexity = json.loads(saved_metric)
+    saved_metric = msgpack.dumps(perplexity)
+    perplexity = msgpack.loads(saved_metric)
 
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = perplexity(None if probs is None else probs[i], None if logits is None else logits[i])
@@ -467,8 +467,8 @@ def _loss_class_test(
     loss_metric = GlobalAverageLossMetric(dist_sync_on_step=dist_sync_on_step, take_avg_loss=take_avg_loss)
 
     # verify loss works after being loaded from saved state
-    saved_metric = json.dumps(loss_metric)
-    loss_metric = json.loads(saved_metric)
+    saved_metric = msgpack.dumps(loss_metric)
+    loss_metric = msgpack.loads(saved_metric)
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = loss_metric(loss_sum_or_avg[i], num_measurements[i])
         if loss_metric.dist_sync_on_step:

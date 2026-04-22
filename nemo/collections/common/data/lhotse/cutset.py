@@ -859,11 +859,46 @@ def _create_recording_from_array(samples: np.ndarray, sampling_rate: int, record
         buffer.seek(0)
         return Recording.from_bytes(buffer.read(), recording_id=recording_id)
 
+def _prepend_silence_monocut(
+    cut: MonoCut,
+    sil_duration: float,
+    sample_rate: int,
+    recording_id: str,
+    cut_id: str,
+) -> MonoCut:
+    """Helper to pad silence at the beginning of a monocut."""
+    audio = cut.load_audio()  # (C, N)
+    n_pad = int(round(sil_duration * sample_rate))
+    if n_pad <= 0:
+        return cut
+
+    pad = np.zeros((audio.shape[0], n_pad), dtype=audio.dtype)
+    audio2 = np.concatenate([pad, audio], axis=1)
+
+    rec = _create_recording_from_array(audio2, sample_rate, recording_id=recording_id)
+    return MonoCut(
+        id=cut_id,
+        start=0.0,
+        duration=audio2.shape[1] / sample_rate,
+        channel=0,
+        recording=rec,
+        supervisions=[],
+    ).move_to_memory(audio_format="wav")
+
 class ConvertCutFn:
-    def __init__(self, sample_rate: int, add_extra_end_sil: bool, extra_end_silence_range: list):
+    def __init__(
+        self, 
+        sample_rate: int, 
+        add_extra_end_sil: bool, 
+        extra_end_silence_range: list,
+        add_extra_begin_sil: bool,
+        extra_begin_silence_range: list
+    ):
         self.sample_rate = sample_rate
         self.add_extra_end_sil = add_extra_end_sil
         self.extra_end_silence_range = extra_end_silence_range
+        self.add_extra_begin_sil = add_extra_begin_sil
+        self.extra_begin_silence_range = extra_begin_silence_range
 
     def __call__(self, cut: Cut) -> Cut:
         orig_agent_sup = fastcopy(cut.supervisions[0])
@@ -909,6 +944,7 @@ class ConvertCutFn:
             user_sup.custom = deepcopy(user_sup.custom)
             user_sup.custom["ipa"] = ""
 
+        # Optionally add extra silence on the end
         if self.add_extra_end_sil:
             sil_duration = random.uniform(*self.extra_end_silence_range)
             cut_target = cut_target.pad(duration=total_duration + sil_duration, direction="right")
@@ -917,6 +953,22 @@ class ConvertCutFn:
             cut_target = cut_target.to_mono().move_to_memory(audio_format='wav')
             agent_sup.duration += sil_duration + 1.0
             user_sup.duration += sil_duration
+
+        # Optionally add extra silence on the start
+        if self.add_extra_begin_sil:
+            sil_duration = random.uniform(*self.extra_begin_silence_range)
+            cut_target = _prepend_silence_monocut(
+                cut_target, sil_duration, self.sample_rate,
+                recording_id=f"{cut.id}_target_pre", cut_id=f"{cut.id}_target"
+            )
+            cut_source = _prepend_silence_monocut(
+                cut_source, sil_duration, self.sample_rate,
+                recording_id=f"{cut.id}_source_pre", cut_id=f"{cut.id}_source"
+            )
+
+            # Shift supervision start times forward, because audio got longer at the beginning
+            user_sup.start += sil_duration
+            agent_sup.start += sil_duration
 
         cut_source.supervisions = [user_sup, agent_sup]
         cut_source.target_audio = cut_target.recording
@@ -929,14 +981,14 @@ class ConvertCutFn:
 
         return cut_source
 
-
-
 @data_type_parser(["lhotse_magpietts_data_as_continuation"])
 def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     cuts, is_tarred = read_cutset_from_config(config)
 
     add_extra_end_sil = config.get("add_extra_end_silence", False)
     extra_end_silence_range = config.get("extra_end_silence_range", [0.5, 6.0])
+    add_extra_begin_sil = config.get("add_extra_begin_sil", False)
+    extra_begin_silence_range = config.get("extra_begin_silence_range", [0.5, 6.0])
     sample_rate = config.get("sample_rate", 22050)
 
     max_cer = config.get("max_cer", 0.03)
@@ -952,7 +1004,14 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         .filter(FilterTargetSpeaker(target_speaker))
     )
 
-    cuts = cuts.map(ConvertCutFn(sample_rate, add_extra_end_sil, extra_end_silence_range))
+    # Pass the beginning silence configs to the updated ConvertCutFn
+    cuts = cuts.map(ConvertCutFn(
+        sample_rate=sample_rate, 
+        add_extra_end_sil=add_extra_end_sil, 
+        extra_end_silence_range=extra_end_silence_range,
+        add_extra_begin_sil=add_extra_begin_sil,
+        extra_begin_silence_range=extra_begin_silence_range
+    ))
 
     return cuts, is_tarred
 

@@ -34,7 +34,7 @@ different environment variables to be set.
 CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.
 
 **CI runs automatically** when all of the following are true:
-- Every commit in the PR is GPG-signed
+- Every commit in the PR is [GPG-signed](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)
 - Every committer is a member of the NVIDIA-NeMo GitHub org (or listed as an `additional_trustee`)
 - The PR has no more than 249 commits
 

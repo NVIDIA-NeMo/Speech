@@ -399,7 +399,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 _available_context_duration = len(context_audio_array) / self.sample_rate
                 _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
                 _num_samples_to_slice = self.get_num_audio_samples_to_slice(_context_duration_to_slice, self.sample_rate)
-                
+
                 if _num_samples_to_slice < len(context_audio_array):
                     start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
                     context_audio_array = context_audio_array[start_idx : start_idx + _num_samples_to_slice]

@@ -11,7 +11,8 @@ Usage:
         --datasets_json_path=/path/to/evalset_config.jsonl \
         --out_dir=/path/to/out/audio \
         --batch_size=6 \
-        --use_cfg
+        --use_cfg \
+        --use_librosa
 """
 
 import argparse
@@ -193,6 +194,7 @@ def collate_and_tokenize_custom(
     pad_factor_text_speech=10,
     force_interruption=False,
     normalize_context_audio_volume=True,
+    use_librosa=False,
 ):
     main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
 
@@ -290,6 +292,7 @@ def collate_and_tokenize_custom(
                         turn_t_lens.append(len(seg_ids))
                         turn_t_valid.append(True)
                     else:
+                        # Dummy pad to keep shapes consistent for items with fewer turns
                         turn_t_tokens.append(torch.as_tensor([model.pad_id], dtype=torch.long))
                         turn_t_lens.append(1)
                         turn_t_valid.append(False)
@@ -324,10 +327,23 @@ def collate_and_tokenize_custom(
             audio_path = os.path.join(root_path, audio_path)
 
         if os.path.exists(audio_path):
-            wav, sr = librosa.load(audio_path, sr=sample_rate, mono=True)
-            if normalize_context_audio_volume:
-                wav = normalize_volume(wav)
-            wav = torch.as_tensor(wav, dtype=torch.float32)
+            if use_librosa:
+                wav, sr = librosa.load(audio_path, sr=sample_rate, mono=True)
+                if normalize_context_audio_volume:
+                    wav = normalize_volume(wav)
+                wav = torch.as_tensor(wav, dtype=torch.float32)
+            else:
+                wav, sr = sf.read(audio_path, dtype='float32')
+                # Force Mono
+                if wav.ndim > 1:
+                    wav = wav.mean(axis=1)
+
+                if normalize_context_audio_volume:
+                    wav = normalize_volume(wav)
+
+                # Convert to tensor, add batch dim for resampler, then remove it
+                wav_tensor = torch.as_tensor(wav, dtype=torch.float32).unsqueeze(0)
+                wav = resample(wav_tensor, sr, sample_rate).squeeze(0)
         else:
             wav = torch.zeros(1, dtype=torch.float32)
 
@@ -384,6 +400,7 @@ def main():
     parser.add_argument("--audio_dir", type=str, default=None, help="Root dir for audio paths in JSONL")
     parser.add_argument("--inference_dtype", type=str, default="float16")
     parser.add_argument("--debug_dtype", action="store_true")
+    parser.add_argument("--use_librosa", action="store_true", help="Use librosa instead of soundfile+torch for audio load")
     
     # Dataloader & Batching
     parser.add_argument("--batch_size", type=int, default=6)
@@ -408,7 +425,7 @@ def main():
     parser.add_argument("--topk", type=int, default=80)
     parser.add_argument("--max_tts_steps", type=int, default=2000)
     parser.add_argument("--force_speech_sil_codes", action="store_true")
-    parser.add_argument("--normalize_volume", type=bool, default=False)
+    parser.add_argument("--normalize_volume", type=lambda x: (str(x).lower() in ['true', '1', 'yes']), default=False)
 
     args = parser.parse_args()
 
@@ -508,7 +525,7 @@ def main():
         pad_factor_text_speech=args.pad_factor_text_speech,
         force_interruption=args.force_interruption,
         normalize_context_audio_volume=args.normalize_volume,
-        
+        use_librosa=args.use_librosa,
     )
 
     dataloader = DataLoader(
@@ -517,18 +534,30 @@ def main():
     )
 
     if args.user_custom_speaker_reference and args.inference_speaker_reference:
-        wav, sr = librosa.load(args.inference_speaker_reference, sr=model.sample_rate, mono=True)
-        if args.normalize_volume:
-            wav = normalize_volume(wav)
-        speaker_wav = torch.as_tensor(wav, dtype=target_dtype).unsqueeze(0).to(model.device)
+        if args.use_librosa:
+            wav, sr = librosa.load(args.inference_speaker_reference, sr=model.sample_rate, mono=True)
+            if args.normalize_volume:
+                wav = normalize_volume(wav)
+            speaker_wav = torch.as_tensor(wav, dtype=target_dtype).unsqueeze(0).to(model.device)
+        else:
+            wav, sr = sf.read(args.inference_speaker_reference, dtype='float32')
+            # Force Mono
+            if wav.ndim > 1:
+                wav = wav.mean(axis=1)
+
+            if args.normalize_volume:
+                wav = normalize_volume(wav)
+
+            speaker_wav = torch.as_tensor(wav).unsqueeze(0)
+            speaker_wav = resample(speaker_wav.float(), sr, model.sample_rate).to(target_dtype).to(model.device)
 
     for batch_id, inputs in enumerate(dataloader):
         B = inputs["context_audio"].size(0)
         device = model.device
-        
+
         inputs["context_audio"] = inputs["context_audio"].to(device, dtype=target_dtype)
         inputs["context_audio_lengths"] = inputs["context_audio_lengths"].to(device)
-        
+
         if args.user_custom_speaker_reference and args.inference_speaker_reference:
             inputs["context_audio"] = speaker_wav.repeat(B, 1)
             inputs["context_audio_lengths"] = torch.full((B,), speaker_wav.size(-1), dtype=torch.long, device=device)
@@ -658,8 +687,8 @@ def main():
             # Scrub Special Tokens (BOS/EOS) from Audio Codes ---
             # Because we force-decode the entire uncropped sequence, any BOS or EOS 
             # tokens left in the array will produce loud artifacts in the codec.
-            bos_id = model.audio_bos_id
-            eos_id = model.audio_eos_id
+            bos_id = getattr(model, "audio_bos_id", -1)
+            eos_id = getattr(model, "audio_eos_id", -1)
             sil_injection = codec_sil_codes.view(1, -1, 1)
 
             for step_idx in range(len(state.all_predictions)):

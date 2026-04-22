@@ -30,6 +30,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
+from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
@@ -2132,11 +2133,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         audio, sr = sf.read(audio_path, dtype='float32')
         if len(audio.shape) > 1:
             audio = audio.mean(axis=1)
-        if sr != target_sample_rate:
-            import librosa
 
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sample_rate)
-        return torch.from_numpy(audio).unsqueeze(0)
+        audio = torch.from_numpy(audio).unsqueeze(0)
+
+        if sr != target_sample_rate:
+            audio = resample(audio.float(), sr, target_sample_rate)
+
+        return audio
 
     @staticmethod
     def _adjust_audio_to_duration_for_inference(

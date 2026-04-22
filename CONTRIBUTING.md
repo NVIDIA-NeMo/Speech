@@ -31,14 +31,18 @@ different environment variables to be set.
 
 ## Running the Github CI
 
-The CI tests are not ran automatically when the PR is opened. When ready, add the "Run CICD" label to the PR. To re-run CI remove and add the label again.
-To run CI for external contributors, a user with write access to the repo must also approve the Github CI to run. Approving the CI to run for external
-contributors is different from approving the PR change to be merged.
+CI runs automatically on every push to a PR. This is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.
+
+For external contributors, a maintainer must approve the CI run before it executes on isolated ephemeral runners.
+
+To re-run CI, push a new commit to the PR.
 
 The CI test suites are selectively ran based on the files that are changed. In some cases, no tests may be ran such as when docs are updated.
 
 Lint checks using flake8 and pylint are ran on the code based on the files that were changed. Please resolve any lint errors. It is possible but discouraged
 to ignore the lint errors by adding the "skip-linting" label to the PR.
+
+To run the nightly e2e test suite on a PR, add the "Run e2e nightly" label before pushing.
 
 ## Whom should you ask for review:
 Please tag @nithinraok for NeMo core and ASR related PRs and @blisc for TTS related PRs.

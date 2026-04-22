@@ -22,7 +22,7 @@ from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import valida
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     INDIC_CHARS_ALL,
     KOREAN_CHARS,
-    LATIN_CHARS_ALL,
+    WORD_CHARS_ALL,
     any_locale_word_tokenize,
     english_word_tokenize,
     normalize_unicode_text,
@@ -40,8 +40,8 @@ class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]
     # Regex for roman characters, accented characters, and locale-agnostic numbers/digits
-    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}\d]")
-    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}\d]")
+    CHAR_REGEX = re.compile(fr"[{WORD_CHARS_ALL}\d]")
+    PUNCT_REGEX = re.compile(fr"[^{WORD_CHARS_ALL}\d]")
     # fmt: on
 
     def __init__(

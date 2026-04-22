@@ -31,6 +31,7 @@ __all__ = [
     "LATIN_CHARS_ALL",
     "INDIC_CHARS_ALL",
     "KOREAN_CHARS",
+    "WORD_CHARS_ALL",
     "normalize_unicode_text",
     "japanese_text_preprocessing",
 ]
@@ -73,11 +74,13 @@ INDIC_CHARS_ALL = f"{DEVANAGARI_CHARS}{BENGALI_CHARS}{TAMIL_CHARS}{TELUGU_CHARS}
 # ref: https://en.wikipedia.org/wiki/Hangul_Compatibility_Jamo   (U+3130–U+318F)
 KOREAN_CHARS = r'\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F'
 
+WORD_CHARS_ALL = f"{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}"
+
 _WORDS_RE_EN = re.compile(
     fr"([{LATIN_ALPHABET_BASIC}]+(?:[{LATIN_ALPHABET_BASIC}\-']*[{LATIN_ALPHABET_BASIC}]+)*)|(\|[^|]*\|)|([^{LATIN_ALPHABET_BASIC}|]+)"
 )
 _WORDS_RE_ANY_LOCALE = re.compile(
-    fr"([{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}]+(?:[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}\-']*[{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}]+)*)|(\|[^|]*\|)|([^{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}|]+)"
+    fr"([{WORD_CHARS_ALL}]+(?:[{WORD_CHARS_ALL}\-']*[{WORD_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{WORD_CHARS_ALL}|]+)"
 )
 
 

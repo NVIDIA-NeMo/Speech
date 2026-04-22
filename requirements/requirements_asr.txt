@@ -1,5 +1,4 @@
 braceexpand
-diskcache
 editdistance
 einops
 jiwer>=3.1.0,<4.0.0

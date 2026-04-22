@@ -51,7 +51,7 @@ The CI test suites are selectively ran based on the files that are changed. In s
 Lint checks using flake8 and pylint are ran on the code based on the files that were changed. Please resolve any lint errors. It is possible but discouraged
 to ignore the lint errors by adding the "skip-linting" label to the PR.
 
-To run the nightly e2e test suite on a PR, add the "Run e2e nightly" label before pushing.
+To run the nightly e2e test suite on a PR, add the "Run e2e nightly" label. Labels are read once by the `pre-flight` job at the start of each run, so the label must be present before CI starts. If CI is already running when you add the label, cancel the active workflow run and re-trigger by pushing a new commit.
 
 ## Whom should you ask for review:
 Please tag @nithinraok for NeMo core and ASR related PRs and @blisc for TTS related PRs.

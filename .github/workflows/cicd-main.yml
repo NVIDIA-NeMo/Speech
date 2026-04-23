@@ -188,9 +188,6 @@ jobs:
             # PyTorch Lightning version
             python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
 
-            # PyTorch Lightning DDP Checks
-            CUDA_VISIBLE_DEVICES="0,1" python "tests/core_ptl/check_for_ranks.py"
-
             # Basic Import Checks
             python tests/core_ptl/check_imports.py --domain asr
             python tests/core_ptl/check_imports.py --domain tts

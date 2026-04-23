@@ -277,8 +277,8 @@ def main(cfg: EvalBeamSearchNGramConfig):
     target_transcripts = apply_text_processing(punctuation_capitalization, cfg, target_transcripts)
 
     if cfg.hyps_cache_file and os.path.exists(cfg.hyps_cache_file):
-        logging.info(f"Found a pickle file of hypotheses at '{cfg.hyps_cache_file}'.")
-        logging.info(f"Loading the cached pickle file of hypotheses from '{cfg.hyps_cache_file}' ...")
+        logging.info(f"Found a cached file of hypotheses at '{cfg.hyps_cache_file}'.")
+        logging.info(f"Loading the cached file of hypotheses from '{cfg.hyps_cache_file}' ...")
         with open(cfg.hyps_cache_file, 'rb') as probs_file:
             all_hyps = msgpack.load(probs_file)
 
@@ -297,7 +297,7 @@ def main(cfg: EvalBeamSearchNGramConfig):
 
         if cfg.hyps_cache_file:
             os.makedirs(os.path.split(cfg.hyps_cache_file)[0], exist_ok=True)
-            logging.info(f"Writing pickle files of hypotheses at '{cfg.hyps_cache_file}'...")
+            logging.info(f"Writing cached files of hypotheses at '{cfg.hyps_cache_file}'...")
             with open(cfg.hyps_cache_file, 'wb') as f_dump:
                 msgpack.dump(all_hyps, f_dump)
 

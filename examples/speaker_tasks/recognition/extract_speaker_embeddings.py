@@ -43,7 +43,7 @@ from nemo.utils import logging
 
 def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./', device='cuda'):
     """
-    save embeddings to pickle file
+    save embeddings to cached file
     Args:
         speaker_model: NeMo <EncDecSpeakerLabel> model
         manifest_file: path to the manifest file containing the audio file path from which the
@@ -72,7 +72,7 @@ def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./
     prefix = manifest_file.split('/')[-1].rsplit('.', 1)[-2]
 
     name = os.path.join(embedding_dir, prefix)
-    embeddings_file = name + '_embeddings.pkl'
+    embeddings_file = name + '_embeddings.msgpack'
     with open(embeddings_file, 'wb') as f:
         msgpack.dump(out_embeddings, f)
     logging.info("Saved embedding files to {}".format(embedding_dir))

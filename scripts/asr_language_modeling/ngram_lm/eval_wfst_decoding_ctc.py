@@ -288,8 +288,8 @@ def main(cfg: EvalWFSTNGramConfig):
         target_transcripts = punctuation_capitalization.separate_punctuation(target_transcripts)
 
     if cfg.probs_cache_file and os.path.exists(cfg.probs_cache_file):
-        logging.info(f"Found a pickle file of probabilities at '{cfg.probs_cache_file}'.")
-        logging.info(f"Loading the cached pickle file of probabilities from '{cfg.probs_cache_file}' ...")
+        logging.info(f"Found a cached file of probabilities at '{cfg.probs_cache_file}'.")
+        logging.info(f"Loading the cached file of probabilities from '{cfg.probs_cache_file}' ...")
         with open(cfg.probs_cache_file, 'rb') as probs_file:
             all_probs = msgpack.load(probs_file)
 
@@ -312,7 +312,7 @@ def main(cfg: EvalWFSTNGramConfig):
         all_probs = all_logits
         if cfg.probs_cache_file:
             os.makedirs(os.path.split(cfg.probs_cache_file)[0], exist_ok=True)
-            logging.info(f"Writing pickle files of probabilities at '{cfg.probs_cache_file}'...")
+            logging.info(f"Writing cached files of probabilities at '{cfg.probs_cache_file}'...")
             with open(cfg.probs_cache_file, 'wb') as f_dump:
                 msgpack.dump(all_probs, f_dump)
 

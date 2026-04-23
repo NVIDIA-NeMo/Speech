@@ -29,7 +29,7 @@ for Voxceleb dataset.
 
 Args:
     trial_file str: path to voxceleb trial file
-    emb : path to pickle file of embeddings dictionary (generated from spkr_get_emb.py)
+    emb : path to cached file of embeddings dictionary (generated from spkr_get_emb.py)
     save_kaldi_emb: if required pass this argument to save kaldi embeddings for KALDI PLDA training later
     Note: order of audio files in manifest file should match the embeddings
 """

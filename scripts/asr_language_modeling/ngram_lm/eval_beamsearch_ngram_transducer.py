@@ -287,8 +287,8 @@ def main(cfg: EvalBeamSearchNGramConfig):
             audio_file_paths.append(str(audio_file.absolute()))
 
     if cfg.probs_cache_file and os.path.exists(cfg.probs_cache_file):
-        logging.info(f"Found a pickle file of probabilities at '{cfg.probs_cache_file}'.")
-        logging.info(f"Loading the cached pickle file of probabilities from '{cfg.probs_cache_file}' ...")
+        logging.info(f"Found a cached file of probabilities at '{cfg.probs_cache_file}'.")
+        logging.info(f"Loading the cached file of probabilities from '{cfg.probs_cache_file}' ...")
         with open(cfg.probs_cache_file, 'rb') as probs_file:
             all_probs = msgpack.load(probs_file)
 
@@ -330,7 +330,7 @@ def main(cfg: EvalBeamSearchNGramConfig):
                             all_probs.append(encoded_no_pad)
 
         if cfg.probs_cache_file:
-            logging.info(f"Writing pickle files of probabilities at '{cfg.probs_cache_file}'...")
+            logging.info(f"Writing cached files of probabilities at '{cfg.probs_cache_file}'...")
             with open(cfg.probs_cache_file, 'wb') as f_dump:
                 msgpack.dump(all_probs, f_dump)
 

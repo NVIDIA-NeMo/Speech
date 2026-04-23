@@ -378,7 +378,7 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
 
             prefix = get_uniqname_from_filepath(manifest_file)
             name = os.path.join(embedding_dir, prefix)
-            self._embeddings_file = name + '_embeddings.pkl'
+            self._embeddings_file = name + '_embeddings.msgpack'
             with open(self._embeddings_file, 'wb') as f:
                 msgpack.dump(self.embeddings, f)
             logging.info("Saved embedding files to {}".format(embedding_dir))

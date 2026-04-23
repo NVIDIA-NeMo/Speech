@@ -37,6 +37,20 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         adapter_subsampling = getattr(self.modality_adapter, "subsampling_factor", 1.0)
         return frame_shift * encoder_subsampling * adapter_subsampling
 
+    @property
+    def encoder(self) -> nn.Module:
+        # When the modality adapter needs per-layer activations (Qformer / MultiLayer
+        # projection), the encoder is wrapped inside ``encoder_multilayer`` so
+        # ConformerMultiLayerFeatureExtractor can attach hooks. Expose it at the top
+        # level here so downstream code (training_step freeze checks, etc.) sees a
+        # single logical ``encoder`` submodule regardless of the adapter choice.
+        # For the non-multilayer path, the encoder was registered via
+        # ``self.encoder = encoder`` through nn.Module.__setattr__ (which bypasses
+        # this property); look it up directly in _modules.
+        if 'encoder_multilayer' in self._modules:
+            return self._modules['encoder_multilayer'].encoder
+        return self._modules['encoder']
+
     def __init__(self, cfg: DictConfig):
         super().__init__()
         # Initialize components

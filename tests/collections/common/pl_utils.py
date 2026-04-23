@@ -27,8 +27,8 @@
 # limitations under the License.
 
 import os
-import tempfile
 import sys
+import tempfile
 from functools import partial
 from typing import Callable, Optional
 

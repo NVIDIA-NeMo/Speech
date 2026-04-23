@@ -27,11 +27,11 @@
 # limitations under the License.
 
 import os
+import tempfile
 import sys
 from functools import partial
 from typing import Callable, Optional
 
-import msgpack
 import numpy as np
 import pytest
 import torch
@@ -93,8 +93,13 @@ def _class_test(
     metric = metric_class(dist_sync_on_step=dist_sync_on_step, **metric_args)
 
     # verify metrics work after being loaded from saved state
-    saved_metric = msgpack.dumps(metric)
-    metric = msgpack.loads(saved_metric)
+    # As per https://lightning.ai/docs/torchmetrics/stable/pages/overview.html#saving-and-loading-metrics, best to
+    # save and load state_dicts
+    if len(metric.state_dict()) > 0:
+        metric.persistent(True)
+        with tempfile.TemporaryFile() as fp:
+            torch.save(metric.state_dict(), fp)
+            metric = metric.load_state_dict(torch.load(fp, map_location="cpu"))
 
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = metric(preds[i], target[i])
@@ -310,8 +315,11 @@ def _perplexity_class_test(
         return
 
     # verify perplexity works after being loaded from saved state
-    saved_metric = msgpack.dumps(perplexity)
-    perplexity = msgpack.loads(saved_metric)
+    if len(perplexity.state_dict()) > 0:
+        perplexity.persistent(True)
+        with tempfile.TemporaryFile() as fp:
+            torch.save(perplexity.state_dict(), fp)
+            perplexity = perplexity.load_state_dict(torch.load(fp, map_location="cpu"))
 
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = perplexity(None if probs is None else probs[i], None if logits is None else logits[i])
@@ -467,8 +475,12 @@ def _loss_class_test(
     loss_metric = GlobalAverageLossMetric(dist_sync_on_step=dist_sync_on_step, take_avg_loss=take_avg_loss)
 
     # verify loss works after being loaded from saved state
-    saved_metric = msgpack.dumps(loss_metric)
-    loss_metric = msgpack.loads(saved_metric)
+    if len(loss_metric.state_dict()) > 0:
+        loss_metric.persistent(True)
+        with tempfile.TemporaryFile() as fp:
+            torch.save(loss_metric.state_dict(), fp)
+            loss_metric = loss_metric.load_state_dict(torch.load(fp, map_location="cpu"))
+
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = loss_metric(loss_sum_or_avg[i], num_measurements[i])
         if loss_metric.dist_sync_on_step:

@@ -986,6 +986,59 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_lens = batch['audio_lens']
             audio_codes, audio_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
 
+
+        if self.cfg.get("use_multiturn_dataset", False) and "tts" in batch['task']:
+            prob = self.cfg.get("add_tts_sil_begining_prob", 0.0)
+            if prob > 0 and torch.rand(1).item() < prob:
+                audio_codes_lens_max = audio_codes_lens.max()
+                
+                # 1. Calculate the raw shift (with the -1 safety buffer)
+                raw_pad_lens = torch.clamp(audio_codes_lens_max - audio_codes_lens - 1, min=0)
+                
+                # 2. Round DOWN to the nearest multiple of the stacking factor
+                pad_lens = (raw_pad_lens // self.frame_stacking_factor) * self.frame_stacking_factor
+
+                # 3. Calculate perfectly aligned text padding
+                text_pad_lens = pad_lens // self.frame_stacking_factor
+
+                if pad_lens.max() > 0:
+                    device = audio_codes.device
+                    B, C, T_audio = audio_codes.shape
+
+                    # --- Vectorized Audio Shift ---
+                    idx_a = torch.arange(T_audio, device=device).unsqueeze(0)
+                    src_idx_a = idx_a - pad_lens.unsqueeze(1)
+                    
+                    valid_mask_a = (src_idx_a >= 0) & (src_idx_a < audio_codes_lens.unsqueeze(1))
+                    safe_src_idx_a = src_idx_a.clamp(min=0, max=T_audio - 1)
+                    
+                    safe_src_idx_a_exp = safe_src_idx_a.unsqueeze(1).expand(-1, C, -1)
+                    valid_mask_a_exp = valid_mask_a.unsqueeze(1).expand(-1, C, -1)
+                    
+                    gathered_audio = torch.gather(audio_codes, 2, safe_src_idx_a_exp)
+                    silence_pad = self.codec_sil_codes_unconverted.view(1, C, 1).expand(B, C, T_audio)
+
+                    audio_codes = torch.where(valid_mask_a_exp, gathered_audio, silence_pad)
+                    audio_codes_lens = audio_codes_lens + pad_lens
+                    
+                    # --- Vectorized Text Shift (USING SCALED LENS) ---
+                    old_text = batch['text']
+                    text_lens = batch['text_lens']
+                    
+                    new_text_lens = text_lens + text_pad_lens
+                    new_T_text = max(new_text_lens.max().item(), old_text.size(1))
+                    
+                    idx_t = torch.arange(new_T_text, device=device).unsqueeze(0)
+                    src_idx_t = idx_t - text_pad_lens.unsqueeze(1)
+                    
+                    valid_mask_t = (src_idx_t >= 0) & (src_idx_t < text_lens.unsqueeze(1))
+                    safe_src_idx_t = src_idx_t.clamp(min=0, max=old_text.size(1) - 1)
+                    
+                    gathered_text = torch.gather(old_text, 1, safe_src_idx_t)
+                    
+                    batch['text'] = torch.where(valid_mask_t, gathered_text, self.pad_id)
+                    batch['text_lens'] = new_text_lens
+
         batch_output = self.process_batch(
             text=batch['text'],
             text_lens=batch['text_lens'],

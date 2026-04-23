@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from collections import Counter
 
 import numpy as np
 import soundfile as sf
@@ -604,6 +605,56 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 mask_token_id=self.mask_token_id,
                 codebook_size=self.codebook_size,
             )
+
+    @property
+    def codec_sil_codes(self):
+        """Returns the CONVERTED silence codes (used by the model's predictions)"""
+        if not hasattr(self, "_codec_sil_codes_buffer"):
+            self._generate_codec_silence_buffer()
+        return self._codec_sil_codes_buffer
+
+    @property
+    def codec_sil_codes_unconverted(self):
+        """Returns the RAW, UNCONVERTED silence codes (used for training batch labels)"""
+        if not hasattr(self, "_codec_sil_codes_buffer_unconverted"):
+            self._generate_codec_silence_buffer()
+        return self._codec_sil_codes_buffer_unconverted
+
+    def _generate_codec_silence_buffer(self):
+        device = self.device if hasattr(self, 'device') else next(self.parameters()).device
+
+        # Generate 5 seconds of silence
+        audio = torch.zeros(1, 5 * self.sample_rate, dtype=torch.float32, device=device)
+        audio_len = torch.tensor([audio.size(-1)], dtype=torch.long, device=device)
+
+        with torch.no_grad():
+            # 1. Get the RAW codes directly from the helper
+            sil_codes_raw, sil_codes_lens = self._codec_helper.audio_to_codes(audio, audio_len)
+            
+            # Find most common frame for UNCONVERTED
+            frames_raw = sil_codes_raw[0].transpose(0, 1)
+            combos_raw = [tuple(frame.tolist()) for frame in frames_raw]
+            most_common_raw, _ = Counter(combos_raw).most_common(1)[0]
+            sil_tensor_unconverted = torch.tensor(most_common_raw, device=device, dtype=torch.long)
+
+            # 2. Get the CONVERTED codes (if a converter exists)
+            if getattr(self, '_codec_converter', None) is not None:
+                sil_codes_conv = self._codec_converter.convert_original_to_new(
+                    audio_tokens=sil_codes_raw, audio_lens=sil_codes_lens
+                ).long()
+                
+                # Find most common frame for CONVERTED
+                frames_conv = sil_codes_conv[0].transpose(0, 1)
+                combos_conv = [tuple(frame.tolist()) for frame in frames_conv]
+                most_common_conv, _ = Counter(combos_conv).most_common(1)[0]
+                sil_tensor_converted = torch.tensor(most_common_conv, device=device, dtype=torch.long)
+            else:
+                # If no converter exists, they are identical
+                sil_tensor_converted = sil_tensor_unconverted.clone()
+
+        # 3. Register BOTH as independent buffers
+        self.register_buffer("_codec_sil_codes_buffer", sil_tensor_converted, persistent=False)
+        self.register_buffer("_codec_sil_codes_buffer_unconverted", sil_tensor_unconverted, persistent=False)
 
     def _get_state_dict_keys_to_exclude(self) -> List[str]:
         return [

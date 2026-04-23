@@ -536,7 +536,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "text": target_text_tokens,
             "text_lens": target_token_lens,
             "raw_texts": [" ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts],
-            "dataset_type": [getattr(c, "type", "") for c in cuts],
+            "task": [getattr(cut, "task", "tts") for cut in cuts],
         }
 
         if target_codes_list:

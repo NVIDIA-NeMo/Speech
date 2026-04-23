@@ -483,27 +483,7 @@ def main():
     if not hasattr(model, "_codec_helper") or model._codec_helper is None:
         model._codec_helper = CodecHelper(codec_model=codec_model, codec_converter=codec_converter)
 
-    from collections import Counter
-    def get_codec_silence_frame(model, device, target_sample_rate):
-        audio = torch.zeros(1, 10 * target_sample_rate).float().to(device)
-        audio_len = torch.tensor([audio.size(-1)]).long().to(device)
-
-        sil_codes, sil_codes_lens = model._codec_helper.audio_to_codes(
-            audio, audio_len
-        )
-
-        if model._codec_converter is not None:
-            sil_codes = model._codec_converter.convert_original_to_new(
-                audio_tokens=sil_codes, audio_lens=sil_codes_lens
-            ).long()
-
-        frames = sil_codes[0].transpose(0, 1)
-        combos = [tuple(frame.tolist()) for frame in frames]
-        counter = Counter(combos)
-        most_common_combo, freq = counter.most_common(1)[0]
-        return torch.tensor(most_common_combo, device=device, dtype=torch.long)
-
-    codec_sil_codes = get_codec_silence_frame(model, target_device, model.sample_rate)
+    codec_sil_codes = model.codec_sil_codes
 
     if args.debug_dtype:
         handles, stats, examples = attach_dtype_counter(model)

@@ -15,7 +15,7 @@
 
 MAJOR = 2
 MINOR = 7
-PATCH = 3
+PATCH = 4
 PRE_RELEASE = ""
 
 # Use the following formatting: (major, minor, patch, pre-release)

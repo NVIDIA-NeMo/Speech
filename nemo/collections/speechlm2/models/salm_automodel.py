@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
 import warnings
 from collections import defaultdict
 from typing import Any, Callable
@@ -152,6 +153,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self,
         input_embeds: Tensor,
         attention_mask: Tensor = None,
+        causal_mask_mapping: dict[str, Tensor] | None = None,
         cache=None,
     ) -> dict[str, Tensor]:
         """
@@ -162,12 +164,20 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         """
         # input_embeds and out: (B, T, H)
+        extra_kwargs = {}
+        # Some backbones (e.g. Nemotron V3) ignore the 2D ``attention_mask`` and require the
+        # precomputed padding-aware 4D causal mask via ``causal_mask_mapping``. Only forward
+        # the kwarg when the underlying model's signature accepts it, so we stay compatible
+        # with vanilla HF transformers LLMs that don't know about it.
+        if causal_mask_mapping is not None and getattr(self, "_llm_accepts_causal_mask_mapping", False):
+            extra_kwargs["causal_mask_mapping"] = causal_mask_mapping
         out = self.llm(
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
             past_key_values=cache,
             use_cache=cache is not None,
             return_dict=True,
+            **extra_kwargs,
         )
         if not isinstance(out, dict):
             # NeMo Automodel doesn't respect return_dict=True yet
@@ -223,10 +233,25 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 attention_mask = attention_mask[:, :-remainder]
                 target_ids = target_ids[:, :-remainder]
 
+        # Precompute the 4D causal+padding mask for backbones that require it (Nemotron V3).
+        # The nemotron_v3 SDPA path requires 4D broadcast-compatible masks; the 2D path silently
+        # falls back to is_causal=True and ignores padding.
+        causal_mask_mapping = None
+        if getattr(self, "_llm_accepts_causal_mask_mapping", False):
+            B, T = input_embs.shape[:2]
+            causal = torch.ones(T, T, dtype=torch.bool, device=input_embs.device).tril()  # (T, T)
+            pad = attention_mask.bool().unsqueeze(1).unsqueeze(2)  # (B, 1, 1, T)
+            full_mask = causal[None, None] & pad  # (B, 1, T, T)
+            assert full_mask.shape == (B, 1, T, T), (
+                f"causal+padding mask shape {tuple(full_mask.shape)} != (B={B}, 1, T={T}, T={T})"
+            )
+            causal_mask_mapping = {"full_attention": full_mask}
+
         return {
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
+            "causal_mask_mapping": causal_mask_mapping,
         }
 
     def on_fit_start(self) -> None:
@@ -265,7 +290,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         inputs = self.prepare_inputs(batch)
         self._maybe_warmup_barrier()
-        forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+        forward_outputs = self(
+            inputs["input_embeds"],
+            attention_mask=inputs["attention_mask"],
+            causal_mask_mapping=inputs.get("causal_mask_mapping"),
+        )
         num_frames = (inputs["target_ids"] != -100).long().sum()
         with loss_parallel():
             loss = (
@@ -328,7 +357,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 continue
             inputs = self.prepare_inputs(dataset_batch)
             self._maybe_warmup_barrier()
-            forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+            forward_outputs = self(
+                inputs["input_embeds"],
+                attention_mask=inputs["attention_mask"],
+                causal_mask_mapping=inputs.get("causal_mask_mapping"),
+            )
             num_frames = (inputs["target_ids"] != -100).long().sum()
             with loss_parallel():
                 loss = (
@@ -707,6 +740,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             trust_remote_code=self.cfg.get("trust_remote_code", False),
             **automodel_kwargs,
         )
+
+        # Detect whether the backbone's forward() accepts ``causal_mask_mapping``
+        # (required by Nemotron V3; ignored by vanilla HF LLMs). We precompute the
+        # 4D causal+padding mask in ``prepare_inputs`` and forward it only when the
+        # model actually consumes it.
+        try:
+            llm_fwd_params = inspect.signature(self.llm.forward).parameters
+            self._llm_accepts_causal_mask_mapping = "causal_mask_mapping" in llm_fwd_params
+        except (TypeError, ValueError):
+            self._llm_accepts_causal_mask_mapping = False
 
         # Apply MoE options (aux_loss_coeff override, load balance tracking)
         self.setup_moe_options()

@@ -113,7 +113,12 @@ def decode_with_blank(
         collapse_whitespace: If True, collapse multiple consecutive whitespace characters into a single space.
         join_with: If provided, join the segments divided by blank tokens with this string, else join with empty string.
     """
-    blank_id = tokenizer.tokenizer.convert_tokens_to_ids(blank_token)
+    if blank_token == "":
+        # No blank token: use EOS (e.g. <|im_end|>) as chunk separator so
+        # per-chunk outputs get joined with spaces instead of BPE-merged into one run.
+        blank_id = tokenizer.tokenizer.eos_token_id
+    else:
+        blank_id = tokenizer.tokenizer.convert_tokens_to_ids(blank_token)
     segments = []
     current = []
     for tid in ids:
@@ -145,7 +150,8 @@ def decode_with_blank(
 def compute_word_spans(
     alignments: List[WordAlignment],
     transcript: str,
-    preserve_whitespace: bool = False,
+    preserve_trailing_whitespace: bool = False,
+    preserve_leading_whitespace: bool = False,
 ) -> List[tuple[int, int]]:
     """Find (start, end) character positions for each alignment word in the transcript.
 
@@ -156,15 +162,26 @@ def compute_word_spans(
     Args:
         alignments: Word-level alignment results.
         transcript: Original transcription string.
-        preserve_whitespace: When True, each span extends through trailing
-            whitespace up to (but not including) the next alphanumeric
+        preserve_trailing_whitespace: When True, each span extends through
+            trailing whitespace up to (but not including) the next alphanumeric
             character.  This is useful when extracting multi-word spans so
             that ``transcript[first_span[0]:last_span[1]]`` includes the
             inter-word spaces.
+        preserve_leading_whitespace: When True, each span extends backward
+            through preceding whitespace (not crossing the previous word's
+            span end).  This matches GPT-style BPE tokenization where a
+            leading space is part of the word token (e.g. ``" world"`` vs
+            ``"world"``).  For ``"hello world"`` this yields
+            ``[(0,5), (5,11)]`` = ``"hello"``, ``" world"``.
 
     Returns a list parallel to *alignments*.  If a word cannot be located, its
     span is ``None``.
     """
+
+    if preserve_trailing_whitespace and preserve_leading_whitespace:
+        raise ValueError(
+            "preserve_trailing_whitespace and preserve_leading_whitespace cannot be True at the same time"
+        )
     spans: List[tuple[int, int] | None] = []
     search_pos = 0
     for word in alignments:
@@ -172,15 +189,21 @@ def compute_word_spans(
         if idx == -1:
             spans.append(None)
             continue
+        start = idx
+        # Optionally extend start backward through leading whitespace,
+        # clamped at the previous word's span end.
+        if preserve_leading_whitespace:
+            while start > search_pos and transcript[start - 1].isspace():
+                start -= 1
         end = idx + len(word.text)
         # Include trailing punctuation (e.g., comma, period, quotes)
         while end < len(transcript) and not transcript[end].isalnum() and not transcript[end].isspace():
             end += 1
         # Optionally include trailing whitespace up to the next word
-        if preserve_whitespace:
+        if preserve_trailing_whitespace:
             while end < len(transcript) and transcript[end].isspace():
                 end += 1
-        spans.append((idx, end))
+        spans.append((start, end))
         search_pos = end
     return spans
 
@@ -266,7 +289,7 @@ def get_llm_messages_for_sample(
         return messages
 
     # Pre-compute word character spans if transcript is provided.
-    word_spans = compute_word_spans(alignments, transcript, preserve_whitespace=True) if transcript else None
+    word_spans = compute_word_spans(alignments, transcript, preserve_leading_whitespace=True) if transcript else None
 
     if chunk_size == 0:
         # Dynamic chunking: one user turn per word group, sized to word boundary.
@@ -676,15 +699,26 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         # special token, otherwise loss is dominated by multi-token blanks and
         # generation becomes unreliable.  The model's __init__ should have called
         # tokenizer.add_special_tokens() before passing the tokenizer here.
-        blank_ids = self.tokenizer.tokenizer.encode(self.cfg.blank_token, add_special_tokens=False)
-        logging.info(f"blank_token: {str(self.cfg.blank_token)}, blank_id: {blank_ids}")
-        if len(blank_ids) != 1:
-            raise ValueError(
-                f"blank_token '{self.cfg.blank_token}' tokenizes into {len(blank_ids)} tokens {blank_ids}. "
-                f"It must be a single special token. Make sure the model adds it via "
-                f"tokenizer.add_special_tokens() before constructing the dataset."
-            )
-        self.blank_id = blank_ids[0]
+        # An empty blank_token ("") disables the explicit blank: chunks without
+        # words get empty assistant turns, stop signal is <|im_end|> alone.
+        if self.cfg.blank_token == "":
+            if self.cfg.chunk_size == 0:
+                raise ValueError(
+                    "blank_token='' is not supported with dynamic chunking (chunk_size=0) — "
+                    "dynamic chunking requires a token to predict at non-final audio positions."
+                )
+            self.blank_id = -1
+            logging.info("blank_token is empty: blank token mechanism disabled (fixed chunking only)")
+        else:
+            blank_ids = self.tokenizer.tokenizer.encode(self.cfg.blank_token, add_special_tokens=False)
+            logging.info(f"blank_token: {str(self.cfg.blank_token)}, blank_id: {blank_ids}")
+            if len(blank_ids) != 1:
+                raise ValueError(
+                    f"blank_token '{self.cfg.blank_token}' tokenizes into {len(blank_ids)} tokens {blank_ids}. "
+                    f"It must be a single special token. Make sure the model adds it via "
+                    f"tokenizer.add_special_tokens() before constructing the dataset."
+                )
+            self.blank_id = blank_ids[0]
 
         # For dynamic chunking (chunk_size=0): cache the first token of the
         # user footer sequence (e.g. <|im_end|>).  This is the target the model

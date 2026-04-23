@@ -38,6 +38,7 @@ from nemo.collections.speechlm2.data.streaming_stt_dataset import (
     _replace_audio_chunks,
     _tokenize_with_assistant_mask,
     compute_word_spans,
+    decode_with_blank,
     get_llm_messages_for_batch,
     get_llm_messages_for_sample,
 )
@@ -450,40 +451,224 @@ class TestComputeWordSpans:
     def test_empty_alignments(self):
         assert compute_word_spans([], "hello world") == []
 
-    # --- preserve_whitespace ---
+    # --- preserve_trailing_whitespace ---
 
-    def test_preserve_whitespace_extends_to_next_word(self):
+    def test_preserve_trailing_whitespace_extends_to_next_word(self):
         alignments = [
             WordAlignment(text="hello", start_time=0.0, end_time=0.3),
             WordAlignment(text="world", start_time=0.4, end_time=0.6),
         ]
-        spans = compute_word_spans(alignments, "hello world", preserve_whitespace=True)
+        spans = compute_word_spans(alignments, "hello world", preserve_trailing_whitespace=True)
         # "hello " (includes trailing space), "world" (no trailing space at end)
         assert spans == [(0, 6), (6, 11)]
 
-    def test_preserve_whitespace_with_punctuation(self):
+    def test_preserve_trailing_whitespace_with_punctuation(self):
         alignments = [
             WordAlignment(text="hello", start_time=0.0, end_time=0.3),
             WordAlignment(text="world", start_time=0.4, end_time=0.6),
         ]
-        spans = compute_word_spans(alignments, "hello, world!", preserve_whitespace=True)
+        spans = compute_word_spans(alignments, "hello, world!", preserve_trailing_whitespace=True)
         # "hello, " (punct + space), "world!" (punct, no trailing space)
         assert spans == [(0, 7), (7, 13)]
 
-    def test_preserve_whitespace_multi_space(self):
+    def test_preserve_trailing_whitespace_multi_space(self):
         alignments = [
             WordAlignment(text="a", start_time=0.0, end_time=0.1),
             WordAlignment(text="b", start_time=0.2, end_time=0.3),
         ]
-        spans = compute_word_spans(alignments, "a   b", preserve_whitespace=True)
+        spans = compute_word_spans(alignments, "a   b", preserve_trailing_whitespace=True)
         # "a   " (3 spaces consumed), "b"
         assert spans == [(0, 4), (4, 5)]
 
-    def test_preserve_whitespace_last_word_no_trailing(self):
+    def test_preserve_trailing_whitespace_last_word_no_trailing(self):
         """Last word's span should not extend beyond the transcript."""
         alignments = [WordAlignment(text="end", start_time=0.0, end_time=0.3)]
-        spans = compute_word_spans(alignments, "the end", preserve_whitespace=True)
+        spans = compute_word_spans(alignments, "the end", preserve_trailing_whitespace=True)
         assert spans == [(4, 7)]  # no trailing space to consume
+
+    # --- preserve_leading_whitespace ---
+
+    def test_preserve_leading_whitespace_basic(self):
+        """First word gets no leading space; subsequent words own their leading space."""
+        alignments = [
+            WordAlignment(text="hello", start_time=0.0, end_time=0.3),
+            WordAlignment(text="world", start_time=0.4, end_time=0.6),
+        ]
+        spans = compute_word_spans(alignments, "hello world", preserve_leading_whitespace=True)
+        # "hello" (no leading space at idx=0), " world" (leading space included)
+        assert spans == [(0, 5), (5, 11)]
+
+    def test_preserve_leading_whitespace_with_punctuation(self):
+        """Leading whitespace extends back through spaces but stops at punctuation."""
+        alignments = [
+            WordAlignment(text="hello", start_time=0.0, end_time=0.3),
+            WordAlignment(text="world", start_time=0.4, end_time=0.6),
+        ]
+        spans = compute_word_spans(alignments, "hello, world!", preserve_leading_whitespace=True)
+        # "hello," (trailing punct), " world!" (leading space + trailing punct).
+        # Previous word's end=6 (after comma), so " " at idx=6 is consumed by "world".
+        assert spans == [(0, 6), (6, 13)]
+
+    def test_preserve_leading_whitespace_multi_space(self):
+        """Multiple spaces between words: all go to the following word."""
+        alignments = [
+            WordAlignment(text="a", start_time=0.0, end_time=0.1),
+            WordAlignment(text="b", start_time=0.2, end_time=0.3),
+        ]
+        spans = compute_word_spans(alignments, "a   b", preserve_leading_whitespace=True)
+        # "a" (no leading), "   b" (3 spaces)
+        assert spans == [(0, 1), (1, 5)]
+
+    def test_preserve_leading_whitespace_first_word_not_at_zero(self):
+        """If the first word isn't at position 0, leading spaces still go to it."""
+        alignments = [WordAlignment(text="end", start_time=0.0, end_time=0.3)]
+        spans = compute_word_spans(alignments, "  end", preserve_leading_whitespace=True)
+        # First word — search_pos=0, extends back to start → "  end"
+        assert spans == [(0, 5)]
+
+    def test_preserve_leading_whitespace_no_overlap_with_prev_span(self):
+        """Leading whitespace must not overlap with the previous word's span end."""
+        alignments = [
+            WordAlignment(text="a", start_time=0.0, end_time=0.1),
+            WordAlignment(text="b", start_time=0.2, end_time=0.3),
+            WordAlignment(text="c", start_time=0.4, end_time=0.5),
+        ]
+        spans = compute_word_spans(alignments, "a b c", preserve_leading_whitespace=True)
+        # "a" (0,1), " b" (1,3), " c" (3,5) — no overlap.
+        assert spans == [(0, 1), (1, 3), (3, 5)]
+
+    def test_preserve_leading_whitespace_concat_matches_full(self):
+        """Concatenating the span texts yields the full transcript (modulo leading chars)."""
+        alignments = [
+            WordAlignment(text="Hello", start_time=0.0, end_time=0.3),
+            WordAlignment(text="world", start_time=0.4, end_time=0.6),
+            WordAlignment(text="Nice", start_time=0.7, end_time=1.0),
+            WordAlignment(text="day", start_time=1.1, end_time=1.4),
+        ]
+        transcript = "Hello, world! Nice day."
+        spans = compute_word_spans(alignments, transcript, preserve_leading_whitespace=True)
+        # Each span "owns" its leading whitespace (if any).
+        assert spans == [(0, 6), (6, 13), (13, 18), (18, 23)]
+        pieces = [transcript[s:e] for s, e in spans]
+        assert pieces == ["Hello,", " world!", " Nice", " day."]
+        assert "".join(pieces) == transcript
+
+    def test_preserve_leading_and_trailing_whitespace_rejected(self):
+        """Using both leading and trailing whitespace modes simultaneously is rejected."""
+        alignments = [WordAlignment(text="hello", start_time=0.0, end_time=0.3)]
+        with pytest.raises(ValueError, match="cannot be True at the same time"):
+            compute_word_spans(
+                alignments,
+                "hello",
+                preserve_leading_whitespace=True,
+                preserve_trailing_whitespace=True,
+            )
+
+
+# ===========================================================================
+# Tests: decode_with_blank
+# ===========================================================================
+class TestDecodeWithBlank:
+    """Tests for decode_with_blank, covering both the standard blank path and
+    the empty-blank fallback (which splits on EOS instead)."""
+
+    @pytest.fixture
+    def qwen3_tok(self):
+        try:
+            from transformers import AutoTokenizer as HFAutoTokenizer
+
+            hf_tok = HFAutoTokenizer.from_pretrained("Qwen/Qwen3-1.7B")
+        except Exception:
+            pytest.skip("Qwen3 tokenizer not available")
+        if "<blank>" not in hf_tok.get_vocab():
+            hf_tok.add_special_tokens({"additional_special_tokens": ["<blank>"]})
+
+        class _Wrapper:
+            def __init__(self, hf):
+                self.tokenizer = hf
+
+            def ids_to_tokens(self, ids):
+                return self.tokenizer.convert_ids_to_tokens(ids)
+
+            def tokens_to_text(self, tokens, remove_special_tokens=True):
+                if remove_special_tokens:
+                    tokens = [t for t in tokens if t not in self.tokenizer.all_special_tokens]
+                return self.tokenizer.convert_tokens_to_string(tokens)
+
+        return _Wrapper(hf_tok)
+
+    # --- empty-blank path: split on EOS (<|im_end|>) ---
+
+    def test_empty_blank_splits_on_eos(self, qwen3_tok):
+        """Two per-chunk segments separated by EOS decode and join with a space."""
+        hf = qwen3_tok.tokenizer
+        eos_id = hf.eos_token_id
+        hello_ids = hf.encode("hello", add_special_tokens=False)
+        world_ids = hf.encode("world", add_special_tokens=False)
+        ids = hello_ids + [eos_id] + world_ids + [eos_id]
+
+        text = decode_with_blank(ids, blank_token="", tokenizer=qwen3_tok)
+        assert text == "hello world"
+
+    def test_empty_blank_no_eos_decodes_as_one_segment(self, qwen3_tok):
+        """Without EOS separators, BPE-merges ruin the output (documents current behavior)."""
+        hf = qwen3_tok.tokenizer
+        ids = hf.encode("hello", add_special_tokens=False) + hf.encode("world", add_special_tokens=False)
+
+        text = decode_with_blank(ids, blank_token="", tokenizer=qwen3_tok)
+        # Without a separator between chunks, tokens decode as one run.
+        assert text == "helloworld"
+
+    def test_empty_blank_preserves_inline_spaces(self, qwen3_tok):
+        """Leading-space tokens inside a chunk decode naturally (BPE keeps spacing)."""
+        hf = qwen3_tok.tokenizer
+        eos_id = hf.eos_token_id
+        # Multi-word chunk (leading-space BPE tokens) then a second single-word chunk.
+        multi_ids = hf.encode("hello world", add_special_tokens=False)
+        nice_ids = hf.encode(" nice", add_special_tokens=False)
+        ids = multi_ids + [eos_id] + nice_ids + [eos_id]
+
+        text = decode_with_blank(ids, blank_token="", tokenizer=qwen3_tok)
+        # collapse_whitespace=True (default) squashes the leading-space join to single spaces.
+        assert text == "hello world nice"
+
+    def test_empty_blank_single_chunk(self, qwen3_tok):
+        """A single trailing EOS still produces the correct text."""
+        hf = qwen3_tok.tokenizer
+        eos_id = hf.eos_token_id
+        ids = hf.encode("hello", add_special_tokens=False) + [eos_id]
+
+        text = decode_with_blank(ids, blank_token="", tokenizer=qwen3_tok)
+        assert text == "hello"
+
+    def test_empty_blank_no_content(self, qwen3_tok):
+        """Only EOS separators (silent chunks) → empty string."""
+        eos_id = qwen3_tok.tokenizer.eos_token_id
+        text = decode_with_blank([eos_id, eos_id], blank_token="", tokenizer=qwen3_tok)
+        assert text == ""
+
+    def test_empty_blank_strip_whitespace(self, qwen3_tok):
+        """strip_whitespace removes leading/trailing whitespace from the final output."""
+        hf = qwen3_tok.tokenizer
+        eos_id = hf.eos_token_id
+        # Leading-space BPE token at the very start of the sequence.
+        ids = hf.encode(" hello", add_special_tokens=False) + [eos_id]
+
+        text = decode_with_blank(ids, blank_token="", tokenizer=qwen3_tok, strip_whitespace=True)
+        assert text == "hello"
+
+    # --- standard blank path (sanity) ---
+
+    def test_explicit_blank_splits_on_blank_id(self, qwen3_tok):
+        """With an explicit <blank> token, decoding splits on its id (not EOS)."""
+        hf = qwen3_tok.tokenizer
+        blank_id = hf.convert_tokens_to_ids("<blank>")
+        hello_ids = hf.encode("hello", add_special_tokens=False)
+        world_ids = hf.encode("world", add_special_tokens=False)
+        ids = hello_ids + [blank_id] + world_ids + [blank_id]
+
+        text = decode_with_blank(ids, blank_token="<blank>", tokenizer=qwen3_tok)
+        assert text == "hello world"
 
 
 # ===========================================================================
@@ -531,9 +716,9 @@ class TestTranscriptPreservation:
             transcript="she said good night",
         )
         asst = [m["content"] for m in msgs if m["role"] == "assistant"]
-        # Trailing space is included because preserve_whitespace extends through
-        # whitespace after "good" (up to "night"), ensuring correct concatenation
-        # when turns are joined.
+        # Trailing space is included because preserve_trailing_whitespace extends
+        # through whitespace after "good" (up to "night"), ensuring correct
+        # concatenation when turns are joined.
         assert asst[0] == "said good "
 
     def test_without_transcript_falls_back(self):
@@ -577,7 +762,7 @@ class TestTranscriptPreservation:
         )
         asst = [m["content"] for m in msgs if m["role"] == "assistant"]
         # "yes" is ready at chunk 0 (end_frame=1 <= 2), alone in its chunk.
-        # Trailing space included via preserve_whitespace (space before "indeed").
+        # Trailing space included via preserve_trailing_whitespace (space before "indeed").
         assert asst[0] == "yes, "
 
     def test_blanks_unchanged_with_transcript(self):
@@ -1308,7 +1493,7 @@ class TestWordsPerChunk:
             words_per_group=2,
         )
         asst = [m["content"] for m in msgs if m["role"] == "assistant"]
-        assert asst[0] == "Hello, World! "  # preserve_whitespace includes trailing space
+        assert asst[0] == "Hello, World! "  # preserve_trailing_whitespace includes trailing space
         assert asst[1] == "How?"
 
 

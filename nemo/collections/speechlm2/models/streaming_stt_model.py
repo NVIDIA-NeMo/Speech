@@ -197,9 +197,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # Ensure <blank> token is in the vocabulary.
         # Unescape Python escape sequences (e.g. "\\n" → "\n") because Hydra/OmegaConf
         # loads YAML strings literally without interpreting backslash escapes.
+        # An empty blank_token ("") disables the blank mechanism entirely
+        # (fixed chunking only — see StreamingSTTDataset for the guard).
         self.blank_token = self.core_cfg.blank_token.encode().decode('unicode_escape')
 
-        if not token_in_vocab(self.blank_token, self.tokenizer):
+        if self.blank_token == "":
+            logging.info("blank_token is empty: blank mechanism disabled")
+        elif not token_in_vocab(self.blank_token, self.tokenizer):
             self.tokenizer.add_special_tokens({"additional_special_tokens": [self.blank_token]})
             self.llm.resize_token_embeddings(len(self.tokenizer.tokenizer))
             logging.info(f"Added blank token `{self.blank_token}` to tokenizer: {self.blank_token_id}")
@@ -321,7 +325,15 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
     @property
     def blank_token_id(self) -> int:
+        # Sentinel -1 when blank is disabled — guarantees `token == blank_token_id`
+        # never matches a real vocab id, so stop-on-blank checks naturally no-op.
+        if self.blank_token == "":
+            return -1
         return self.tokenizer.text_to_ids(self.blank_token)[0]
+
+    @property
+    def has_blank(self) -> bool:
+        return self.blank_token != ""
 
     # ------------------------------------------------------------------
     # Core: efficient audio-text embedding interleaving
@@ -448,6 +460,8 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # --- Blank vs non-blank loss breakdown ---
         blank_id = self.blank_token_id
         valid_mask = flat_targets != IGNORE_INDEX
+        # When blank is disabled (blank_id=-1), is_blank is always False →
+        # everything counts as non-blank, and blank_weight has no effect.
         is_blank = valid_mask & (flat_targets == blank_id)
         is_nonblank = valid_mask & (flat_targets != blank_id)
         num_blank = is_blank.sum()
@@ -455,7 +469,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         # Apply blank loss weight (< 1.0 to down-weight easy blank predictions)
         blank_weight = self.core_cfg.blank_loss_weight
-        if blank_weight != 1.0:
+        if blank_weight != 1.0 and self.has_blank:
             effective_num_targets = num_blank * blank_weight + num_nonblank
             loss = (
                 per_token_loss[is_nonblank].sum() + per_token_loss[is_blank].sum() * blank_weight
@@ -866,10 +880,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     continue
                 tid = next_tokens[b].item()
 
-                # EOS: stop WITHOUT feeding to LLM. Append blank separator.
+                # EOS: stop WITHOUT feeding to LLM. Append a chunk separator so
+                # decode_with_blank can join per-chunk outputs correctly.
                 if self._eos_id is not None and tid == self._eos_id:
                     finished[b] = True
-                    generated[b].append(self.blank_token_id)
+                    # Blank token when enabled, else EOS id itself (matches decode_with_blank).
+                    generated[b].append(self.blank_token_id if self.has_blank else self._eos_id)
                     continue
 
                 # All other tokens get appended and fed to LLM
@@ -898,10 +914,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             # Feed tokens to LLM. For finished streams, feed the blank token
             # (which the model was trained on) instead of a pad token, so the
             # KV cache stays clean — no foreign tokens that corrupt attention.
+            # When blank is disabled, feed text_pad_id as a fallback.
+            filler_id = self.blank_token_id if self.has_blank else self.text_pad_id
             tokens_to_feed = next_tokens.clone()
             for b in range(B):
                 if not feed_mask[b]:
-                    tokens_to_feed[b] = self.blank_token_id
+                    tokens_to_feed[b] = filler_id
 
             # All tokens are "real" (blank is a valid token), so all seq_lens grow
             if state is not None:
@@ -1433,8 +1451,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         max_steps = max_model_len - max(state.seq_lens)
 
         # Padding embedding for DONE streams and empty-buffer LISTENING streams.
-        # Use the blank token embedding (a real token the model knows).
-        pad_emb = self.embed_tokens(torch.tensor([self.blank_token_id], device=device)).squeeze(0)  # (H,)
+        # Use the blank token embedding when blank is enabled (a real token the
+        # model knows). Otherwise fall back to the text pad id.
+        pad_token_id = self.blank_token_id if self.has_blank else self.text_pad_id
+        pad_emb = self.embed_tokens(torch.tensor([pad_token_id], device=device)).squeeze(0)  # (H,)
 
         for _step in range(max_steps):
             # --- Refill audio embedding buffers for LISTENING streams ---
@@ -1520,6 +1540,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                         self.embed_tokens(torch.tensor([last_gen_token[b]], device=device)).squeeze(0)  # (H,)
                     )
                 elif stream_state[b] == BLANK_FEED:
+                    # Only reached when has_blank is True (guarded at transition sites).
                     embs_list.append(
                         self.embed_tokens(torch.tensor([self.blank_token_id], device=device)).squeeze(0)  # (H,)
                     )
@@ -1613,9 +1634,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             self._eos_id is not None and first_token == self._eos_id
                         ) or first_token == self.blank_token_id
                         if first_is_stop:
-                            # Immediately done generating — append blank separator
-                            all_tokens[b].append(self.blank_token_id)
-                            if fixed_chunk_mode:
+                            # Immediately done generating — append chunk separator
+                            # (blank when enabled, else EOS so decode_with_blank splits chunks)
+                            all_tokens[b].append(self.blank_token_id if self.has_blank else self._eos_id)
+                            if fixed_chunk_mode and self.has_blank:
                                 # Feed blank to LLM first (matches training sequence)
                                 stream_state[b] = BLANK_FEED
                             elif af_ids:
@@ -1649,12 +1671,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     is_blank = token == self.blank_token_id
                     is_max = gen_token_count[b] >= max_new_tokens
                     if is_eos or is_blank or is_max:
-                        # Always append blank as separator (decode_with_blank needs it)
-                        all_tokens[b].append(self.blank_token_id)
+                        # Append chunk separator (blank when enabled, else EOS).
+                        # decode_with_blank splits per-chunk outputs on this.
+                        all_tokens[b].append(self.blank_token_id if self.has_blank else self._eos_id)
                         # In fixed-chunk mode, blank must be fed to LLM before footer
                         # (training sequence: ...text <blank> <asst_footer>...).
                         # This applies for ALL stop conditions (EOS, blank, max).
-                        if fixed_chunk_mode:
+                        if fixed_chunk_mode and self.has_blank:
                             stream_state[b] = BLANK_FEED
                         elif af_ids:
                             stream_state[b] = ASST_FOOTER

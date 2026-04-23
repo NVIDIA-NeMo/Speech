@@ -298,8 +298,16 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 trainer._checkpoint_connector.restore(self.best_model_path)
 
         if self.save_nemo_on_train_end:
+            save_to = getattr(pl_module, "save_to", None)
+            if not callable(save_to):
+                logging.warning(
+                    f"{type(pl_module).__name__} does not implement save_to(); "
+                    "skipping automatic .nemo export at train end."
+                )
+                return
+
             backup_path = self._backup_existing_nemo_ckpt(trainer)
-            pl_module.save_to(save_path=self._format_nemo_checkpoint_name())
+            save_to(save_path=self._format_nemo_checkpoint_name())
             if backup_path is not None and is_global_rank_zero():
                 logging.info(f'Removing old .nemo backup {backup_path}')
                 get_filesystem(backup_path).rm(backup_path)

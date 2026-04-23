@@ -2,6 +2,7 @@ boto3
 Jinja2
 latexcodec
 numpy
+nvidia-sphinx-theme
 pydata-sphinx-theme
 Sphinx
 sphinx-book-theme

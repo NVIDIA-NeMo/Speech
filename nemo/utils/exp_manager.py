@@ -274,9 +274,6 @@ class ExpManagerConfig:
     # log step time with nemo logger instead of lightning logger to avoid lightning logger overhead
     log_delta_step_timing: Optional[bool] = False
     step_timing_kwargs: Optional[StepTimingParams] = field(default_factory=lambda: StepTimingParams())
-    # Configures creation of log files for different ranks
-    log_local_rank_0_only: Optional[bool] = False
-    log_global_rank_0_only: Optional[bool] = False
     # disable initial validation when resuming from a checkpoint saved during validation
     disable_validation_on_resume: Optional[bool] = True
     ema: Optional[EMAParams] = field(default_factory=lambda: EMAParams())
@@ -558,14 +555,6 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
             - create_fault_tolerance_callback (bool): Use fault tolerance callback. Default is False.
             - files_to_copy (list): A list of files to copy to the experiment logging directory.
                 Defaults to None which copies no files.
-            - log_local_rank_0_only (bool): Whether to only create log files for local rank 0.
-                Defaults to False.
-                Set this to True if you are using DDP with many GPUs and do not want many log files
-                in your exp dir.
-            - log_global_rank_0_only (bool): Whether to only create log files for global rank 0.
-                Defaults to False.
-                Set this to True if you are using DDP with many GPUs and do not want many log files
-                in your exp dir.
             - max_time (str): The maximum wall clock time *per run*. This is intended to be used on
                 clusters where you want a checkpoint to be saved after this specified time and be
                 able to resume from that checkpoint. Defaults to None.
@@ -659,25 +648,9 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
     logging.info(f'Experiments will be logged at {log_dir}')
     trainer._default_root_dir = log_dir
 
-    if cfg.log_local_rank_0_only is True and cfg.log_global_rank_0_only is True:
-        raise ValueError(
-            "Cannot set both log_local_rank_0_only and log_global_rank_0_only to True."
-            "Please set either one or neither."
-        )
-
-    # This is set if the env var NEMO_TESTING is set to True.
-    nemo_testing = get_envbool(NEMO_ENV_VARNAME_TESTING, False)
-
-    # Handle logging to file
-    log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
-    if cfg.log_local_rank_0_only is True and not nemo_testing:
-        if local_rank == 0:
-            logging.add_file_handler(log_file)
-    elif cfg.log_global_rank_0_only is True and not nemo_testing:
-        if global_rank == 0:
-            logging.add_file_handler(log_file)
-    else:
-        # Logs on all ranks.
+    # Only log on all ranks when NEMO_TESTING is True
+    if get_envbool(NEMO_ENV_VARNAME_TESTING, False):
+        log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
         logging.add_file_handler(log_file)
 
     # For some reason, LearningRateLogger requires trainer to have a logger. Safer to create logger on all ranks

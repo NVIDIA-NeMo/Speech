@@ -243,7 +243,6 @@ class ContinuousBatchedRequestStreamer:
         device: torch.device = None,
         pad_last_frame: bool = False,
         right_pad_features: bool = False,
-        tail_padding_in_samples: int = 0,
     ):
         """
         Args:
@@ -257,7 +256,6 @@ class ContinuousBatchedRequestStreamer:
             device (torch.device): The device to use, required for request type FEATURE_BUFFER
             pad_last_frame (bool): Whether to pad the last frame
             right_pad_features (bool): Whether to right pad the features, optional for request type FEATURE_BUFFER
-            tail_padding_in_samples (int): The tail padding in samples, optional for request type FEATURE_BUFFER
         """
 
         if request_type is RequestType.FEATURE_BUFFER:
@@ -284,7 +282,6 @@ class ContinuousBatchedRequestStreamer:
                 sample_rate=sample_rate, buffer_size_in_secs=buffer_size_in_secs
             )
             self.right_pad_features = right_pad_features
-            self.tail_padding_in_samples = tail_padding_in_samples
 
     def set_audio_filepaths(self, audio_filepaths: list[str], options: list[RequestOptions]) -> None:
         """
@@ -351,11 +348,9 @@ class ContinuousBatchedRequestStreamer:
         buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
 
         # Calculate right paddings and subtract from buffer lens
-        # tail_padding_in_samples is used to keep some amount of padding at the end of the buffer
-        # some models perform better with this padding
-        right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
-        ).clamp(min=0)
+        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
+            min=0
+        )
 
         # Subtract right paddings from buffer lens
         buffer_lens = buffer_lens - right_paddings

@@ -31,7 +31,7 @@ NVIDIA NeMo Speech Developer Docs
      </a>
      <a class="task-card" href="speechlm2/intro.html">
        <h3>🧠 Speech Language Models</h3>
-       <p>Audio-aware LLMs that understand and generate speech. Speech-to-text, speech-to-speech, and more.</p>
+       <p>Audio-aware LLMs that understand and generate speech. Use HuggingFace Transformers, or NeMo Automodel for efficient MoE and model parallelism. Speech-to-text, speech-to-speech, and more.</p>
        <strong>Quick Start →</strong>
      </a>
      <a class="task-card" href="audio/intro.html">

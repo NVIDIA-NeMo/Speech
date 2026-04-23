@@ -198,3 +198,4 @@ exp_manager:
      every_n_epochs: 1
      save_top_k: 1
      always_save_nemo: false
+     save_nemo_on_train_end: false

@@ -92,6 +92,13 @@ class PreemptionCallback(Callback):
             interrupted = self.interrupted
             if interrupted:
                 logging.info("Received SIGTERM, saving checkpoint and exiting")
+                # Same off-by-one as in StatelessTimer: on_train_batch_end fires before
+                # batch_progress.increment_completed(), but the batch's optim step has
+                # already advanced global_step. Flush the in-flight batch so resume
+                # doesn't replay it and double-count the optim step.
+                from nemo.utils.exp_manager import _flush_in_flight_batch_progress
+
+                _flush_in_flight_batch_progress(trainer)
                 monitor_candidates = self.checkpoint_callback._monitor_candidates(trainer)
                 self.checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
                 sys.exit(0)

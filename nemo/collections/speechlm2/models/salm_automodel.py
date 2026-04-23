@@ -13,9 +13,10 @@
 # limitations under the License.
 import warnings
 from collections import defaultdict
-from typing import Any
+from typing import Any, Callable
 
 import torch
+import torch.distributed as dist
 from lightning import LightningModule
 from omegaconf import DictConfig
 from torch import Tensor
@@ -38,6 +39,11 @@ from nemo.collections.speechlm2.parts.pretrained import (
     update_perception_output_dim,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
+
+try:
+    from nemo_automodel.components.moe.layers import MoE as _AutomodelMoE
+except ImportError:
+    _AutomodelMoE = None
 
 
 class SALMAutomodel(LightningModule, HFHubMixin):
@@ -223,6 +229,34 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "target_ids": target_ids,
         }
 
+    def on_fit_start(self) -> None:
+        """Warm the distributed forward path before the sanity-check validation.
+
+        Controlled by ``cfg.distributed_warmup_barriers`` (0 = disabled).
+        """
+        self._warmup_barriers_remaining = int(self.cfg.get("distributed_warmup_barriers", 0))
+        if self._warmup_barriers_remaining <= 0:
+            return
+        if self.llm is None:
+            return
+        param = next(self.llm.parameters(), None)
+        if param is None:
+            return
+        warmup_distributed_forward(
+            self,
+            hidden_size=self.llm.config.hidden_size,
+            dtype=param.dtype,
+            device=self.device,
+        )
+
+    def _maybe_warmup_barrier(self) -> None:
+        """Pre-step WORLD barrier for the first N batches (see ``warmup_distributed_forward``)."""
+        remaining = getattr(self, "_warmup_barriers_remaining", 0)
+        if remaining <= 0:
+            return
+        maybe_barrier()
+        self._warmup_barriers_remaining = remaining - 1
+
     def training_step(self, batch: dict, batch_idx: int):
         self._current_batch_idx = batch_idx
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
@@ -230,6 +264,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
+        self._maybe_warmup_barrier()
         forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
         num_frames = (inputs["target_ids"] != -100).long().sum()
         with loss_parallel():
@@ -285,8 +320,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
     def validation_step(self, batch: dict, batch_idx: int):
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
-                continue  # some dataset is exhausted
+                # Keep all ranks in sync even when a dataset is exhausted; without
+                # this, ranks with data run the MoE forward while ranks without it
+                # don't, causing DeepEP dispatch-side timeouts.
+                if getattr(self, '_warmup_barriers_remaining', 0) > 0:
+                    dist.barrier()
+                continue
             inputs = self.prepare_inputs(dataset_batch)
+            self._maybe_warmup_barrier()
             forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
             num_frames = (inputs["target_ids"] != -100).long().sum()
             with loss_parallel():
@@ -746,3 +787,75 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],
         }
+
+
+def maybe_barrier() -> None:
+    """Issue a WORLD-group ``dist.barrier()`` if torch.distributed is initialized; no-op otherwise."""
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+
+def warmup_distributed_forward(
+    forward_fn: Callable,
+    *,
+    hidden_size: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    seq_len: int = 512,
+) -> None:
+    """Warm the distributed forward path with a dummy forward between barriers.
+
+    DeepEP has a hardcoded 100s in-kernel barrier timeout (calls ``trap()`` on
+    expiry → unrecoverable CUDA launch failure). Launch-time skew from
+    first-iteration FSDP2 all-gather, kernel autotune, or DeepEP Buffer
+    construction can exceed that budget and kill an otherwise-healthy run.
+    Running a dummy forward here under ``dist.barrier()`` migrates that
+    one-time work to NCCL's (tunable, generous) watchdog regime.
+
+    Pairs with per-step ``maybe_barrier()`` calls that absorb per-batch rank
+    skew (dataloader jitter, cross-node NCCL straggler on FSDP2 all-gather)
+    under NCCL's watchdog so it doesn't leak into DeepEP's 100s in-kernel spin.
+
+    ``forward_fn`` is called as ``forward_fn(input_embeds, attention_mask=mask)``.
+    No-op when torch.distributed isn't initialized.
+
+    Two sources of per-rank skew are mitigated here:
+
+    1. Gate degeneracy: ``torch.zeros`` input causes top-K tie-breaking to route
+       all tokens to the lowest-index experts (rank 0's shard in EP), making rank 0
+       do full grouped-GEMM while ranks 5-7 do nothing. Using ``randn * 0.02`` and
+       a larger ``seq_len`` distributes tokens more evenly across EP ranks.
+
+    2. Skew accumulation across layers: even with balanced routing, per-layer skew
+       from FSDP first all-gather or JIT compile can accumulate across 30+ MoE
+       layers and exceed the 100 s per-collective budget. Forward hooks on each MoE
+       layer insert ``torch.cuda.synchronize() + dist.barrier()`` to cap the
+       per-dispatch wait at one layer's execution time.
+    """
+    if not (dist.is_available() and dist.is_initialized()):
+        return
+    dummy_embeds = torch.randn(1, seq_len, hidden_size, device=device, dtype=dtype) * 0.02
+    dummy_mask = torch.ones(1, seq_len, device=device, dtype=torch.long)
+
+    # Install per-MoE-layer sync barriers to prevent skew from accumulating.
+    # Hooks are removed in the finally block — zero overhead during training.
+    hooks = []
+    llm = getattr(forward_fn, 'llm', None)
+    if llm is not None and _AutomodelMoE is not None:
+
+        def _sync_barrier(m, inp, out):
+            torch.cuda.synchronize()
+            dist.barrier()
+
+        for module in llm.modules():
+            if isinstance(module, _AutomodelMoE):
+                hooks.append(module.register_forward_hook(_sync_barrier))
+
+    try:
+        dist.barrier()
+        with torch.no_grad():
+            forward_fn(dummy_embeds, attention_mask=dummy_mask)
+        dist.barrier()
+    finally:
+        for h in hooks:
+            h.remove()

@@ -50,6 +50,14 @@ model:
   # Default false — pretrained routing is kept frozen.
   train_gate: false
 
+  # Mitigate DeepEP's hardcoded 100s in-kernel barrier timeout. When > 0, runs a
+  # tiny dummy forward under dist.barrier() at fit start, and issues a WORLD
+  # barrier before the first N training/validation steps, to absorb
+  # first-iteration rank skew under NCCL's (tunable) watchdog. Disabled by
+  # default — only enable on MoE runs that hit DeepEP timeouts.
+  # Useful on clusters where some nodes are much slower for any reason.
+  distributed_warmup_barriers: 0  # 0 = disabled; typical value when enabled: 10
+
   # MoE expert balance/utilization metrics logging.
   moe_metrics:
     enabled: true

@@ -15,8 +15,7 @@
 # limitations under the License.
 
 # base image: official PyTorch image
-ARG BASE_IMAGE=pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
-# NB: automodel requires torch<=2.10.0, cannot use 2.11.0 for now
+ARG BASE_IMAGE=pytorch/pytorch:2.11.0-cuda13.0-cudnn9-devel
 
 # check imports: if flag is false, ignore result
 ARG REQUIRE_CHECK_IMPORTS=true
@@ -31,7 +30,6 @@ ENV UV_BREAK_SYSTEM_PACKAGES=true
 
 # Ensure apt-get won't prompt for selecting options
 ENV DEBIAN_FRONTEND=noninteractive
-# libavdevice-dev required for latest torchaudio
 RUN apt-get update && \
   apt-get install -y \
   git \
@@ -39,30 +37,8 @@ RUN apt-get update && \
   libfreetype6 \
   libsox-fmt-all \
   swig \
-  ffmpeg \
-  libavdevice-dev && \
+  ffmpeg && \
   rm -rf /var/lib/apt/lists/*
-
-# libtool, ... , libgts-dev are required for graphviz
-# graphviz is required for k2 and pynini visualization
-RUN apt-get update && \
-  apt-get install -y \
-  libtool \
-  libltdl-dev \
-  automake \
-  autoconf \
-  bison \
-  flex \
-  tcl \
-  ghostscript \
-  libgd-dev \
-  fontconfig \
-  libcairo2-dev \
-  libpango1.0-dev \
-  libgts-dev && \
-  rm -rf /var/lib/apt/lists/*
-
-WORKDIR /tmp/
 
 # copy nemo source into a scratch image
 FROM scratch as nemo-src
@@ -70,7 +46,6 @@ COPY . .
 
 # start building the final container
 FROM nemo-deps as nemo
-ARG NEMO_VERSION=2.0.0
 
 RUN uv pip install cmake aistore --system
 # Install NeMo
@@ -79,11 +54,7 @@ RUN --mount=from=nemo-src,target=/tmp/nemo,rw cd /tmp/nemo && uv pip freeze | gr
   uv pip install ".[all,cu13]" -c constraints.txt --system
 
 # Check install
-# NB: adjusting LD_LIBRARY_PATH (only here, should not be persistent!) is a temporary hack
-# to avoid failure if CUDA is unavailable (`docker build` does not expose GPUs)
-# The error is raised in NeMo Core, and the main reason is reinstalled Transformer-Engine;
-RUN CHECK_MSG=$(export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${CUDA_HOME}/compat/lib.real && \
-  python -c "import nemo.collections.asr as nemo_asr" && \
+RUN CHECK_MSG=$(python -c "import nemo.collections.asr as nemo_asr" && \
   python -c "import nemo.collections.audio as nemo_audio" && \
   python -c "import nemo.collections.speechlm2 as nemo_speechlm2" && \
   python -c "import nemo.collections.tts as nemo_tts" && \
@@ -103,8 +74,3 @@ COPY scripts /workspace/nemo/scripts
 COPY examples /workspace/nemo/examples
 COPY tests /workspace/nemo/tests
 COPY tutorials /workspace/nemo/tutorials
-# COPY README.rst LICENSE /workspace/nemo/
-
-# Fix for Megatron: set a permanent location inside the container (NOT /tmp, which might get wiped)
-ENV TORCH_EXTENSIONS_DIR="/opt/pytorch_extensions"
-RUN mkdir -p $TORCH_EXTENSIONS_DIR && chmod 777 $TORCH_EXTENSIONS_DIR

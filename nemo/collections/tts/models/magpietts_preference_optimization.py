@@ -958,8 +958,7 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
 
                 if self.loss_type == "grpo":
                     codebook_loss = (
-                        (per_token_loss * policy_codebook_loss_mask).sum(dim=1)
-                        / policy_codebook_loss_mask.sum(dim=1)
+                        (per_token_loss * policy_codebook_loss_mask).sum(dim=1) / policy_codebook_loss_mask.sum(dim=1)
                     ).mean()
                 elif self.loss_type == "dr_grpo":
                     # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py

@@ -43,6 +43,19 @@ from nemo.utils import logging
 from nemo.utils.data_utils import is_datastore_path
 
 
+class LhotseLazyJsonlIterator(LazyJsonlIterator):
+    def __init__(self, path: str | Path | list[str]):
+        super().__init__(path)
+
+    def __iter__(self):
+        for line in super().__iter__():
+            try:
+                yield line
+            except Exception as e:
+                logging.error(f"Error decoding JSON line `{line}` in file `{self.path}`: {e}")
+                raise e
+
+
 class LazyNeMoIterator:
     """
     ``LazyNeMoIterator`` reads a NeMo (non-tarred) JSON manifest and converts it on the fly to an ``Iterable[Cut]``.
@@ -103,10 +116,10 @@ class LazyNeMoIterator:
         paths = expand_sharded_filepaths(path)
 
         if len(paths) == 1:
-            self.source = LazyJsonlIterator(paths[0])
+            self.source = LhotseLazyJsonlIterator(paths[0])
         else:
             self.source = LazyIteratorChain(
-                *(LazyJsonlIterator(p) for p in paths), shuffle_iters=self.shuffle_shards, seed=self.shard_seed
+                *(LhotseLazyJsonlIterator(p) for p in paths), shuffle_iters=self.shuffle_shards, seed=self.shard_seed
             )
         self.text_field = text_field
         self.lang_field = lang_field

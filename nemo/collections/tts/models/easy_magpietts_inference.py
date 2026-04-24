@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import time
 import random
+import time
 from dataclasses import dataclass, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -873,7 +873,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         )
         context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
         batch_size = context_audio_embedded.size(0)
-        
+
         if self.use_speaker_encoder:
             if (
                 self.training

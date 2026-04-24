@@ -428,7 +428,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 # Use IPA text for IPABPETokenizer (required), otherwise use regular text_str
                 if isinstance(self.phoneme_tokenizer, IPABPETokenizer):
                     if not cut.supervisions[0].has_custom("ipa"):
-                        if self.dataset_type == 'train':
+                        if (self.dataset_type == 'train') and (language not in self.ignore_phoneme_languages):
                             raise ValueError(
                                 f"IPABPETokenizer requires 'ipa' field but it is not available in the cut. "
                                 f"Cut ID: {cut.id}, Text: {text_str}"

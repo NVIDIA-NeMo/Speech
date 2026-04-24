@@ -34,9 +34,8 @@ As of now, we only support English input and output, but more languages will be 
 
 
 ## 💡 Upcoming Next
-- Better tool calling support for LLMs.
-- Better inference latency for Magpie TTS model.
 - Evaluation tools and benchmarks for voice agents.
+- Better inference latency for Magpie TTS model.
 - Accuracy and robustness ASR model improvements.
 - Combine ASR and speaker diarization model to handle overlapping speech.
 

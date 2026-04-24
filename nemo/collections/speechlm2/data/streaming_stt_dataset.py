@@ -84,6 +84,8 @@ class StreamingSTTDataConfig:
     system_role: str = "system"
     system_prompt: str = "Transcribe the audio into text."
     prompt_field: str = "system_prompt"
+    compact_template: bool = False
+    write_token: str = "<|im_start|>"
 
 
 def decode_with_blank(
@@ -539,6 +541,102 @@ def parse_chat_template_ids(hf_tok, last_turn: bool = False) -> tuple[list[int],
     return user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids
 
 
+def build_compact_turn_markers(hf_tok, write_token: str) -> tuple[list[int], list[int], list[int]]:
+    """Return the compact-format analogue of ``parse_chat_template_ids``.
+
+    Compact format drops the user/assistant role delimiters: turns look like
+    ``<audio>*N <write_token> TEXT <eos>`` with no header before audio and only
+    the ``write_token`` marking the audio→text transition.  The turn-end is
+    the tokenizer's native EOS.
+
+    ``write_token`` should be an existing vocab token the LLM saw pretraining
+    as a turn-boundary marker (e.g. ``"<|im_start|>"`` for Qwen3,
+    ``"<start_of_turn>"`` for Gemma).
+    """
+    write_ids = hf_tok.encode(write_token, add_special_tokens=False)
+    if len(write_ids) != 1:
+        raise ValueError(
+            f"write_token {write_token!r} must encode to exactly 1 token, got {write_ids}. "
+            f"Pick a tokenizer-native turn-boundary token or override via config."
+        )
+    eos_id = getattr(hf_tok, "eos_token_id", None)
+    if eos_id is None:
+        raise ValueError("tokenizer.eos_token_id is required for compact_template=True")
+    return [], [write_ids[0]], [eos_id]
+
+
+def _tokenize_compact_with_assistant_mask(
+    messages: List[dict],
+    tokenizer: AutoTokenizer,
+    write_id: int,
+    eos_id: int,
+) -> tuple[list[int], list[int]]:
+    """Tokenize chat messages in compact format and return (input_ids, assistant_mask).
+
+    Compact per-turn layout (no role wrapping between audio and text):
+        [system_wrapped] [user_content, <write>, asst_content, <eos>]*K
+
+    The system prompt IS still wrapped via ``apply_chat_template`` (Qwen3 system
+    block), only the per-turn scaffolding is compacted.  Loss is applied on
+    ``<write>``, assistant content, and ``<eos>`` — mirroring the HF path where
+    the ``<|im_end|>\\n`` footer is trainable.
+    """
+    hf_tok = tokenizer.tokenizer
+
+    input_ids: list[int] = []
+    assistant_mask: list[int] = []
+
+    # --- System section: keep Qwen3-style wrapping ---
+    system_msgs = [m for m in messages if m["role"] == "system"]
+    if system_msgs:
+        system_ids = hf_tok.apply_chat_template(
+            system_msgs,
+            tokenize=True,
+            add_generation_prompt=False,
+            enable_thinking=False,
+        )
+        input_ids.extend(list(system_ids))
+        assistant_mask.extend([0] * len(system_ids))
+
+    # --- Per-turn compact encoding ---
+    turn_msgs = [m for m in messages if m["role"] != "system"]
+    # Pairs: (user, assistant). The final turn may be user-only (trailing silence).
+    i = 0
+    while i < len(turn_msgs):
+        msg = turn_msgs[i]
+        if msg["role"] == "user":
+            user_ids = hf_tok.encode(msg["content"], add_special_tokens=False) if msg["content"] else []
+            input_ids.extend(user_ids)
+            assistant_mask.extend([0] * len(user_ids))
+            i += 1
+            # Pair with following assistant turn if present.
+            if i < len(turn_msgs) and turn_msgs[i]["role"] == "assistant":
+                asst = turn_msgs[i]
+                asst_ids = hf_tok.encode(asst["content"], add_special_tokens=False) if asst["content"] else []
+                # write_id
+                input_ids.append(write_id)
+                assistant_mask.append(1)
+                # assistant content
+                input_ids.extend(asst_ids)
+                assistant_mask.extend([1] * len(asst_ids))
+                # eos
+                input_ids.append(eos_id)
+                assistant_mask.append(1)
+                i += 1
+        else:
+            # Orphan assistant (shouldn't normally occur) — treat as standalone asst segment.
+            asst_ids = hf_tok.encode(msg["content"], add_special_tokens=False) if msg["content"] else []
+            input_ids.append(write_id)
+            assistant_mask.append(1)
+            input_ids.extend(asst_ids)
+            assistant_mask.extend([1] * len(asst_ids))
+            input_ids.append(eos_id)
+            assistant_mask.append(1)
+            i += 1
+
+    return input_ids, assistant_mask
+
+
 def _tokenize_with_assistant_mask(
     messages: List[dict],
     tokenizer: AutoTokenizer,
@@ -720,13 +818,32 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 )
             self.blank_id = blank_ids[0]
 
+        # Compact template: cache write_id and eos_id. Skip the parse_chat_template_ids
+        # call since we derive the markers directly from config.
+        if self.cfg.compact_template:
+            hf_tok = self.tokenizer.tokenizer
+            _, ufah_ids, af_ids = build_compact_turn_markers(hf_tok, self.cfg.write_token)
+            self._write_id = ufah_ids[0]
+            self._compact_eos_id = af_ids[0]
+            logging.info(
+                f"compact_template enabled: write_token={self.cfg.write_token!r} "
+                f"(id={self._write_id}), eos_id={self._compact_eos_id}"
+            )
+        else:
+            self._write_id = None
+            self._compact_eos_id = None
+
         # For dynamic chunking (chunk_size=0): cache the first token of the
         # user footer sequence (e.g. <|im_end|>).  This is the target the model
         # predicts at the last audio frame of each chunk to signal "ready to transcribe".
         if self.cfg.chunk_size == 0:
-            hf_tok = self.tokenizer.tokenizer
-            _, user_footer_and_asst_header_ids, _ = parse_chat_template_ids(hf_tok)
-            self._user_footer_first_id = user_footer_and_asst_header_ids[0]
+            if self.cfg.compact_template:
+                # Compact: boundary target is write_id (<|im_start|> in Qwen3).
+                self._user_footer_first_id = self._write_id
+            else:
+                hf_tok = self.tokenizer.tokenizer
+                _, user_footer_and_asst_header_ids, _ = parse_chat_template_ids(hf_tok)
+                self._user_footer_first_id = user_footer_and_asst_header_ids[0]
         else:
             self._user_footer_first_id = None
 
@@ -785,7 +902,12 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
 
         for sample_idx, messages in enumerate(batch_messages):
             # Tokenize and compute assistant content mask.
-            input_ids, assistant_mask = _tokenize_with_assistant_mask(messages, self.tokenizer)
+            if self.cfg.compact_template:
+                input_ids, assistant_mask = _tokenize_compact_with_assistant_mask(
+                    messages, self.tokenizer, self._write_id, self._compact_eos_id
+                )
+            else:
+                input_ids, assistant_mask = _tokenize_with_assistant_mask(messages, self.tokenizer)
 
             # Replace each audio chunk token sequence with chunk_size AUDIO_TOKEN_IDX markers.
             # We match the full chunk (audio_tag * chunk_size) as a unit because BPE

@@ -36,6 +36,7 @@ from nemo.collections.speechlm2.data.streaming_stt_dataset import (
     IGNORE_INDEX,
     StreamingSTTBatch,
     StreamingSTTDataset,
+    build_compact_turn_markers,
     decode_with_blank,
     parse_chat_template_ids,
 )
@@ -144,6 +145,8 @@ class StreamingSTTModelConfig:
     blank_loss_weight: float = 1.0
     log_every_n_steps: int = 10
     dtype: str = "bfloat16"
+    compact_template: bool = False
+    write_token: str = "<|im_start|>"
 
 
 @dataclass
@@ -209,6 +212,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             logging.info(f"Added blank token `{self.blank_token}` to tokenizer: {self.blank_token_id}")
         else:
             logging.info(f"Blank token `{str(self.blank_token)}` already in tokenizer: {self.blank_token_id}")
+
+        # Compact-template write_token: only register if missing (default <|im_start|>
+        # is already in Qwen3's vocab → uses pretrained embedding).
+        if self.core_cfg.compact_template:
+            wt = self.core_cfg.write_token
+            if not token_in_vocab(wt, self.tokenizer):
+                self.tokenizer.add_special_tokens({"additional_special_tokens": [wt]})
+                self.llm.resize_token_embeddings(len(self.tokenizer.tokenizer))
+                logging.info(f"compact_template: added write_token `{wt}` to tokenizer (random init)")
+            else:
+                logging.info(f"compact_template: using existing vocab token `{wt}` as write_token")
 
         # Separate embedding layer to avoid FSDP/TP conflicts (same pattern as SALM)
         self.embed_tokens = self.llm.model.embed_tokens
@@ -670,9 +684,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         chunk_size = self.core_cfg.chunk_size
 
         # --- Build turn template ---
-        user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids = parse_chat_template_ids(
-            hf_tok, last_turn=(chunk_size < 0)
-        )
+        if self.core_cfg.compact_template:
+            user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids = build_compact_turn_markers(
+                hf_tok, self.core_cfg.write_token
+            )
+            logging.info(
+                f"compact_template: user_header={user_header_ids}, "
+                f"write+mid={user_footer_and_asst_header_ids}, footer={asst_footer_ids}"
+            )
+        else:
+            user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids = parse_chat_template_ids(
+                hf_tok, last_turn=(chunk_size < 0)
+            )
         self._user_header_ids = user_header_ids
         self._user_footer_and_asst_header_ids = user_footer_and_asst_header_ids
         self._asst_footer_ids = asst_footer_ids
@@ -1425,7 +1448,9 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         # --- Per-stream state machine ---
         HEADER, LISTENING, FOOTER, GENERATING, BLANK_FEED, ASST_FOOTER, DONE = range(7)
-        stream_state = [HEADER] * B
+        # When user_header_ids is empty (compact template), skip HEADER entirely.
+        _initial_state = LISTENING if not self._user_header_ids else HEADER
+        stream_state = [_initial_state] * B
         template_pos = [0] * B  # position within current template seq
         audio_sample_idx = [0] * B  # next audio sample offset for perception
         gen_token_count = [0] * B  # tokens generated in current GENERATING phase
@@ -1651,7 +1676,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                     audio_emb_buf,
                                     audio_sample_idx,
                                     n_samples_list,
-                                    HEADER,
+                                    _initial_state,
                                     DONE,
                                 )
                         else:
@@ -1690,7 +1715,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                 audio_emb_buf,
                                 audio_sample_idx,
                                 n_samples_list,
-                                HEADER,
+                                _initial_state,
                                 DONE,
                             )
                     else:
@@ -1711,7 +1736,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             audio_emb_buf,
                             audio_sample_idx,
                             n_samples_list,
-                            HEADER,
+                            _initial_state,
                             DONE,
                         )
 
@@ -1725,7 +1750,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             audio_emb_buf,
                             audio_sample_idx,
                             n_samples_list,
-                            HEADER,
+                            _initial_state,
                             DONE,
                         )
 
@@ -1747,13 +1772,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         audio_emb_buf,
         audio_sample_idx,
         n_samples_list,
-        HEADER,
+        next_listen_state,
         DONE,
     ):
-        """Transition stream b from GENERATING to HEADER or DONE."""
+        """Transition stream b from GENERATING to next_listen_state (HEADER or LISTENING) or DONE.
+
+        ``next_listen_state`` is HEADER when user_header_ids is non-empty, or LISTENING
+        when user_header_ids is empty (compact template) — the HEADER state is skipped
+        since there are no header tokens to feed.
+        """
         has_more_audio = bool(audio_emb_buf[b]) or audio_sample_idx[b] < n_samples_list[b]
         if has_more_audio:
-            stream_state[b] = HEADER
+            stream_state[b] = next_listen_state
             template_pos[b] = 0
         else:
             stream_state[b] = DONE

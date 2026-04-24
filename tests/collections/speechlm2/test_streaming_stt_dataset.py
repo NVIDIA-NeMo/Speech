@@ -36,7 +36,9 @@ from nemo.collections.speechlm2.data.streaming_stt_dataset import (
     AUDIO_TOKEN_IDX,
     IGNORE_INDEX,
     _replace_audio_chunks,
+    _tokenize_compact_with_assistant_mask,
     _tokenize_with_assistant_mask,
+    build_compact_turn_markers,
     compute_word_spans,
     decode_with_blank,
     get_llm_messages_for_batch,
@@ -716,10 +718,9 @@ class TestTranscriptPreservation:
             transcript="she said good night",
         )
         asst = [m["content"] for m in msgs if m["role"] == "assistant"]
-        # Trailing space is included because preserve_trailing_whitespace extends
-        # through whitespace after "good" (up to "night"), ensuring correct
-        # concatenation when turns are joined.
-        assert asst[0] == "said good "
+        # Trailing space is excluded because preserve_leading_whitespace=True
+        #  ensures correct concatenation when turns are joined.
+        assert asst[0] == "said good"
 
     def test_without_transcript_falls_back(self):
         """Without transcript, words are joined with plain space."""
@@ -762,8 +763,8 @@ class TestTranscriptPreservation:
         )
         asst = [m["content"] for m in msgs if m["role"] == "assistant"]
         # "yes" is ready at chunk 0 (end_frame=1 <= 2), alone in its chunk.
-        # Trailing space included via preserve_trailing_whitespace (space before "indeed").
-        assert asst[0] == "yes, "
+        # Trailing space excluded via preserve_leading_whitespace (space before "indeed").
+        assert asst[0] == "yes,"
 
     def test_blanks_unchanged_with_transcript(self):
         """Blank chunks still produce <blank> even when transcript is provided."""
@@ -1805,3 +1806,194 @@ class TestTokenizeWithAssistantMaskRealTokenizers:
         assert any("blank" in t.lower() for t in trained), f"[{label}] '<blank>' not in trained: {trained}"
         assert any("hello" in t.lower() for t in trained), f"[{label}] 'hello' not in trained: {trained}"
         assert any("world" in t.lower() for t in trained), f"[{label}] 'world' not in trained: {trained}"
+
+
+# ===========================================================================
+# Tests: compact chat template
+# ===========================================================================
+class TestCompactTemplate:
+    """Tests for the compact chat template feature (Qwen3 tokenizer).
+
+    Compact mode drops per-turn role wrapping, yielding
+    ``[system_wrapped] <audio>*N <write> text <eos> <audio>*N <write> text <eos>``.
+    """
+
+    @pytest.fixture
+    def qwen3_hf(self):
+        try:
+            from transformers import AutoTokenizer as HFAutoTokenizer
+
+            return HFAutoTokenizer.from_pretrained("Qwen/Qwen3-1.7B")
+        except Exception:
+            pytest.skip("Qwen3 tokenizer not available")
+
+    @pytest.fixture
+    def qwen3_tok(self, qwen3_hf):
+        class _Wrapper:
+            def __init__(self, hf):
+                self.tokenizer = hf
+
+        return _Wrapper(qwen3_hf)
+
+    def test_build_compact_turn_markers_qwen3(self, qwen3_hf):
+        """Default <|im_start|> → 1-token header; <|im_end|> → 1-token footer."""
+        uh, ufah, af = build_compact_turn_markers(qwen3_hf, "<|im_start|>")
+        assert uh == []
+        im_start_id = qwen3_hf.convert_tokens_to_ids("<|im_start|>")
+        im_end_id = qwen3_hf.eos_token_id
+        assert ufah == [im_start_id]
+        assert af == [im_end_id]
+
+    def test_build_compact_turn_markers_multi_token_raises(self, qwen3_hf):
+        """A write_token that tokenizes to >1 piece should fail loudly."""
+        with pytest.raises(ValueError, match="must encode to exactly 1 token"):
+            build_compact_turn_markers(qwen3_hf, "this is definitely not one token")
+
+    def test_tokenize_compact_structure(self, qwen3_tok):
+        """Sequence shape: [system_wrapped] [<audio>*N <|im_start|> text <|im_end|>] * K."""
+        hf = qwen3_tok.tokenizer
+        write_id = hf.convert_tokens_to_ids("<|im_start|>")
+        eos_id = hf.eos_token_id
+        messages = [
+            {"role": "system", "content": "Transcribe."},
+            {"role": "user", "content": "<audio><audio>"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "<audio><audio>"},
+            {"role": "assistant", "content": "world"},
+        ]
+        input_ids, mask = _tokenize_compact_with_assistant_mask(messages, qwen3_tok, write_id, eos_id)
+
+        # Two turns → write_id and eos_id should each appear at least twice.
+        assert input_ids.count(write_id) >= 2
+        assert input_ids.count(eos_id) >= 2
+
+        # Every write_id and (each turn's trailing) eos_id should be mask=1.
+        # Also "hello"/"world" tokens should be mask=1.
+        hello_ids = hf.encode("hello", add_special_tokens=False)
+        world_ids = hf.encode("world", add_special_tokens=False)
+        # Find first hello token position and check mask
+        for hid in hello_ids:
+            if hid in input_ids:
+                assert mask[input_ids.index(hid)] == 1
+        for wid in world_ids:
+            if wid in input_ids:
+                assert mask[input_ids.index(wid)] == 1
+
+    def test_tokenize_compact_assistant_mask(self, qwen3_tok):
+        """Mask=1 on write/text/eos; mask=0 on system wrapping and audio user content."""
+        hf = qwen3_tok.tokenizer
+        write_id = hf.convert_tokens_to_ids("<|im_start|>")
+        eos_id = hf.eos_token_id
+        messages = [
+            {"role": "system", "content": "Sys."},
+            {"role": "user", "content": "<audio>"},
+            {"role": "assistant", "content": "X"},
+        ]
+        input_ids, mask = _tokenize_compact_with_assistant_mask(messages, qwen3_tok, write_id, eos_id)
+
+        # Final token should be the trailing EOS with mask=1.
+        assert input_ids[-1] == eos_id
+        assert mask[-1] == 1
+
+        # User content (the audio tag tokens) must have mask=0. Verify each audio
+        # BPE piece appears at least once with mask=0 (at the user-content occurrence).
+        audio_ids = hf.encode("<audio>", add_special_tokens=False)
+        for aid in audio_ids:
+            positions = [i for i, t in enumerate(input_ids) if t == aid]
+            assert any(mask[p] == 0 for p in positions), f"audio token {aid} should appear with mask=0"
+
+        # At least one write_id occurrence must have mask=1 (the one we inserted).
+        write_positions = [i for i, t in enumerate(input_ids) if t == write_id]
+        assert any(mask[p] == 1 for p in write_positions), "inserted write_id should have mask=1"
+
+        # System wrapping contains write_id with mask=0 (e.g. <|im_start|>system\n...).
+        assert any(mask[p] == 0 for p in write_positions), "system-wrapping write_id should have mask=0"
+
+    def test_tokenize_compact_no_trailing_asst(self, qwen3_tok):
+        """A trailing user-only turn (no asst) should not append a write/eos pair."""
+        hf = qwen3_tok.tokenizer
+        write_id = hf.convert_tokens_to_ids("<|im_start|>")
+        eos_id = hf.eos_token_id
+        messages = [
+            {"role": "system", "content": "S."},
+            {"role": "user", "content": "<audio>"},
+            {"role": "assistant", "content": "x"},
+            {"role": "user", "content": "<audio>"},  # trailing user-only
+        ]
+        input_ids, mask = _tokenize_compact_with_assistant_mask(messages, qwen3_tok, write_id, eos_id)
+        # Sequence should end with the audio token of the last user-only turn
+        # (not with write/eos). Count: one paired (user+asst) + one orphan user.
+        assert input_ids.count(write_id) == 1 + input_ids[
+            : input_ids.index(hf.encode("<audio>", add_special_tokens=False)[0])
+        ].count(write_id)
+
+    def test_tokenize_compact_mask_length_matches_ids(self, qwen3_tok):
+        """assistant_mask must be parallel to input_ids."""
+        hf = qwen3_tok.tokenizer
+        write_id = hf.convert_tokens_to_ids("<|im_start|>")
+        eos_id = hf.eos_token_id
+        messages = [
+            {"role": "system", "content": "S."},
+            {"role": "user", "content": "<audio><audio><audio>"},
+            {"role": "assistant", "content": "hello world"},
+        ]
+        input_ids, mask = _tokenize_compact_with_assistant_mask(messages, qwen3_tok, write_id, eos_id)
+        assert len(input_ids) == len(mask)
+        assert all(m in (0, 1) for m in mask)
+
+    def test_tokenize_compact_empty_blank_combo(self, qwen3_tok):
+        """Verify compact_template=True + blank_token="" combination.
+
+        When blank_token="", silent chunks produce empty assistant content.
+        Expected shape per silent chunk: ``<audio>*N <|im_start|> <|im_end|>``
+        (adjacent write+eos with no text between). Model learns to emit an
+        immediate close-of-turn for silent chunks. Both write and eos must
+        be trainable (mask=1).
+        """
+        hf = qwen3_tok.tokenizer
+        write_id = hf.convert_tokens_to_ids("<|im_start|>")
+        eos_id = hf.eos_token_id
+        # Mix of silent (empty content) and non-silent chunks — mirrors what
+        # get_llm_messages_for_sample produces when blank_token="" is used
+        # with fixed chunking.
+        messages = [
+            {"role": "system", "content": "S."},
+            {"role": "user", "content": "<audio><audio>"},
+            {"role": "assistant", "content": ""},  # silent chunk
+            {"role": "user", "content": "<audio><audio>"},
+            {"role": "assistant", "content": "hello"},  # chunk with word
+            {"role": "user", "content": "<audio><audio>"},
+            {"role": "assistant", "content": ""},  # silent chunk
+        ]
+        input_ids, mask = _tokenize_compact_with_assistant_mask(messages, qwen3_tok, write_id, eos_id)
+
+        assert len(input_ids) == len(mask)
+
+        # Locate the *inserted* write_id positions (mask=1). System-wrapping
+        # write_id occurrences have mask=0.
+        inserted_write_positions = [i for i, t in enumerate(input_ids) if t == write_id and mask[i] == 1]
+        assert len(inserted_write_positions) == 3, "one <|im_start|> per turn (3 turns)"
+
+        # For each inserted write, the next token is either:
+        #   - eos_id with mask=1 (silent chunk: <|im_start|><|im_end|> adjacent)
+        #   - a content token with mask=1 (word chunk: <|im_start|> hello ...)
+        # Verify the two silent chunks have immediate <|im_end|> right after <|im_start|>.
+        adjacent_pairs = 0
+        for pos in inserted_write_positions:
+            if pos + 1 < len(input_ids) and input_ids[pos + 1] == eos_id:
+                adjacent_pairs += 1
+                # Adjacent eos must also be trainable (mask=1).
+                assert mask[pos + 1] == 1, "adjacent <|im_end|> in silent chunk must be trainable"
+        assert adjacent_pairs == 2, "two silent chunks should each produce adjacent <|im_start|><|im_end|>"
+
+        # The middle ("hello") chunk: <|im_start|> should NOT be directly followed by <|im_end|>.
+        # Verify at least one hello-content token exists with mask=1 between a write and an eos.
+        hello_ids = set(hf.encode("hello", add_special_tokens=False))
+        trainable_content = [input_ids[i] for i in range(len(input_ids)) if mask[i] == 1 and input_ids[i] in hello_ids]
+        assert len(trainable_content) > 0, "hello content tokens must be trainable"
+
+        # Sanity: state-machine inference separator / decode_with_blank splitter.
+        # When has_blank=False, code appends `self._eos_id` as the chunk separator
+        # and decode_with_blank splits on `eos_token_id`. The training sequence's
+        # per-turn eos_id plays exactly that role. Verify the trailing token is eos.
+        assert input_ids[-1] == eos_id

@@ -18,9 +18,11 @@ model:
   freeze_params:
     # Frozen LLM (embed_tokens stays inside llm, so this pattern covers it too)
     - "^llm\\..+$"
-    # Frozen pretrained ASR (only the modality adapter layers are trainable)
+    # Frozen pretrained ASR (only the modality adapter layers are trainable).
+    # The second alternation matches the MultiLayerProjectionConnector path where the encoder
+    # is wrapped inside ``perception.encoder_multilayer.encoder`` instead of ``perception.encoder``.
     - "^perception\\.preprocessor\\..+$"
-    - "^perception\\.encoder\\..+$"
+    - "^perception\\.encoder(_multilayer\\.encoder)?\\..+$"
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
   prompt_format: nemotron-nano-v3

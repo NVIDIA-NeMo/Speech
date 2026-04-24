@@ -1348,16 +1348,36 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         self.encoder = encoder
         self.num_layers = len(encoder.layers)
         self.layer_idx_list = []
+        self.include_final_output = False
         if not layer_idx_list:
             layer_idx_list = list(range(self.num_layers))
         for lid in layer_idx_list:
+            if lid == -1:
+                # Sentinel: capture ``encoder.forward()``'s final return (post out_proj + optional
+                # reduction), not ``num_layers - 1``. Lets recipes combine intermediate-layer
+                # features with the top-of-stack representation.
+                self.include_final_output = True
+                continue
             if lid < -self.num_layers or lid >= self.num_layers:
                 raise ValueError(f"Invalid layer index {lid} for ConformerEncoder with {self.num_layers} layers.")
             if lid < 0:
                 lid = self.num_layers + lid
             self.layer_idx_list.append(lid)
         self.layer_idx_list.sort()
-        logging.info(f"Extracting ConformerEncoder features from layers: {self.layer_idx_list}")
+        logging.info(
+            f"Extracting ConformerEncoder features from layers: {self.layer_idx_list}"
+            + (" (+ final encoder output)" if self.include_final_output else "")
+        )
+        # Layers past the last captured intermediate index contribute no gradient to any
+        # downstream loss (their output is not consumed), so Adam would never allocate optimizer
+        # state for them and DCP resume would fail with "Missing key in checkpoint state_dict".
+        # Freeze them so the optimizer never adopts them in the first place. Skip when
+        # ``include_final_output`` is set, since that path backprops through every layer.
+        if not self.include_final_output and self.layer_idx_list:
+            max_used_layer = self.layer_idx_list[-1]
+            for layer in encoder.layers[max_used_layer + 1 :]:
+                for p in layer.parameters():
+                    p.requires_grad_(False)
         self.enc_access_cfg = {
             "interctc": {
                 "capture_layers": self.layer_idx_list,
@@ -1381,13 +1401,17 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         self.update_access_cfg(self.enc_access_cfg, guid=getattr(self, "model_guid", None))
         self.set_access_enabled(access_enabled=True, guid=getattr(self, "model_guid", None))
 
-        _ = self.encoder(
+        encoder_ret = self.encoder(
             audio_signal=audio_signal,
             length=length,
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
         )
+        # ConformerEncoder.forward_internal returns (audio_signal, length) when caches are unused
+        # and a 5-tuple (+ cache tensors) otherwise. First two elements are always the final
+        # [B, D, T] output and the [B] length.
+        encoder_out, encoder_out_len = encoder_ret[0], encoder_ret[1]
 
         # Chunk of code adapted from ConformerEncoder.forward_internal()
         total_registry = {}
@@ -1412,6 +1436,12 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
                 raise RuntimeError("Make sure encoder.forward is called exactly one time")
             encoded_list.append(layer_outputs[0])  # [B, D, T]
             encoded_len_list.append(layer_lengths[0])  # [B]
+
+        if self.include_final_output:
+            # encoder_out is already [B, D, T] (ConformerEncoder.forward_internal transposes it
+            # on line ~765), matching the layout of the captured interctc tensors above.
+            encoded_list.append(encoder_out)
+            encoded_len_list.append(encoder_out_len)
 
         self.encoder.reset_registry()
         self.set_access_enabled(access_enabled=old_access_flag, guid=getattr(self, "model_guid", None))

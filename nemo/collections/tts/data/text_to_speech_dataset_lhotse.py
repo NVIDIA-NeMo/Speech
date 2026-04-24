@@ -21,7 +21,7 @@ import torch
 from hydra.utils import instantiate
 from lhotse import CutSet
 from lhotse.dataset.collation import collate_matrices, collate_vectors
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from transformers import AutoTokenizer, T5Tokenizer
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPABPETokenizer
@@ -48,6 +48,28 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
             text_tokenizer_kwargs = {}
             if "g2p" in tokenizer_config:
                 text_tokenizer_kwargs["g2p"] = instantiate(tokenizer_config.g2p)
+            # Ensure locale_specific_punct is persisted so it survives .nemo save/restore.
+            # New training for locales with extended punctuation should use the full set (True).
+            if (
+                hasattr(tokenizer_config, '_target_')
+                and tokenizer_config._target_
+                == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
+                and tokenizer_config.get('locale', None) == "pt-BR"
+                and not hasattr(tokenizer_config, 'non_default_punct_list')
+                and not hasattr(tokenizer_config, 'locale_specific_punct')
+            ):
+                with open_dict(tokenizer_config):
+                    tokenizer_config.locale_specific_punct = True
+            # Persist punct_version=2 for HindiCharsTokenizer so .nemo save/restore
+            # always uses the expanded punctuation set (with dandas).
+            if (
+                hasattr(tokenizer_config, '_target_')
+                and tokenizer_config._target_
+                == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
+                and not hasattr(tokenizer_config, 'punct_version')
+            ):
+                with open_dict(tokenizer_config):
+                    tokenizer_config.punct_version = 2
             tokenizer = instantiate(tokenizer_config, **text_tokenizer_kwargs)
             # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
             if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):

@@ -52,6 +52,25 @@ class TestTTSTokenizers:
         "ハロー": ["haɾoː"],
         "ワールド": ["wa:ɾdo"],
     }
+    PHONEME_DICT_HI = {
+        "नमस्ते": ["nəmˈʌsteː"],
+        "दुनिया": ["dˈʊnɪjˌã"],
+        "अच्छा": ["ˈʌtʃtʃʰaː"],
+        "है": ["hɛː"],
+    }
+    PHONEME_DICT_PT_BR = {
+        "Olá": ["olˈa"],
+        "mundo": ["mˈũndʊ"],
+        "café": ["kafˈɛ"],
+        "está": ["iʃtˈa"],
+        "bom": ["bˈõ"],
+    }
+    PHONEME_DICT_KO = {
+        "안녕": ["ˈɐnnjʌŋ"],
+        "하세요": ["hˈɐsejˌo"],
+        "감사": ["kˈɐmsɐ"],
+        "합니다": ["hˈɐmnidˌɐ"],
+    }
 
     @staticmethod
     def _parse_text(tokenizer, text):
@@ -235,6 +254,85 @@ class TestTTSTokenizers:
         tokenizer = IPATokenizer(g2p=g2p, locale="fr-FR")
         chars, tokens = self._parse_text(tokenizer, input_text)
 
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_pt_br(self):
+        """pt-BR: accented characters (á, é) + punctuation (comma, exclamation)."""
+        input_text = "Olá, café está bom!"
+        expected_output = "olˈa, kafˈɛ iʃtˈa bˈõ!"
+
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_PT_BR, locale="pt-BR")
+        tokenizer = IPATokenizer(g2p=g2p, locale="pt-BR")
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_pt_br_locale_specific_punct(self):
+        """locale_specific_punct=True (default) adds extended punctuation for pt-BR."""
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_PT_BR, locale="pt-BR")
+        tok_with = IPATokenizer(g2p=g2p, locale="pt-BR", locale_specific_punct=True)
+        tok_without = IPATokenizer(g2p=g2p, locale="pt-BR", locale_specific_punct=False)
+
+        extended_punct = {
+            '\u00ab',  # « left guillemet
+            '\u00bb',  # » right guillemet
+            '\u2039',  # ‹ left single guillemet
+            '\u203a',  # › right single guillemet
+            '\u201c',  # " left double quotation mark
+            '\u201d',  # " right double quotation mark
+            '\u2018',  # ' left single quotation mark
+            '\u2019',  # ' right single quotation mark
+            '\u2013',  # – en dash
+            '\u2014',  # — em dash
+            '\u2026',  # … horizontal ellipsis
+        }
+        for p in extended_punct:
+            assert p in tok_with.punct_list, f"{p!r} missing from locale_specific_punct=True"
+            assert p not in tok_without.punct_list, f"{p!r} should not be in locale_specific_punct=False"
+
+        assert len(tok_with.tokens) > len(tok_without.tokens)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_pt_br_legacy_vocab_stability(self):
+        """locale_specific_punct=False produces the same vocab as en-US default punctuation."""
+        g2p_pt = IpaG2p(phoneme_dict=self.PHONEME_DICT_PT_BR, locale="pt-BR")
+        tok_legacy = IPATokenizer(g2p=g2p_pt, locale="pt-BR", locale_specific_punct=False)
+
+        from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import DEFAULT_PUNCTUATION
+
+        assert set(tok_legacy.punct_list) == set(DEFAULT_PUNCTUATION)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_hi_in(self):
+        """hi-IN: code-switching (Hindi + English) + Devanagari punctuation (danda)."""
+        input_text = "नमस्ते world, अच्छा है।"
+        expected_output = "nəmˈʌsteː ˈwɝɫd, ˈʌtʃtʃʰaː hɛː।"
+        g2p = IpaG2p(
+            phoneme_dict=[self.PHONEME_DICT_HI, self.PHONEME_DICT_EN],
+            locale="hi-IN",
+        )
+        tokenizer = IPATokenizer(g2p=g2p, locale="hi-IN")
+        chars, tokens = self._parse_text(tokenizer, input_text)
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_ko_kr(self):
+        """ko-KR: code-switching (Korean + English) + punctuation."""
+        input_text = "안녕 hello, 감사 합니다!"
+        expected_output = "ˈɐnnjʌŋ həˈɫoʊ, kˈɐmsɐ hˈɐmnidˌɐ!"
+        g2p = IpaG2p(
+            phoneme_dict=[self.PHONEME_DICT_KO, self.PHONEME_DICT_EN],
+            locale="ko-KR",
+        )
+        tokenizer = IPATokenizer(g2p=g2p, locale="ko-KR")
+        chars, tokens = self._parse_text(tokenizer, input_text)
         assert chars == expected_output
 
     @pytest.mark.run_only_on('CPU')

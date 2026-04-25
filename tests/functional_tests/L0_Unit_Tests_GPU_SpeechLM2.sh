@@ -11,4 +11,4 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-CUDA_VISIBLE_DEVICES=0 NEMO_NUMBA_MINVER=0.53 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest tests/collections/speechlm2 -m "not pleasefixme" --with_downloads
+CUDA_VISIBLE_DEVICES=0 NEMO_NUMBA_MINVER=0.53 pytest --cov=/workspace --cov-report= -n 2 --dist=loadfile tests/collections/speechlm2 -m "not pleasefixme" --with_downloads

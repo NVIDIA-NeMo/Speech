@@ -20,16 +20,13 @@ on:
         type: string
       image-name:
         required: false
-        default: nemo_container_speech
+        # Reuse the image built by cicd-main.yml's cicd-test-container-build job
+        # (Dockerfile.ci is identical for every *_container* tag) instead of
+        # rebuilding a second, identical image here.
+        default: nemo_container
         type: string
 
 jobs:
-  build:
-    uses: ./.github/workflows/_build_container.yml
-    with:
-      image-name: ${{ inputs.image-name }}
-      dockerfile: docker/Dockerfile.ci
-
   unit-tests:
     strategy:
       fail-fast: false
@@ -59,7 +56,6 @@ jobs:
             runner: self-hosted-azure-cpu
             cpu-only: true
             timeout: 20
-    needs: [build]
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.script }}
     steps:

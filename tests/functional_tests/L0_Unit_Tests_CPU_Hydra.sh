@@ -11,4 +11,4 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest tests/hydra -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat
+CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest --cov=/workspace --cov-report= -n auto --dist=loadfile tests/hydra -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat

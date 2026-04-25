@@ -4,9 +4,11 @@ coverage
 isort>5.1.0,<6.0.0
 parameterized
 pytest
+pytest-cov
 pytest-httpserver
 pytest-mock
 pytest-runner
+pytest-xdist
 ruamel.yaml
 sphinx
 sphinxcontrib-bibtex

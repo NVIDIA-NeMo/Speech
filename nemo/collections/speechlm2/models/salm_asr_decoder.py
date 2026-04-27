@@ -47,6 +47,7 @@ from nemo.collections.speechlm2.modules.perception import AudioTranscriptionPerc
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
+from nemo.collections.speechlm2.parts.parallel import set_hf_llm_activation_checkpointing
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, move_embedding
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
@@ -550,14 +551,21 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
         return configure_optimizers(self)
 
     def configure_model(self) -> None:
+        llm = self.llm
+        if isinstance(llm, PeftModel):
+            llm = llm.base_model.model
+
+        # Activation checkpointing on perception encoder layers and LLM transformer
+        # blocks. Both must run BEFORE FSDP2 sharding so checkpoint_wrapper sees the
+        # pristine modules and fully_shard indexes the wrapped structure. No-op
+        # when the corresponding flag is False.
+        self.perception.set_activation_checkpointing(self.cfg.get("activation_checkpointing_perception", False))
+        set_hf_llm_activation_checkpointing(llm, self.cfg.get("activation_checkpointing_llm", False))
+
         # TODO(pzelasko): refactor into separate module re-usable across models
         device_mesh = self.device_mesh
         if device_mesh is None:
             return
-
-        llm = self.llm
-        if isinstance(llm, PeftModel):
-            llm = llm.base_model.model
 
         if (tp_mesh := device_mesh["tensor_parallel"]).size() > 1:
             self._use_tp = True

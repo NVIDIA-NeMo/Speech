@@ -22,7 +22,42 @@ import torch
 import torch.distributed as dist
 from lightning.fabric.plugins.collectives.torch_collective import default_pg_timeout
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
+from torch import nn
 from typing_extensions import override
+
+
+def set_hf_llm_activation_checkpointing(llm: nn.Module, enabled: bool) -> None:
+    """Wrap each transformer block in a HuggingFace LLM with ``checkpoint_wrapper``.
+
+    Targets the HF path used by speechlm2 models (``llm`` loaded via
+    ``transformers.AutoModelForCausalLM``). The NeMo-Automodel path applies
+    activation checkpointing through its own parallelizer and does not go
+    through this helper.
+
+    Two layouts are supported, matching the conventions in this codebase:
+
+      * ``llm.model.layers`` — the full ``ForCausalLM`` wrapper is retained
+        (e.g. :class:`SALM`, :class:`SALMASRDecoder`).
+      * ``llm.layers`` — the caller has already extracted the inner
+        ``model`` (e.g. the Duplex* models, which do
+        ``self.llm = llm.model``).
+
+    Must be called before FSDP2 sharding so ``fully_shard`` indexes the
+    wrapped structure. No-op when ``enabled`` is False, or when the LLM has
+    no recognisable layers attribute (e.g. an architecture we don't know
+    how to wrap).
+    """
+    if not enabled:
+        return
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+    layers = getattr(getattr(llm, "model", None), "layers", None)
+    if layers is None:
+        layers = getattr(llm, "layers", None)
+    if layers is None:
+        return
+    for i in range(len(layers)):
+        layers[i] = checkpoint_wrapper(layers[i])
 
 
 def setup_distributed(

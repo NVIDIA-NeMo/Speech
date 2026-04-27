@@ -50,6 +50,7 @@ from nemo.collections.speechlm2.parts.optim_setup import (
     configure_optimizers_exclude_norm_from_wd,
     is_frozen,
 )
+from nemo.collections.speechlm2.parts.parallel import set_hf_llm_activation_checkpointing
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import (
     load_checkpoint,
@@ -1421,14 +1422,20 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         raise NotImplementedError
 
     def configure_model(self) -> None:
+        llm = self.tts_model.backbone
+        if isinstance(llm, PeftModel):
+            llm = llm.base_model.model
+
+        # Activation checkpointing on the LLM transformer blocks. Must run BEFORE
+        # FSDP2 sharding so checkpoint_wrapper sees the pristine modules and
+        # fully_shard indexes the wrapped structure. No-op when the flag is False.
+        # This model has no perception module, so only the LLM flag is honored.
+        set_hf_llm_activation_checkpointing(llm, self.cfg.get("activation_checkpointing_llm", False))
+
         # TODO(pzelasko): refactor into separate module re-usable across models
         device_mesh = self.device_mesh
         if device_mesh is None:
             return
-
-        llm = self.tts_model.backbone
-        if isinstance(llm, PeftModel):
-            llm = llm.base_model.model
 
         if (tp_mesh := device_mesh["tensor_parallel"]).size() > 1:
             self._use_tp = True

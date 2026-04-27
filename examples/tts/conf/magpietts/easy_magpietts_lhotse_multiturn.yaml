@@ -124,9 +124,9 @@ model:
         quadratic_duration: ${quadratic_duration}
         use_bucketing: true
         num_buckets: 20
-        bucket_buffer_size: 15_000
-        shuffle_buffer_size: 15_000
-        num_cuts_for_bins_estimate: 15_000
+        bucket_buffer_size: 10_000
+        shuffle_buffer_size: 10_000
+        num_cuts_for_bins_estimate: 10_000
         shard_seed: "trng"
         drop_last: true
         shuffle: true
@@ -144,9 +144,9 @@ model:
         input_cfg: /lustre/fsw/convai_convaird_nemo-speech/data/duplex/multispeaker_syn_duplex.yaml
         use_bucketing: true
         num_buckets: 20
-        bucket_buffer_size: 5_000
-        shuffle_buffer_size: 5_000
-        num_cuts_for_bins_estimate: 5_000
+        bucket_buffer_size: 1_000
+        shuffle_buffer_size: 1_000
+        num_cuts_for_bins_estimate: 1_000
         max_duration: 300 # 5 mi max duration
         bucket_duration_bins: [4.0, 8.9, 10.2, 11.6, 13.2, 15.0, 17.0, 19.3, 25.0, 31.5, 38.5, 46.0, 55.5, 66.5, 79.5, 93.3, 110.0, 130.0, 156.8, 203.3]
         bucket_batch_size:    [75, 33, 29, 25, 23, 20, 18, 15, 12, 10, 8, 7, 5, 4, 3, 3, 2, 2, 1, 1]

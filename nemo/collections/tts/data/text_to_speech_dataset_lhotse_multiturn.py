@@ -410,7 +410,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 context_audio = torch.from_numpy(context_audio_array)
                 context_audio_list.append(context_audio)
                 context_audio_len_list.append(context_audio.shape[0])
-                
+
             else:
                 matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
                 

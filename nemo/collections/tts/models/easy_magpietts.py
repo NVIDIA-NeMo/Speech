@@ -1403,6 +1403,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         return val_output
 
+    def on_fit_start(self):
+        super().on_fit_start()
+        if not hasattr(self, "_codec_sil_codes_buffer"):
+            self._generate_codec_silence_buffer()
+
     def on_validation_epoch_start(self) -> None:
         if torch.distributed.is_initialized():
             self.trainer.strategy.model.require_backward_grad_sync = False

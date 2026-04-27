@@ -483,6 +483,7 @@ def main():
     if not hasattr(model, "_codec_helper") or model._codec_helper is None:
         model._codec_helper = CodecHelper(codec_model=codec_model, codec_converter=codec_converter)
 
+    model._generate_codec_silence_buffer()
     codec_sil_codes = model.codec_sil_codes
 
     if args.debug_dtype:

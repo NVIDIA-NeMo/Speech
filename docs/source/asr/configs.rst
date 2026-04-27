@@ -1,10 +1,102 @@
-.. _asr-configs-dataset-configuration:
-
 NeMo ASR Configuration Files
 ============================
 
-This page covers ASR-specific configuration. For general NeMo setup (Experiment Manager, trainer), see :doc:`../core/core`.
-Example configs: `examples/asr/conf <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf>`_.
+This section describes the NeMo configuration file setup that is specific to models in the ASR collection. For general information
+about how to set up and run experiments that is common to all NeMo models (e.g. Experiment Manager and PyTorch Lightning trainer
+parameters), see the :doc:`../core/core` section.
+
+The model section of the NeMo ASR configuration files generally requires information about the dataset(s) being used, the preprocessor
+for audio files, parameters for any augmentation being performed, as well as the model architecture specification. The sections on
+this page cover each of these in more detail.
+
+Example configuration files for all of the NeMo ASR scripts can be found in the
+`config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf>`_.
+
+.. _asr-configs-dataset-configuration:
+
+Dataset Configuration
+---------------------
+
+Training, validation, and test parameters are specified using the ``train_ds``, ``validation_ds``, and
+``test_ds`` sections in the configuration file, respectively. Depending on the task, there may be arguments specifying the sample rate
+of the audio files, the vocabulary of the dataset (for character prediction), whether or not to shuffle the dataset, and so on. You may
+also decide to leave fields such as the ``manifest_filepath`` blank, to be specified via the command-line at runtime.
+
+Any initialization parameter that is accepted for the Dataset class used in the experiment can be set in the config file.
+Refer to the :ref:`Datasets <asr-api-datasets>` section of the API for a list of Datasets and their respective parameters.
+
+An example ASR train and validation configuration should look similar to the following:
+
+.. code-block:: yaml
+
+  # Specified at the beginning of the config file
+  labels: &labels [" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+           "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "'"]
+
+  model:
+    train_ds:
+      manifest_filepath: ???
+      sample_rate: 16000
+      labels: *labels   # Uses the labels above
+      batch_size: 32
+      trim_silence: True
+      max_duration: 16.7
+      shuffle: True
+      num_workers: 8
+      pin_memory: true
+      # tarred datasets
+      is_tarred: false # If set to true, uses the tarred version of the Dataset
+      tarred_audio_filepaths: null     # Not used if is_tarred is false
+      shuffle_n: 2048                  # Not used if is_tarred is false
+      # bucketing params
+      bucketing_strategy: "synced_randomized"
+      bucketing_batch_size: null
+      bucketing_weights: null
+
+    validation_ds:
+      manifest_filepath: ???
+      sample_rate: 16000
+      labels: *labels   # Uses the labels above
+      batch_size: 32
+      shuffle: False    # No need to shuffle the validation data
+      num_workers: 8
+      pin_memory: true
+
+There are two ways to test/validate on more than one manifest:
+
+- Specify a list in the `manifest_filepath` field. Results will be reported for each, the first one being used for overall loss / WER (specify `val_dl_idx` if you wish to change that). In this case, all manifests will share configuration parameters.
+- Use the ds_item key and pass a list of config objects to it. This allows you to use differently configured datasets for validation, e.g.
+
+.. code-block:: yaml
+
+  model:
+    validation_ds:
+      ds_item:
+      - name: dataset1
+        manifest_filepath: ???
+        # Config parameters for dataset1
+        ...
+      - name: dataset2
+        manifest_filepath: ???
+        # Config parameters for dataset2
+        ...
+
+By default, dataloaders are set up when the model is instantiated. However, dataloader setup can be deferred to
+model's `setup()` method by setting ``defer_setup`` in the configuration.
+
+For example, training data setup can be deferred as follows:
+
+.. code-block:: yaml
+
+  model:
+    train_ds:
+      # Configure training data as usual
+      ...
+      # Defer train dataloader setup from `__init__` to `setup`
+      defer_setup: true
+
+
+.. _asr-configs-metric-configuration:
 
 
 .. _asr-configs-preprocessor-configuration:
@@ -66,6 +158,11 @@ and ``time_*`` parameters).
 You can use any combination of ``Cutout``, frequency/time ``SpecAugment``, or neither of them.
 
 You can also add audio augmentation pipelines via an ``augmentor`` section in ``train_ds``.
+
+.. caution::
+   The ``augmentor`` pipeline is not supported by the Lhotse dataloader, which provides its own set of augmentation options.
+   See :doc:`Lhotse Dataloading </dataloaders>` for details.
+
 Augmentors are applied on-the-fly to audio data in the data layer. The following example
 adds white noise (probability 0.5, level between -50 dB and -10 dB) and room impulse response
 augmentation (probability 0.3, from a manifest of impulse responses):
@@ -184,76 +281,415 @@ Each metric within ``MultiTaskMetric`` can be configured with an optional boolea
 Tokenizer Configurations
 ------------------------
 
-Models using sub-word encoding require a ``tokenizer`` section:
+Some models utilize sub-word encoding via an external tokenizer instead of explicitly defining their vocabulary.
+
+For such models, a ``tokenizer`` section is added  to the model config. ASR models currently support two types of
+custom tokenizers:
+
+- Google Sentencepiece tokenizers (tokenizer type of ``bpe`` in the config)
+- HuggingFace WordPiece tokenizers (tokenizer type of ``wpe`` in the config)
+- Aggregate tokenizers ((tokenizer type of ``agg`` in the config), see below)
+
+In order to build custom tokenizers, refer to the ``ASR_with_Subword_Tokenization`` notebook available in the
+ASR tutorials directory.
+
+The following example sets up a ``SentencePiece Tokenizer`` at a path specified by the user:
 
 .. code-block:: yaml
 
   model:
+    ...
     tokenizer:
-      dir: "<path to tokenizer>"
-      type: "bpe"  # or "wpe"
+      dir: "<path to the directory that contains the custom tokenizer files>"
+      type: "bpe"  # can be "bpe" or "wpe"
 
-For multilingual models, use ``AggregateTokenizer`` (``type: "agg"``), which combines multiple monolingual tokenizers
-into one. Each sub-tokenizer is assigned a language id that must match the ``lang`` field in the manifest:
+The Aggregate (``agg``) tokenizer feature makes it possible to combine tokenizers in order to train multilingual
+models. The config file would look like this:
 
 .. code-block:: yaml
 
   model:
+    ...
     tokenizer:
-      type: agg
+      type: "agg"  # aggregate tokenizer
       langs:
         en:
-          dir: /path/to/en_tokenizer
-          type: bpe
+          dir: "<path to the directory that contains the tokenizer files>"
+          type: "bpe"  # can be "bpe" or "wpe"
         es:
-          dir: /path/to/es_tokenizer
-          type: bpe
+          dir: "<path to the directory that contains the tokenizer files>"
+          type: "bpe"  # can be "bpe" or "wpe"
+
+In the above config file, each language is associated with its own pre-trained tokenizer, which gets assigned
+a token id range in the order the tokenizers are listed. To train a multilingual model, one needs to populate the
+``lang`` field in the manifest file, allowing the routing of each sample to the correct tokenizer. At inference time,
+the routing is done based on the inferred token id range.
+
+For models which utilize sub-word tokenization, we share the decoder module (``ConvASRDecoder``) with character tokenization models.
+All parameters are shared, but for models which utilize sub-word encoding, there are minor differences when setting up the config. For
+such models, the tokenizer is utilized to fill in the missing information when the model is constructed automatically.
+
+For example, a decoder config corresponding to a sub-word tokenization model should look similar to the following:
+
+.. code-block:: yaml
+
+  model:
+    ...
+    decoder:
+      _target_: nemo.collections.asr.modules.ConvASRDecoder
+      feat_in: *enc_final
+      num_classes: -1  # filled with vocabulary size from tokenizer at runtime
+      vocabulary: []  # filled with vocabulary from tokenizer at runtime
+
+
+On-the-fly Code Switching
+-------------------------
+
+Nemo supports creating code-switched synthetic utterances on-the-fly during training/validation/testing. This allows you to create ASR models which
+support intra-utterance code switching. If you have Nemo formatted audio data on disk (either JSON manifests or tarred audio data), you
+can easily mix as many of these audio sources together as desired by adding some extra parameters to your `train_ds`, `validation_ds`, and `test_ds`.
+
+Please note that this allows you to mix any kind of audio sources together to create synthetic utterances which sample from all sources. The most
+common use case for this is blending different languages together to create a multilingual code-switched model, but you can also blend
+together different audio sources from the same languages (or language families), to create noise robust data, or mix fast and slow speech from the
+same language.
+
+For multilingual code-switched models, we recommend using AggTokenizer for your Tokenizer if mixing different languages.
+
+The following example shows how to mix 3 different languages: English (en), German (de), and Japanese (ja) added to the `train_ds` model block, however
+you can add similar logic to your `validation_ds` and `test_ds` blocks for on-the-fly code-switched validation and test data too. This example mixes
+together 3 languages, but you can use as many as you want. However, be advised that the more languages you add, the higher your `min_duration` and `max_duration`
+need to be set to ensure all languages are sampled into each synthetic utterance, and setting these hyperparameters higher will use more VRAM per mini-batch during
+training and evaluation.
+
+.. code-block:: yaml
+
+  model:
+    train_ds:
+      manifest_filepath: [/path/to/EN/tarred_manifest.json, /path/to/DE/tarred_manifest.json, /path/to/JA/tarred_manifest.json]
+      tarred_audio_filepaths: ['/path/to/EN/tars/audio__OP_0..511_CL_.tar', '/path/to/DE/tars/audio__OP_0..1023_CL_.tar', '/path/to/JA/tars/audio__OP_0..2047_CL_.tar']
+      is_code_switched: true
+      is_tarred: true
+      shuffle: true
+        code_switched:              # add this block for code-switching
+          min_duration: 12          # the minimum number of seconds for each synthetic code-switched utterance
+          max_duration: 20          # the maximum number of seconds for each synthetic code-switched utterance
+          min_monolingual: 0.3      # the minimum percentage of utterances which will be pure monolingual (0.3 = 30%)
+          probs: [0.25, 0.5, 0.25]  # the probability to sample each language (matches order of `language` above) if not provided, assumes uniform distribution
+          force_monochannel: true   # if your source data is multi-channel, then setting this to True will force the synthetic utterances to be mono-channel
+          sampling_scales: 0.75     # allows you to down/up sample individual languages. Can set this as an array for individual languages, or a scalar for all languages
+          seed: 123                 # add a seed for replicability in future runs (highly useful for `validation_ds` and `test_ds`)
+
+
+Model Architecture Configurations
+---------------------------------
+
+Each configuration file should describe the model architecture being used for the experiment. Models in the NeMo ASR collection need
+an ``encoder`` section and a ``decoder`` section, with the ``_target_`` field specifying the module to use for each.
+
+Here is the list of the parameters in the model section which are shared among most of the ASR models:
+
++-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
+| **Parameter**           | **Datatype**     | **Description**                                                                                               | **Supported Values**            |
++=========================+==================+===============================================================================================================+=================================+
+| :code:`log_prediction`  | bool             | Whether a random sample should be printed in the output at each step, along with its predicted transcript.    |                                 |
++-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
+| :code:`ctc_reduction`   | string           | Specifies the reduction type of CTC loss. Defaults to ``mean_batch`` which would take the average over the    | :code:`none`,                   |
+|                         |                  | batch after taking the average over the length of each sample.                                                | :code:`mean_batch`              |
+|                         |                  |                                                                                                               | :code:`mean`, :code:`sum`       |
++-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
+
+For more information about the ASR models, refer to the :doc:`Featured Models <./featured_models>` section.
+
+
+.. _asr-configs-conformer-ctc:
+
+Conformer-CTC
+~~~~~~~~~~~~~
+
+The config files for Conformer-CTC model contain character-based encoding and sub-word encoding at
+``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_char.yaml`` and ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_bpe.yaml``
+respectively. Some components of the configs of :ref:`Conformer-CTC <Conformer-CTC_model>` include the following datasets:
+
+* ``train_ds``, ``validation_ds``, and ``test_ds``
+* opimizer (``optim``)
+* augmentation (``spec_augment``)
+* ``decoder``
+* ``trainer``
+* ``exp_manager``
+
+There should be a tokenizer section where you can
+specify the tokenizer if you want to use sub-word encoding instead of character-based encoding.
+
+
+The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the
+config files and also :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`.
+
+
+Conformer-Transducer
+~~~~~~~~~~~~~~~~~~~~
+
+Please refer to the model page of :ref:`Conformer-Transducer <Conformer-Transducer_model>` for more information on this model.
 
 
 Transducer Configurations
 -------------------------
 
-CTC configs can be extended for Transducer training by adding prediction network, joint network, decoding, and loss sections.
+All CTC-based ASR model configs can be modified to support Transducer loss training. Below, we discuss the modifications required in the config to enable Transducer training. All modifications are made to the ``model`` config.
+
+Model Defaults
+~~~~~~~~~~~~~~
+
+It is a subsection to the model config representing the default values shared across the entire model represented as ``model.model_defaults``.
+
+There are three values that are primary components of a transducer model. They are :
+
+* ``enc_hidden``: The hidden dimension of the final layer of the Encoder network.
+* ``pred_hidden``: The hidden dimension of the final layer of the Prediction network.
+* ``joint_hidden``: The hidden dimension of the intermediate layer of the Joint network.
+
+One can access these values inside the config by using OmegaConf interpolation as follows :
 
 .. code-block:: yaml
 
     model:
+      ...
       model_defaults:
         enc_hidden: 256
         pred_hidden: 256
         joint_hidden: 256
-
+      ...
       decoder:
-        _target_: nemo.collections.asr.modules.RNNTDecoder
-        blank_as_pad: true
+        ...
         prednet:
           pred_hidden: ${model.model_defaults.pred_hidden}
-          pred_rnn_layers: 1
 
-      joint:
-        _target_: nemo.collections.asr.modules.RNNTJoint
-        log_softmax: null
-        fuse_loss_wer: false
-        fused_batch_size: 16
-        jointnet:
-          joint_hidden: ${model.model_defaults.joint_hidden}
-          activation: "relu"
+Acoustic Encoder Model
+~~~~~~~~~~~~~~~~~~~~~~
 
-      decoding:
-        strategy: "greedy_batch"  # greedy, greedy_batch, beam, tsd, alsd, maes
-        greedy:
-          max_symbols: 10
-        beam:
-          beam_size: 2
-          score_norm: true
+The transducer model is comprised of three models combined. One of these models is the Acoustic (encoder) model. We should be able to drop in any CTC Acoustic model config into this section of the transducer config.
 
-      loss:
-        loss_name: "default"
-        warprnnt_numba_kwargs:
-          fastemit_lambda: 0.0
+The only condition that needs to be met is that **the final layer of the acoustic model must have the hidden dimension defined in ``model_defaults.enc_hidden``**.
 
-For large vocabularies, use ``SampledRNNTJoint`` with ``n_samples`` to reduce memory.
-`FastEmit <https://arxiv.org/abs/2010.11148>`_ regularization controls transducer latency via ``fastemit_lambda``.
+Decoder / Prediction Model
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Prediction model is generally an autoregressive, causal model that consumes text tokens and returns embeddings that will be used by the Joint model. The base config for an LSTM based Prediction network can be found in the ``decoder`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+
+**This config can be copy-pasted into any custom transducer model with no modification.**
+
+Let us discuss some of the important arguments:
+
+* ``blank_as_pad``: In ordinary transducer models, the embedding matrix does not acknowledge the ``Transducer Blank`` token (similar to CTC Blank). However, this causes the autoregressive loop to be more complicated and less efficient. Instead, this flag which is set by default, will add the ``Transducer Blank`` token to the embedding matrix - and use it as a pad value (zeros tensor). This enables more efficient inference without harming training. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+
+* ``prednet.pred_hidden``: The hidden dimension of the LSTM and the output dimension of the Prediction network.
+
+.. code-block:: yaml
+
+  decoder:
+    _target_: nemo.collections.asr.modules.RNNTDecoder
+    normalization_mode: null
+    random_state_sampling: false
+    blank_as_pad: true
+
+    prednet:
+      pred_hidden: ${model.model_defaults.pred_hidden}
+      pred_rnn_layers: 1
+      t_max: null
+      dropout: 0.0
+
+Joint Model
+~~~~~~~~~~~
+
+The Joint model is a simple feed-forward Multi-Layer Perceptron network. This MLP accepts the output of the Acoustic and Prediction models and computes a joint probability distribution over the entire vocabulary space. The base config for the Joint network can be found in the ``joint`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+
+**This config can be copy-pasted into any custom transducer model with no modification.**
+
+The Joint model config has several essential components which we discuss below :
+
+* ``log_softmax``: Due to the cost of computing softmax on such large tensors, the Numba CUDA implementation of RNNT loss will implicitly compute the log softmax when called (so its inputs should be logits). The CPU version of the loss doesn't face such memory issues so it requires log-probabilities instead. Since the behaviour is different for CPU-GPU, the ``None`` value will automatically switch behaviour dependent on whether the input tensor is on a CPU or GPU device.
+
+* ``preserve_memory``: This flag will call ``torch.cuda.empty_cache()`` at certain critical sections when computing the Joint tensor. While this operation might allow us to preserve some memory, the empty_cache() operation is tremendously slow and will slow down training by an order of magnitude or more. It is available to use but not recommended.
+
+* ``fuse_loss_wer``: This flag performs "batch splitting" and then "fused loss + metric" calculation. It will be discussed in detail in the next tutorial that will train a Transducer model.
+
+* ``fused_batch_size``: When the above flag is set to True, the model will have two distinct "batch sizes". The batch size provided in the three data loader configs (``model.*_ds.batch_size``) will now be the ``Acoustic model`` batch size, whereas the ``fused_batch_size`` will be the batch size of the ``Prediction model``, the ``Joint model``, the ``transducer loss`` module and the ``decoding`` module.
+
+* ``jointnet.joint_hidden``: The hidden intermediate dimension of the joint network.
+
+.. code-block:: yaml
+
+  joint:
+    _target_: nemo.collections.asr.modules.RNNTJoint
+    log_softmax: null  # sets it according to cpu/gpu device
+
+    # fused mode
+    fuse_loss_wer: false
+    fused_batch_size: 16
+
+    jointnet:
+      joint_hidden: ${model.model_defaults.joint_hidden}
+      activation: "relu"
+      dropout: 0.0
+
+Sampled Softmax Joint Model
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+There are some situations where a large vocabulary with a Transducer model - such as for multilingual models with a large
+number of languages. In this setting, we need to consider the cost of memory of training Transducer networks which does
+not allow large vocabulary.
+
+For such cases, one can instead utilize the ``SampledRNNTJoint`` module instead of the usual ``RNNTJoint`` module, in order
+to compute the loss using a sampled subset of the vocabulary rather than the full vocabulary file.
+
+It adds only one additional parameter :
+
+* ``n_samples``: Specifies the minimum number of tokens to sample from the vocabulary space,
+  excluding the RNNT blank token. If a given value is larger than the entire vocabulary size,
+  then the full vocabulary will be used.
+
+The only difference in config required is to replace ``nemo.collections.asr.modules.RNNTJoint`` with ``nemo.collections.asr.modules.SampledRNNTJoint``
+
+.. code-block:: yaml
+
+  joint:
+    _target_: nemo.collections.asr.modules.SampledRNNTJoint
+    n_samples: 500
+    ...  # All other arguments from RNNTJoint can be used after this.
+
+
+Effect of Batch Splitting / Fused Batch step
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The following information below explain why memory is an issue when training Transducer models and how NeMo tackles the issue with its Fused Batch step. The material can be read for a thorough understanding, otherwise, it can be skipped. You can also follow these steps in the "ASR_with_Transducers" tutorial.
+
+**Diving deeper into the memory costs of Transducer Joint**
+
+One of the significant limitations of Transducers is the exorbitant memory cost of computing the Joint module. The Joint module is comprised of two steps.
+
+1) Projecting the Acoustic and Transcription feature dimensions to some standard hidden dimension (specified by model.model_defaults.joint_hidden)
+
+2) Projecting this intermediate hidden dimension to the final vocabulary space to obtain the transcription.
+
+Take the following example.
+
+BS=32 ; T (after 2x stride) = 800, U (with character encoding) = 400-450 tokens, Vocabulary size V = 28 (26 alphabet chars, space and apostrophe). Let the hidden dimension of the Joint model be 640 (Most Google Transducer papers use hidden dimension of 640).
+
+* Memory (Hidden, gb) = 32 x 800 x 450 x 640 x 4 = 29.49 gigabytes (4 bytes per float).
+
+* Memory (Joint, gb) = 32 x 800 x 450 x 28 x 4 = 1.290 gigabytes (4 bytes per float)
+
+**NOTE**: This is just for the forward pass! We need to double this memory to store gradients! This much memory is also just for the Joint model **alone**. Far more memory is required for the Prediction model as well as the large Acoustic model itself and its gradients!
+
+Even with mixed precision, that's ~30 GB of GPU RAM for just 1 part of the network + its gradients.
+
+Effect of Fused Batch Step
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The fundamental problem is that the joint tensor grows in size when ``[T x U]`` grows in size. This growth in memory cost is due to many reasons - either by model construction (downsampling) or the choice of dataset preprocessing (character tokenization vs. sub-word tokenization).
+
+Another dimension that NeMo can control is **batch**. Due to how we batch our samples, small and large samples all get clumped together into a single batch. So even though the individual samples are not all as long as the maximum length of T and U in that batch, when a batch of such samples is constructed, it will consume a significant amount of memory for the sake of compute efficiency.
+
+So as is always the case - **trade-off compute speed for memory savings**.
+
+The fused operation goes as follows :
+
+1) Forward the entire acoustic model in a single pass. (Use global batch size here for acoustic model - found in ``model.*_ds.batch_size``)
+
+2) Split the Acoustic Model's logits by ``fused_batch_size`` and loop over these sub-batches.
+
+3) Construct a sub-batch of same ``fused_batch_size`` for the Prediction model. Now the target sequence length is U_sub-batch < U.
+
+4) Feed this U_sub-batch into the Joint model, along with a sub-batch from the Acoustic model (with T_sub-batch < T). Remember, we only have to slice off a part of the acoustic model here since we have the full batch of samples (B, T, D) from the acoustic model.
+
+5) Performing steps (3) and (4) yields T_sub-batch and U_sub-batch. Perform sub-batch joint step - costing an intermediate (B, T_sub-batch, U_sub-batch, V) in memory.
+
+6) Compute loss on sub-batch and preserve in a list to be later concatenated.
+
+7) Compute sub-batch metrics (such as Character / Word Error Rate) using the above Joint tensor and sub-batch of ground truth labels. Preserve the scores to be averaged across the entire batch later.
+
+8) Delete the sub-batch joint matrix (B, T_sub-batch, U_sub-batch, V). Only gradients from .backward() are preserved now in the computation graph.
+
+9) Repeat steps (3) - (8) until all sub-batches are consumed.
+
+10) Cleanup step. Compute full batch WER and log. Concatenate loss list and pass to PTL to compute the equivalent of the original (full batch) Joint step. Delete ancillary objects necessary for sub-batching.
+
+Transducer Decoding
+~~~~~~~~~~~~~~~~~~~
+
+Models which have been trained with CTC can transcribe text simply by performing a regular argmax over the output of their decoder. For transducer-based models, the three networks must operate in a synchronized manner in order to transcribe the acoustic features. The base config for the Transducer decoding step can be found in the ``decoding`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+
+**This config can be copy-pasted into any custom transducer model with no modification.**
+
+The most important component at the top level is the ``strategy``. It can take one of many values:
+
+* ``greedy``: This is sample-level greedy decoding. It is generally exceptionally slow as each sample in the batch will be decoded independently. For publications, this should be used alongside batch size of 1 for exact results.
+
+* ``greedy_batch``: This is the general default and should nearly match the ``greedy`` decoding scores (if the acoustic features are not affected by feature mixing in batch mode). Even for small batch sizes, this strategy is significantly faster than ``greedy``.
+
+* ``beam``: Runs beam search with the implicit language model of the Prediction model. It will generally be quite slow, and might need some tuning of the beam size to get better transcriptions.
+
+* ``tsd``: Time synchronous decoding. Please refer to the paper: `Alignment-Length Synchronous Decoding for RNN Transducer <https://ieeexplore.ieee.org/document/9053040>`_ for details on the algorithm implemented. Time synchronous decoding (TSD) execution time grows by the factor T * max_symmetric_expansions. For longer sequences, T is greater and can therefore take a long time for beams to obtain good results. TSD also requires more memory to execute.
+
+* ``alsd``: Alignment-length synchronous decoding. Please refer to the paper: `Alignment-Length Synchronous Decoding for RNN Transducer <https://ieeexplore.ieee.org/document/9053040>`_ for details on the algorithm implemented. Alignment-length synchronous decoding (ALSD) execution time is faster than TSD, with a growth factor of T + U_max, where U_max is the maximum target length expected during execution. Generally, T + U_max < T * max_symmetric_expansions. However, ALSD beams are non-unique. Therefore it is required to use larger beam sizes to achieve the same (or close to the same) decoding accuracy as TSD. For a given decoding accuracy, it is possible to attain faster decoding via ALSD than TSD.
+
+* ``maes``: Modified Adaptive Expansion Search Decoding. Please refer to the paper `Accelerating RNN Transducer Inference via Adaptive Expansion Search <https://ieeexplore.ieee.org/document/9250505>`_. Modified Adaptive Synchronous Decoding (mAES) execution time is adaptive w.r.t the number of expansions (for tokens) required per timestep. The number of expansions can usually be constrained to 1 or 2, and in most cases 2 is sufficient. This beam search technique can possibly obtain superior WER while sacrificing some evaluation time.
+
+.. code-block:: yaml
+
+  decoding:
+    strategy: "greedy_batch"
+
+    # preserve decoding alignments
+    preserve_alignments: false
+
+    # Overrides the fused batch size after training.
+    # Setting it to -1 will process whole batch at once when combined with `greedy_batch` decoding strategy
+    fused_batch_size: -1
+
+    # greedy strategy config
+    greedy:
+      max_symbols: 10
+
+    # beam strategy config
+    beam:
+      beam_size: 2
+      score_norm: true
+      softmax_temperature: 1.0  # scale the logits by some temperature prior to softmax
+      tsd_max_sym_exp: 10  # for Time Synchronous Decoding, int > 0
+      alsd_max_target_len: 5.0  # for Alignment-Length Synchronous Decoding, float > 1.0
+      maes_num_steps: 2  # for modified Adaptive Expansion Search, int > 0
+      maes_prefix_alpha: 1  # for modified Adaptive Expansion Search, int > 0
+      maes_expansion_beta: 2  # for modified Adaptive Expansion Search, int >= 0
+      maes_expansion_gamma: 2.3  # for modified Adaptive Expansion Search, float >= 0
+
+Transducer Loss
+~~~~~~~~~~~~~~~
+
+This section configures the type of Transducer loss itself, along with possible sub-sections. By default, an optimized implementation of Transducer loss will be used which depends on Numba for CUDA acceleration. The base config for the Transducer loss section can be found in the ``loss`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+
+**This config can be copy-pasted into any custom transducer model with no modification.**
+
+The loss config is based on a resolver pattern and can be used as follows:
+
+1) ``loss_name``: ``default`` is generally a good option. Will select one of the available resolved losses and match the kwargs from a sub-configs passed via explicit ``{loss_name}_kwargs`` sub-config.
+
+2) ``{loss_name}_kwargs``: This sub-config is passed to the resolved loss above and can be used to configure the resolved loss.
+
+
+.. code-block:: yaml
+
+  loss:
+    loss_name: "default"
+    warprnnt_numba_kwargs:
+      fastemit_lambda: 0.0
+
+FastEmit Regularization
+^^^^^^^^^^^^^^^^^^^^^^^
+
+FastEmit Regularization is supported for the default Numba based WarpRNNT loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
+
+Refer to the above paper for results and recommendations of ``fastemit_lambda``.
 
 For decoding customization (confidence scores, CUDA graphs, language models, word boosting), see :doc:`ASR Language Modeling and Customization <./asr_language_modeling_and_customization>`.
 

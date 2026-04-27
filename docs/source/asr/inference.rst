@@ -17,15 +17,11 @@ Loading Checkpoints
     import nemo.collections.asr as nemo_asr
     model = nemo_asr.models.ASRModel.restore_from("path/to/checkpoint.nemo")
 
-**From HuggingFace or NGC:**
+**From HuggingFace:**
 
 .. code-block:: python
 
-    # HuggingFace (prefix with nvidia/)
     model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
-
-    # NGC (no prefix)
-    model = nemo_asr.models.ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
 
 
 Basic Transcription
@@ -35,7 +31,7 @@ Basic Transcription
 
 .. code-block:: python
 
-    outputs = model.transcribe(audio=["file1.wav", "file2.wav"], batch_size=4)
+    outputs = model.transcribe(audio=["file1.wav", "file2.wav"], batch_size=2)
     print(outputs[0].text)
 
 The ``audio`` argument accepts file paths (strings), lists of paths, numpy arrays, or PyTorch tensors.
@@ -131,7 +127,9 @@ Obtain word, segment, or character timestamps with Parakeet models (CTC/RNNT/TDT
 
 **Advanced configuration:**
 
-See :doc:`Configs <./configs>` for all available ``decoding`` options and :doc:`ASR Language Modeling and Customization <./asr_language_modeling_and_customization>` for decoding customization (confidence, CUDA graphs, language models, word boosting).
+For Transducer decoding strategies (greedy, beam, TSD, ALSD, mAES) and their parameters, see the Transducer Decoding section in :doc:`Configs <./configs>`.
+For CTC and AED decoding classes, see the :doc:`API reference <./api>`.
+For decoding customization (confidence, CUDA graphs, language models, word boosting), see :doc:`ASR Language Modeling and Customization <./asr_language_modeling_and_customization>`.
 
 .. code-block:: python
 
@@ -214,15 +212,7 @@ Canary models use prompt slots to control transcription behavior.
 
     results = canary.transcribe("manifest.json", batch_size=16)
 
-Manifest format (Canary Flash / v2 — only ``source_lang`` and ``target_lang`` are required):
-
-.. code-block:: json
-
-    {"audio_filepath": "/path/to/audio.wav", "duration": null, "source_lang": "en", "target_lang": "en", "pnc": "yes", "answer": "na"}
-
-.. note::
-
-    For the original Canary v1, ``task`` (``"asr"`` or ``"ast"``) is also required in the manifest.
+For the manifest format required by Canary models, see :ref:`Canary Manifest Format <canary-manifest-format>`.
 
 **Via direct parameters:**
 
@@ -235,6 +225,25 @@ Manifest format (Canary Flash / v2 — only ``source_lang`` and ``target_lang`` 
         target_lang="en",
         pnc=True,
     )
+
+
+.. _asr-enforcing-single-language:
+
+Enforcing a Single Language
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For multilingual Canary models, you can enforce a specific output language by explicitly setting ``source_lang`` and
+``target_lang``. When both are set to the same language, the model will transcribe in that language only:
+
+.. code-block:: python
+
+    results = canary.transcribe(
+        audio=["audio.wav"],
+        source_lang="de",
+        target_lang="de",
+    )
+
+This prevents phonetic drift where the model may switch languages mid-utterance.
 
 
 Streaming Inference

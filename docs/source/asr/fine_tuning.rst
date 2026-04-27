@@ -22,19 +22,21 @@ If you have a large, diverse dataset and want to train from scratch, see :doc:`C
 Fine-Tuning Script
 ------------------
 
-Use the ``speech_to_text_finetune.py`` script:
+Use the ``speech_to_text_finetune.py`` script with the default config at
+``examples/asr/conf/asr_finetune/speech_to_text_finetune.yaml``:
 
 .. code-block:: bash
 
     python examples/asr/speech_to_text_finetune.py \
-        --config-path=<path to config directory> \
-        --config-name=<config name> \
-        model.train_ds.manifest_filepath=<path to train manifest> \
-        model.validation_ds.manifest_filepath=<path to val manifest> \
+        --config-path=../conf/asr_finetune \
+        --config-name=speech_to_text_finetune \
+        init_from_pretrained_model="nvidia/parakeet-tdt-0.6b-v2" \
+        model.train_ds.manifest_filepath=/path/to/train_manifest.json \
+        model.validation_ds.manifest_filepath=/path/to/val_manifest.json \
         trainer.devices=1 \
         trainer.max_epochs=50
 
-The script handles model initialization from a pretrained checkpoint using the ``init_from_nemo_model`` or ``init_from_pretrained_model`` config options.
+You must specify either ``init_from_pretrained_model`` (NGC/HuggingFace name) or ``init_from_nemo_model`` (local ``.nemo`` path) to load the pretrained weights.
 
 
 Initialization Options
@@ -96,13 +98,9 @@ When changing the tokenizer (e.g., for a new language or domain), you need to:
       - decoder
       - joint
 
+**Enforcing a single language after fine-tuning:**
 
-Enforcing a Single Language During Inference
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-For multilingual Canary models, you can enforce a specific output language by explicitly setting ``source_lang`` and
-``target_lang`` in every ``model.transcribe()`` call or in every manifest entry. When both are set to the same language,
-the model will transcribe in that language only:
+When fine-tuning a multilingual ``EncDecMultiTaskModel`` (e.g., Canary) on a single language, the model may still exhibit phonetic drift — switching languages mid-utterance at inference time. To enforce a specific language during decoding, explicitly set ``source_lang`` and ``target_lang`` to the same language:
 
 .. code-block:: python
 
@@ -112,15 +110,16 @@ the model will transcribe in that language only:
         target_lang="de",
     )
 
-This prevents phonetic drift where the model may switch languages mid-utterance.
-For fine-tuning, ensure all training manifest entries have consistent ``source_lang`` / ``target_lang`` values
-for your target language.
+See :ref:`Enforcing a Single Language <asr-enforcing-single-language>` in the Inference documentation for more details.
 
 
 Fine-Tuning with HuggingFace Datasets
 ---------------------------------------
 
 NeMo supports loading datasets directly from HuggingFace:
+
+.. note::
+   HuggingFace dataset loading is not currently supported with the Lhotse dataloader.
 
 .. code-block:: bash
 
@@ -162,19 +161,10 @@ The most important parameters for fine-tuning:
 For the complete configuration reference, see :doc:`Configuration Files <./configs>`.
 
 
-Execution Flow
---------------
-
-The fine-tuning execution flow for CTC and Transducer models is documented in:
-
-* `CTC model execution overview <https://github.com/NVIDIA/NeMo/tree/main/examples/asr/asr_ctc>`_
-* `Transducer model execution overview <https://github.com/NVIDIA/NeMo/tree/main/examples/asr/asr_transducer>`_
-
-
 Tips
 ----
 
 1. **Start with a low learning rate** — fine-tuning with too high a learning rate can destroy pretrained features. Typical fine-tuning LRs are 1e-4 to 1e-5. If your pretrained config uses the Noam (warmup + decay) scheduler, override it with a constant or cosine-annealing schedule to avoid the warmup phase resetting to a high LR.
 2. **Use Lhotse dataloading** for efficient training with dynamic batching. See :doc:`Lhotse Dataloading </dataloaders>`.
 3. **Use spec augmentation** during fine-tuning to improve robustness. See :ref:`Augmentation Configurations <asr-configs-augmentation-configurations>`.
-4. **For multilingual fine-tuning**, consider using ``AggregateTokenizer`` (see :doc:`Configs <./configs>`) and the :ref:`Hybrid model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model__Config>`.
+4. **For multilingual fine-tuning**, use a multilingual tokenizer. NeMo supports two approaches: a **unified multilingual SentencePiece tokenizer** — a single BPE model trained on all target languages (as used by Canary v2/Flash), and an ``AggregateTokenizer`` that combines separate monolingual tokenizers with per-language routing (see :doc:`Configs <./configs>` for the ``agg`` tokenizer setup). For prompt-conditioned multilingual models, see the :ref:`Hybrid model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model__Config>`.

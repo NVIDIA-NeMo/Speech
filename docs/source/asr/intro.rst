@@ -39,7 +39,7 @@ Key Features
 
 **Streaming** — Real-time transcription with cache-aware streaming Conformer models, supporting configurable latency-accuracy tradeoffs. See :ref:`cache-aware streaming conformer`.
 
-**Multi-task (Canary)** — The Canary model family supports ASR and speech translation (AST) across 25 European languages, with built-in punctuation and capitalization. See :doc:`Models <./models>`.
+**Multi-task (Canary)** — The Canary model family supports ASR and speech translation (AST) across 25 European languages, with built-in punctuation and capitalization. See :doc:`Featured Models <./featured_models>`.
 
 **Language Modeling** — GPU-accelerated n-gram LM fusion (NGPU-LM) for CTC, RNN-T, TDT, and AED models improves transcription accuracy without retraining. See :ref:`asr_language_modeling_and_customization`.
 
@@ -64,7 +64,7 @@ Further Reading
 .. toctree::
    :maxdepth: 1
 
-   models
+   featured_models
    asr_checkpoints
    inference
    fine_tuning

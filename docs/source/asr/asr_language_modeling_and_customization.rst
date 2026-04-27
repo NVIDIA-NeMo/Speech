@@ -132,13 +132,37 @@ Support varies by decoder strategy:
 
 To disable CUDA graphs (e.g. for debugging or when preserving alignments with frame-looping):
 
-.. code-block:: yaml
+**Via Python (at runtime):**
 
-  decoding:
-    greedy:
-      use_cuda_graph_decoder: false
-    beam:
-      allow_cuda_graphs: false
+.. code-block:: python
+
+    model.disable_cuda_graphs()
+
+**Greedy decoding** — use ``use_cuda_graph_decoder=true/false``:
+
+.. code-block:: bash
+
+    python examples/asr/speech_to_text_eval.py \
+       pretrained_name="nvidia/parakeet-rnnt-1.1b" \
+       dataset_manifest=<dataset_manifest> \
+       batch_size=32 \
+       output_filename=decoded.jsonl \
+       rnnt_decoding.strategy="greedy_batch" \
+       rnnt_decoding.greedy.use_cuda_graph_decoder=true
+
+**Beam decoding** — use ``allow_cuda_graphs=true/false``:
+
+.. code-block:: bash
+
+    python examples/asr/speech_to_text_eval.py \
+       pretrained_name="nvidia/parakeet-rnnt-1.1b" \
+       dataset_manifest=<dataset_manifest> \
+       batch_size=32 \
+       output_filename=decoded.jsonl \
+       rnnt_decoding.strategy="malsd_batch" \
+       rnnt_decoding.beam.max_symbols_per_step=10 \
+       rnnt_decoding.beam.beam_size=12 \
+       rnnt_decoding.beam.allow_cuda_graphs=true
 
 When unsupported, NeMo falls back to standard decoding automatically.
 

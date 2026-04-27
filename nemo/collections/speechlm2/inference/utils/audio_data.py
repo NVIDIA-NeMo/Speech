@@ -80,7 +80,7 @@ def prepare_audio_data(
 
     if sort_by_duration:
         durations = [sf.SoundFile(fp).frames for fp in filepaths]
-        order = sorted(range(len(filepaths)), key=lambda i: durations[i])
+        order = sorted(range(len(filepaths)), key=lambda i: durations[i], reverse=True)
         filepaths = [filepaths[i] for i in order]
         options = [options[i] for i in order]
         ground_truths = [ground_truths[i] for i in order]

@@ -422,8 +422,8 @@ class TestCountInputCfgLevels:
         config = {"input_cfg": str(top_yaml)}
         assert count_input_cfg_levels(config) == 2
 
-    def test_unresolvable_string_input_cfg_counts_as_one(self):
-        """Unresolvable path (e.g. OmegaConf interpolation) counts as 1 level."""
+    def test_unresolvable_nested_string_input_cfg_is_treated_as_leaf(self):
+        """Nested unresolvable string input_cfg is treated as a leaf, so total depth is 2."""
         config = {
             "input_cfg": [
                 {

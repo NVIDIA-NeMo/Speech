@@ -499,13 +499,19 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
         2
     """
 
+    _cache: dict[str, object] = {}
+
     def _resolve_if_path(val):
         """If *val* is a string/Path, try to load the YAML it points to."""
         if isinstance(val, (str, Path)):
-            try:
-                return load_yaml(str(val))
-            except Exception:
-                return val
+            key = str(val)
+            if key not in _cache:
+                try:
+                    _cache[key] = load_yaml(key)
+                except Exception:
+                    logging.debug("count_input_cfg_levels: could not load %r, treating as leaf", key)
+                    _cache[key] = val
+            return _cache[key]
         return val
 
     def _max_depth(obj) -> int:

@@ -476,6 +476,12 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
     the same temperature (due to propagate_attrs.copy()), we count max depth,
     not total occurrences.
 
+    String/Path values for ``input_cfg`` are treated as file references (mirroring
+    :func:`parse_and_combine_datasets`) and loaded so that nested ``input_cfg``
+    keys inside those files are counted.  If a file cannot be loaded (e.g. the
+    path contains unresolved OmegaConf interpolations), it is conservatively
+    counted as one additional level.
+
     Args:
         config: Configuration dictionary that may contain nested 'input_cfg' keys.
 
@@ -493,13 +499,22 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
         2
     """
 
+    def _resolve_if_path(val):
+        """If *val* is a string/Path, try to load the YAML it points to."""
+        if isinstance(val, (str, Path)):
+            try:
+                return load_yaml(str(val))
+            except Exception:
+                return val
+        return val
+
     def _max_depth(obj) -> int:
         if isinstance(obj, (dict, DictConfig)):
             depths = []
             for key, val in obj.items():
                 if key == "input_cfg":
-                    # Found input_cfg: this level counts as 1 + max depth of children
-                    depths.append(1 + _max_depth(val))
+                    resolved = _resolve_if_path(val)
+                    depths.append(1 + _max_depth(resolved))
                 else:
                     depths.append(_max_depth(val))
             return max(depths, default=0)

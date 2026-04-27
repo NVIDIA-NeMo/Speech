@@ -400,6 +400,40 @@ class TestCountInputCfgLevels:
         )
         assert count_input_cfg_levels(config) == 2
 
+    def test_string_input_cfg_resolves_yaml_file(self, tmp_path):
+        """String input_cfg pointing to a YAML file is loaded and traversed."""
+        inner_yaml = tmp_path / "inner.yaml"
+        inner_yaml.write_text(
+            "- type: lhotse_shar\n  shar_path: /path1\n  weight: 1.0\n"
+            "- type: lhotse_shar\n  shar_path: /path2\n  weight: 2.0\n"
+        )
+        config = {"input_cfg": str(inner_yaml)}
+        assert count_input_cfg_levels(config) == 1
+
+    def test_two_level_string_input_cfg(self, tmp_path):
+        """Top-level string ref → YAML with groups whose input_cfg are strings."""
+        lang_yaml = tmp_path / "train_lang.yaml"
+        lang_yaml.write_text("- type: lhotse_shar\n  shar_path: /audio/cuts\n  weight: 3.5\n")
+        top_yaml = tmp_path / "train_all.yaml"
+        top_yaml.write_text(
+            f"- type: group\n  weight: 100\n  input_cfg: {lang_yaml}\n"
+            f"- type: group\n  weight: 200\n  input_cfg: {lang_yaml}\n"
+        )
+        config = {"input_cfg": str(top_yaml)}
+        assert count_input_cfg_levels(config) == 2
+
+    def test_unresolvable_string_input_cfg_counts_as_one(self):
+        """Unresolvable path (e.g. OmegaConf interpolation) counts as 1 level."""
+        config = {
+            "input_cfg": [
+                {
+                    "type": "group",
+                    "input_cfg": "${oc.env:MANIFEST_ROOT}/train_ar-AE.yaml",
+                },
+            ]
+        }
+        assert count_input_cfg_levels(config) == 2
+
 
 class TestReweightTemperatureValidation:
     def test_scalar_temperature_broadcasts_to_all_levels(self):

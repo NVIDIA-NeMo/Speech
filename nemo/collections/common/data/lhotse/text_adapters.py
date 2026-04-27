@@ -25,11 +25,9 @@ from typing import Iterator, Literal, Optional, Sequence, Union
 import numpy as np
 import torch
 from lhotse import AudioSource, CutSet, Recording
-from lhotse.audio import AudioLoadingError
 from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
 from lhotse.dataset import AudioSamples
-from lhotse.dataset.collation import collate_matrices, collate_vectors
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.serialization import load_jsonl, open_best
 from lhotse.shar import AudioTarWriter, JsonlShardWriter

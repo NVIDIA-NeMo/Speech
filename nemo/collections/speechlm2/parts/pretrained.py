@@ -23,7 +23,6 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.speechlm2.modules import AudioPerceptionModule
-from nemo.collections.speechlm2.modules.perception import MultiLayerProjectionConnector, QformerConnector
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
@@ -149,6 +148,8 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
 
     If user config specifies encoder parameters, they will override the pretrained model's config.
     """
+    from nemo.collections.speechlm2.modules.perception import MultiLayerProjectionConnector, QformerConnector
+
     if pretrained_weights:
         # Save user-specified encoder config before loading pretrained model
         user_encoder_config = {}

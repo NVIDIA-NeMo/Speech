@@ -1,2 +1,2 @@
-nemo_automodel @ git+https://github.com/NVIDIA-NeMo/Automodel.git@cadbba77a6466f1acdabd7382fd90e0c3f821c19
+nemo_automodel @ git+https://github.com/NVIDIA-NeMo/Automodel.git@9eccbb6102a260efd7cbdffa890fc57b94f94528  # version with relaxed pytorch constraints
 flashoptim

@@ -30,7 +30,7 @@ jobs:
 
   claude-review:
     needs: acknowledge
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_claude_review.yml@v0.79.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_claude_review.yml@v0.88.0
     with:
       prompt: |
         You are doing a light code review. Keep it concise and actionable.

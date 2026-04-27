@@ -18,7 +18,7 @@ on:
   push:
     branches:
       - main
-      - "r**"
+      - "r[0-9]*"
 
 defaults:
   run:

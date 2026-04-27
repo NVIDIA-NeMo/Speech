@@ -534,6 +534,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 '<EOS>': self.eos_id,
                 '<CFG_UNK>': self.cfg_unk_token_id,
             }
+            if cfg.get("use_multiturn_dataset", False):
+                special_vocab["<INTERRUPTION>"] = self.interruption_token_id
+
             self.cas_encoder = CharAwareSubwordEncoder(
                 d_embed=cfg.embedding_dim,
                 llm_tokenizer_vocab=subword_vocab,

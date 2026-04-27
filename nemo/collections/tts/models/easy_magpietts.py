@@ -61,7 +61,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_UTMOSV2 = False
 
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
-
+from typing import List
 
 @dataclass
 class ProcessBatchOutput:
@@ -671,6 +671,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         phoneme_tokens_lens: Optional[torch.Tensor] = None,
         mode: str = "train",
         training_mode: Optional[TrainingMode] = None,
+        task: Optional[List[str]] = None,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -754,9 +755,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         speech_eos_mask = None
         if self.cfg.get("use_multiturn_dataset", False):
             speech_eos_mask = (text == self.interruption_token_id)  # (B, T)
-            # ToDo: do not remove from interruption data
-            text[speech_eos_mask] = self.tokenizer.pad  # Clean up the text channel
-
+            # remove the interruption token for all task, expect for interruption
+            if "interruption" not in task[0]:
+                text[speech_eos_mask] = self.tokenizer.pad  # Clean up the text channel
 
         # 3. Prepare text channel embeddings
         text_channel_embedding, text_channel_lens = self.prepare_text_channel_embeddings(
@@ -1051,6 +1052,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="train",
+            task=batch["task"],
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
@@ -1148,6 +1150,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="val",
+            task=batch["task"],
         )
         # Access ProcessBatchOutput dataclass attributes
         # logits come from the parallel prediction head

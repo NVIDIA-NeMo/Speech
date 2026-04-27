@@ -44,9 +44,11 @@ jobs:
             timeout: 30
           - script: L0_Unit_Tests_GPU_TTS
             runner: self-hosted-azure-gpus-1
+            timeout: 20
           - script: L0_Unit_Tests_CPU_TTS
             runner: self-hosted-azure-cpu
             cpu-only: true
+            timeout: 20
           - script: L0_Unit_Tests_GPU_Audio
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_Audio

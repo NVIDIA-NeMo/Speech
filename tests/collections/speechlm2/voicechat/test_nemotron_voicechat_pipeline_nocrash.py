@@ -55,7 +55,6 @@ _TEST_DEFAULTS = {
         "decode_audio": False,
         "use_perception_cache": False,
         "use_perception_cudagraph": False,
-        "use_llm_cache": False,
         "system_prompt": None,
         "top_p": 1.0,
         "repetition_penalty": 1.0,
@@ -105,8 +104,8 @@ def _build_no_crash_pipeline(
 _TEXT_CONFIGS = [
     pytest.param({}, id="baseline"),
     pytest.param(
-        {"s2s": {"use_llm_cache": True, "use_perception_cache": True}},
-        id="both_caches",
+        {"s2s": {"use_perception_cache": True}},
+        id="perception_cache",
     ),
     pytest.param({"pad_audio_by_sec": 2}, id="pad_by_sec"),
 ]
@@ -115,19 +114,25 @@ _TEXT_CONFIGS = [
 _AUDIO_CONFIGS = [
     pytest.param({}, id="baseline"),
     pytest.param(
-        {"s2s": {"use_llm_cache": True, "use_perception_cache": True, "system_prompt": _MOCK_SYSTEM_PROMPT},
-         "streaming": {"chunk_size_in_secs": 0.24},
-         "pad_audio_to_sec": 5},
-        id="both_caches_prompt_multiframe_pad_to_sec",
+        {
+            "s2s": {"use_perception_cache": True, "system_prompt": _MOCK_SYSTEM_PROMPT},
+            "streaming": {"chunk_size_in_secs": 0.24},
+            "pad_audio_to_sec": 5,
+        },
+        id="perception_cache_prompt_multiframe_pad_to_sec",
     ),
     pytest.param(
-        {"s2s": {"use_llm_cache": True, "top_p": 0.9, "temperature": 0.7, "repetition_penalty": 1.1},
-         "pad_silence_ratio": 0.5},
+        {
+            "s2s": {"top_p": 0.9, "temperature": 0.7, "repetition_penalty": 1.1},
+            "pad_silence_ratio": 0.5,
+        },
         id="sampling_pad_silence_ratio",
     ),
     pytest.param(
-        {"s2s": {"use_tts_subword_cache": True, "use_tts_torch_compile": True},
-         "pad_audio_by_sec": 2},
+        {
+            "s2s": {"use_tts_subword_cache": True, "use_tts_torch_compile": True},
+            "pad_audio_by_sec": 2,
+        },
         id="tts_optimizations_pad_by_sec",
     ),
     pytest.param(

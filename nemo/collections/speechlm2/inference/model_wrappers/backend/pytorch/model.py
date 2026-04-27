@@ -93,18 +93,17 @@ class PyTorchLLM(ModelInterface):
                 "Otherwise, EOS tokens may be randomly sampled and generation may not stop properly!"
             )
 
-    def create_cache(self, use_llm_cache: bool = True):
+    def create_cache(self):
         """Create an LLM KV cache appropriate for this model's backbone.
 
         Returns a ``DynamicCache`` (standard transformer) or
-        ``HybridMambaAttentionDynamicCache`` (Nemotron hybrid), or ``None``
-        if caching is disabled.
+        ``None`` for Nemotron hybrid models, whose remote-code cache handling
+        is intentionally not patched in this inference path.
         """
-        if not use_llm_cache:
-            return None
         pretrained_llm = str(self.model.stt_model.cfg.get("pretrained_llm", ""))
         if "Nemotron" in pretrained_llm:
-            return self.model.stt_model._create_nemotron_cache(batch_size=1)
+            logging.info("Using no-cache mode for Nemotron (full history each step)")
+            return None
         from transformers import DynamicCache
 
         return DynamicCache()
@@ -126,8 +125,8 @@ class PyTorchLLM(ModelInterface):
 
         Args:
             input_embeds: Input embeddings [batch, seq_len, hidden_dim]
-            cache: Optional DynamicCache or HybridMambaAttentionDynamicCache
-            cache_position: Optional position tensor for Nemotron models.
+            cache: Optional DynamicCache for standard transformer models.
+            cache_position: Optional cache-position tensor for cached decoding.
                 If not provided, ``cache_position_offset`` is used instead.
             cache_position_offset: Optional integer offset; when ``cache_position``
                 is None, a single-element tensor ``[cache_position_offset]`` is

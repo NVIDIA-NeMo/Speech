@@ -180,9 +180,6 @@ S2S Model Settings (``s2s``)
    * - ``use_perception_cache``
      - ``true``
      - Cache-aware streaming for the perception encoder.
-   * - ``use_llm_cache``
-     - ``true``
-     - Use KV cache for incremental LLM decoding.
    * - ``top_p``
      - ``0.5``
      - Top-p sampling threshold.

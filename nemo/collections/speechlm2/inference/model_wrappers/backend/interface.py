@@ -250,8 +250,8 @@ class ModelInterface(ABC):
         """Create inference cache for this backend. Returns None by default.
 
         Override in LLM backends that manage their own cache (e.g. PyTorchLLM
-        creates a DynamicCache or HybridMambaAttentionDynamicCache).  vLLM
-        backends manage cache internally and inherit the default.
+        creates a DynamicCache for standard transformer models).  vLLM backends
+        manage cache internally and inherit the default.
         """
         return None
 

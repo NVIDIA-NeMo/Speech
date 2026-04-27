@@ -191,11 +191,6 @@ class NemotronVoicechatInferenceWrapper:
         self.repetition_penalty = float(model_cfg.get("repetition_penalty", 1.0))
         self.temperature = float(model_cfg.get("temperature", 1.0))
 
-        # LLM KV cache: when enabled, uses DynamicCache (standard) or
-        # HybridMambaAttentionDynamicCache (Nemotron) for incremental decoding.
-        # When disabled, falls back to full-history reprocessing each step.
-        self.use_llm_cache = bool(model_cfg.get("use_llm_cache", True))
-
         # Perception cache configuration
         self.use_perception_cache = bool(model_cfg.get("use_perception_cache", False))
         use_perception_cudagraph = bool(model_cfg.get("use_perception_cudagraph", False))
@@ -457,7 +452,7 @@ class NemotronVoicechatInferenceWrapper:
 
     def create_decode_state(self, max_len: int) -> StreamingDecodeState:
         gen_text, gen_asr_text = self._init_token_buffers(max_len)
-        llm_cache = self.model_llm_interface.create_cache(use_llm_cache=self.use_llm_cache)
+        llm_cache = self.model_llm_interface.create_cache()
         if self.decode_audio:
             subword_mask, tts_codec_cache = self.model_eartts_interface.create_codec_state(max_len, self.device)
         else:
@@ -509,8 +504,8 @@ class NemotronVoicechatInferenceWrapper:
             num_frames_per_chunk (int): Number of 80 ms frames in this chunk.
             state (StreamingDecodeState): Mutable decode state (KV caches, token workspaces, etc.).
             request_id (str | None): Unique ID for this stream (used by vLLM engines).
-            has_prompt (bool): Whether the LLM KV cache already contains a prefilled
-                system prompt.  Affects the first-frame embedding (PAD vs BOS).
+            has_prompt (bool): Whether the LLM state already contains a prefilled
+                system prompt. Affects the first-frame embedding (PAD vs BOS).
             return_debug (bool): If True, attach per-step debug info to the result.
             sampling_params (dict[str, float] | None): Optional per-stream sampling overrides
                 (``top_p``, ``temperature``, ``repetition_penalty``).
@@ -520,7 +515,7 @@ class NemotronVoicechatInferenceWrapper:
         frame_idx = state.frame_idx
 
         state.timing.start("total_step")
-        use_llm_cache = state.llm_cache is not None
+        has_llm_cache = state.llm_cache is not None
         B = state.gen_text.shape[0]
 
         predicted_tokens = torch.empty(
@@ -581,7 +576,7 @@ class NemotronVoicechatInferenceWrapper:
                 frame_offset,
                 effective_request_id,
                 current_frame_idx,
-                use_llm_cache,
+                has_llm_cache,
                 return_debug,
                 new_input_embeds,
                 sampling_params=sampling_params,
@@ -623,13 +618,13 @@ class NemotronVoicechatInferenceWrapper:
         logging.debug(f'frame {frame_idx}: AGENT txt: {predicted_text_strs}')
 
         # --- Update remaining state fields ---
-        if not use_llm_cache:
+        if not has_llm_cache:
             # WARNING: Without the KV cache, input_embeds_history grows
             # linearly with session length and the full-sequence LLM forward
-            # pass is O(n^2).  This path is intended for debugging / parity
-            # testing only and is not suitable for long sessions or deployment.
+            # pass is O(n^2).  This path is currently used for native
+            # Nemotron until upstream cache handling is reliable.
             state.input_embeds_history = state.input_embeds_history + new_input_embeds
-        if use_llm_cache:
+        if has_llm_cache:
             state.llm_cache_position_offset += num_frames_per_chunk
 
         state.timing.stop("total_step")
@@ -656,7 +651,7 @@ class NemotronVoicechatInferenceWrapper:
         frame_offset: int,
         request_id: str,
         current_frame_idx: int,
-        use_llm_cache: bool,
+        has_llm_cache: bool,
         return_debug: bool,
         new_input_embeds: list,
         sampling_params: dict[str, float] | None = None,
@@ -668,7 +663,7 @@ class NemotronVoicechatInferenceWrapper:
         """
         state.timing.start("stt_model")
 
-        if use_llm_cache or self.use_vllm_llm:
+        if has_llm_cache or self.use_vllm_llm:
             if self.use_vllm_llm:
                 ans = self.model_llm_interface(
                     input_emb,

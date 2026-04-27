@@ -67,7 +67,6 @@ s2s:
   # ========================
   use_perception_cache: true                  # Enable cache-aware streaming for perception encoder
   use_perception_cudagraph: true              # Enable CUDA graph-accelerated perception encoder
-  use_llm_cache: true                         # Use KV cache for the STT LLM (DynamicCache or HybridMambaAttentionDynamicCache)
 
   # TTS speedup flags (default to false; enable to speed up native inference)
   use_tts_torch_compile: false                # Compile TTS backbone with torch.compile (mode='default')

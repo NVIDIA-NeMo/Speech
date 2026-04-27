@@ -110,7 +110,7 @@ class StreamingDecodeState:
     gen_text: torch.Tensor
     gen_asr_text: torch.Tensor
     input_embeds_history: list[torch.Tensor]
-    llm_cache: Any  # DynamicCache or HybridMambaAttentionDynamicCache
+    llm_cache: Any  # DynamicCache for supported native transformer backbones, otherwise None.
     tts_past_key_values: Any
     tts_code: torch.Tensor | None
     subword_mask: torch.Tensor | None

@@ -230,7 +230,7 @@ def assert_parity(
     assert not failures, "Parity failed:\n  " + "\n  ".join(failures)
 
 
-# Parity requires deterministic, float32, no caches, greedy decoding.
+# Parity requires deterministic, float32, and greedy decoding.
 _PARITY_DEFAULTS = {
     "s2s": {
         "engine_type": "native",
@@ -239,7 +239,6 @@ _PARITY_DEFAULTS = {
         "decode_audio": False,
         "use_perception_cache": False,
         "use_perception_cudagraph": False,
-        "use_llm_cache": False,
         "top_p": 1.0,
         "repetition_penalty": 1.0,
         "temperature": 1.0,

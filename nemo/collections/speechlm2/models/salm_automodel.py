@@ -609,7 +609,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         Mirrors Automodel's ``_get_dp_group(include_cp=True)`` pattern: prefers
         the ``dp_cp`` submesh (includes context parallelism) for the broadest
-        reduction, falling back to ``dp``.
+        reduction, falling back to ``dp``. ``dp`` and ``dp_cp`` are flattened
+        submeshes registered in ``device_mesh._flatten_mapping`` — they are not
+        in ``mesh_dim_names`` of the root mesh, so resolve them via
+        ``get_flat_mesh`` (same helper Automodel's ``base_recipe`` uses).
 
         Returns ``None`` when no device mesh is available (e.g. DDP training),
         causing ``collect_expert_loads`` to skip all-reduce (rank-local view).
@@ -617,12 +620,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         device_mesh = getattr(self, "_device_mesh", None)
         if device_mesh is None:
             return None
-        dim_names = device_mesh.mesh_dim_names
-        if "dp_cp" in dim_names:
-            return device_mesh["dp_cp"].get_group()
-        if "dp" in dim_names:
-            return device_mesh["dp"].get_group()
-        return None
+        from nemo_automodel.components.distributed.mesh_utils import get_flat_mesh
+
+        try:
+            if "cp" in device_mesh.mesh_dim_names and device_mesh["cp"].size() > 1:
+                return get_flat_mesh(device_mesh, "dp_cp").get_group()
+            return get_flat_mesh(device_mesh, "dp").get_group()
+        except KeyError:
+            return None
 
     def _configure_moe_aux_loss_scaler(self) -> None:
         """Cancel FSDP's gradient averaging on MoE aux-loss grads.

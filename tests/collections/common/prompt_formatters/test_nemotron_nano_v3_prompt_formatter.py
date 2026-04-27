@@ -106,6 +106,23 @@ def test_nemotron_nano_v3_training_no_think_prepended(bpe_tokenizer_with_think):
     # fmt: on
 
 
+def test_nemotron_nano_v3_training_multiturn_past_asst_no_think(bpe_tokenizer_with_think):
+    """Multi-turn training, past assistant WITHOUT think tags: <think></think> prepended to match HF jinja."""
+    formatter = NemotronNanoV3PromptFormatter(bpe_tokenizer_with_think)
+    ans = formatter.encode_dialog(
+        [
+            {"role": "user", "slots": {"message": "TEST"}},
+            {"role": "assistant", "slots": {"message": "TEST"}},
+            {"role": "user", "slots": {"message": "TEST"}},
+            {"role": "assistant", "slots": {"message": "TEST"}},
+        ]
+    )
+    # fmt: off
+    assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"].tolist()) == '<|im_start|>system\n<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think></think>TEST<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think></think>TEST<|im_end|>\n'
+    assert ans["mask"].shape[0] == ans["input_ids"].shape[0]
+    # fmt: on
+
+
 def test_nemotron_nano_v3_history_thinking_truncation(bpe_tokenizer_with_think):
     """Multi-turn: earlier assistant thinking replaced with <think></think>."""
     formatter = NemotronNanoV3PromptFormatter(bpe_tokenizer_with_think)
@@ -170,6 +187,42 @@ def test_nemotron_nano_v3_inference_keys(bpe_tokenizer_with_think):
     # fmt: off
     assert set(ans) == {"input_ids", "context_ids"}
     assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"].tolist()) == '<|im_start|>system\nSYSTEM<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think>\n'
+    assert ans["input_ids"].tolist() == ans["context_ids"].tolist()
+    # fmt: on
+
+
+def test_nemotron_nano_v3_inference_multiturn_thinking_disabled(bpe_tokenizer_with_think):
+    """Multi-turn inference, thinking disabled: past <think>...</think> truncated, generation prompt ends with <think></think>."""
+    formatter = NemotronNanoV3PromptFormatter(bpe_tokenizer_with_think)
+    ans = formatter.encode_dialog(
+        [
+            {"role": "user", "slots": {"message": "TEST"}},
+            {"role": "assistant", "slots": {"message": "<think>PAST</think>TEST"}},
+            {"role": "user", "slots": {"message": "TEST"}},
+        ],
+        enable_thinking=False,
+    )
+    # fmt: off
+    assert set(ans) == {"input_ids", "context_ids"}
+    assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"].tolist()) == '<|im_start|>system\n<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think></think>TEST<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think></think>'
+    assert ans["input_ids"].tolist() == ans["context_ids"].tolist()
+    # fmt: on
+
+
+def test_nemotron_nano_v3_inference_multiturn_thinking_enabled(bpe_tokenizer_with_think):
+    """Multi-turn inference, thinking enabled: past <think>...</think> truncated, generation prompt ends with <think>\\n."""
+    formatter = NemotronNanoV3PromptFormatter(bpe_tokenizer_with_think)
+    ans = formatter.encode_dialog(
+        [
+            {"role": "user", "slots": {"message": "TEST"}},
+            {"role": "assistant", "slots": {"message": "<think>PAST</think>TEST"}},
+            {"role": "user", "slots": {"message": "TEST"}},
+        ],
+        enable_thinking=True,
+    )
+    # fmt: off
+    assert set(ans) == {"input_ids", "context_ids"}
+    assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"].tolist()) == '<|im_start|>system\n<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think></think>TEST<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think>\n'
     assert ans["input_ids"].tolist() == ans["context_ids"].tolist()
     # fmt: on
 

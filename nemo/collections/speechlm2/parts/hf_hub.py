@@ -161,6 +161,10 @@ class HFHubMixin(
             config = getattr(self, "cfg")
             if isinstance(config, DictConfig):
                 config = OmegaConf.to_container(self.cfg)
+        # Ensure HF-compatible fields are present so vLLM / transformers can identify the model.
+        if isinstance(config, dict):
+            config.setdefault("model_type", "nemo_speechlm")
+            config.setdefault("architectures", ["NeMoSpeechLMForConditionalGeneration"])
         return super().save_pretrained(
             save_directory=save_directory,
             config=config,

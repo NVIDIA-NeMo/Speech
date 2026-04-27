@@ -180,9 +180,7 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
         # ``encoder_multilayer.encoder.*`` rather than ``encoder.*``; remap ASR
         # state-dict keys so pretrained encoder weights actually load.
         if isinstance(model.perception.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
-            asr_sd = {
-                ('encoder_multilayer.' + k if k.startswith('encoder.') else k): v for k, v in asr_sd.items()
-            }
+            asr_sd = {('encoder_multilayer.' + k if k.startswith('encoder.') else k): v for k, v in asr_sd.items()}
         model.perception.load_state_dict(asr_sd, strict=False)
     else:
         model.perception = AudioPerceptionModule(model.cfg.perception).train()

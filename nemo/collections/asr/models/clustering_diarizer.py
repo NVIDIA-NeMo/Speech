@@ -19,7 +19,6 @@ import tempfile
 from copy import deepcopy
 from typing import Any, List, Optional, Union
 
-import msgpack
 import torch
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
@@ -378,9 +377,9 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
 
             prefix = get_uniqname_from_filepath(manifest_file)
             name = os.path.join(embedding_dir, prefix)
-            self._embeddings_file = name + '_embeddings.msgpack'
+            self._embeddings_file = name + '_embeddings.pt'
             with open(self._embeddings_file, 'wb') as f:
-                msgpack.dump(self.embeddings, f)
+                torch.load(self.embeddings, f)
             logging.info("Saved embedding files to {}".format(embedding_dir))
 
     def diarize(self, paths2audio_files: List[str] = None, batch_size: int = 0):

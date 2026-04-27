@@ -16,7 +16,6 @@ import argparse
 import os
 import sys
 
-import msgpack
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import brentq
@@ -40,7 +39,7 @@ def get_acc(trial_file='', emb='', save_kaldi_emb=False):
     trial_score = open('trial_score.txt', 'w')
     dirname = os.path.dirname(trial_file)
     with open(emb, 'rb') as f:
-        emb = msgpack.load(f)
+        emb = torch.load(f)
     trial_embs = []
     keys = []
     all_scores = []

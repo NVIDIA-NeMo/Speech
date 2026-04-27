@@ -65,7 +65,7 @@ embs = speaker_model.get_embedding('audio_path')
 
 ### Voxceleb Evaluation
 ``` bash
-python voxceleb_eval.py --trial_file='/path/to/trail/file' --emb='./embeddings/voxceleb1_test_manifest_embeddings.msgpack'
+python voxceleb_eval.py --trial_file='/path/to/trail/file' --emb='./embeddings/voxceleb1_test_manifest_embeddings.pt'
 ```
 The above command gives the performance of models on voxceleb-o cleaned trial file.
 

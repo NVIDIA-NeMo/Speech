@@ -32,7 +32,6 @@ import json
 import os
 from argparse import ArgumentParser
 
-import msgpack
 import numpy as np
 import torch
 
@@ -72,9 +71,9 @@ def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./
     prefix = manifest_file.split('/')[-1].rsplit('.', 1)[-2]
 
     name = os.path.join(embedding_dir, prefix)
-    embeddings_file = name + '_embeddings.msgpack'
+    embeddings_file = name + '_embeddings.pt'
     with open(embeddings_file, 'wb') as f:
-        msgpack.dump(out_embeddings, f)
+        torch.save(out_embeddings, f)
     logging.info("Saved embedding files to {}".format(embedding_dir))
 
 

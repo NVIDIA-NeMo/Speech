@@ -20,7 +20,9 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
-    LATIN_CHARS_ALL,
+    INDIC_CHARS_ALL,
+    KOREAN_CHARS,
+    WORD_CHARS_ALL,
     any_locale_word_tokenize,
     english_word_tokenize,
     normalize_unicode_text,
@@ -29,18 +31,24 @@ from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.collections.tts.g2p.utils import GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER, set_grapheme_case
 from nemo.utils import logging
 
+# Compiled regex pattern for Indic scripts (used in dictionary parsing)
+_INDIC_PATTERN = re.compile(f'^[{INDIC_CHARS_ALL}]')
+_KOREAN_PATTERN = re.compile(f'^[{KOREAN_CHARS}]')
+
 
 class IpaG2p(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]
     # Regex for roman characters, accented characters, and locale-agnostic numbers/digits
-    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}\d]")
-    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}\d]")
+    CHAR_REGEX = re.compile(fr"[{WORD_CHARS_ALL}\d]")
+    PUNCT_REGEX = re.compile(fr"[^{WORD_CHARS_ALL}\d]")
     # fmt: on
 
     def __init__(
         self,
-        phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]],
+        phoneme_dict: Union[
+            str, pathlib.Path, List[Union[str, pathlib.Path, Dict[str, List[List[str]]]]], Dict[str, List[List[str]]]
+        ],
         locale: str = "en-US",
         apply_to_oov_word: Optional[Callable[[str], str]] = None,
         ignore_ambiguous_words: bool = True,
@@ -59,12 +67,16 @@ class IpaG2p(BaseG2p):
         `apply_to_oov_word` for handling.
 
         Args:
-            phoneme_dict (str, Path, or Dict): Path to file in CMUdict format or an IPA dict object with CMUdict-like
-                entries. For example,
-                a dictionary file: scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt;
-                a dictionary object: {..., "Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}.
-            locale (str): Locale used to determine a locale-specific tokenization logic. Currently, it supports "en-US",
-                "de-DE", and "es-ES". Defaults to "en-US". Specify None if implementing custom logic for a new locale.
+            phoneme_dict: A single phoneme dictionary source or a list of sources for multi-dictionary
+                code-switching (e.g. Hindi + English). Each source can be:
+                - a file path (str or pathlib.Path) in CMUdict format,
+                  e.g. ``scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt``
+                - a dict object with CMUdict-like entries,
+                  e.g. ``{"Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]]}``
+                When a list is provided, all sources are parsed and merged into a single dictionary.
+            locale (str): Locale used to determine a locale-specific tokenization logic.
+                See ``SUPPORTED_LOCALES`` in ``ipa_lexicon.py`` for the full list.
+                Defaults to "en-US". Specify None if implementing custom logic for a new locale.
             apply_to_oov_word (Callable): Function that deals with the out-of-vocabulary (OOV) words that do not exist
                 in the `phoneme_dict`.
             ignore_ambiguous_words (bool): Whether to handle word via phoneme_dict with ambiguous phoneme sequences.
@@ -154,19 +166,36 @@ class IpaG2p(BaseG2p):
 
     @staticmethod
     def _parse_phoneme_dict(
-        phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]]
+        phoneme_dict: Union[
+            str,
+            pathlib.Path,
+            Dict[str, List[List[str]]],
+            List[Union[str, pathlib.Path, Dict[str, List[List[str]]]]],
+        ]
     ) -> Dict[str, List[List[str]]]:
         """
-        parse an input IPA dictionary and save it as a dict object.
+        Parse one or more IPA dictionaries and return a merged dict object.
 
         Args:
-            phoneme_dict (Union[str, pathlib.Path, dict]): Path to file in CMUdict format or an IPA dict object with
-                CMUdict-like entries. For example,
-                a dictionary file: scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt;
-                a dictionary object: {..., "Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}.
+            phoneme_dict: A single phoneme dictionary source or a list of sources for multi-dictionary
+                code-switching (e.g. Hindi + English). Each source can be:
+                - a file path (str or pathlib.Path) in CMUdict format,
+                e.g. ``scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt``
+                - a dict object with CMUdict-like entries,
+                e.g. ``{"Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]]}``
+                When a list is provided, all sources are parsed and merged into a single dictionary.
 
-        Returns: a dict object (Dict[str, List[List[str]]]).
+        Returns:
+            A merged dict object (Dict[str, List[List[str]]]).
         """
+        if isinstance(phoneme_dict, list):
+            merged = defaultdict(list)
+            for source in phoneme_dict:
+                parsed = IpaG2p._parse_phoneme_dict(source)
+                for word, prons in parsed.items():
+                    merged[word].extend(prons)
+            return merged
+
         if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path):
             # load the dictionary file where there may exist a digit suffix after a word, e.g. "Word(2)", which
             # represents the pronunciation variant of that word.
@@ -190,6 +219,8 @@ class IpaG2p(BaseG2p):
                         or 'À' <= line[0] <= 'Ö'
                         or 'Ø' <= line[0] <= 'ö'
                         or 'ø' <= line[0] <= 'ÿ'
+                        or _INDIC_PATTERN.match(line[0])
+                        or _KOREAN_PATTERN.match(line[0])
                         or line[0] == "'"
                     ):
                         parts = line.strip().split(maxsplit=1)
@@ -217,7 +248,15 @@ class IpaG2p(BaseG2p):
 
         return phoneme_dict_obj
 
-    def replace_dict(self, phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]]):
+    def replace_dict(
+        self,
+        phoneme_dict: Union[
+            str,
+            pathlib.Path,
+            Dict[str, List[List[str]]],
+            List[Union[str, pathlib.Path, Dict[str, List[List[str]]]]],
+        ],
+    ):
         """
         Replace model's phoneme dictionary with a custom one
         """

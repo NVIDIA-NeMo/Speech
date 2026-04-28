@@ -72,8 +72,7 @@ def get_embeddings(speaker_model, manifest_file, batch_size=1, embedding_dir='./
 
     name = os.path.join(embedding_dir, prefix)
     embeddings_file = name + '_embeddings.pt'
-    with open(embeddings_file, 'wb') as f:
-        torch.save(out_embeddings, f)
+    torch.save(out_embeddings, embeddings_file)
     logging.info("Saved embedding files to {}".format(embedding_dir))
 
 

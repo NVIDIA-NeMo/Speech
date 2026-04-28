@@ -114,13 +114,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.asr_head = copy.deepcopy(self.lm_head)
             self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
 
-        self.use_function_head = self.cfg.get("use_function_head", False)
-        if self.use_function_head:
-            self.function_head = copy.deepcopy(self.lm_head)
-            logging.info("[Function Calling] Initialized function_head (deep copy of lm_head)")
-        else:
-            self.function_head = None
-
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model
@@ -217,11 +210,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         ans = {"text_logits": text_logits}
         if self.predict_user_text:
             ans["asr_logits"] = asr_logits
-        if self.function_head is not None:
-            function_in = out['last_hidden_state']
-            if function_in.dtype != self.function_head.weight.dtype:
-                function_in = function_in.to(self.function_head.weight.dtype)
-            ans["function_logits"] = self.function_head(function_in)
 
         if cache is not None:
             if 'Nemotron' in self.cfg.pretrained_llm:

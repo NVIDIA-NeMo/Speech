@@ -24,7 +24,12 @@ from lhotse.dataset.collation import collate_matrices, collate_vectors
 from omegaconf import DictConfig, open_dict
 from transformers import AutoTokenizer, T5Tokenizer
 
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPABPETokenizer
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
+    CASELESS_SCRIPT_TOKENIZER_TARGETS,
+    DEFAULT_CHARSET_VERSION,
+    AggregatedTTSTokenizer,
+    IPABPETokenizer,
+)
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     beta_binomial_prior_distribution,
     normalize_volume,
@@ -74,6 +79,18 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
             # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
             if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
                 tokenizer.set_phone_prob(1.0)
+
+            # Persist charset_version so it's saved in .nemo archives and
+            # update_config_for_inference can distinguish old checkpoints
+            # (missing charset_version → v1) from new ones.
+            if (
+                hasattr(tokenizer_config, '_target_')
+                and tokenizer_config._target_ in CASELESS_SCRIPT_TOKENIZER_TARGETS
+                and not hasattr(tokenizer_config, 'charset_version')
+            ):
+                with open_dict(all_tokenizers_config):
+                    tokenizer_config.charset_version = DEFAULT_CHARSET_VERSION
+
         tokenizers.append(tokenizer)
         tokenizer_names.append(tokenizer_name)
 

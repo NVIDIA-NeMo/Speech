@@ -213,7 +213,7 @@ jobs:
             - Speaker Diarization (docs/source/asr/speaker_diarization/): @tango4j, @ipmedenn
             - Audio Codec: @Edresson
             - TTS (docs/source/tts/): @subhankar-ghosh, @blisc
-            - Speech Enhancement (docs/source/audio/): @acoiaws
+            - Speech Enhancement (docs/source/audio/): @racoiaws
             - Dataloaders: @pzelasko
             - SSL (docs/source/asr/ssl/): @stevehuang52
 

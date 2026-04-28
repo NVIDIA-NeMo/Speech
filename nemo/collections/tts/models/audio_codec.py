@@ -814,11 +814,12 @@ class AudioCodecModel(ModelPT):
         )
         return data_loader
 
-    def _get_legacy_dataloader(self, cfg):
-        """Legacy (non-Lhotse) training dataloader for NeMo dataset format."""
+    def _get_non_tarred_dataloader(self, cfg):
+        """Non-tarred (NeMo format with individual files) training dataloader."""
         return self.get_dataset(cfg)
 
     def _setup_test_dataloader(self, cfg):
+        """Test/log dataloader for NeMo dataset format with individual files ."""
         return self.get_dataset(cfg)
 
     def _get_lhotse_dataloader(self, cfg):
@@ -884,13 +885,14 @@ class AudioCodecModel(ModelPT):
         if cfg.get("dataloader_params", {}).get("use_lhotse", False):
             self._train_dl = self._get_lhotse_dataloader(cfg)
         else:
-            self._train_dl = self._get_legacy_dataloader(cfg)
+            self._train_dl = self._get_non_tarred_dataloader(cfg)
 
     def setup_validation_data(self, cfg):
         if cfg.get("use_lhotse", False):
             raise ValueError("Lhotse data loading is not supported yet for validation.")
         else:
-            # For validation, we still use legacy data loading (NeMo dataset format).
+            # For validation, we still use non-Lhotse, non-tarred data format (NeMo
+            # dataset with individual files).
             self._validation_dl = self._setup_test_dataloader(cfg)
 
     def setup_test_data(self, cfg):

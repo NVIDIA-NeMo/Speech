@@ -756,7 +756,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.cfg.get("use_multiturn_dataset", False):
             speech_eos_mask = (text == self.interruption_token_id)  # (B, T)
             # remove the interruption token for all task, expect for interruption
-            if "interruption" not in task[0]:
+            if not task or "interruption" not in str(task[0]):
                 text[speech_eos_mask] = self.tokenizer.pad  # Clean up the text channel
 
         # 3. Prepare text channel embeddings
@@ -1052,7 +1052,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="train",
-            task=batch["task"],
+            task=batch["task"] if self.cfg.get("use_multiturn_dataset", False) else None,
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
@@ -1150,7 +1150,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="val",
-            task=batch["task"],
+            task=batch["task"] if "task" in batch else None,
         )
         # Access ProcessBatchOutput dataclass attributes
         # logits come from the parallel prediction head

@@ -3,6 +3,7 @@ model:
   pretrained_audio_codec: ???  # to be released
   pretrained_tts_model: null
   scoring_asr: stt_en_fastconformer_transducer_large # used only in validation/evaluation
+  trust_remote_code: true
 
   # Regexp (re.compile) patterns matching parameters to be frozen.
   freeze_params:

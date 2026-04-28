@@ -5,6 +5,7 @@ model:
   scoring_asr: stt_en_fastconformer_transducer_large  # used only in validation/evaluation
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
+  trust_remote_code: true
 
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 

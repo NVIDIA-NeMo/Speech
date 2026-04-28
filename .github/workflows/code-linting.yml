@@ -27,6 +27,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get PR info
+        id: get-pr-info
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        uses: nv-gha-runners/get-pr-info@main
 
       - name: Select filter
         id: filter
@@ -62,6 +69,8 @@ jobs:
         id: changed-files
         uses: step-security/changed-files@v45.0.1
         with:
+          sha: ${{ github.sha }}
+          base_sha: ${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').base.sha || github.event.pull_request.base.sha }}
           files: ${{ steps.filter.outputs.main }}
           files_separator: ","
           separator: " "

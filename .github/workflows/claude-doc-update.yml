@@ -1,0 +1,383 @@
+# Automated Documentation Updater — triggered on PR merge or via /claude docs command.
+#
+# Two modes:
+#   1. Automatic: When a PR is merged to main, Claude analyzes the diff and
+#      decides whether documentation updates are needed. If yes, it opens a
+#      new PR with the doc changes and requests review from @Ssofja.
+#   2. On-demand: A speech_team member comments "/claude docs" on any PR to
+#      trigger a doc analysis for that specific PR's changes.
+#
+# Authorization: restricted to NVIDIA-NeMo/speech_team members.
+# The workflow never runs for PRs from forks.
+#
+# Required secrets: ANTHROPIC_API_KEY, ORG_TEAM_READ_TOKEN
+
+name: Claude Code — Documentation Updater
+
+on:
+  pull_request:
+    types: [closed]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  # ---- On-demand: /claude docs command on a PR ----
+
+  acknowledge-command:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/claude docs')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add eyes reaction
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+  authorize-command:
+    needs: acknowledge-command
+    runs-on: ubuntu-latest
+    outputs:
+      authorized: ${{ steps.authz.outputs.authorized }}
+      pr_number: ${{ github.event.issue.number }}
+    steps:
+      - name: Verify commenter is speech_team
+        id: authz
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
+          script: |
+            const username = context.payload.comment.user.login;
+            try {
+              const res = await github.rest.teams.getMembershipForUserInOrg({
+                org: 'NVIDIA-NeMo',
+                team_slug: 'speech_team',
+                username,
+              });
+              core.setOutput('authorized', res.data.state === 'active' ? 'true' : 'false');
+            } catch (e) {
+              core.setOutput('authorized', 'false');
+            }
+
+      - name: Refuse non-speech_team
+        if: steps.authz.outputs.authorized != 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `@${context.payload.comment.user.login} the doc updater is restricted to \`speech_team\` members.`
+            });
+
+  # ---- Automatic: analyze merged PRs ----
+
+  check-merged-pr:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      should_analyze: ${{ steps.check.outputs.should_analyze }}
+      pr_number: ${{ github.event.pull_request.number }}
+      pr_title: ${{ github.event.pull_request.title }}
+      merge_sha: ${{ github.event.pull_request.merge_commit_sha }}
+    steps:
+      - name: Determine if PR touches code that may need doc updates
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const filenames = files.map(f => f.filename);
+
+            // Skip PRs that ONLY touch docs (they're already doc PRs)
+            const allDocs = filenames.every(f => f.startsWith('docs/'));
+            if (allDocs) {
+              core.info('PR only touches docs — skipping.');
+              core.setOutput('should_analyze', 'false');
+              return;
+            }
+
+            // Skip PRs that only touch CI/config/tests with no code changes
+            const hasCodeChanges = filenames.some(f =>
+              f.startsWith('nemo/') ||
+              f.startsWith('examples/') ||
+              f.startsWith('scripts/')
+            );
+            if (!hasCodeChanges) {
+              core.info('No code changes in nemo/, examples/, or scripts/ — skipping.');
+              core.setOutput('should_analyze', 'false');
+              return;
+            }
+
+            core.setOutput('should_analyze', 'true');
+
+  # ---- Core job: Claude analyzes the PR and proposes doc updates ----
+
+  analyze-and-propose:
+    needs: check-merged-pr
+    if: needs.check-merged-pr.outputs.should_analyze == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: doc-update-${{ needs.check-merged-pr.outputs.pr_number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Create doc-update branch
+        id: branch
+        env:
+          PR_NUMBER: ${{ needs.check-merged-pr.outputs.pr_number }}
+        run: |
+          BRANCH="docs/auto-update-pr-${PR_NUMBER}"
+          git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            PR #${{ needs.check-merged-pr.outputs.pr_number }} ("${{ needs.check-merged-pr.outputs.pr_title }}")
+            was just merged to main.
+
+            Your task: determine whether this PR's changes require documentation updates
+            in the `docs/source/` directory, and if so, make those changes.
+
+            Instructions:
+
+            1. Run `gh pr diff ${{ needs.check-merged-pr.outputs.pr_number }}` to see the full diff.
+               Also run `gh pr view ${{ needs.check-merged-pr.outputs.pr_number }}` to read the PR
+               description and understand intent.
+
+            2. Analyze the changes and determine if documentation updates are needed.
+               Documentation updates ARE needed when:
+               - New public API classes, functions, or config options are added
+               - Existing API signatures or behavior changes (parameters renamed, defaults changed)
+               - New model architectures or checkpoints are introduced
+               - New scripts or examples are added
+               - Existing features are deprecated or removed
+               - Config file structures change
+
+               Documentation updates are NOT needed when:
+               - Internal refactoring with no public API change
+               - Bug fixes that don't change documented behavior
+               - Test-only changes
+               - CI/infrastructure changes
+               - Performance optimizations with no user-facing change
+
+            3. If NO documentation update is needed:
+               - Post a comment on PR #${{ needs.check-merged-pr.outputs.pr_number }} saying:
+                 "Analyzed for documentation impact — no updates needed."
+               - Do NOT create any commits or branches.
+
+            4. If documentation DOES need updating:
+               - Edit the relevant .rst files under docs/source/
+               - Focus on accuracy: match code changes exactly
+               - Follow the existing documentation style and structure
+               - Commit with message: "docs: update documentation for PR #${{ needs.check-merged-pr.outputs.pr_number }}"
+               - Push the branch
+               - Create a new PR with:
+                 Title: "docs: auto-update for #${{ needs.check-merged-pr.outputs.pr_number }}"
+                 Body explaining what changed and why docs need updating
+                 Request reviewers based on which docs are affected (always include @Ssofja and @pzelasko):
+
+            Reviewer routing (request ALL that apply):
+            - Always: @Ssofja, @pzelasko
+            - ASR (docs/source/asr/intro.rst, models.rst, configs.rst, etc.): @nithinraok
+            - Speaker Diarization (docs/source/asr/speaker_diarization/): @tango4j, @ipmedenn
+            - Audio Codec: @Edresson
+            - TTS (docs/source/tts/): @subhankar-ghosh, @blisc
+            - Speech Enhancement (docs/source/audio/): @acoiaws
+            - Dataloaders: @pzelasko
+            - SSL (docs/source/asr/ssl/): @stevehuang52
+
+            Key documentation directories and files to consider:
+            - docs/source/index.rst — top-level landing page
+            - docs/source/starthere/ — getting started, choosing a model, install, key concepts
+            - docs/source/asr/intro.rst — ASR overview and quick-start
+            - docs/source/asr/models.rst — ASR model architectures
+            - docs/source/asr/all_chkpt.rst — checkpoint listings
+            - docs/source/asr/configs.rst — ASR configuration options
+            - docs/source/asr/datasets.rst — data formats, tarred datasets, Lhotse dataloading
+            - docs/source/asr/asr_language_modeling_and_customization.rst — decoding customization
+            - docs/source/asr/asr_customization/ — word boosting, n-gram LM, neural rescoring
+            - docs/source/asr/streaming_decoding/ — Canary chunked and streaming decoding
+            - docs/source/asr/api.rst — ASR API reference
+            - docs/source/asr/speaker_diarization/ — speaker diarization (intro, models, configs, results, datasets)
+            - docs/source/asr/speaker_recognition/ — speaker recognition
+            - docs/source/asr/speech_classification/ — speech classification (VAD, etc.)
+            - docs/source/asr/ssl/ — self-supervised learning
+            - docs/source/tts/ — text-to-speech (MagpieTTS, FastPitch, etc.)
+            - docs/source/audio/ — speech enhancement, restoration, extraction, audio codecs
+            - docs/source/speechlm2/ — speech language models (SALM, Canary-Qwen)
+            - docs/source/tools/ — NFA, CTC segmentation, ASR evaluator, data tools
+            - docs/source/common/ — tokenizers, losses, metrics, callbacks, data utilities
+            - docs/source/core/ — neural modules, exp_manager, neural types
+            - docs/source/features/ — mixed precision, parallelisms
+            - docs/source/checkpoints/ — checkpoint loading
+
+            Be conservative: only propose changes you are confident about.
+            When in doubt, mention the uncertainty in the PR description.
+          claude_args: "--max-turns 15 --model claude-sonnet-4-6"
+
+  # ---- On-demand analysis (same logic, triggered by /claude docs) ----
+
+  analyze-on-demand:
+    needs: authorize-command
+    if: needs.authorize-command.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: doc-update-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create doc-update branch
+        id: branch
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          BRANCH="docs/auto-update-pr-${PR_NUMBER}"
+          git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            A team member requested documentation analysis for PR #${{ github.event.issue.number }}.
+
+            Your task: analyze this PR and determine whether documentation updates
+            are needed, and if so, make those changes.
+
+            Instructions:
+
+            1. Run `gh pr diff ${{ github.event.issue.number }}` to see the full diff.
+               Also run `gh pr view ${{ github.event.issue.number }}` to read the PR
+               description and understand intent.
+
+            2. Analyze the changes and determine if documentation updates are needed.
+               Documentation updates ARE needed when:
+               - New public API classes, functions, or config options are added
+               - Existing API signatures or behavior changes
+               - New model architectures or checkpoints are introduced
+               - New scripts or examples are added
+               - Existing features are deprecated or removed
+               - Config file structures change
+
+               Documentation updates are NOT needed when:
+               - Internal refactoring with no public API change
+               - Bug fixes that don't change documented behavior
+               - Test-only changes
+
+            3. If NO documentation update is needed:
+               - Reply on the PR: "Analyzed for documentation impact — no updates needed."
+
+            4. If documentation DOES need updating:
+               - Edit the relevant .rst files under docs/source/
+               - Focus on accuracy: match code changes exactly
+               - Follow the existing documentation style and structure
+               - Commit with message: "docs: update documentation for PR #${{ github.event.issue.number }}"
+               - Push the branch
+               - Create a new PR with:
+                 Title: "docs: auto-update for #${{ github.event.issue.number }}"
+                 Body explaining what changed and why docs need updating
+                 Request reviewers based on which docs are affected (always include @Ssofja and @pzelasko):
+
+            Reviewer routing (request ALL that apply):
+            - Always: @Ssofja, @pzelasko
+            - ASR (docs/source/asr/intro.rst, models.rst, configs.rst, etc.): @nithinraok
+            - Speaker Diarization (docs/source/asr/speaker_diarization/): @tango4j, @ipmedenn
+            - Audio Codec: @Edresson
+            - TTS (docs/source/tts/): @subhankar-ghosh, @blisc
+            - Speech Enhancement (docs/source/audio/): @acoiaws
+            - Dataloaders: @pzelasko
+            - SSL (docs/source/asr/ssl/): @stevehuang52
+
+            Key documentation directories and files to consider:
+            - docs/source/index.rst — top-level landing page
+            - docs/source/starthere/ — getting started, choosing a model, install, key concepts
+            - docs/source/asr/intro.rst — ASR overview and quick-start
+            - docs/source/asr/models.rst — ASR model architectures
+            - docs/source/asr/all_chkpt.rst — checkpoint listings
+            - docs/source/asr/configs.rst — ASR configuration options
+            - docs/source/asr/datasets.rst — data formats, tarred datasets, Lhotse dataloading
+            - docs/source/asr/asr_language_modeling_and_customization.rst — decoding customization
+            - docs/source/asr/asr_customization/ — word boosting, n-gram LM, neural rescoring
+            - docs/source/asr/streaming_decoding/ — Canary chunked and streaming decoding
+            - docs/source/asr/api.rst — ASR API reference
+            - docs/source/asr/speaker_diarization/ — speaker diarization (intro, models, configs, results, datasets)
+            - docs/source/asr/speaker_recognition/ — speaker recognition
+            - docs/source/asr/speech_classification/ — speech classification (VAD, etc.)
+            - docs/source/asr/ssl/ — self-supervised learning
+            - docs/source/tts/ — text-to-speech (MagpieTTS, FastPitch, etc.)
+            - docs/source/audio/ — speech enhancement, restoration, extraction, audio codecs
+            - docs/source/speechlm2/ — speech language models (SALM, Canary-Qwen)
+            - docs/source/tools/ — NFA, CTC segmentation, ASR evaluator, data tools
+            - docs/source/common/ — tokenizers, losses, metrics, callbacks, data utilities
+            - docs/source/core/ — neural modules, exp_manager, neural types
+            - docs/source/features/ — mixed precision, parallelisms
+            - docs/source/checkpoints/ — checkpoint loading
+
+            Be conservative: only propose changes you are confident about.
+          claude_args: "--max-turns 15 --model claude-sonnet-4-6"
+
+  # ---- Notify on failure ----
+
+  notify-failure-merged:
+    needs: [check-merged-pr, analyze-and-propose]
+    if: failure() && needs.check-merged-pr.outputs.should_analyze == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: parseInt('${{ needs.check-merged-pr.outputs.pr_number }}', 10),
+              body: 'Doc updater failed to analyze this PR. @Ssofja please review manually if documentation updates are needed.'
+            });
+
+  notify-failure-command:
+    needs: [authorize-command, analyze-on-demand]
+    if: failure() && needs.authorize-command.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: 'Doc updater failed to analyze this PR. @Ssofja please review manually.'
+            });

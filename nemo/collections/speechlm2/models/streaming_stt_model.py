@@ -14,6 +14,7 @@
 import math
 import warnings
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Union
 
@@ -22,9 +23,9 @@ import torch.nn.functional as F
 from lightning import LightningModule
 from lightning.pytorch.utilities.model_summary import ModelSummary
 from omegaconf import DictConfig
-from torch import Tensor
+from torch import Tensor, nn
 from torch.distributed.tensor.parallel import loss_parallel
-from transformers import GenerationConfig
+from transformers import AutoModel, GenerationConfig
 
 from nemo.collections.asr.inference.streaming.buffering.cache_feature_bufferer import BatchedCacheFeatureBufferer
 from nemo.collections.asr.inference.streaming.framing.request import Frame
@@ -147,6 +148,21 @@ class StreamingSTTModelConfig:
     dtype: str = "bfloat16"
     compact_template: bool = False
     write_token: str = "<|im_start|>"
+    # --- Aux chunk-boundary classifier head ---
+    # Enabled when chunk_classifier_loss_weight > 0. The aux head is a small
+    # K-layer transformer on top of the LLM's last hidden state that emits a
+    # binary "ready to emit" probability at audio frame positions, replacing
+    # the LM-head signal for the boundary decision.
+    chunk_classifier_loss_weight: float = 0.0
+    chunk_classifier_num_layers: int = 2
+    chunk_classifier_init_from_llm: bool = True
+    chunk_classifier_threshold: float = 0.5
+    chunk_classifier_use_at_inference: bool = False
+    freeze_chunk_classifier: bool = False
+    # Auto-balance the BCE: pos_weight = num_neg/num_pos per batch. Most audio
+    # frames are "keep listening" (label=0); the few "emit" frames (label=1) get
+    # drowned out without rebalancing.
+    chunk_classifier_auto_balance: bool = True
 
 
 @dataclass
@@ -164,6 +180,10 @@ class StreamingState:
     audio_cache: CacheAwareContext | None = None  # perception cache with batch dim B
     audio_feature_buffer: BatchedCacheFeatureBufferer | None = None
     attention_mask: Optional[Tensor] = None  # (B, seq_len) mask for left-padded prefill
+    # (B, seq_len, H) running buffer of LLM last hidden states; used by the aux
+    # chunk-boundary classifier when chunk_classifier_use_at_inference is True.
+    # None when disabled — keeps the field cheap to always carry on the state.
+    aux_hidden_buffer: Optional[Tensor] = None
     batch_size: int = 1
 
     @property
@@ -238,6 +258,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             att_context_size=self.core_cfg.att_context_size,
         )
 
+        # --- Aux chunk-boundary classifier (always built; cheap) ---
+        # Small K-layer transformer with the same architecture as the LLM,
+        # operating on the LLM's last hidden state. Bypassed entirely when
+        # chunk_classifier_loss_weight == 0 and chunk_classifier_use_at_inference
+        # is False, so existing runs/checkpoints see no behavior change.
+        self._build_chunk_classifier()
+
         self._apply_freeze_config()
 
         # --- LoRA ---
@@ -260,6 +287,46 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             self.dataset = None
 
         logging.info("\n" + str(ModelSummary(self, max_depth=2)))
+
+    def _build_chunk_classifier(self) -> None:
+        """Construct the aux backbone + linear head.
+
+        The backbone reuses the LLM's architecture via ``AutoModel.from_config``
+        (works for any modern HF decoder-only LLM — Llama/Qwen/Mistral/Phi/Gemma).
+        ``embed_tokens`` is dropped since we always feed ``inputs_embeds``;
+        same pattern as the main LLM at __init__.
+        """
+        K = max(int(self.core_cfg.chunk_classifier_num_layers), 1)
+        aux_cfg = deepcopy(self.llm.config)
+        aux_cfg.num_hidden_layers = K
+        # Aux backbone is run as a full-sequence forward at both train and
+        # inference time — no KV cache needed.
+        aux_cfg.use_cache = False
+
+        self.chunk_classifier_backbone = AutoModel.from_config(aux_cfg)
+        # Drop V×H embedding table: we always feed inputs_embeds.
+        # (Same trick as line 228-229 for the main LLM.)
+        if hasattr(self.chunk_classifier_backbone, "embed_tokens"):
+            del self.chunk_classifier_backbone.embed_tokens
+
+        self.chunk_classifier_head = nn.Linear(aux_cfg.hidden_size, 1)
+        nn.init.zeros_(self.chunk_classifier_head.bias)
+
+        # Optional warm-start: copy the last K layers + final norm from the
+        # main LLM. The aux backbone consumes the LLM's last hidden state, so
+        # these layers operate on the right input distribution and converge
+        # much faster than random init.
+        if self.core_cfg.chunk_classifier_init_from_llm:
+            try:
+                src_layers = self.llm.model.layers[-K:]
+                for i in range(K):
+                    self.chunk_classifier_backbone.layers[i].load_state_dict(src_layers[i].state_dict())
+                self.chunk_classifier_backbone.norm.load_state_dict(self.llm.model.norm.state_dict())
+                logging.info(f"chunk_classifier: warm-started from last {K} LLM layers")
+            except (AttributeError, KeyError) as e:
+                logging.warning(
+                    f"chunk_classifier_init_from_llm: warm-start failed ({e}); " "falling back to random init"
+                )
 
     def _apply_freeze_config(self) -> None:
         if self.core_cfg.freeze_speech_encoder:
@@ -294,6 +361,14 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             freeze_module(self.embed_tokens)
         else:
             unfreeze_module(self.embed_tokens)
+
+        # Aux chunk-boundary classifier (backbone + linear head)
+        if self.core_cfg.freeze_chunk_classifier:
+            freeze_module(self.chunk_classifier_backbone)
+            freeze_module(self.chunk_classifier_head)
+        else:
+            unfreeze_module(self.chunk_classifier_backbone)
+            unfreeze_module(self.chunk_classifier_head)
 
     # ------------------------------------------------------------------
     # Properties
@@ -405,18 +480,26 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         input_embeds: Tensor,
         attention_mask: Tensor | None = None,
         cache=None,
+        output_hidden_states: bool = False,
     ) -> dict[str, Tensor]:
         """
         Forward pass:  embeddings → LLM → logits.
+
+        When ``output_hidden_states=True`` the dict also contains
+        ``hidden_states`` (B, L, H) — the LLM's last-layer hidden state, used
+        as input to the aux chunk-boundary classifier.
         """
         out = self.llm(
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
             past_key_values=cache,
             use_cache=cache is not None,
+            output_hidden_states=output_hidden_states,
             return_dict=True,
         )
         ans = {"logits": out["logits"]}  # (B, L, V)
+        if output_hidden_states:
+            ans["hidden_states"] = out["hidden_states"][-1]  # (B, L, H)
         if cache is not None:
             ans["cache"] = out["past_key_values"]
         return ans
@@ -443,9 +526,26 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             batch = move_data_to_device(batch, self.device)
 
         inputs = self._build_input_embeds(batch.input_tokens, batch.audios, batch.audio_lens)
-        outputs = self.forward(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+        cls_w = self.core_cfg.chunk_classifier_loss_weight
+        outputs = self.forward(
+            inputs["input_embeds"],
+            attention_mask=inputs["attention_mask"],
+            output_hidden_states=(cls_w > 0),
+        )
 
         target_ids = batch.target_tokens
+
+        # When the aux chunk classifier is active, strip audio-frame positions
+        # from the LM CE so the LM head is only supervised on text. The aux
+        # head (below) handles the boundary decision via BCE. Use the input-axis
+        # audio mask — NOT a target-value mask — so end-of-chunk blanks at
+        # text positions (line 1696/1701 in inference) remain supervised.
+        if cls_w > 0:
+            audio_mask = batch.input_tokens == AUDIO_TOKEN_IDX  # (B, L)
+            target_ids = torch.where(audio_mask, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
+        else:
+            audio_mask = None
+
         num_targets = (target_ids != IGNORE_INDEX).long().sum()
 
         if num_targets == 0:
@@ -495,12 +595,51 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             loss_blank = per_token_loss[is_blank].sum() / num_blank.clamp(min=1)
             loss_nonblank = per_token_loss[is_nonblank].sum() / num_nonblank.clamp(min=1)
 
+        # --- Aux chunk-boundary classifier loss ---
+        # BCE on the aux head's binary "ready to emit" prediction at audio frames.
+        # Supervised positions: input is an audio frame AND original target was a
+        # decision token (blank=keep listening, user_footer_first=emit). Using the
+        # input-axis audio mask here exactly mirrors the supervision the LM head
+        # used to provide at audio positions before §4(a) masked them out.
+        cls_loss_log = torch.zeros((), device=loss.device)
+        if cls_w > 0 and self.has_blank and audio_mask is not None and self._user_footer_first_id is not None:
+            audio_mask_flat = audio_mask.flatten(0, 1)  # (B*L,)
+            orig_targets_flat = batch.target_tokens.flatten(0, 1)  # pre-LM-CE-masking
+            decision_mask = audio_mask_flat & (orig_targets_flat != IGNORE_INDEX)
+            num_decisions = decision_mask.sum()
+            if num_decisions > 0:
+                aux_out = self.chunk_classifier_backbone(
+                    inputs_embeds=outputs["hidden_states"],  # (B, L, H)
+                    attention_mask=inputs["attention_mask"],
+                    return_dict=True,
+                )
+                flat_aux = aux_out.last_hidden_state.flatten(0, 1)  # (B*L, H)
+                cls_logits = self.chunk_classifier_head(flat_aux[decision_mask]).squeeze(-1)
+                cls_targets = (orig_targets_flat[decision_mask] == self._user_footer_first_id).to(cls_logits.dtype)
+                # Auto-balance: pos_weight = N_neg/N_pos. Skip when either class
+                # is empty in this batch (pos_weight would zero out one side).
+                num_pos = cls_targets.sum()
+                num_neg = cls_targets.numel() - num_pos
+                if self.core_cfg.chunk_classifier_auto_balance and num_pos > 0 and num_neg > 0:
+                    pos_weight = (num_neg.float() / num_pos.float()).detach()
+                else:
+                    pos_weight = None
+                cls_loss = F.binary_cross_entropy_with_logits(cls_logits, cls_targets, pos_weight=pos_weight)
+                loss = loss + cls_w * cls_loss
+                cls_loss_log = cls_loss.detach()
+                cls_pos_ratio = num_pos.float() / num_decisions.clamp(min=1).float()
+                self.log_dict(
+                    {"loss_chunk_cls_pos_ratio": cls_pos_ratio},
+                    on_step=True,
+                )
+
         B, L = inputs["input_embeds"].shape[:2]
         self.log_dict(
             {
                 "loss": loss,
                 "loss_blank": loss_blank,
                 "loss_nonblank": loss_nonblank,
+                "loss_chunk_cls": cls_loss_log,
                 "blank_ratio": num_blank.float() / num_targets,
                 "learning_rate": torch.as_tensor(
                     self.trainer.optimizers[0].param_groups[0]["lr"] if self._trainer is not None else 0
@@ -524,6 +663,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
     def on_validation_epoch_start(self) -> None:
         self._partial_val_losses: dict[str, list] = defaultdict(list)
         self._partial_accuracies: dict[str, list] = defaultdict(list)
+        # Per-class TP/total counts for the aux chunk classifier. Aggregated
+        # across the epoch so macro acc isn't biased by per-batch composition.
+        self._partial_aux_pos_correct: dict[str, list] = defaultdict(list)
+        self._partial_aux_pos_total: dict[str, list] = defaultdict(list)
+        self._partial_aux_neg_correct: dict[str, list] = defaultdict(list)
+        self._partial_aux_neg_total: dict[str, list] = defaultdict(list)
 
     def on_validation_epoch_end(self) -> None:
         val_losses = []
@@ -542,8 +687,31 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         if accuracies:
             self.log("val_acc", torch.stack(accuracies).mean(), on_epoch=True, sync_dist=True)
 
+        # --- Aux chunk classifier: macro accuracy ---
+        # Sum per-class counts across the epoch and compute pos/neg accuracy
+        # once at the end. Macro acc = (pos_acc + neg_acc) / 2 — class-balanced.
+        macro_accs = []
+        for name in self._partial_aux_pos_total.keys():
+            pos_correct = torch.stack(self._partial_aux_pos_correct[name]).sum()
+            pos_total = torch.stack(self._partial_aux_pos_total[name]).sum()
+            neg_correct = torch.stack(self._partial_aux_neg_correct[name]).sum()
+            neg_total = torch.stack(self._partial_aux_neg_total[name]).sum()
+            pos_acc = pos_correct.float() / pos_total.clamp(min=1).float()
+            neg_acc = neg_correct.float() / neg_total.clamp(min=1).float()
+            macro = (pos_acc + neg_acc) / 2
+            self.log(f"val_aux_pos_acc_{name}", pos_acc, on_epoch=True, sync_dist=True)
+            self.log(f"val_aux_neg_acc_{name}", neg_acc, on_epoch=True, sync_dist=True)
+            self.log(f"val_aux_macro_acc_{name}", macro, on_epoch=True, sync_dist=True)
+            macro_accs.append(macro)
+        if macro_accs:
+            self.log("val_aux_macro_acc", torch.stack(macro_accs).mean(), on_epoch=True, sync_dist=True)
+
         self._partial_val_losses.clear()
         self._partial_accuracies.clear()
+        self._partial_aux_pos_correct.clear()
+        self._partial_aux_pos_total.clear()
+        self._partial_aux_neg_correct.clear()
+        self._partial_aux_neg_total.clear()
 
     def validation_step(self, batch, batch_idx: int):
         # Support multiple validation dataloaders ({name: batch} dict).
@@ -567,7 +735,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             batch = move_data_to_device(batch, self.device)
 
         inputs = self._build_input_embeds(batch.input_tokens, batch.audios, batch.audio_lens)
-        outputs = self.forward(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+        cls_w = self.core_cfg.chunk_classifier_loss_weight
+        aux_active = cls_w > 0 and self.has_blank and self._user_footer_first_id is not None
+        outputs = self.forward(
+            inputs["input_embeds"],
+            attention_mask=inputs["attention_mask"],
+            output_hidden_states=aux_active,
+        )
 
         target_ids = batch.target_tokens
         num_targets = (target_ids != IGNORE_INDEX).long().sum()
@@ -591,6 +765,33 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         self._partial_val_losses[name].append(loss)
         self._partial_accuracies[name].append(accuracy)
+
+        # --- Aux chunk classifier: per-class correct/total counts ---
+        if aux_active:
+            audio_mask = batch.input_tokens == AUDIO_TOKEN_IDX  # (B, L)
+            audio_mask_flat = audio_mask.flatten(0, 1)
+            orig_targets_flat = batch.target_tokens.flatten(0, 1)
+            decision_mask = audio_mask_flat & (orig_targets_flat != IGNORE_INDEX)
+            if decision_mask.any():
+                aux_out = self.chunk_classifier_backbone(
+                    inputs_embeds=outputs["hidden_states"],
+                    attention_mask=inputs["attention_mask"],
+                    return_dict=True,
+                )
+                flat_aux = aux_out.last_hidden_state.flatten(0, 1)
+                cls_logits = self.chunk_classifier_head(flat_aux[decision_mask]).squeeze(-1)
+                cls_targets = orig_targets_flat[decision_mask] == self._user_footer_first_id
+                # Use the configured threshold so val acc reflects what
+                # _generate_dynamic_streaming will actually do at inference.
+                thr = self.core_cfg.chunk_classifier_threshold
+                cls_preds = torch.sigmoid(cls_logits) >= thr
+                correct = cls_preds == cls_targets
+                pos_mask = cls_targets
+                neg_mask = ~cls_targets
+                self._partial_aux_pos_correct[name].append((correct & pos_mask).sum().detach())
+                self._partial_aux_pos_total[name].append(pos_mask.sum().detach())
+                self._partial_aux_neg_correct[name].append((correct & neg_mask).sum().detach())
+                self._partial_aux_neg_total[name].append(neg_mask.sum().detach())
 
         # Log decoded predictions vs references periodically (first sample in batch).
         if batch_idx % self.core_cfg.log_every_n_steps == 0:
@@ -1045,6 +1246,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         sys_lens = [len(ids) for ids in all_sys_ids]
         needs_padding = len(set(sys_lens)) > 1
 
+        # Capture hidden states from the prefill if the aux head will be used at
+        # inference, so the aux backbone sees the same full-sequence context as
+        # at training time.
+        capture_hidden = self.core_cfg.chunk_classifier_use_at_inference
+
         if not needs_padding:
             # Fast path: all same length, no padding needed
             sys_embs = self.embed_tokens(
@@ -1055,6 +1261,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 inputs_embeds=sys_embs,
                 attention_mask=attention_mask,
                 use_cache=True,
+                output_hidden_states=capture_hidden,
                 return_dict=True,
             )
             max_sys_len = sys_lens[0]
@@ -1077,8 +1284,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 inputs_embeds=sys_embs,
                 attention_mask=attention_mask,
                 use_cache=True,
+                output_hidden_states=capture_hidden,
                 return_dict=True,
             )
+
+        aux_hidden_buffer = out.hidden_states[-1] if capture_hidden else None
 
         cache_last_channel, cache_last_time, cache_last_channel_len = self.perception.get_initial_cache_state(
             batch_size=batch_size, dtype=dtype, device=device
@@ -1096,6 +1306,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             audio_cache=audio_cache,
             audio_feature_buffer=audio_feature_buffer,
             attention_mask=attention_mask,
+            aux_hidden_buffer=aux_hidden_buffer,
             batch_size=batch_size,
         )
 
@@ -1581,10 +1792,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             input_embs = torch.stack(embs_list).unsqueeze(1)  # (B, H) → (B, 1, H)
 
             # --- Single LLM forward ---
+            use_aux = self.core_cfg.chunk_classifier_use_at_inference
             llm_kwargs = dict(
                 inputs_embeds=input_embs,
                 past_key_values=state.cache,
                 use_cache=True,
+                output_hidden_states=use_aux,
                 return_dict=True,
             )
             if state.attention_mask is not None:
@@ -1597,6 +1810,26 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             state.cache = out.past_key_values
             for b in range(B):
                 state.seq_lens[b] += 1
+
+            # --- Aux chunk-boundary classifier: full-sequence forward ---
+            # Append the new LLM hidden state to the running buffer, then run
+            # the K-layer aux backbone over the entire accumulated buffer
+            # (no aux KV cache — matches training, where the aux backbone sees
+            # the full sequence in one pass). Cost is K layers × current length
+            # per step; cheap at K≈2.
+            aux_last_hidden = None
+            if use_aux:
+                new_h = out.hidden_states[-1]  # (B, 1, H)
+                if state.aux_hidden_buffer is None:
+                    state.aux_hidden_buffer = new_h
+                else:
+                    state.aux_hidden_buffer = torch.cat([state.aux_hidden_buffer, new_h], dim=1)
+                aux_out = self.chunk_classifier_backbone(
+                    inputs_embeds=state.aux_hidden_buffer,
+                    attention_mask=state.attention_mask,
+                    return_dict=True,
+                )
+                aux_last_hidden = aux_out.last_hidden_state  # (B, L_so_far, H)
 
             # --- Per-stream state transitions ---
             for b in range(B):
@@ -1629,14 +1862,22 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                 template_pos[b] = 0
                                 frames_in_segment[b] = 0
                         else:
-                            # In [min, max] window — use model prediction
-                            token = self._sample_token(
-                                out.logits[b : b + 1, -1, :],
-                                None,
-                                generation_config,
-                                **generation_kwargs,
-                            ).item()
-                            if token == user_footer_first_id:
+                            # In [min, max] window — use model prediction.
+                            # Either the aux classifier head (when enabled) or
+                            # the LM head's vocab sample (legacy path).
+                            if use_aux and aux_last_hidden is not None:
+                                h_last = aux_last_hidden[b, -1, :]  # (H,)
+                                p_emit = torch.sigmoid(self.chunk_classifier_head(h_last)).item()
+                                emit = p_emit >= self.core_cfg.chunk_classifier_threshold
+                            else:
+                                token = self._sample_token(
+                                    out.logits[b : b + 1, -1, :],
+                                    None,
+                                    generation_config,
+                                    **generation_kwargs,
+                                ).item()
+                                emit = token == user_footer_first_id
+                            if emit:
                                 stream_state[b] = FOOTER
                                 template_pos[b] = 0
                                 frames_in_segment[b] = 0

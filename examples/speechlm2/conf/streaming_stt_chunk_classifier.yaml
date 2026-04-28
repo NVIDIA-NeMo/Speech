@@ -1,0 +1,161 @@
+model:
+  pretrained_llm: Qwen/Qwen3-1.7B
+  pretrained_asr: nvidia/nemotron-speech-streaming-en-0.6b
+  load_llm_weights: true
+  load_asr_weights: true
+
+  sample_rate: 16000
+  blank_token: "<blank>"
+  frame_length_in_secs: 0.08
+  # Dynamic chunking (chunk_size=0): boundary decision at audio frames is
+  # provided by the aux chunk classifier instead of the LM head.
+  chunk_size: 0
+  att_context_size: [70, 1]
+  audio_pad_to: 16
+
+  freeze_speech_encoder: false
+  freeze_modality_adapter: false
+  freeze_modality_proj: false
+  freeze_llm_model: true
+  freeze_llm_head: false
+  freeze_embed_tokens: false
+
+  # --- Aux chunk-boundary classifier ---
+  # K-layer transformer head (mirrors LLM architecture) trained with BCE at
+  # audio frame positions. When chunk_classifier_loss_weight > 0 the LM CE
+  # loss is masked to text positions only — the aux head owns the boundary
+  # decision. Set chunk_classifier_use_at_inference=true after training to
+  # decode with the aux head instead of the LM head.
+  chunk_classifier_loss_weight: 0.5
+  chunk_classifier_num_layers: 2
+  chunk_classifier_init_from_llm: true
+  chunk_classifier_threshold: 0.5
+  chunk_classifier_use_at_inference: false
+  freeze_chunk_classifier: false
+  # Auto-balance BCE per batch (pos_weight = N_neg/N_pos). "Emit" frames are
+  # rare vs. "keep listening" frames, so this is on by default.
+  chunk_classifier_auto_balance: true
+
+  # LoRA (uncomment to enable)
+  # lora:
+  #   task_type: CAUSAL_LM
+  #   r: 128
+  #   lora_alpha: 256
+  #   lora_dropout: 0.01
+
+  perception:
+    # spec_augment:
+    #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    #   freq_masks: 2 # set to zero to disable it
+    #   # you may use lower time_masks for smaller models to have a faster convergence
+    #   time_masks: 10 # set to zero to disable it
+    #   freq_width: 27
+    #   time_width: 0.05
+
+    modality_adapter:
+      _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 5e-4
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+    foreach: true
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
+    warmup_steps: 1000
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+data:
+  # --- StreamingSTTDataset config ---
+  dataset:
+    sample_rate: ${model.sample_rate}
+    frame_length_in_secs: ${model.frame_length_in_secs}
+    chunk_size: ${model.chunk_size}
+    num_delay_frames: 0
+    audio_tag: "<audio>"
+    blank_token: ${model.blank_token}
+    system_role: system
+    system_prompt: "Transcribe the audio into text."
+
+  # --- Lhotse dataloader config ---
+  train_ds:
+    sample_rate: ${data.dataset.sample_rate}
+    input_cfg: null
+    manifest_filepath: null
+    seed: 42
+    shuffle: true
+    shard_seed: "randomized"
+    num_workers: 4
+    batch_size: 4
+    # Optional bucketing:
+    # batch_size: null
+    # use_bucketing: true
+    # batch_duration: 200
+    # bucket_duration_bins: [5, 10, 15, 20, 25, 30]
+    # num_buckets: 6
+    # bucket_buffer_size: 5000
+
+  validation_ds:
+    datasets:
+      val_set_0:
+        input_cfg: null
+        manifest_filepath: null
+    sample_rate: ${data.dataset.sample_rate}
+    batch_size: 4
+    num_workers: 4
+    seed: 42
+    shard_seed: "randomized"
+
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: 1
+  precision: bf16-true
+  logger: false
+  enable_checkpointing: false
+  use_distributed_sampler: false
+  max_steps: 100000
+  limit_train_batches: 5000
+  val_check_interval: ${trainer.limit_train_batches}
+  limit_val_batches: 10
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
+    find_unused_parameters: true
+
+
+exp_manager:
+  exp_dir: null
+  explicit_log_dir: null
+  name: streaming_stt_chunk_classifier
+  create_tensorboard_logger: false
+  create_checkpoint_callback: true
+  use_datetime_version: true
+  max_time_per_run: "00:03:50:00"
+
+  resume_from_checkpoint: null
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
+
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: ${exp_manager.name}
+    project: null
+    resume: true
+
+  checkpoint_callback_params:
+    filename: "{step}"
+    monitor: val_acc
+    mode: max
+    every_n_train_steps: null
+    every_n_epochs: 1
+    save_top_k: 1
+    always_save_nemo: false
+    save_nemo_on_train_end: false

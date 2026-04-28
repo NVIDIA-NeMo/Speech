@@ -15,6 +15,7 @@
 import pytest
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
+    ArabicCharsTokenizer,
     EnglishCharsTokenizer,
     FrenchCharsTokenizer,
     GermanCharsTokenizer,
@@ -404,6 +405,19 @@ class TestTTSTokenizers:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_japanese_mix_english_katakana_accent_tokenizer(self):
+        input_text = "箸 love"
+        expected_output = "1ハ0シ 1ラ0ブ"
+
+        g2p = JapaneseKatakanaAccentG2p()
+        tokenizer = JapanesePhonemeTokenizer(g2p=g2p, punct=False)
+
+        chars, _ = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_hindi_chars_tokenizer(self):
         input_text = "नमस्ते दुनिया!"
         expected_output = "नमस्ते दुनिया!"
@@ -412,3 +426,120 @@ class TestTTSTokenizers:
         chars, tokens = self._parse_text(tokenizer, input_text)
 
         assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_hindi_chars_tokenizer_legacy(self):
+        """charset_version=1 reproduces the old (case='mixed' + ascii_lowercase) behaviour."""
+        input_text = "नमस्ते दुनिया!"
+        expected_output = "नमस्ते दुनिया!"
+
+        tokenizer = HindiCharsTokenizer(charset_version=1)
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_hindi_chars_tokenizer_mixed_english(self):
+        """Default v2 charset supports both upper and lower English."""
+        input_text = "नमस्ते Hello World"
+        expected_output = "नमस्ते Hello World"
+
+        tokenizer = HindiCharsTokenizer()
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_hindi_chars_tokenizer_v1_no_upper_english(self):
+        """Legacy v1 charset only has ascii_lowercase, so uppercase English is skipped."""
+        input_text = "नमस्ते Hello"
+        expected_output = "नमस्ते ello"
+
+        tokenizer = HindiCharsTokenizer(charset_version=1)
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_hindi_chars_tokenizer_v1_v2_different_vocab(self):
+        """v1 and v2 must produce different token vocabularies."""
+        tok_v1 = HindiCharsTokenizer(charset_version=1)
+        tok_v2 = HindiCharsTokenizer(charset_version=2)
+
+        assert tok_v1.tokens != tok_v2.tokens
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_arabic_chars_tokenizer_mixed_english(self):
+        input_text = "مرحبا Hello"
+        expected_output = "مرحبا Hello"
+
+        tokenizer = ArabicCharsTokenizer()
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "input_text, expected_output",
+        [
+            ("بِسْمِ", "بِسْمِ"),  # kasra + sukun
+            ("كَتَبَ", "كَتَبَ"),  # fatha
+            ("كُتُبٌ", "كُتُبٌ"),  # damma + tanwin
+            ("شَدَّة", "شَدَّة"),  # shadda
+        ],
+        ids=["kasra_sukun", "fatha", "damma_tanwin", "shadda"],
+    )
+    def test_arabic_chars_tokenizer_diacritics(self, input_text, expected_output):
+        tokenizer = ArabicCharsTokenizer()
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_arabic_chars_tokenizer_punctuation(self):
+        input_text = "مرحبا، كيف حالك؟"
+        expected_output = "مرحبا، كيف حالك؟"
+
+        tokenizer = ArabicCharsTokenizer()
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_arabic_chars_tokenizer_unknown_token(self):
+        input_text = "مرحبا 你好 عالم"
+        expected_output = "مرحبا عالم"
+
+        tokenizer = ArabicCharsTokenizer()
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_arabic_chars_tokenizer_legacy(self):
+        """charset_version=1 reproduces the old (case='mixed' + ascii_letters) behaviour."""
+        input_text = "مرحبا Hello"
+        expected_output = "مرحبا Hello"
+
+        tokenizer = ArabicCharsTokenizer(charset_version=1)
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_arabic_chars_tokenizer_v1_v2_different_vocab(self):
+        """v1 and v2 must produce different token vocabularies."""
+        tok_v1 = ArabicCharsTokenizer(charset_version=1)
+        tok_v2 = ArabicCharsTokenizer(charset_version=2)
+
+        assert tok_v1.tokens != tok_v2.tokens

@@ -21,7 +21,7 @@
 #  These functions are used by locale-specific tokenizers (e.g., HindiCharsTokenizer uses
 #  get_grapheme_character_set("hi-IN")). If someone later creates PortugueseCharsTokenizer or
 #  KoreanCharsTokenizer, they'd hit this.
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN", "pt-BR", "ko-KR"]
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN", "ar-MSA", "pt-BR", "ko-KR"]
 
 # Derived from LJSpeech and "/" additionally
 DEFAULT_PUNCTUATION = (
@@ -113,6 +113,15 @@ GRAPHEME_CHARACTER_SETS = {
         'ॅ', 'ॉ', 'ँ', 'ं', 'ः', '्', '़', 'ॊ', 'ॢ', 'ॣ', 'ॆ',
         # Danda (period)
         '।',
+    ),
+    # ref: https://en.wikipedia.org/wiki/Arabic_alphabet
+    "ar-MSA": (
+        'ء', 'آ', 'أ', 'إ', 'ؤ', 'ئ', 'ا', 'ب', 'ة', 'ت',
+        'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر', 'ز', 'س', 'ش',
+        'ص', 'ض', 'ط', 'ظ', 'ع', 'غ', 'ف', 'ق', 'ك', 'ل',
+        'م', 'ن', 'ه', 'و', 'ى', 'ي', 
+        # Diacritics
+        'ً', 'ٌ', 'ٍ', 'َ', 'ُ', 'ِ', 'ّ', 'ٰ', 'ْ',
     ),
 }
 
@@ -352,6 +361,14 @@ def get_ipa_punctuation_list(locale):
                 '！',
                 '？',
                 '・',
+            ]
+        )
+    elif locale == "ar-MSA":
+        punct_set.update(
+            [
+                '،',
+                '؛',
+                '؟',
             ]
         )
     elif locale == "hi-IN":

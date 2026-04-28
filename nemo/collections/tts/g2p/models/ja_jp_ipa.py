@@ -298,28 +298,44 @@ class JapaneseKatakanaAccentG2p(BaseG2p):
             acc = word.get('acc', 0)
 
             string = unicodedata.normalize('NFKC', string)
+            pos_group1 = word.get('pos_group1', '')
 
-            # Handle English letters
+            # If string is pure ASCII letters after NFKC normalization, decide based on pos:
+            # - pos='フィラー' means OpenJTalk didn't recognize the word (just spelled it out) → keep Latin
+            # - any other pos (e.g. '名詞') means OpenJTalk recognized it as a loanword → use katakana pron
             if string and all(c in self.ascii_letter_dict for c in string):
-                if current_chain:
-                    self._process_chain(current_chain, result)
-                    current_chain = []
+                if pos == 'フィラー':
+                    if current_chain:
+                        self._process_chain(current_chain, result)
+                        current_chain = []
+                    result.extend(list(string))
+                    continue
 
-                result.extend(list(string))
-                continue
-
-            # Handle punctuation
-            if pos in ('記号', '補助記号'):
+            # Handle punctuation (記号), but keep alphabet symbols (アルファベット) as regular words
+            if pos in ('記号', '補助記号') and pos_group1 != 'アルファベット':
                 if current_chain:
                     self._process_chain(current_chain, result)
                     current_chain = []
                 if string.isspace():
-                    result.append(' ')
+                    if not result or result[-1] != ' ':
+                        result.append(' ')
                 elif string in punctuation:
                     result.append(string)
+                else:
+                    logging.warning(
+                        f"Unknown symbol '{string}' (pos={pos}) not in punctuation list, replacing with space. original text: {text}"
+                    )
+                    if not result or result[-1] != ' ':
+                        result.append(' ')
                 continue
 
             if not pron or mora_size == 0:
+                if string and not string.isspace():
+                    logging.warning(
+                        f"Unknown symbol '{string}' (pos={pos}) not in punctuation list, replacing with space. original text: {text}"
+                    )
+                    if not result or result[-1] != ' ':
+                        result.append(' ')
                 continue
 
             # Add word to current chain

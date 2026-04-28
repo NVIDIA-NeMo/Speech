@@ -28,6 +28,7 @@ from typing import Dict, Optional, Tuple
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import CASELESS_SCRIPT_TOKENIZER_TARGETS
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
 from nemo.utils import logging
 
@@ -149,6 +150,24 @@ class ModelLoadConfig:
             )
 
 
+def _migrate_charset_version(model_cfg: DictConfig) -> None:
+    """Pin charset_version=1 for Hindi/Arabic tokenizers in old checkpoints.
+
+    New models have ``charset_version`` persisted by ``setup_tokenizers()``.
+    Old checkpoints lack it, so without this migration the new default (v2)
+    would silently change the token-to-ID mapping and break the model.
+
+    Must be called inside ``open_dict(model_cfg)``.
+    """
+    if not hasattr(model_cfg, 'text_tokenizers'):
+        return
+    for tok_name in model_cfg.text_tokenizers:
+        tok_cfg = model_cfg.text_tokenizers[tok_name]
+        if hasattr(tok_cfg, '_target_') and tok_cfg._target_ in CASELESS_SCRIPT_TOKENIZER_TARGETS:
+            if not hasattr(tok_cfg, 'charset_version'):
+                tok_cfg.charset_version = 1
+
+
 def _migrate_tokenizer_punctuation(model_cfg: DictConfig) -> None:
     """Backfill punctuation fields for tokenizers that predate them.
 
@@ -203,6 +222,7 @@ def update_config_for_inference(
     model_cfg.codecmodel_path = codecmodel_path
 
     _migrate_tokenizer_punctuation(model_cfg)
+    _migrate_charset_version(model_cfg)
 
     # Update text tokenizer paths for backward compatibility
     if hasattr(model_cfg, 'text_tokenizer'):

@@ -110,7 +110,7 @@ class _HFAudioTextDataset(Dataset):
         audio_key: key to access audio data from the dataset
         text_key: key to access text data from the dataset
         sample_rate_key: key to access sample rate data from the dataset
-        hf_data_cfg: HuggingFace dataset config, all params in this config will be passed to `hf_datasets.load_dataset`
+        hf_data_cfg: HuggingFace dataset config, params are passed to `hf_datasets.load_dataset` (trust_remote_code is always stripped for security)
         parser: Str for a language specific preprocessor or a callable.
         augmentor: An instance of `nemo.collections.asr.parts.perturb.AudioAugmentor` to apply on audio.
         trim: If true, trims silence using `nemo.collections.asr.parts.preprocessing.segment.AudioSegment`
@@ -169,7 +169,7 @@ class _HFAudioTextDataset(Dataset):
                 if data_cfg.pop("trust_remote_code", False):
                     logging.warning(
                         "trust_remote_code=True was found in hf_data_cfg but has been removed for security. "
-                        "If you need trust_remote_code, set it explicitly in your local training config."
+                        "This key is always stripped from hf_data_cfg before calling load_dataset."
                     )
                 if "streaming" in data_cfg and data_cfg.streaming:
                     logging.warning(
@@ -385,7 +385,7 @@ class _HFIterableAudioTextDataset(IterableDataset):
         audio_key: key to access audio data from the dataset
         text_key: key to access text data from the dataset
         sample_rate_key: key to access sample rate data from the dataset
-        hf_data_cfg: HuggingFace dataset config, all params in this config will be passed to `hf_datasets.load_dataset`
+        hf_data_cfg: HuggingFace dataset config, params are passed to `hf_datasets.load_dataset` (trust_remote_code is always stripped for security)
         parser: Str for a language specific preprocessor or a callable.
         augmentor: An instance of `nemo.collections.asr.parts.perturb.AudioAugmentor` to apply on audio.
         trim: If true, trims silence using `nemo.collections.asr.parts.preprocessing.segment.AudioSegment`
@@ -456,7 +456,7 @@ class _HFIterableAudioTextDataset(IterableDataset):
                 if data_cfg.pop("trust_remote_code", False):
                     logging.warning(
                         "trust_remote_code=True was found in hf_data_cfg but has been removed for security. "
-                        "If you need trust_remote_code, set it explicitly in your local training config."
+                        "This key is always stripped from hf_data_cfg before calling load_dataset."
                     )
                 if "streaming" in data_cfg and not data_cfg.streaming:
                     logging.warning(

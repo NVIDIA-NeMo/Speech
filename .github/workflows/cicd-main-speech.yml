@@ -46,9 +46,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - script: L0_Unit_Tests_GPU_ASR
+          - script: L0_Unit_Tests_GPU_ASR_1
             runner: ${{ inputs.runner }}
-            timeout: 60
+            timeout: 15
+          - script: L0_Unit_Tests_GPU_ASR_2
+            runner: ${{ inputs.runner }}
+            timeout: 15
+          - script: L0_Unit_Tests_GPU_ASR_3
+            runner: ${{ inputs.runner }}
+            timeout: 15
+          - script: L0_Unit_Tests_GPU_ASR_4
+            runner: ${{ inputs.runner }}
+            timeout: 15
+          - script: L0_Unit_Tests_GPU_ASR_5
+            runner: ${{ inputs.runner }}
+            timeout: 15
           - script: L0_Unit_Tests_CPU_ASR
             runner: ${{ inputs.runner }}
             cpu-only: true

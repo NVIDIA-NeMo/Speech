@@ -43,6 +43,10 @@ class WebsocketClientApp {
   private volumeUpdateInterval: number | null = null;
   private currentBotMessageElement: HTMLDivElement | null = null;
   private currentBotMessage: string = '';
+  private currentUserMessageElement: HTMLDivElement | null = null;
+  private currentUserMessage: string = '';
+  /** ISO time for the active user row (set when the row is pre-allocated). */
+  private currentUserUtteranceIso: string = '';
 
   // Server configurations
   private readonly serverConfigs = {
@@ -120,6 +124,20 @@ class WebsocketClientApp {
     const entry = document.createElement('div');
     entry.style.color = '#4CAF50';
     entry.textContent = `${new Date().toISOString()} - ${initialText}`;
+    this.debugLog.appendChild(entry);
+    this.debugLog.scrollTop = this.debugLog.scrollHeight;
+    return entry;
+  }
+
+  /**
+   * Create a user transcript row (pre-allocated on VAD user-started, filled on final transcript).
+   */
+  private createUserMessageElement(initialText: string): HTMLDivElement | null {
+    if (!this.debugLog) return null;
+    this.currentUserUtteranceIso = new Date().toISOString();
+    const entry = document.createElement('div');
+    entry.style.color = '#2196F3';
+    entry.textContent = `${this.currentUserUtteranceIso} - User: ${initialText}`;
     this.debugLog.appendChild(entry);
     this.debugLog.scrollTop = this.debugLog.scrollHeight;
     return entry;
@@ -250,10 +268,29 @@ class WebsocketClientApp {
             this.log(`Bot ready: ${JSON.stringify(data)}`);
             this.setupMediaTracks();
           },
-          onUserTranscript: (data) => {
-            if (data.final) {
-              this.log(`User: ${data.text}`);
+          onUserStartedSpeaking: () => {
+            if (this.currentUserMessage !== '') {
+              this.currentUserMessage = '';
+              this.currentUserMessageElement = this.createUserMessageElement('');
+            } else if (!this.currentUserMessageElement) {
+              this.currentUserMessage = '';
+              this.currentUserMessageElement = this.createUserMessageElement('');
             }
+          },
+          onUserTranscript: (data) => {
+            if (!data.final) {
+              return;
+            }
+            if (!this.currentUserMessageElement) {
+              this.currentUserMessage = '';
+              this.currentUserMessageElement = this.createUserMessageElement('');
+            }
+            if (this.currentUserMessageElement) {
+              this.currentUserMessageElement.textContent = `${this.currentUserUtteranceIso} - User: ${data.text}`;
+            }
+            this.currentUserMessage = data.text;
+            this.debugLog?.scrollTo({ top: this.debugLog.scrollHeight, behavior: 'smooth' });
+            console.log(`User: ${data.text}`);
           },
           onBotTranscript: (data) => {
             // If no current element exists, create one (fallback in case BOT_LLM_STARTED didn't fire)
@@ -358,10 +395,13 @@ class WebsocketClientApp {
     // Clean up bot message state
     this.currentBotMessage = '';
     this.currentBotMessageElement = null;
-    
+    this.currentUserMessage = '';
+    this.currentUserMessageElement = null;
+    this.currentUserUtteranceIso = '';
+
     // Reset mute state
     this.isMuted = false;
-    
+
     // Reset disconnecting flag
     this.isDisconnecting = false;
   }
@@ -406,10 +446,13 @@ class WebsocketClientApp {
     // Clean up bot message state
     this.currentBotMessage = '';
     this.currentBotMessageElement = null;
-    
+    this.currentUserMessage = '';
+    this.currentUserMessageElement = null;
+    this.currentUserUtteranceIso = '';
+
     // Reset mute state
     this.isMuted = false;
-    
+
     this.isDisconnecting = false;
   }
 

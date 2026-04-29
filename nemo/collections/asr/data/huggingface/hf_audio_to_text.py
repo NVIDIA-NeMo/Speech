@@ -166,6 +166,11 @@ class _HFAudioTextDataset(Dataset):
         dataset_list = []
         for data_cfg in data_config_list:
             with open_dict(data_cfg):
+                if data_cfg.pop("trust_remote_code", False):
+                    logging.warning(
+                        "trust_remote_code=True was found in hf_data_cfg but has been removed for security. "
+                        "If you need trust_remote_code, set it explicitly in your local training config."
+                    )
                 if "streaming" in data_cfg and data_cfg.streaming:
                     logging.warning(
                         "streaming must be False for random access dataset, but you use streaming=True. Forcing streaming=False"
@@ -448,6 +453,11 @@ class _HFIterableAudioTextDataset(IterableDataset):
         dataset_list = []
         for data_cfg in data_config_list:
             with open_dict(data_cfg):
+                if data_cfg.pop("trust_remote_code", False):
+                    logging.warning(
+                        "trust_remote_code=True was found in hf_data_cfg but has been removed for security. "
+                        "If you need trust_remote_code, set it explicitly in your local training config."
+                    )
                 if "streaming" in data_cfg and not data_cfg.streaming:
                     logging.warning(
                         "streaming must be True for streaming dataset, but you use streaming=False. Forcing streaming=True"

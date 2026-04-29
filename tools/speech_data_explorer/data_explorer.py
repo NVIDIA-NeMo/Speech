@@ -143,8 +143,7 @@ def get_s3_client(s3cfg):
     """
     if not _S3_AVAILABLE:
         raise ImportError(
-            "S3 support requires 'boto3' and 'braceexpand'. "
-            "Install with: pip install boto3 braceexpand"
+            "S3 support requires 'boto3' and 'braceexpand'. " "Install with: pip install boto3 braceexpand"
         )
     global _s3_client
     if _s3_client is not None:
@@ -160,9 +159,7 @@ def get_s3_client(s3cfg):
         return _s3_client
 
     if '[' not in s3cfg:
-        raise ValueError(
-            f"--s3cfg value must include a section in brackets, e.g. ~/.s3cfg[default]. Got: {s3cfg}"
-        )
+        raise ValueError(f"--s3cfg value must include a section in brackets, e.g. ~/.s3cfg[default]. Got: {s3cfg}")
     path, section = s3cfg.rsplit('[', 1)
     s3_config = parse_s3cfg(path, section.rstrip(']'))
     # NOTE: logs credentials at DEBUG level — only the tool operator can enable
@@ -229,8 +226,7 @@ def expand_sharded_path(path_pattern):
         return [s]
     if not _S3_AVAILABLE:
         raise ImportError(
-            "Sharded path patterns (_OP_/_CL_) require 'braceexpand'. "
-            "Install with: pip install braceexpand"
+            "Sharded path patterns (_OP_/_CL_) require 'braceexpand'. " "Install with: pip install braceexpand"
         )
     brace_pattern = s.replace('_OP_', '{').replace('_CL_', '}')
     return list(braceexpand.braceexpand(brace_pattern))
@@ -635,6 +631,7 @@ filter_operators = {
     '=': 'eq',
     'contains ': 'contains',
 }
+
 
 # parse table filter queries
 def split_filter_part(filter_part):
@@ -1689,7 +1686,9 @@ samples_layout = [
         dbc.Col(
             dash_table.DataTable(
                 id='datatable',
-                columns=[{'name': k.replace('_', ' '), 'id': k, 'hideable': True} for k in data[0] if not k.startswith('_')],
+                columns=[
+                    {'name': k.replace('_', ' '), 'id': k, 'hideable': True} for k in data[0] if not k.startswith('_')
+                ],
                 filter_action='custom',
                 filter_query='',
                 sort_action='custom',
@@ -1727,7 +1726,8 @@ samples_layout = [
             dbc.Col(html.Div(id='_' + k), class_name='mt-1 bg-light font-monospace text-break small rounded border'),
         ]
     )
-    for k in data[0] if not k.startswith('_')
+    for k in data[0]
+    if not k.startswith('_')
 ]
 
 if metrics_available:
@@ -2443,7 +2443,8 @@ else:
 
 
 @app.callback(
-    [Output('_' + k, 'children') for k in data[0] if not k.startswith('_')], [Input('datatable', 'selected_rows'), Input('datatable', 'data')]
+    [Output('_' + k, 'children') for k in data[0] if not k.startswith('_')],
+    [Input('datatable', 'selected_rows'), Input('datatable', 'data')],
 )
 def show_item(idx, data):
     if len(idx) == 0:

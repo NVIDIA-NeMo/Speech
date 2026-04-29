@@ -88,7 +88,6 @@ IPA_FILE = Path(os.getenv("IPA_FILE_PATH", str(Path(__file__).parent / "nemotron
 IS_TRACING_ENABLED = os.getenv("ENABLE_TRACING", "false").lower() == "true"
 
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
-logger.info(f"NVIDIA_API_KEY: {NVIDIA_API_KEY}")
 NVIDIA_LLM_URL = os.getenv("NVIDIA_LLM_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_LLM_MODEL = os.getenv("NVIDIA_LLM_MODEL", "nvidia/nemotron-3-nano-30b-a3b")
 

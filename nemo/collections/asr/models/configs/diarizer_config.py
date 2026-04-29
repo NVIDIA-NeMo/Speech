@@ -113,7 +113,7 @@ class SpeakerEmbeddingsParams(DiarizerComponentConfig):
     shift_length_in_sec: Tuple[float] = (0.75, 0.625, 0.5, 0.375, 0.25)
     # Weight for each scale. None (for single scale) or list with window/shift scale count. ex) [0.33,0.33,0.33]
     multiscale_weights: Tuple[float] = (1, 1, 1, 1, 1)
-    # save speaker embeddings in pickle format.
+    # save speaker embeddings in torch format.
     save_embeddings: bool = True
 
 

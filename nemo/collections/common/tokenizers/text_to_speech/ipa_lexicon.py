@@ -15,8 +15,15 @@
 
 # fmt: off
 
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN"]
+# TODO: pt-BR and ko-KR are missing from GRAPHEME_CHARACTER_SETS and IPA_CHARACTER_SETS below.
+#  They work with IPATokenizer (which builds vocab from g2p.symbols), but get_grapheme_character_set()
+#  and get_ipa_character_set() will raise ValueError for these locales until entries are added.
+#  These functions are used by locale-specific tokenizers (e.g., HindiCharsTokenizer uses
+#  get_grapheme_character_set("hi-IN")). If someone later creates PortugueseCharsTokenizer or
+#  KoreanCharsTokenizer, they'd hit this.
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN", "ar-MSA", "pt-BR", "ko-KR"]
 
+# Derived from LJSpeech and "/" additionally
 DEFAULT_PUNCTUATION = (
     ',', '.', '!', '?', '-',
     ':', ';', '/', '"', '(',
@@ -106,6 +113,15 @@ GRAPHEME_CHARACTER_SETS = {
         'ॅ', 'ॉ', 'ँ', 'ं', 'ः', '्', '़', 'ॊ', 'ॢ', 'ॣ', 'ॆ',
         # Danda (period)
         '।',
+    ),
+    # ref: https://en.wikipedia.org/wiki/Arabic_alphabet
+    "ar-MSA": (
+        'ء', 'آ', 'أ', 'إ', 'ؤ', 'ئ', 'ا', 'ب', 'ة', 'ت',
+        'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر', 'ز', 'س', 'ش',
+        'ص', 'ض', 'ط', 'ظ', 'ع', 'غ', 'ف', 'ق', 'ك', 'ل',
+        'م', 'ن', 'ه', 'و', 'ى', 'ي', 
+        # Diacritics
+        'ً', 'ٌ', 'ٍ', 'َ', 'ُ', 'ِ', 'ّ', 'ٰ', 'ْ',
     ),
 }
 
@@ -240,7 +256,7 @@ def get_ipa_punctuation_list(locale):
     punct_set = set(DEFAULT_PUNCTUATION)
     # TODO @xueyang: verify potential mismatches with locale-specific punctuation sets used
     #  in nemo_text_processing.text_normalization.en.taggers.punctuation.py
-    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR", "ja-JP"]:
+    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR", "ja-JP", "pt-BR"]:
         # ref: https://en.wikipedia.org/wiki/Guillemet#Uses
         punct_set.update(['«', '»', '‹', '›'])
     if locale == "de-DE":
@@ -345,6 +361,51 @@ def get_ipa_punctuation_list(locale):
                 '！',
                 '？',
                 '・',
+            ]
+        )
+    elif locale == "ar-MSA":
+        punct_set.update(
+            [
+                '،',
+                '؛',
+                '؟',
+            ]
+        )
+    elif locale == "hi-IN":
+        punct_set.update(
+            [
+                '।',
+                '॥',
+            ]
+        )
+    elif locale == "pt-BR":
+        # ref: https://en.wikipedia.org/wiki/Portuguese_orthography#Punctuation
+        # Guillemets (« » ‹ ›) are already added by the shared block above.
+        punct_set.update(
+            [
+                '\u201c',  # " left double quotation mark
+                '\u201d',  # " right double quotation mark
+                '\u2018',  # ' left single quotation mark
+                '\u2019',  # ' right single quotation mark
+                '\u2013',  # – en dash
+                '\u2014',  # — em dash
+                '\u2026',  # … horizontal ellipsis
+            ]
+        )
+    elif locale == "ko-KR":
+        punct_set.update(
+            [
+                '『',
+                '』',
+                '「',
+                '」',
+                '《',
+                '》',
+                '…',
+                '·',
+                '—',
+                '–',
+                '〜',
             ]
         )
     punct_list = sorted(list(punct_set))

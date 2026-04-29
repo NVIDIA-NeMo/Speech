@@ -4,6 +4,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_call:
+    inputs:
+      skip_docs:
+        required: false
+        default: 'false'
+        type: string
+      skip_linting:
+        required: false
+        default: 'false'
+        type: string
 
 jobs:
   linting:
@@ -18,6 +27,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get PR info
+        id: get-pr-info
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        uses: nv-gha-runners/get-pr-info@main
 
       - name: Select filter
         id: filter
@@ -53,6 +69,8 @@ jobs:
         id: changed-files
         uses: step-security/changed-files@v45.0.1
         with:
+          sha: ${{ github.sha }}
+          base_sha: ${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').base.sha || github.event.pull_request.base.sha }}
           files: ${{ steps.filter.outputs.main }}
           files_separator: ","
           separator: " "
@@ -61,8 +79,8 @@ jobs:
         id: pylint
         env:
           CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-          SKIP_DOCS: ${{ contains(github.event.pull_request.labels.*.name, 'skip-docs') }}
-          SKIP_LINTING: ${{ contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
+          SKIP_DOCS: ${{ inputs.skip_docs == 'true' || contains(github.event.pull_request.labels.*.name, 'skip-docs') }}
+          SKIP_LINTING: ${{ inputs.skip_linting == 'true' || contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
         run: |
           if [[ -z "$CHANGED_FILES" ]]; then
             echo Nothing to lint.
@@ -89,7 +107,7 @@ jobs:
         id: flake8
         env:
           CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-          SKIP_LINTING: ${{ contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
+          SKIP_LINTING: ${{ inputs.skip_linting == 'true' || contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
         run: |
           if [[ -z "$CHANGED_FILES" ]]; then
             echo Nothing to lint.

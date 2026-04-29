@@ -77,14 +77,21 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
             if turn["role"] == "user":
                 last_user_idx = i
 
-        # 3) Truncate thinking in assistant turns before the last user turn.
+        # 3) Normalize past assistant turns to mirror HF jinja's truncate_history_thinking:
+        #    - Has both tags  → truncate to "<think></think>" + post-</think> content
+        #    - Has neither    → prepend "<think></think>"
+        #    - Has only one   → leave as-is (matches jinja)
         if last_user_idx is not None:
             for i, turn in enumerate(turns):
                 if i < last_user_idx and turn["role"] == self.OUTPUT_ROLE:
                     msg = turn["slots"]["message"]
-                    if "<think>" in msg and "</think>" in msg:
+                    has_open = "<think>" in msg
+                    has_close = "</think>" in msg
+                    if has_open and has_close:
                         content_after_think = msg.split("</think>", 1)[1].strip()
                         turn["slots"]["message"] = "<think></think>" + content_after_think
+                    elif not has_open and not has_close:
+                        turn["slots"]["message"] = "<think></think>" + msg
 
         # 4) For last assistant turn (training): prepend <think></think> if no think tags.
         if turns[-1]["role"] == self.OUTPUT_ROLE:

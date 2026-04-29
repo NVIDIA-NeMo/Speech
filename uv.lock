@@ -3542,14 +3542,14 @@ wheels = [
 
 [[package]]
 name = "mako"
-version = "1.3.10"
+version = "1.3.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "markupsafe" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9e/38/bd5b78a920a64d708fe6bc8e0a2c075e1389d53bef8413725c63ba041535/mako-1.3.10.tar.gz", hash = "sha256:99579a6f39583fa7e5630a28c3c1f440e4e97a414b80372649c0ce338da2ea28", size = 392474, upload-time = "2025-04-10T12:44:31.16Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/59/8a/805404d0c0b9f3d7a326475ca008db57aea9c5c9f2e1e39ed0faa335571c/mako-1.3.11.tar.gz", hash = "sha256:071eb4ab4c5010443152255d77db7faa6ce5916f35226eb02dc34479b6858069", size = 399811, upload-time = "2026-04-14T20:19:51.493Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/fb/99f81ac72ae23375f22b7afdb7642aba97c00a713c217124420147681a2f/mako-1.3.10-py3-none-any.whl", hash = "sha256:baef24a52fc4fc514a0887ac600f9f1cff3d82c61d4d700a1fa84d597b88db59", size = 78509, upload-time = "2025-04-10T12:50:53.297Z" },
+    { url = "https://files.pythonhosted.org/packages/68/a5/19d7aaa7e433713ffe881df33705925a196afb9532efc8475d26593921a6/mako-1.3.11-py3-none-any.whl", hash = "sha256:e372c6e333cf004aa736a15f425087ec977e1fcbd2966aae7f17c8dc1da27a77", size = 78503, upload-time = "2026-04-14T20:19:53.233Z" },
 ]
 
 [[package]]
@@ -4586,7 +4586,7 @@ wheels = [
 [[package]]
 name = "nemo-automodel"
 version = "0.3.0rc0"
-source = { git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=a3987c947709f2d95e7e03d66ef15edfde262a46#a3987c947709f2d95e7e03d66ef15edfde262a46" }
+source = { git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=cadbba77a6466f1acdabd7382fd90e0c3f821c19#cadbba77a6466f1acdabd7382fd90e0c3f821c19" }
 dependencies = [
     { name = "datasets" },
     { name = "flashoptim" },
@@ -5357,9 +5357,9 @@ requires-dist = [
     { name = "mediapy", marker = "extra == 'speechlm2'", specifier = "==1.1.6" },
     { name = "mediapy", marker = "extra == 'test'", specifier = "==1.1.6" },
     { name = "mediapy", marker = "extra == 'tts'", specifier = "==1.1.6" },
-    { name = "nemo-automodel", marker = "extra == 'all'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=a3987c947709f2d95e7e03d66ef15edfde262a46" },
-    { name = "nemo-automodel", marker = "extra == 'speechlm2'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=a3987c947709f2d95e7e03d66ef15edfde262a46" },
-    { name = "nemo-automodel", marker = "extra == 'speechlm2-only'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=a3987c947709f2d95e7e03d66ef15edfde262a46" },
+    { name = "nemo-automodel", marker = "extra == 'all'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=cadbba77a6466f1acdabd7382fd90e0c3f821c19" },
+    { name = "nemo-automodel", marker = "extra == 'speechlm2'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=cadbba77a6466f1acdabd7382fd90e0c3f821c19" },
+    { name = "nemo-automodel", marker = "extra == 'speechlm2-only'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=cadbba77a6466f1acdabd7382fd90e0c3f821c19" },
     { name = "nemo-run", marker = "extra == 'all'" },
     { name = "nemo-run", marker = "extra == 'run'" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'all'" },
@@ -5439,16 +5439,16 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'tts'" },
     { name = "parameterized", marker = "extra == 'all'" },
     { name = "parameterized", marker = "extra == 'test'" },
-    { name = "peft", marker = "extra == 'all'" },
-    { name = "peft", marker = "extra == 'asr'" },
-    { name = "peft", marker = "extra == 'audio'" },
-    { name = "peft", marker = "extra == 'common'" },
-    { name = "peft", marker = "extra == 'core'" },
-    { name = "peft", marker = "extra == 'lightning'" },
-    { name = "peft", marker = "extra == 'slu'" },
-    { name = "peft", marker = "extra == 'speechlm2'" },
-    { name = "peft", marker = "extra == 'test'" },
-    { name = "peft", marker = "extra == 'tts'" },
+    { name = "peft", marker = "extra == 'all'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'asr'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'audio'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'common'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'core'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'lightning'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'slu'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'speechlm2'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'test'", specifier = "<=0.18.0" },
+    { name = "peft", marker = "extra == 'tts'", specifier = "<=0.18.0" },
     { name = "pesq", marker = "(platform_machine != 'x86_64' and extra == 'all') or (sys_platform != 'darwin' and extra == 'all')" },
     { name = "pesq", marker = "(platform_machine != 'x86_64' and extra == 'audio') or (sys_platform != 'darwin' and extra == 'audio')" },
     { name = "progress", marker = "extra == 'all'", specifier = ">=1.5" },
@@ -6758,7 +6758,7 @@ wheels = [
 
 [[package]]
 name = "peft"
-version = "0.18.1"
+version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "accelerate" },
@@ -6775,9 +6775,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/48/147b3ea999560b40a34fd78724c7777aa9d18409c2250bdcaf9c4f2db7fc/peft-0.18.1.tar.gz", hash = "sha256:2dd0d6bfce936d1850e48aaddbd250941c5c02fc8ef3237cd8fd5aac35e0bae2", size = 635030, upload-time = "2026-01-09T13:08:01.136Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/0c/f2938db546ac7fc961ab5917cd50fcf5d0d70b406de93e3faccaa504e152/peft-0.18.0.tar.gz", hash = "sha256:c81c80b2056ab40c23d58ef25f74daab417ac653970718589a11a8af28218588", size = 634141, upload-time = "2025-11-13T11:13:06.603Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b3/14/b4e3f574acf349ae6f61f9c000a77f97a3b315b4bb6ad03791e79ae4a568/peft-0.18.1-py3-none-any.whl", hash = "sha256:0bf06847a3551e3019fc58c440cffc9a6b73e6e2962c95b52e224f77bbdb50f1", size = 556960, upload-time = "2026-01-09T13:07:55.865Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/55/481bf25613d40ef53534f664deba7b138fe566356b6ca10304e2b3b2529c/peft-0.18.0-py3-none-any.whl", hash = "sha256:624f69ca6393b765ccc6734adda7ca57d80b238f0900a42c357d8b67a03d62ff", size = 556427, upload-time = "2025-11-13T11:13:03.664Z" },
 ]
 
 [[package]]
@@ -10065,7 +10065,7 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.5.0"
+version = "5.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -10079,9 +10079,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ff/9d/fb46e729b461985f41a5740167688b924a4019141e5c164bea77548d3d9e/transformers-5.5.0.tar.gz", hash = "sha256:c8db656cf51c600cd8c75f06b20ef85c72e8b8ff9abc880c5d3e8bc70e0ddcbd", size = 8237745, upload-time = "2026-04-02T16:13:08.113Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/1a/70e830d53ecc96ce69cfa8de38f163712d2b43ac52fbd743f39f56025c31/transformers-5.3.0.tar.gz", hash = "sha256:009555b364029da9e2946d41f1c5de9f15e6b1df46b189b7293f33a161b9c557", size = 8830831, upload-time = "2026-03-04T17:41:46.119Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/28/35f7411ff80a3640c1f4fc907dcbb6a65061ebb82f66950e38bfc9f7f740/transformers-5.5.0-py3-none-any.whl", hash = "sha256:821a9ff0961abbb29eb1eb686d78df1c85929fdf213a3fe49dc6bd94f9efa944", size = 10245591, upload-time = "2026-04-02T16:13:03.462Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/88/ae8320064e32679a5429a2c9ebbc05c2bf32cefb6e076f9b07f6d685a9b4/transformers-5.3.0-py3-none-any.whl", hash = "sha256:50ac8c89c3c7033444fb3f9f53138096b997ebb70d4b5e50a2e810bf12d3d29a", size = 10661827, upload-time = "2026-03-04T17:41:42.722Z" },
 ]
 
 [[package]]

@@ -18,7 +18,11 @@ from typing import Any, Callable, List, Optional
 
 from lightning.pytorch.callbacks import Callback as PTLCallback
 from nemo.lightning.base_callback import BaseCallback
-from nemo.lightning.one_logger_callback import OneLoggerNeMoCallback
+
+try:
+    from nemo.lightning.one_logger_callback import OneLoggerNeMoCallback
+except ModuleNotFoundError:
+    OneLoggerNeMoCallback = None
 
 
 class CallbackGroup:
@@ -43,7 +47,7 @@ class CallbackGroup:
         return cls._instance
 
     def __init__(self) -> None:
-        self._callbacks: List[BaseCallback] = [OneLoggerNeMoCallback()]
+        self._callbacks: List[BaseCallback] = [OneLoggerNeMoCallback()] if OneLoggerNeMoCallback else []
         # Ensure application-end is emitted at most once per process
         self._app_end_emitted: bool = False
 

@@ -2,7 +2,7 @@
 name = "nemo-voice-agent"
 version = "0.1.0"
 description = "An open-source voice agent pipeline."
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     # Deep learning core (CUDA 13.0 wheels; see [tool.uv.sources] below)
     "torch",
@@ -23,6 +23,7 @@ dependencies = [
     "kokoro",
     "silero-vad",
     "onnxruntime",
+    "kaldialign",
 
     # Web / API / client
     "fastapi",
@@ -33,6 +34,10 @@ dependencies = [
     "python_weather",
     "python-dotenv",
     "loguru",
+    "opentelemetry-sdk",
+
+    # Riva client
+    "nvidia-riva-client==2.21.1",
 ]
 
 [project.optional-dependencies]
@@ -71,3 +76,8 @@ python-preference = "only-managed"
 # and any package that declares a torch-backend-aware source. This replaces
 # the manual [[tool.uv.index]] + [tool.uv.sources] plumbing for torch.
 torch-backend = "cu130"
+
+# Force patched versions for known CVEs
+override-dependencies = [
+    "protobuf==5.29.6",
+]

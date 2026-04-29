@@ -38,7 +38,6 @@ class TestFusedBatchNorm1d:
 
     @pytest.mark.unit
     def test_from_batchnorm(self):
-        torch.manual_seed(0)
         num_features = 10
 
         # construct batchnorm
@@ -50,16 +49,15 @@ class TestFusedBatchNorm1d:
         for _ in range(10):
             _ = bn(torch.rand(batch_size, num_features))
 
-        # test eval mode is equivalent; atol=1e-5 accounts for float32 rounding
-        # between fused (x*W+B) and standard ((x-mean)/std*w+b) formulations
+        # test eval mode is equivalent
         fused_bn = FusedBatchNorm1d.from_batchnorm(bn)
         bn.eval()
 
         sample_2d = torch.rand(batch_size, num_features)
-        assert torch.allclose(bn(sample_2d), fused_bn(sample_2d), atol=1e-5)
+        assert torch.allclose(bn(sample_2d), fused_bn(sample_2d))
 
         sample_3d = torch.rand(batch_size, num_features, 5)
-        assert torch.allclose(bn(sample_3d), fused_bn(sample_3d), atol=1e-5)
+        assert torch.allclose(bn(sample_3d), fused_bn(sample_3d))
 
 
 class TestReplaceBNWithFusedBN:

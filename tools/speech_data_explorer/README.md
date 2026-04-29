@@ -43,6 +43,31 @@ export AIS_AUTHN_TOKEN=your_token
 python data_explorer.py s3://bucket/manifest.json --s3cfg AIS
 ```
 
+### Sharded paths (`_OP_/_CL_` syntax)
+
+Manifests and tar files are often split into numbered shards. Instead of listing
+every shard explicitly, use the `_OP_start..end_CL_` range pattern. The tool
+expands it into individual paths automatically:
+
+```
+s3://bucket/manifest__OP_0..255_CL_.json
+→  s3://bucket/manifest_0.json
+   s3://bucket/manifest_1.json
+   ...
+   s3://bucket/manifest_255.json
+```
+
+Multiple ranges in a single path produce a **cartesian product** — useful when
+shards are spread across several buckets or directories:
+
+```
+s3://store_OP_1..2_CL_/audio__OP_0..1_CL_.tar
+→  s3://store1/audio_0.tar
+   s3://store1/audio_1.tar
+   s3://store2/audio_0.tar
+   s3://store2/audio_1.tar
+```
+
 ### Tarred audio on S3
 
 When audio is stored in tar archives on S3, use `--tar-base-path` to point to the

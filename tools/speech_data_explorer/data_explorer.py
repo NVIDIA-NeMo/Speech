@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import argparse
+import atexit
 import base64
+import configparser
 import csv
 import datetime
 import difflib
@@ -29,8 +31,6 @@ from os.path import expanduser
 from pathlib import Path
 from urllib.parse import urlparse
 
-import boto3
-import braceexpand
 import dash
 import dash_bootstrap_components as dbc
 import diff_match_patch
@@ -41,14 +41,23 @@ import numpy as np
 import pandas as pd
 import soundfile as sf
 import tqdm
-from botocore.config import Config
-from botocore.exceptions import ClientError
 from dash import dash_table, dcc, html
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
 from plotly import express as px
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
+
+# S3/cloud dependencies — only required when using --s3cfg or sharded _OP_/_CL_ paths
+try:
+    import boto3
+    import braceexpand
+    from botocore.config import Config
+    from botocore.exceptions import ClientError
+
+    _S3_AVAILABLE = True
+except ImportError:
+    _S3_AVAILABLE = False
 
 # Configure logging to show INFO level messages
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -58,8 +67,6 @@ DATA_PAGE_SIZE = 10
 
 # Global S3 client (initialized lazily)
 _s3_client = None
-
-import configparser
 
 
 def parse_s3cfg(config_path='~/.s3cfg', section='default'):
@@ -134,6 +141,11 @@ def get_s3_client(s3cfg):
     Returns:
         boto3.client or AISClient
     """
+    if not _S3_AVAILABLE:
+        raise ImportError(
+            "S3 support requires 'boto3' and 'braceexpand'. "
+            "Install with: pip install boto3 braceexpand"
+        )
     global _s3_client
     if _s3_client is not None:
         return _s3_client
@@ -147,9 +159,20 @@ def get_s3_client(s3cfg):
         _s3_client = AISClient(endpoint_url, authn_token)
         return _s3_client
 
+    if '[' not in s3cfg:
+        raise ValueError(
+            f"--s3cfg value must include a section in brackets, e.g. ~/.s3cfg[default]. Got: {s3cfg}"
+        )
     path, section = s3cfg.rsplit('[', 1)
     s3_config = parse_s3cfg(path, section.rstrip(']'))
+    # NOTE: logs credentials at DEBUG level — only the tool operator can enable
+    # DEBUG, but avoid persisting debug logs to shared storage.
     logging.debug(f"S3 config loaded: {s3_config}")
+    if not s3_config.get('host_base'):
+        raise ValueError(
+            f"'host_base' is missing or empty in [{section.rstrip(']')}] section of {path}. "
+            "Set it to the S3 endpoint hostname (e.g. s3.amazonaws.com)."
+        )
     endpoint_url = ("https://" if s3_config['use_https'] else "http://") + s3_config['host_base']
     authn_token = s3_config.get('authn_token')
 
@@ -204,6 +227,11 @@ def expand_sharded_path(path_pattern):
     s = str(path_pattern)
     if '_OP_' not in s:
         return [s]
+    if not _S3_AVAILABLE:
+        raise ImportError(
+            "Sharded path patterns (_OP_/_CL_) require 'braceexpand'. "
+            "Install with: pip install braceexpand"
+        )
     brace_pattern = s.replace('_OP_', '{').replace('_CL_', '}')
     return list(braceexpand.braceexpand(brace_pattern))
 
@@ -607,8 +635,6 @@ filter_operators = {
     '=': 'eq',
     'contains ': 'contains',
 }
-comparison_mode = False
-
 
 # parse table filter queries
 def split_filter_part(filter_part):
@@ -1063,14 +1089,14 @@ def load_data(
                     word_accuracy_1 = match_vocab_1[w] / vocabulary_1[w] * 100.0
                     acc_sum_1 += word_accuracy_1
                     item['accuracy_1'] = round(word_accuracy_1, 1)
-                mwa_1 = acc_sum_1 / len(vocabulary_data_1)
+                mwa_1 = acc_sum_1 / len(vocabulary_data_1) if vocabulary_data_1 else 0
 
                 for item in vocabulary_data_2:
                     w = item['word']
                     word_accuracy_2 = match_vocab_2[w] / vocabulary_2[w] * 100.0
                     acc_sum_2 += word_accuracy_2
                     item['accuracy_2'] = round(word_accuracy_2, 1)
-                mwa_2 = acc_sum_2 / len(vocabulary_data_2)
+                mwa_2 = acc_sum_2 / len(vocabulary_data_2) if vocabulary_data_2 else 0
 
         acc_sum = 0
         for item in vocabulary_data:
@@ -1311,6 +1337,7 @@ if dual_manifest_mode:
     data_filename = merged_manifest_path
     args.names_compared = [f'pred_text_{model_name_1}', f'pred_text_{model_name_2}']
     logging.info(f"Dual-manifest mode: using merged manifest at {merged_manifest_path}")
+    atexit.register(os.remove, merged_manifest_path)
 else:
     data_filename = args.manifest[0]
 
@@ -1662,7 +1689,7 @@ samples_layout = [
         dbc.Col(
             dash_table.DataTable(
                 id='datatable',
-                columns=[{'name': k.replace('_', ' '), 'id': k, 'hideable': True} for k in data[0]],
+                columns=[{'name': k.replace('_', ' '), 'id': k, 'hideable': True} for k in data[0] if not k.startswith('_')],
                 filter_action='custom',
                 filter_query='',
                 sort_action='custom',
@@ -1700,7 +1727,7 @@ samples_layout = [
             dbc.Col(html.Div(id='_' + k), class_name='mt-1 bg-light font-monospace text-break small rounded border'),
         ]
     )
-    for k in data[0]
+    for k in data[0] if not k.startswith('_')
 ]
 
 if metrics_available:
@@ -1840,7 +1867,7 @@ if comparison_mode:
 
         if dot_spacing == 'yes':
             rad = float(rad)
-            if Ox[0] == 'a' or 'c':
+            if Ox[0] in ('a', 'c'):
                 tmp = []
                 for i in range(len(res[Ox])):
                     tmp.append(
@@ -1850,7 +1877,7 @@ if comparison_mode:
                         * math.cos(random.randrange(1, len(res[Ox])) * 2 * math.pi / len(res[Ox]))
                     )
                 res_spacing[Ox] = tmp
-            if Ox[0] == 'a' or 'c':
+            if Ox[0] in ('a', 'c'):
                 tmp = []
                 for i in range(len(res[Oy])):
                     tmp.append(
@@ -2416,12 +2443,12 @@ else:
 
 
 @app.callback(
-    [Output('_' + k, 'children') for k in data[0]], [Input('datatable', 'selected_rows'), Input('datatable', 'data')]
+    [Output('_' + k, 'children') for k in data[0] if not k.startswith('_')], [Input('datatable', 'selected_rows'), Input('datatable', 'data')]
 )
 def show_item(idx, data):
     if len(idx) == 0:
         raise PreventUpdate
-    return [data[idx[0]][k] for k in data[0]]
+    return [data[idx[0]][k] for k in data[0] if not k.startswith('_')]
 
 
 if comparison_mode:

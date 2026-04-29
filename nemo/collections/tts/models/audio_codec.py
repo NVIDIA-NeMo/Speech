@@ -14,18 +14,23 @@
 
 import itertools
 from contextlib import nullcontext
-from math import ceil
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import torch
 import torch.nn.functional as F
 from einops import rearrange
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
-from omegaconf import DictConfig, OmegaConf, open_dict
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.audio.parts.utils.transforms import Resample
+from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.dataloader import (
+    LhotseDataLoadingConfig,
+    make_structured_with_schema_warnings,
+)
+from nemo.collections.tts.data.audio_codec_dataset_lhotse import AudioCodecLhotseDataset
 from nemo.collections.tts.data.vocoder_dataset import VocoderDataset
 from nemo.collections.tts.losses.audio_codec_loss import (
     FeatureMatchingLoss,
@@ -64,11 +69,11 @@ class AudioCodecModel(ModelPT):
         if trainer is not None:
             self.world_size = trainer.num_nodes * trainer.num_devices
 
-        super().__init__(cfg=cfg, trainer=trainer)
-
         # Expected sample rate for input and output audio
         self.sample_rate = cfg.sample_rate
         self.output_sample_rate = cfg.get("output_sample_rate", self.sample_rate)
+
+        super().__init__(cfg=cfg, trainer=trainer)
 
         # Number of samples of input in each audio frame that is encoded
         self.samples_per_frame = cfg.samples_per_frame
@@ -222,8 +227,7 @@ class AudioCodecModel(ModelPT):
             # load pretrained model
             # self.speaker_encoder.load_checkpoint("https://github.com/coqui-ai/TTS/releases/download/speaker_encoder_model/model_se.pth.tar")
             self.speaker_encoder.load_checkpoint(
-                "https://huggingface.co/Edresson/Speaker_Encoder_H_ASP/resolve/main/pytorch_model.bin",
-                strict=False,
+                "https://huggingface.co/Edresson/Speaker_Encoder_H_ASP/resolve/main/pytorch_model.bin", strict=False
             )
             # freeze the pretrained speaker encoder
             self.speaker_encoder.freeze()
@@ -240,6 +244,9 @@ class AudioCodecModel(ModelPT):
         # Optimizer setup
         self.lr_schedule_interval = None
         self.automatic_optimization = False
+
+        self.clip_grad_norm = cfg.get("clip_grad_norm", None)
+        self.skip_nan_gradients = cfg.get("skip_nan_gradients", False)
 
     @property
     def dtype(self):
@@ -599,6 +606,39 @@ class AudioCodecModel(ModelPT):
         disc_update_step = batch_idx % self.disc_update_period
         return disc_update_step < self.disc_updates_per_period
 
+    def _compute_grad_norm(self, params, log_name=None):
+        """Compute the total gradient norm of `params`.
+
+        If `log_name` is provided, the value is also logged under that name.
+        """
+        grads = [p.grad for p in params if p.grad is not None]
+        total_norm = torch.nn.utils.get_total_norm(grads, error_if_nonfinite=False)
+        if log_name is not None:
+            self.log(log_name, total_norm, on_step=True, sync_dist=True)
+        return total_norm
+
+    def _step_optimizer(self, optimizer, params, name):
+        """Step `optimizer` after optionally skipping non-finite gradients
+        and clipping the gradient norm of `params`. `name` is used in
+        log messages to identify the optimizer.
+        """
+        total_norm = self._compute_grad_norm(params, log_name=f"grad_norm_{name}_pre_clip")
+
+        if self.skip_nan_gradients and not torch.isfinite(total_norm):
+            logging.warning(
+                f"Non-finite gradient norm ({total_norm}) detected for {name} optimizer at global step "
+                f"{self.global_step}; zeroing gradients and skipping optimizer step."
+            )
+            optimizer.zero_grad(set_to_none=True)
+            # Don't step the optimizer
+            return
+
+        if self.clip_grad_norm is not None:
+            self.clip_gradients(optimizer, self.clip_grad_norm, gradient_clip_algorithm="norm")
+            self._compute_grad_norm(params, log_name=f"grad_norm_{name}_post_clip")
+
+        optimizer.step()
+
     def training_step(self, batch, batch_idx):
         if self.discriminator is None:
             optim_gen = self.optimizers()
@@ -611,6 +651,7 @@ class AudioCodecModel(ModelPT):
         metrics = {
             "global_step": self.global_step,
             "lr": optim_gen.param_groups[0]['lr'],
+            "batch_duration": batch['audio_lens'].sum() / self.output_sample_rate,
         }
 
         if optim_disc is not None and self.should_update_disc(batch_idx):
@@ -623,7 +664,8 @@ class AudioCodecModel(ModelPT):
 
             optim_disc.zero_grad()
             self.manual_backward(loss_disc)
-            optim_disc.step()
+
+            self._step_optimizer(optim_disc, self.disc_params, name="discriminator")
 
         generator_losses = []
 
@@ -710,7 +752,7 @@ class AudioCodecModel(ModelPT):
 
         optim_gen.zero_grad()
         self.manual_backward(loss_gen_all)
-        optim_gen.step()
+        self._step_optimizer(optim_gen, self.gen_params, name="generator")
 
         self.update_lr()
 
@@ -760,14 +802,8 @@ class AudioCodecModel(ModelPT):
 
         self.log_dict(metrics, on_epoch=True, sync_dist=True)
 
-    def get_dataset(self, cfg, is_sharded=False):
-        if is_sharded:
-            with open_dict(cfg):
-                cfg.dataset.global_rank = self.global_rank
-                cfg.dataset.world_size = self.world_size
-                cfg.dataset._target_ = 'nemo.collections.tts.data.vocoder_dataset.TarredVocoderDataset'
-            dataset = instantiate(cfg.dataset)
-        elif '_target_' in cfg.dataset:
+    def get_dataset(self, cfg):
+        if '_target_' in cfg.dataset:
             dataset = instantiate(cfg.dataset)
         else:
             dataset = VocoderDataset(**cfg.dataset.dataset_args)
@@ -778,42 +814,86 @@ class AudioCodecModel(ModelPT):
         )
         return data_loader
 
-    def _setup_train_dataloader(self, cfg):
-        with open_dict(cfg):
-            is_sharded = cfg.dataset.pop('is_sharded', False)
-
-        return self.get_dataset(cfg, is_sharded=is_sharded)
-
-    def _setup_test_dataloader(self, cfg):
+    def _get_non_tarred_dataloader(self, cfg):
+        """Non-tarred (NeMo format with individual files) training dataloader."""
         return self.get_dataset(cfg)
 
+    def _setup_test_dataloader(self, cfg):
+        """Test/log dataloader for NeMo dataset format with individual files ."""
+        return self.get_dataset(cfg)
+
+    def _get_lhotse_dataloader(self, cfg):
+        """Build the Lhotse dataset and dataloader from a `train_ds` config.
+
+        Expects a config with two sub-sections:
+          * `dataloader_params`: forwarded to Lhotse data loader
+          * `dataset_args`: forwarded to the dataset class, `AudioCodecLhotseDataset`
+        """
+        if not isinstance(cfg, DictConfig):
+            cfg = OmegaConf.create(cfg)
+
+        # Extract config section for the dataset
+        dataset_args: Dict = OmegaConf.to_container(cfg.get("dataset_args", {}), resolve=True)
+
+        # Extract data loader parameters and verify that they are schema-compliant with
+        # `LhotseDataLoadingConfig`.
+        supported_keys = set(OmegaConf.structured(LhotseDataLoadingConfig).keys())
+        unsupported_keys = set(cfg.dataloader_params.keys()) - supported_keys - {"use_lhotse"}
+        if unsupported_keys:
+            raise ValueError(
+                f"Unsupported keys in `dataloader_params`: {sorted(unsupported_keys)}. "
+                f"Allowed keys are defined by `LhotseDataLoadingConfig`."
+            )
+        loader_cfg: DictConfig = make_structured_with_schema_warnings(cfg.dataloader_params)
+
+        # --- Update the Lhotse loader configuration ---
+
+        # Set the data loader's sample rate to the codec's output sample rate.
+        # Note that this isn't enough for Lhotse to automatically resample the audio
+        # since our audio is in a custom field ('target_audio'). We do the resampling
+        # manually in the dataset class.
+        loader_cfg.sample_rate = self.output_sample_rate
+
+        # Set up cut truncation, filtering, and random selection:
+        # `truncate_duration` and `truncate_offset_type` are interpreted by Lhotse.
+        # Together, they configure Lhotse to choose a random segment of this length
+        # from each cut.
+        if loader_cfg.truncate_duration is None:
+            raise ValueError("`truncate_duration` must be set in the config")
+        loader_cfg.truncate_offset_type = "random"
+        # Also filter examples to be at least this long to avoid zero-padding
+        loader_cfg.min_duration = loader_cfg.truncate_duration
+
+        # --- Create the dataset ---
+
+        # Error out if the audio is suspiciously short (half the expected length)
+        min_samples_for_sanity = loader_cfg.truncate_duration * self.output_sample_rate // 2
+        # Create the dataset
+        dataset = AudioCodecLhotseDataset(
+            sample_rate=self.output_sample_rate, min_samples_for_sanity=min_samples_for_sanity, **dataset_args
+        )
+
+        # Create the dataloader
+        return get_lhotse_dataloader_from_config(
+            config=loader_cfg,
+            global_rank=self.global_rank,
+            world_size=self.world_size,
+            dataset=dataset,
+        )
+
     def setup_training_data(self, cfg):
-        self._train_dl = self._setup_train_dataloader(cfg)
-        batch_size = cfg['dataloader_params']['batch_size']
-        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
-        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
-        # So we set the number of steps manually (to the correct number) to fix this.
-        if (
-            self._train_dl is not None
-            and hasattr(self._train_dl, 'dataset')
-            and isinstance(self._train_dl.dataset, torch.utils.data.IterableDataset)
-        ):
-            # We also need to check if limit_train_batches is already set.
-            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
-            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
-            if self._trainer is not None and isinstance(self._trainer.limit_train_batches, float):
-                self._trainer.limit_train_batches = int(
-                    self._trainer.limit_train_batches
-                    * ceil((len(self._train_dl.dataset) / self.world_size) / batch_size)
-                )
-            elif self._trainer is None:
-                logging.warning(
-                    "Model Trainer was not set before constructing the dataset, incorrect number of "
-                    "training batches will be used. Please set the trainer and rebuild the dataset."
-                )
+        if cfg.get("dataloader_params", {}).get("use_lhotse", False):
+            self._train_dl = self._get_lhotse_dataloader(cfg)
+        else:
+            self._train_dl = self._get_non_tarred_dataloader(cfg)
 
     def setup_validation_data(self, cfg):
-        self._validation_dl = self._setup_test_dataloader(cfg)
+        if cfg.get("use_lhotse", False):
+            raise ValueError("Lhotse data loading is not supported yet for validation.")
+        else:
+            # For validation, we still use non-Lhotse, non-tarred data format (NeMo
+            # dataset with individual files).
+            self._validation_dl = self._setup_test_dataloader(cfg)
 
     def setup_test_data(self, cfg):
         pass
@@ -847,16 +927,16 @@ class AudioCodecModel(ModelPT):
 
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
-        gen_params = itertools.chain(
-            self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params
+        self.gen_params = list(
+            itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params)
         )
-        optim_g = instantiate(optim_config, params=gen_params)
+        optim_g = instantiate(optim_config, params=self.gen_params)
 
         if self.discriminator is None:
             optim_d = None
         else:
-            disc_params = self.discriminator.parameters()
-            optim_d = instantiate(optim_config, params=disc_params)
+            self.disc_params = list(self.discriminator.parameters())
+            optim_d = instantiate(optim_config, params=self.disc_params)
 
         if sched_config is None:
             logging.debug('Scheduler is not used')

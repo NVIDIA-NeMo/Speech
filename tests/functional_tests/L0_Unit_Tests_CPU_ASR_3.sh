@@ -12,14 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
-    tests/collections/asr/decoding/test_biasing_multi_model.py \
-    tests/collections/asr/decoding/test_ctc_decoding.py \
-    tests/collections/asr/decoding/test_cuda_graph_rnnt_greedy_decoding.py \
-    tests/collections/asr/decoding/test_multi_task_decoding.py \
-    tests/collections/asr/decoding/test_multi_task_streaming_decoding.py \
-    tests/collections/asr/decoding/test_rnnt_alignments.py \
-    tests/collections/asr/decoding/test_rnnt_decoding.py \
-    tests/collections/asr/decoding/test_streaming_decoding.py \
-    tests/collections/asr/mixins \
-    tests/collections/asr/test_asr_local_attn.py \
+    tests/collections/asr \
+    --shard-id=2 --num-shards=4 \
     -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat

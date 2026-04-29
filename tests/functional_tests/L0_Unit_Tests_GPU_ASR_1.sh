@@ -12,12 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 python -c "from nemo.collections.asr.models import ASRModel" && NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
-    tests/collections/asr/confidence \
-    tests/collections/asr/decoding/test_batched_beam_decoding.py \
-    tests/collections/asr/decoding/test_batched_beam_hyps.py \
-    tests/collections/asr/decoding/test_batched_hyps_and_alignments.py \
-    tests/collections/asr/decoding/test_biasing_multi_model.py \
-    tests/collections/asr/decoding/test_ctc_decoding.py \
-    tests/collections/asr/decoding/test_cuda_graph_rnnt_greedy_decoding.py \
-    tests/collections/asr/decoding/test_multi_task_decoding.py \
+    tests/collections/asr \
+    --shard-id=0 --num-shards=5 \
     -m "not pleasefixme" --with_downloads

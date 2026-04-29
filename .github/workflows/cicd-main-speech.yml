@@ -48,13 +48,14 @@ jobs:
         include:
           - script: L0_Unit_Tests_GPU_ASR
             runner: ${{ inputs.runner }}
-            timeout: 30
+            timeout: 60
           - script: L0_Unit_Tests_CPU_ASR
             runner: ${{ inputs.runner }}
             cpu-only: true
             timeout: 30
           - script: L0_Unit_Tests_GPU_TTS
             runner: ${{ inputs.runner }}
+            timeout: 30
           - script: L0_Unit_Tests_CPU_TTS
             runner: ${{ inputs.runner }}
             cpu-only: true

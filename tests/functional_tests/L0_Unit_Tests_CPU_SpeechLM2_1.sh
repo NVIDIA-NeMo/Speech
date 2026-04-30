@@ -13,5 +13,5 @@
 # limitations under the License.
 CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
     tests/collections/speechlm2 \
-    --shard-id=0 --num-shards=3 \
+    --shard-id=0 --num-shards=4 \
     -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat

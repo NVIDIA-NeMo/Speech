@@ -579,6 +579,14 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         if len(reward_list) > 0:
             batch_dict['rewards'] = torch.FloatTensor(reward_list)
 
+        agent_mask, agent_mask_lens = collate_speaker_mask_channel(
+            cuts,
+            self.frame_length,
+            self.output_roles,
+        )
+
+        batch_dict["agent_mask"] = agent_mask
+        batch_dict["agent_mask_lens"] = agent_mask
         return batch_dict
 
 
@@ -609,6 +617,36 @@ def collate_token_channel(
         )
     token_lens = torch.tensor([len(tt) for tt in tokens])
     return collate_vectors(tokens, padding_value=pad_id), token_lens
+
+
+def build_speaker_mask_channel(
+    cut: Cut,
+    frame_length: Seconds,
+    output_roles: set[str],
+) -> torch.Tensor:
+    total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
+    mask = torch.zeros(total, dtype=torch.float32)
+
+    for supervision in cut.supervisions:
+        start = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
+        end = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
+
+        if supervision.speaker in output_roles:
+            mask[start:end] = 1.0
+
+    return mask
+
+def collate_speaker_mask_channel(
+    cuts: CutSet,
+    frame_length: Seconds,
+    output_roles: set[str],
+):
+    masks = [
+        build_speaker_mask_channel(cut, frame_length, output_roles)
+        for cut in cuts
+    ]
+    mask_lens = torch.tensor([len(m) for m in masks])
+    return collate_vectors(masks, padding_value=0.0), mask_lens
 
 
 def build_token_channel(

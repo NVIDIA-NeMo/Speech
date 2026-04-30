@@ -171,7 +171,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             '_utmos_calculator',
         ]
 
-    def compute_loss(self, logits, audio_codes, audio_codes_lens):
+
+    def compute_loss(
+        self,
+        logits,
+        audio_codes,
+        audio_codes_lens,
+        agent_mask_target=None,
+    ):
         """
         Computes the audio codebook loss. Used by
         (1) The main Magpie-TTS transformer
@@ -183,21 +190,26 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         """
         loss_mask = get_mask_from_lengths(audio_codes_lens)
         loss_mask = loss_mask.unsqueeze(1).repeat(1, audio_codes.size(1), 1)
+
+        if agent_mask_target is not None:
+            agent_mask_target = agent_mask_target.to(device=audio_codes.device, dtype=loss_mask.dtype)
+
         total_codebook_loss = None
         for codebook in range(audio_codes.size(1)):
             si = codebook * self.num_all_tokens_per_codebook
             ei = si + self.num_all_tokens_per_codebook
-            codebook_logits = logits[:, :, si:ei]  # (B, T', num_tokens_per_codebook)
-            codebook_targets = audio_codes[:, codebook]  # (B, T')
-            codebook_loss = self.cross_entropy_loss(
-                codebook_logits.permute(0, 2, 1), codebook_targets.long()  # (B, num_tokens_per_codebook, T')
+            codebook_logits = logits[:, :, si:ei]
+            codebook_targets = audio_codes[:, codebook]
+            raw_loss = self.cross_entropy_loss(
+                codebook_logits.permute(0, 2, 1),
+                codebook_targets.long(),
             )  # (B, T')
-            codebook_loss = codebook_loss * loss_mask[:, codebook, :]
-            codebook_loss = codebook_loss.sum() / loss_mask[:, codebook, :].sum()
-            if total_codebook_loss is None:
-                total_codebook_loss = codebook_loss
-            else:
-                total_codebook_loss = total_codebook_loss + codebook_loss
+            effective_mask = loss_mask[:, codebook, :]
+            if agent_mask_target is not None:
+                effective_mask = effective_mask * agent_mask_target
+            codebook_loss = raw_loss * effective_mask
+            codebook_loss = codebook_loss.sum() / effective_mask.sum().clamp_min(1.0)
+            total_codebook_loss = codebook_loss if total_codebook_loss is None else total_codebook_loss + codebook_loss
 
         total_codebook_loss = total_codebook_loss / audio_codes.size(1)
         return total_codebook_loss, loss_mask
@@ -577,6 +589,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             codes_len=audio_codes_lens,
             bos_id=self.audio_bos_id,
             eos_id=self.audio_eos_id,
+            num_eos_tokens=1 if speech_eos_mask is None else 0,
         )
 
         # Stack audio codes across codebooks
@@ -590,11 +603,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
 
         if speech_eos_mask is not None:
-            # 1. Shift the mask +1 to the right to account for the <BOS> token and +1 for the EOS
-            #    prepended by add_special_tokens.
+            # 1. Shift the mask +1 to the right to account for the <BOS> token.
             B_mask, T_mask = speech_eos_mask.shape
-            shifted_mask = torch.zeros((B_mask, T_mask + 2), dtype=torch.bool, device=device)
-            shifted_mask[:, 2:] = speech_eos_mask
+            shifted_mask = torch.zeros((B_mask, T_mask + 1), dtype=torch.bool, device=device)
+            shifted_mask[:, 1:] = speech_eos_mask
 
             # 2. Find the minimum overlapping time dimension
             t_mask = shifted_mask.size(1)
@@ -672,6 +684,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         mode: str = "train",
         training_mode: Optional[TrainingMode] = None,
         task: Optional[List[str]] = None,
+        agent_mask: Optional[torch.Tensor] = None,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -907,9 +920,129 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         pred_embeddings_audio = self.audio_out_projection(pred_embeddings)
         logits = self.final_proj(pred_embeddings_audio)
 
+        if agent_mask is not None:
+            # pad agent mask
+            target_T = audio_codes_target.size(2)
+            if agent_mask.size(1) < target_T:
+                pad = torch.zeros(
+                    agent_mask.size(0),
+                    target_T - agent_mask.size(1),
+                    device=agent_mask.device,
+                    dtype=agent_mask.dtype,
+                )
+                agent_mask = torch.cat([agent_mask, pad], dim=1)
+            else:
+                agent_mask = agent_mask[:, :target_T]
+            agent_mask = agent_mask.to(audio_codes_target.device).bool()
+
+            # force include EOS
+            valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(audio_codes_target.device)
+            eos_any = (audio_codes_target == self.audio_eos_id).any(dim=1) & valid
+            agent_mask = agent_mask | eos_any
+
+            # include previous token to avoid align issues
+            eos_prev1 = torch.zeros_like(eos_any)
+            eos_prev1[:, :-1] = eos_any[:, 1:]
+            agent_mask = agent_mask | eos_any | eos_prev1
+
+            """
+            # =========================
+            # HARD ASSERTS (ALIGNMENT)
+            # =========================
+            agent_mask = agent_mask.bool()
+            debug_window = 5
+
+            valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(audio_codes_target.device)
+            eos_any = (audio_codes_target == self.audio_eos_id).any(dim=1) & valid  # (B, T)
+
+            eos_prev1 = torch.zeros_like(eos_any)
+            eos_prev1[:, :-1] = eos_any[:, 1:]
+
+            eos_prev2 = torch.zeros_like(eos_any)
+            eos_prev2[:, :-2] = eos_any[:, 2:]
+
+            eos_required = eos_any | eos_prev1 | eos_prev2
+            missing_eos = eos_required & (~agent_mask)
+
+            if missing_eos.any():
+                b, t = missing_eos.nonzero(as_tuple=False)[0].tolist()
+                s = max(0, t - debug_window)
+                e = min(audio_codes_target.size(2), t + debug_window + 1)
+
+                eos_positions_b = eos_any[b].nonzero(as_tuple=False).flatten().detach().cpu().tolist()
+                required_positions_b = eos_required[b].nonzero(as_tuple=False).flatten().detach().cpu().tolist()
+
+                raise RuntimeError(
+                    "[MASK ERROR] EOS coverage violation\n"
+                    f"first_bad=(b={b}, t={t})\n"
+                    f"audio_len_target={int(audio_codes_lens_target[b])}\n"
+                    f"all_eos_positions_b={eos_positions_b}\n"
+                    f"required_positions_b={required_positions_b}\n"
+                    f"is_eos_at_bad={bool(eos_any[b, t])}\n"
+                    f"is_eos_prev1_at_bad={bool(eos_prev1[b, t])}\n"
+                    f"is_eos_prev2_at_bad={bool(eos_prev2[b, t])}\n"
+                    f"valid_window={valid[b, s:e].detach().cpu().tolist()}\n"
+                    f"eos_window={eos_any[b, s:e].detach().cpu().tolist()}\n"
+                    f"eos_required_window={eos_required[b, s:e].detach().cpu().tolist()}\n"
+                    f"agent_mask_window={agent_mask[b, s:e].detach().cpu().tolist()}\n"
+                    f"codes_window={audio_codes_target[b, :, s:e].detach().cpu().tolist()}\n"
+                )
+
+            # ---- All non-pad text must be covered ----
+            if text is not None:
+                text = text.to(agent_mask.device)
+                valid_text = text != self.pad_id
+
+                if text_lens is not None:
+                    valid_text = valid_text & get_mask_from_lengths(text_lens).bool().to(text.device)
+
+                T_overlap = min(text.size(1), agent_mask.size(1))
+                valid_text = valid_text[:, :T_overlap]
+                agent_mask_text = agent_mask[:, :T_overlap]
+
+                missing_text = valid_text & (~agent_mask_text)
+
+                if missing_text.any():
+                    b, t = missing_text.nonzero(as_tuple=False)[0].tolist()
+                    s = max(0, t - debug_window)
+                    e = min(T_overlap, t + debug_window + 1)
+
+                    first_nonpad = valid_text[b].nonzero(as_tuple=False)
+                    first_nonpad_t = int(first_nonpad[0].item()) if first_nonpad.numel() > 0 else None
+
+                    bad_token = int(text[b, t].detach().cpu())
+
+                    token_str = None
+                    try:
+                        token_str = self.tokenizer.ids_to_text([bad_token])
+                    except Exception:
+                        try:
+                            token_str = self.tokenizer.decode([bad_token])
+                        except Exception:
+                            try:
+                                token_str = self.tokenizer.id_to_token(bad_token)
+                            except Exception:
+                                token_str = "<decode failed>"
+
+                    raise RuntimeError(
+                        "[MASK ERROR] Text coverage violation\n"
+                        f"first_bad=(b={b}, t={t})\n"
+                        f"bad_token_id={bad_token}\n"
+                        f"bad_token_decoded={token_str}\n"
+                        f"text_lens={int(text_lens[b]) if text_lens is not None else None}\n"
+                        f"audio_len_target={int(audio_codes_lens_target[b])}\n"
+                        f"T_text={text.size(1)} T_agent_mask={agent_mask.size(1)} T_overlap={T_overlap}\n"
+                        f"first_nonpad_text_t={first_nonpad_t}\n"
+                        f"text_window={text[b, s:e].detach().cpu().tolist()}\n"
+                        f"valid_text_window={valid_text[b, s:e].detach().cpu().tolist()}\n"
+                        f"agent_mask_window={agent_mask_text[b, s:e].detach().cpu().tolist()}\n"
+                    )
+            """
+
         # Compute codebook loss
-        codebook_loss, _ = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target)
+        codebook_loss, _ = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target, agent_mask_target=agent_mask)
         loss = self.parallel_codebook_loss_scale * codebook_loss
+
 
         # Compute local transformer loss if applicable
         local_transformer_loss = None
@@ -920,8 +1053,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 pred_embeddings, audio_codes_target, targets_offset_by_one=False
             )
             local_transformer_loss, _ = self.compute_loss(
-                local_transformer_logits, audio_codes_target, audio_codes_lens_target
+                local_transformer_logits, audio_codes_target, audio_codes_lens_target, agent_mask_target=agent_mask
             )
+
             loss = loss + self.local_transformer_loss_scale * local_transformer_loss
 
         # Compute phoneme loss if applicable
@@ -1053,6 +1187,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="train",
             task=batch["task"] if self.cfg.get("use_multiturn_dataset", False) else None,
+            agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) and self.cfg.get("mask_user_on_loss", False) else None,
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
@@ -1151,6 +1286,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="val",
             task=batch["task"] if "task" in batch else None,
+            agent_mask=batch["agent_mask"] if "agent_mask" in batch and self.cfg.get("mask_user_on_loss", False) else None,
         )
         # Access ProcessBatchOutput dataclass attributes
         # logits come from the parallel prediction head

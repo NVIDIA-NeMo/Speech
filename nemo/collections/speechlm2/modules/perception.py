@@ -68,6 +68,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                 layer_idx_list=cfg.modality_adapter.target_layer_ids,
                 detach=False,
                 convert_to_cpu=False,
+                include_final_output=cfg.modality_adapter.get("include_final_output", True),
             )
         else:
             self.encoder = encoder
@@ -225,6 +226,7 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
                 layer_idx_list=cfg.modality_adapter.target_layer_ids,
                 detach=False,
                 convert_to_cpu=False,
+                include_final_output=cfg.modality_adapter.get("include_final_output", True),
             )
         if 'output_dim' not in cfg.modality_adapter and "d_model" in cfg.modality_adapter:  # e.g., conformer encoder
             self.proj = nn.Linear(cfg.modality_adapter.d_model, cfg.output_dim)
@@ -324,21 +326,24 @@ class QformerConnector(nn.Module):
         qformer_num_hidden_layers: int,
         encoder_config: DictConfig,
         llm_config: DictConfig,
+        include_final_output: bool = True,
     ):
         super().__init__()
         self.prompt_size = prompt_size
         self.target_layer_ids = target_layer_ids
+        self.include_final_output = include_final_output
         self.qformer_num_hidden_layers = qformer_num_hidden_layers
         self.encoder_config = encoder_config
         self.llm_config = llm_config
 
+        num_inputs = len(self.target_layer_ids) + int(self.include_final_output)
         self.layer_prompts = nn.ParameterList(
             [
                 nn.Parameter(torch.randn(1, self.prompt_size, self.encoder_config.d_model))
-                for _ in range(len(self.target_layer_ids))
+                for _ in range(num_inputs)
             ]
         )
-        self.layer_weights = nn.Parameter(torch.zeros(self.prompt_size, len(self.target_layer_ids), dtype=torch.float))
+        self.layer_weights = nn.Parameter(torch.zeros(self.prompt_size, num_inputs, dtype=torch.float))
 
         qformer_config = BertConfig()
         qformer_config.num_hidden_layers = self.qformer_num_hidden_layers
@@ -361,9 +366,10 @@ class QformerConnector(nn.Module):
             audio_signal: layerwise hidden states from the encoder
         """
         layer_prompt_outputs = []
-        assert len(audio_signal) == len(
-            self.target_layer_ids
-        ), f"Expected {len(self.target_layer_ids)} activations from encoder layers but got {len(audio_signal)}."
+        expected_num = len(self.target_layer_ids) + int(self.include_final_output)
+        assert (
+            len(audio_signal) == expected_num
+        ), f"Expected {expected_num} activations from encoder layers but got {len(audio_signal)}."
         for idx, encoder_hidden_state in enumerate(audio_signal):
             layer_prompt = self.layer_prompts[idx].expand(encoder_hidden_state.size(0), -1, -1)
             qformer_output = self.qformer(
@@ -391,17 +397,21 @@ class MultiLayerProjectionConnector(nn.Module):
         target_layer_ids: list[int],
         input_dim: int,
         output_dim: int,
+        include_final_output: bool = True,
     ):
         super().__init__()
         self.target_layer_ids = target_layer_ids
+        self.include_final_output = include_final_output
         self.input_dim = input_dim
         self.output_dim = output_dim
-        self.proj = torch.nn.Linear(self.input_dim * len(self.target_layer_ids), self.output_dim)
+        num_inputs = len(self.target_layer_ids) + int(self.include_final_output)
+        self.proj = torch.nn.Linear(self.input_dim * num_inputs, self.output_dim)
 
     def forward(self, audio_signal: list[torch.Tensor], length):
-        assert len(audio_signal) == len(
-            self.target_layer_ids
-        ), f"Expected {len(self.target_layer_ids)} activations from encoder layers but got {len(audio_signal)}."
+        expected_num = len(self.target_layer_ids) + int(self.include_final_output)
+        assert (
+            len(audio_signal) == expected_num
+        ), f"Expected {expected_num} activations from encoder layers but got {len(audio_signal)}."
         audio_signal = torch.cat(audio_signal, dim=1).transpose(1, 2)
         projected = self.proj(audio_signal).transpose(1, 2)
         return projected, length[0]

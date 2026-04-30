@@ -1334,30 +1334,32 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         aggregator: Optional[NeuralModule] = None,
         detach: bool = False,
         convert_to_cpu: bool = False,
+        include_final_output: bool = True,
     ):
         """
         This class is used to extract features from different layers of the ConformerEncoder.
         Args:
             encoder: ConformerEncoder instance.
             layer_idx_list: List of layer indices to extract features from. If None, all layers are extracted.
+                Negative indices follow standard Python convention (``-1`` == ``num_layers - 1``).
             aggregator: Aggregator instance. If None, the features are returned as a list.
             detach: If True, the features are detached from the graph.
             convert_to_cpu: If True, the features are converted to CPU.
+            include_final_output: If True (default), the post-encoder final output (the value returned
+                by ``encoder.forward()`` after its out_proj + optional reduction) is appended to the
+                feature list, after all intermediate-layer captures. This is distinct from capturing
+                ``num_layers - 1`` via ``layer_idx_list`` — that captures the raw last-layer activation,
+                whereas this captures the post-projection final output. Set False to return only the
+                intermediate captures.
         """
         super().__init__()
         self.encoder = encoder
         self.num_layers = len(encoder.layers)
         self.layer_idx_list = []
-        self.include_final_output = False
+        self.include_final_output = include_final_output
         if not layer_idx_list:
             layer_idx_list = list(range(self.num_layers))
         for lid in layer_idx_list:
-            if lid == -1:
-                # Sentinel: capture ``encoder.forward()``'s final return (post out_proj + optional
-                # reduction), not ``num_layers - 1``. Lets recipes combine intermediate-layer
-                # features with the top-of-stack representation.
-                self.include_final_output = True
-                continue
             if lid < -self.num_layers or lid >= self.num_layers:
                 raise ValueError(f"Invalid layer index {lid} for ConformerEncoder with {self.num_layers} layers.")
             if lid < 0:

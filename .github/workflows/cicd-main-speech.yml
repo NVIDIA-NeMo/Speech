@@ -61,6 +61,9 @@ jobs:
           - script: L0_Unit_Tests_GPU_ASR_5
             runner: ${{ inputs.runner }}
             timeout: 15
+          - script: L0_Unit_Tests_GPU_ASR_6
+            runner: ${{ inputs.runner }}
+            timeout: 15
           - script: L0_Unit_Tests_CPU_ASR_1
             runner: ${{ inputs.runner }}
             cpu-only: true
@@ -74,6 +77,10 @@ jobs:
             cpu-only: true
             timeout: 12
           - script: L0_Unit_Tests_CPU_ASR_4
+            runner: ${{ inputs.runner }}
+            cpu-only: true
+            timeout: 12
+          - script: L0_Unit_Tests_CPU_ASR_5
             runner: ${{ inputs.runner }}
             cpu-only: true
             timeout: 12

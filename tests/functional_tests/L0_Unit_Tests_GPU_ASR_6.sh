@@ -13,5 +13,5 @@
 # limitations under the License.
 python -c "from nemo.collections.asr.models import ASRModel" && NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
     tests/collections/asr \
-    --shard-id=4 --num-shards=6 \
+    --shard-id=5 --num-shards=6 \
     -m "not pleasefixme" --with_downloads

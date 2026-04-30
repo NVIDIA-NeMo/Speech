@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-python -c "from nemo.collections.asr.models import ASRModel" && NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
+CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
     tests/collections/asr \
-    --shard-id=4 --num-shards=6 \
-    -m "not pleasefixme" --with_downloads
+    --shard-id=4 --num-shards=5 \
+    -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat

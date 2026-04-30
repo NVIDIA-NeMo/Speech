@@ -338,10 +338,7 @@ class QformerConnector(nn.Module):
 
         num_inputs = len(self.target_layer_ids) + int(self.include_final_output)
         self.layer_prompts = nn.ParameterList(
-            [
-                nn.Parameter(torch.randn(1, self.prompt_size, self.encoder_config.d_model))
-                for _ in range(num_inputs)
-            ]
+            [nn.Parameter(torch.randn(1, self.prompt_size, self.encoder_config.d_model)) for _ in range(num_inputs)]
         )
         self.layer_weights = nn.Parameter(torch.zeros(self.prompt_size, num_inputs, dtype=torch.float))
 

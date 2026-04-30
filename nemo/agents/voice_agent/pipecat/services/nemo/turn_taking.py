@@ -19,6 +19,7 @@ from typing import List, Optional, Union
 
 import yaml
 from loguru import logger
+from omegaconf import ListConfig
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -63,6 +64,7 @@ class NeMoTurnTakingService(FrameProcessor):
         self.use_vad = use_vad
         self.use_diar = use_diar
         self.max_buffer_size = max_buffer_size
+        self.can_create_user_frames = can_create_user_frames
 
         self.backchannel_phrases = self._load_backchannel_phrases(backchannel_phrases)
         self.backchannel_phrases_nopc = set([self.clean_text(phrase) for phrase in self.backchannel_phrases])
@@ -94,10 +96,11 @@ class NeMoTurnTakingService(FrameProcessor):
             if not isinstance(backchannel_phrases, list):
                 raise ValueError(f"Backchannel phrases must be a list, got {type(backchannel_phrases)}")
             logger.info(f"Loaded {len(backchannel_phrases)} backchannel phrases from file: {backchannel_phrases}")
-        elif isinstance(backchannel_phrases, list):
+        elif isinstance(backchannel_phrases, (list, ListConfig)):
+            backchannel_phrases = list(backchannel_phrases)
             logger.info(f"Using backchannel phrases from list: {backchannel_phrases}")
         else:
-            raise ValueError(f"Invalid backchannel phrases: {backchannel_phrases}")
+            raise ValueError(f"Invalid backchannel phrases of type {type(backchannel_phrases)}: {backchannel_phrases}")
         return backchannel_phrases
 
     def reset(self):
@@ -399,10 +402,6 @@ class NeMoTurnTakingService(FrameProcessor):
                 logger.debug("Pushing UserStartedSpeakingFrame and StartInterruptionFrame")
                 await self.push_frame(frame)
                 await self.push_frame(StartInterruptionFrame(), direction=FrameDirection.DOWNSTREAM)
-            else:
-                logger.debug(
-                    "Skipping UserStartedSpeakingFrame and StartInterruptionFrame because can_create_user_frames is False"
-                )
             # Record cutoff time for agent audio when TTS is interrupted
             if self._audio_logger and self._bot_speaking:
                 self._audio_logger.set_agent_cutoff_time()

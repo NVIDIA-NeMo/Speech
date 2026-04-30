@@ -38,7 +38,7 @@ async def tool_get_city_weather(params: FunctionCallParams, city_name: str):
 
     # The measuring unit defaults to metric (Celsius)
     # Use imperial for Fahrenheit: python_weather.IMPERIAL
-    async with python_weather.Client(unit=python_weather.METRIC) as client:
+    async with python_weather.Client(unit=python_weather.METRIC, max_retries=3) as client:
         # Fetch a weather forecast from a city
         logger.debug(f"Fetching weather forecast for `{city_name}`")
         try:

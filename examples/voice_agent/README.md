@@ -60,28 +60,22 @@ As of now, we only support English input and output, but more languages will be 
 
 ### Install dependencies
 
-First, install or update the npm and node.js to the latest version, for example:
+First, install the `npm` and `nodejs` dependencies via:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y npm nodejs
 ```
 
-or:
+Second, create a venv with `uv`:
 
 ```bash
-curl -fsSL https://fnm.vercel.app/install | bash
-. ~/.bashrc
-fnm use --install-if-missing 20
+uv sync
 ```
 
-Second, create a new conda environment with the dependencies:
+Then you can activate the environment via `source .venv/bin/activate`.
 
-```bash
-conda env create -f environment.yaml
-```
-
-Then you can activate the environment via `conda activate nemo-voice`.
+Alternatively, you can do all steps in one go by running `bash install.sh`.
 
 ### Configure the server
 

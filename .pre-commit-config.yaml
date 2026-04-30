@@ -30,7 +30,7 @@ repos:
       - id: check-case-conflict
       - id: detect-private-key
       - id: check-added-large-files
-        args: ['--maxkb=1000']
+        args: ['--maxkb=2000']
       - id: requirements-txt-fixer
 
   - repo: https://github.com/PyCQA/isort
@@ -49,4 +49,4 @@ repos:
         # supported by your project here, or alternatively use
         # pre-commit's default_language_version, see
         # https://pre-commit.com/#top_level-default_language_version
-        language_version: python3.10
+        language_version: python3.12

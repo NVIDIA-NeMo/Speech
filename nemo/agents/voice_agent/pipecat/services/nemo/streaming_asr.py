@@ -30,6 +30,8 @@ from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentenceP
 
 @dataclass
 class ASRResult:
+    """Result of one ASR inference step."""
+
     text: str
     is_final: bool
     eou_prob: Optional[float] = None
@@ -40,6 +42,8 @@ class ASRResult:
 
 
 class NemoStreamingASRService:
+    """Streaming ASR service wrapping a NeMo FastConformer model with EOU/EOB prediction."""
+
     def __init__(
         self,
         model: str = "nvidia/parakeet_realtime_eou_120m-v1",
@@ -55,6 +59,7 @@ class NemoStreamingASRService:
         frame_len_in_secs: float = 0.08,
         use_amp: bool = False,
         chunk_size_in_secs: float = 0.08,
+        ignore_eou_eob: bool = False,
     ):
         self.model = model
         self.eou_string = eou_string
@@ -71,6 +76,7 @@ class NemoStreamingASRService:
         self.pad_and_drop_preencoded = False
         self.blank_id = self.get_blank_id()
         self.chunk_size_in_secs = chunk_size_in_secs
+        self.ignore_eou_eob = ignore_eou_eob
 
         assert len(self.att_context_size) == 2, "Att context size must be a list of two integers"
         assert (
@@ -122,17 +128,21 @@ class NemoStreamingASRService:
         )  # batch size is 1
 
     def _get_blank_hypothesis(self) -> List[Hypothesis]:
+        """Return a fresh empty hypothesis to seed decoding."""
         blank_hypothesis = Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestamp=[], last_token=None)
         return [blank_hypothesis]
 
     @property
     def drop_extra_pre_encoded(self):
+        """Number of extra pre-encoded frames the encoder drops per step."""
         return self.asr_model.encoder.streaming_cfg.drop_extra_pre_encoded
 
     def get_blank_id(self):
+        """Return the CTC blank token id (one past the last vocab entry)."""
         return len(self.tokenizer.vocab)
 
     def get_text_from_tokens(self, tokens: List[int]) -> str:
+        """Decode a list of SentencePiece token ids back into text, skipping blanks."""
         sep = "\u2581"  # '▁'
         tokens = [int(t) for t in tokens if t != self.blank_id]
         if tokens:
@@ -235,6 +245,7 @@ class NemoStreamingASRService:
         return tokens, probs
 
     def transcribe(self, audio: bytes, stream_id: str = "default") -> ASRResult:
+        """Run one streaming ASR inference step on a chunk of PCM audio bytes."""
         start_time = time.time()
 
         # Convert bytes to numpy array
@@ -280,6 +291,9 @@ class NemoStreamingASRService:
         eou_prob = None
         eob_prob = None
         current_timestamp = time.time()
+        if self.ignore_eou_eob:
+            text = text.replace(self.eou_string, "").replace(self.eob_string, "")
+
         if self.eou_string in text or self.eob_string in text:
             is_final = True
             if self.eou_string in text:
@@ -308,12 +322,14 @@ class NemoStreamingASRService:
         )
 
     def reset_state(self, stream_id: str = "default"):
+        """Clear audio buffer, decoder cache, and hypothesis state for a stream."""
         self._audio_buffer.reset()
         self._reset_cache()
         self._previous_hypotheses = self._get_blank_hypothesis()
         self._last_transcript_timestamp = time.time()
 
     def get_eou_probability(self, tokens: List[int], probs: List[float], eou_string: str = "<EOU>") -> float:
+        """Return the probability of the end-of-utterance token in the current hypothesis."""
         text_tokens = self.tokenizer.ids_to_tokens(tokens)
         eou_index = text_tokens.index(eou_string)
         return probs[eou_index]

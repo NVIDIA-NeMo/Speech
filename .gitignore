@@ -190,6 +190,10 @@ onelogger.*
 node_modules/
 .vite/
 bot_server.*
+eval_results/
+audio_logs/
+audio_logs_user/
+audio_logs_agent/
 audio_logs/
 eval_results/
 

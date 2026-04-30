@@ -39,19 +39,23 @@ from nemo.agents.voice_agent.pipecat.services.nemo.streaming_diar import Diariza
 
 
 class NeMoDiarInputParams(BaseModel):
-    threshold: Optional[float] = (
-        0.4  # threshold value used to determine if a speaker exists or not, setting it to a lower value will increase the sensitivity of the diarization model
-    )
+    """Streaming diarization parameters for the NeMo diarization service."""
+
+    # threshold value used to determine if a speaker exists or not;
+    # a lower value increases the sensitivity of the diarization model
+    threshold: Optional[float] = 0.4
     language: Optional[Language] = Language.EN_US
     frame_len_in_secs: Optional[float] = 0.08  # 80ms for FastConformer model
     config_path: Optional[str] = None  # path to the Niva ASR config file
     raw_audio_frame_len_in_secs: Optional[float] = 0.016  # 16ms for websocket transport
-    buffer_size: Optional[int] = (
-        30  # number of audio frames to buffer, 1 frame is 16ms, streaming Sortformer was trained with 6*0.08=0.48s chunks
-    )
+    # number of audio frames to buffer; 1 frame is 16ms,
+    # streaming Sortformer was trained with 6*0.08=0.48s chunks
+    buffer_size: Optional[int] = 30
 
 
 class NemoDiarService(STTService):
+    """Pipecat STT service wrapping NeMo's streaming diarization model."""
+
     def __init__(
         self,
         *,
@@ -329,6 +333,7 @@ class NemoDiarService(STTService):
         self._audio_buffer = []
         self._vad_user_speaking = False
         self._model.reset_state()
+        logger.debug("Diarization service reset complete")
 
     def _get_dominant_speaker_id(self, spk_pred: np.ndarray):
         spk_pred = (spk_pred > self._params.threshold).astype(int)

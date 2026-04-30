@@ -1,0 +1,84 @@
+[project]
+name = "nemo-voice-agent"
+version = "0.1.0"
+description = "An open-source voice agent pipeline."
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    # Deep learning core (CUDA 13.0 wheels; see [tool.uv.sources] below)
+    "torch",
+    "torchvision",
+    "torchaudio",
+
+    # NeMo speech stack (ASR + TTS models)
+    "nemo-toolkit[asr,tts]",
+
+    # Real-time voice pipeline framework
+    "pipecat-ai==0.0.98",
+
+    # LLM backends
+    "vllm>=0.19.0",
+    "openai",
+
+    # TTS backends and audio processing
+    "kokoro",
+    "silero-vad",
+    "onnxruntime",
+    "kaldialign",
+
+    # Web / API / client
+    "fastapi",
+    "uvicorn",
+    "websockets",
+
+    # Utilities
+    "python_weather",
+    "python-dotenv",
+    "loguru",
+    "opentelemetry-exporter-otlp-proto-grpc",
+    "opentelemetry-exporter-otlp-proto-http",
+
+    # Riva client
+    "nvidia-riva-client==2.21.1",
+]
+
+[project.optional-dependencies]
+# Dev tools: linters, formatters, test runners
+dev = [
+    "black>=24",
+    "isort>=5",
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["setuptools>=79"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# This is a collection of example scripts, not a library package.
+# Only build wheels if explicitly requested.
+packages = []
+
+# ---------------------------------------------------------------------------
+# uv configuration — pins PyTorch and vLLM wheels to the CUDA 13.0 index.
+# vLLM publishes matching CUDA 13 wheels on the PyTorch index.
+# Change the index URL for CPU-only or different CUDA versions:
+#   - CPU:       https://download.pytorch.org/whl/cpu
+#   - CUDA 12.4: https://download.pytorch.org/whl/cu124
+#   - CUDA 12.8: https://download.pytorch.org/whl/cu128
+#   - CUDA 13.0: https://download.pytorch.org/whl/cu130  (default here)
+# ---------------------------------------------------------------------------
+[tool.uv]
+# Always use uv's own managed Python (downloaded to ~/.local/share/uv/python/).
+# Prevents picking up system/conda Python which can cause build-toolchain
+# mismatches when compiling C extensions from source (e.g. cdifflib).
+python-preference = "only-managed"
+
+# Tell uv to select the CUDA 13 variant for torch, torchvision, torchaudio,
+# and any package that declares a torch-backend-aware source. This replaces
+# the manual [[tool.uv.index]] + [tool.uv.sources] plumbing for torch.
+torch-backend = "cu130"
+
+# Force patched versions for known CVEs
+override-dependencies = [
+    "protobuf==5.29.6",
+]

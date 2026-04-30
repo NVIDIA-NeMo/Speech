@@ -88,9 +88,17 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         self._pending_requests = {}
         self._have_seen_think_tokens = False
 
+        self._initialize_tool_calling()
+
     def reset(self):
         """Reset the TTS service."""
         self._text_aggregator.reset()
+        self._tts_queue = asyncio.Queue()
+        logger.debug("TTS service reset complete")
+
+    def _initialize_tool_calling(self):
+        """Initialize the tool calling mixin by registering all available tools."""
+        self.setup_tool_calling()
 
     def setup_tool_calling(self):
         """
@@ -167,11 +175,15 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
 
                     # Process TTS generation
                     try:
-                        audio_result = self._generate_audio(text)
+                        # Consume the generator completely in background thread to avoid blocking main event loop
+                        # _generate_audio yields audio chunks, so we collect them into a list
+                        audio_chunks = []
+                        for audio_chunk in self._generate_audio(text):
+                            audio_chunks.append(audio_chunk)
 
-                        # Send result directly to the waiting request
+                        # Send the list of audio chunks to the waiting request
                         asyncio.run_coroutine_threadsafe(
-                            response_queue.put(('success', audio_result)), self.get_event_loop()
+                            response_queue.put(('success', audio_chunks)), self.get_event_loop()
                         )
                     except Exception as e:
                         logger.error(f"Error in TTS generation: {e}")
@@ -326,10 +338,10 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                 # Process the audio result (same as before)
                 if (
                     inspect.isgenerator(audio_result)
-                    or hasattr(audio_result, '__iter__')
-                    and hasattr(audio_result, '__next__')
+                    or isinstance(audio_result, list)
+                    or (hasattr(audio_result, '__iter__') and hasattr(audio_result, '__next__'))
                 ):
-                    # Handle generator case
+                    # Handle generator/list case
                     first_chunk = True
                     for audio_chunk in audio_result:
                         if first_chunk:
@@ -354,6 +366,9 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                                 audio=audio_chunk_bytes, sample_rate=self.sample_rate, num_channels=1
                             )
                             yield frame
+
+                        # Yield control to event loop after each audio chunk
+                        await asyncio.sleep(0)
                 else:
                     # Handle single result case
                     await self.stop_ttfb_metrics()
@@ -523,7 +538,6 @@ class KokoroTTSService(BaseNemoTTSService):
         else:
             self._model_maps = {}
         super().__init__(model=model, device=device, sample_rate=sample_rate, **kwargs)
-        self.setup_tool_calling()
 
     def _setup_model(self, lang_code: Optional[str] = None, voice: Optional[str] = None):
         """Initialize the Kokoro pipeline."""
@@ -573,7 +587,7 @@ class KokoroTTSService(BaseNemoTTSService):
         try:
             # Generate audio using Kokoro pipeline
             generator = self._model(text, voice=self._voice, speed=self._speed)
-
+            logger.debug(f"Kokoro generating audio with voice: {self._voice} and speed: {self._speed}")
             # The generator yields tuples of (gs, ps, audio)
             # We only need the audio component
             for i, (gs, ps, audio) in enumerate(generator):
@@ -791,7 +805,6 @@ class MagpieTTSService(BaseNemoTTSService):
         self._current_speaker = speaker
         self._apply_TN = apply_TN
         super().__init__(model=model, device=device, **kwargs)
-        self.setup_tool_calling()
 
     def _setup_model(self):
         from nemo.collections.tts.models import MagpieTTSModel
@@ -847,6 +860,7 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
     if model is None:
         raise ValueError("Model is required for Nemo TTS service")
 
+    logger.debug(f"Getting TTS service from config: {config}")
     text_aggregator = SimpleSegmentedTextAggregator(
         punctuation_marks=config.get("extra_separator", None),
         ignore_marks=config.get("ignore_strings", None),

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import asyncio
 from loguru import logger
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.frames.frames import (
@@ -26,6 +26,8 @@ from pipecat.transports.base_input import BaseInputTransport as _BaseInputTransp
 
 
 class BaseInputTransport(_BaseInputTransport):
+    """Subclass of Pipecat's BaseInputTransport that overrides VAD event handling for NeMo."""
+
     async def _handle_vad(self, audio_frame: InputAudioRawFrame, vad_state: VADState):
         """Handle Voice Activity Detection results and generate appropriate frames."""
         new_vad_state = await self._vad_analyze(audio_frame)
@@ -56,3 +58,13 @@ class BaseInputTransport(_BaseInputTransport):
 
             vad_state = new_vad_state
         return vad_state
+
+    async def push_audio_frame(self, frame: InputAudioRawFrame):
+        """Push an audio frame to the processing queue if audio input is enabled.
+
+        Args:
+            frame: The input audio frame to process.
+        """
+        frame.timestamp = asyncio.get_event_loop().time()
+        if self._params.audio_in_enabled and not self._paused:
+            await self._audio_in_queue.put(frame)

@@ -99,6 +99,10 @@ def register_direct_tools_to_llm(
     else:
         logger.info(f"Registering {len(all_tools)} direct tools to the LLM.")
 
+    existing_tools = context.tools
+    if not isinstance(existing_tools, list):
+        existing_tools = []
+    all_tools.extend(existing_tools)
     tools_schema = ToolsSchema(standard_tools=all_tools)
     context.set_tools(tools_schema)
 

@@ -34,7 +34,9 @@ class ConfigManager:
         Initialize the configuration manager.
 
         Args:
-            config_path: Path to the main server configuration file.
+            server_base_path: Path to the server base directory containing the server_configs
+                and model_registry.yaml files.
+            server_config_path: Path to the main server configuration file.
                         If None, uses default path from environment variable.
         """
         if not os.path.exists(server_base_path):
@@ -49,12 +51,13 @@ class ConfigManager:
         if not os.path.exists(self._server_config_path):
             raise FileNotFoundError(f"Server configuration file not found at {self._server_config_path}")
 
+        # Load and process main configuration
+        self.server_config = self._load_server_config()
+        self.use_model_registry = self.server_config.server.get("use_model_registry", True)
+
         # Load model registry
         self.model_registry_path = f"{os.path.abspath(self._server_base_path)}/model_registry.yaml"
         self.model_registry = self._load_model_registry()
-
-        # Load and process main configuration
-        self.server_config = self._load_server_config()
 
         # Initialize configuration parameters
         self._initialize_config_parameters()
@@ -62,15 +65,19 @@ class ConfigManager:
         self._generic_hf_llm_model_id = "hf_llm_generic"
 
         logger.info(f"Configuration loaded from: {self._server_config_path}")
-        logger.info(f"Model registry loaded from: {self.model_registry_path}")
 
     def _load_model_registry(self) -> Dict[str, Any]:
         """Load model registry from YAML file."""
-        try:
-            return OmegaConf.load(self.model_registry_path)
-        except Exception as e:
-            logger.error(f"Failed to load model registry: {e}")
-            raise ValueError(f"Failed to load model registry: {e}")
+        model_registry = OmegaConf.create({})
+        if not self.use_model_registry:
+            logger.info("Model registry not loaded, using empty model registry.")
+        else:
+            logger.info(f"Loading model registry from: {self.model_registry_path}")
+            try:
+                model_registry = OmegaConf.load(self.model_registry_path)
+            except Exception as e:
+                logger.error(f"Failed to load model registry from {self.model_registry_path}: {e}")
+        return model_registry
 
     def _load_server_config(self) -> OmegaConf:
         """Load and process the main server configuration."""
@@ -83,7 +90,8 @@ class ConfigManager:
         """Initialize all configuration parameters from the loaded config."""
         # Default constants
         self.SAMPLE_RATE = 16000
-        self.RAW_AUDIO_FRAME_LEN_IN_SECS = 0.016
+        # websocket has 16ms frame length by default
+        self.RAW_AUDIO_FRAME_LEN_IN_SECS = self.server_config.transport.get("audio_in_frame_len_secs", 0.016)
         self.SYSTEM_PROMPT = " ".join(
             [
                 "You are a helpful AI agent named Lisa.",
@@ -123,9 +131,10 @@ class ConfigManager:
         self.STT_DEVICE = self.server_config.stt.device
         # Apply STT-specific configuration based on model type
         # Try to get STT config file name from server config first
+        yaml_file_name = None
         if self.server_config.stt.get("model_config", None) is not None:
             yaml_file_name = os.path.basename(self.server_config.stt.model_config)
-        else:
+        elif self.use_model_registry:
             # Get STT configuration from registry
             if str(self.STT_MODEL).endswith(".nemo"):
                 model_name = os.path.splitext(os.path.basename(self.STT_MODEL))[0]
@@ -134,23 +143,27 @@ class ConfigManager:
             if model_name in self.model_registry.stt_models:
                 yaml_file_name = self.model_registry.stt_models[model_name].yaml_id
             else:
-                error_msg = f"STT model {model_name} is not in model registry: {self.model_registry.stt_models}."
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-
-        stt_config_path = f"{os.path.abspath(self._server_base_path)}/server_configs/stt_configs/{yaml_file_name}"
-        if not os.path.exists(stt_config_path):
-            raise FileNotFoundError(f"STT config file not found at {stt_config_path}")
-        stt_config = OmegaConf.load(stt_config_path)
-
-        # merge stt config with server config
-        for key in stt_config:
-            if key in self.server_config.stt and self.server_config.stt[key] != stt_config[key]:
-                logger.info(
-                    f"STT config field `{key}` is overridden from `{self.server_config.stt[key]}` "
-                    f"to `{stt_config[key]}` by {stt_config_path}"
+                message = (
+                    f"STT model {model_name} is not in model registry: {self.model_registry.stt_models}, "
+                    f"please make sure the server config ({self._server_config_path}) "
+                    "contains all the necessary configurations."
                 )
-            self.server_config.stt[key] = stt_config[key]
+                logger.warning(message)
+
+        if yaml_file_name is not None:
+            stt_config_path = f"{os.path.abspath(self._server_base_path)}/server_configs/stt_configs/{yaml_file_name}"
+            if not os.path.exists(stt_config_path):
+                raise FileNotFoundError(f"STT config file not found at {stt_config_path}")
+            stt_config = OmegaConf.load(stt_config_path)
+
+            # merge stt config with server config
+            for key in stt_config:
+                if key in self.server_config.stt and self.server_config.stt[key] != stt_config[key]:
+                    logger.info(
+                        f"STT config field `{key}` is overridden from `{self.server_config.stt[key]}` "
+                        f"to `{stt_config[key]}` by {stt_config_path}"
+                    )
+                self.server_config.stt[key] = stt_config[key]
 
         logger.info(f"Final STT config: {self.server_config.stt}")
 
@@ -160,7 +173,7 @@ class ConfigManager:
             att_context_size=self.server_config.stt.att_context_size,
             frame_len_in_secs=self.server_config.stt.frame_len_in_secs,
             raw_audio_frame_len_in_secs=self.RAW_AUDIO_FRAME_LEN_IN_SECS,
-            buffer_size=buffer_size,
+            buffer_size=self.server_config.stt.get("buffer_size", buffer_size),  # FC has 80ms frame, which is 5 * 16ms
         )
 
     def _configure_diarization(self):
@@ -185,11 +198,11 @@ class ConfigManager:
         """Configure LLM parameters."""
         llm_model_id = self.server_config.llm.model
         is_registry_model = False
-
+        yaml_file_name = None
         # Try to get LLM config file name from server config first
         if self.server_config.llm.get("model_config", None) is not None:
             yaml_file_name = os.path.basename(self.server_config.llm.model_config)
-        else:
+        elif self.use_model_registry:
             # Get LLM configuration from registry
             if llm_model_id in self.model_registry.llm_models:
                 yaml_file_name = self.model_registry.llm_models[llm_model_id].yaml_id
@@ -197,34 +210,35 @@ class ConfigManager:
             else:
                 logger.warning(
                     f"LLM model {llm_model_id} is not included in the model registry. "
-                    "Using a generic HuggingFace LLM config instead."
+                    f"Please make sure the server config ({self._server_config_path}) "
+                    "contains all the necessary configurations."
                 )
-                yaml_file_name = self.model_registry.llm_models[self._generic_hf_llm_model_id].yaml_id
 
-        # Load and merge LLM configuration
-        llm_config_path = f"{os.path.abspath(self._server_base_path)}/server_configs/llm_configs/{yaml_file_name}"
+        if yaml_file_name is not None:
+            # Load and merge LLM configuration
+            llm_config_path = f"{os.path.abspath(self._server_base_path)}/server_configs/llm_configs/{yaml_file_name}"
 
-        if (
-            is_registry_model
-            and self.model_registry.llm_models[llm_model_id].get("reasoning_supported", False)
-            and self.server_config.llm.get("enable_reasoning", False)
-        ):
-            llm_config_path = llm_config_path.replace(".yaml", "_think.yaml")
+            if (
+                is_registry_model
+                and self.model_registry.llm_models[llm_model_id].get("reasoning_supported", False)
+                and self.server_config.llm.get("enable_reasoning", False)
+            ):
+                llm_config_path = llm_config_path.replace(".yaml", "_think.yaml")
 
-        if not os.path.exists(llm_config_path):
-            raise FileNotFoundError(f"LLM config file not found at {llm_config_path}")
-        logger.info(f"Loading LLM config from: {llm_config_path}")
+            if not os.path.exists(llm_config_path):
+                raise FileNotFoundError(f"LLM config file not found at {llm_config_path}")
+            logger.info(f"Loading LLM config from: {llm_config_path}")
 
-        llm_config = OmegaConf.load(llm_config_path)
-        # merge llm config with server config
-        # print the override keys
-        for key in llm_config:
-            if key in self.server_config.llm and self.server_config.llm[key] != llm_config[key]:
-                logger.info(
-                    f"LLM config field `{key}` is overridden from `{self.server_config.llm[key]}` to "
-                    f"`{llm_config[key]}` by {llm_config_path}"
-                )
-            self.server_config.llm[key] = llm_config[key]
+            llm_config = OmegaConf.load(llm_config_path)
+            # merge llm config with server config
+            # print the override keys
+            for key in llm_config:
+                if key in self.server_config.llm and self.server_config.llm[key] != llm_config[key]:
+                    logger.info(
+                        f"LLM config field `{key}` is overridden from `{self.server_config.llm[key]}` to "
+                        f"`{llm_config[key]}` by {llm_config_path}"
+                    )
+                self.server_config.llm[key] = llm_config[key]
 
         logger.info(f"Final LLM config: {self.server_config.llm}")
 
@@ -239,8 +253,10 @@ class ConfigManager:
         else:
             logger.info(f"No system prompt provided, using default system prompt: {self.SYSTEM_PROMPT}")
 
+        self.SYSTEM_PROMPT_SUFFIX = ""
         if self.server_config.llm.get("system_prompt_suffix", None) is not None:
             self.SYSTEM_PROMPT += "\n" + self.server_config.llm.system_prompt_suffix
+            self.SYSTEM_PROMPT_SUFFIX = self.server_config.llm.system_prompt_suffix
             logger.info(f"Adding system prompt suffix: {self.server_config.llm.system_prompt_suffix}")
 
         logger.info(f"System prompt: {self.SYSTEM_PROMPT}")
@@ -248,32 +264,36 @@ class ConfigManager:
     def _configure_tts(self):
         """Configure TTS parameters."""
         tts_model_id = self.server_config.tts.model
-
+        yaml_file_name = None
         # Try to get TTS config file name from server config first
         if self.server_config.tts.get("model_config", None) is not None:
             yaml_file_name = os.path.basename(self.server_config.tts.model_config)
-        else:
+        elif self.use_model_registry:
             # Get TTS configuration from registry
             if tts_model_id in self.model_registry.tts_models:
                 yaml_file_name = self.model_registry.tts_models[tts_model_id].yaml_id
             else:
-                error_msg = f"TTS model {tts_model_id} is not in model registry: {self.model_registry.tts_models}"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-
-        tts_config_path = f"{os.path.abspath(self._server_base_path)}/server_configs/tts_configs/{yaml_file_name}"
-        if not os.path.exists(tts_config_path):
-            raise FileNotFoundError(f"Default TTS config file not found at {tts_config_path}")
-        tts_config = OmegaConf.load(tts_config_path)
-
-        # merge tts config with server config
-        for key in tts_config:
-            if key in self.server_config.tts and self.server_config.tts[key] != tts_config[key]:
-                logger.info(
-                    f"TTS config field `{key}` is overridden from `{self.server_config.tts[key]}` to "
-                    f"`{tts_config[key]}` by {tts_config_path}"
+                message = (
+                    f"TTS model {tts_model_id} is not in model registry: {self.model_registry.tts_models}, "
+                    f"please make sure the server config ({self._server_config_path}) "
+                    "contains all the necessary configurations."
                 )
-            self.server_config.tts[key] = tts_config[key]
+                logger.warning(message)
+
+        if yaml_file_name is not None:
+            tts_config_path = f"{os.path.abspath(self._server_base_path)}/server_configs/tts_configs/{yaml_file_name}"
+            if not os.path.exists(tts_config_path):
+                raise FileNotFoundError(f"TTS config file not found at {tts_config_path}")
+            tts_config = OmegaConf.load(tts_config_path)
+
+            # merge tts config with server config
+            for key in tts_config:
+                if key in self.server_config.tts and self.server_config.tts[key] != tts_config[key]:
+                    logger.info(
+                        f"TTS config field `{key}` is overridden from `{self.server_config.tts[key]}` to "
+                        f"`{tts_config[key]}` by {tts_config_path}"
+                    )
+                self.server_config.tts[key] = tts_config[key]
 
         logger.info(f"Final TTS config: {self.server_config.tts}")
 

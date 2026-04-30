@@ -13,9 +13,12 @@
 # limitations under the License.
 
 import functools
+import logging
 import os
 import random
+import re
 import traceback
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -30,6 +33,14 @@ from torch.special import gammaln
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
+
+try:
+    from nemo_text_processing.text_normalization.normalize import Normalizer
+
+    PYNINI_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    Normalizer = None
+    PYNINI_AVAILABLE = False
 
 
 def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
@@ -769,3 +780,132 @@ def resample_batch(audio, audio_len, input_sample_rate, output_sample_rate):
     audio_len = audio_len.int()
     audio = mask_sequence_tensor(audio, audio_len)
     return audio, audio_len
+
+
+def normalize_text_by_pattern(text: str, pattern: str, replacement: str) -> str:
+    """Normalize input text using a regular expression.
+
+    This function will search for and replace any string matching the input 'pattern' surrounded by any punctuation.
+
+    Example:
+        >>> text = "Mr holmes told mr. watson to be careful."
+        >>> normalized_text = normalize_text_by_pattern(text=text, pattern="[mM]r\.?", replacement="mister")
+        >>> normalized_text
+        "mister holmes told mister watson to be careful."
+
+    Args:
+        text: Text to normalize
+        pattern: Text pattern to find and replace
+        replacement: Text to substitute for the input pattern
+
+    Returns:
+        The normalized text string
+
+    """
+    # Finds all occurrences of the pattern, capturing any punctuation before and after it (including start and end of sentence).
+    regex = re.compile(f"(^|[^A-Za-zÀ-ÖØ-öø-ÿ]){pattern}($|[^A-Za-zÀ-ÖØ-öø-ÿ])")
+    match = regex.findall(string=text)
+
+    output = text
+    for surrounding_punct in match:
+        repl = f"{surrounding_punct[0]}{replacement}{surrounding_punct[1]}"
+        output = regex.sub(string=output, repl=repl, count=1)
+
+    return output
+
+
+class TextProcessor(ABC):
+    """Interface for preprocessing text for TTS training, inference, and evaluation"""
+
+    @abstractmethod
+    def normalize_text(self, text: str) -> str:
+        """
+        Preprocess text for model training and inference.
+            Usually this involves language-specific rules for converting written text to spoken form.
+
+        Args:
+            text: Raw text string
+
+        Returns:
+            Normalized text string
+        """
+        pass
+
+    @abstractmethod
+    def process_text_for_wer(self, text: str) -> str:
+        """
+        Preprocess text for calculating word error rate and character error rate.
+            This should include conversion of text to lower case, removal of punctuation, normalization,
+            and possible post-processing steps for ASR model output.
+
+        Args:
+            text: Raw text string
+
+        Returns:
+            Processed text string
+        """
+        pass
+
+
+class DefaultTextProcessor(TextProcessor):
+    """Default text processing behavior, if language-specific processing is not yet implemented."""
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = text.lower()
+        # Replace dash with a single space
+        text = text.replace("-", " ")
+        # Replace whitespace with a single space
+        text = re.sub(pattern=r"\s\s+", string=text, repl=" ")
+        # Remove all non-alphanumeric characters, making sure to keep accented and foreign characters
+        text = "".join([c for c in text if c == " " or c.isalnum()])
+        # Fix common ASR transcript artifacts
+        text = text.replace("h t t p", "http")
+        text = text.replace("w w w", "www")
+        text = text.strip()
+        return text
+
+
+class EnglishTextProcessor(TextProcessor):
+    """English text processing, which catches some edge cases not covered by normal text normalization.
+
+    English TN does not work on abbreviations when a period is missing. For example, "mr." will be normalized to "mister",
+    but "mr" will not be. This class manually normalizes abbreviations commonly found in public datasets and ASR transcriptions.
+    """
+
+    def __init__(self, input_case: str = "cased"):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+        if not PYNINI_AVAILABLE:
+            logging.warning("`nemo_text_processing` is not installed, will skip default text normalization")
+            self.normalizer = None
+        else:
+            self.normalizer = Normalizer(lang="en", input_case=input_case)
+
+    def normalize_text(self, text: str) -> str:
+        if self.normalizer is not None:
+            text = self.normalizer.normalize(text)
+
+        text = normalize_text_by_pattern(text=text, pattern="[mM]r\.?", replacement="mister")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]s\.?", replacement="miss")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]rs\.?", replacement="missus")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]me\.?", replacement="madame")
+        text = normalize_text_by_pattern(text=text, pattern="[dD]r\.?", replacement="doctor")
+        text = normalize_text_by_pattern(text=text, pattern="[eE]tc\.?", replacement="et cetera")
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = self.normalize_text(text)
+        text = self.default_processor.process_text_for_wer(text)
+        return text
+
+
+def get_text_processor(language: str) -> TextProcessor:
+    if language == "en":
+        return EnglishTextProcessor()
+    else:
+        logging.info(f"Text processing not implemented for language {language}; using default processor")
+        return DefaultTextProcessor()

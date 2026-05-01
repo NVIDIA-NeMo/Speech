@@ -83,9 +83,7 @@ def parse_args():
         help="Path(s) to SPE tokenizer(s) or HuggingFace repo id. More than one path requires --langs "
         "and constructs an AggregateTokenizer.",
     )
-    parser.add_argument(
-        "-a", "--langs", nargs="+", help="Language names for each AggregateTokenizer sub-tokenizer."
-    )
+    parser.add_argument("-a", "--langs", nargs="+", help="Language names for each AggregateTokenizer sub-tokenizer.")
     parser.add_argument(
         "-b",
         "--buckets",
@@ -232,8 +230,7 @@ def parse_args():
         "--output-config",
         type=str,
         default=None,
-        help="Path to write the patched copy of --source-config to. Required iff --source-config "
-        "is set.",
+        help="Path to write the patched copy of --source-config to. Required iff --source-config " "is set.",
     )
     return parser.parse_args()
 
@@ -403,7 +400,7 @@ def estimate_token_buckets_2d(
     skipped_buckets = 1
     start_idx = 0
     for i, (input_bin, binidx) in enumerate(zip(input_bins, bin_indexes[1:])):
-        is_last = (i == len(input_bins) - 1)
+        is_last = i == len(input_bins) - 1
         if (not is_last and input_bins[i + 1] == input_bin) or (is_last and max_input_tokens == input_bin):
             skipped_buckets += 1
             continue

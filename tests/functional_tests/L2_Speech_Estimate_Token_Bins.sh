@@ -20,14 +20,21 @@ cat > "$INPUT_CFG" <<EOF
 - type: lhotse_as_conversation
   manifest_filepath: /home/TestData/an4_dataset/an4_train_lang.json
 EOF
+# Conversation-style inputs require a prompt formatter to populate input_ids/answer_ids
+# (NeMoMultimodalConversation has no plain ``tokenize()`` path) and an audio-locator-tag
+# so AudioTurns get a non-null message slot.
 # 1D buckets [SALM multimodal sampling]
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/speechlm2/estimate_token_bins.py \
   "$INPUT_CFG" \
   --tokenizer /home/TestData/asr_tokenizers/canary/en/tokenizer_spe_bpe_v1024_max_4/tokenizer.model \
+  --prompt-format plain \
+  --audio-locator-tag '<|audioplaceholder|>' \
   --buckets 5
 # 2D buckets [SALM multimodal sampling, input_tokens x output_tokens]
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/speechlm2/estimate_token_bins.py \
   "$INPUT_CFG" \
   --tokenizer /home/TestData/asr_tokenizers/canary/en/tokenizer_spe_bpe_v1024_max_4/tokenizer.model \
+  --prompt-format plain \
+  --audio-locator-tag '<|audioplaceholder|>' \
   --buckets 5 \
   --sub-buckets 2

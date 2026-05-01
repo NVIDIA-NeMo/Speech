@@ -24,19 +24,21 @@ from dotenv import load_dotenv
 from loguru import logger
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as OTLPSpanExporterGRPC
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter as OTLPSpanExporterHTTP
-from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.silero import SileroVADAnalyzer, VADParams
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.observers.loggers.user_bot_latency_log_observer import UserBotLatencyLogObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
+from pipecat.services.nvidia.llm import NvidiaLLMService
 from pipecat.services.openai.base_llm import BaseOpenAILLMService
 from pipecat.transports.websocket.server import WebsocketServerParams, WebsocketServerTransport
 from pipecat.utils.tracing.setup import setup_tracing
 
 from nemo.agents.voice_agent.evaluation.tools import get_schema_tool_for_eval
+from nemo.agents.voice_agent.evaluation.tools.basic_tools import GetCityWeatherTool
 from nemo.agents.voice_agent.pipecat.bot_server import (
     create_fastapi_app,
     run_bot_websocket_server,
@@ -49,11 +51,6 @@ from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi_actions import (
     create_reset_context_action,
     create_update_system_prompt_action,
 )
-from nemo.agents.voice_agent.pipecat.processors.nvidia_context_aggregator import (
-    NvidiaTTSResponseCacher,
-    create_nvidia_context_aggregator,
-)
-from nemo.agents.voice_agent.pipecat.services.nvidia_llm import NvidiaLLMService
 from nemo.agents.voice_agent.pipecat.services.riva_speech import NemotronASRService, NemotronTTSService
 from nemo.agents.voice_agent.pipecat.utils.riva_text_filter import RivaTextFilter
 from nemo.agents.voice_agent.utils import setup_rotating_log
@@ -81,6 +78,7 @@ ENABLE_THINKING = os.getenv("ENABLE_THINKING", "false").lower() == "true"
 AUDIO_OUT_10MS_CHUNKS = int(os.getenv("AUDIO_OUT_10MS_CHUNKS", "10"))
 ENABLE_MULTILINGUAL = os.getenv("ENABLE_MULTILINGUAL", "false").lower() == "true"
 VAD_PROFILE = VADProfile(os.getenv("VAD_PROFILE", VADProfile.ASR))
+VAD_STOP_SECS = float(os.getenv("VAD_STOP_SECS", "1.2"))
 PROMPT_FILE = Path(
     os.getenv("PROMPT_FILE_PATH", str(Path(__file__).parent / "nemotron_voice_agent_config" / "prompt.yaml"))
 )
@@ -176,6 +174,34 @@ async def run_bot_websocket(
 ):
     """Start the evaluation agent websocket server; runs until Ctrl+C."""
     logger.info(f"Starting websocket server on {host}:{port}")
+    logger.info(f"------- LLM -------")
+    logger.info(f"NVIDIA_LLM_URL: {NVIDIA_LLM_URL}")
+    logger.info(f"NVIDIA_LLM_MODEL: {NVIDIA_LLM_MODEL}")
+    logger.info(f"ENABLE_TOOL_CALLING: {ENABLE_TOOL_CALLING}")
+    logger.info(f"ENABLE_THINKING: {ENABLE_THINKING}")
+    logger.info(f"------- ASR -------")
+    logger.info(f"ASR_SERVER_URL: {ASR_SERVER_URL}")
+    logger.info(f"ASR_MODEL_NAME: {ASR_MODEL_NAME}")
+    logger.info(f"ASR_LANGUAGE: {ASR_LANGUAGE}")
+    logger.info(f"ASR_CLOUD_FUNCTION_ID: {ASR_CLOUD_FUNCTION_ID}")
+    logger.info(f"------- TTS -------")
+    logger.info(f"TTS_SERVER_URL: {TTS_SERVER_URL}")
+    logger.info(f"TTS_VOICE_ID: {TTS_VOICE_ID}")
+    logger.info(f"TTS_MODEL_NAME: {TTS_MODEL_NAME}")
+    logger.info(f"TTS_LANGUAGE: {TTS_LANGUAGE}")
+    logger.info(f"------- Misc ------")
+    logger.info(f"ENABLE_MULTILINGUAL: {ENABLE_MULTILINGUAL}")
+    logger.info(f"VAD_PROFILE: {VAD_PROFILE}")
+    logger.info(f"VAD_STOP_SECS: {VAD_STOP_SECS}")
+    logger.info(f"PROMPT_FILE: {PROMPT_FILE}")
+    logger.info(f"IPA_FILE: {IPA_FILE}")
+    logger.info(f"IS_TRACING_ENABLED: {IS_TRACING_ENABLED}")
+    logger.info(f"ZERO_SHOT_AUDIO_PROMPT: {ZERO_SHOT_AUDIO_PROMPT}")
+    logger.info(f"SYSTEM_PROMPT_SELECTOR: {SYSTEM_PROMPT_SELECTOR}")
+    logger.info(f"ENABLE_SPECULATIVE_SPEECH: {ENABLE_SPECULATIVE_SPEECH}")
+    logger.info(f"CHAT_HISTORY_LIMIT: {CHAT_HISTORY_LIMIT}")
+    logger.info(f"LOG_FILE: {LOG_FILE}")
+    logger.info(f"-------------------")
 
     setup_rotating_log(
         log_file=LOG_FILE,
@@ -187,6 +213,15 @@ async def run_bot_websocket(
     talk_first = TALK_FIRST
     logger.info(f"Server configured to {'TALK' if talk_first else 'LISTEN'} first")
 
+    if VAD_PROFILE == VADProfile.SILERO:
+        vad_analyzer = SileroVADAnalyzer(
+            params=VADParams(
+                stop_secs=VAD_STOP_SECS,
+            )
+        )
+    else:
+        vad_analyzer = None
+
     ws_transport = WebsocketServerTransport(
         params=WebsocketServerParams(
             serializer=ProtobufFrameSerializer(),
@@ -197,7 +232,7 @@ async def run_bot_websocket(
             audio_in_sample_rate=16000,
             audio_out_sample_rate=24000,  # the browser app expects 24kHz
             audio_out_10ms_chunks=AUDIO_OUT_10MS_CHUNKS,
-            vad_analyzer=SileroVADAnalyzer() if VAD_PROFILE == VADProfile.SILERO else None,
+            vad_analyzer=vad_analyzer,
         ),
         host=host,
         port=port,
@@ -304,7 +339,15 @@ async def run_bot_websocket(
     if TALK_FIRST:
         messages.append({"role": "user", "content": "Hello"})
 
-    context = LLMContext(messages)
+    # context = LLMContext(messages)
+    context = OpenAILLMContext(messages=messages)
+
+    if ENABLE_TOOL_CALLING:
+        register_schema_tools_to_llm(llm, context, [GetCityWeatherTool()])
+
+    logger.info(f"Context: {context}")
+    logger.info(f"Messages: {messages}")
+    logger.info(f"Tools: {context.tools}")
 
     enable_speculative_speech = ENABLE_SPECULATIVE_SPEECH
     chat_history_limit = CHAT_HISTORY_LIMIT
@@ -313,22 +356,25 @@ async def run_bot_websocket(
     # This ensures system and first user messages (used for prompting) are never truncated
     preserve_prompt_messages = len(messages)
 
-    if enable_speculative_speech:
-        context_aggregator = create_nvidia_context_aggregator(
-            context,
-            send_interims=True,
-            chat_history_limit=chat_history_limit,
-            preserve_prompt_messages=preserve_prompt_messages,
-        )
-        tts_response_cacher = NvidiaTTSResponseCacher()
-    else:
-        context_aggregator = create_nvidia_context_aggregator(
-            context,
-            send_interims=False,
-            chat_history_limit=chat_history_limit,
-            preserve_prompt_messages=preserve_prompt_messages,
-        )
-        tts_response_cacher = None
+    # if enable_speculative_speech:
+    #     context_aggregator = create_nvidia_context_aggregator(
+    #         context,
+    #         send_interims=True,
+    #         chat_history_limit=chat_history_limit,
+    #         preserve_prompt_messages=preserve_prompt_messages,
+    #     )
+    #     tts_response_cacher = NvidiaTTSResponseCacher()
+    # else:
+    #     context_aggregator = create_nvidia_context_aggregator(
+    #         context,
+    #         send_interims=False,
+    #         chat_history_limit=chat_history_limit,
+    #         preserve_prompt_messages=preserve_prompt_messages,
+    #     )
+    #     tts_response_cacher = None
+
+    tts_response_cacher = None
+    context_aggregator = llm.create_context_aggregator(context)
 
     # Re-setup logging so the service initialization does not clobber loguru config.
     setup_rotating_log(log_file=LOG_FILE, log_level=LOG_LEVEL)

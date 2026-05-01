@@ -478,9 +478,10 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
 
     String/Path values for ``input_cfg`` are treated as file references (mirroring
     :func:`parse_and_combine_datasets`) and loaded so that nested ``input_cfg``
-    keys inside those files are counted.  If a file cannot be loaded (e.g. the
-    path contains unresolved OmegaConf interpolations), it is conservatively
-    counted as one additional level.
+    keys inside those files are counted.  If the file is not found (e.g. the
+    path contains unresolved OmegaConf interpolations such as
+    ``${oc.env:MANIFEST_ROOT}``), it is conservatively counted as one additional
+    level.  All other I/O or parsing errors propagate immediately.
 
     Args:
         config: Configuration dictionary that may contain nested 'input_cfg' keys.
@@ -502,13 +503,20 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
     _cache: dict[str, object] = {}
 
     def _resolve_if_path(val):
-        """If *val* is a string/Path, try to load the YAML it points to."""
+        """If *val* is a string/Path, load the YAML file it points to.
+
+        Raises on I/O or parse errors except ``FileNotFoundError``, which is
+        expected when the path contains OmegaConf interpolations (e.g.
+        ``${oc.env:MANIFEST_ROOT}/file.yaml``) that raw ``yaml.load`` returns
+        as literal strings.  ``parse_and_combine_datasets`` resolves them at
+        runtime via ``OmegaConf.create()``.
+        """
         if isinstance(val, (str, Path)):
             key = str(val)
             if key not in _cache:
                 try:
                     _cache[key] = load_yaml(key)
-                except Exception:
+                except FileNotFoundError:
                     logging.debug("count_input_cfg_levels: could not load %r, treating as leaf", key)
                     _cache[key] = val
             return _cache[key]

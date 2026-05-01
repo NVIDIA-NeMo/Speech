@@ -27,7 +27,6 @@ from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIProcessor
 
 from nemo.agents.voice_agent.evaluation.tools import get_schema_tool_for_eval
 from nemo.agents.voice_agent.evaluation.tools.basic_tools import GetCityWeatherTool
-from nemo.agents.voice_agent.evaluation.tools.rtvi_control import SendScenarioSummaryTool
 from nemo.agents.voice_agent.pipecat.bot_server import (
     create_fastapi_app,
     run_bot_websocket_server,
@@ -101,12 +100,21 @@ async def run_bot_websocket(
     llm = build_llm(config_manager)
     context, user_agg, assistant_agg, original_messages = build_context_and_aggregators(llm, config_manager)
 
+    llm_enable_tool_calling = server_config.llm.get("enable_tool_calling", False)
+    if llm_enable_tool_calling:
+        logger.info("Tool calling enabled; registering initial tools...")
+        register_schema_tools_to_llm(llm, context, [GetCityWeatherTool()])
+    else:
+        logger.info("Tool calling disabled; skipping initial tool registration.")
+
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
     pipeline_list = [ws_transport.input(), rtvi, stt]
     if diar is not None:
         pipeline_list.append(diar)
-    pipeline_list.extend([turn_taking, user_agg, llm, tts, ws_transport.output(), assistant_agg])
+    if turn_taking is not None:
+        pipeline_list.append(turn_taking)
+    pipeline_list.extend([user_agg, llm, tts, ws_transport.output(), assistant_agg])
     pipeline = Pipeline(pipeline_list)
 
     resettable = [stt, tts, turn_taking, diar]
@@ -121,7 +129,7 @@ async def run_bot_websocket(
             resettable,
             system_role=config_manager.SYSTEM_ROLE,
             system_prompt_suffix=config_manager.SYSTEM_PROMPT_SUFFIX,
-            enable_tool_calling=server_config.llm.get("enable_tool_calling", False),
+            enable_tool_calling=llm_enable_tool_calling,
             llm=llm,
             context=context,
             rtvi=rtvi,

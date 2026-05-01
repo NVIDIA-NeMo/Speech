@@ -28,12 +28,15 @@ from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
+from pipecat.services.llm_service import LLMService
 from pipecat.services.openai import BaseOpenAILLMService
+from pipecat.services.stt_service import STTService
+from pipecat.services.tts_service import TTSService
 
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
 from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
 from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config
-from nemo.agents.voice_agent.pipecat.services.nemo.stt import NemoSTTService
+from nemo.agents.voice_agent.pipecat.services.nemo.stt import get_stt_service_from_config
 from nemo.agents.voice_agent.pipecat.services.nemo.tts import get_tts_service_from_config
 from nemo.agents.voice_agent.pipecat.services.nemo.turn_taking import NeMoTurnTakingService
 from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import (
@@ -64,7 +67,7 @@ def build_vad_analyzer(config_manager: ConfigManager) -> SileroVADAnalyzer:
 
 def build_ws_transport(
     config_manager: ConfigManager,
-    vad_analyzer: SileroVADAnalyzer,
+    vad_analyzer: SileroVADAnalyzer | None,
     host: str,
     port: int,
 ) -> WebsocketServerTransport:
@@ -80,7 +83,7 @@ def build_ws_transport(
             session_timeout=None,
             audio_in_sample_rate=server_config.transport.get("audio_in_sample_rate", config_manager.SAMPLE_RATE),
             audio_out_sample_rate=server_config.transport.get("audio_out_sample_rate", None),
-            can_create_user_frames=False,
+            can_create_user_frames=server_config.transport.get("can_create_user_frames", False),
             audio_out_10ms_chunks=config_manager.TRANSPORT_AUDIO_OUT_10MS_CHUNKS,
         ),
         host=host,
@@ -88,24 +91,14 @@ def build_ws_transport(
     )
 
 
-def build_stt(config_manager: ConfigManager, audio_logger: Optional[AudioLogger] = None) -> NemoSTTService:
+def build_stt(config_manager: ConfigManager, audio_logger: Optional[AudioLogger] = None) -> STTService:
     """Build the NeMo STT service from config."""
-    return NemoSTTService(
-        model=config_manager.STT_MODEL,
-        device=config_manager.STT_DEVICE,
-        params=config_manager.get_stt_params(),
-        sample_rate=config_manager.SAMPLE_RATE,
-        audio_passthrough=True,
-        backend="legacy",
-        decoder_type="rnnt",
-        audio_logger=audio_logger,
-        ignore_eou_eob=config_manager.server_config.stt.get("ignore_eou_eob", False),
-    )
+    return get_stt_service_from_config(config_manager.server_config.stt, audio_logger)
 
 
 def build_diar(config_manager: ConfigManager, audio_logger: Optional[AudioLogger] = None) -> Optional[NemoDiarService]:
     """Build the diarization service, or return ``None`` if ``diar.enabled`` is False."""
-    if not config_manager.USE_DIAR:
+    if not config_manager.server_config.diar.get("enabled", False):
         return None
     return NemoDiarService(
         model=config_manager.DIAR_MODEL,
@@ -127,6 +120,8 @@ def build_turn_taking(
     """Build the turn-taking service. ``use_diar`` defaults to ``config_manager.USE_DIAR``."""
     if use_diar is None:
         use_diar = config_manager.USE_DIAR
+    if not config_manager.server_config.turn_taking.get("enabled", True):
+        return None
     return NeMoTurnTakingService(
         use_vad=use_vad,
         use_diar=use_diar,
@@ -137,15 +132,12 @@ def build_turn_taking(
     )
 
 
-def build_tts(config_manager: ConfigManager, audio_logger: Optional[AudioLogger] = None):
+def build_tts(config_manager: ConfigManager, audio_logger: Optional[AudioLogger] = None) -> TTSService:
     """Build the TTS service via ``get_tts_service_from_config``."""
-    tts_type = config_manager.server_config.tts.type
-    if tts_type != "nemo":
-        raise ValueError(f"Invalid TTS type: {tts_type}")
     return get_tts_service_from_config(config_manager.server_config.tts, audio_logger)
 
 
-def build_llm(config_manager: ConfigManager):
+def build_llm(config_manager: ConfigManager) -> LLMService:
     """Build the LLM service via ``get_llm_service_from_config``."""
     return get_llm_service_from_config(config_manager.server_config.llm)
 
@@ -164,7 +156,7 @@ def build_context_and_aggregators(llm: BaseOpenAILLMService, config_manager: Con
         }
     ]
     if config_manager.server_config.llm.get("inject_dummy_user_message", False):
-        dummy_message = config_manager.server_config.llm.get("dummy_user_message", "Hello, who are you?")
+        dummy_message = config_manager.server_config.llm.get("dummy_user_message", "Hello.")
         messages.append({"role": "user", "content": dummy_message})
 
     context = OpenAILLMContext(messages=messages)

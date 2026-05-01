@@ -27,9 +27,9 @@ class StandardSchemaTool:
     Base class for all standard tools with FunctionSchema.
     """
 
-    def __init__(self, *, description: str, name: Optional[str] = None):
+    def __init__(self, *, description: Optional[str] = None, name: Optional[str] = None):
         self.name = name if name is not None else self.__class__.__name__
-        self.description = description
+        self.description = description if description is not None else ""
         if not self.name:
             raise ValueError(f"Name is required for tool {self.__class__}")
         if not self.description:

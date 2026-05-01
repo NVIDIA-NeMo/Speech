@@ -754,9 +754,9 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
             vllm_server_params=vllm_server_params,
         )
     elif backend == "nvidia":
-        llm_model = config.get("model")
+        llm_model = config.get("model", "nvidia/nemotron-3-nano-30b-a3b")
         llm_api_key = os.getenv("NVIDIA_API_KEY", config.get("api_key", "None"))
-        llm_base_url = config.get("base_url")
+        llm_base_url = config.get("base_url", "https://integrate.api.nvidia.com/v1")
         llm_params = config.get("nvidia_generation_params", None)
         llm_default_headers = config.get("default_headers", None)
         if llm_default_headers is not None:

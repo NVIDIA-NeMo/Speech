@@ -14,6 +14,7 @@
 
 import asyncio
 import inspect
+import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -35,6 +36,7 @@ from pipecat.frames.frames import (
     TTSStoppedFrame,
 )
 from pipecat.services.llm_service import FunctionCallParams
+from pipecat.services.nvidia.tts import NvidiaTTSService
 from pipecat.services.tts_service import TTSService
 
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
@@ -853,12 +855,31 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
     """
     if isinstance(config, DictConfig):
         config = OmegaConf.to_container(config, resolve=True)
+
+    assert config.get("type") in [
+        "nemo",
+        "nvidia",
+    ], f"Invalid TTS type: {config.get('type')}, only 'nemo' and 'nvidia' are supported"
+
     model = config.get("model", None)
     device = config.get("device", "cuda")
-    if config.get("type", None) != "nemo":
-        raise ValueError(f"Invalid TTS type: {config.get('type', None)}, only 'nemo' is supported")
+    if config.get("type", None) == "nvidia":
+        api_key = os.getenv("NVIDIA_API_KEY", config.get("api_key", "None"))
+        model_name = config.get("model", "magpie_tts_ensemble-Magpie-Multilingual")
+        function_id = config.get("function_id", "877104f7-e885-42b9-8de8-f6e4c6303969")
+        voice_id = config.get("voice_id", "Magpie-Multilingual.EN-US.Aria")
+        language = config.get("language", "en-US")
+        return NvidiaTTSService(
+            api_key=api_key,
+            server=config.get("server", "grpc.nvcf.nvidia.com:443"),
+            voice_id=voice_id,
+            model_function_map={"function_id": function_id, "model_name": model_name},
+            language=language,
+            sample_rate=22050,
+        )
+
     if model is None:
-        raise ValueError("Model is required for Nemo TTS service")
+        raise ValueError("Model is required for NeMo TTS service")
 
     logger.debug(f"Getting TTS service from config: {config}")
     text_aggregator = SimpleSegmentedTextAggregator(

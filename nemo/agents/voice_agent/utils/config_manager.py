@@ -128,7 +128,7 @@ class ConfigManager:
     def _configure_stt(self):
         """Configure STT parameters."""
         self.STT_MODEL = self.server_config.stt.model
-        self.STT_DEVICE = self.server_config.stt.device
+        self.STT_DEVICE = self.server_config.stt.get("device", "cuda")
         # Apply STT-specific configuration based on model type
         # Try to get STT config file name from server config first
         yaml_file_name = None
@@ -170,8 +170,8 @@ class ConfigManager:
         audio_chunk_size_in_secs = self.server_config.stt.get("audio_chunk_size_in_secs", 0.08)
         buffer_size = audio_chunk_size_in_secs // self.RAW_AUDIO_FRAME_LEN_IN_SECS
         self.stt_params = NeMoSTTInputParams(
-            att_context_size=self.server_config.stt.att_context_size,
-            frame_len_in_secs=self.server_config.stt.frame_len_in_secs,
+            att_context_size=self.server_config.stt.get("att_context_size", [70, 1]),
+            frame_len_in_secs=self.server_config.stt.get("frame_len_in_secs", 0.08),
             raw_audio_frame_len_in_secs=self.RAW_AUDIO_FRAME_LEN_IN_SECS,
             buffer_size=self.server_config.stt.get("buffer_size", buffer_size),  # FC has 80ms frame, which is 5 * 16ms
         )
@@ -181,18 +181,20 @@ class ConfigManager:
         Configure diarization parameters.
         Currently only NeMo End-to-End Diarization is supported.
         """
-        self.DIAR_MODEL = self.server_config.diar.model
         self.USE_DIAR = self.server_config.diar.enabled
-        self.diar_params = NeMoDiarInputParams(
-            frame_len_in_secs=self.server_config.diar.frame_len_in_secs,
-            threshold=self.server_config.diar.threshold,
-        )
+        if self.USE_DIAR:
+            self.DIAR_MODEL = self.server_config.diar.model
+            self.diar_params = NeMoDiarInputParams(
+                frame_len_in_secs=self.server_config.diar.frame_len_in_secs,
+                threshold=self.server_config.diar.threshold,
+            )
 
     def _configure_turn_taking(self):
         """Configure turn taking parameters."""
-        self.TURN_TAKING_BACKCHANNEL_PHRASES_PATH = self.server_config.turn_taking.backchannel_phrases_path
-        self.TURN_TAKING_MAX_BUFFER_SIZE = self.server_config.turn_taking.max_buffer_size
-        self.TURN_TAKING_BOT_STOP_DELAY = self.server_config.turn_taking.bot_stop_delay
+        if self.server_config.turn_taking.get("enabled", False):
+            self.TURN_TAKING_BACKCHANNEL_PHRASES_PATH = self.server_config.turn_taking.backchannel_phrases_path
+            self.TURN_TAKING_MAX_BUFFER_SIZE = self.server_config.turn_taking.max_buffer_size
+            self.TURN_TAKING_BOT_STOP_DELAY = self.server_config.turn_taking.bot_stop_delay
 
     def _configure_llm(self):
         """Configure LLM parameters."""

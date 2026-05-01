@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import asyncio
+import os
 from datetime import datetime
 from typing import AsyncGenerator, List, Optional
 
 from loguru import logger
+from omegaconf import DictConfig
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
@@ -30,6 +32,7 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.nvidia.stt import NvidiaSTTService
 from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -381,3 +384,47 @@ class NemoSTTService(STTService):
             self._is_vad_active = True
 
         await super().process_frame(frame, direction)
+
+
+def get_stt_service_from_config(config: DictConfig, audio_logger: Optional[AudioLogger] = None) -> STTService:
+    """Get the STT service from the config."""
+    backend = config.type
+    assert backend in ["nemo", "nvidia"], f"Invalid STT backend: {backend}, only 'nemo' and 'nvidia' are supported"
+
+    if backend == "nemo":
+        audio_chunk_size_in_secs = config.get("audio_chunk_size_in_secs", 0.08)
+        raw_audio_frame_len_in_secs = config.get("raw_audio_frame_len_in_secs", 0.016)
+        att_context_size = config.get("att_context_size", [70, 1])
+        frame_len_in_secs = config.get("frame_len_in_secs", 0.08)
+        buffer_size = config.get("buffer_size", audio_chunk_size_in_secs // raw_audio_frame_len_in_secs)
+        stt_params = NeMoSTTInputParams(
+            att_context_size=att_context_size,
+            frame_len_in_secs=frame_len_in_secs,
+            raw_audio_frame_len_in_secs=raw_audio_frame_len_in_secs,
+            buffer_size=buffer_size,
+        )
+        return NemoSTTService(
+            model=config.model,
+            device=config.device,
+            params=stt_params,
+            sample_rate=config.get("sample_rate", 16000),
+            audio_passthrough=True,
+            backend="legacy",
+            decoder_type="rnnt",
+            audio_logger=audio_logger,
+            ignore_eou_eob=config.get("ignore_eou_eob", False),
+        )
+    elif backend == "nvidia":
+        api_key = os.getenv("NVIDIA_API_KEY", config.get("api_key", "None"))
+        model_name = config.get("model", "parakeet-1.1b-en-US-asr-streaming-silero-vad-sortformer")
+        function_id = config.get("function_id", "1598d209-5e27-4d3c-8079-4751568b1081")
+        language = config.get("language", "en-US")
+        return NvidiaSTTService(
+            api_key=api_key,
+            server=config.get("server", "grpc.nvcf.nvidia.com:443"),
+            model_function_map={"function_id": function_id, "model_name": model_name},
+            language=language,
+            sample_rate=config.get("sample_rate", 16000),
+        )
+    else:
+        raise ValueError(f"Invalid ASR backend: {backend}")

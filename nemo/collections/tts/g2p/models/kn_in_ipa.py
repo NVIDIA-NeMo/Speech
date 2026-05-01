@@ -13,13 +13,11 @@
 # limitations under the License.
 
 import pathlib
-import re
 import unicodedata
 from collections import defaultdict
 from typing import Dict, List, Optional, Union
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
-    GRAPHEME_CHARACTER_SETS,
     get_grapheme_character_set,
     get_ipa_punctuation_list,
 )
@@ -44,13 +42,12 @@ class KannadaG2p(BaseG2p):
         ['k', 'a', 'n', 'n', 'a', 'ɖ', 'a']
     """
 
-
     def __init__(
         self,
         phoneme_dict: Optional[Union[str, pathlib.Path, Dict[str, List[str]]]] = None,
         phoneme_prefix: str = "",
-        ascii_letter_prefix: str = "",
-        ascii_letter_case: str = "lower",
+        grapheme_prefix: str = "",
+        grapheme_case: str = "lower",
         word_tokenize_func=None,
         apply_to_oov_word=None,
         mapping_file: Optional[str] = None,
@@ -59,12 +56,12 @@ class KannadaG2p(BaseG2p):
 
         Args:
             phoneme_dict: Path to Kannada pronunciation dictionary file or a dict object.
-                Format: word<whitespace>phonemes (space-separated IPA symbols)
+                Format: word<TAB>pronunciation (IPA characters without spaces)
             phoneme_prefix: Prefix to prepend to phoneme symbols to distinguish from graphemes.
                 Default is "" (no prefix).
-            ascii_letter_prefix: Prefix to prepend to ASCII letters for code-mixed text.
-                Default is "" (no prefix).
-            ascii_letter_case: Case for ASCII letters: "upper", "lower", or "mixed".
+            grapheme_prefix: Prefix to prepend to graphemes (ASCII letters in code-mixed text)
+                to distinguish them from phonemes. Default is "" (no prefix).
+            grapheme_case: Case for graphemes: "upper", "lower", or "mixed".
                 Default is "lower".
             word_tokenize_func: Custom function for tokenizing text into words.
                 Should return List[Tuple[Union[str, List[str]], bool]].
@@ -74,30 +71,31 @@ class KannadaG2p(BaseG2p):
         """
         if phoneme_prefix is None:
             phoneme_prefix = ""
-        if ascii_letter_prefix is None:
-            ascii_letter_prefix = ""
+        if grapheme_prefix is None:
+            grapheme_prefix = ""
 
         self.phoneme_prefix = phoneme_prefix
+        self.grapheme_prefix = grapheme_prefix
+        self.grapheme_case = grapheme_case
 
         # Load phoneme dictionary if provided
         if phoneme_dict is not None:
-            phoneme_dict = (
-                self._parse_phoneme_dict(phoneme_dict, phoneme_prefix)
-                if isinstance(phoneme_dict, (str, pathlib.Path))
-                else phoneme_dict
-            )
+            if isinstance(phoneme_dict, (str, pathlib.Path)):
+                phoneme_dict = self._parse_phoneme_dict(phoneme_dict, phoneme_prefix)
+            else:
+                # Normalize dict input: split string pronunciations into character lists
+                phoneme_dict = self._normalize_phoneme_dict(phoneme_dict, phoneme_prefix)
             self.phoneme_list = sorted({pron for prons in phoneme_dict.values() for pron in prons})
         else:
             phoneme_dict = {}
             self.phoneme_list = []
 
-        # ASCII letter handling for code-mixed text (Kannada + English)
-        self.ascii_letter_dict = {
-            x: ascii_letter_prefix + x
-            for x in get_grapheme_character_set(locale="en-US", case=ascii_letter_case)
+        # Grapheme handling for code-mixed text (Kannada + English)
+        self.grapheme_dict = {
+            x: grapheme_prefix + x
+            for x in get_grapheme_character_set(locale="en-US", case=grapheme_case)
         }
-        self.ascii_letter_list = sorted(self.ascii_letter_dict)
-        self.ascii_letter_case = ascii_letter_case
+        self.grapheme_list = sorted(self.grapheme_dict)
 
         # Punctuation set
         self.punctuation = get_ipa_punctuation_list('kn-IN')
@@ -119,6 +117,123 @@ class KannadaG2p(BaseG2p):
             apply_to_oov_word=apply_to_oov_word,
             mapping_file=mapping_file,
         )
+
+        # Build symbols set for IPATokenizer compatibility
+        self._build_symbols()
+
+    def _build_symbols(self):
+        """Build the symbols set containing all valid graphemes and phonemes.
+
+        This is required for compatibility with IPATokenizer which uses g2p.symbols.
+        """
+        from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
+            IPA_CHARACTER_SETS,
+        )
+
+        symbols = set()
+        prefix = self.phoneme_prefix
+
+        # Add Kannada graphemes
+        symbols.update(self.kannada_grapheme_set)
+
+        # Add IPA phonemes from the character set (with prefix if set)
+        for char in IPA_CHARACTER_SETS.get("kn-IN", ()):
+            symbols.add(prefix + char)
+
+        # Add phonemes from dictionary (already prefixed during parsing)
+        symbols.update(self.phoneme_list)
+
+        # Add graphemes for code-mixed text (use dict values which include prefix)
+        symbols.update(self.grapheme_dict.values())
+
+        # Add punctuation
+        symbols.update(self.punctuation)
+
+        # Add ASCII digits (emitted by G2P for both Kannada and ASCII digits)
+        symbols.update('0123456789')
+
+        self.symbols = symbols
+
+    @staticmethod
+    def _normalize_phoneme_dict(
+        phoneme_dict: Dict[str, List[str]],
+        phoneme_prefix: str
+    ) -> Dict[str, List[str]]:
+        """Normalize a dict-provided phoneme dictionary.
+
+        Supports two input formats:
+        1. {"word": ["phonemestring"]} - string gets split into characters
+        2. {"word": ["p", "h", "o", ...]} - already flat, used as-is
+
+        Args:
+            phoneme_dict: Dictionary mapping words to pronunciations.
+            phoneme_prefix: Prefix to add to each phoneme character.
+
+        Returns:
+            Normalized dictionary with pronunciations as flat character lists.
+        """
+        normalized = {}
+        for word, prons in phoneme_dict.items():
+            if not isinstance(prons, list) or len(prons) == 0:
+                normalized[word] = prons
+                continue
+
+            # Detect format: flat list of tokens vs list containing pronunciation string(s)
+            # Flat format: ["k", "a", "n", ...] - all single chars
+            # String format: ["kannaɖa"] - one or more multi-char strings
+            is_flat_token_list = all(
+                isinstance(p, str) and len(p) == 1 for p in prons
+            )
+
+            if is_flat_token_list:
+                # Already flat list of single-char tokens, just apply prefix
+                if phoneme_prefix:
+                    normalized[word] = [phoneme_prefix + p for p in prons]
+                else:
+                    normalized[word] = prons
+            else:
+                # List contains pronunciation string(s), take first and split
+                pron = prons[0]
+                if isinstance(pron, str):
+                    normalized[word] = [phoneme_prefix + char for char in pron]
+                else:
+                    normalized[word] = prons
+
+        return normalized
+
+    def replace_symbols(self, symbols, keep_alternate=True):
+        """Replace the vocabulary of symbols and filter entries with illegal symbols.
+
+        This method is required for compatibility with IPATokenizer's fixed_vocab feature.
+
+        Args:
+            symbols: User-provided set of valid symbols (graphemes and phonemes).
+            keep_alternate: Unused, kept for API compatibility with IpaG2p.
+        """
+        new_symbols = set(symbols)
+
+        # Filter phoneme dictionary entries
+        deletion_words = []
+
+        for word, prons in self.phoneme_dict.items():
+            # Check for illegal graphemes in the word
+            word_graphemes = set(word)
+            if word_graphemes - new_symbols:
+                deletion_words.append(word)
+                continue
+
+            # Check for illegal phonemes in pronunciation
+            # prons is a flat list of phoneme tokens (possibly prefixed like "#k")
+            # Check each token as a whole, not character by character
+            pron_set = set(prons)
+            if pron_set - new_symbols:
+                deletion_words.append(word)
+
+        # Update dictionary
+        for word in deletion_words:
+            del self.phoneme_dict[word]
+
+        self.symbols = new_symbols
 
     def _init_kannada_rules(self):
         """Initialize Kannada grapheme-to-phoneme mapping rules based on Kannada phonology."""
@@ -224,13 +339,13 @@ class KannadaG2p(BaseG2p):
 
     def _split_phoneme(self, phoneme: str, prefix: str) -> List[str]:
         """Split multi-character phonemes into separate tokens for consistency.
-        
+
         Splits multi-character phonemes into individual characters for consistent tokenization.
-        
+
         Args:
             phoneme: The phoneme string to potentially split.
             prefix: Prefix to add to each token.
-            
+
         Returns:
             List of prefixed phoneme tokens.
         """
@@ -409,26 +524,26 @@ class KannadaG2p(BaseG2p):
                 continue
 
             # Handle ASCII letters (code-mixed text)
-            if char.upper() in self.ascii_letter_dict or char.lower() in self.ascii_letter_dict:
-                processed_char = set_grapheme_case(char, case=self.ascii_letter_case)
-                if processed_char in self.ascii_letter_dict:
-                    phonemes.append(self.ascii_letter_dict[processed_char])
+            if char.upper() in self.grapheme_dict or char.lower() in self.grapheme_dict:
+                processed_char = set_grapheme_case(char, case=self.grapheme_case)
+                if processed_char in self.grapheme_dict:
+                    phonemes.append(self.grapheme_dict[processed_char])
                 else:
                     phonemes.append(processed_char)
                 i += 1
                 continue
 
-            # Handle digits (pass through or convert)
-            if char.isdigit():
-                phonemes.append(char)
-                i += 1
-                continue
-
-            # Handle Kannada digits
+            # Handle Kannada digits (must check before isdigit() as isdigit() is True for Kannada digits)
             kannada_digits = '೦೧೨೩೪೫೬೭೮೯'
             if char in kannada_digits:
                 # Convert to Arabic numeral
                 phonemes.append(str(kannada_digits.index(char)))
+                i += 1
+                continue
+
+            # Handle ASCII digits (pass through)
+            if char.isascii() and char.isdigit():
+                phonemes.append(char)
                 i += 1
                 continue
 
@@ -506,13 +621,35 @@ class KannadaG2p(BaseG2p):
         text = unicodedata.normalize('NFC', text)
 
         # Apply case transformation for ASCII letters
-        text = set_grapheme_case(text, case=self.ascii_letter_case)
+        text = set_grapheme_case(text, case=self.grapheme_case)
 
         # Tokenize into words
-        tokens = self._tokenize(text)
+        if self.word_tokenize_func is not None:
+            # Custom tokenizer returns List[Tuple[Union[str, List[str]], bool]]
+            # where bool (without_changes) indicates whether to pass through unchanged
+            words_and_flags = self.word_tokenize_func(text)
+        else:
+            # Default tokenizer returns List[str], convert to expected format
+            # without_changes=False means process the word
+            words_and_flags = [([token], False) for token in self._tokenize(text)]
 
         phoneme_seq = []
-        for token in tokens:
+        for words, without_changes in words_and_flags:
+            if without_changes:
+                # Pass through unchanged: prefix ASCII letters (case-normalized), leave others as-is
+                for word in words:
+                    for char in word:
+                        normalized_char = set_grapheme_case(char, case=self.grapheme_case)
+                        if normalized_char in self.grapheme_dict:
+                            phoneme_seq.append(self.grapheme_dict[normalized_char])
+                        else:
+                            phoneme_seq.append(char)
+                continue
+
+            # Process the word(s)
+            assert len(words) == 1, f"{words} should have single item when without_changes is False"
+            token = words[0]
+
             # Skip whitespace tokens
             if token.isspace():
                 phoneme_seq.append(' ')

@@ -270,6 +270,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.context_audio_bos_id = get_token_index(SpecialAudioToken.AUDIO_CONTEXT_BOS)
         self.context_audio_eos_id = get_token_index(SpecialAudioToken.AUDIO_CONTEXT_EOS)
         self.mask_token_id = get_token_index(SpecialAudioToken.MASK_TOKEN)
+        self.audio_user_speaking_id = get_token_index(SpecialAudioToken.USER_SPEAKING)
         self.num_all_tokens_per_codebook = self.codebook_size + len(SpecialAudioToken)
         self.use_bpe_char_tokenizer = cfg.get('use_bpe_char_tokenizer', False)
         # If True, text tokens are embedded only with the char-aware subword (CAS) encoder, and the decoder token
@@ -651,6 +652,120 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         else:
             self._codec_sil_codes_buffer.copy_(sil_tensor_converted)
             self._codec_sil_codes_buffer_unconverted.copy_(sil_tensor_unconverted)
+    
+    def streaming_prefill_profile(
+        self,
+        state: StreamingState,
+        text_tokens: torch.Tensor,  # (B, T) or (B,)
+        use_inference_mode: bool = True,
+        # ToDo: implement audio direct support instead of use silence tokens
+    ) -> StreamingState:
+        grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
+        with grad_ctx():
+            if text_tokens.dim() == 1:
+                text_tokens = text_tokens[:, None]
+
+            B, T = text_tokens.shape
+            device = state.config.device
+            text_tokens = text_tokens.to(device)
+
+            # -----------------------
+            # TEXT CHANNEL
+            # -----------------------
+            if self.cfg.get("disable_subword_embedding", False):
+                text_emb = torch.zeros(
+                    B,
+                    T,
+                    self.cfg.embedding_dim,
+                    dtype=next(self.parameters()).dtype,
+                    device=device,
+                )
+            else:
+                text_emb = self.decoder.get_input_embeddings()(text_tokens)
+
+            if self.use_bpe_char_tokenizer:
+                if self.cfg.get("use_multiturn_dataset", False):
+                    text_mask = text_tokens != self.pad_id
+                else:
+                    text_mask = torch.ones_like(text_tokens, dtype=torch.bool)
+
+                text_emb = text_emb + self.cas_encoder(text_tokens, subword_mask=text_mask)
+
+            if self.cfg.get("use_multiturn_dataset", False):
+                text_emb[text_tokens == self.pad_id] = 0.0
+
+            # -----------------------
+            # AUDIO CHANNEL: silence previous-token input
+            # -----------------------
+            C = self.num_audio_codebooks
+            S = self.frame_stacking_factor
+
+            sil_codes = self.codec_sil_codes.to(device=device, dtype=torch.long)  # (C,)
+
+            sil_codes_unstacked = sil_codes.view(1, C, 1).expand(B, C, T * S).contiguous()
+            sil_codes_stacked, _ = self.stack_codes(
+                sil_codes_unstacked,
+                torch.full((B,), T * S, dtype=torch.long, device=device),
+                bos_id=self.audio_bos_id,
+                eos_id=self.audio_eos_id,
+                stacking_factor=S,
+                num_codebooks=C,
+            )  # (B, C*S, T)
+
+            audio_emb = self.embed_audio_tokens(sil_codes_stacked)
+
+            # Match training channel sum: text + audio silence.
+            combined_emb = text_emb + audio_emb
+
+            # -----------------------
+            # CFG handling
+            # -----------------------
+            if state.config.use_cfg:
+                # Match regular streaming inference:
+                # conditional branch = text + audio
+                # unconditional branch = audio only
+                inputs_embeds = torch.cat([combined_emb, audio_emb], dim=0)
+            else:
+                inputs_embeds = combined_emb
+
+            # -----------------------
+            # KV CACHE EXTENSION
+            # -----------------------
+            cache_position = torch.arange(
+                state.cache_seq_len,
+                state.cache_seq_len + T,
+                device=device,
+            )
+
+            out = self.forward(
+                inputs_embeds=inputs_embeds,
+                attention_mask=None,
+                use_cache=True,
+                past_key_values=state.past_key_values,
+                cache_position=cache_position,
+            )
+
+            state.past_key_values = out.past_key_values
+            state.cache_seq_len += T
+            state.last_hidden = out.last_hidden_state
+
+            # Advance logical streams consumed by this profile prefill.
+            state.text_tokens_seen += T
+            state.audio_steps += T
+
+            # Make the next normal streaming_step continue from silence, not AUDIO_BOS.
+            state.all_predictions.append(sil_codes_unstacked) # keep silence so that in the target audio user will be silence
+            if self.cfg.get("use_user_speaking_token", False):
+                state.last_audio_codes = torch.full(
+                    (B, C * S),
+                    self.audio_user_speaking_id,
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                state.last_audio_codes = sil_codes_stacked[:, :, -1].contiguous()
+
+            return state
 
     def _get_state_dict_keys_to_exclude(self) -> List[str]:
         return [

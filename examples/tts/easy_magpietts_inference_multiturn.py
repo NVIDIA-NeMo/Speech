@@ -195,15 +195,18 @@ def collate_and_tokenize_custom(
     force_interruption=False,
     normalize_context_audio_volume=True,
     use_librosa=False,
+    profile_multiturn_inference=False,
 ):
     main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
 
     # --- MULTI-TURN MODE DECISION ---
-    is_duplex = emulate_duplex_inference
+    is_profile = profile_multiturn_inference
+    is_duplex = emulate_duplex_inference and not is_profile
 
     out_dict = {
         "duplex_multiturn": is_duplex,
-        "regular_multiturn": not is_duplex,
+        "regular_multiturn": (not is_duplex) and (not is_profile),
+        "profile_multiturn": is_profile,
     }
 
     tokenized_list = []
@@ -412,7 +415,11 @@ def main():
     parser.add_argument("--emulate_duplex_inference", action="store_true")
     parser.add_argument("--add_interruption_token", action="store_true")
     parser.add_argument("--force_interruption", action="store_true")
-    
+    parser.add_argument("--profile_multiturn_inference", action="store_true")
+    parser.add_argument("--profile_pad_min_sec", type=float, default=2.0)
+    parser.add_argument("--profile_pad_max_sec", type=float, default=2.0)
+
+
     # Speaker & Prompt Configurations
     parser.add_argument("--user_custom_speaker_reference", action="store_true")
     parser.add_argument("--inference_speaker_reference", type=str, default=None)
@@ -428,6 +435,12 @@ def main():
     parser.add_argument("--normalize_volume", type=lambda x: (str(x).lower() in ['true', '1', 'yes']), default=False)
 
     args = parser.parse_args()
+
+    if args.profile_multiturn_inference and args.batch_size != 1:
+        raise RuntimeError("--profile_multiturn_inference currently requires --batch_size=1.")
+
+    if args.profile_pad_max_sec < args.profile_pad_min_sec:
+        raise RuntimeError("--profile_pad_max_sec must be >= --profile_pad_min_sec.")
 
     distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
     if distributed and not torch.distributed.is_initialized():
@@ -507,6 +520,7 @@ def main():
         force_interruption=args.force_interruption,
         normalize_context_audio_volume=args.normalize_volume,
         use_librosa=args.use_librosa,
+        profile_multiturn_inference=args.profile_multiturn_inference
     )
 
     dataloader = DataLoader(
@@ -569,7 +583,6 @@ def main():
                 phoneme_sampling_method="argmax",
                 use_inference_mode=True,
             )
-
             # ---------------------------------------------------------
             # MODE 1: DUPLEX (Continuous Padding Token Stream)
             # ---------------------------------------------------------
@@ -665,6 +678,129 @@ def main():
                         
                         state, _, _ = model.streaming_step(state=state, text_tokens=current_tokens, use_inference_mode=True)
 
+            # ---------------------------------------------------------
+            # MODE 3: PROFILE MULTI-TURN
+            # ---------------------------------------------------------
+            elif inputs["profile_multiturn"]:
+                profile_started = False
+                if B != 1:
+                    raise RuntimeError(
+                        "--profile_multiturn_inference currently supports only batch_size=1. "
+                        "Use --batch_size=1 for this mode."
+                    )
+
+                batched_turns = inputs["batched_turns"]
+                batched_turn_lens = inputs["batched_turn_lens"]
+                valid_turn_masks = inputs["valid_turn_masks"]
+
+                max_turns = len(batched_turns)
+                prev_turn_immediate_eos = True  # force prefill before first turn
+                prev_turn_ended_with_audio_eos = True  # profile before turn 0
+                for t in range(max_turns):
+                    turn_text = batched_turns[t].to(device)
+                    turn_lens = batched_turn_lens[t].to(device)
+                    valid_mask = valid_turn_masks[t].to(device)
+
+                    if not bool(valid_mask[0].item()):
+                        continue
+
+                    # Re-open stream for this turn.
+                    state.finished.zero_()
+                    state.text_finished.zero_()
+                    state.audio_prediction_end_idx.fill_(-1)
+
+                    if hasattr(state, "phoneme_stream_ended"):
+                        state.phoneme_stream_ended.zero_()
+                    if hasattr(state, "phoneme_eos_detected"):
+                        state.phoneme_eos_detected.zero_()
+
+                    # Prefill before first turn and only after turns that ended immediately.
+                    if t == 0 or prev_turn_ended_with_audio_eos:
+                        profile_seconds = (
+                            args.profile_pad_min_sec
+                            + torch.rand((), device=device).item()
+                            * (args.profile_pad_max_sec - args.profile_pad_min_sec)
+                        )
+
+                        profile_T = max(
+                            1,
+                            int(round(profile_seconds * model.sample_rate / model.input_samples_per_frame)),
+                        )
+
+                        profile_tokens = torch.full(
+                            (1, profile_T),
+                            model.pad_id,
+                            dtype=torch.long,
+                            device=device,
+                        )
+
+                        state = model.streaming_prefill_profile(
+                            state=state,
+                            text_tokens=profile_tokens,
+                            use_inference_mode=True,
+                        )
+
+                        logging.info(
+                            f"[profile_multiturn] turn={t} prefilled {profile_T} steps "
+                            f"({profile_seconds:.2f}s)"
+                        )
+                        if not profile_started:
+                            start_frame = sum(p.size(-1) for p in state.all_predictions)
+                            state.audio_prediction_start_idx.fill_(start_frame)
+                            profile_started = True
+
+                    turn_offset = state.text_tokens_seen.clone()
+                    turn_steps = 0
+                    saw_audio = False
+                    first_audio_step_finished = False
+
+                    turn_text_done = False
+
+                    while turn_steps < args.max_tts_steps:
+                        turn_steps += 1
+
+                        state.finished.zero_()
+
+                        relative_position = state.text_tokens_seen - turn_offset
+                        text_exhausted = relative_position >= turn_lens
+
+                        position = relative_position.clamp(min=0, max=turn_text.size(1) - 1)
+                        current_tokens = turn_text[torch.arange(B, device=device), position]
+                        current_tokens = torch.where(
+                            text_exhausted,
+                            torch.full_like(current_tokens, model.eos_id),
+                            current_tokens,
+                        )
+
+                        state, audio_codes, _ = model.streaming_step(
+                            state=state,
+                            text_tokens=current_tokens,
+                            use_inference_mode=True,
+                        )
+
+                        if audio_codes is not None and not saw_audio:
+                            saw_audio = True
+                            first_audio_step_finished = bool(state.finished[0].item())
+
+                        if bool(text_exhausted[0].item()) and bool(state.finished[0].item()):
+                            turn_ended_with_audio_eos = True
+                            break
+
+                    prev_turn_immediate_eos = saw_audio and first_audio_step_finished
+                    # prev_turn_immediate_eos = saw_audio and first_audio_step_finished
+                    prev_turn_ended_with_audio_eos = turn_ended_with_audio_eos
+
+                    # keep generated codes, but don't let this turn's EOS crop finalize output
+                    state.audio_prediction_end_idx.fill_(-1)
+                    state.finished.zero_()
+
+                    logging.info(
+                        f"[profile_multiturn] turn={t} steps={turn_steps} "
+                        f"saw_audio={saw_audio} immediate_eos={prev_turn_immediate_eos}"
+                    )
+            # if state.audio_prediction_end_idx[0].item() >= 0:
+            #     last_audio_prediction_end_idx.copy_(state.audio_prediction_end_idx)
+
             # Scrub Special Tokens (BOS/EOS) from Audio Codes ---
             # Because we force-decode the entire uncropped sequence, any BOS or EOS 
             # tokens left in the array will produce loud artifacts in the codec.
@@ -689,6 +825,9 @@ def main():
                 # Erase the internal memory of Turn 1's EOS token so `streaming_finalize` 
                 # decodes the entire physical sequence!
                 state.audio_prediction_end_idx.fill_(-1)
+            
+            if inputs["profile_multiturn"]:
+                state.audio_prediction_end_idx.fill_(-1)
 
             # Finalize decodes the collected Codec states globally regardless of which loop was run
             finalize_output = model.streaming_finalize(state, use_inference_mode=True)
@@ -708,6 +847,8 @@ def main():
                 
                 # Cap the expected length so it physically cannot exceed the actual generated tensor size
                 audio_len = torch.min(audio_len, torch.tensor(audio_f32.size(1), device=device))
+            elif inputs["profile_multiturn"]:
+                audio_len = finalize_output.audio_len.int()
             else:
                 audio_len = torch.min(audio_len, expected_audio_lens)
 

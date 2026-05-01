@@ -928,119 +928,47 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     agent_mask.size(0),
                     target_T - agent_mask.size(1),
                     device=agent_mask.device,
-                    dtype=agent_mask.dtype,
+                    dtype=torch.bool,
                 )
-                agent_mask = torch.cat([agent_mask, pad], dim=1)
+                agent_mask = torch.cat([agent_mask.bool(), pad], dim=1)
             else:
-                agent_mask = agent_mask[:, :target_T]
-            agent_mask = agent_mask.to(audio_codes_target.device).bool()
+                agent_mask = agent_mask[:, :target_T].bool()
 
-            # force include EOS
+            agent_mask = agent_mask.to(audio_codes_target.device)
+
             valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(audio_codes_target.device)
+            agent_mask = agent_mask & valid
+
             eos_any = (audio_codes_target == self.audio_eos_id).any(dim=1) & valid
-            agent_mask = agent_mask | eos_any
-
-            # include previous token to avoid align issues
-            eos_prev1 = torch.zeros_like(eos_any)
-            eos_prev1[:, :-1] = eos_any[:, 1:]
-            agent_mask = agent_mask | eos_any | eos_prev1
-
-            """
-            # =========================
-            # HARD ASSERTS (ALIGNMENT)
-            # =========================
-            agent_mask = agent_mask.bool()
-            debug_window = 5
-
-            valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(audio_codes_target.device)
-            eos_any = (audio_codes_target == self.audio_eos_id).any(dim=1) & valid  # (B, T)
 
             eos_prev1 = torch.zeros_like(eos_any)
             eos_prev1[:, :-1] = eos_any[:, 1:]
 
-            eos_prev2 = torch.zeros_like(eos_any)
-            eos_prev2[:, :-2] = eos_any[:, 2:]
+            # Keep EOS/boundary supervised even if the dataloader mask is slightly off.
+            agent_mask = agent_mask | eos_prev1 | eos_any
 
-            eos_required = eos_any | eos_prev1 | eos_prev2
-            missing_eos = eos_required & (~agent_mask)
-
-            if missing_eos.any():
-                b, t = missing_eos.nonzero(as_tuple=False)[0].tolist()
-                s = max(0, t - debug_window)
-                e = min(audio_codes_target.size(2), t + debug_window + 1)
-
-                eos_positions_b = eos_any[b].nonzero(as_tuple=False).flatten().detach().cpu().tolist()
-                required_positions_b = eos_required[b].nonzero(as_tuple=False).flatten().detach().cpu().tolist()
-
-                raise RuntimeError(
-                    "[MASK ERROR] EOS coverage violation\n"
-                    f"first_bad=(b={b}, t={t})\n"
-                    f"audio_len_target={int(audio_codes_lens_target[b])}\n"
-                    f"all_eos_positions_b={eos_positions_b}\n"
-                    f"required_positions_b={required_positions_b}\n"
-                    f"is_eos_at_bad={bool(eos_any[b, t])}\n"
-                    f"is_eos_prev1_at_bad={bool(eos_prev1[b, t])}\n"
-                    f"is_eos_prev2_at_bad={bool(eos_prev2[b, t])}\n"
-                    f"valid_window={valid[b, s:e].detach().cpu().tolist()}\n"
-                    f"eos_window={eos_any[b, s:e].detach().cpu().tolist()}\n"
-                    f"eos_required_window={eos_required[b, s:e].detach().cpu().tolist()}\n"
-                    f"agent_mask_window={agent_mask[b, s:e].detach().cpu().tolist()}\n"
-                    f"codes_window={audio_codes_target[b, :, s:e].detach().cpu().tolist()}\n"
+            if self.cfg.get("debug_decode_agent_mask", False) and mode == "train" and self.global_step < 5:
+                self.debug_decode_mask_regions(
+                    audio_codes_target=audio_codes_target,
+                    audio_codes_lens_target=audio_codes_lens_target,
+                    agent_mask=agent_mask,
+                    out_dir=os.path.join(self.trainer.log_dir, "mask_debug", f"step_{self.global_step}"),
+                    prefix=f"batch_{self.global_rank}_{self.global_step}",
                 )
 
-            # ---- All non-pad text must be covered ----
-            if text is not None:
-                text = text.to(agent_mask.device)
-                valid_text = text != self.pad_id
+        # replace all user tokens by a single token
+        if self.cfg.get("use_user_speaking_token", False) and agent_mask is not None:
+            non_agent_mask = (~agent_mask) & get_mask_from_lengths(audio_codes_lens_target).bool().to(agent_mask.device)
 
-                if text_lens is not None:
-                    valid_text = valid_text & get_mask_from_lengths(text_lens).bool().to(text.device)
-
-                T_overlap = min(text.size(1), agent_mask.size(1))
-                valid_text = valid_text[:, :T_overlap]
-                agent_mask_text = agent_mask[:, :T_overlap]
-
-                missing_text = valid_text & (~agent_mask_text)
-
-                if missing_text.any():
-                    b, t = missing_text.nonzero(as_tuple=False)[0].tolist()
-                    s = max(0, t - debug_window)
-                    e = min(T_overlap, t + debug_window + 1)
-
-                    first_nonpad = valid_text[b].nonzero(as_tuple=False)
-                    first_nonpad_t = int(first_nonpad[0].item()) if first_nonpad.numel() > 0 else None
-
-                    bad_token = int(text[b, t].detach().cpu())
-
-                    token_str = None
-                    try:
-                        token_str = self.tokenizer.ids_to_text([bad_token])
-                    except Exception:
-                        try:
-                            token_str = self.tokenizer.decode([bad_token])
-                        except Exception:
-                            try:
-                                token_str = self.tokenizer.id_to_token(bad_token)
-                            except Exception:
-                                token_str = "<decode failed>"
-
-                    raise RuntimeError(
-                        "[MASK ERROR] Text coverage violation\n"
-                        f"first_bad=(b={b}, t={t})\n"
-                        f"bad_token_id={bad_token}\n"
-                        f"bad_token_decoded={token_str}\n"
-                        f"text_lens={int(text_lens[b]) if text_lens is not None else None}\n"
-                        f"audio_len_target={int(audio_codes_lens_target[b])}\n"
-                        f"T_text={text.size(1)} T_agent_mask={agent_mask.size(1)} T_overlap={T_overlap}\n"
-                        f"first_nonpad_text_t={first_nonpad_t}\n"
-                        f"text_window={text[b, s:e].detach().cpu().tolist()}\n"
-                        f"valid_text_window={valid_text[b, s:e].detach().cpu().tolist()}\n"
-                        f"agent_mask_window={agent_mask_text[b, s:e].detach().cpu().tolist()}\n"
-                    )
-            """
+            user_tok = torch.full_like(audio_codes_target, self.audio_user_speaking_id)
+            audio_codes_target = torch.where(
+                non_agent_mask.unsqueeze(1),
+                user_tok,
+                audio_codes_target,
+            )
 
         # Compute codebook loss
-        codebook_loss, _ = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target, agent_mask_target=agent_mask)
+        codebook_loss, _ = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target, agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None)
         loss = self.parallel_codebook_loss_scale * codebook_loss
 
 
@@ -1053,7 +981,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 pred_embeddings, audio_codes_target, targets_offset_by_one=False
             )
             local_transformer_loss, _ = self.compute_loss(
-                local_transformer_logits, audio_codes_target, audio_codes_lens_target, agent_mask_target=agent_mask
+                local_transformer_logits, audio_codes_target, audio_codes_lens_target, agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None
             )
 
             loss = loss + self.local_transformer_loss_scale * local_transformer_loss
@@ -1187,7 +1115,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="train",
             task=batch["task"] if self.cfg.get("use_multiturn_dataset", False) else None,
-            agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) and self.cfg.get("mask_user_on_loss", False) else None,
+            agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
@@ -1286,7 +1214,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="val",
             task=batch["task"] if "task" in batch else None,
-            agent_mask=batch["agent_mask"] if "agent_mask" in batch and self.cfg.get("mask_user_on_loss", False) else None,
+            agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
         )
         # Access ProcessBatchOutput dataclass attributes
         # logits come from the parallel prediction head
@@ -1822,3 +1750,112 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         self._val_dl_wrapped_with_dist_sampler = True
         return self._validation_dl
+
+    def debug_decode_mask_regions(
+        self,
+        audio_codes_target,
+        audio_codes_lens_target,
+        agent_mask,
+        out_dir,
+        prefix="debug_mask",
+    ):
+        os.makedirs(out_dir, exist_ok=True)
+
+        device = audio_codes_target.device
+        B, C, T = audio_codes_target.shape
+
+        agent_mask = agent_mask.to(device).bool()
+
+        if agent_mask.size(1) < T:
+            pad = torch.zeros(B, T - agent_mask.size(1), device=device, dtype=torch.bool)
+            agent_mask = torch.cat([agent_mask, pad], dim=1)
+        else:
+            agent_mask = agent_mask[:, :T]
+
+        valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(device)
+        agent_mask = agent_mask & valid
+
+        C_base = self.num_audio_codebooks
+        S = self.frame_stacking_factor
+        C_target = audio_codes_target.size(1)
+
+        sil = self.codec_sil_codes.to(device=device, dtype=audio_codes_target.dtype)
+
+        if C_target == C_base:
+            sil = sil.view(1, C_base, 1).expand(B, C_base, T)
+
+        elif C_target == C_base * S:
+            sil_unstacked = sil.view(1, C_base, 1).expand(B, C_base, T * S).contiguous()
+            sil_stacked, _ = self.stack_codes(
+                sil_unstacked,
+                torch.full((B,), T * S, dtype=torch.long, device=device),
+                bos_id=self.audio_bos_id,
+                eos_id=self.audio_eos_id,
+                stacking_factor=S,
+                num_codebooks=C_base,
+            )
+            sil = sil_stacked[:, :, :T]
+        else:
+            raise RuntimeError(
+                f"Unexpected codebook dim: target C={C_target}, "
+                f"base C={C_base}, stacking_factor={S}"
+            )
+
+        def decode_and_save(codes, lens, name):
+            codes = codes.clone()
+            codes, lens = self._prepare_codes_for_decode(codes, lens)
+            audio, audio_len, _ = self._codec_helper.codes_to_audio(codes, lens)
+
+            for b in range(B):
+                wav = audio[b, : audio_len[b]].float().detach().cpu().numpy()
+                sf.write(
+                    os.path.join(out_dir, f"{prefix}_b{b}_{name}.wav"),
+                    wav,
+                    self.output_sample_rate,
+                )
+
+        # 1. full target
+        decode_and_save(audio_codes_target, audio_codes_lens_target, "full_target")
+
+        # 2. only agent region, silence elsewhere
+        agent_codes = torch.where(agent_mask[:, None, :], audio_codes_target, sil)
+        decode_and_save(agent_codes, audio_codes_lens_target, "agent_only_sil_elsewhere")
+
+        # 3. only masked-out region, silence elsewhere
+        non_agent_codes = torch.where((~agent_mask & valid)[:, None, :], audio_codes_target, sil)
+        decode_and_save(non_agent_codes, audio_codes_lens_target, "non_agent_only_sil_elsewhere")
+
+        # 4. each contiguous agent segment independently
+        for b in range(B):
+            mask_b = agent_mask[b]
+            idx = mask_b.nonzero(as_tuple=False).flatten()
+
+            if idx.numel() == 0:
+                continue
+
+            # contiguous runs
+            breaks = torch.where(idx[1:] != idx[:-1] + 1)[0] + 1
+            chunks = torch.tensor_split(idx, breaks.cpu().tolist())
+
+            for seg_i, seg_idx in enumerate(chunks):
+                start = int(seg_idx[0])
+                end = int(seg_idx[-1]) + 1
+
+                seg_codes = audio_codes_target[b : b + 1, :, start:end].clone()
+                seg_lens = torch.tensor([end - start], device=device, dtype=torch.long)
+
+                seg_codes, seg_lens = self._prepare_codes_for_decode(seg_codes, seg_lens)
+                audio, audio_len, _ = self._codec_helper.codes_to_audio(seg_codes, seg_lens)
+
+                wav = audio[0, : audio_len[0]].float().detach().cpu().numpy()
+                sf.write(
+                    os.path.join(out_dir, f"{prefix}_b{b}_agent_segment{seg_i}_frames{start}-{end}.wav"),
+                    wav,
+                    self.output_sample_rate,
+                )
+
+        logging.info(
+            f"[mask_debug] saved mask decode files to {out_dir}; "
+            f"agent coverage frames={agent_mask.sum(dim=1).detach().cpu().tolist()} / "
+            f"{audio_codes_lens_target.detach().cpu().tolist()}"
+        )

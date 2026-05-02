@@ -522,6 +522,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 llm_tokenizer_vocab=subword_vocab,
                 subword_padding_idx=self.tokenizer.pad,
                 special_vocab=special_vocab,
+                n_layers=cfg.get('cas_encoder_n_layers', 1),
             )
 
         if self.disable_subword_embedding and not hasattr(self, 'cas_encoder'):

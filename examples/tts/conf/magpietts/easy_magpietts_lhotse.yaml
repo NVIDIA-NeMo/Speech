@@ -15,6 +15,7 @@ model:
   disable_lm_text_head: false
   disable_subword_embedding: false
   use_bpe_char_tokenizer: true
+  cas_encoder_n_layers: 1
   
   # HuggingFace backend config (used when decoder_type: "huggingface")
   transformer_hf_backend: "Qwen/Qwen2.5-1.5B"

@@ -76,6 +76,21 @@ def _strip_timestamps(
     return _SPACE_PATTERN.sub(" ", text).strip()
 
 
+def _get_supervision_ipa_text(supervision) -> str:
+    """Return IPA for a supervision, preferring top-level field over custom."""
+    ipa_text = getattr(supervision, "ipa", None)
+    if isinstance(ipa_text, str) and ipa_text.strip():
+        return ipa_text
+
+    custom = getattr(supervision, "custom", None)
+    if isinstance(custom, dict):
+        custom_ipa = custom.get("ipa")
+        if isinstance(custom_ipa, str):
+            return custom_ipa
+
+    return ""
+
+
 class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
     """
     A PyTorch Dataset for loading and processing Text-to-Speech data for
@@ -796,7 +811,7 @@ def build_phoneme_channel(
                     continue
 
                 if isinstance(phoneme_tokenizer, IPABPETokenizer):
-                    ipa_text = supervision.ipa if supervision.has_custom("ipa") else ""
+                    ipa_text = _get_supervision_ipa_text(supervision)
                     if language in ignore_phoneme_languages:
                         ipa_text = ""
                 else:
@@ -824,7 +839,7 @@ def build_phoneme_channel(
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
             if isinstance(phoneme_tokenizer, IPABPETokenizer):
-                ipa_text = supervision.ipa if supervision.has_custom("ipa") else ""
+                ipa_text = _get_supervision_ipa_text(supervision)
                 if language in ignore_phoneme_languages:
                     ipa_text = ""
             else:

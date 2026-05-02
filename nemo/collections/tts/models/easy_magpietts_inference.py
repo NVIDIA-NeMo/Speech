@@ -11,11 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-<<<<<<< HEAD
 import random
 import time
-=======
->>>>>>> 3ea2b31298 (Apply isort and black reformatting)
 import random
 import time
 from dataclasses import dataclass, fields

@@ -12,13 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, Optional
+import re
+from pathlib import Path
+from typing import Dict, Optional, Union
 
+import soundfile as sf
 import torch
 from lhotse import CutSet
 from lhotse.dataset.collation import collate_audio
 
 from nemo.utils import logging
+
+_SAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+_DATASET_IN_SPEAKER = re.compile(r"(?:^|[\s|])Dataset:([^\s|]+)")
 
 
 class AudioCodecLhotseDataset(torch.utils.data.Dataset):
@@ -42,6 +48,9 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
         sample_rate: int,
         sanity_check_audio: bool = False,
         min_samples_for_sanity: Optional[int] = None,
+        log_audio: bool = False,
+        log_audio_dir: Union[str, Path] = "logged_audio",
+        log_audio_num_batches: int = 3,
     ):
         """
         Args:
@@ -50,11 +59,98 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
             min_samples_for_sanity: cuts should have at least this many samples or an
                                     error will be raised. Only used when
                                     `sanity_check_audio` is True.
+            log_audio: If True, save the original `target_audio` waveforms from
+                       the first few batches before any dataset resampling.
+            log_audio_dir: Directory where debug wav files will be written.
+            log_audio_num_batches: Number of initial batches to log per dataset
+                                   instance or dataloader worker.
         """
         super().__init__()
         self.sample_rate = sample_rate
         self.sanity_check_audio = sanity_check_audio
         self.min_samples_for_sanity = min_samples_for_sanity
+        self.log_audio = log_audio
+        self.log_audio_dir = Path(log_audio_dir)
+        self.log_audio_num_batches = log_audio_num_batches
+        self._logged_audio_batches = 0
+
+    def _maybe_log_audio(self, cuts: CutSet):
+        """
+        Save original target_audio waveforms for the first few batches.
+        """
+        if not self.log_audio or self._logged_audio_batches >= self.log_audio_num_batches:
+            return
+
+        self._log_target_audio_without_resampling(cuts)
+        self._logged_audio_batches += 1
+
+    def _log_target_audio_without_resampling(self, cuts: CutSet):
+        """
+        Save each cut's `target_audio` before `target_audio.resample()` is applied.
+
+        This intentionally uses the custom `target_audio` recording and its own
+        sampling rate, not `self.sample_rate`. To keep the debug files trustworthy,
+        fail fast if the recording already has Lhotse audio transforms attached.
+        """
+        self.log_audio_dir.mkdir(parents=True, exist_ok=True)
+
+        for cut in cuts:
+            recording = cut.target_audio
+            transform_names = self._recording_transform_names(recording)
+            if transform_names:
+                raise RuntimeError(
+                    "Cannot log untransformed target_audio because the recording "
+                    f"already has Lhotse audio transforms attached: {transform_names}. "
+                    f"cut_id={cut.id}, recording_id={recording.id}"
+                )
+
+            audio = cut.load_custom("target_audio")
+            speaker = getattr(cut.supervisions[0], "speaker", None) if cut.supervisions else None
+            filename = self._recording_id_to_wav_name(recording.id, recording.sampling_rate, speaker=speaker)
+            path = self.log_audio_dir / filename
+            sf.write(str(path), self._audio_for_soundfile(audio), samplerate=recording.sampling_rate)
+            logging.info(
+                f"Saved original target_audio for cut_id={cut.id}, recording_id={recording.id}, "
+                f"sampling_rate={recording.sampling_rate}, shape={audio.shape}, path={path}"
+            )
+
+    @staticmethod
+    def _recording_transform_names(recording) -> list[str]:
+        transform_names = []
+        for transform in recording.transforms or []:
+            if isinstance(transform, dict):
+                transform_names.append(transform.get("name", str(transform)))
+            else:
+                transform_names.append(type(transform).__name__)
+        return transform_names
+
+    @staticmethod
+    def _recording_id_to_wav_name(recording_id: str, sampling_rate: int, speaker: Optional[str] = None) -> str:
+        safe_id = _SAFE_FILENAME_CHARS.sub("_", str(recording_id)).strip("._")
+        if not safe_id:
+            safe_id = "recording"
+        dataset = AudioCodecLhotseDataset._dataset_from_speaker(speaker)
+        if dataset is not None:
+            safe_id = f"{dataset}_{safe_id}"
+        return f"{safe_id}_{sampling_rate}Hz.wav"
+
+    @staticmethod
+    def _dataset_from_speaker(speaker: Optional[str]) -> Optional[str]:
+        if speaker is None:
+            return None
+        match = _DATASET_IN_SPEAKER.search(speaker)
+        if match is None:
+            return None
+        safe_dataset = _SAFE_FILENAME_CHARS.sub("_", match.group(1)).strip("._")
+        return safe_dataset or None
+
+    @staticmethod
+    def _audio_for_soundfile(audio):
+        if audio.ndim == 1:
+            return audio
+        if audio.shape[0] == 1:
+            return audio[0]
+        return audio.T
 
     def __getitem__(self, cuts: CutSet) -> Dict[str, torch.Tensor]:
         """
@@ -65,6 +161,7 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
         Returns:
             A dictionary with the `audio` and `audio_lens` tensors.
         """
+        self._maybe_log_audio(cuts)
         # Resample the audio to the target sample rate. We need to do this manually
         # because Lhotse only resamples its standard `recording` field automatically,
         # not custom fields like `target_audio`.

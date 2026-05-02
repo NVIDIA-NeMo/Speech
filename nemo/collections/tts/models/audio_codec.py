@@ -862,7 +862,8 @@ class AudioCodecModel(ModelPT):
             raise ValueError("`truncate_duration` must be set in the config")
         loader_cfg.truncate_offset_type = "random"
         # Also filter examples to be at least this long to avoid zero-padding
-        loader_cfg.min_duration = loader_cfg.truncate_duration
+        if loader_cfg.min_duration is None:
+            loader_cfg.min_duration = loader_cfg.truncate_duration
 
         # --- Create the dataset ---
 

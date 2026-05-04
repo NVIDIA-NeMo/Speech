@@ -554,7 +554,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
         current_streaming_speech_delay: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Prepare audio embeddings as a channel input with delay handling.
 
@@ -575,6 +575,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 - audio_channel_lens: Total length of audio channel for each batch item (B,)
                 - audio_codes_target: Target audio codes for loss computation (B, C, T'-1)
                 - audio_codes_lens_target: Length of target audio codes (B,)
+                - loss_agent_mask: Optional mask used for loss masking; None when no agent_mask is provided.
         """
         batch_size = audio_codes.size(0)
         device = audio_codes.device

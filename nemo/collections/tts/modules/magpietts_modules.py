@@ -97,7 +97,7 @@ class SpecialAudioToken(Enum):
     MASK_TOKEN = 4
     # Reserve these values so that if we need to add more special tokens in the future the codebook size will remain the same
     USER_SPEAKING = 5
-    RESERVED_2 = 6
+    USER_SPEAKING_END = 6
     RESERVED_3 = 7
 
     @staticmethod

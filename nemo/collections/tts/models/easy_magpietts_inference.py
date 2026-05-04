@@ -271,6 +271,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.context_audio_eos_id = get_token_index(SpecialAudioToken.AUDIO_CONTEXT_EOS)
         self.mask_token_id = get_token_index(SpecialAudioToken.MASK_TOKEN)
         self.audio_user_speaking_id = get_token_index(SpecialAudioToken.USER_SPEAKING)
+        self.audio_user_speaking_end_id = get_token_index(SpecialAudioToken.USER_SPEAKING_END)
         self.num_all_tokens_per_codebook = self.codebook_size + len(SpecialAudioToken)
         self.use_bpe_char_tokenizer = cfg.get('use_bpe_char_tokenizer', False)
         # If True, text tokens are embedded only with the char-aware subword (CAS) encoder, and the decoder token
@@ -695,26 +696,38 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 text_emb[text_tokens == self.pad_id] = 0.0
 
             # -----------------------
-            # AUDIO CHANNEL: silence previous-token input
+            # AUDIO CHANNEL: previous-token input during profile
             # -----------------------
             C = self.num_audio_codebooks
             S = self.frame_stacking_factor
 
             sil_codes = self.codec_sil_codes.to(device=device, dtype=torch.long)  # (C,)
 
+            # Keep all_predictions as real silence so decoded waveform has silence during profile.
             sil_codes_unstacked = sil_codes.view(1, C, 1).expand(B, C, T * S).contiguous()
-            sil_codes_stacked, _ = self.stack_codes(
-                sil_codes_unstacked,
-                torch.full((B,), T * S, dtype=torch.long, device=device),
-                bos_id=self.audio_bos_id,
-                eos_id=self.audio_eos_id,
-                stacking_factor=S,
-                num_codebooks=C,
-            )  # (B, C*S, T)
 
-            audio_emb = self.embed_audio_tokens(sil_codes_stacked)
+            if self.cfg.get("use_user_speaking_token", False):
+                # Match training: during non-agent/user-speaking regions, the audio INPUT token
+                # is audio_user_speaking_id.
+                profile_audio_stacked = torch.full(
+                    (B, C * S, T),
+                    self.audio_user_speaking_id,
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                profile_audio_stacked, _ = self.stack_codes(
+                    sil_codes_unstacked,
+                    torch.full((B,), T * S, dtype=torch.long, device=device),
+                    bos_id=self.audio_bos_id,
+                    eos_id=self.audio_eos_id,
+                    stacking_factor=S,
+                    num_codebooks=C,
+                )  # (B, C*S, T)
 
-            # Match training channel sum: text + audio silence.
+            audio_emb = self.embed_audio_tokens(profile_audio_stacked)
+
+            # Match training channel sum: text + audio profile-token/silence input.
             combined_emb = text_emb + audio_emb
 
             # -----------------------
@@ -755,7 +768,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Make the next normal streaming_step continue from silence, not AUDIO_BOS.
             state.all_predictions.append(sil_codes_unstacked) # keep silence so that in the target audio user will be silence
-            if self.cfg.get("use_user_speaking_token", False):
+            if self.cfg.get("use_user_speaking_end_token", False):
+                state.last_audio_codes = torch.full(
+                    (B, C * S),
+                    self.audio_user_speaking_end_id,
+                    dtype=torch.long,
+                    device=device,
+                )
+            elif self.cfg.get("use_user_speaking_token", False):
                 state.last_audio_codes = torch.full(
                     (B, C * S),
                     self.audio_user_speaking_id,
@@ -763,7 +783,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     device=device,
                 )
             else:
-                state.last_audio_codes = sil_codes_stacked[:, :, -1].contiguous()
+                state.last_audio_codes = profile_audio_stacked[:, :, -1].contiguous()
 
             return state
 

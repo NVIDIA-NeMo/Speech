@@ -401,7 +401,7 @@ def main():
     # Optional Paths & General
     parser.add_argument("--phoneme_tokenizer_path", type=str, default=None)
     parser.add_argument("--audio_dir", type=str, default=None, help="Root dir for audio paths in JSONL")
-    parser.add_argument("--inference_dtype", type=str, default="float16")
+    parser.add_argument("--inference_dtype", type=str, default="float32")
     parser.add_argument("--debug_dtype", action="store_true")
     parser.add_argument("--use_librosa", action="store_true", help="Use librosa instead of soundfile+torch for audio load")
     
@@ -557,6 +557,7 @@ def main():
             inputs["context_audio"] = speaker_wav.repeat(B, 1)
             inputs["context_audio_lengths"] = torch.full((B,), speaker_wav.size(-1), dtype=torch.long, device=device)
 
+        profile_turn_frame_ranges = []
         with torch.inference_mode():
             wav = inputs["context_audio"]
             wav_len = inputs["context_audio_lengths"]
@@ -682,7 +683,6 @@ def main():
             # MODE 3: PROFILE MULTI-TURN
             # ---------------------------------------------------------
             elif inputs["profile_multiturn"]:
-                profile_started = False
                 if B != 1:
                     raise RuntimeError(
                         "--profile_multiturn_inference currently supports only batch_size=1. "
@@ -694,9 +694,9 @@ def main():
                 valid_turn_masks = inputs["valid_turn_masks"]
 
                 max_turns = len(batched_turns)
-                prev_turn_immediate_eos = True  # force prefill before first turn
                 prev_turn_ended_with_audio_eos = True  # profile before turn 0
                 for t in range(max_turns):
+                    turn_ended_with_audio_eos = False
                     turn_text = batched_turns[t].to(device)
                     turn_lens = batched_turn_lens[t].to(device)
                     valid_mask = valid_turn_masks[t].to(device)
@@ -714,40 +714,46 @@ def main():
                     if hasattr(state, "phoneme_eos_detected"):
                         state.phoneme_eos_detected.zero_()
 
-                    # Prefill before first turn and only after turns that ended immediately.
-                    if t == 0 or prev_turn_ended_with_audio_eos:
-                        profile_seconds = (
-                            args.profile_pad_min_sec
-                            + torch.rand((), device=device).item()
-                            * (args.profile_pad_max_sec - args.profile_pad_min_sec)
-                        )
+                    # Prefill on the begining of each turn
+                    profile_seconds = (
+                        args.profile_pad_min_sec
+                        + torch.rand((), device=device).item()
+                        * (args.profile_pad_max_sec - args.profile_pad_min_sec)
+                    )
 
-                        profile_T = max(
-                            1,
-                            int(round(profile_seconds * model.sample_rate / model.input_samples_per_frame)),
-                        )
+                    profile_T = max(
+                        1,
+                        int(round(profile_seconds * model.sample_rate / model.input_samples_per_frame)),
+                    )
 
-                        profile_tokens = torch.full(
-                            (1, profile_T),
-                            model.pad_id,
-                            dtype=torch.long,
-                            device=device,
-                        )
+                    profile_tokens = torch.full(
+                        (1, profile_T),
+                        model.pad_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                    # add text tokens needed for profilling
+                    delay_tokens = int(state.config.training_mode.streaming_speech_delay)
+                    delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
+                    profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]
+                    turn_text = turn_text[:, delay_tokens:]
+                    turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
 
-                        state = model.streaming_prefill_profile(
-                            state=state,
-                            text_tokens=profile_tokens,
-                            use_inference_mode=True,
-                        )
+                    state = model.streaming_prefill_profile(
+                        state=state,
+                        text_tokens=profile_tokens,
+                        use_inference_mode=True,
+                    )
 
-                        logging.info(
-                            f"[profile_multiturn] turn={t} prefilled {profile_T} steps "
-                            f"({profile_seconds:.2f}s)"
-                        )
-                        if not profile_started:
-                            start_frame = sum(p.size(-1) for p in state.all_predictions)
-                            state.audio_prediction_start_idx.fill_(start_frame)
-                            profile_started = True
+                    logging.info(
+                        f"[profile_multiturn] turn={t} prefilled {profile_T} steps "
+                        f"({profile_seconds:.2f}s)"
+                    )
+
+                    turn_start_frame = sum(p.size(-1) for p in state.all_predictions)
+                    if t == 0:
+                        state.audio_prediction_start_idx.fill_(turn_start_frame)
+                        profile_decode_start_frame = turn_start_frame
 
                     turn_offset = state.text_tokens_seen.clone()
                     turn_steps = 0
@@ -786,8 +792,6 @@ def main():
                             turn_ended_with_audio_eos = True
                             break
 
-                    prev_turn_immediate_eos = saw_audio and first_audio_step_finished
-                    # prev_turn_immediate_eos = saw_audio and first_audio_step_finished
                     prev_turn_ended_with_audio_eos = turn_ended_with_audio_eos
 
                     # keep generated codes, but don't let this turn's EOS crop finalize output
@@ -796,8 +800,11 @@ def main():
 
                     logging.info(
                         f"[profile_multiturn] turn={t} steps={turn_steps} "
-                        f"saw_audio={saw_audio} immediate_eos={prev_turn_immediate_eos}"
+                        f"saw_audio={saw_audio} immediate_eos={prev_turn_ended_with_audio_eos}"
                     )
+                    turn_end_frame = sum(p.size(-1) for p in state.all_predictions)
+                    profile_turn_frame_ranges.append((t, turn_start_frame, turn_end_frame))
+
             # if state.audio_prediction_end_idx[0].item() >= 0:
             #     last_audio_prediction_end_idx.copy_(state.audio_prediction_end_idx)
 
@@ -806,14 +813,17 @@ def main():
             # tokens left in the array will produce loud artifacts in the codec.
             bos_id = getattr(model, "audio_bos_id", -1)
             eos_id = getattr(model, "audio_eos_id", -1)
+            speaking_id = getattr(model, "audio_user_speaking_id", -1)
+            speaking_end_id = getattr(model, "audio_user_speaking_end_id", -1)
+
             sil_injection = codec_sil_codes.view(1, -1, 1)
 
             for step_idx in range(len(state.all_predictions)):
                 pred = state.all_predictions[step_idx]
-                # Check if any codebook in the frame has a BOS or EOS token
-                mask = (pred == bos_id) | (pred == eos_id)
+                # Check if any codebook in the frame has any special token
+                mask = (pred == bos_id) | (pred == eos_id) | (pred == speaking_id) | (pred == speaking_end_id)
                 frame_mask = mask.any(dim=1, keepdim=True) 
-                
+
                 if frame_mask.any():
                     state.all_predictions[step_idx] = torch.where(
                         frame_mask, 
@@ -876,12 +886,43 @@ def main():
             audio_len = audio_len.cpu()
 
             for i in range(B):
-                wav = audio_f32[i, : audio_len[i]].numpy()
                 target_path = inputs["target_audio_paths"][i]
                 base_name = os.path.basename(target_path)
-                out_path = os.path.join(args.out_dir, base_name)
-                sf.write(out_path, wav, samplerate=model.output_sample_rate)
-                logging.info(f"Saved: {out_path}")
+                stem, ext = os.path.splitext(base_name)
+                if not ext:
+                    ext = ".wav"
+
+                if inputs["profile_multiturn"]:
+                    wav = audio_f32[i, : audio_len[i]].numpy()
+                    out_path = os.path.join(args.out_dir, base_name)
+                    sf.write(out_path, wav, samplerate=model.output_sample_rate)
+                    logging.info(f"Full Audio Saved: {out_path}")
+    
+                    full_wav = audio_f32[i].numpy()
+                    full_len = int(audio_len[i].item())
+                    print(profile_turn_frame_ranges)
+                    for turn_id, start_frame, end_frame in profile_turn_frame_ranges:
+                        samples_per_prediction_frame = (
+                            model.codec_model_samples_per_frame / (model.sample_rate / model.output_sample_rate)
+                        )
+                        rel_start_frame = start_frame - profile_decode_start_frame
+                        rel_end_frame = end_frame - profile_decode_start_frame
+
+                        start_sample = int(round(rel_start_frame * samples_per_prediction_frame))
+                        end_sample = int(round(rel_end_frame * samples_per_prediction_frame))
+                        start_sample = max(0, min(start_sample, full_len))
+                        end_sample = max(start_sample, min(end_sample, full_len))
+                        print("Turn:", turn_id, "Start:", start_sample, "End:", end_sample,  "Start S:", start_sample/model.output_sample_rate, "End S:", end_sample/model.output_sample_rate, )
+                        turn_wav = full_wav[start_sample:end_sample]
+
+                        out_path = os.path.join(args.out_dir, f"{stem}_turn_{turn_id}{ext}")
+                        sf.write(out_path, turn_wav, samplerate=model.output_sample_rate)
+                        logging.info(f"Saved: {out_path}")
+                else:
+                    wav = audio_f32[i, : audio_len[i]].numpy()
+                    out_path = os.path.join(args.out_dir, base_name)
+                    sf.write(out_path, wav, samplerate=model.output_sample_rate)
+                    logging.info(f"Saved: {out_path}")
 
     with fp32_precision():
         logging.info("\n--- Evaluation Metrics ---")

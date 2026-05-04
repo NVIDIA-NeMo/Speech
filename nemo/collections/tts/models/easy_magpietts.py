@@ -552,6 +552,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes_lens: torch.Tensor,
         delay: torch.Tensor,
         speech_eos_mask: Optional[torch.Tensor] = None,
+        agent_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Prepare audio embeddings as a channel input with delay handling.
@@ -627,6 +628,96 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes_target = audio_codes[:, :, 1:]  # (B, C, T'-1)
         audio_codes_input = audio_codes[:, :, :-1]  # (B, C, T'-1)
 
+        # deal with agent mask
+        if agent_mask is not None:
+            target_T = audio_codes_target.size(2)
+
+            # Align dataloader agent_mask to audio_codes_target time.
+            if agent_mask.size(1) < target_T:
+                pad = torch.zeros(
+                    agent_mask.size(0),
+                    target_T - agent_mask.size(1),
+                    device=agent_mask.device,
+                    dtype=torch.bool,
+                )
+                agent_mask = torch.cat([agent_mask.bool(), pad], dim=1)
+            else:
+                agent_mask = agent_mask[:, :target_T].bool()
+
+            agent_mask = agent_mask.to(audio_codes_target.device)
+
+            valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(audio_codes_target.device)
+            agent_mask = agent_mask & valid
+
+            # Keep EOS and the frame before EOS supervised.
+            eos_any = (audio_codes_target == self.audio_eos_id).any(dim=1) & valid
+
+            eos_prev1 = torch.zeros_like(eos_any)
+            eos_prev1[:, :-1] = eos_any[:, 1:]
+
+            agent_mask = agent_mask | eos_prev1 | eos_any
+            target_agent_mask = agent_mask & valid
+
+            if self.cfg.get("debug_decode_agent_mask", False) and self.training and self.global_step < 5:
+                self.debug_decode_mask_regions(
+                    audio_codes_target=audio_codes_target,
+                    audio_codes_lens_target=audio_codes_lens_target,
+                    agent_mask=agent_mask,
+                    out_dir=os.path.join(self.trainer.log_dir, "mask_debug", f"step_{self.global_step}"),
+                    prefix=f"batch_{self.global_rank}_{self.global_step}",
+                )
+
+
+            # Replace user/non-agent regions with a learned token.
+            # Important: audio_codes_input predicts audio_codes_target, so input mask must be shifted.
+            if self.cfg.get("use_user_speaking_token", False):
+                target_non_agent = (~target_agent_mask) & valid
+
+                # audio_codes_input[:, :, t] is the previous token used to predict target t.
+                input_agent_mask = torch.zeros_like(target_agent_mask)
+                input_agent_mask[:, 1:] = target_agent_mask[:, :-1]
+                input_agent_mask[:, 0] = True  # Keep first/BOS input untouched.
+
+                input_valid = torch.zeros_like(valid)
+                input_valid[:, 1:] = valid[:, :-1]
+                input_valid[:, 0] = valid[:, 0]
+
+                input_non_agent = (~input_agent_mask) & input_valid
+
+                user_tok_input = torch.full_like(audio_codes_input, self.audio_user_speaking_id)
+                audio_codes_input = torch.where(
+                    input_non_agent.unsqueeze(1),
+                    user_tok_input,
+                    audio_codes_input,
+                )
+
+                user_tok_target = torch.full_like(audio_codes_target, self.audio_user_speaking_id)
+                audio_codes_target = torch.where(
+                    target_non_agent.unsqueeze(1),
+                    user_tok_target,
+                    audio_codes_target,
+                )
+
+            # Put audio_user_speaking_end_id in the input slot that predicts the first agent frame
+            # after a non-agent region.
+            if self.cfg.get("use_user_speaking_end_token", False):
+                user_to_agent = torch.zeros_like(target_agent_mask)
+
+                user_to_agent[:, 1:] = (
+                    target_agent_mask[:, 1:]
+                    & (~target_agent_mask[:, :-1])
+                    & valid[:, 1:]
+                    & valid[:, :-1]
+                )
+
+                end_tok_input = torch.full_like(audio_codes_input, self.audio_user_speaking_end_id)
+
+                audio_codes_input = torch.where(
+                    user_to_agent.unsqueeze(1),
+                    end_tok_input,
+                    audio_codes_input,
+                )
+
         # Embed audio tokens
         audio_embedded = self.embed_audio_tokens(audio_codes_input)  # (B, T'-1, E)
 
@@ -640,7 +731,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             lengths=[delay, audio_codes_lens_target],
         )
 
-        return audio_channel_embedding, audio_channel_lens, audio_codes_target, audio_codes_lens_target
+        return audio_channel_embedding, audio_channel_lens, audio_codes_target, audio_codes_lens_target, agent_mask
 
     def slice_sequence_embeddings(self, sequence_embeddings, context_lens, target_lens):
         """
@@ -825,11 +916,13 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_channel_lens,
             audio_codes_target,
             audio_codes_lens_target,
+            agent_mask,
         ) = self.prepare_audio_channel_embeddings(
             audio_codes=audio_codes,
             audio_codes_lens=audio_codes_lens,
             delay=audio_delay,
             speech_eos_mask=speech_eos_mask,
+            agent_mask=agent_mask,
         )
 
         # 6. Sum the channel embeddings element-wise
@@ -919,53 +1012,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         # Project to audio logits
         pred_embeddings_audio = self.audio_out_projection(pred_embeddings)
         logits = self.final_proj(pred_embeddings_audio)
-
-        if agent_mask is not None:
-            # pad agent mask
-            target_T = audio_codes_target.size(2)
-            if agent_mask.size(1) < target_T:
-                pad = torch.zeros(
-                    agent_mask.size(0),
-                    target_T - agent_mask.size(1),
-                    device=agent_mask.device,
-                    dtype=torch.bool,
-                )
-                agent_mask = torch.cat([agent_mask.bool(), pad], dim=1)
-            else:
-                agent_mask = agent_mask[:, :target_T].bool()
-
-            agent_mask = agent_mask.to(audio_codes_target.device)
-
-            valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(audio_codes_target.device)
-            agent_mask = agent_mask & valid
-
-            eos_any = (audio_codes_target == self.audio_eos_id).any(dim=1) & valid
-
-            eos_prev1 = torch.zeros_like(eos_any)
-            eos_prev1[:, :-1] = eos_any[:, 1:]
-
-            # Keep EOS/boundary supervised even if the dataloader mask is slightly off.
-            agent_mask = agent_mask | eos_prev1 | eos_any
-
-            if self.cfg.get("debug_decode_agent_mask", False) and mode == "train" and self.global_step < 5:
-                self.debug_decode_mask_regions(
-                    audio_codes_target=audio_codes_target,
-                    audio_codes_lens_target=audio_codes_lens_target,
-                    agent_mask=agent_mask,
-                    out_dir=os.path.join(self.trainer.log_dir, "mask_debug", f"step_{self.global_step}"),
-                    prefix=f"batch_{self.global_rank}_{self.global_step}",
-                )
-
-        # replace all user tokens by a single token
-        if self.cfg.get("use_user_speaking_token", False) and agent_mask is not None:
-            non_agent_mask = (~agent_mask) & get_mask_from_lengths(audio_codes_lens_target).bool().to(agent_mask.device)
-
-            user_tok = torch.full_like(audio_codes_target, self.audio_user_speaking_id)
-            audio_codes_target = torch.where(
-                non_agent_mask.unsqueeze(1),
-                user_tok,
-                audio_codes_target,
-            )
 
         # Compute codebook loss
         codebook_loss, _ = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target, agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None)

@@ -554,7 +554,7 @@ def main():
         inputs["context_audio_lengths"] = inputs["context_audio_lengths"].to(device)
 
         if args.user_custom_speaker_reference and args.inference_speaker_reference:
-            inputs["context_audio"] = speaker_wav.repeat(B, 1)
+            inputs["context_audio"] = speaker_wav.repeat(B, 1).detach()
             inputs["context_audio_lengths"] = torch.full((B,), speaker_wav.size(-1), dtype=torch.long, device=device)
 
         profile_turn_frame_ranges = []
@@ -733,11 +733,12 @@ def main():
                         device=device,
                     )
                     # add text tokens needed for profilling
-                    delay_tokens = int(state.config.training_mode.streaming_speech_delay)
-                    delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
-                    profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]
-                    turn_text = turn_text[:, delay_tokens:]
-                    turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
+                    if not model.cfg.get("agent_mask_include_transition_prefix", False):
+                        delay_tokens = int(state.config.training_mode.streaming_speech_delay)
+                        delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
+                        profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]
+                        turn_text = turn_text[:, delay_tokens:]
+                        turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
 
                     state = model.streaming_prefill_profile(
                         state=state,

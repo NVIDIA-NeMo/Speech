@@ -768,7 +768,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Make the next normal streaming_step continue from silence, not AUDIO_BOS.
             state.all_predictions.append(sil_codes_unstacked) # keep silence so that in the target audio user will be silence
-            if self.cfg.get("use_user_speaking_end_token", False):
+            if self.cfg.get("use_user_speaking_end_token", False) and not self.cfg.get("agent_mask_include_transition_prefix", False):
                 state.last_audio_codes = torch.full(
                     (B, C * S),
                     self.audio_user_speaking_end_id,

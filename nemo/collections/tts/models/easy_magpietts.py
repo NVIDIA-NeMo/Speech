@@ -553,6 +553,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         delay: torch.Tensor,
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
+        current_streaming_speech_delay: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Prepare audio embeddings as a channel input with delay handling.
@@ -629,6 +630,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes_input = audio_codes[:, :, :-1]  # (B, C, T'-1)
 
         # deal with agent mask
+        loss_agent_mask = None
         if agent_mask is not None:
             target_T = audio_codes_target.size(2)
 
@@ -657,6 +659,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
             agent_mask = agent_mask | eos_prev1 | eos_any
             target_agent_mask = agent_mask & valid
+            loss_agent_mask = target_agent_mask
 
             if self.cfg.get("debug_decode_agent_mask", False) and self.training and self.global_step < 5:
                 self.debug_decode_mask_regions(
@@ -718,6 +721,24 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     audio_codes_input,
                 )
 
+            # Note that consider the current_streaming_speech_delay tokens/user speaking tokens on the loss,
+            # allowing to predict them in autoregressive way
+            transition_prefix = int(current_streaming_speech_delay or 0)
+            if self.cfg.get("agent_mask_include_transition_prefix", False) and transition_prefix > 0:
+                agent_i = target_agent_mask.float().unsqueeze(1)
+
+                agent_i = torch.nn.functional.pad(agent_i, (0, transition_prefix))
+                loss_agent_mask = (
+                    torch.nn.functional.max_pool1d(
+                        agent_i,
+                        kernel_size=transition_prefix + 1,
+                        stride=1,
+                    )
+                    .squeeze(1)
+                    .bool()
+                    & valid
+                )
+
         # Embed audio tokens
         audio_embedded = self.embed_audio_tokens(audio_codes_input)  # (B, T'-1, E)
 
@@ -731,7 +752,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             lengths=[delay, audio_codes_lens_target],
         )
 
-        return audio_channel_embedding, audio_channel_lens, audio_codes_target, audio_codes_lens_target, agent_mask
+        return audio_channel_embedding, audio_channel_lens, audio_codes_target, audio_codes_lens_target, loss_agent_mask
 
     def slice_sequence_embeddings(self, sequence_embeddings, context_lens, target_lens):
         """
@@ -923,6 +944,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             delay=audio_delay,
             speech_eos_mask=speech_eos_mask,
             agent_mask=agent_mask,
+            current_streaming_speech_delay=current_streaming_speech_delay
         )
 
         # 6. Sum the channel embeddings element-wise

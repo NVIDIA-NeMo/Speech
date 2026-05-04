@@ -77,8 +77,6 @@ LOG_FILE = os.getenv("LOG_FILE", "bot_agent_nemotron.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 
-ENABLE_TOOL_CALLING = os.getenv("ENABLE_TOOL_CALLING", "false").lower() == "true"
-ENABLE_THINKING = os.getenv("ENABLE_THINKING", "false").lower() == "true"
 AUDIO_OUT_10MS_CHUNKS = int(os.getenv("AUDIO_OUT_10MS_CHUNKS", "10"))
 ENABLE_MULTILINGUAL = os.getenv("ENABLE_MULTILINGUAL", "false").lower() == "true"
 VAD_PROFILE = VADProfile(os.getenv("VAD_PROFILE", VADProfile.ASR))
@@ -92,8 +90,9 @@ IS_TRACING_ENABLED = os.getenv("ENABLE_TRACING", "false").lower() == "true"
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NVIDIA_LLM_URL = os.getenv("NVIDIA_LLM_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_LLM_MODEL = os.getenv("NVIDIA_LLM_MODEL", "nvidia/nemotron-3-nano-30b-a3b")
-
-
+ENABLE_TOOL_CALLING = os.getenv("ENABLE_TOOL_CALLING", "false").lower() == "true"
+ENABLE_THINKING = os.getenv("ENABLE_THINKING", "false").lower() == "true"
+THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "256"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "1.0"))
 TOP_P = float(os.getenv("TOP_P", "1.0"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
@@ -183,6 +182,7 @@ async def run_bot_websocket(
     logger.info(f"NVIDIA_LLM_MODEL: {NVIDIA_LLM_MODEL}")
     logger.info(f"ENABLE_TOOL_CALLING: {ENABLE_TOOL_CALLING}")
     logger.info(f"ENABLE_THINKING: {ENABLE_THINKING}")
+    logger.info(f"THINKING_BUDGET: {THINKING_BUDGET}")
     logger.info(f"------- ASR -------")
     logger.info(f"ASR_SERVER_URL: {ASR_SERVER_URL}")
     logger.info(f"ASR_MODEL_NAME: {ASR_MODEL_NAME}")
@@ -243,6 +243,10 @@ async def run_bot_websocket(
     )
 
     enable_thinking = ENABLE_THINKING
+    thinking_budget = THINKING_BUDGET
+    if thinking_budget is not None and thinking_budget >= MAX_TOKENS:
+        thinking_budget = MAX_TOKENS - 3
+        logger.warning(f"THINKING_BUDGET is greater than MAX_TOKENS, setting it to MAX_TOKENS - 3: {thinking_budget}")
 
     llm = NvidiaLLMService(
         api_key=NVIDIA_API_KEY,
@@ -253,7 +257,14 @@ async def run_bot_websocket(
             top_p=TOP_P,
             max_tokens=MAX_TOKENS,
             **(
-                {"extra": {"extra_body": {"chat_template_kwargs": {"enable_thinking": enable_thinking}}}}
+                {
+                    "extra": {
+                        "extra_body": {
+                            "reasoning_budget": thinking_budget,
+                            "chat_template_kwargs": {"enable_thinking": enable_thinking},
+                        }
+                    }
+                }
                 if enable_thinking is not None
                 else {}
             ),

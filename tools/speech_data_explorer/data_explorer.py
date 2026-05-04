@@ -64,6 +64,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # number of items in a table per page
 DATA_PAGE_SIZE = 10
+# key in the manifest file that contains the text
+TEXT_KEY = 'text'
 
 # Global S3 client (initialized lazily)
 _s3_client = None
@@ -899,26 +901,26 @@ def load_data(
             for line in tqdm.tqdm(manifest_lines, desc=desc):
                 item = json.loads(line)
                 if force:
-                    item.setdefault('text', '')
+                    item.setdefault(TEXT_KEY, '')
                     item.setdefault('duration', 0)
                     item.setdefault('audio_filepath', '')
-                if not isinstance(item['text'], str):
-                    item['text'] = ''
-                num_chars = len(item['text'])
-                orig = item['text'].split()
+                if TEXT_KEY not in item or not isinstance(item[TEXT_KEY], str):
+                    item[TEXT_KEY] = ''
+                num_chars = len(item[TEXT_KEY])
+                orig = item[TEXT_KEY].split()
                 num_words = len(orig)
                 for word in orig:
                     vocabulary[word] += 1
-                for char in item['text']:
+                for char in item[TEXT_KEY]:
                     alphabet.add(char)
                 num_hours += item['duration']
 
-                if field_name in item and item['text']:
+                if field_name in item and item[TEXT_KEY]:
                     metrics_available = True
                     pred = item[field_name].split()
-                    measures = jiwer.compute_measures(item['text'], item[field_name])
+                    measures = jiwer.compute_measures(item[TEXT_KEY], item[field_name])
                     word_dist = measures['substitutions'] + measures['insertions'] + measures['deletions']
-                    char_dist = editdistance.eval(item['text'], item[field_name])
+                    char_dist = editdistance.eval(item[TEXT_KEY], item[field_name])
                     wer_dist += word_dist
                     cer_dist += char_dist
                     wer_count += num_words
@@ -947,7 +949,7 @@ def load_data(
                     'num_chars': num_chars,
                     'word_rate': round(num_words / item['duration'], 2) if item['duration'] > 0 else 0,
                     'char_rate': round(num_chars / item['duration'], 2) if item['duration'] > 0 else 0,
-                    'text': item['text'],
+                    'text': item[TEXT_KEY],
                 }
                 # Store resolved tar path for this entry (needed for audio playback)
                 if resolved_tar_path is not None:

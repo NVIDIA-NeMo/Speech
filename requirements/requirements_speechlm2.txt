@@ -1,5 +1,2 @@
-# nemo_automodel is also required at runtime but is pinned in
-# requirements/manifest.json (vcs-dependencies.nemo_automodel) and installed by
-# docker/common/install_dep.sh `extra` — direct git URL deps are rejected by
-# PyPI/TestPyPI (`400 Can't have direct dependency`) so it cannot live here.
+nemo_automodel
 flashoptim

@@ -246,7 +246,7 @@ async def run_bot_websocket(
 
     enable_thinking = bool(ENABLE_THINKING) if ENABLE_THINKING is not None else False
     thinking_budget = int(THINKING_BUDGET) if THINKING_BUDGET is not None else -1
-    if thinking_budget >= MAX_TOKENS or thinking_budget < 0:
+    if thinking_budget >= MAX_TOKENS:
         thinking_budget = MAX_TOKENS - 3
         logger.warning(f"THINKING_BUDGET is greater than MAX_TOKENS, setting it to MAX_TOKENS - 3: {thinking_budget}")
 

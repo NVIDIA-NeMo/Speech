@@ -246,9 +246,18 @@ async def run_bot_websocket(
 
     enable_thinking = bool(ENABLE_THINKING) if ENABLE_THINKING is not None else False
     thinking_budget = int(THINKING_BUDGET) if THINKING_BUDGET is not None else -1
-    if thinking_budget >= MAX_TOKENS:
-        thinking_budget = MAX_TOKENS - 3
-        logger.warning(f"THINKING_BUDGET is greater than MAX_TOKENS, setting it to MAX_TOKENS - 3: {thinking_budget}")
+    if thinking_budget < 0:
+        extra_body = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+    else:
+        if thinking_budget >= MAX_TOKENS:
+            thinking_budget = MAX_TOKENS - 3
+            logger.warning(
+                f"THINKING_BUDGET is greater than MAX_TOKENS, setting it to MAX_TOKENS - 3: {thinking_budget}"
+            )
+        extra_body = {
+            "reasoning_budget": thinking_budget,
+            "chat_template_kwargs": {"enable_thinking": enable_thinking},
+        }
 
     llm = NvidiaLLMService(
         api_key=NVIDIA_API_KEY,
@@ -258,18 +267,7 @@ async def run_bot_websocket(
             temperature=TEMPERATURE,
             top_p=TOP_P,
             max_tokens=MAX_TOKENS,
-            **(
-                {
-                    "extra": {
-                        "extra_body": {
-                            "reasoning_budget": thinking_budget,
-                            "chat_template_kwargs": {"enable_thinking": enable_thinking},
-                        }
-                    }
-                }
-                if enable_thinking
-                else {}
-            ),
+            **({"extra": {"extra_body": extra_body}} if enable_thinking else {}),
         ),
     )
 

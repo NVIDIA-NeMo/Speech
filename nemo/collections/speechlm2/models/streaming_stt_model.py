@@ -276,6 +276,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 f"(chunk_size=0), got chunk_size={self.core_cfg.chunk_size}"
             )
             self._build_chunk_classifier()
+            # Aux training/eval reads self._user_footer_first_id (the BCE positive
+            # label). It's normally set lazily by _ensure_inference_cache, but
+            # training runs before any inference call — so prime the cache now.
+            self._ensure_inference_cache()
         elif self.core_cfg.chunk_classifier_use_at_inference:
             raise ValueError("chunk_classifier_use_at_inference=True requires use_chunk_classifier=True")
 

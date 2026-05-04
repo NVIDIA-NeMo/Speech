@@ -80,7 +80,7 @@ class FeatureStacking(nn.Module):
         t_new = (t + pad_size) // self.subsampling_factor
         x = x.reshape(b, t_new, c * self.subsampling_factor)
         x = self.proj(x)
-        lengths = torch.div(lengths + pad_size, self.subsampling_factor, rounding_mode='floor')
+        lengths = torch.div(lengths + self.subsampling_factor - 1, self.subsampling_factor, rounding_mode='floor')
         return x, lengths
 
 

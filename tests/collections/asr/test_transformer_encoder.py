@@ -74,6 +74,20 @@ class TestFeatureStacking:
         assert out.shape == (B, expected_t, 256)
 
     @pytest.mark.unit
+    def test_length_shorter_than_batch(self):
+        """Output length must be ceil(sample_length / factor), not dependent on batch T."""
+        B, C, T = 2, 80, 403
+        subsampling_factor = 4
+        stacking = FeatureStacking(subsampling_factor=subsampling_factor, feat_in=C, feat_out=256)
+        x = torch.randn(B, C, T)
+        lengths = torch.tensor([401, 397])
+
+        _, out_lengths = stacking(x, lengths)
+        # ceil(401/4) = 101, ceil(397/4) = 100
+        assert out_lengths[0].item() == 101
+        assert out_lengths[1].item() == 100
+
+    @pytest.mark.unit
     def test_no_padding_when_divisible(self):
         B, C, T = 1, 80, 400
         stacking = FeatureStacking(subsampling_factor=4, feat_in=C, feat_out=256)

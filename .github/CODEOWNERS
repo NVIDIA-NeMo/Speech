@@ -1,4 +1,3 @@
-* @nvidia-nemo/speech_maintainers
 .github/ @nvidia-nemo/automation
 docker/ @nvidia-nemo/automation
 requirements/ @nvidia-nemo/automation

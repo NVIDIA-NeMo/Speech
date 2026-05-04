@@ -25,6 +25,7 @@ import logging
 import math
 import operator
 import os
+import tarfile
 import tempfile
 from collections import defaultdict
 from os.path import expanduser
@@ -48,16 +49,31 @@ from plotly import express as px
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
 
-# S3/cloud dependencies — only required when using --s3cfg or sharded _OP_/_CL_ paths
+# S3/cloud dependencies — only required when using --s3cfg
 try:
     import boto3
-    import braceexpand
     from botocore.config import Config
     from botocore.exceptions import ClientError
 
     _S3_AVAILABLE = True
 except ImportError:
+    boto3 = None
+    Config = None
+
+    class ClientError(Exception):
+        pass
+
     _S3_AVAILABLE = False
+
+# Optional dependency for sharded _OP_/_CL_ expansion. A local fallback is used
+# when braceexpand is unavailable.
+try:
+    import braceexpand
+
+    _BRACEEXPAND_AVAILABLE = True
+except ImportError:
+    braceexpand = None
+    _BRACEEXPAND_AVAILABLE = False
 
 # Configure logging to show INFO level messages
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -145,7 +161,7 @@ def get_s3_client(s3cfg):
     """
     if not _S3_AVAILABLE:
         raise ImportError(
-            "S3 support requires 'boto3' and 'braceexpand'. " "Install with: pip install boto3 braceexpand"
+            "S3 support requires 'boto3' and 'botocore'. " "Install with: pip install boto3"
         )
     global _s3_client
     if _s3_client is not None:
@@ -206,8 +222,8 @@ def is_sharded_path(path):
 def expand_sharded_path(path_pattern):
     """Expand a sharded path pattern into a list of individual paths.
 
-    Converts NeMo _OP_/_CL_ range syntax to brace syntax and uses braceexpand
-    for correct cartesian-product expansion of multiple ranges.
+    Converts NeMo _OP_/_CL_ range syntax to brace syntax and uses braceexpand,
+    when available, for correct cartesian-product expansion of multiple ranges.
 
     Supports patterns like:
         s3://ASR/manifest__OP_0..255_CL_.json
@@ -226,12 +242,47 @@ def expand_sharded_path(path_pattern):
     s = str(path_pattern)
     if '_OP_' not in s:
         return [s]
-    if not _S3_AVAILABLE:
-        raise ImportError(
-            "Sharded path patterns (_OP_/_CL_) require 'braceexpand'. " "Install with: pip install braceexpand"
-        )
+    if not _BRACEEXPAND_AVAILABLE:
+        return expand_sharded_path_without_braceexpand(s)
     brace_pattern = s.replace('_OP_', '{').replace('_CL_', '}')
     return list(braceexpand.braceexpand(brace_pattern))
+
+
+def expand_sharded_path_without_braceexpand(path_pattern):
+    """Expand NeMo _OP_start..end_CL_ ranges without external dependencies."""
+    op = path_pattern.find('_OP_')
+    if op == -1:
+        return [path_pattern]
+
+    cl = path_pattern.find('_CL_', op)
+    if cl == -1:
+        raise ValueError(f"Malformed sharded path pattern, missing _CL_: {path_pattern}")
+
+    range_expr = path_pattern[op + len('_OP_') : cl]
+    if '..' not in range_expr:
+        raise ValueError(f"Malformed sharded path range, expected start..end: {path_pattern}")
+
+    start_str, end_str = range_expr.split('..', 1)
+    start = int(start_str)
+    end = int(end_str)
+    step = 1 if end >= start else -1
+    width = max(len(start_str.lstrip('-')), len(end_str.lstrip('-')))
+    zero_pad = (
+        width > 1
+        and (start_str.lstrip('-').startswith('0') or end_str.lstrip('-').startswith('0'))
+    )
+
+    prefix = path_pattern[:op]
+    suffix = path_pattern[cl + len('_CL_') :]
+    expanded = []
+    for value in range(start, end + step, step):
+        if zero_pad:
+            sign = '-' if value < 0 else ''
+            value_str = f"{sign}{abs(value):0{width}d}"
+        else:
+            value_str = str(value)
+        expanded.extend(expand_sharded_path_without_braceexpand(prefix + value_str + suffix))
+    return expanded
 
 
 def parse_s3_path(s3_path):
@@ -316,77 +367,111 @@ def parse_dali_index(index_content):
             size = int(parts[2])
             filename = parts[3]
 
-            index[filename] = {'offset': offset, 'size': size}
+            index[filename] = {'offset': offset, 'size': size, 'name': filename}
             # Also index by basename for easier lookup
             basename = os.path.basename(filename)
             if basename and basename != filename:
-                index[basename] = {'offset': offset, 'size': size}
+                index[basename] = {'offset': offset, 'size': size, 'name': filename}
 
     return index
 
 
-def get_dali_index_path(tar_s3_path, dali_index_base=None):
+def add_tar_index_entry(index, filename, offset, size):
+    """Add a tar member to an index, including a basename alias."""
+    file_info = {'offset': offset, 'size': size, 'name': filename}
+    index[filename] = file_info
+
+    basename = os.path.basename(filename)
+    if basename and basename != filename:
+        index[basename] = file_info
+
+
+def count_tar_index_files(index):
+    """Count unique tar members in an index that also includes basename aliases."""
+    return len({file_info.get('name', name) for name, file_info in index.items()})
+
+
+def tar_index_stem(tar_path):
+    """Return the DALI index stem for a tar path."""
+    tar_filename = os.path.basename(str(tar_path))
+    lower_filename = tar_filename.lower()
+    for suffix in ('.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.tar'):
+        if lower_filename.endswith(suffix):
+            return tar_filename[: -len(suffix)]
+    return tar_filename.rsplit('.', 1)[0]
+
+
+def get_dali_index_path(tar_path, dali_index_base=None):
     """Construct the DALI index file path for a given tar file.
 
     If dali_index_base is not provided, automatically derives it from tar path:
         s3://bucket/tarred/audio_0.tar -> s3://bucket/tarred/dali_index/audio_0.index
+        /data/tarred/audio_0.tar -> /data/tarred/dali_index/audio_0.index
 
     Args:
-        tar_s3_path: S3 path to the tar file (e.g., s3://bucket/tarred/audio_0.tar)
-        dali_index_base: Optional base S3 path for DALI index files.
+        tar_path: Path to the tar file (local or S3).
+        dali_index_base: Optional base path for DALI index files (local or S3).
                          If None, auto-derives as tar_directory/dali_index/
 
     Returns:
-        str: S3 path to the corresponding index file
+        str: Path to the corresponding index file
     """
-    # Extract the tar filename without extension
-    tar_filename = os.path.basename(tar_s3_path)
-    tar_name = tar_filename.rsplit('.', 1)[0]  # Remove .tar extension
+    tar_name = tar_index_stem(tar_path)
 
     # Auto-derive dali_index_base if not provided
     if dali_index_base is None:
         # Get the directory containing the tar file
-        tar_dir = tar_s3_path.rsplit('/', 1)[0]
-        dali_index_base = f"{tar_dir}/dali_index"
+        tar_dir = os.path.dirname(str(tar_path))
+        dali_index_base = f"{tar_dir}/dali_index" if tar_dir else "dali_index"
 
     # Construct index path
-    if dali_index_base.endswith('/'):
+    if str(dali_index_base).endswith('/'):
         return f"{dali_index_base}{tar_name}.index"
     else:
         return f"{dali_index_base}/{tar_name}.index"
 
 
-def load_dali_index_from_s3(tar_s3_path, dali_index_base=None):
-    """Load and cache a DALI index file from S3.
+def load_dali_index(tar_path, dali_index_base=None):
+    """Load and cache a DALI index file from local storage or S3.
 
     If dali_index_base is not provided, automatically tries the standard location:
         s3://bucket/tarred/audio_0.tar -> s3://bucket/tarred/dali_index/audio_0.index
+        /data/tarred/audio_0.tar -> /data/tarred/dali_index/audio_0.index
 
     Args:
-        tar_s3_path: S3 path to the tar file
-        dali_index_base: Optional base S3 path for DALI index files.
-                         If None, auto-derives from tar path.
+        tar_path: Path to the tar file (local or S3).
+        dali_index_base: Optional base path for DALI index files.
 
     Returns:
         dict: The parsed DALI index, or None if not found
     """
     global _dali_index_cache
 
-    if tar_s3_path in _dali_index_cache:
-        return _dali_index_cache[tar_s3_path]
+    cache_key = (str(tar_path), str(dali_index_base) if dali_index_base is not None else None)
+    if cache_key in _dali_index_cache:
+        return _dali_index_cache[cache_key]
 
-    index_path = get_dali_index_path(tar_s3_path, dali_index_base)
+    index_path = get_dali_index_path(tar_path, dali_index_base)
     logging.info(f"Loading DALI index: {index_path}")
 
     try:
-        index_content = read_s3_file(index_path)
+        if is_s3_path(index_path):
+            index_content = read_s3_file(index_path)
+        else:
+            with open(expanduser(index_path), 'r', encoding='utf-8') as index_file:
+                index_content = index_file.read()
         index = parse_dali_index(index_content)
-        logging.info(f"DALI index loaded: {len(index) // 2} files, {len(index_content)/1024:.1f} KB")
-        _dali_index_cache[tar_s3_path] = index
+        logging.info(f"DALI index loaded: {count_tar_index_files(index)} files, {len(index_content)/1024:.1f} KB")
+        _dali_index_cache[cache_key] = index
         return index
-    except ClientError as e:
+    except (FileNotFoundError, OSError) as e:
         logging.warning(f"DALI index not found at {index_path}: {e}")
         return None
+    except Exception as e:
+        if is_s3_path(index_path) and isinstance(e, ClientError):
+            logging.warning(f"DALI index not found at {index_path}: {e}")
+            return None
+        raise
 
 
 def read_s3_range(s3_path, start_byte, end_byte):
@@ -478,73 +563,87 @@ def build_tar_index_from_s3(tar_s3_path, chunk_size=512 * 1024):
 
         # Store the data offset (right after the header) and size
         if name:  # Skip empty names
-            index[name] = {'offset': offset + 512, 'size': size}
-            # Also index by basename for easier lookup
-            basename = os.path.basename(name)
-            if basename and basename != name:
-                index[basename] = {'offset': offset + 512, 'size': size}
+            add_tar_index_entry(index, name, offset + 512, size)
 
         # Move to next header: current header (512) + data (size rounded up to 512)
         offset += 512 + ((size + 511) // 512) * 512
 
     logging.info(
-        f"Tar index built: {len(index) // 2} files, {num_requests} requests, {total_bytes_downloaded/1024:.1f} KB downloaded"
+        f"Tar index built: {count_tar_index_files(index)} files, {num_requests} requests, {total_bytes_downloaded/1024:.1f} KB downloaded"
     )
     return index
 
 
-def get_tar_index(tar_s3_path, dali_index_base=None):
+def build_tar_index_from_local(tar_path):
+    """Build an index of files in a local tar archive."""
+    logging.info(f"Building local tar index by scanning headers: {tar_path}")
+    index = {}
+    tar_path = expanduser(str(tar_path))
+
+    with tarfile.open(tar_path, 'r:*') as tar:
+        for member in tar:
+            if member.isfile():
+                add_tar_index_entry(index, member.name, member.offset_data, member.size)
+
+    logging.info(f"Local tar index built: {count_tar_index_files(index)} files")
+    return index
+
+
+def read_local_range(path, start_byte, end_byte):
+    """Read a specific byte range from a local file."""
+    range_size = end_byte - start_byte + 1
+    logging.info(f"Local range read: bytes={start_byte}-{end_byte} (size: {range_size} bytes) from {path}")
+    with open(expanduser(str(path)), 'rb') as tar_file:
+        tar_file.seek(start_byte)
+        return tar_file.read(range_size)
+
+
+def is_compressed_tar_path(tar_path):
+    """Return True when local tar extraction must go through tarfile streams."""
+    tar_path = str(tar_path).lower()
+    return tar_path.endswith(('.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz'))
+
+
+def get_tar_index(tar_path, dali_index_base=None):
     """Get or build the tar index for a given tar file.
 
     Automatically tries to load DALI index from standard location first (fast):
         s3://bucket/tarred/audio_0.tar -> s3://bucket/tarred/dali_index/audio_0.index
+        /data/tarred/audio_0.tar -> /data/tarred/dali_index/audio_0.index
 
     Falls back to scanning tar headers if DALI index is not available.
 
     Args:
-        tar_s3_path: S3 URL to the tar file
-        dali_index_base: Optional base S3 path for DALI index files.
-                         If None, auto-derives from tar path.
+        tar_path: Path to the tar file (local or S3).
+        dali_index_base: Optional base path for DALI index files.
 
     Returns:
         dict: The tar index mapping filenames to offsets and sizes
     """
     global _tar_index_cache
 
-    if tar_s3_path in _tar_index_cache:
-        return _tar_index_cache[tar_s3_path]
+    cache_key = (str(tar_path), str(dali_index_base) if dali_index_base is not None else None)
+    if cache_key in _tar_index_cache:
+        return _tar_index_cache[cache_key]
 
     # Always try DALI index first (fast - single small file download)
     # It will auto-derive the path if dali_index_base is None
-    dali_index = load_dali_index_from_s3(tar_s3_path, dali_index_base)
+    dali_index = load_dali_index(tar_path, dali_index_base)
     if dali_index:
-        _tar_index_cache[tar_s3_path] = dali_index
+        _tar_index_cache[cache_key] = dali_index
         return dali_index
 
     logging.warning("DALI index not found, falling back to tar header scanning")
-    # Fall back to scanning tar headers (slow for large tars)
-    _tar_index_cache[tar_s3_path] = build_tar_index_from_s3(tar_s3_path)
-    return _tar_index_cache[tar_s3_path]
+    if is_s3_path(tar_path):
+        # Fall back to scanning tar headers with S3 range requests (slow for large tars)
+        _tar_index_cache[cache_key] = build_tar_index_from_s3(tar_path)
+    else:
+        _tar_index_cache[cache_key] = build_tar_index_from_local(tar_path)
+    return _tar_index_cache[cache_key]
 
 
-def get_audio_from_s3_tar(tar_s3_path, audio_filename, dali_index_base=None):
-    """Extract an audio file from a tar archive stored on S3 using Range requests.
-
-    This function only downloads the specific audio file bytes, not the entire tar.
-    If dali_index_base is provided, uses DALI index for instant offset lookup.
-    Otherwise falls back to scanning tar headers.
-
-    Args:
-        tar_s3_path: S3 URL to the tar file (e.g., s3://bucket/audio_0.tar)
-        audio_filename: Name of the audio file within the tar (e.g., audio1.wav)
-        dali_index_base: Optional base S3 path for DALI index files
-
-    Returns:
-        bytes: Audio file contents
-    """
-    # Get or build the tar index
-    index = get_tar_index(tar_s3_path, dali_index_base)
-
+def find_tar_index_entry(index, audio_filename, tar_path):
+    """Find an audio file in a tar index by exact path, basename, or suffix."""
     # Try to find the file in the index
     target_key = None
 
@@ -566,11 +665,30 @@ def get_audio_from_s3_tar(tar_s3_path, audio_filename, dali_index_base=None):
     if target_key is None:
         available = list(index.keys())[:10]
         raise FileNotFoundError(
-            f"Audio file '{audio_filename}' not found in tar archive {tar_s3_path}. "
+            f"Audio file '{audio_filename}' not found in tar archive {tar_path}. "
             f"Available files: {available}..."
         )
 
-    file_info = index[target_key]
+    return target_key, index[target_key]
+
+
+def get_audio_from_s3_tar(tar_s3_path, audio_filename, dali_index_base=None):
+    """Extract an audio file from a tar archive stored on S3 using Range requests.
+
+    This function only downloads the specific audio file bytes, not the entire tar.
+    If dali_index_base is provided, uses DALI index for instant offset lookup.
+    Otherwise falls back to scanning tar headers.
+
+    Args:
+        tar_s3_path: S3 URL to the tar file (e.g., s3://bucket/audio_0.tar)
+        audio_filename: Name of the audio file within the tar (e.g., audio1.wav)
+        dali_index_base: Optional base path for DALI index files
+
+    Returns:
+        bytes: Audio file contents
+    """
+    index = get_tar_index(tar_s3_path, dali_index_base)
+    target_key, file_info = find_tar_index_entry(index, audio_filename, tar_s3_path)
     offset = file_info['offset']
     size = file_info['size']
 
@@ -579,6 +697,29 @@ def get_audio_from_s3_tar(tar_s3_path, audio_filename, dali_index_base=None):
     audio_bytes = read_s3_range(tar_s3_path, offset, offset + size - 1)
     logging.debug(f"Audio fetched: {len(audio_bytes)} bytes")
     return audio_bytes
+
+
+def get_audio_from_local_tar(tar_path, audio_filename, dali_index_base=None):
+    """Extract an audio file from a local tar archive."""
+    index = get_tar_index(tar_path, dali_index_base)
+    target_key, file_info = find_tar_index_entry(index, audio_filename, tar_path)
+    offset = file_info['offset']
+    size = file_info['size']
+
+    logging.info(f"Fetching audio from local tar: {target_key} (offset={offset}, size={size/1024:.1f} KB)")
+    if not is_compressed_tar_path(tar_path):
+        return read_local_range(tar_path, offset, offset + size - 1)
+
+    member_name = file_info.get('name', target_key)
+    with tarfile.open(expanduser(str(tar_path)), 'r:*') as tar:
+        try:
+            member = tar.getmember(member_name)
+        except KeyError:
+            member = tar.getmember(target_key)
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            raise FileNotFoundError(f"Audio file '{audio_filename}' could not be extracted from {tar_path}")
+        return extracted.read()
 
 
 def load_audio_from_s3(audio_filepath, tar_path=None, dali_index_base=None):
@@ -685,9 +826,9 @@ def parse_args():
         '--tar-base-path',
         default=None,
         type=str,
-        help='S3 path to tarred audio files (e.g., s3://ASR/tarred/audio_0.tar). '
+        help='Path to tarred audio files, local or S3 (e.g., /data/tarred/audio_0.tar or s3://ASR/tarred/audio_0.tar). '
         'Supports sharded patterns using _OP_start..end_CL_ syntax '
-        '(e.g., s3://ASR/tarred/audio__OP_0..255_CL_.tar). '
+        '(e.g., /data/tarred/audio__OP_0..255_CL_.tar). '
         'When using sharded manifests, the tar shard index is automatically matched '
         'to the manifest shard index. '
         'When specified, audio_filepath values in the manifest are treated as '
@@ -697,7 +838,7 @@ def parse_args():
         '--dali-index-base',
         default=None,
         type=str,
-        help='S3 path to DALI index files directory (e.g., s3://bucket/tarred/dali_index/). '
+        help='Path to DALI index files directory, local or S3 (e.g., /data/tarred/dali_index/ or s3://bucket/tarred/dali_index/). '
         'When provided, uses DALI index files for instant file offset lookup instead of '
         'scanning tar headers. This dramatically speeds up audio loading for large tar files. '
         'If not specified, automatically looks for index at <tar_dir>/dali_index/<tar_name>.index. '
@@ -1196,14 +1337,14 @@ def absolute_audio_filepath(audio_filepath, audio_base_path, tar_base_path=None)
     Args:
         audio_filepath: Path to audio file (local, S3, or filename within tar)
         audio_base_path: Base path for relative audio files
-        tar_base_path: S3 path to tar file containing audio (optional)
+        tar_base_path: Path to tar file containing audio (optional)
 
     Returns:
         str: The resolved audio filepath
     """
-    # If using tarred audio from S3, just return the filename as-is
+    # If using tarred audio, just return the filename as-is.
     # The actual loading will be handled by load_audio_data
-    if tar_base_path and is_s3_path(tar_base_path):
+    if tar_base_path:
         return str(audio_filepath)
 
     # If audio_filepath is already an S3 path, return as-is
@@ -1226,21 +1367,24 @@ def absolute_audio_filepath(audio_filepath, audio_base_path, tar_base_path=None)
 
 
 def load_audio_data(audio_filepath, audio_base_path=None, tar_path=None, dali_index_base=None):
-    """Load audio data from local file, S3, or tarred S3 archive.
+    """Load audio data from local file, S3, or tar archive.
 
     Args:
         audio_filepath: Path to audio file (local, S3, or filename within tar)
         audio_base_path: Base path for relative audio files
-        tar_path: Resolved S3 path to the tar file (e.g., s3://bucket/audio_5.tar).
+        tar_path: Resolved path to the tar file (e.g., /data/audio_5.tar or s3://bucket/audio_5.tar).
                   Already expanded from any _OP_/_CL_ pattern.
-        dali_index_base: Optional base S3 path for DALI index files (for fast offset lookup)
+        dali_index_base: Optional base path for DALI index files (for fast offset lookup)
 
     Returns:
         tuple: (audio_signal, sample_rate)
     """
-    # Case 1: Tarred audio on S3
-    if tar_path and is_s3_path(tar_path):
-        audio_buffer = load_audio_from_s3(audio_filepath, tar_path, dali_index_base)
+    # Case 1: Tarred audio
+    if tar_path:
+        if is_s3_path(tar_path):
+            audio_buffer = load_audio_from_s3(audio_filepath, tar_path, dali_index_base)
+        else:
+            audio_buffer = io.BytesIO(get_audio_from_local_tar(tar_path, audio_filepath, dali_index_base))
         return librosa.load(audio_buffer, sr=None)
 
     # Case 2: Direct S3 audio file

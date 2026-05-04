@@ -68,11 +68,16 @@ s3://store_OP_1..2_CL_/audio__OP_0..1_CL_.tar
    s3://store2/audio_1.tar
 ```
 
-### Tarred audio on S3
+### Tarred audio
 
-When audio is stored in tar archives on S3, use `--tar-base-path` to point to the
-tar files. DALI index files are used automatically (if available at
+When audio is stored in tar archives locally or on S3, use `--tar-base-path` to
+point to the tar files. DALI index files are used automatically (if available at
 `<tar_dir>/dali_index/`) for fast byte-range lookups:
+
+```
+python data_explorer.py /data/manifests/manifest.json \
+    --tar-base-path /data/tarred/audio.tar
+```
 
 ```
 python data_explorer.py s3://bucket/manifests/manifest__OP_0..255_CL_.json \
@@ -129,8 +134,8 @@ Any additional field will be parsed and displayed in the Samples tab.
 | `--port` | Serving port (default: 8050) |
 | `--estimate-audio-metrics` / `-a` | Estimate audio metrics |
 | `--base-path` | Base path for relative audio paths in the manifest |
-| `--tar-base-path` | S3 path to tarred audio files (supports sharded `_OP_..._CL_` patterns) |
-| `--dali-index-base` | S3 path to DALI index directory for fast tar lookups |
+| `--tar-base-path` | Local or S3 path to tarred audio files (supports sharded `_OP_..._CL_` patterns) |
+| `--dali-index-base` | Local or S3 path to DALI index directory for fast tar lookups |
 | `--s3cfg` / `-s3c` | S3 config file and section, or `AIS` for AIStore env vars |
 | `--force` / `-f` | Tolerate manifest entries with missing required fields |
 | `-nc` / `--names_compared` | Two field names for model comparison |

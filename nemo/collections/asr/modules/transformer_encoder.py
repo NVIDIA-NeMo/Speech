@@ -218,7 +218,7 @@ class TransformerEncoder(nn.Module):
             length: (B,) — output lengths after subsampling.
         """
         x, length = self.pre_encode(audio_signal, length)
-        x = x * (self.d_model**0.5)
+        
         x = self.embed_norm(x)
 
         B, T, _ = x.shape

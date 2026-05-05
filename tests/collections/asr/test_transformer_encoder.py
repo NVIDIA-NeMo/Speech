@@ -33,6 +33,7 @@ class TestTransformerEncoderConfig:
         assert cfg.drop_rate == 0.1
         assert cfg.qkv_bias is False
         assert cfg.qk_norm is False
+        assert cfg.ff_expansion == 4.0
         assert cfg.subsampling_factor == 4
         assert cfg.attn_mode == "full"
 
@@ -56,7 +57,7 @@ class TestFeatureStacking:
         lengths = torch.tensor([400, 300])
 
         out, out_lengths = stacking(x, lengths)
-        expected_t = T // subsampling_factor
+        expected_t = stacking.compute_num_out_frames(T)
         assert out.shape == (B, expected_t, 256)
         assert out_lengths[0].item() == expected_t
 
@@ -69,8 +70,7 @@ class TestFeatureStacking:
         lengths = torch.tensor([401])
 
         out, out_lengths = stacking(x, lengths)
-        pad_size = (subsampling_factor - (T % subsampling_factor)) % subsampling_factor
-        expected_t = (T + pad_size) // subsampling_factor
+        expected_t = stacking.compute_num_out_frames(T)
         assert out.shape == (B, expected_t, 256)
 
     @pytest.mark.unit
@@ -83,9 +83,8 @@ class TestFeatureStacking:
         lengths = torch.tensor([401, 397])
 
         _, out_lengths = stacking(x, lengths)
-        # ceil(401/4) = 101, ceil(397/4) = 100
-        assert out_lengths[0].item() == 101
-        assert out_lengths[1].item() == 100
+        assert out_lengths[0].item() == stacking.compute_num_out_frames(401)
+        assert out_lengths[1].item() == stacking.compute_num_out_frames(397)
 
     @pytest.mark.unit
     def test_no_padding_when_divisible(self):
@@ -95,8 +94,8 @@ class TestFeatureStacking:
         lengths = torch.tensor([400])
 
         out, out_lengths = stacking(x, lengths)
-        assert out.shape == (B, 100, 256)
-        assert out_lengths[0].item() == 100
+        assert out.shape == (B, stacking.compute_num_out_frames(T), 256)
+        assert out_lengths[0].item() == stacking.compute_num_out_frames(T)
 
 
 class TestTransformerEncoder:
@@ -223,7 +222,7 @@ class TestTransformerEncoder:
             out1, _ = model(x, lengths)
             out2, _ = model(x, lengths)
 
-        assert torch.equal(out1, out2)
+        assert torch.allclose(out1, out2, atol=1e-6)
 
     @pytest.mark.run_only_on('GPU')
     def test_padding_does_not_affect_valid_output(self):

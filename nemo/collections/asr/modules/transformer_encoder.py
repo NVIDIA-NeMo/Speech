@@ -30,6 +30,7 @@ class TransformerEncoderConfig:
     drop_rate: float = 0.1
     qkv_bias: bool = False
     qk_norm: bool = False
+    ff_expansion: float = 4.0
     subsampling_factor: int = 4
     # Attention mode — currently only "full" is supported.
     # Future: "causal", "lookahead", "local", "sliding_window"
@@ -63,6 +64,9 @@ class FeatureStacking(nn.Module):
         self.subsampling_factor = subsampling_factor
         self.proj = nn.Linear(subsampling_factor * feat_in, feat_out, bias=False)
 
+    def compute_num_out_frames(self, in_frames):
+        return (in_frames + self.subsampling_factor - 1) // self.subsampling_factor
+
     def forward(self, x, lengths):
         """
         Args:
@@ -80,18 +84,19 @@ class FeatureStacking(nn.Module):
         t_new = (t + pad_size) // self.subsampling_factor
         x = x.reshape(b, t_new, c * self.subsampling_factor)
         x = self.proj(x)
-        lengths = torch.div(lengths + self.subsampling_factor - 1, self.subsampling_factor, rounding_mode='floor')
+        lengths = self.compute_num_out_frames(lengths)
         return x, lengths
 
 
 class FeedForward(nn.Module):
     def __init__(self, cfg: TransformerEncoderConfig):
         super().__init__()
+        ff_hidden = int(cfg.ff_expansion * cfg.d_model)
         self.net = nn.Sequential(
-            nn.Linear(cfg.d_model, 4 * cfg.d_model),
+            nn.Linear(cfg.d_model, ff_hidden),
             nn.GELU(),
             nn.Dropout(cfg.drop_rate),
-            nn.Linear(4 * cfg.d_model, cfg.d_model),
+            nn.Linear(ff_hidden, cfg.d_model),
             nn.Dropout(cfg.drop_rate),
         )
 
@@ -106,9 +111,7 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = cfg.d_model // cfg.n_heads
         self.d_model = cfg.d_model
 
-        self.w_q = nn.Linear(cfg.d_model, cfg.d_model, bias=cfg.qkv_bias)
-        self.w_k = nn.Linear(cfg.d_model, cfg.d_model, bias=cfg.qkv_bias)
-        self.w_v = nn.Linear(cfg.d_model, cfg.d_model, bias=cfg.qkv_bias)
+        self.w_qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model, bias=cfg.qkv_bias)
         self.out_proj = nn.Linear(cfg.d_model, cfg.d_model)
 
         self.qk_norm = cfg.qk_norm
@@ -120,9 +123,8 @@ class MultiHeadAttention(nn.Module):
         B, T, _ = x.shape
         H, D = self.n_heads, self.head_dim
 
-        q = self.w_q(x).view(B, T, H, D).transpose(1, 2)
-        k = self.w_k(x).view(B, T, H, D).transpose(1, 2)
-        v = self.w_v(x).view(B, T, H, D).transpose(1, 2)
+        qkv = self.w_qkv(x).view(B, T, 3, H, D).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
 
         if self.qk_norm:
             q = self.q_norm(q).to(v.dtype)
@@ -165,6 +167,7 @@ class TransformerEncoder(nn.Module):
         drop_rate: Dropout probability.
         qkv_bias: Whether to use bias in Q/K/V projections.
         qk_norm: Whether to apply per-head LayerNorm to Q and K before the dot product.
+        ff_expansion: Feed-forward expansion factor (float to support sub-1x for MoE).
         subsampling_factor: Frame stacking factor for the pre-encoder.
         attn_mode: Attention pattern — currently only "full" (bidirectional) is supported.
     """
@@ -178,6 +181,7 @@ class TransformerEncoder(nn.Module):
         drop_rate: float = 0.1,
         qkv_bias: bool = False,
         qk_norm: bool = False,
+        ff_expansion: float = 4.0,
         subsampling_factor: int = 4,
         attn_mode: str = "full",
     ):
@@ -193,6 +197,7 @@ class TransformerEncoder(nn.Module):
             drop_rate=drop_rate,
             qkv_bias=qkv_bias,
             qk_norm=qk_norm,
+            ff_expansion=ff_expansion,
             subsampling_factor=subsampling_factor,
             attn_mode=attn_mode,
         )

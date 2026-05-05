@@ -80,6 +80,7 @@ model:
     drop_rate: 0.1
     qkv_bias: false
     qk_norm: true
+    ff_expansion: 4
     subsampling_factor: 8
 
   decoder:

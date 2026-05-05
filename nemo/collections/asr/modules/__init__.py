@@ -20,7 +20,6 @@ from nemo.collections.asr.modules.audio_preprocessing import (  # noqa: F401
     SpectrogramAugmentation,
 )
 from nemo.collections.asr.modules.beam_search_decoder import BeamSearchDecoderWithLM  # noqa: F401
-from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder  # noqa: F401
 from nemo.collections.asr.modules.conformer_encoder import (  # noqa: F401
     ConformerEncoder,
     ConformerEncoderAdapter,
@@ -53,6 +52,7 @@ from nemo.collections.asr.modules.ssl_modules import (
     RandomBlockMasking,
     RandomProjectionVectorQuantizer,
 )
+from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder  # noqa: F401
 
 __all__ = [
     'AudioToMelSpectrogramPreprocessor',

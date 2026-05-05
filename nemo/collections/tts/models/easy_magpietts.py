@@ -606,10 +606,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
 
         if speech_eos_mask is not None:
-            # 1. Shift the mask +1 to the right to account for the <BOS> token.
+            # Shift +1 for BOS alignment and +1 more so EOS is injected after the marked frame.
             B_mask, T_mask = speech_eos_mask.shape
-            shifted_mask = torch.zeros((B_mask, T_mask + 1), dtype=torch.bool, device=device)
-            shifted_mask[:, 1:] = speech_eos_mask
+            shifted_mask = torch.zeros((B_mask, T_mask + 2), dtype=torch.bool, device=device)
+            shifted_mask[:, 2:] = speech_eos_mask
 
             # 2. Find the minimum overlapping time dimension
             t_mask = shifted_mask.size(1)
@@ -884,6 +884,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             # remove the interruption token for all task, expect for interruption
             if not task or "interruption" not in str(task[0]):
                 text[speech_eos_mask] = self.tokenizer.pad  # Clean up the text channel
+            # else: # ToDo: move self.interruption_token_id forward by  audio_delay so that soon it saw the interruption token it is forced to stop instead of await audio_delay tokens
 
         # 3. Prepare text channel embeddings
         text_channel_embedding, text_channel_lens = self.prepare_text_channel_embeddings(
@@ -1040,7 +1041,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         codebook_loss, _ = self.compute_loss(logits, audio_codes_target, audio_codes_lens_target, agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None)
         loss = self.parallel_codebook_loss_scale * codebook_loss
 
-
         # Compute local transformer loss if applicable
         local_transformer_loss = None
         local_transformer_logits = None
@@ -1118,7 +1118,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_lens = batch['audio_lens']
             audio_codes, audio_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
 
-
+        # augment tts data to looks more like multiturn data by adding pad on the begining and emulating user speaking.
         if self.cfg.get("use_multiturn_dataset", False) and "tts" in batch['task']:
             prob = self.cfg.get("add_tts_sil_begining_prob", 0.0)
             if prob > 0 and torch.rand(1).item() < prob:
@@ -1151,25 +1151,71 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     silence_pad = self.codec_sil_codes_unconverted.view(1, C, 1).expand(B, C, T_audio)
 
                     audio_codes = torch.where(valid_mask_a_exp, gathered_audio, silence_pad)
-                    audio_codes_lens = audio_codes_lens + pad_lens
-                    
-                    # --- Vectorized Text Shift (USING SCALED LENS) ---
+                    audio_codes_lens = torch.clamp(audio_codes_lens + pad_lens, max=T_audio)
+
+                    # Vectorized Text Shift
                     old_text = batch['text']
                     text_lens = batch['text_lens']
-                    
-                    new_text_lens = text_lens + text_pad_lens
-                    new_T_text = max(new_text_lens.max().item(), old_text.size(1))
-                    
+
+                    new_T_text = old_text.size(1)
+                    new_text_lens = torch.clamp(text_lens + text_pad_lens, max=new_T_text)
                     idx_t = torch.arange(new_T_text, device=device).unsqueeze(0)
                     src_idx_t = idx_t - text_pad_lens.unsqueeze(1)
-                    
+
                     valid_mask_t = (src_idx_t >= 0) & (src_idx_t < text_lens.unsqueeze(1))
                     safe_src_idx_t = src_idx_t.clamp(min=0, max=old_text.size(1) - 1)
-                    
                     gathered_text = torch.gather(old_text, 1, safe_src_idx_t)
                     
                     batch['text'] = torch.where(valid_mask_t, gathered_text, self.pad_id)
                     batch['text_lens'] = new_text_lens
+
+                    # Vectorized Phoneme Shift
+                    if (
+                        self.phoneme_tokenizer is not None
+                        and batch.get("phoneme_tokens") is not None
+                        and batch.get("phoneme_tokens_lens") is not None
+                    ):
+                        old_phonemes = batch["phoneme_tokens"]
+                        phoneme_lens = batch["phoneme_tokens_lens"]
+
+                        new_T_phoneme = old_phonemes.size(1)
+                        new_phoneme_lens = torch.clamp(phoneme_lens + text_pad_lens, max=new_T_phoneme)
+
+                        idx_p = torch.arange(new_T_phoneme, device=device).unsqueeze(0)
+                        src_idx_p = idx_p - text_pad_lens.unsqueeze(1)
+
+                        valid_mask_p = (src_idx_p >= 0) & (src_idx_p < phoneme_lens.unsqueeze(1))
+                        safe_src_idx_p = src_idx_p.clamp(min=0, max=old_phonemes.size(1) - 1)
+
+                        gathered_phonemes = torch.gather(old_phonemes, 1, safe_src_idx_p)
+
+                        phoneme_pad_id = getattr(self.phoneme_tokenizer, "pad", -1)
+                        batch["phoneme_tokens"] = torch.where(
+                            valid_mask_p,
+                            gathered_phonemes,
+                            torch.full_like(gathered_phonemes, phoneme_pad_id),
+                        )
+                        batch["phoneme_tokens_lens"] = new_phoneme_lens
+
+                    # change batch["agent_mask"]  to consider this augmentation (in practice adding zeros/False where we are adding silence )
+                    if self.cfg.get("use_multiturn_dataset", False) and "agent_mask" in batch:
+                        old_agent_mask = batch["agent_mask"].bool()
+                        T_mask = old_agent_mask.size(1)
+
+                        idx_m = torch.arange(T_mask, device=device).unsqueeze(0)
+                        src_idx_m = idx_m - text_pad_lens.unsqueeze(1)
+
+                        valid_mask_m = (src_idx_m >= 0) & (src_idx_m < old_agent_mask.size(1))
+                        safe_src_idx_m = src_idx_m.clamp(min=0, max=old_agent_mask.size(1) - 1)
+
+                        gathered_agent_mask = torch.gather(old_agent_mask, 1, safe_src_idx_m)
+
+                        # New prepended silence/user region should be non-agent.
+                        batch["agent_mask"] = torch.where(
+                            valid_mask_m,
+                            gathered_agent_mask,
+                            torch.zeros_like(gathered_agent_mask),
+                        )
 
         batch_output = self.process_batch(
             text=batch['text'],

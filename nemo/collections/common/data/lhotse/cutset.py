@@ -1038,7 +1038,8 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     move_agent_text_back_by = config.get("move_agent_text_back_by", 0)
     filter_samples_starting_with_agent = config.get("filter_samples_starting_with_agent", False)
     agent_roles = config.get("agent_roles", ["agent", "Assistant", "assistant"])
-
+    min_number_of_turns = int(config.get("min_number_of_turns", 0))
+    max_gap_duration_collapse_turns = config.get("max_gap_duration_collapse_turns", None)
     cuts, is_tarred = read_cutset_from_config(config)
 
     def filter_cuts_starting_with_agent_fn(cuts: CutSet, agent_roles: Tuple[str, ...]) -> CutSet:
@@ -1051,6 +1052,49 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
             return cut.supervisions[0].speaker not in agent_roles
 
         return cuts.filter(_filter_fn)
+
+    def filter_min_agent_turns_fn(cuts: CutSet, min_number_of_turns: int, agent_roles: Tuple[str, ...]) -> CutSet:
+        """Keep cuts with at least `min_number_of_turns` agent turns."""
+        if min_number_of_turns <= 0:
+            return cuts
+
+        def _filter_fn(cut: Cut) -> bool:
+            num_agent_turns = sum(s.speaker in agent_roles for s in cut.supervisions)
+            if not num_agent_turns >= min_number_of_turns:
+                logging.info(
+                    f"[Parser] Filtering cut={cut.id}: "
+                    f"agent_turns={num_agent_turns} < min_number_of_turns={min_number_of_turns}"
+                )
+            return num_agent_turns >= min_number_of_turns
+
+        return cuts.filter(_filter_fn)
+
+    def collapse_adjacent_same_speaker(supervisions, max_gap):
+        if max_gap is None or max_gap <= 0:
+            return supervisions
+
+        supervisions = sorted(supervisions, key=lambda s: (s.start, s.end))
+        collapsed = []
+
+        for s in supervisions:
+            if not collapsed:
+                collapsed.append(s)
+                continue
+
+            prev = collapsed[-1]
+            gap = s.start - (prev.start + prev.duration)
+
+            if s.speaker == prev.speaker:
+                if gap < max_gap:
+                    # MERGE
+                    new_end = max(prev.start + prev.duration, s.start + s.duration)
+                    prev.duration = new_end - prev.start
+                    prev.text = f"{prev.text} {s.text}".strip()
+                else:
+                    collapsed.append(s)
+            else:
+                collapsed.append(s)
+        return collapsed
 
     def convert_overlap_cut_fn(cut: Cut) -> Cut:
         """Convert agent/user overlapping segments into sequential SupervisionSegments."""
@@ -1080,11 +1124,22 @@ def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
         cut.supervisions = sorted(agent_segments + user_segments, key=lambda s: s.start)
         cut.task = "s2s_duplex_overlap_as_s2s_duplex"
+        if max_gap_duration_collapse_turns is not None:
+            cut.supervisions = collapse_adjacent_same_speaker(
+                cut.supervisions,
+                max_gap_duration_collapse_turns,
+            )
+
         return cut
 
     cuts = cuts.map(convert_overlap_cut_fn)
+
+    # Force materialization for accurate counting
     if filter_samples_starting_with_agent:
         cuts = filter_cuts_starting_with_agent_fn(cuts, tuple(agent_roles))
+    
+    if min_number_of_turns > 0:
+        cuts = filter_min_agent_turns_fn(cuts, min_number_of_turns, tuple(agent_roles))
 
     return cuts, is_tarred
 

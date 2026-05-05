@@ -606,6 +606,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
 
         if speech_eos_mask is not None:
+            audio_codes_before_speech_eos = audio_codes.clone()
             # Shift +1 for BOS alignment and +1 more so EOS is injected after the marked frame.
             B_mask, T_mask = speech_eos_mask.shape
             shifted_mask = torch.zeros((B_mask, T_mask + 2), dtype=torch.bool, device=device)
@@ -629,6 +630,31 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes_lens_target = audio_codes_lens - 1
         audio_codes_target = audio_codes[:, :, 1:]  # (B, C, T'-1)
         audio_codes_input = audio_codes[:, :, :-1]  # (B, C, T'-1)
+
+        # Drop some EOS frames from audio input so the model learns recovery when inference misses EOS.
+        # sample_prob keeps some samples untouched, so the model still learns the normal EOS-input behavior.
+        if speech_eos_mask is not None and self.training:
+            drop_eos_sample_prob = float(self.cfg.get("drop_eos_from_audio_input_sample_prob", 0.0))
+            drop_eos_frame_prob = float(self.cfg.get("drop_eos_from_audio_input_frame_prob", 0.5))
+
+            if drop_eos_sample_prob > 0.0 and drop_eos_frame_prob > 0.0:
+                eos_frame_mask = (audio_codes_input == self.audio_eos_id).any(dim=1)  # [B, T]
+
+                sample_drop_mask = torch.rand(batch_size, device=device) < drop_eos_sample_prob  # [B]
+
+                frame_drop_mask = (
+                    eos_frame_mask
+                    & sample_drop_mask.unsqueeze(1)
+                    & (torch.rand_like(eos_frame_mask.float()) < drop_eos_frame_prob)
+                )  # [B, T]
+
+                audio_codes_input_backup = audio_codes_before_speech_eos[:, :, :-1]
+
+                audio_codes_input = torch.where(
+                    frame_drop_mask.unsqueeze(1),
+                    audio_codes_input_backup,
+                    audio_codes_input,
+                )
 
         # deal with agent mask
         loss_agent_mask = None
@@ -670,7 +696,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     out_dir=os.path.join(self.trainer.log_dir, "mask_debug", f"step_{self.global_step}"),
                     prefix=f"batch_{self.global_rank}_{self.global_step}",
                 )
-
 
             # Replace user/non-agent regions with a learned token.
             # Important: audio_codes_input predicts audio_codes_target, so input mask must be shifted.

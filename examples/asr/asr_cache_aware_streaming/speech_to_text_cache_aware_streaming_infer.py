@@ -186,6 +186,11 @@ class TranscriptionConfig:
     # use_cer: bool = False
     debug_mode: bool = False  # Whether to print more detail in the output.
 
+    # Language-ID prompt for prompt-conditioned models (e.g. EncDecRNNTBPEModelWithPrompt).
+    # Set to a language key from the model's prompt_dictionary (e.g. "en-US", "auto").
+    # Ignored for models without prompt support.
+    target_lang: Optional[str] = None
+
 
 def extract_transcriptions(hyps):
     """
@@ -362,6 +367,11 @@ def main(cfg: TranscriptionConfig):
                 asr_model.change_decoding_strategy(cfg.rnnt_decoding)
         else:
             asr_model.change_decoding_strategy(cfg.ctc_decoding)
+
+    # Set language-ID prompt for prompt-conditioned models
+    if hasattr(asr_model, 'set_inference_prompt'):
+        lang = cfg.target_lang if cfg.target_lang is not None else "auto"
+        asr_model.set_inference_prompt(lang)
 
     asr_model = asr_model.to(device=device, dtype=compute_dtype)
     asr_model.eval()

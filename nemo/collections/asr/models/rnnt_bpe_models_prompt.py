@@ -24,11 +24,11 @@ from pytorch_lightning import Trainer
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset, DALIOutputs
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
-from nemo.collections.asr.data.audio_to_text_lhotse_prompt import LhotseSpeechToTextBpeDatasetWithPrompt
 from nemo.collections.asr.data.audio_to_text_lhotse_prompt_index import LhotseSpeechToTextBpeDatasetWithPromptIndex
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel
 from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, TranscribeConfig
+from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding
@@ -92,10 +92,11 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
             cfg.num_prompts = cfg.model_defaults.get('num_prompts', 128)
 
             if 'prompt_dictionary' not in cfg.model_defaults:
-                raise ValueError(
-                    "No prompt_dictionary found in config. "
-                    "Please make sure your config has a prompt_dictionary in model_defaults."
+                logging.warning(
+                    "No prompt_dictionary in config; using empty dict "
+                    "(expected during checkpoint restoration)."
                 )
+                cfg.model_defaults.prompt_dictionary = {}
 
             self.subsampling_factor = cfg.get('subsampling_factor', 8)
 
@@ -175,9 +176,124 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
             self.joint.set_loss(self.loss)
             self.joint.set_wer(self.wer)
 
-    # ------------------------------------------------------------------
+    # Streaming inference with language-ID prompt
+    def set_inference_prompt(self, target_lang: str):
+        """
+        Set the language prompt for streaming inference.
+
+        Call this before ``conformer_stream_step`` to condition decoding on
+        a specific language, following the same pattern as
+        ``change_decoding_strategy``.
+
+        Args:
+            target_lang: A key from the model's ``prompt_dictionary``
+                         (e.g. ``"en-US"``, ``"auto"``).
+        """
+        prompt_dict = self.cfg.model_defaults.get('prompt_dictionary', {})
+        if target_lang not in prompt_dict:
+            available = list(prompt_dict.keys())
+            raise ValueError(
+                f"Unknown target language '{target_lang}'. "
+                f"Available: {available[:20]}{'...' if len(available) > 20 else ''}"
+            )
+        self._inference_prompt_index = prompt_dict[target_lang]
+        logging.info(f"Inference prompt set to '{target_lang}' (index {self._inference_prompt_index})")
+
+    def _apply_prompt_to_encoded(self, encoded: torch.Tensor) -> torch.Tensor:
+        """
+        Inject the language-ID prompt into encoder output during streaming.
+
+        ``encoded`` arrives as (B, D, T) from the encoder cache-aware step.
+        Returns the same shape after prompt concatenation + projection.
+        """
+        if not self.concat or not hasattr(self, '_inference_prompt_index'):
+            return encoded
+
+        encoded = encoded.transpose(1, 2)  # (B, D, T) -> (B, T, D)
+
+        batch_size, time_steps, _ = encoded.shape
+        prompt = torch.zeros(
+            batch_size, time_steps, self.num_prompts,
+            dtype=encoded.dtype, device=encoded.device,
+        )
+        idx = torch.full(
+            (batch_size,), self._inference_prompt_index,
+            dtype=torch.long, device=encoded.device,
+        )
+        prompt.scatter_(2, idx.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
+
+        out_dtype = encoded.dtype
+        encoded = self.prompt_kernel(torch.cat([encoded, prompt], dim=-1)).to(out_dtype)
+        return encoded.transpose(1, 2)  # (B, T, D) -> (B, D, T)
+
+    def conformer_stream_step(
+        self,
+        processed_signal,
+        processed_signal_length=None,
+        cache_last_channel=None,
+        cache_last_time=None,
+        cache_last_channel_len=None,
+        keep_all_outputs=True,
+        previous_hypotheses=None,
+        previous_pred_out=None,
+        drop_extra_pre_encoded=None,
+        return_transcription=True,
+        return_log_probs=False,
+        bypass_pre_encode=False,
+    ):
+        """Cache-aware streaming step with language-ID prompt injection.
+
+        Identical to the base ``ASRModuleMixin.conformer_stream_step`` except
+        that after the encoder step, ``_apply_prompt_to_encoded`` concatenates
+        the one-hot language prompt and projects back to enc_hidden.
+
+        Set the target language via ``set_inference_prompt(target_lang)``
+        before calling this method.
+        """
+        import nemo.collections.asr.models as asr_models
+
+        if not isinstance(self.encoder, StreamingEncoder):
+            raise NotImplementedError("Encoder does not support streaming!")
+
+        (
+            encoded,
+            encoded_len,
+            cache_last_channel_next,
+            cache_last_time_next,
+            cache_last_channel_next_len,
+        ) = self.encoder.cache_aware_stream_step(
+            processed_signal=processed_signal,
+            processed_signal_length=processed_signal_length,
+            cache_last_channel=cache_last_channel,
+            cache_last_time=cache_last_time,
+            cache_last_channel_len=cache_last_channel_len,
+            keep_all_outputs=keep_all_outputs,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+            bypass_pre_encode=bypass_pre_encode,
+        )
+
+        encoded = self._apply_prompt_to_encoded(encoded)
+
+        best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
+            encoder_output=encoded,
+            encoded_lengths=encoded_len,
+            return_hypotheses=True,
+            partial_hypotheses=previous_hypotheses,
+        )
+        greedy_predictions = [hyp.y_sequence for hyp in best_hyp]
+        all_hyp_or_transcribed_texts = best_hyp
+
+        result = [
+            greedy_predictions,
+            all_hyp_or_transcribed_texts,
+            cache_last_channel_next,
+            cache_last_time_next,
+            cache_last_channel_next_len,
+            best_hyp,
+        ]
+        return tuple(result)
+
     # Data loading
-    # ------------------------------------------------------------------
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if config.get("use_lhotse"):
             if config.get('initialize_prompt_feature', True):
@@ -308,9 +424,6 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
         self._update_dataset_config(dataset_name='test', config=test_data_config)
         self._test_dl = self._setup_dataloader_from_config(config=test_data_config)
 
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
         if hasattr(self.preprocessor, '_sample_rate'):
@@ -380,9 +493,6 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
         encoded = torch.transpose(encoded, 1, 2)  # B x T x D -> B x D x T
         return encoded, encoded_len
 
-    # ------------------------------------------------------------------
-    # Training
-    # ------------------------------------------------------------------
     def training_step(self, batch, batch_nb):
         if AccessMixin.is_access_enabled(self.model_guid):
             AccessMixin.reset_registry(self)
@@ -468,9 +578,6 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
 
         return {'loss': loss_value}
 
-    # ------------------------------------------------------------------
-    # Validation / Test
-    # ------------------------------------------------------------------
     def validation_pass(self, batch, batch_idx, dataloader_idx=0):
         signal, signal_len, transcript, transcript_len, prompt_indices = batch
 
@@ -572,9 +679,6 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
 
         return list(zip(sample_id, best_hyp))
 
-    # ------------------------------------------------------------------
-    # Transcription
-    # ------------------------------------------------------------------
     def _transcribe_forward(self, batch, trcfg: RNNTPromptTranscribeConfig) -> dict:
         audio, audio_lens = batch[0], batch[1]
         if len(batch) >= 5:

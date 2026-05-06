@@ -71,8 +71,8 @@ from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 
 @hydra_runner(
-    config_path="../conf/fastconformer/hybrid_cache_aware_streaming/",
-    config_name="fastconformer_hybrid_transducer_ctc_bpe_streaming_prompt_600m.yaml",
+    config_path="../conf/fastconformer/cache_aware_streaming/",
+    config_name="fastconformer_transducer_bpe_streaming_prompt.yaml",
 )
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')

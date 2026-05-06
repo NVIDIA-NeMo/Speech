@@ -329,6 +329,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             punct_pattern = '|'.join([re.escape(p) for p in self.supported_punctuation])
             self.space_before_punct_pattern = re.compile(r'(\s)(' + punct_pattern + ')')
 
+        self.strip_lang_tags = self.cfg.get('strip_lang_tags', False)
+        if self.strip_lang_tags:
+            self.lang_tag_pattern = re.compile(r'\s*<[a-z]{2}-[A-Z]{2}>')
+
         # initialize confidence-related fields
         self._init_confidence(self.cfg.get('confidence_cfg', None))
 
@@ -949,10 +953,13 @@ class AbstractRNNTDecoding(ConfidenceMixin):
     def decode_tokens_to_str_with_strip_punctuation(self, tokens: List[int]) -> str:
         """
         Decodes a list of tokens to a string and removes a space before supported punctuation marks.
+        Optionally strips language-ID tags (e.g. ``<en-US>``) when ``strip_lang_tags`` is enabled.
         """
         text = self.decode_ids_to_str(tokens)
         if self.supported_punctuation:
             text = self.space_before_punct_pattern.sub(r'\2', text)
+        if self.strip_lang_tags:
+            text = self.lang_tag_pattern.sub('', text).strip()
         return text
 
     def update_joint_fused_batch_size(self):
@@ -1854,6 +1861,10 @@ class RNNTDecodingConfig:
 
     # config for multiblank decoding.
     big_blank_durations: Optional[List[int]] = field(default_factory=list)
+
+    # Strip language-ID tags (e.g. <en-US>) from decoded output.
+    # Enable for prompt-conditioned models that emit locale tags after punctuation.
+    strip_lang_tags: bool = True
 
 
 @dataclass

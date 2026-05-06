@@ -73,10 +73,26 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
         # Field to use for prompt key (default to 'target_lang')
         self.prompt_field = cfg.get('prompt_field', 'target_lang')
 
-        # Training mode flag: when True, randomly use auto (101) 50% of the time
         self.training_mode = cfg.get('training_mode', True)
 
-        logging.info(f"LhotseSpeechToTextBpeDatasetWithPromptIndex: Returns indices only, model creates prompt tensor")
+        # Per-dataset prompt mode is read from cut.custom["prompt_mode"] at runtime.
+        # Supported values:
+        #   "langID"  — always pass the real language ID
+        #   "auto"    — always pass auto (101)
+        #   "unified" — randomize: auto with probability unified_auto_ratio, else lang ID
+        # Set via lhotse input_cfg tags, e.g.  tags: { prompt_mode: langID }
+        self.prompt_mode_field = cfg.get('prompt_mode_field', 'prompt_mode')
+        self.default_prompt_mode = cfg.get('default_prompt_mode', 'unified')
+        self.unified_auto_ratio = cfg.get('unified_auto_ratio', 0.5)
+
+        # Index used for the language-agnostic / auto prompt
+        self.auto_index = self.prompt_dict.get('auto', 101)
+
+        logging.info(
+            f"LhotseSpeechToTextBpeDatasetWithPromptIndex: "
+            f"default_prompt_mode={self.default_prompt_mode}, "
+            f"unified_auto_ratio={self.unified_auto_ratio}"
+        )
 
     def _get_prompt_index(self, prompt_key: str) -> int:
         """Maps prompt keys to indices using the prompt dictionary."""
@@ -87,15 +103,45 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
             )
         return self.prompt_dict[prompt_key]
 
+    def _get_prompt_mode(self, cut) -> str:
+        """Resolve the prompt_mode for a cut from its custom tags."""
+        if cut.custom is not None:
+            mode = cut.custom.get(self.prompt_mode_field)
+            if mode is not None:
+                return mode
+        return self.default_prompt_mode
+
     def _get_prompt_index_for_cut(self, cut) -> int:
         """
-        Get prompt index for a cut, with training mode randomization.
-        During training: 50% chance to use auto (101), 50% actual language ID
-        During inference: always use the actual language ID
+        Determine the prompt index for a cut based on its prompt_mode tag.
+
+        During inference (training_mode=False): always returns the real lang ID
+        regardless of prompt_mode.
+
+        During training, behaviour depends on prompt_mode (set per-dataset via
+        lhotse input_cfg tags):
+            "langID"  — always return the real language ID
+            "auto"    — always return auto index (language-agnostic)
+            "unified" — return auto with probability unified_auto_ratio,
+                        otherwise the real language ID
         """
-        if self.training_mode and random.random() < 0.5:
-            return 101  # Auto/language-agnostic
+        if not self.training_mode:
+            return self._get_prompt_index(cut.supervisions[0].language)
+
+        mode = self._get_prompt_mode(cut)
+
+        if mode == 'langID':
+            return self._get_prompt_index(cut.supervisions[0].language)
+        elif mode == 'auto':
+            return self.auto_index
+        elif mode == 'unified':
+            if random.random() < self.unified_auto_ratio:
+                return self.auto_index
+            return self._get_prompt_index(cut.supervisions[0].language)
         else:
+            logging.warning(f"Unknown prompt_mode '{mode}', falling back to unified")
+            if random.random() < self.unified_auto_ratio:
+                return self.auto_index
             return self._get_prompt_index(cut.supervisions[0].language)
 
     def __getitem__(self, cuts) -> Tuple[torch.Tensor, ...]:

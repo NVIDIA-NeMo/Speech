@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 import os
 from dataclasses import dataclass
 from math import ceil
@@ -31,6 +30,7 @@ from nemo.collections.asr.metrics.bleu import BLEU
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridRNNTCTCBPEModel
 from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, TranscribeConfig
+from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
@@ -198,6 +198,168 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         # setting the RNNT decoder as the default one
         self.cur_decoder = "rnnt"
 
+    # Streaming inference with language-ID prompt
+
+    def set_inference_prompt(self, target_lang: str):
+        """
+        Set the language prompt for streaming inference.
+
+        Call this before ``conformer_stream_step`` to condition decoding on
+        a specific language, following the same pattern as
+        ``change_decoding_strategy``.
+
+        Args:
+            target_lang: A key from the model's ``prompt_dictionary``
+                         (e.g. ``"en-US"``, ``"auto"``).
+        """
+        prompt_dict = self.cfg.model_defaults.get('prompt_dictionary', {})
+        if target_lang not in prompt_dict:
+            available = list(prompt_dict.keys())
+            raise ValueError(
+                f"Unknown target language '{target_lang}'. "
+                f"Available: {available[:20]}{'...' if len(available) > 20 else ''}"
+            )
+        self._inference_prompt_index = prompt_dict[target_lang]
+        logging.info(f"Inference prompt set to '{target_lang}' (index {self._inference_prompt_index})")
+
+    def _apply_prompt_to_encoded(self, encoded: torch.Tensor) -> torch.Tensor:
+        """
+        Inject the language-ID prompt into encoder output during streaming.
+
+        ``encoded`` arrives as (B, D, T) from the encoder cache-aware step.
+        Returns the same shape after prompt concatenation + projection.
+        """
+        if not self.concat or not hasattr(self, '_inference_prompt_index'):
+            return encoded
+
+        encoded = encoded.transpose(1, 2)  # (B, D, T) -> (B, T, D)
+
+        batch_size, time_steps, _ = encoded.shape
+        prompt = torch.zeros(
+            batch_size, time_steps, self.num_prompts,
+            dtype=encoded.dtype, device=encoded.device,
+        )
+        idx = torch.full(
+            (batch_size,), self._inference_prompt_index,
+            dtype=torch.long, device=encoded.device,
+        )
+        prompt.scatter_(2, idx.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
+
+        out_dtype = encoded.dtype
+        encoded = self.prompt_kernel(torch.cat([encoded, prompt], dim=-1)).to(out_dtype)
+        return encoded.transpose(1, 2)  # (B, T, D) -> (B, D, T)
+
+    def conformer_stream_step(
+        self,
+        processed_signal,
+        processed_signal_length=None,
+        cache_last_channel=None,
+        cache_last_time=None,
+        cache_last_channel_len=None,
+        keep_all_outputs=True,
+        previous_hypotheses=None,
+        previous_pred_out=None,
+        drop_extra_pre_encoded=None,
+        return_transcription=True,
+        return_log_probs=False,
+        bypass_pre_encode=False,
+    ):
+        """Cache-aware streaming step with language-ID prompt injection.
+
+        Identical to the base ``ASRModuleMixin.conformer_stream_step`` except
+        that after the encoder step, ``_apply_prompt_to_encoded`` concatenates
+        the one-hot language prompt and projects back to enc_hidden.
+
+        Set the target language via ``set_inference_prompt(target_lang)``
+        before calling this method.
+        """
+        import nemo.collections.asr.models as asr_models
+
+        if not isinstance(self.encoder, StreamingEncoder):
+            raise NotImplementedError("Encoder does not support streaming!")
+
+        (
+            encoded,
+            encoded_len,
+            cache_last_channel_next,
+            cache_last_time_next,
+            cache_last_channel_next_len,
+        ) = self.encoder.cache_aware_stream_step(
+            processed_signal=processed_signal,
+            processed_signal_length=processed_signal_length,
+            cache_last_channel=cache_last_channel,
+            cache_last_time=cache_last_time,
+            cache_last_channel_len=cache_last_channel_len,
+            keep_all_outputs=keep_all_outputs,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+            bypass_pre_encode=bypass_pre_encode,
+        )
+
+        encoded = self._apply_prompt_to_encoded(encoded)
+
+        if isinstance(self, asr_models.EncDecCTCModel) or (
+            isinstance(self, asr_models.EncDecHybridRNNTCTCModel) and self.cur_decoder == "ctc"
+        ):
+            if hasattr(self, "ctc_decoder"):
+                decoding = self.ctc_decoding
+                decoder = self.ctc_decoder
+            else:
+                decoding = self.decoding
+                decoder = self.decoder
+
+            log_probs = decoder(encoder_output=encoded)
+            predictions_tensor = log_probs.argmax(dim=-1, keepdim=False)
+
+            greedy_predictions = []
+            if return_transcription:
+                all_hyp_or_transcribed_texts = []
+            else:
+                all_hyp_or_transcribed_texts = None
+
+            for preds_idx, preds in enumerate(predictions_tensor):
+                if encoded_len is None:
+                    preds_cur = predictions_tensor[preds_idx]
+                else:
+                    preds_cur = predictions_tensor[preds_idx, : encoded_len[preds_idx]]
+                if previous_pred_out is not None:
+                    greedy_predictions_concat = torch.cat((previous_pred_out[preds_idx], preds_cur), dim=-1)
+                    encoded_len[preds_idx] += len(previous_pred_out[preds_idx])
+                else:
+                    greedy_predictions_concat = preds_cur
+                greedy_predictions.append(greedy_predictions_concat)
+
+                if return_transcription:
+                    decoded_out = decoding.ctc_decoder_predictions_tensor(
+                        decoder_outputs=greedy_predictions_concat.unsqueeze(0),
+                        decoder_lengths=encoded_len[preds_idx : preds_idx + 1],
+                        return_hypotheses=False,
+                    )
+                    all_hyp_or_transcribed_texts.append(decoded_out[0])
+            best_hyp = None
+        else:
+            best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                encoder_output=encoded,
+                encoded_lengths=encoded_len,
+                return_hypotheses=True,
+                partial_hypotheses=previous_hypotheses,
+            )
+            greedy_predictions = [hyp.y_sequence for hyp in best_hyp]
+            all_hyp_or_transcribed_texts = best_hyp
+
+        result = [
+            greedy_predictions,
+            all_hyp_or_transcribed_texts,
+            cache_last_channel_next,
+            cache_last_time_next,
+            cache_last_channel_next_len,
+            best_hyp,
+        ]
+        if return_log_probs:
+            result.append(log_probs)
+            result.append(encoded_len)
+
+        return tuple(result)
+
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if config.get("use_lhotse"):
             if config.get('initialize_prompt_feature', True):
@@ -326,32 +488,25 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         Returns:
             The model's outputs that are processed by `_transcribe_output_processing()`.
         """
-        # Handling DataLoader batch - should be a tuple of tensors
-        # Expected structure: (audio, audio_lens, tokens, token_lens, prompt_indices)
-        # For transcription, we may only have (audio, audio_lens) or (audio, audio_lens, ..., prompt_indices)
         audio, audio_lens = batch[0], batch[1]
+        prompt, prompt_indices = None, None
+
         if len(batch) >= 5:
-            # Prompt indices provided by the dataloader (language ID indices)
-            prompt_indices = batch[4]  # This should be the prompt_indices from dataset
-        else:
-            # Prompt to be built dynamically.
-            prompt_indices = None
+            prompt_or_indices = batch[4]
+            if prompt_or_indices.dim() == 1:
+                prompt_indices = prompt_or_indices
+            else:
+                prompt = prompt_or_indices
 
         batch_size = audio.shape[0]
 
-        if prompt_indices is None:
-            # The dataloader provided only audio + audio_lens, so we need to construct
-            # the prompt indices dynamically using TranscribeConfig.
+        if prompt is None and prompt_indices is None:
             target_lang = trcfg.target_lang
-
-            # Get prompt dictionary from model config
             prompt_dict = self.cfg.model_defaults.get('prompt_dictionary')
-            num_prompts = self.cfg.model_defaults.get('num_prompts', 128)
 
             if not prompt_dict:
                 raise ValueError("Prompt dictionary is empty. Cannot create dynamic prompts.")
 
-            # Get the prompt index for the target language
             if target_lang not in prompt_dict:
                 available_keys = list(prompt_dict.keys())
                 raise ValueError(
@@ -359,14 +514,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
                 )
 
             prompt_id = prompt_dict[target_lang]
-
-            # Create prompt index tensor for the batch - forward() will create the one-hot prompt
-            # from these indices using the actual encoder output length
             prompt_indices = torch.full((batch_size,), prompt_id, dtype=torch.long, device=audio.device)
 
-        # Call forward with prompt_indices - the model creates prompt tensors after encoding
-        # This guarantees no size mismatch between encoded features and prompt tensors
-        encoded, encoded_len = self.forward(input_signal=audio, input_signal_length=audio_lens, prompt_indices=prompt_indices)
+        encoded, encoded_len = self.forward(
+            input_signal=audio, input_signal_length=audio_lens, prompt=prompt, prompt_indices=prompt_indices
+        )
 
         # Prepare output dictionary based on decoder type
         if self.cur_decoder == "rnnt":
@@ -505,7 +657,8 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
-            "prompt_indices": NeuralType(tuple('B'), LabelsType()),  # Language ID indices per sample
+            "prompt": NeuralType(('B', 'T', 'D'), LabelsType(), optional=True),
+            "prompt_indices": NeuralType(tuple('B'), LabelsType(), optional=True),
         }
 
     @property
@@ -522,6 +675,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         input_signal_length=None,
         processed_signal=None,
         processed_signal_length=None,
+        prompt=None,
         prompt_indices=None,
     ):
         """
@@ -538,9 +692,12 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
                 of shape (B, D, T) that has undergone processing via some DALI preprocessor.
             processed_signal_length: Vector of length B, that contains the individual lengths of the
                 processed audio sequences.
+            prompt: (backward-compatible) Pre-built one-hot prompt tensor of shape [B, T, D].
+                If provided, used directly (trimmed to encoder length if needed).
             prompt_indices: Tensor of shape [B] containing language ID indices per sample.
                 The model creates the prompt tensor after encoding using the actual
                 encoder output length, guaranteeing no size mismatch.
+                Ignored if ``prompt`` is also provided.
 
         Returns:
             A tuple of 2 elements -
@@ -569,25 +726,22 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         encoded = torch.transpose(encoded, 1, 2)  # B * D * T -> B * T * D
 
         if self.concat:
-            if prompt_indices is None:
-                raise ValueError("prompt_indices must be provided when concat mode is enabled.")
-            
-            # Create prompt tensor from indices using actual encoded length
-            batch_size = encoded.shape[0]
-            time_steps = encoded.shape[1]
-            num_prompts = self.num_prompts
-            
-            # Create one-hot prompt tensor: (batch_size, time_steps, num_prompts)
-            prompt = torch.zeros(batch_size, time_steps, num_prompts, dtype=encoded.dtype, device=encoded.device)
-            # Vectorized scatter: set each sample's language column to 1.0 (no Python loop)
-            prompt.scatter_(2, prompt_indices.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
-            
+            if prompt is not None:
+                # Backward-compatible path: caller provided a pre-built [B, T, D] one-hot tensor
+                if prompt.shape[1] > encoded.shape[1]:
+                    prompt = prompt[:, : encoded.shape[1], :]
+            elif prompt_indices is not None:
+                # New path: build one-hot from per-sample language ID indices
+                batch_size = encoded.shape[0]
+                time_steps = encoded.shape[1]
+                num_prompts = self.num_prompts
+                prompt = torch.zeros(batch_size, time_steps, num_prompts, dtype=encoded.dtype, device=encoded.device)
+                prompt.scatter_(2, prompt_indices.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
+            else:
+                raise ValueError("Either prompt or prompt_indices must be provided when concat mode is enabled.")
+
             out_dtype = encoded.dtype
-
-            # Concatenate encoded states with prompt
             concat_enc_states = torch.cat([encoded, prompt], dim=-1)
-
-            # Apply joint projection
             encoded = self.prompt_kernel(concat_enc_states).to(out_dtype)
 
         encoded = torch.transpose(encoded, 1, 2)  # B * T * D -> B * D * T
@@ -601,15 +755,21 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True)
 
-        signal, signal_len, transcript, transcript_len, prompt_indices = batch
+        signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
-        # forward() only performs encoder forward
-        # prompt_indices contains language ID indices [B], not full tensors
-        # The model creates prompt tensors after encoding using actual encoder output length
+        # Detect whether batch[4] is old-style prompt [B, T, D] or new-style indices [B]
+        prompt, prompt_indices = None, None
+        if prompt_or_indices.dim() == 1:
+            prompt_indices = prompt_or_indices
+        else:
+            prompt = prompt_or_indices
+
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt_indices=prompt_indices)
+            encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+            )
         del signal
 
         # During training, loss must be computed, so decoder forward is necessary
@@ -715,14 +875,20 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         return {'loss': loss_value}
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        signal, signal_len, transcript, transcript_len, prompt_indices = batch
+        signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
-        # forward() only performs encoder forward
-        # prompt_indices contains language ID indices [B], not full tensors
+        prompt, prompt_indices = None, None
+        if prompt_or_indices.dim() == 1:
+            prompt_indices = prompt_or_indices
+        else:
+            prompt = prompt_or_indices
+
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt_indices=prompt_indices)
+            encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+            )
         del signal
 
         if self.cur_decoder == 'rnnt':
@@ -746,14 +912,20 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True)
 
-        signal, signal_len, transcript, transcript_len, prompt_indices = batch
+        signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
-        # forward() only performs encoder forward
-        # prompt_indices contains language ID indices [B], not full tensors
+        prompt, prompt_indices = None, None
+        if prompt_or_indices.dim() == 1:
+            prompt_indices = prompt_or_indices
+        else:
+            prompt = prompt_or_indices
+
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt_indices=prompt_indices)
+            encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+            )
         del signal
 
         tensorboard_logs = {}

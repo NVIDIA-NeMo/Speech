@@ -34,11 +34,11 @@ from nemo.utils import logging
 class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
     """
     Simplified dataset class for speech-to-text with prompt support.
-    
+
     Instead of computing full prompt tensors, this dataset returns just the
     language ID index per sample. The model creates the prompt tensor using
     the actual encoder output length, guaranteeing no size mismatch.
-    
+
     Returns:
         audio_signal: Audio waveform [B, T]
         audio_signal_length: Audio lengths [B]
@@ -57,7 +57,7 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
             'prompt_indices': NeuralType(tuple('B'), LabelsType()),  # Just indices, not full tensors
         }
 
-    def __init__(self, tokenizer, cfg):
+    def __init__(self, tokenizer: TokenizerSpec, cfg: Dict) -> None:
         super().__init__()
         self.tokenizer = TokenizerWrapper(tokenizer)
         self.load_audio = AudioSamples(fault_tolerant=True)
@@ -67,7 +67,7 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
         self.prompt_dict = cfg.get('prompt_dictionary')
         if not self.prompt_dict:
             raise ValueError("prompt_dictionary is required in config")
-        
+
         self.num_prompts = cfg.get('num_prompts', 128)
 
         # Field to use for prompt key (default to 'target_lang')
@@ -149,21 +149,18 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
         tokens = [torch.as_tensor(self.tokenizer(c.supervisions[0].text, c.supervisions[0].language)) for c in cuts]
 
         # Get prompt indices (just the language ID per sample, NOT full tensors)
-        prompt_indices = torch.tensor(
-            [self._get_prompt_index_for_cut(c) for c in cuts],
-            dtype=torch.long
-        )
+        prompt_indices = torch.tensor([self._get_prompt_index_for_cut(c) for c in cuts], dtype=torch.long)
 
         # Create final tensors
         token_lens = torch.tensor([t.size(0) for t in tokens], dtype=torch.long)
         tokens = collate_vectors(tokens, padding_value=0)
 
         return (
-            audio,          # Audio signal [B, T]
-            audio_lens,     # Audio lengths [B]
-            tokens,         # Text tokens [B, T]
-            token_lens,     # Token lengths [B]
-            prompt_indices, # Language ID indices [B] - model creates full tensor
+            audio,  # Audio signal [B, T]
+            audio_lens,  # Audio lengths [B]
+            tokens,  # Text tokens [B, T]
+            token_lens,  # Token lengths [B]
+            prompt_indices,  # Language ID indices [B] - model creates full tensor
         )
 
 
@@ -183,7 +180,8 @@ class TokenizerWrapper:
         return self._impl(text, lang)
 
     def _call_agg_tokenizer(self, text: str, lang: Optional[str] = None):
-        assert lang is not None, "Expected 'lang' to be set for AggregateTokenizer."
+        if lang is None:
+            raise ValueError("Expected 'lang' to be set for AggregateTokenizer.")
         return self._tokenizer.text_to_ids(text, lang)
 
     def _call_tokenizer(self, text: str, lang: Optional[str] = None):

@@ -763,9 +763,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
             if return_hypotheses:
                 # greedy decoding, can get high-level confidence scores
-                if self.preserve_frame_confidence and (
-                    self.preserve_word_confidence or self.preserve_token_confidence
-                ):
+                if self.preserve_frame_confidence and (self.preserve_word_confidence or self.preserve_token_confidence):
                     hypotheses = self.compute_confidence(hypotheses)
                 return hypotheses
 

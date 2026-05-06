@@ -24,7 +24,6 @@ from pytorch_lightning import Trainer
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset, DALIOutputs
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
-from nemo.collections.asr.data.audio_to_text_lhotse_prompt import LhotseSpeechToTextBpeDatasetWithPrompt
 from nemo.collections.asr.data.audio_to_text_lhotse_prompt_index import LhotseSpeechToTextBpeDatasetWithPromptIndex
 from nemo.collections.asr.metrics.bleu import BLEU
 from nemo.collections.asr.metrics.wer import WER
@@ -58,7 +57,6 @@ class HybridRNNTCTCPromptTranscribeConfig(TranscribeConfig):
 
     target_lang: str = "auto"
     prompt_field: str = "target_lang"
-
 
 
 class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTranscriptionMixin):
@@ -112,8 +110,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
 
             if 'prompt_dictionary' not in cfg.model_defaults:
                 logging.warning(
-                    "No prompt_dictionary in config; using empty dict "
-                    "(expected during checkpoint restoration)."
+                    "No prompt_dictionary in config; using empty dict " "(expected during checkpoint restoration)."
                 )
                 cfg.model_defaults.prompt_dictionary = {}
 
@@ -236,12 +233,17 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
 
         batch_size, time_steps, _ = encoded.shape
         prompt = torch.zeros(
-            batch_size, time_steps, self.num_prompts,
-            dtype=encoded.dtype, device=encoded.device,
+            batch_size,
+            time_steps,
+            self.num_prompts,
+            dtype=encoded.dtype,
+            device=encoded.device,
         )
         idx = torch.full(
-            (batch_size,), self._inference_prompt_index,
-            dtype=torch.long, device=encoded.device,
+            (batch_size,),
+            self._inference_prompt_index,
+            dtype=torch.long,
+            device=encoded.device,
         )
         prompt.scatter_(2, idx.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
 
@@ -365,9 +367,15 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
             if config.get('initialize_prompt_feature', True):
                 # Use index-based dataset - returns prompt indices instead of full tensors
                 # The model creates prompt tensors after encoding, guaranteeing no size mismatch
-                dataset_config = OmegaConf.to_container(config, resolve=True) if isinstance(config, DictConfig) else dict(config)
+                dataset_config = (
+                    OmegaConf.to_container(config, resolve=True) if isinstance(config, DictConfig) else dict(config)
+                )
                 if hasattr(self, 'cfg') and 'encoder' in self.cfg:
-                    dataset_config['encoder'] = OmegaConf.to_container(self.cfg.encoder, resolve=True) if isinstance(self.cfg.encoder, DictConfig) else dict(self.cfg.encoder)
+                    dataset_config['encoder'] = (
+                        OmegaConf.to_container(self.cfg.encoder, resolve=True)
+                        if isinstance(self.cfg.encoder, DictConfig)
+                        else dict(self.cfg.encoder)
+                    )
                 dataset = LhotseSpeechToTextBpeDatasetWithPromptIndex(tokenizer=self.tokenizer, cfg=dataset_config)
                 logging.info("Setting up Lhotse dataset with prompt index support (model creates prompt tensors)")
             else:
@@ -531,7 +539,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
             del encoded
 
         return output
-
 
     @torch.no_grad()
     def transcribe(
@@ -1185,4 +1192,3 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
             List of available pre-trained models.
         """
         return None
-

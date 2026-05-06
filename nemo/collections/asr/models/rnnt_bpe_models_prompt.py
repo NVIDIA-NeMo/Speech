@@ -49,6 +49,8 @@ from nemo.utils import logging, model_utils
 
 @dataclass
 class RNNTPromptTranscribeConfig(TranscribeConfig):
+    """Transcription configuration for RNNT BPE Model with Prompt conditioning."""
+
     target_lang: str = "auto"
     prompt_field: str = "target_lang"
 
@@ -93,8 +95,7 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
 
             if 'prompt_dictionary' not in cfg.model_defaults:
                 logging.warning(
-                    "No prompt_dictionary in config; using empty dict "
-                    "(expected during checkpoint restoration)."
+                    "No prompt_dictionary in config; using empty dict " "(expected during checkpoint restoration)."
                 )
                 cfg.model_defaults.prompt_dictionary = {}
 
@@ -213,12 +214,17 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
 
         batch_size, time_steps, _ = encoded.shape
         prompt = torch.zeros(
-            batch_size, time_steps, self.num_prompts,
-            dtype=encoded.dtype, device=encoded.device,
+            batch_size,
+            time_steps,
+            self.num_prompts,
+            dtype=encoded.dtype,
+            device=encoded.device,
         )
         idx = torch.full(
-            (batch_size,), self._inference_prompt_index,
-            dtype=torch.long, device=encoded.device,
+            (batch_size,),
+            self._inference_prompt_index,
+            dtype=torch.long,
+            device=encoded.device,
         )
         prompt.scatter_(2, idx.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
 
@@ -250,8 +256,6 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
         Set the target language via ``set_inference_prompt(target_lang)``
         before calling this method.
         """
-        import nemo.collections.asr.models as asr_models
-
         if not isinstance(self.encoder, StreamingEncoder):
             raise NotImplementedError("Encoder does not support streaming!")
 
@@ -298,9 +302,7 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
         if config.get("use_lhotse"):
             if config.get('initialize_prompt_feature', True):
                 dataset_config = (
-                    OmegaConf.to_container(config, resolve=True)
-                    if isinstance(config, DictConfig)
-                    else dict(config)
+                    OmegaConf.to_container(config, resolve=True) if isinstance(config, DictConfig) else dict(config)
                 )
                 if hasattr(self, 'cfg') and 'encoder' in self.cfg:
                     dataset_config['encoder'] = (
@@ -308,9 +310,7 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
                         if isinstance(self.cfg.encoder, DictConfig)
                         else dict(self.cfg.encoder)
                     )
-                dataset = LhotseSpeechToTextBpeDatasetWithPromptIndex(
-                    tokenizer=self.tokenizer, cfg=dataset_config
-                )
+                dataset = LhotseSpeechToTextBpeDatasetWithPromptIndex(tokenizer=self.tokenizer, cfg=dataset_config)
                 logging.info(
                     "Setting up Lhotse dataset with prompt index support (RNNT-only model creates prompt tensors)"
                 )
@@ -691,7 +691,6 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
         if prompt_indices is None:
             target_lang = trcfg.target_lang
             prompt_dict = self.cfg.model_defaults.get('prompt_dictionary')
-            num_prompts = self.cfg.model_defaults.get('num_prompts', 128)
 
             if not prompt_dict:
                 raise ValueError("Prompt dictionary is empty. Cannot create dynamic prompts.")
@@ -758,8 +757,7 @@ class EncDecRNNTBPEModelWithPrompt(EncDecRNNTBPEModel, ASRTranscriptionMixin):
         else:
             if not isinstance(override_config, RNNTPromptTranscribeConfig):
                 raise ValueError(
-                    f"override_config must be of type {RNNTPromptTranscribeConfig}, "
-                    f"but got {type(override_config)}"
+                    f"override_config must be of type {RNNTPromptTranscribeConfig}, " f"but got {type(override_config)}"
                 )
             trcfg = override_config
 

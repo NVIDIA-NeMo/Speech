@@ -293,9 +293,7 @@ def perform_streaming(
         pred_out_offline_cat = torch.cat(pred_out_offline)
         if pred_out_stream_cat.size() == pred_out_offline_cat.size():
             diff_num = torch.sum(pred_out_stream_cat != pred_out_offline_cat).cpu().numpy()
-            logging.info(
-                f"Found {diff_num} differences in the outputs of the model in streaming mode vs offline mode."
-            )
+            logging.info(f"Found {diff_num} differences in the outputs of the model in streaming mode vs offline mode.")
         else:
             logging.info(
                 f"The shape of the outputs of the model in streaming mode ({pred_out_stream_cat.size()}) is different from offline mode ({pred_out_offline_cat.size()})."

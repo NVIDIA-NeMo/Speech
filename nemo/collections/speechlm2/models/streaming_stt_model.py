@@ -603,7 +603,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         # Apply blank loss weight (< 1.0 to down-weight easy blank predictions)
         blank_weight = self.core_cfg.blank_loss_weight
-        if blank_weight != 1.0 and self.has_blank:
+        if num_blank > 0 and blank_weight != 1.0 and self.has_blank:
             effective_num_targets = num_blank * blank_weight + num_nonblank
             loss = (
                 per_token_loss[is_nonblank].sum() + per_token_loss[is_blank].sum() * blank_weight
@@ -764,18 +764,23 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         )
 
         target_ids = batch.target_tokens
+        # Mirror training-time LM-CE masking: when the aux head owns the
+        # boundary decision, audio positions are not LM-supervised in
+        # training, so they must also be excluded from val_loss / val_acc —
+        # otherwise val metrics are dominated by positions the LM was never
+        # trained on.
+        if aux_active:
+            audio_mask_for_lm = batch.input_tokens == AUDIO_TOKEN_IDX
+            target_ids = torch.where(audio_mask_for_lm, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
         num_targets = (target_ids != IGNORE_INDEX).long().sum()
 
         with loss_parallel():
-            loss = (
-                F.cross_entropy(
-                    outputs["logits"].flatten(0, 1),
-                    target_ids.flatten(0, 1),
-                    reduction="sum",
-                    ignore_index=IGNORE_INDEX,
-                )
-                / num_targets
-            )
+            loss = F.cross_entropy(
+                outputs["logits"].flatten(0, 1),
+                target_ids.flatten(0, 1),
+                reduction="sum",
+                ignore_index=IGNORE_INDEX,
+            ) / num_targets.clamp(min=1)
 
         preds = outputs["logits"].argmax(dim=-1).view(-1)
         refs = target_ids.reshape(-1)
@@ -823,8 +828,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             sample_ref_ids = sample_target[mask].tolist()
             sample_pred_ids = sample_preds[mask].tolist()
 
-            ref_decoded = decode_with_blank(sample_ref_ids, self.blank_token, self.tokenizer)
-            pred_decoded = decode_with_blank(sample_pred_ids, self.blank_token, self.tokenizer)
+            ref_decoded = decode_with_blank(
+                sample_ref_ids, self.blank_token, self.tokenizer, write_token=self.core_cfg.write_token
+            )
+            pred_decoded = decode_with_blank(
+                sample_pred_ids, self.blank_token, self.tokenizer, write_token=self.core_cfg.write_token
+            )
             ref_text = batch.text[0] if batch.text else ""
             logging.info(
                 "[%s] batch %d\n  gt:         `%s`\n  ref_tokens: `%s`\n  pred:       `%s`",

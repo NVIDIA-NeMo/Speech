@@ -70,8 +70,20 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
+  pre-flight:
+    if: github.event_name != 'workflow_dispatch'
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@v0.94.1
+
   release:
-    if: ${{ !cancelled() }}
+    needs: [pre-flight]
+    if: |
+      !cancelled()
+      && (needs.pre-flight.result == 'success' || needs.pre-flight.result == 'skipped')
+      && (
+        github.event_name == 'workflow_dispatch'
+        || !(needs.pre-flight.outputs.docs_only == 'true'
+             || needs.pre-flight.outputs.is_deployment_workflow == 'true')
+      )
     uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@f5224c1bd6206ba3b26dd7a91c970a3902711b8f
     with:
       release-ref: ${{ inputs.release-ref || github.sha }}
@@ -105,8 +117,14 @@ jobs:
       S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
 
   release-summary:
-    needs: [release]
-    if: always() && !cancelled()
+    needs: [pre-flight, release]
+    if: |
+      (
+        needs.pre-flight.outputs.docs_only == 'true'
+        || needs.pre-flight.outputs.is_deployment_workflow == 'true'
+        || always()
+      )
+      && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - name: Result

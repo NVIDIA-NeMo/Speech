@@ -84,7 +84,7 @@ jobs:
         || !(needs.pre-flight.outputs.docs_only == 'true'
              || needs.pre-flight.outputs.is_deployment_workflow == 'true')
       )
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@b8fdc579e96fba4e59a24507a7be1643c74c7585
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@8b6828043ea50a4328ce259018ab1a82d91bd29c
     with:
       release-ref: ${{ inputs.release-ref || github.sha }}
       python-package: nemo

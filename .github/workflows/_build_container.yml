@@ -11,9 +11,22 @@ on:
         type: string
       runner:
         required: false
-        default: self-hosted-azure-builder
+        default: nemo-ci-aws-gpu-x2
         type: string
         description: "The runner to use for the build"
+      registry:
+        required: false
+        default: 766267172432.dkr.ecr.us-east-1.amazonaws.com
+        type: string
+        description: "Container registry"
+    outputs:
+      image:
+        description: "Full image URL (registry/nemo-speech:image-name-run_id)"
+        value: ${{ jobs.build.outputs.image }}
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   pre-flight:
@@ -60,30 +73,60 @@ jobs:
                 }
               }
             }' | jq -r '.data.repository.pullRequests.nodes[].number' | while read -r number; do
-              echo "nemoci.azurecr.io/${{ inputs.image-name }}-buildcache:$number"
+              echo "type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-$number,mode=max"
             done)
 
-          echo "LAST_PRS<<EOF" >> $GITHUB_OUTPUT
-          echo "$LAST_PRS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "LAST_PRS<<EOF" | tee -a $GITHUB_OUTPUT
+          echo "$LAST_PRS" | tee -a $GITHUB_OUTPUT
+          echo "EOF" | tee -a $GITHUB_OUTPUT
 
   build:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_container.yml@v0.27.0
+    runs-on: ${{ inputs.runner }}
     needs: [pre-flight]
-    with:
-      image-name: ${{ inputs.image-name }}
-      dockerfile: ${{ inputs.dockerfile }}
-      image-label: nemo-core
-      build-args: |
-        IMAGE_LABEL=nemo-core
-        NEMO_TAG=${{ github.sha }}
-        NEMO_REPO=https://github.com/NVIDIA/NeMo
-        PR_NUMBER=${{ github.event.pull_request.number || 0 }}
-        ${{ needs.pre-flight.outputs.build_args }}
-      prune-filter-timerange: 24h
-      use-inline-cache: false
-      cache-from: |
-        nemoci.azurecr.io/${{ inputs.image-name }}-buildcache:main
-        nemoci.azurecr.io/${{ inputs.image-name }}-buildcache:${{ github.event.pull_request.number || 0 }}
-        ${{ needs.pre-flight.outputs.cache-from }}
-      runner: ${{ inputs.runner }}
+    outputs:
+      image: ${{ steps.image-tag.outputs.image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Compute image tag
+        id: image-tag
+        run: |
+          echo "image=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-${{ github.run_id }}" | tee -a $GITHUB_OUTPUT
+
+      - name: Compute cache keys
+        id: cache-keys
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            KEY="main"
+          elif [[ -n "$PR_NUMBER" ]]; then
+            KEY="$PR_NUMBER"
+          else
+            KEY=$(echo "${{ github.ref_name }}" | tr '/' '-' | tr -cd '[:alnum:]._-')
+          fi
+          echo "cache-to=type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-${KEY},mode=max" | tee -a $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          file: ${{ inputs.dockerfile }}
+          push: true
+          context: .
+          build-args: |
+            IMAGE_LABEL=nemo-core
+            NEMO_TAG=${{ github.sha }}
+            NEMO_REPO=https://github.com/NVIDIA/NeMo
+            PR_NUMBER=${{ github.event.pull_request.number || 0 }}
+            ${{ needs.pre-flight.outputs.build_args }}
+          cache-from: |
+            type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-main,mode=max
+            type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-${{ github.event.pull_request.number || 0 }},mode=max
+            ${{ needs.pre-flight.outputs.cache-from }}
+          cache-to: ${{ steps.cache-keys.outputs.cache-to }}
+          tags: |
+            ${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-${{ github.run_id }}
+            ${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-${{ github.sha }}

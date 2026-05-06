@@ -597,7 +597,7 @@ class MagpieInferenceRunner(BaseInferenceRunner):
             predicted_codes = stack_tensors(predicted_codes_list, max_lens=[max_code_len]).cuda()
             predicted_codes_lens_tensor = torch.tensor(predicted_codes_lens, dtype=torch.long, device='cuda')
 
-            predicted_audio, predicted_audio_lens, _ = self.model._codec_helper.codes_to_audio(
+            predicted_audio, predicted_audio_lens, predicted_codes = self.model._codec_helper.codes_to_audio(
                 predicted_codes,
                 predicted_codes_lens_tensor,
             )

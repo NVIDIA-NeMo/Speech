@@ -21,6 +21,7 @@ from nemo.collections.tts.models.fastpitch import FastPitchModel
 from nemo.collections.tts.models.fastpitch_ssl import FastPitchModel_SSL
 from nemo.collections.tts.models.hifigan import HifiGanModel
 from nemo.collections.tts.models.magpietts import InferBatchOutput, MagpieTTSModel
+from nemo.collections.tts.models.magpietts_cfg_distillation import OnlineCFGDistillation
 from nemo.collections.tts.models.magpietts_preference_optimization import (
     MagpieTTSModelOfflinePO,
     MagpieTTSModelOfflinePODataGen,
@@ -37,6 +38,7 @@ __all__ = [
     "HifiGanModel",
     "InferBatchOutput",
     "MagpieTTSModel",
+    "OnlineCFGDistillation",
     "EasyMagpieTTSModel",
     "EasyMagpieTTSInferenceModel",
     "EasyMagpieTTSModelOnlinePO",

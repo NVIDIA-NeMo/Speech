@@ -18,6 +18,7 @@ import logging
 import random
 import re
 import warnings
+from copy import deepcopy
 from functools import partial
 from itertools import repeat
 from pathlib import Path
@@ -475,6 +476,13 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
     the same temperature (due to propagate_attrs.copy()), we count max depth,
     not total occurrences.
 
+    String/Path values for ``input_cfg`` are treated as file references (mirroring
+    :func:`parse_and_combine_datasets`) and loaded so that nested ``input_cfg``
+    keys inside those files are counted.  If the file is not found (e.g. the
+    path contains unresolved OmegaConf interpolations such as
+    ``${oc.env:MANIFEST_ROOT}``), it is conservatively counted as one additional
+    level.  All other I/O or parsing errors propagate immediately.
+
     Args:
         config: Configuration dictionary that may contain nested 'input_cfg' keys.
 
@@ -492,13 +500,35 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
         2
     """
 
+    _cache: dict[str, object] = {}
+
+    def _resolve_if_path(val):
+        """If *val* is a string/Path, load the YAML file it points to.
+
+        Raises on I/O or parse errors except ``FileNotFoundError``, which is
+        expected when the path contains OmegaConf interpolations (e.g.
+        ``${oc.env:MANIFEST_ROOT}/file.yaml``) that raw ``yaml.load`` returns
+        as literal strings.  ``parse_and_combine_datasets`` resolves them at
+        runtime via ``OmegaConf.create()``.
+        """
+        if isinstance(val, (str, Path)):
+            key = str(val)
+            if key not in _cache:
+                try:
+                    _cache[key] = load_yaml(key)
+                except FileNotFoundError:
+                    logging.debug("count_input_cfg_levels: could not load %r, treating as leaf", key)
+                    _cache[key] = val
+            return _cache[key]
+        return val
+
     def _max_depth(obj) -> int:
         if isinstance(obj, (dict, DictConfig)):
             depths = []
             for key, val in obj.items():
                 if key == "input_cfg":
-                    # Found input_cfg: this level counts as 1 + max depth of children
-                    depths.append(1 + _max_depth(val))
+                    resolved = _resolve_if_path(val)
+                    depths.append(1 + _max_depth(resolved))
                 else:
                     depths.append(_max_depth(val))
             return max(depths, default=0)
@@ -925,7 +955,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
     def convert_cut_fn(cut: Cut) -> Cut:
         """Convert a single cut into the continuation format."""
-        orig_agent_sup = fastcopy(cut.supervisions[0])
+        orig_agent_sup = deepcopy(cut.supervisions[0])
         target_audio_orig_dur = cut.target_audio.duration
 
         # Resample audios
@@ -1011,6 +1041,104 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     # Convert cuts
     cuts = cuts.map(convert_cut_fn)
 
+    return cuts, is_tarred
+
+
+@data_type_parser(["s2s_duplex_reverse_role"])
+def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
+    """
+    Reverse the speaker roles and swap the source/target audio streams in a Duplex S2S CutSet.
+
+    This parser takes an existing conversational dataset and inverts the perspective
+    by swapping the "user" and "agent" supervision labels. It also swaps the primary
+    `recording` (usually source audio) with the `target_audio` to fully simulate the
+    conversation from the opposite participant's point of view.
+
+    Args:
+        config: Dictionary containing parser options:
+            - agent_roles (List[str], optional): List of role strings to be identified as the agent.
+              Defaults to ["agent", "Agent", "Assistant", "assistant"].
+            - user_roles (List[str], optional): List of role strings to be identified as the user.
+              Defaults to ["user", "User"].
+            - target_agent_name (str, optional): The canonical name to assign to former user roles.
+              Defaults to "agent".
+            - target_user_name (str, optional): The canonical name to assign to former agent roles.
+              Defaults to "user".
+
+    Returns:
+        Tuple[CutSet, bool]: Converted cuts with swapped roles and audio streams,
+        along with a flag indicating if the data was tarred.
+    """
+    cuts, is_tarred = read_cutset_from_config(config)
+
+    # Roles coming from config
+    agent_roles = config.get("agent_roles", ["agent", "Agent", "Assistant", "assistant"])
+    user_roles = config.get("user_roles", ["user", "User"])
+
+    # Normalize for robust matching
+    agent_roles_set = {r.lower() for r in agent_roles}
+    user_roles_set = {r.lower() for r in user_roles}
+
+    # Canonical names you want after swapping
+    target_agent_name = config.get("target_agent_name", "agent")
+    target_user_name = config.get("target_user_name", "user")
+
+    def swap_speaker(role: str) -> str:
+        """Swap a given role based on the configured user/agent sets."""
+        if role is None:
+            return role
+
+        role_l = role.lower()
+
+        # user -> agent
+        if role_l in user_roles_set:
+            return target_agent_name
+
+        # agent -> user
+        if role_l in agent_roles_set:
+            return target_user_name
+
+        # untouched roles (e.g., narrator, system, etc.)
+        return role
+
+    def convert_cut_fn(cut: Cut) -> Cut:
+        """Convert a single cut by swapping supervisions and audio streams."""
+        new_cut = deepcopy(cut)
+
+        # swap supervisions
+        if getattr(new_cut, "supervisions", None):
+            new_sups = []
+            for s in new_cut.supervisions:
+                s2 = deepcopy(s)
+                s2.speaker = swap_speaker(getattr(s2, "speaker", None))
+                new_sups.append(s2)
+            new_cut.supervisions = new_sups
+
+        # swap audio streams
+        old_recording = new_cut.recording
+        old_target_audio = new_cut.target_audio
+        old_rec_id = old_recording.id
+        old_tar_id = old_target_audio.id
+
+        new_cut.recording = old_target_audio
+        new_cut.target_audio = old_recording
+
+        # keep duration consistent
+        if hasattr(new_cut, "duration"):
+            new_cut.duration = new_cut.recording.duration
+
+        # Debug assertions
+        assert new_cut.target_audio.id == old_rec_id, f"{new_cut.id}: recording swap failed"
+        assert new_cut.recording.id == old_tar_id, f"{new_cut.id}: target_audio swap failed"
+
+        # Optional stronger assertions (object identity)
+        assert new_cut.recording is old_target_audio, f"{new_cut.id}: recording object not swapped"
+        assert new_cut.target_audio is old_recording, f"{new_cut.id}: target_audio object not swapped"
+
+        new_cut.task = "s2s_duplex_reverse_role"
+        return new_cut
+
+    cuts = cuts.map(convert_cut_fn)
     return cuts, is_tarred
 
 

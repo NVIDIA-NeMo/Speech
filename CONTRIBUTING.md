@@ -31,14 +31,27 @@ different environment variables to be set.
 
 ## Running the Github CI
 
-The CI tests are not ran automatically when the PR is opened. When ready, add the "Run CICD" label to the PR. To re-run CI remove and add the label again.
-To run CI for external contributors, a user with write access to the repo must also approve the Github CI to run. Approving the CI to run for external
-contributors is different from approving the PR change to be merged.
+CI is powered by [copy-pr-bot](https://github.com/apps/copy-pr-bot), which mirrors each PR to a `pull-request/<number>` branch and triggers the workflow on push.
+
+**CI runs automatically** when all of the following are true:
+- Every commit in the PR is [GPG-signed](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)
+- Every committer is a member of the NVIDIA-NeMo GitHub org (or listed as an `additional_trustee`)
+- The PR has no more than 249 commits
+
+If any of those conditions are not met, copy-pr-bot posts a comment and skips branch creation — CI will not run. A maintainer (anyone with write access or greater) can trigger it manually by commenting:
+```
+/ok to test <sha>
+```
+where `<sha>` is the full or abbreviated SHA of the PR's HEAD commit. The bot also accepts `/okay to test` and `/ok-to-test`.
+
+To re-run CI after a new push, the bot will sync automatically if the PR is still trusted. Otherwise comment `/ok to test <sha>` again with the new HEAD SHA.
 
 The CI test suites are selectively ran based on the files that are changed. In some cases, no tests may be ran such as when docs are updated.
 
 Lint checks using flake8 and pylint are ran on the code based on the files that were changed. Please resolve any lint errors. It is possible but discouraged
 to ignore the lint errors by adding the "skip-linting" label to the PR.
+
+To run the nightly e2e test suite on a PR, add the "Run e2e nightly" label. Labels are read once by the `pre-flight` job at the start of each run, so the label must be present before CI starts. If CI is already running when you add the label, cancel the active workflow run and re-trigger by pushing a new commit.
 
 ## Whom should you ask for review:
 Please tag @nithinraok for NeMo core and ASR related PRs and @blisc for TTS related PRs.

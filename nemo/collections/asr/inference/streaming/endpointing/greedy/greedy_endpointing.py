@@ -265,7 +265,7 @@ class GreedyEndpointing:
             raise ValueError("Pivot point is out of range")
 
         if search_start_point > pivot_point:
-            raise ValueError("Search start point is greater then pivot_point")
+            raise ValueError("Search start point is greater than pivot_point")
 
         if self.residue_tokens_at_end > 0:
             sequence_length = max(0, sequence_length - self.residue_tokens_at_end)

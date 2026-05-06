@@ -16,6 +16,10 @@
     "trt-llm": {
       "repo": "https://github.com/NVIDIA/TensorRT-LLM.git",
       "ref": "7965842954628b0b5456a2f7d59786d3dcd41647"
+    },
+    "nemo_automodel": {
+      "repo": "https://github.com/NVIDIA-NeMo/Automodel.git",
+      "ref": "9eccbb6102a260efd7cbdffa890fc57b94f94528"
     }
   },
   "pypi-dependencies": {}

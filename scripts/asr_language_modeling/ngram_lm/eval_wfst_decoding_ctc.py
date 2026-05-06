@@ -56,12 +56,12 @@ For grid search, you can provide a list of arguments as follows -
 import contextlib
 import json
 import os
-import pickle
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import List, Optional
 
 import editdistance
+import msgpack
 import numpy as np
 import torch
 from omegaconf import MISSING, OmegaConf
@@ -110,7 +110,7 @@ class EvalWFSTNGramConfig:
     decoding: ctc_beam_decoding.WfstCTCInferConfig = field(
         default_factory=lambda: ctc_beam_decoding.WfstCTCInferConfig(beam_size=1)
     )
-    
+
     text_processing: Optional[TextProcessingConfig] = field(default_factory=lambda: TextProcessingConfig(
         punctuation_marks = ".,?",
         separate_punctuation = False,
@@ -288,10 +288,10 @@ def main(cfg: EvalWFSTNGramConfig):
         target_transcripts = punctuation_capitalization.separate_punctuation(target_transcripts)
 
     if cfg.probs_cache_file and os.path.exists(cfg.probs_cache_file):
-        logging.info(f"Found a pickle file of probabilities at '{cfg.probs_cache_file}'.")
-        logging.info(f"Loading the cached pickle file of probabilities from '{cfg.probs_cache_file}' ...")
+        logging.info(f"Found a cached file of probabilities at '{cfg.probs_cache_file}'.")
+        logging.info(f"Loading the cached file of probabilities from '{cfg.probs_cache_file}' ...")
         with open(cfg.probs_cache_file, 'rb') as probs_file:
-            all_probs = pickle.load(probs_file)
+            all_probs = msgpack.load(probs_file)
 
         if len(all_probs) != len(audio_file_paths):
             raise ValueError(
@@ -312,9 +312,9 @@ def main(cfg: EvalWFSTNGramConfig):
         all_probs = all_logits
         if cfg.probs_cache_file:
             os.makedirs(os.path.split(cfg.probs_cache_file)[0], exist_ok=True)
-            logging.info(f"Writing pickle files of probabilities at '{cfg.probs_cache_file}'...")
+            logging.info(f"Writing cached files of probabilities at '{cfg.probs_cache_file}'...")
             with open(cfg.probs_cache_file, 'wb') as f_dump:
-                pickle.dump(all_probs, f_dump)
+                msgpack.dump(all_probs, f_dump)
 
     wer_dist_greedy = 0
     cer_dist_greedy = 0

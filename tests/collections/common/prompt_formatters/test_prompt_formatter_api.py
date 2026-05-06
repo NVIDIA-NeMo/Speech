@@ -50,6 +50,13 @@ def test_prompt_formatter_inference_using_content(bpe_tokenizer):
         torch.testing.assert_close(ans[k], ans2[k])
 
 
+def test_prompt_formatter_ignores_unused_encode_dialog_kwargs(bpe_tokenizer):
+    formatter = _DummyPromptFormatter(bpe_tokenizer)
+    ans = formatter.encode_dialog([{"role": "user", "slots": {"text": "hi"}}], enable_thinking=False)
+    recovered = bpe_tokenizer.ids_to_text(ans["input_ids"])
+    assert recovered == "<s>hi</s>"
+
+
 def test_prompt_formatter_training(bpe_tokenizer):
     formatter = _DummyPromptFormatter(bpe_tokenizer)
     ans = formatter.encode_dialog(

@@ -131,7 +131,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         audio, audio_len = self.pad_audio_to_factor(audio, audio_len, self.target_samples_per_frame)
 
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-            sil_codes, sil_codes_lens = self.audio_codec.encode(audio.unsqueeze(1), audio_len)
+            sil_codes, sil_codes_lens = self.audio_codec.encode(
+                audio.unsqueeze(1).to(self.audio_codec_run_dtype), audio_len
+            )
             return sil_codes[0, -1]
 
     def get_codec_silence_frame(self):
@@ -142,7 +144,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         audio, audio_len = self.pad_audio_to_factor(audio, audio_len, self.target_samples_per_frame)
 
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-            sil_codes, _ = self.audio_codec.encode(audio.unsqueeze(1), audio_len)  # [1, T, C]
+            sil_codes, _ = self.audio_codec.encode(
+                audio.unsqueeze(1).to(self.audio_codec_run_dtype), audio_len
+            )  # [1, T, C]
             sil_codes = sil_codes[0]  # [T, C]
 
         # Convert each frame (C tokens) into a tuple
@@ -328,7 +332,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             target_audio, target_audio_lens, self.target_samples_per_frame, 1
         )
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-            target_codes, target_codes_lens = self.audio_codec.encode(target_audio.unsqueeze(1), target_audio_lens)
+            target_codes, target_codes_lens = self.audio_codec.encode(
+                target_audio.unsqueeze(1).to(self.audio_codec_run_dtype), target_audio_lens
+            )
 
         with fp32_precision():
             target_len = target_codes.shape[1]
@@ -546,10 +552,27 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.log_dict(ans, on_step=True)
         return ans
 
+    def ensures_codec_target_dtype(self) -> None:
+        """
+        Ensures the audio codec is instantiated with the target dtype.
+
+        This method checks whether `self.audio_codec` exists and whether its
+        parameters match `self.audio_codec_run_dtype`. If the codec is missing
+        or is running with the wrong dtype (e.g., due to PTL auto-downcasting),
+        the codec is reloaded by calling `setup_audio_codec()`.
+
+        Intended to be called at runtime boundaries such as:
+        - `on_train_epoch_start`
+        - `on_validation_epoch_start`
+        """
+        if hasattr(self, "audio_codec") and next(self.audio_codec.parameters()).dtype == self.audio_codec_run_dtype:
+            self.audio_codec.eval()
+            return  # already correct precision → no-op
+
+        setup_audio_codec(self)
+
     def on_train_epoch_start(self) -> None:
-        ensures_codec_target_dtype(
-            self
-        )  # potentially reloads the audio codec to make sure it's in target codec precision
+        self.ensures_codec_target_dtype()  # potentially reloads the audio codec to make sure it's in target codec precision
 
     def on_train_epoch_end(self) -> None:
         # log model stats to debug gradient weights issues
@@ -600,9 +623,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         if torch.distributed.is_initialized():
             self.trainer.strategy.model.require_backward_grad_sync = False
 
-        ensures_codec_target_dtype(
-            self
-        )  # potentially reloads the audio codec to make sure it's in target codec precision
+        self.ensures_codec_target_dtype()  # potentially reloads the audio codec to make sure it's in target codec precision
 
         self.results_logger = ResultsLogger(self.validation_save_path).reset()
         self.asr_bleu = ASRBLEU(self.cfg.scoring_asr).reset()
@@ -1013,7 +1034,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             [target_audio.size(-1)] * target_audio.size(0), dtype=torch.long, device=self.device
         )
         with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
-            code, _ = self.audio_codec.encode(target_audio.unsqueeze(1), target_audio_len)
+            code, _ = self.audio_codec.encode(
+                target_audio.unsqueeze(1).to(self.audio_codec_run_dtype), target_audio_len
+            )
 
         # get context hidden
         if self.cfg.tts_config.context_hidden_size is not None:
@@ -1205,7 +1228,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 - audio_pred_cur_step: Latest decoded waveform chunk, shape (B, wav_to_token_ratio).
                 - audio_len: Lengths (number of samples), shape (B,).
         """
-        with fp32_precision(), torch.no_grad():
+        with ensures_target_precision(self.audio_codec_run_dtype), torch.no_grad():
             if number_prev_tokens:
                 gen_audio_codes_history = gen_audio_codes_history[:, -number_prev_tokens:]
 
@@ -1365,7 +1388,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             logging.info(f"Autoregressive inference step: {i} of {max_steps} take around {step_time}s")
 
         if not incremental_audio_decoding:
-            gen_audio_codes_lens = torch.tensor([gen_audio_codes.shape[1]] * gen_audio_codes.shape[0]).to(self.device)
+            gen_audio_codes_lens = torch.tensor(
+                [gen_audio_codes.shape[1]] * gen_audio_codes.shape[0], dtype=torch.long
+            ).to(self.device)
             # decode audio. Note that it is not necessary because the prompt is removed, so no special token should be on the output, but lets do it for safety
             gen_audio_codes = replace_control_speech_codes(
                 gen_audio_codes, self._control_codes, self.codec_silence_tokens
@@ -1634,30 +1659,6 @@ def replace_control_speech_codes(
         return torch.where(torch.isin(speech_codes, control_codes), speech_codes[:, :1], speech_codes)
 
 
-def ensures_codec_target_dtype(model):
-    """
-    Ensures the audio codec is instantiated with the target dtype.
-
-    This function checks whether `model.audio_codec` exists and whether its
-    parameters match `model.audio_codec_run_dtype`. If the codec is missing
-    or is running with the wrong dtype (e.g., due to PTL auto-downcasting),
-    the codec is reloaded by calling `setup_audio_codec()`.
-
-    Intended to be called at runtime boundaries such as:
-      - `on_train_epoch_start`
-      - `on_validation_epoch_start`
-
-    Args:
-        model: Model instance of DuplexEARTTS
-
-    """
-    if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == model.audio_codec_run_dtype:
-        model.audio_codec.eval()
-        return  # already correct precision → no-op
-
-    setup_audio_codec(model)
-
-
 def setup_audio_codec(model):
     """
     Instantiates the RVQ audio codec and injects codec embeddings into the TTS model.
@@ -1683,6 +1684,7 @@ def setup_audio_codec(model):
         p.requires_grad = False
 
     model.audio_codec.eval()
+    model.audio_codec.to(model.device)  # force codec to run in the same device as the main model
 
     assert callable(model.tts_model.set_rvq_embs)
 

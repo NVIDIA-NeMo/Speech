@@ -1,0 +1,23 @@
+<div class="sub-card">
+  <h4>{{ title }}</h4>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+        {% for header in headers %}
+          <th>{{ header }}</th>
+        {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+      {% for row in rows %}
+        <tr>
+        {% for cell in row %}
+          <td>{{ cell|safe }}</td>
+        {% endfor %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>

@@ -592,7 +592,8 @@ class MagpieTTSModel(ModelPT):
             for layer in self.context_decoder_layers:
                 multi_encoder_mapping[layer] = 1
             self.multi_encoder_mapping = multi_encoder_mapping
-            # Create context encoder. We do not recommend MoE for this encoder.
+            # Create context encoder.
+            # Note: router_* loss coefficients are model-level config, not consumed by the Transformer module.
             context_encoder_cfg = dict(cfg.context_encoder)
             if context_encoder_cfg.get('use_moe', False):
                 raise Exception(
@@ -618,6 +619,7 @@ class MagpieTTSModel(ModelPT):
         elif self.model_type == 'decoder_ce':
             # Similar to decoder_context_tts, but we use context encoder
             # Decoder gets output from context encoder instead of raw context tokens embeddings
+            # Note: router_* loss coefficients are model-level config, not consumed by the Transformer module.
             context_encoder_cfg = dict(cfg.context_encoder)
             if context_encoder_cfg.get('use_moe', False):
                 raise Exception(

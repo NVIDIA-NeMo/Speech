@@ -592,11 +592,23 @@ class MagpieTTSModel(ModelPT):
             for layer in self.context_decoder_layers:
                 multi_encoder_mapping[layer] = 1
             self.multi_encoder_mapping = multi_encoder_mapping
-            # Create context encoder (filter out MoE loss coefficients if present)
-            # Note: Loss coefficients are model-level config, not passed to Transformer module
+            # Create context encoder. We do not recommend MoE for this encoder.
             context_encoder_cfg = dict(cfg.context_encoder)
-            context_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
-            context_encoder_cfg.pop('router_z_loss_coeff', None)
+            if context_encoder_cfg.get('use_moe', False):
+                raise Exception(
+                    "MoE is not recommended for the context encoder. "
+                    "Please set context_encoder.use_moe to False."
+                )
+            if 'router_load_balancing_loss_coeff' in context_encoder_cfg:
+                logging.warning(
+                    "Detected `router_load_balancing_loss_coeff` in context encoder config. "
+                    "MoE is not recommended for the context encoder."
+                )
+            if 'router_z_loss_coeff' in context_encoder_cfg:
+                logging.warning(
+                    "Detected `router_z_loss_coeff` in context encoder config. "
+                    "MoE is not recommended for the context encoder."
+                )
             self.context_encoder = transformer_2501.Transformer(**context_encoder_cfg)
         elif self.model_type == 'decoder_context_tts':
             # Context audio/text goes directly to the decoder (before the target audio codes)
@@ -607,8 +619,21 @@ class MagpieTTSModel(ModelPT):
             # Similar to decoder_context_tts, but we use context encoder
             # Decoder gets output from context encoder instead of raw context tokens embeddings
             context_encoder_cfg = dict(cfg.context_encoder)
-            context_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
-            context_encoder_cfg.pop('router_z_loss_coeff', None)
+            if context_encoder_cfg.get('use_moe', False):
+                raise Exception(
+                    "MoE is not recommended for the context encoder. "
+                    "Please set context_encoder.use_moe to False."
+                )
+            if 'router_load_balancing_loss_coeff' in context_encoder_cfg:
+                logging.warning(
+                    "Detected `router_load_balancing_loss_coeff` in context encoder config. "
+                    "MoE is not recommended for the context encoder."
+                )
+            if 'router_z_loss_coeff' in context_encoder_cfg:
+                logging.warning(
+                    "Detected `router_z_loss_coeff` in context encoder config. "
+                    "MoE is not recommended for the context encoder."
+                )
             self.context_encoder = transformer_2501.Transformer(**context_encoder_cfg)
             self.transcript_decoder_layers = [
                 idx for idx in range(cfg.decoder.n_layers)

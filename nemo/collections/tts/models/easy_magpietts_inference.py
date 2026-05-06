@@ -369,11 +369,24 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.use_speaker_encoder = cfg.get('use_speaker_encoder', False)
         self.train_shuffle_context_embedding_prob = 0.0
         if self.use_speaker_encoder:
-            speaker_encoder_cfg = cfg.get('speaker_encoder', cfg.get('context_encoder', None))
+            speaker_encoder_cfg = cfg.get('speaker_encoder', None)
             if speaker_encoder_cfg is not None:
                 speaker_encoder_cfg = dict(speaker_encoder_cfg)
-                speaker_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
-                speaker_encoder_cfg.pop('router_z_loss_coeff', None)
+                if speaker_encoder_cfg.get('use_moe', False):
+                    raise Exception(
+                        "MoE is not recommended for the speaker encoder. "
+                        "Please set speaker_encoder.use_moe to False."
+                    )
+                if 'router_load_balancing_loss_coeff' in speaker_encoder_cfg:
+                    logging.warning(
+                        "Detected `router_load_balancing_loss_coeff` in speaker encoder config. "
+                        "MoE is not recommended for the speaker encoder."
+                    )
+                if 'router_z_loss_coeff' in speaker_encoder_cfg:
+                    logging.warning(
+                        "Detected `router_z_loss_coeff` in speaker encoder config. "
+                        "MoE is not recommended for the speaker encoder."
+                    )
             else:
                 speaker_encoder_cfg = {
                     'n_layers': cfg.get('speaker_encoder_n_layers', 1),

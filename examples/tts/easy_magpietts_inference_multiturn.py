@@ -734,7 +734,10 @@ def main():
                     )
                     # add text tokens needed for profilling
                     if not model.cfg.get("agent_mask_include_transition_prefix", False):
-                        delay_tokens = int(state.config.training_mode.streaming_speech_delay)
+                        if model.phoneme_tokenizer is not None:
+                            delay_tokens = int(state.config.training_mode.streaming_phonemes_delay)
+                        else:
+                            delay_tokens = int(state.config.training_mode.streaming_speech_delay)
                         delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
                         profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]
                         turn_text = turn_text[:, delay_tokens:]
@@ -750,8 +753,13 @@ def main():
                         f"[profile_multiturn] turn={t} prefilled {profile_T} steps "
                         f"({profile_seconds:.2f}s)"
                     )
-
-                    turn_start_frame = sum(p.size(-1) for p in state.all_predictions)
+                    # turn_start_frame = sum(p.size(-1) for p in state.all_predictions)
+                    # count the two extra delays to remove hallucinations on inference time
+                    if model.phoneme_tokenizer:
+                        turn_start_frame = sum(p.size(-1) for p in state.all_predictions) + (int(state.config.training_mode.streaming_speech_delay)-int(state.config.training_mode.streaming_phonemes_delay)) 
+                    else:
+                        turn_start_frame = sum(p.size(-1) for p in state.all_predictions)
+        
                     if t == 0:
                         state.audio_prediction_start_idx.fill_(turn_start_frame)
                         profile_decode_start_frame = turn_start_frame
@@ -778,12 +786,68 @@ def main():
                             torch.full_like(current_tokens, model.eos_id),
                             current_tokens,
                         )
+                        # continue the profilling step until all the delays tokens are consumed if phoneme channel is used
+                        if model.phoneme_tokenizer is not None and not model.cfg.get("agent_mask_include_transition_prefix", False) and turn_steps <= (int(state.config.training_mode.streaming_speech_delay)-int(state.config.training_mode.streaming_phonemes_delay)):
+                            C = model.num_audio_codebooks
+                            S = model.frame_stacking_factor
+                            T = 1
+                            sil_codes = model.codec_sil_codes.to(device=device, dtype=torch.long)  # (C,)
+                            sil_codes_unstacked = sil_codes.view(1, C, 1).expand(B, C, T * S).contiguous()
+                            profile_audio_stacked, _ = model.stack_codes(
+                                sil_codes_unstacked,
+                                torch.full((B,), T * S, dtype=torch.long, device=device),
+                                bos_id=model.audio_bos_id,
+                                eos_id=model.audio_eos_id,
+                                stacking_factor=S,
+                                num_codebooks=C,
+                            )  # (B, C*S, T)
+          
+                            # Feed the pad on speech channel as part of the prediction while profilling until we finish the whole delay
+                            if turn_steps < (int(state.config.training_mode.streaming_speech_delay)-int(state.config.training_mode.streaming_phonemes_delay)):
+                                if model.cfg.get("use_user_speaking_end_token", False) and not model.cfg.get("agent_mask_include_transition_prefix", False):
+                                    state.last_audio_codes = torch.full(
+                                        state.last_audio_codes.shape,
+                                        model.audio_user_speaking_end_id,
+                                        dtype=torch.long,
+                                        device=device,
+                                    )
+                                elif model.cfg.get("use_user_speaking_token", False):
+                                    state.last_audio_codes = torch.full(
+                                        state.last_audio_codes.shape,
+                                        model.audio_user_speaking_id,
+                                        dtype=torch.long,
+                                        device=device,
+                                    )
+                                else:
+                                    state.last_audio_codes = profile_audio_stacked[:, :, -1].contiguous()
 
+                            elif turn_steps == (int(state.config.training_mode.streaming_speech_delay)-int(state.config.training_mode.streaming_phonemes_delay)):
+                                if model.cfg.get("use_user_speaking_end_token", False) and not model.cfg.get("agent_mask_include_transition_prefix", False):
+                                    state.last_audio_codes = torch.full(
+                                        state.last_audio_codes.shape,
+                                        model.audio_user_speaking_end_id,
+                                        dtype=torch.long,
+                                        device=device,
+                                    )
+                                elif model.cfg.get("use_user_speaking_token", False):
+                                    state.last_audio_codes = torch.full(
+                                        state.last_audio_codes.shape,
+                                        model.audio_user_speaking_id,
+                                        dtype=torch.long,
+                                        device=device,
+                                    )
+                                else:
+                                    state.last_audio_codes = profile_audio_stacked[:, :, -1].contiguous()
+
+                        # ToDo: we need to feed the user audio embedding to streaming step as well
                         state, audio_codes, _ = model.streaming_step(
                             state=state,
                             text_tokens=current_tokens,
                             use_inference_mode=True,
                         )
+                        # Replace predicted delay tokens with silence
+                        if model.phoneme_tokenizer is not None not model.cfg.get("agent_mask_include_transition_prefix", False) and turn_steps <= (int(state.config.training_mode.streaming_speech_delay)-int(state.config.training_mode.streaming_phonemes_delay)):
+                            state.all_predictions[-1] = codec_sil_codes.view(1, -1, 1).expand_as(state.all_predictions[-1])
 
                         if audio_codes is not None and not saw_audio:
                             saw_audio = True
@@ -817,12 +881,15 @@ def main():
             speaking_id = getattr(model, "audio_user_speaking_id", -1)
             speaking_end_id = getattr(model, "audio_user_speaking_end_id", -1)
 
-            sil_injection = codec_sil_codes.view(1, -1, 1)
+            context_audio_bos_id = getattr(model, "context_audio_bos_id", -1)
+            context_audio_eos_id = getattr(model, "context_audio_eos_id", -1)
+            mask_token_id = getattr(model, "mask_token_id", -1)
 
+            sil_injection = codec_sil_codes.view(1, -1, 1)
             for step_idx in range(len(state.all_predictions)):
                 pred = state.all_predictions[step_idx]
                 # Check if any codebook in the frame has any special token
-                mask = (pred == bos_id) | (pred == eos_id) | (pred == speaking_id) | (pred == speaking_end_id)
+                mask = (pred == bos_id) | (pred == eos_id) | (pred == speaking_id) | (pred == speaking_end_id) | (pred == context_audio_bos_id) | (pred == context_audio_eos_id) | (pred == mask_token_id)
                 frame_mask = mask.any(dim=1, keepdim=True) 
 
                 if frame_mask.any():

@@ -149,6 +149,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         input_embeds: Tensor,
         attention_mask: Tensor = None,
         cache=None,
+        **llm_kwargs,
     ) -> dict[str, Tensor]:
         """
         Implements a fully offline forward pass through the entire model.
@@ -156,14 +157,21 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         |speech and text embeddings| -> |llm| -> |lm_head| -> |token ids|
 
+        ``llm_kwargs`` carries optional THD/packed-sequence metadata
+        (``qkv_format``, ``cu_seqlens``, ``position_ids``, ``max_seqlen``);
+        it is empty for the BSHD path.
         """
-        # input_embeds and out: (B, T, H)
+        # input_embeds: (B, T, H) for BSHD or (T_total, H) for THD packed
+        # (the THD shape mirrors Automodel's _shard_thd_chunk_for_te output —
+        # the model squeezes 3D inputs internally when qkv_format=="thd", so
+        # passing 2D directly skips that hop)
         out = self.llm(
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
             past_key_values=cache,
             use_cache=cache is not None,
             return_dict=True,
+            **llm_kwargs,
         )
         if not isinstance(out, dict):
             # NeMo Automodel doesn't respect return_dict=True yet
@@ -198,13 +206,30 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         )
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self._embed_tokens(input_ids_to_embed)
+        target_ids_full = batch["input_ids"].where(batch["loss_mask"], -100)  # CrossEntropyLoss().ignore_index
+
+        # Packed-sequence (THD) path — used for both training and validation when enabled.
+        # Generate stays on the BSHD path (it doesn't go through prepare_inputs).
+        if self.cfg.get("packed_sequences", False):
+            from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
+
+            return prepare_packed_llm_inputs(
+                input_ids=batch["input_ids"],
+                text_embs=text_embs,
+                audio_embs=audio_embs,
+                target_ids=target_ids_full,
+                padding_id=self.text_pad_id,
+                placeholder_id=self.audio_locator_tag_id,
+                device_mesh=getattr(self, "_device_mesh", None),
+            )
+
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
             input_ids=batch["input_ids"],
             embeds=text_embs,
             padding_id=self.text_pad_id,
             placeholder_id=self.audio_locator_tag_id,
             replacements=audio_embs,
-            target_ids=batch["input_ids"].where(batch["loss_mask"], -100),  # CrossEntropyLoss().ignore_index
+            target_ids=target_ids_full,
         )
         input_embs = input_embs[:, :-1]
         attention_mask = attention_mask[:, :-1]
@@ -227,6 +252,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
+            "llm_kwargs": {},
         }
 
     def on_fit_start(self) -> None:
@@ -241,7 +267,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
-        forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+        forward_outputs = self(
+            inputs["input_embeds"],
+            attention_mask=inputs["attention_mask"],
+            **inputs.get("llm_kwargs", {}),
+        )
         num_frames = (inputs["target_ids"] != -100).long().sum()
 
         # Match Automodel's training recipe: normalize CE by the *global* token count across
@@ -260,9 +290,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         num_frames_global = num_frames_global.clamp(min=1)
 
         with loss_parallel():
+            logits = forward_outputs["logits"]
             loss_sum = torch.nn.functional.cross_entropy(
-                forward_outputs["logits"].flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
-                inputs["target_ids"].flatten(0, 1),
+                logits.reshape(-1, logits.size(-1)),  # BSHD (B,T,V) or THD (1,T,V) -> (*, V)
+                inputs["target_ids"].reshape(-1),     # BSHD (B,T) or THD (T,) -> (*,)
                 reduction="sum",
                 ignore_index=-100,
             )
@@ -273,7 +304,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         with torch.no_grad():
             loss_display = loss_sum.detach() / num_frames.clamp(min=1)
 
-        B, T = inputs["input_embeds"].shape[:2]
+        # Input embeds shape is (B, T, H) for BSHD or (T, H) for THD packed.
+        input_embeds = inputs["input_embeds"]
+        if input_embeds.dim() == 2:
+            B, T = 1, input_embeds.shape[0]
+        else:
+            B, T = input_embeds.shape[:2]
         ans = {
             "loss": loss,
             "learning_rate": (
@@ -318,13 +354,18 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if dataset_batch is None:
                 continue  # some dataset is exhausted
             inputs = self.prepare_inputs(dataset_batch)
-            forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+            forward_outputs = self(
+                inputs["input_embeds"],
+                attention_mask=inputs["attention_mask"],
+                **inputs.get("llm_kwargs", {}),
+            )
             num_frames = (inputs["target_ids"] != -100).long().sum()
             with loss_parallel():
+                logits = forward_outputs["logits"]
                 loss = (
                     torch.nn.functional.cross_entropy(
-                        forward_outputs["logits"].flatten(0, 1),
-                        inputs["target_ids"].flatten(0, 1),
+                        logits.reshape(-1, logits.size(-1)),
+                        inputs["target_ids"].reshape(-1),
                         reduction="sum",
                         ignore_index=-100,
                     )

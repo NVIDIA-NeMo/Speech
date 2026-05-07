@@ -34,6 +34,7 @@ class TestTransformerEncoderConfig:
         assert cfg.qkv_bias is False
         assert cfg.qk_norm is False
         assert cfg.ff_expansion == 4.0
+        assert cfg.pre_block_norm is True
         assert cfg.subsampling_factor == 4
         assert cfg.attn_mode == "full"
 

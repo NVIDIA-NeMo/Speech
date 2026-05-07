@@ -81,6 +81,7 @@ model:
     qkv_bias: false
     qk_norm: true
     ff_expansion: 4
+    pre_block_norm: true
     subsampling_factor: 8
 
   decoder:

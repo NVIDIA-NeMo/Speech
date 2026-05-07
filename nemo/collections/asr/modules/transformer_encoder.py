@@ -31,6 +31,7 @@ class TransformerEncoderConfig:
     qkv_bias: bool = False
     qk_norm: bool = False
     ff_expansion: float = 4.0
+    pre_block_norm: bool = True
     subsampling_factor: int = 4
     # Attention mode — currently only "full" is supported.
     # Future: "causal", "lookahead", "local", "sliding_window"
@@ -168,6 +169,10 @@ class TransformerEncoder(nn.Module):
         qkv_bias: Whether to use bias in Q/K/V projections.
         qk_norm: Whether to apply per-head LayerNorm to Q and K before the dot product.
         ff_expansion: Feed-forward expansion factor (float to support sub-1x for MoE).
+        pre_block_norm: If True (default), apply LayerNorm to embeddings before the first
+            transformer block (BERT/ViT-style). Set False to match pre-norm transformers
+            such as Whisper or GPT-2 — required when loading pretrained weights from those
+            checkpoints.
         subsampling_factor: Frame stacking factor for the pre-encoder.
         attn_mode: Attention pattern — currently only "full" (bidirectional) is supported.
     """
@@ -182,6 +187,7 @@ class TransformerEncoder(nn.Module):
         qkv_bias: bool = False,
         qk_norm: bool = False,
         ff_expansion: float = 4.0,
+        pre_block_norm: bool = True,
         subsampling_factor: int = 4,
         attn_mode: str = "full",
     ):
@@ -200,13 +206,14 @@ class TransformerEncoder(nn.Module):
             qkv_bias=qkv_bias,
             qk_norm=qk_norm,
             ff_expansion=ff_expansion,
+            pre_block_norm=pre_block_norm,
             subsampling_factor=subsampling_factor,
             attn_mode=attn_mode,
         )
         self.d_model = d_model
 
         self.pre_encode = FeatureStacking(subsampling_factor, feat_in, d_model)
-        self.embed_norm = nn.LayerNorm(d_model)
+        self.embed_norm = nn.LayerNorm(d_model) if pre_block_norm else nn.Identity()
         self.layers = nn.ModuleList([TransformerBlock(cfg) for _ in range(n_layers)])
         self.final_norm = nn.LayerNorm(d_model)
 

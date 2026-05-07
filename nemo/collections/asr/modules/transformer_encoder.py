@@ -153,7 +153,7 @@ class TransformerBlock(nn.Module):
 class TransformerEncoder(nn.Module):
     """Pre-norm Transformer encoder for ASR.
 
-    Architecture: FeatureStacking -> EmbedScale -> LayerNorm -> N x TransformerBlock -> FinalNorm
+    Architecture: FeatureStacking -> LayerNorm -> N x TransformerBlock -> FinalNorm
 
     Uses PyTorch FlexAttention for attention computation. On CUDA, mask functions
     are compiled into fused Triton kernels with block-sparse optimization. On CPU,
@@ -186,6 +186,8 @@ class TransformerEncoder(nn.Module):
         attn_mode: str = "full",
     ):
         super().__init__()
+        if d_model % n_heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by n_heads ({n_heads}).")
         if attn_mode != "full":
             raise ValueError(f"attn_mode='{attn_mode}' is not yet supported. Currently only 'full' is available.")
 

@@ -194,15 +194,23 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         * Take care of any necessary slicing to align the shapes of source audio,
             target audio, and target token ids.
         """
-        # Source audio encoding.
-        # Input audio: (B, T_samples)
-        # Audio embeddings: (B, T, H)
-        audio_embs = encode_audio_with_optional_chunking(
+        from nemo.collections.speechlm2.parts.cp_helpers import (
+            encode_audio_with_cp_distribution,
+            get_cp_mesh,
+            shard_bshd_for_cp,
+        )
+
+        cp_mesh, cp_size, _ = get_cp_mesh(getattr(self, "_device_mesh", None))
+
+        # Source audio encoding (distributed across CP ranks when CP is active).
+        # Input audio: (B_aud, T_samples) → list of (L_i, H) embeddings.
+        audio_embs = encode_audio_with_cp_distribution(
             self.perception,
             batch["audios"],
             batch["audio_lens"],
             chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
             sampling_rate=self.sampling_rate,
+            cp_mesh=cp_mesh,
         )
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self._embed_tokens(input_ids_to_embed)
@@ -235,22 +243,34 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         attention_mask = attention_mask[:, :-1]
         target_ids = target_ids[:, 1:]
 
-        # Combine target audio and text into a single tensor to slice them together.
-        # It will also help us truncate the sequence lengths to be divisible by TP world size,
-        # when TP is enabled.
-        # Input ids: (B, T, K+1)
-        if self._use_tp:
-            tp_world_size = self.device_mesh["tp"].size()
-            if (remainder := (input_embs.shape[1] - 1) % tp_world_size) != 0:
+        # Sequence-length divisibility for sequence/context parallelism.
+        # CP path: pad to 2*cp_size*tp_size and partition along the seq dim
+        # (the existing TP truncation is folded into the CP padding). BSHD-only
+        # path keeps the original TP-truncation behavior.
+        tp_size = self.device_mesh["tp"].size() if self._use_tp else 1
+        if cp_size > 1:
+            sharded = shard_bshd_for_cp(input_embs, attention_mask, target_ids, cp_mesh, tp_size=tp_size)
+            input_embs = sharded["input_embs"]
+            attention_mask = sharded["attention_mask"]
+            target_ids = sharded["target_ids"]
+        elif self._use_tp:
+            if (remainder := (input_embs.shape[1] - 1) % tp_size) != 0:
                 # Truncate some tokens from the end to make the sequence length shape divisible by tensor parallelism
                 # world size. Otherwise, sequence parallelism will change the input shape making leading to mismatches.
                 input_embs = input_embs[:, :-remainder]
                 attention_mask = attention_mask[:, :-remainder]
                 target_ids = target_ids[:, :-remainder]
 
+        # TE's fused-attention CP path rejects ``padding_causal``; only ``causal``
+        # is supported. BSHD batches are left-padded so dropping the padding mask
+        # lets pad K/V leak into real-token attention — tolerable for the
+        # smoke-test step but the durable fix for batched + padded inputs is the
+        # THD packed-sequence path (which uses cu_seqlens-aware CP attention).
+        llm_attention_mask = None if cp_size > 1 else attention_mask
+
         return {
             "input_embeds": input_embs,
-            "attention_mask": attention_mask,
+            "attention_mask": llm_attention_mask,
             "target_ids": target_ids,
             "llm_kwargs": {},
         }

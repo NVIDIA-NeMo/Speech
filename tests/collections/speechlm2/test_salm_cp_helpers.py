@@ -11,8 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""CPU-only tests for the CP-helper module."""
-from nemo.collections.speechlm2.parts.cp_helpers import get_cp_mesh
+"""CPU-only tests for the CP-helper module.
+
+The ``cp_size > 1`` paths in ``shard_bshd_for_cp`` and
+``encode_audio_with_cp_distribution`` require ``transformer_engine_torch``
+and a real ``torch.distributed`` process group respectively; they're
+exercised by the 2-GPU smoke. These tests cover the fallback contracts
+that run on every machine (``cp_mesh is None``, ``B_aud == 0``).
+"""
+import torch
+
+from nemo.collections.speechlm2.parts.cp_helpers import (
+    encode_audio_with_cp_distribution,
+    get_cp_mesh,
+)
 
 
 def test_get_cp_mesh_none():
@@ -52,3 +64,52 @@ def test_get_cp_mesh_cp_size_one():
 
 def test_get_cp_mesh_no_cp_dim():
     assert get_cp_mesh(_DummyDeviceMesh(has_cp=False)) == (None, 1, 0)
+
+
+class _PerceptionStub:
+    """Stand-in for ``self.perception``: returns a deterministic embedding per audio."""
+
+    def __init__(self, hidden_size: int = 4):
+        self.hidden_size = hidden_size
+
+    def __call__(self, *, input_signal, input_signal_length):
+        # Pretend each audio of length L produces L // 2 frames of embeddings;
+        # encode the row index into the first column so we can verify ordering.
+        B, T = input_signal.shape
+        if B == 0:
+            return torch.zeros(0, 0, self.hidden_size, dtype=torch.float32), input_signal_length
+        # Frame count per row scales with audio_lens.
+        out_lens = (input_signal_length // 2).clamp(min=1)
+        max_out = int(out_lens.max().item())
+        embs = torch.zeros(B, max_out, self.hidden_size, dtype=torch.float32)
+        for i in range(B):
+            embs[i, : int(out_lens[i].item()), 0] = float(i)  # marker
+        return embs, out_lens
+
+
+def test_encode_audio_no_cp_returns_unpadded_list():
+    perception = _PerceptionStub(hidden_size=4)
+    audios = torch.zeros(3, 1600, dtype=torch.float32)
+    audio_lens = torch.tensor([800, 1200, 1600], dtype=torch.long)
+    embs = encode_audio_with_cp_distribution(
+        perception, audios, audio_lens,
+        chunk_size_seconds=None, sampling_rate=16000, cp_mesh=None,
+    )
+    # 3 audios → 3 embedding tensors with row-specific lengths.
+    assert len(embs) == 3
+    expected_lens = [400, 600, 800]
+    for i, e in enumerate(embs):
+        assert e.shape == (expected_lens[i], 4)
+        # Marker preserved.
+        assert torch.all(e[:, 0] == float(i))
+
+
+def test_encode_audio_empty_batch_returns_empty():
+    perception = _PerceptionStub()
+    audios = torch.zeros(0, 1600, dtype=torch.float32)
+    audio_lens = torch.zeros(0, dtype=torch.long)
+    embs = encode_audio_with_cp_distribution(
+        perception, audios, audio_lens,
+        chunk_size_seconds=None, sampling_rate=16000, cp_mesh=None,
+    )
+    assert embs == []

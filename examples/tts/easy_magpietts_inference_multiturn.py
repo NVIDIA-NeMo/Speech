@@ -846,7 +846,7 @@ def main():
                             use_inference_mode=True,
                         )
                         # Replace predicted delay tokens with silence
-                        if model.phoneme_tokenizer is not None not model.cfg.get("agent_mask_include_transition_prefix", False) and turn_steps <= (int(state.config.training_mode.streaming_speech_delay)-int(state.config.training_mode.streaming_phonemes_delay)):
+                        if model.phoneme_tokenizer is not None and not model.cfg.get("agent_mask_include_transition_prefix", False) and turn_steps <= (int(state.config.training_mode.streaming_speech_delay)-int(state.config.training_mode.streaming_phonemes_delay)):
                             state.all_predictions[-1] = codec_sil_codes.view(1, -1, 1).expand_as(state.all_predictions[-1])
 
                         if audio_codes is not None and not saw_audio:

@@ -112,13 +112,7 @@ jobs:
 
   release-summary:
     needs: [pre-flight, release]
-    if: |
-      (
-        needs.pre-flight.outputs.docs_only == 'true'
-        || needs.pre-flight.outputs.is_deployment_workflow == 'true'
-        || always()
-      )
-      && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Result

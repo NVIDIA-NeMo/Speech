@@ -75,7 +75,9 @@ class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
             from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
             self.whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-            self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
+            self.whisper_model = WhisperForConditionalGeneration.from_pretrained(
+                "openai/whisper-large-v3", torch_dtype="auto"
+            )
             self.whisper_model.eval()
             self._normalize_whisper_transcript = cfg.get('normalize_whisper_transcript', True)
             if self._normalize_whisper_transcript and PYNINI_AVAILABLE:
@@ -511,7 +513,9 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
             self.whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-            self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
+            self.whisper_model = WhisperForConditionalGeneration.from_pretrained(
+                "openai/whisper-large-v3", torch_dtype="auto"
+            )
             self.whisper_model.eval()
         else:
             raise ValueError(f"Unknown reward_asr_model: {cfg.reward_asr_model}")
@@ -525,7 +529,9 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
             from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
             self.whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-            self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
+            self.whisper_model = WhisperForConditionalGeneration.from_pretrained(
+                "openai/whisper-large-v3", torch_dtype="auto"
+            )
             self.whisper_model.eval()
 
         use_pesq = self.cfg.get('use_pesq', False)

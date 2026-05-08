@@ -20,10 +20,7 @@ smoke. These tests cover the fallback contracts that run on every machine
 """
 import torch
 
-from nemo.collections.speechlm2.parts.cp_helpers import (
-    encode_audio_with_cp_distribution,
-    get_cp_mesh,
-)
+from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_cp_mesh
 
 
 def test_get_cp_mesh_none():
@@ -46,6 +43,7 @@ class _DummyDeviceMesh:
 
     def __getitem__(self, key):
         if key == "cp":
+
             class _Dim:
                 def __init__(self, size):
                     self._size = size
@@ -91,8 +89,12 @@ def test_encode_audio_no_cp_returns_unpadded_list():
     audios = torch.zeros(3, 1600, dtype=torch.float32)
     audio_lens = torch.tensor([800, 1200, 1600], dtype=torch.long)
     embs = encode_audio_with_cp_distribution(
-        perception, audios, audio_lens,
-        chunk_size_seconds=None, sampling_rate=16000, cp_mesh=None,
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=None,
     )
     # 3 audios → 3 embedding tensors with row-specific lengths.
     assert len(embs) == 3
@@ -108,7 +110,11 @@ def test_encode_audio_empty_batch_returns_empty():
     audios = torch.zeros(0, 1600, dtype=torch.float32)
     audio_lens = torch.zeros(0, dtype=torch.long)
     embs = encode_audio_with_cp_distribution(
-        perception, audios, audio_lens,
-        chunk_size_seconds=None, sampling_rate=16000, cp_mesh=None,
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=None,
     )
     assert embs == []

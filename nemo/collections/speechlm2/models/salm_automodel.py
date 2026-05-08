@@ -194,10 +194,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         * Take care of any necessary slicing to align the shapes of source audio,
             target audio, and target token ids.
         """
-        from nemo.collections.speechlm2.parts.cp_helpers import (
-            encode_audio_with_cp_distribution,
-            get_cp_mesh,
-        )
+        from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_cp_mesh
 
         cp_mesh, _, _ = get_cp_mesh(getattr(self, "_device_mesh", None))
 
@@ -285,9 +282,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         attn_backend = self.cfg.get("automodel_backend", {}).get("attn", "te")
         nvte_fused_attn = os.environ.get("NVTE_FUSED_ATTN")
-        device_capability = (
-            torch.cuda.get_device_capability() if torch.cuda.is_available() else None
-        )
+        device_capability = torch.cuda.get_device_capability() if torch.cuda.is_available() else None
 
         validate_parallelism_compatibility(
             packed_sequences=bool(self.cfg.get("packed_sequences", False)),
@@ -330,7 +325,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             logits = forward_outputs["logits"]
             loss_sum = torch.nn.functional.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),  # BSHD (B,T,V) or THD (1,T,V) -> (*, V)
-                inputs["target_ids"].reshape(-1),     # BSHD (B,T) or THD (T,) -> (*,)
+                inputs["target_ids"].reshape(-1),  # BSHD (B,T) or THD (T,) -> (*,)
                 reduction="sum",
                 ignore_index=-100,
             )

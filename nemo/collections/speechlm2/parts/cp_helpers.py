@@ -80,8 +80,11 @@ def encode_audio_with_cp_distribution(
     B_aud = int(audios.shape[0])
     if cp_mesh is None or B_aud == 0:
         return encode_audio_with_optional_chunking(
-            perception, audios, audio_lens,
-            chunk_size_seconds=chunk_size_seconds, sampling_rate=sampling_rate,
+            perception,
+            audios,
+            audio_lens,
+            chunk_size_seconds=chunk_size_seconds,
+            sampling_rate=sampling_rate,
         )
 
     cp_size = cp_mesh.size()
@@ -106,8 +109,11 @@ def encode_audio_with_cp_distribution(
     local_audio_lens = audio_lens[start:end]
 
     local_embs = encode_audio_with_optional_chunking(
-        perception, local_audios, local_audio_lens,
-        chunk_size_seconds=chunk_size_seconds, sampling_rate=sampling_rate,
+        perception,
+        local_audios,
+        local_audio_lens,
+        chunk_size_seconds=chunk_size_seconds,
+        sampling_rate=sampling_rate,
     )
 
     # All-gather across CP. Variable-length: pad to a common max-L first.

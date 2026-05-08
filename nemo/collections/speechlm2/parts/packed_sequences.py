@@ -113,9 +113,7 @@ def pack_audio_into_text_embeds(
             rep = replacements[rep_idx]
             rep_idx += 1
             emb_segments.append(rep)
-            lab_segments.append(
-                torch.full((rep.shape[0],), ignore_index, dtype=torch.long, device=device)
-            )
+            lab_segments.append(torch.full((rep.shape[0],), ignore_index, dtype=torch.long, device=device))
             prev = p + 1
         if prev < ids_i.numel():
             emb_segments.append(emb_i[prev:])

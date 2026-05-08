@@ -140,9 +140,7 @@ class BroadcastingDataLoader:
         if not _is_noop(device_mesh, axes):
             self._is_source = is_dp_source_rank(device_mesh, axes)
             if self._is_source and source is None:
-                raise ValueError(
-                    "BroadcastingDataLoader on a DP source rank requires a non-None source"
-                )
+                raise ValueError("BroadcastingDataLoader on a DP source rank requires a non-None source")
 
     def __iter__(self) -> Iterator[Any]:
         if _is_noop(self._mesh, self._axes):

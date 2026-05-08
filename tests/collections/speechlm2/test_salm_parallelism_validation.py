@@ -24,6 +24,7 @@ from nemo.collections.speechlm2.parts.parallel import validate_parallelism_compa
 
 # Combinations that must pass without raising or warning.
 
+
 def test_bshd_cp1_te_passes():
     validate_parallelism_compatibility(
         packed_sequences=False,
@@ -66,6 +67,7 @@ def test_thd_cp2_te_with_fused_attn_off_passes():
 
 # BSHD + CP > 1 — hard error regardless of other knobs.
 
+
 @pytest.mark.parametrize("cp_size", [2, 4, 8])
 def test_bshd_with_cp_raises(cp_size):
     with pytest.raises(ValueError, match="BSHD .* incompatible with cp_size > 1"):
@@ -80,6 +82,7 @@ def test_bshd_with_cp_raises(cp_size):
 
 # THD + non-TE attention — hard error.
 
+
 @pytest.mark.parametrize("attn_backend", ["sdpa", "flex"])
 def test_thd_with_non_te_attn_raises(attn_backend):
     with pytest.raises(ValueError, match=r"THD.*requires.*attn=te"):
@@ -93,6 +96,7 @@ def test_thd_with_non_te_attn_raises(attn_backend):
 
 
 # THD + TE + NVTE_FUSED_ATTN unset — warns on non-sm_120, raises on sm_120.
+
 
 @pytest.mark.parametrize("nvte_fused_attn", [None, "", "1", "true"])
 def test_thd_te_without_fused_attn_off_warns_on_other_archs(nvte_fused_attn):

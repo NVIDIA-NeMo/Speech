@@ -29,12 +29,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from nemo.collections.common.data.lhotse.broadcasting import (
-    BroadcastingDataLoader,
-    broadcast_batch,
-    is_dp_source_rank,
-)
-
+from nemo.collections.common.data.lhotse.broadcasting import BroadcastingDataLoader, broadcast_batch, is_dp_source_rank
 
 # ---------------------------------------------------------------------------
 # Fake-mesh CPU-only tests (no distributed required).

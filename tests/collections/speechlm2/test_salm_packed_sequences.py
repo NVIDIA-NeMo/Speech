@@ -14,11 +14,7 @@
 import pytest
 import torch
 
-from nemo.collections.speechlm2.parts.packed_sequences import (
-    pack_audio_into_text_embeds,
-    prepare_packed_llm_inputs,
-)
-
+from nemo.collections.speechlm2.parts.packed_sequences import pack_audio_into_text_embeds, prepare_packed_llm_inputs
 
 PAD = 0
 AUDIO = 100
@@ -117,7 +113,7 @@ def test_audio_frame_labels_are_ignored():
     # the original slot's label was -100. Verify all original audio slots map
     # to -100 in the shifted output (audio at t means lab_shift[t-1] gets
     # what was at t, which is -100 from the audio fill).
-    utt0 = labels[cu[0]:cu[1]]
+    utt0 = labels[cu[0] : cu[1]]
     # Shifted: original audio at positions 1-4 → label[0..3] should be -100;
     # audio at 7-9 → label[6..8] should be -100; last slot (10) is -100.
     assert (utt0[0:4] == -100).all()
@@ -143,13 +139,13 @@ def test_labels_shifted_per_utt():
     # which after per-utt shift becomes the label of position 9 (the last
     # audio frame). Since the shift puts orig[t+1] at slot t, the second-to-
     # last slot of utt0 holds target_ids of the trailing "1".
-    utt0 = labels[cu[0]:cu[1]]
+    utt0 = labels[cu[0] : cu[1]]
     assert utt0[-2].item() == 1  # trailing text token "1" with loss_mask=True
     assert utt0[-1].item() == -100  # last position of every utterance is -100
 
     # Utt 1 last two text tokens (4, 5) had loss_mask=True. After per-utt
     # shift, label[L-3] = 4, label[L-2] = 5, label[L-1] = -100.
-    utt1 = labels[cu[1]:cu[2]]
+    utt1 = labels[cu[1] : cu[2]]
     assert utt1[-3].item() == 4
     assert utt1[-2].item() == 5
     assert utt1[-1].item() == -100
@@ -421,8 +417,7 @@ def _assert_pairs_equivalent(bshd_pairs, thd_pairs, *, atol=1e-6):
             f"Per-utt next-token shift must align with global [:-1]/[1:] shift."
         )
         assert torch.allclose(e_b, e_t, atol=atol), (
-            f"Pair {i} (target={t_b}): input embedding mismatch between BSHD and THD. "
-            f"BSHD={e_b}, THD={e_t}"
+            f"Pair {i} (target={t_b}): input embedding mismatch between BSHD and THD. " f"BSHD={e_b}, THD={e_t}"
         )
 
 

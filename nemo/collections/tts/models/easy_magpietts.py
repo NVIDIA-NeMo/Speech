@@ -1143,6 +1143,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_lens = batch['audio_lens']
             audio_codes, audio_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
 
+        
         # augment tts data to looks more like multiturn data by adding pad on the begining and emulating user speaking.
         if self.cfg.get("use_multiturn_dataset", False) and "tts" in batch['task']:
             prob = self.cfg.get("add_tts_sil_begining_prob", 0.0)

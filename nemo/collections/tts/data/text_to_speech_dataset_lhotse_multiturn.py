@@ -176,7 +176,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         add_text_bos: bool = False,
         remove_user_turns_prob: float = None,
     ):
-        super().__init__()
+        # super().__init__()
         self.sample_rate = sample_rate
         self.volume_norm = volume_norm
 

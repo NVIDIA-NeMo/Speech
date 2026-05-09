@@ -80,7 +80,7 @@ jobs:
       !cancelled() && !failure()
       && !(needs.pre-flight.outputs.docs_only == 'true'
            || needs.pre-flight.outputs.is_deployment_workflow == 'true')
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v1.0.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v1.2.0
     with:
       release-ref: ${{ inputs.release-ref || github.sha }}
       python-package: nemo
@@ -98,6 +98,8 @@ jobs:
       docs-target-path: nemo
       docs-directory: docs/source
       docs-requirements-file: requirements/requirements_docs.txt
+      docs-sync-all: true
+      docs-no-extras: "--no-extra cu12"
       publish-as-latest: true
       run-on-version-tag-only: ${{ github.ref_name != 'main' }}
       docs-skip-linkcheck: true

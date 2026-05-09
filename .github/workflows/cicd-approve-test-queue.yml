@@ -81,6 +81,20 @@ jobs:
                   return None
 
 
+          def cancel_run(run_id):
+              """Cancel a workflow run. Returns True on success."""
+              url = f"{API_BASE}/actions/runs/{run_id}/cancel"
+              try:
+                  response = requests.post(url, headers=headers)
+                  response.raise_for_status()
+                  return True
+              except requests.exceptions.RequestException as e:
+                  print(f"Error cancelling run {run_id}: {str(e)}")
+                  if hasattr(e.response, 'text'):
+                      print(f"Response: {e.response.text}")
+                  return False
+
+
           def get_workflow_runs(status):
               """Get all workflow runs for a given status."""
               all_results = []
@@ -129,6 +143,7 @@ jobs:
 
           # Process each deployment
           print("Processing ...")
+          had_unrecoverable = False
           for workflow in pending_workflows:
               if total_workflows >= MAX_CONCURRENCY:
                   print("Maximum concurrency reached, stopping approvals")
@@ -139,7 +154,11 @@ jobs:
               print(f"Approving workflow {workflow_name} with Run Id: {workflow_id}")
 
               deployment_url = f"actions/runs/{workflow_id}/pending_deployments"
-              deployment = make_request(deployment_url)[0]
+              deployments = make_request(deployment_url) or []
+              if not deployments:
+                  print(f"No pending deployments for run {workflow_id} (race: approved between list and GET), skipping")
+                  continue
+              deployment = deployments[0]
               environment_id = deployment["environment"]["id"]
 
               # Approve the deployment
@@ -152,9 +171,28 @@ jobs:
 
               if result:
                   total_workflows += 1
+                  continue
+
+              # POST failed. Distinguish race (someone else approved between our GET
+              # and POST) from a wedged run (deployment listed as pending but GitHub
+              # refuses to approve it — typically when the parent ref was force-pushed
+              # and the run was orphaned). The former is benign; the latter blocks
+              # every future cron tick because the run sits at the head of the
+              # waiting queue forever, so we cancel it.
+              deployments_after = make_request(deployment_url) or []
+              if not deployments_after:
+                  print(f"Run {workflow_id} approved by another path (race), skipping")
+                  continue
+
+              print(f"Run {workflow_id} is wedged: POST refused but pending_deployments still non-empty. Cancelling.")
+              if cancel_run(workflow_id):
+                  print(f"Cancelled wedged run {workflow_id}")
               else:
-                  print(f"Failed to approve deployment {deployment['id']}")
-                  exit(1)
+                  print(f"Could not cancel wedged run {workflow_id}; manual intervention required")
+                  had_unrecoverable = True
+
+          if had_unrecoverable:
+              exit(1)
 
           EOF
   notify:

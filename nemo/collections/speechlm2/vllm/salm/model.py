@@ -197,11 +197,7 @@ class NeMoSpeechLMForConditionalGeneration(
             torch.float32,
         )
         self.perception = self.perception.to(target_dtype)
-        dtype_weights = {
-            key: tensor.to(target_dtype) if tensor.is_floating_point() else tensor
-            for key, tensor in perception_weights.items()
-        }
-        self.perception.load_state_dict(dtype_weights, strict=False)
+        self.perception.load_state_dict(perception_weights, strict=False)
         return {"perception." + k for k in perception_weights}
 
     @staticmethod

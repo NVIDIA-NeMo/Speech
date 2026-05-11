@@ -153,8 +153,6 @@ class NeMoSpeechLMForConditionalGeneration(
                 processed_signal_length=processed_signal_length,
             )
 
-        audio_embeds = audio_embeds.to(_PERCEPTION_DTYPE)
-
         return tuple(audio_embeds[i, : audio_embed_lens[i]] for i in range(audio_embeds.shape[0]))
 
     def embed_multimodal(self, **kwargs) -> MultiModalEmbeddings:

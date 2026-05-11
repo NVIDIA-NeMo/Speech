@@ -98,8 +98,6 @@ class NeMoSpeechLMForConditionalGeneration(
                 architectures=backend.architectures(),
             )
 
-        self._lm_dtype = next(self.language_model.parameters()).dtype
-
         with self._mark_tower_model(vllm_config, {"audio"}):
             self.perception = _load_nemo_perception(config.perception)
 
@@ -155,7 +153,7 @@ class NeMoSpeechLMForConditionalGeneration(
                 processed_signal_length=processed_signal_length,
             )
 
-        audio_embeds = audio_embeds.to(self._lm_dtype)
+        audio_embeds = audio_embeds.to(torch.bfloat16)
 
         return tuple(audio_embeds[i, : audio_embed_lens[i]] for i in range(audio_embeds.shape[0]))
 

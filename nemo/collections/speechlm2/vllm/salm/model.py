@@ -60,6 +60,7 @@ from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend, make_ba
 from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
 
 _AUDIO_INPUT_DTYPE = torch.float32
+_PERCEPTION_DTYPE = torch.bfloat16
 
 
 @MULTIMODAL_REGISTRY.register_processor(
@@ -146,14 +147,13 @@ class NeMoSpeechLMForConditionalGeneration(
                 input_signal=audio_signal,
                 length=audio_lengths,
             )
-            perception_dtype = next(self.perception.encoder.parameters()).dtype
-            processed_signal = processed_signal.to(dtype=perception_dtype)
+            processed_signal = processed_signal.to(dtype=_PERCEPTION_DTYPE)
             audio_embeds, audio_embed_lens = self.perception(
                 processed_signal=processed_signal,
                 processed_signal_length=processed_signal_length,
             )
 
-        audio_embeds = audio_embeds.to(torch.bfloat16)
+        audio_embeds = audio_embeds.to(_PERCEPTION_DTYPE)
 
         return tuple(audio_embeds[i, : audio_embed_lens[i]] for i in range(audio_embeds.shape[0]))
 
@@ -190,11 +190,7 @@ class NeMoSpeechLMForConditionalGeneration(
     # ── weight loading ──
 
     def _load_perception_weights(self, perception_weights: dict[str, torch.Tensor]) -> set[str]:
-        target_dtype = next(
-            (tensor.dtype for tensor in perception_weights.values() if tensor.is_floating_point()),
-            torch.float32,
-        )
-        self.perception = self.perception.to(target_dtype)
+        self.perception = self.perception.to(_PERCEPTION_DTYPE)
         self.perception.load_state_dict(perception_weights, strict=False)
         return {"perception." + k for k in perception_weights}
 

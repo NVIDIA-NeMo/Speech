@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from nemo.agents.voice_agent.evaluation.bridge import VoiceAgentEvaluationBridge
+from nemo.agents.voice_agent.evaluation.db_hash import compute_db_diff, get_dict_hash
 from nemo.agents.voice_agent.evaluation.scenarios.classes import Scenario
 from nemo.agents.voice_agent.evaluation.utils import LLMJudge, check_if_task_success
 from nemo.agents.voice_agent.utils import FileLogger
@@ -94,6 +95,9 @@ async def run_dynamic_evaluation(
 
     all_results = []
     success_results = []
+    # DB-state match results (only collected for scenarios with `expected_scenario_db`).
+    # Denominator is "scenarios that opted into DB-state scoring", not "all scenarios".
+    db_state_results: List[bool] = []
     for idx, scenario in enumerate(scenarios):
         logger.info(f"{'='*80}")
         logger.info(f"Starting Scenario {idx+1}/{len(scenarios)}: {scenario.name}")
@@ -180,6 +184,28 @@ async def run_dynamic_evaluation(
         metrics["scenario_duration"] = (scenario_end - scenario_start).total_seconds()
         metrics["is_successful"] = is_successful
 
+        # Optional DB-state hash matching — runs alongside action-list scoring as
+        # an independent signal. Only fires for scenarios that expose
+        # `expected_scenario_db` (eva_airline). Path-independent: any sequence
+        # of agent actions that lands in the right end state passes.
+        expected_db = getattr(scenario, "expected_scenario_db", None)
+        if expected_db is not None:
+            db_path = os.path.join(scenario_dir, bridge.final_scenario_db_file)
+            if not os.path.exists(db_path):
+                logger.info(f"Final scenario DB file {db_path} not found; skipping DB-state match.")
+                metrics["db_state_match"] = "N/A"
+            else:
+                with open(db_path, "r") as f:
+                    actual_db = json.load(f)
+                expected_hash = get_dict_hash(expected_db)
+                actual_hash = get_dict_hash(actual_db)
+                metrics["db_state_match"] = expected_hash == actual_hash
+                metrics["db_state_expected_hash"] = expected_hash
+                metrics["db_state_actual_hash"] = actual_hash
+                if not metrics["db_state_match"]:
+                    metrics["db_state_diff"] = compute_db_diff(expected_db=expected_db, actual_db=actual_db)
+                db_state_results.append(metrics["db_state_match"])
+
         # Save metrics to file
         metrics_file = os.path.join(scenario_dir, "metrics.json")
         with open(metrics_file, "w") as f:
@@ -194,6 +220,8 @@ async def run_dynamic_evaluation(
         logger.info(f"Scenario '{scenario.name}' Complete")
         logger.info(f"{'='*80}")
         logger.info(f"  Is successful: {metrics['is_successful']}")
+        if "db_state_match" in metrics:
+            logger.info(f"  DB-state match: {metrics['db_state_match']}")
         logger.info(f"  Total turns: {metrics['total_turns']}")
         logger.info(f"  Duration: {metrics['scenario_duration']:.1f}s")
         logger.info(f"  Latency measurements: {latency_stats['count']}")
@@ -221,6 +249,9 @@ async def run_dynamic_evaluation(
     # Save summary
     summary_file = os.path.join(output_dir, "all_summary.txt")
     success_rate = sum(success_results) / len(success_results) if len(success_results) > 0 else 0
+    # Denominator is "scenarios with expected_scenario_db", not all scenarios.
+    # None when no scenario in the run opted into DB-state scoring.
+    db_state_success_rate = sum(db_state_results) / len(db_state_results) if db_state_results else None
     all_latencies = []
     for result in all_results:
         all_latencies.extend([lat["latency_ms"] for lat in result["latencies"]])
@@ -250,6 +281,8 @@ async def run_dynamic_evaluation(
             stats = result["latency_stats"]
             f.write(f"\n====== {result['scenario_name']} ======:\n")
             f.write(f"  Is successful: {result['is_successful']}\n")
+            if "db_state_match" in result:
+                f.write(f"  DB-state match: {result['db_state_match']}\n")
             f.write(f"  Turns: {result['total_turns']}\n")
             f.write(f"  Duration: {result['scenario_duration']:.1f}s\n")
             if result['scenario_duration'] > 0:
@@ -273,11 +306,21 @@ async def run_dynamic_evaluation(
         f.write(f"  Max: {overall_latency_stats['max_ms']:.1f}ms\n")
 
         f.write(f"\n\nOverall Success Rate: {success_rate*100:.2f}%\n")
+        if db_state_success_rate is not None:
+            f.write(
+                f"DB-State Match Rate: {db_state_success_rate*100:.2f}% "
+                f"({sum(db_state_results)}/{len(db_state_results)} scenarios with expected_scenario_db)\n"
+            )
 
     logger.info(f"{'='*80}")
     logger.info("Evaluation Complete!")
     logger.info(f"{'='*80}")
     logger.info(f"Overall Success Rate: {success_rate*100:.2f}%")
+    if db_state_success_rate is not None:
+        logger.info(
+            f"DB-State Match Rate: {db_state_success_rate*100:.2f}% "
+            f"({sum(db_state_results)}/{len(db_state_results)})"
+        )
     logger.info(f"Overall Latency P95: {overall_latency_stats['p95_ms']:.1f}ms")
     logger.info(f"Overall Latency P50: {overall_latency_stats['p50_ms']:.1f}ms")
     logger.info(f"Results saved to: {results_file}")

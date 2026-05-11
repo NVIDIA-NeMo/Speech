@@ -322,8 +322,12 @@ class VoiceAgentEvaluationBridge:
         self.bridge_ready = False
         self.needs_reset = False
         self.final_response_file = "final_agent_response.json"
+        self.final_scenario_db_file = "final_scenario_db.json"
         self.user_context_history = None
         self.agent_context_history = None
+        # Pulled at end-of-scenario via the get_scenario_summary RTVI action.
+        # Shape: {"actions": [...], "db": {...}} or None if pull didn't happen.
+        self.scenario_summary: Optional[dict] = None
 
     def init_output_dir(self, output_dir: str, scenario_name: Optional[str] = None, log_level: str = "DEBUG"):
         """Initialize the output directory and all derived log/audio file paths."""
@@ -1096,8 +1100,10 @@ class VoiceAgentEvaluationBridge:
                     except asyncio.TimeoutError:
                         logger.info("[AGENT THREAD] Overall timeout reached, stopping receive loop")
 
-                    # at the end, send an RTVI message to the agent to tell it to return the context history
+                    # at the end, send RTVI messages to the agent to fetch the
+                    # context history and scenario summary (actions + final DB)
                     self.agent_context_history = await self._retrieve_context_history(agent_ws)
+                    self.scenario_summary = await self._retrieve_scenario_summary(agent_ws)
 
             except Exception as e:
                 logger.error(f"[AGENT THREAD] Error: {e}", exc_info=True)
@@ -1177,6 +1183,66 @@ class VoiceAgentEvaluationBridge:
             logger.warning(f"[CONTEXT HISTORY] Error retrieving context history: {e}")
             return {}
 
+    async def _retrieve_scenario_summary(self, ws) -> dict:
+        """Retrieve ``{"actions": [...], "db": {...}}`` from the bot via the
+        ``get_scenario_summary`` RTVI action. Mirrors ``_retrieve_context_history``.
+
+        Args:
+            ws: WebSocket connection to the agent bot.
+
+        Returns:
+            ``{"actions": list, "db": dict}`` if the bot responded; ``{}`` if
+            the bot didn't register the action (legacy bot) or timed out.
+        """
+        if not ws:
+            logger.warning("[SCENARIO SUMMARY] WebSocket is not connected, skipping scenario summary retrieval")
+            return {}
+
+        try:
+            action_msg = {
+                "label": "rtvi-ai",
+                "type": "action",
+                "id": f"get_scenario_summary_{datetime.now().timestamp()}",
+                "data": {
+                    "service": "context",
+                    "action": "get_scenario_summary",
+                    "arguments": [],
+                },
+            }
+            msg_frame = MessageFrame(data=json.dumps(action_msg))
+            serialized = await self.serializer.serialize(msg_frame)
+            await ws.send(serialized)
+            logger.info("[SCENARIO SUMMARY] Sent get_scenario_summary action, waiting for response...")
+
+            timeout = 15.0
+            start_time = asyncio.get_event_loop().time()
+            while asyncio.get_event_loop().time() - start_time < timeout:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    frame = await self.serializer.deserialize(msg)
+                    if frame is None:
+                        continue
+                    if not (hasattr(frame, 'message') and frame.message):
+                        continue
+                    data = json.loads(frame.message) if isinstance(frame.message, str) else frame.message
+                    if data.get("type") == "action-response":
+                        result = data.get("data", {}).get("result", {})
+                        actions = result.get("actions", [])
+                        db = result.get("db", {})
+                        logger.info(
+                            f"[SCENARIO SUMMARY] Received summary "
+                            f"(actions: {len(actions)}, db top-level keys: {len(db)})"
+                        )
+                        return result
+                except asyncio.TimeoutError:
+                    continue
+
+            logger.warning("[SCENARIO SUMMARY] Timeout waiting for scenario summary response")
+            return {}
+        except Exception as e:
+            logger.warning(f"[SCENARIO SUMMARY] Error retrieving scenario summary: {e}")
+            return {}
+
     async def _receive_user_to_queue(self, user_ws, duration: float):
         """Receive audio from user WebSocket and put into queue for agent thread."""
         return await self._receive_to_queue(
@@ -1245,6 +1311,7 @@ class VoiceAgentEvaluationBridge:
         self.sent_to_user_chunks = []
         self.user_context_history = None
         self.agent_context_history = None
+        self.scenario_summary = None
 
         # Clear thread-safe queues
         self.user_to_agent_queue = queue.Queue()
@@ -1282,6 +1349,7 @@ class VoiceAgentEvaluationBridge:
 
         # Write conversation log with post-hoc latency calculation
         self._save_final_response()
+        self._save_scenario_db()
         self._save_conversation_log()
         self._save_audio_log()
         self._save_seglst()
@@ -1586,25 +1654,69 @@ class VoiceAgentEvaluationBridge:
                     self.metrics.end_time = datetime.now()
 
     def _save_final_response(self):
-        """Save the agent's final response to a JSON file under the output directory."""
+        """Save the agent's final response to a JSON file under the output directory.
+
+        Two sources, in priority order:
+          1. **Pull** (``self.scenario_summary["actions"]``) — the bridge-pulled
+             auto-aggregated action list. Used when the bot registered the
+             ``get_scenario_summary`` action (post-commit-3 bots) and returned
+             a non-empty actions list.
+          2. **Push** (``self.metrics.agent_final_response``) — ``<final_response>``
+             text messages captured during the conversation. Used by domains that
+             still have an LLM-callable summary tool (restaurant / customer_service
+             / qa) or as a fallback when pull returned empty.
+
+        Output is always list-wrapped (``[{"actions": ...}]``) for shape compat
+        with the existing strict comparator and downstream consumers.
+        """
         if not self.output_dir:
             return
 
-        results = []
-        for final_response in self.metrics.agent_final_response:
-            try:
-                response_obj = json.loads(final_response)
-            except (json.JSONDecodeError, TypeError):
-                response_obj = {"message": final_response}
-            results.append(response_obj)
+        # Pull path
+        if self.scenario_summary and self.scenario_summary.get("actions") is not None:
+            results = [{"actions": self.scenario_summary.get("actions", [])}]
+            source = "pull"
+        else:
+            # Push fallback
+            results = []
+            for final_response in self.metrics.agent_final_response:
+                try:
+                    response_obj = json.loads(final_response)
+                except (json.JSONDecodeError, TypeError):
+                    response_obj = {"message": final_response}
+                results.append(response_obj)
+            source = "push"
 
         output_path = Path(self.output_dir) / self.final_response_file
         try:
             with open(output_path, "w") as f:
                 json.dump(results, f, indent=2)
-            logger.info(f"Final agent response saved: {output_path}")
+            logger.info(f"Final agent response saved (source={source}): {output_path}")
         except Exception as e:
             logger.error(f"Error saving final agent response: {e}")
+
+    def _save_scenario_db(self):
+        """Save the post-run scenario DB to ``final_scenario_db.json``.
+
+        Sourced from the bridge-pulled ``scenario_summary["db"]``. Skipped if
+        no pull happened (legacy bots) or the DB is empty. Used by the runner's
+        DB-state hash matching when ``scenario.expected_scenario_db`` is set.
+        """
+        if not self.output_dir:
+            return
+        if not self.scenario_summary:
+            return
+        db = self.scenario_summary.get("db")
+        if not db:
+            return
+
+        output_path = Path(self.output_dir) / self.final_scenario_db_file
+        try:
+            with open(output_path, "w") as f:
+                json.dump(db, f, indent=2)
+            logger.info(f"Final scenario DB saved: {output_path} ({len(db)} top-level keys)")
+        except Exception as e:
+            logger.error(f"Error saving final scenario DB: {e}")
 
     def _save_seglst(self):
         """Save segLST transcript file with offset-adjusted timestamps."""

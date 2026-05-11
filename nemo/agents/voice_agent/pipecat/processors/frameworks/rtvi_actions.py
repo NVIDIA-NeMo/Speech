@@ -49,6 +49,20 @@ class TaskRef:
     running: bool = False
 
 
+@dataclasses.dataclass
+class SharedStateRef:
+    """Mutable handle to the per-scenario ``shared_state`` dict.
+
+    The same dict that's passed to tool constructors is also published here, so
+    other RTVI action handlers (specifically ``get_scenario_summary``) can read
+    ``shared_state["actions"]`` and ``shared_state["db"]`` without needing tool
+    references. ``state`` is reset (re-pointed at a new dict) every time
+    ``update_system_prompt`` runs.
+    """
+
+    state: dict = dataclasses.field(default_factory=dict)
+
+
 async def _maybe_end_task(task_ref: TaskRef) -> None:
     if task_ref.running and task_ref.task is not None:
         await task_ref.task.queue_frames([EndTaskFrame()])
@@ -112,6 +126,7 @@ def create_update_system_prompt_action(
     rtvi: Optional[RTVIProcessor] = None,
     tool_factory: Optional[Callable[..., Any]] = None,
     register_schema_tools: Optional[Callable[..., Any]] = None,
+    shared_state_ref: Optional[SharedStateRef] = None,
 ) -> RTVIAction:
     """Build the ``context.update_system_prompt`` action.
 
@@ -124,10 +139,15 @@ def create_update_system_prompt_action(
     The action accepts an optional ``shared_state_init`` argument (JSON string)
     used to initialize the per-scenario ``shared_state`` dict before tools are
     instantiated. The bridge populates it from ``Scenario.setup_shared_state``.
-    Convention: keys ending in ``_path`` (currently just ``db_path``) are
-    resolved against ``EVAL_DATA_ROOT`` and the loaded JSON content replaces
-    them under the de-suffixed key (``db_path`` → ``db``). Missing files raise
-    ``FileNotFoundError`` loudly. Only consumed when tool calling is enabled.
+    Two supported shapes (both via ``shared_state_init``):
+      - **Inline**: ``{"db": {...full content...}, ...}``. Used as-is.
+      - **Path-based fallback**: ``{"db_path": "rel/path.json", ...}``. Resolved
+        against ``EVAL_DATA_ROOT`` and replaced under the de-suffixed key
+        (``db_path`` → ``db``). Missing files raise ``FileNotFoundError`` loudly.
+
+    If ``shared_state_ref`` is provided, the resolved ``shared_state`` is
+    published to it so other action handlers (``get_scenario_summary``) can
+    read the same dict. Only consumed when tool calling is enabled.
     """
 
     async def handler(rtvi_processor: RTVIProcessor, service: str, arguments: dict[str, Any]) -> bool:
@@ -164,15 +184,16 @@ def create_update_system_prompt_action(
                 logger.info("Registering new tools...")
                 new_tools = json.loads(new_tools_json)
 
-                # Initialize shared_state from the optional shared_state_init payload
-                # produced by Scenario.setup_shared_state(). Convention: any *_path
-                # keys (e.g. "db_path") are resolved against EVAL_DATA_ROOT and the
-                # loaded JSON content replaces them under the de-suffixed key
-                # ("db_path" → "db"). Decoupled from agent tool-call order.
-                from nemo.agents.voice_agent.evaluation import get_eval_data_root
-
+                # Initialize shared_state from the optional shared_state_init
+                # payload produced by Scenario.setup_shared_state(). Inline DB
+                # content (state["db"]) is the primary path; path-based loading
+                # (state["db_path"]) is a fallback for fixtures too large to
+                # ship inline.
                 shared_state: dict = json.loads(arguments.get("shared_state_init", "{}"))
                 if "db_path" in shared_state:
+                    # Lazy import to avoid coupling rtvi_actions to evaluation/.
+                    from nemo.agents.voice_agent.evaluation import get_eval_data_root
+
                     db_path = shared_state.pop("db_path")
                     full_path = get_eval_data_root() / db_path
                     if not full_path.exists():
@@ -182,6 +203,11 @@ def create_update_system_prompt_action(
                         )
                     shared_state["db"] = json.loads(full_path.read_text())
                     logger.info(f"Loaded scenario DB from {full_path} into shared_state['db']")
+
+                # Publish the dict so sibling action handlers (e.g. get_scenario_summary)
+                # can read the same shared_state without needing tool references.
+                if shared_state_ref is not None:
+                    shared_state_ref.state = shared_state
 
                 new_schema_tools = [
                     tool_factory(tool_name, rtvi=rtvi, shared_state=shared_state, **tool_args)
@@ -247,6 +273,40 @@ def create_get_context_history_action(
     return RTVIAction(
         service="context",
         action="get_context_history",
+        result="object",
+        arguments=[],
+        handler=handler,
+    )
+
+
+def create_get_scenario_summary_action(
+    shared_state_ref: SharedStateRef,
+) -> RTVIAction:
+    """Build the ``context.get_scenario_summary`` action.
+
+    Returns ``{"actions": [...], "db": {...}}`` from the per-scenario shared
+    state. Auto-aggregating tools (e.g. ``WriteAirlineTool`` subclasses)
+    populate ``shared_state["actions"]`` on each successful mutation; the
+    fixture-loading flow populates ``shared_state["db"]``. The bridge calls
+    this action after ``<exit>`` (or scenario timeout) to retrieve the final
+    artifacts without depending on any LLM-callable summary tool.
+
+    Mirrors how ``get_context_history`` is consumed by the bridge.
+    """
+
+    async def handler(rtvi_processor: RTVIProcessor, service: str, arguments: dict[str, Any]) -> dict:
+        try:
+            actions = shared_state_ref.state.get("actions", [])
+            db = shared_state_ref.state.get("db", {})
+            logger.debug(f"Returning scenario summary: {len(actions)} action(s), " f"db has {len(db)} top-level keys")
+            return {"actions": actions, "db": db}
+        except Exception as e:
+            logger.error(f"Error getting scenario summary: {e}")
+            return {"actions": [], "db": {}}
+
+    return RTVIAction(
+        service="context",
+        action="get_scenario_summary",
         result="object",
         arguments=[],
         handler=handler,

@@ -225,6 +225,7 @@ class Scenario:
         ignore_punctuation: Optional[bool] = False,
         clean_text: Optional[bool] = False,
         disallow_extra_items: Optional[bool] = False,
+        expected_scenario_db: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the scenario.
@@ -245,6 +246,12 @@ class Scenario:
             disallow_extra_items: When True, the list-of-dicts comparator requires
                 ``len(reference) == len(prediction)`` (exact bijection). Default False
                 preserves the existing lenient behavior where agent extras pass.
+            expected_scenario_db: Optional expected post-run DB state. When set,
+                the runner additionally scores the scenario by SHA-256-hashing this
+                against the bridge-pulled ``final_scenario_db.json`` (path-independent
+                end-state correctness — see ``evaluation/db_hash.py``). Subclasses
+                that derive the expected DB from a fixture file should expose this
+                as a ``cached_property`` instead of passing it through ``__init__``.
         """
         if not hasattr(self, "name"):
             self.name = name
@@ -267,6 +274,8 @@ class Scenario:
             self.clean_text = clean_text
         if not hasattr(self, "disallow_extra_items"):
             self.disallow_extra_items = disallow_extra_items
+        if not hasattr(self, "expected_scenario_db"):
+            self.expected_scenario_db = expected_scenario_db
 
     def setup_shared_state(self, state: dict, side: str) -> None:
         """Populate per-side ``shared_state`` before tools are instantiated.

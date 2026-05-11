@@ -34,8 +34,10 @@ from nemo.agents.voice_agent.pipecat.bot_server import (
 )
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi_actions import (
+    SharedStateRef,
     TaskRef,
     create_get_context_history_action,
+    create_get_scenario_summary_action,
     create_reset_context_action,
     create_update_system_prompt_action,
 )
@@ -119,6 +121,7 @@ async def run_bot_websocket(
 
     resettable = [stt, tts, turn_taking, diar]
     task_ref = TaskRef()
+    shared_state_ref = SharedStateRef()
     rtvi.register_action(create_reset_context_action(task_ref, user_agg, assistant_agg, original_messages, resettable))
     rtvi.register_action(
         create_update_system_prompt_action(
@@ -135,9 +138,11 @@ async def run_bot_websocket(
             rtvi=rtvi,
             tool_factory=get_schema_tool_for_eval,
             register_schema_tools=register_schema_tools_to_llm,
+            shared_state_ref=shared_state_ref,
         )
     )
     rtvi.register_action(create_get_context_history_action(task_ref, assistant_agg))
+    rtvi.register_action(create_get_scenario_summary_action(shared_state_ref))
 
     task = PipelineTask(
         pipeline,

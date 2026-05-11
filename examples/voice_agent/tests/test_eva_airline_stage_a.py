@@ -65,45 +65,6 @@ def _load_fixture_state(eva_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Smoke scenario sanity checks
-# ---------------------------------------------------------------------------
-
-
-def test_smoke_scenario_registered_and_bound():
-    s = get_eval_scenario("eva_airline__smoke")
-    assert s is not None
-    assert s.eva_id == "1.1.2"
-    assert s.current_date == "2026-03-17"
-    assert s.reference_answer == {"actions": []}
-
-
-def test_smoke_scenario_setup_shared_state_per_side():
-    s = get_eval_scenario("eva_airline__smoke")
-    agent_state, user_state = {}, {}
-    s.setup_shared_state(agent_state, "agent")
-    s.setup_shared_state(user_state, "user")
-    # Symmetric DB transfer: agent gets the inline DB content; user side is empty.
-    assert "db" in agent_state
-    assert agent_state["db"]["_current_date"] == "2026-03-17"
-    assert "ZK3FFW" in agent_state["db"]["reservations"]
-    assert user_state == {}
-
-
-def test_smoke_scenario_agent_prompt_has_today_and_endconversation_guideline():
-    s = get_eval_scenario("eva_airline__smoke")
-    prompt = s.get_agent_prompt()
-    assert "Today is 2026-03-17" in prompt
-    assert "EndConversationTool" in prompt
-
-
-def test_smoke_scenario_user_prompt_has_spell_out_rule():
-    s = get_eval_scenario("eva_airline__smoke")
-    prompt = s.get_user_prompt()
-    # The literal example from the rule
-    assert "Z, K, three, F, F, W" in prompt
-
-
-# ---------------------------------------------------------------------------
 # Action-type vocabulary
 # ---------------------------------------------------------------------------
 

@@ -305,7 +305,16 @@ async def run_dynamic_evaluation(
         f.write(f"  Min: {overall_latency_stats['min_ms']:.1f}ms\n")
         f.write(f"  Max: {overall_latency_stats['max_ms']:.1f}ms\n")
 
-        f.write(f"\n\nOverall Success Rate: {success_rate*100:.2f}%\n")
+        if success_results:
+            # success_results entries are bool (action-list match, or judge ≥ threshold)
+            # or float (raw judge score when no threshold set). `:g` drops trailing zeros
+            # so 2.0 → "2" and 1.6 → "1.6".
+            f.write(
+                f"\n\nOverall Success Rate: {success_rate*100:.2f}% "
+                f"({sum(success_results):g}/{len(success_results)} scenarios with reference_answer)\n"
+            )
+        else:
+            f.write("\n\nOverall Success Rate: N/A (no scenarios had reference_answer for action-list scoring)\n")
         if db_state_success_rate is not None:
             f.write(
                 f"DB-State Match Rate: {db_state_success_rate*100:.2f}% "
@@ -315,11 +324,17 @@ async def run_dynamic_evaluation(
     logger.info(f"{'='*80}")
     logger.info("Evaluation Complete!")
     logger.info(f"{'='*80}")
-    logger.info(f"Overall Success Rate: {success_rate*100:.2f}%")
+    if success_results:
+        logger.info(
+            f"Overall Success Rate: {success_rate*100:.2f}% "
+            f"({sum(success_results):g}/{len(success_results)} scenarios with reference_answer)"
+        )
+    else:
+        logger.info("Overall Success Rate: N/A (no scenarios had reference_answer for action-list scoring)")
     if db_state_success_rate is not None:
         logger.info(
             f"DB-State Match Rate: {db_state_success_rate*100:.2f}% "
-            f"({sum(db_state_results)}/{len(db_state_results)})"
+            f"({sum(db_state_results)}/{len(db_state_results)} scenarios with expected_scenario_db)"
         )
     logger.info(f"Overall Latency P95: {overall_latency_stats['p95_ms']:.1f}ms")
     logger.info(f"Overall Latency P50: {overall_latency_stats['p50_ms']:.1f}ms")

@@ -427,12 +427,6 @@ def test_expected_scenario_db_loads_from_dataset_jsonl():
     assert expected["_current_date"] == s.current_date
 
 
-def test_smoke_scenario_opts_out_of_db_state_scoring():
-    """Smoke doesn't mutate the DB; ``expected_scenario_db`` is explicitly None."""
-    s = get_eval_scenario("eva_airline__smoke")
-    assert s.expected_scenario_db is None
-
-
 def test_voluntary_date_change_happy_path_db_state_match():
     """Clean rebook+seat sequence produces a DB that hash-matches eva's expected state.
 
@@ -534,6 +528,60 @@ def test_messy_path_db_state_diverges_from_expected():
     # The diff should specifically show extra/modified bookings on the reservation
     diff = compute_db_diff(expected_db=scenario.expected_scenario_db, actual_db=state["db"])
     assert "reservations" in diff["tables_modified"], f"expected reservations diff, got: {diff}"
+
+
+# ---------------------------------------------------------------------------
+# Coverage: all registered eva_airline scenarios are well-formed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "scenario_name,eva_id",
+    [
+        ("eva_airline__voluntary_date_change", "1.1.2"),
+        ("eva_airline__irrops_cancellation", "2.1.1"),
+        ("eva_airline__missed_flight_standby", "3.1.3"),
+        ("eva_airline__cancellation_refund", "5.1.1"),
+        ("eva_airline__escalation_edge_case", "7.2.1"),
+    ],
+)
+def test_eva_airline_scenarios_register_and_load(scenario_name, eva_id):
+    """Each scenario instantiates, binds to the right eva_id, and loads expected_scenario_db.
+
+    Cheap structural check that catches missing data files, typos in eva_id,
+    or scenarios that forgot to set eva_id. Doesn't validate agent behavior —
+    just that the scenario is well-formed and the dataset.jsonl entry exists.
+    """
+    s = get_eval_scenario(scenario_name)
+    assert s is not None, f"{scenario_name} is not registered"
+    assert s.eva_id == eva_id, f"{scenario_name}: eva_id mismatch (got {s.eva_id!r})"
+    expected = s.expected_scenario_db
+    assert isinstance(expected, dict), f"{scenario_name}: expected_scenario_db is not a dict"
+    for table in ("_current_date", "reservations", "journeys"):
+        assert table in expected, f"{scenario_name}: expected_db missing {table!r}"
+
+
+@pytest.mark.parametrize(
+    "scenario_name",
+    [
+        "eva_airline__voluntary_date_change",
+        "eva_airline__irrops_cancellation",
+        "eva_airline__missed_flight_standby",
+        "eva_airline__cancellation_refund",
+        "eva_airline__escalation_edge_case",
+    ],
+)
+def test_eva_airline_scenarios_have_spell_out_rule_in_both_prompts(scenario_name):
+    """VOICE_ALPHANUMERIC_RULE must land in both agent and user prompts.
+
+    Catches scenarios that overrode user_actions but forgot to include
+    self.VOICE_ALPHANUMERIC_RULE in user_actions.guidelines.
+    """
+    s = get_eval_scenario(scenario_name)
+    agent_prompt = s.get_agent_prompt()
+    user_prompt = s.get_user_prompt()
+    assert "L, A, X" in agent_prompt, f"{scenario_name}: spell-out rule missing from agent prompt"
+    assert "L, A, X" in user_prompt, f"{scenario_name}: spell-out rule missing from user prompt"
 
 
 if __name__ == "__main__":

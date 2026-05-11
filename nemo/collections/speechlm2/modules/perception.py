@@ -126,12 +126,16 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
+        encoder_dtype = next(self.encoder.parameters()).dtype
+        processed_signal = processed_signal.to(dtype=encoder_dtype)
+
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             encoder_emb, encoded_len = self.encoder_multilayer(
                 audio_signal=processed_signal, length=processed_signal_length
             )
         else:
             encoder_emb, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
+
         encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
 
         # b, c, t -> b, t, c

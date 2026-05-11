@@ -5,6 +5,7 @@ isort>5.1.0,<6.0.0
 parameterized
 pytest
 pytest-httpserver
+pytest-shard
 pytest-mock
 pytest-runner
 ruamel.yaml

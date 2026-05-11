@@ -13,6 +13,7 @@
 # limitations under the License.
 import logging
 import math
+import os
 import random
 import tarfile
 from collections import deque
@@ -23,15 +24,14 @@ from typing import Iterator, Literal, Optional, Sequence, Union
 
 import numpy as np
 import torch
-from lhotse import CutSet, Recording
-from lhotse.audio import AudioLoadingError
+from lhotse import AudioSource, CutSet, Recording
 from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
-from lhotse.dataset.collation import collate_matrices, collate_vectors
+from lhotse.dataset import AudioSamples
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.serialization import load_jsonl, open_best
 from lhotse.shar import AudioTarWriter, JsonlShardWriter
-from lhotse.utils import Pathlike, is_valid_url
+from lhotse.utils import Pathlike, compute_num_samples, is_valid_url
 
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     IndexedJSONLReader,
@@ -427,57 +427,90 @@ class NeMoMultimodalConversation(Formattable, CustomFieldMixin):
 
 def collate_conversation_audio_fault_tolerant(
     conversations: Sequence[NeMoMultimodalConversation],
+    load_audio: AudioSamples,
 ) -> tuple[torch.Tensor, torch.Tensor, CutSet]:
     """
     Loads and collates audio data from a sequence of ``NeMoMultimodalConversation`` objects,
     preserving the order of conversations and turns.
 
-    Fault tolerance skips over the conversations for which at least one audio turn failed to load
-    due to ``lhotse.utils.AudioLoadingError``. This typically indicates corrupted data.
+    Audio is loaded via the provided ``AudioSamples`` (fault-tolerant and
+    MultiCut-to-mono aware; optionally backed by AIStore GetBatch when
+    constructed with ``use_batch_loader=True``) — one batched call per minibatch.
+
+    Fault tolerance drops every conversation that has at least one audio turn
+    whose cut failed to load (matching the legacy semantics).
+
+    Cut ids are assumed unique within a minibatch (upheld by ``_make_cut_id``
+    offset-suffixing in the adapters).
+
+    Algorithm (four phases):
+
+    1. **Flatten** — walk every conversation, collect each audio turn's cut into
+       ``flat_cuts``, and record the per-conversation cut-id list in
+       ``conv_to_cut_ids`` so we can regroup later. Empty ``flat_cuts`` (text-only
+       batch) takes the early return.
+
+    2. **Batched load** — a single ``AudioSamples`` call over the flat ``CutSet``
+       returns ``audios``, ``audio_lens``, and the ``surviving`` subset that
+       decoded successfully. ``survivor_rows`` maps each surviving cut id to its
+       row index in ``audios``.
+
+    3. **Regroup** — keep a conversation iff *all* its cut ids are in
+       ``survivor_rows`` (legacy semantics: one failed turn invalidates the whole
+       conversation). For survivors, append matching row indices to ``keep_rows``
+       in conversation-then-turn order — so ``audios[keep_rows]`` aligns with the
+       flattened turn order of ``CutSet(ok).list_cuts()``.
+
+    4. **Return** — index ``audios`` / ``audio_lens`` by ``keep_rows`` and wrap
+       the surviving conversations in a CutSet. If every conversation failed,
+       returns empty tensors and an empty CutSet.
 
     Returns a tuple of:
 
-    * ``audio`` tensor fp32 (B, T) or (B, C, T) if multi-channel
+    * ``audio`` tensor fp32 (B, T)
 
     * ``audio_lens`` tensor int64 (B)
 
     * ``conversations`` CutSet of NeMoMultimodalConversations that were successfully loaded.
     """
-    from lhotse.cut import MultiCut
-
-    audios = []
-    all_cuts = []
-    ok = []
+    # Phase 1: flatten — per-conv cut-id lists let us regroup after the batched load.
+    flat_cuts: list[Cut] = []
+    conv_to_cut_ids: list[list[str]] = []
     for conversation in conversations:
         assert isinstance(conversation, NeMoMultimodalConversation)
-        try:
-            conv_audios = []
-            conv_cuts = []
-            for cut in conversation.list_cuts():
-                if isinstance(cut, MultiCut):
-                    cut = cut.to_mono(mono_downmix=True)
-                conv_audios.append(torch.as_tensor(cut.load_audio()).squeeze())
-                conv_cuts.append(cut)
-        except AudioLoadingError:
-            logging.warning(f"Skipping conversation because it failed to load audio: {conversation.to_dict()}")
-            continue
-        else:
-            audios.extend(conv_audios)
-            all_cuts.extend(conv_cuts)
+        ids = []
+        for cut in conversation.list_cuts():
+            flat_cuts.append(cut)
+            ids.append(cut.id)
+        conv_to_cut_ids.append(ids)
+
+    if not flat_cuts:
+        # Text-only batch: nothing to load, but pass conversations through unchanged.
+        return torch.tensor([]), torch.tensor([]), CutSet(list(conversations))
+
+    # Phase 2: batched load — one fault-tolerant AudioSamples call for the whole minibatch.
+    # ``surviving`` is a subset (in arbitrary order) of cuts that decoded successfully.
+    audios, audio_lens, surviving = load_audio(CutSet(flat_cuts))
+    survivor_rows = {c.id: i for i, c in enumerate(surviving)}
+
+    # Phase 3: regroup — keep a conversation only if every one of its turns survived.
+    # ``keep_rows`` indexes ``audios`` in conversation-then-turn order.
+    keep_rows: list[int] = []
+    ok = []
+    for conversation, ids in zip(conversations, conv_to_cut_ids):
+        if all(cid in survivor_rows for cid in ids):
+            keep_rows.extend(survivor_rows[cid] for cid in ids)
             ok.append(conversation)
+        else:
+            logging.warning(f"Skipping conversation because it failed to load audio: {conversation.id=}")
 
     if not ok:
         ids = [c.id for c in conversations]
         logging.warning(f"An entire batch of conversations failed to load audios. Conversations ids: {ids}")
         return torch.tensor([]), torch.tensor([]), CutSet()
 
-    audio_lens = torch.tensor([c.num_samples for c in all_cuts], dtype=torch.int64)
-    if len(audios[0].shape) == 1:
-        audios = collate_vectors(audios, padding_value=0.0)
-    else:
-        audios = collate_matrices([a.transpose(0, 1) for a in audios], padding_value=0.0).transpose(1, 2)
-
-    return audios, audio_lens, CutSet(ok)
+    # Phase 4: return — re-order audio rows to match ``ok`` conversation/turn order.
+    return audios[keep_rows], audio_lens[keep_rows], CutSet(ok)
 
 
 def _compute_num_audio_tokens(example: NeMoMultimodalConversation, mode: Literal["context", "answer", "all"]) -> int:
@@ -526,6 +559,40 @@ def default_multimodal_conversation_prompt_format_fn(example: NeMoMultimodalConv
         for role, turn_grp in turns
     ]
     return prompt.encode_dialog(turns, **prompt_kwargs)
+
+
+def _make_url_cut(
+    tar_path: str,
+    audio_filename: str,
+    duration: float,
+    offset: float = 0.0,
+    sampling_rate: int = 16000,
+) -> Cut:
+    """
+    Build a Cut backed by a URL-type ``AudioSource`` (no tar file opened).
+
+    Used for the AIStore GetBatch code path in the multimodal conversation adapters —
+    audio will be fetched lazily (typically via a single batched request from
+    ``AudioSamples(use_batch_loader=True)``).
+
+    Unlike the richer helper in ``nemo_adapters.py``, this one does not attach
+    supervisions, custom fields, or manifest/tar origin — the multimodal conversation
+    adapters attach their own turn-level metadata downstream and re-id the cut via
+    ``_make_cut_id``.
+    """
+    audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
+    recording = Recording(
+        id=audio_filename,
+        sources=[AudioSource(type="url", channels=[0], source=audio_url)],
+        sampling_rate=sampling_rate,
+        num_samples=compute_num_samples(duration, sampling_rate),
+        duration=duration,
+    )
+    cut = recording.to_cut()
+    if offset > 0:
+        cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+        cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+    return cut
 
 
 @dataclass
@@ -593,6 +660,9 @@ class NeMoMultimodalConversationJsonlAdapter:
         return Path(turn['value']).stem
 
     def _iter_tar(self):
+        # In GetBatch mode we do not open the tar; the manifest's audio path is trusted to match
+        # the tar layout, mirroring LazyNeMoTarredIterator._iter_batch_for_ais_get_batch.
+        use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
         paths = list(zip(self.manifest_filepath, self.tarred_audio_filepaths))
         rng = self._get_rng()
         if self.shuffle_shards:
@@ -601,7 +671,7 @@ class NeMoMultimodalConversationJsonlAdapter:
             jsonl = load_jsonl(jsonl_path)
             if self.slice_length is not None:
                 jsonl = list(jsonl)
-            tar = iter(TarIterator(tar_path))
+            tar = None if use_ais_get_batch else iter(TarIterator(tar_path))
             slice_offset = (
                 rng.randint(0, len(jsonl) - self.slice_length)
                 if self.slice_length is not None and self.slice_length < len(jsonl)
@@ -612,14 +682,26 @@ class NeMoMultimodalConversationJsonlAdapter:
                 audio_turns = [t for t in data["conversations"] if t["type"] == "audio"]
                 cuts = []
                 for turn in audio_turns:
-                    recording, audio_path = next(tar)
-                    audio_path = str(audio_path)
-                    cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
-                    cut = cut.with_id(self._make_cut_id(cut, turn))
-                    assert audio_path == turn['value'], (
-                        f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got "
-                        f"the following from tar {audio_path=}.\nBad inputs in: {jsonl_path=} {tar_path=}"
-                    )
+                    if use_ais_get_batch:
+                        cut = _make_url_cut(
+                            tar_path=str(tar_path),
+                            audio_filename=turn['value'],
+                            duration=turn.get('duration'),
+                            offset=turn.get('offset', 0.0),
+                            sampling_rate=turn.get('sampling_rate', 16000),
+                        )
+                        cut = cut.with_id(self._make_cut_id(cut, turn))
+                    else:
+                        recording, audio_path = next(tar)
+                        audio_path = str(audio_path)
+                        cut = recording.to_cut().truncate(
+                            offset=turn.get("offset", 0.0), duration=turn.get("duration")
+                        )
+                        cut = cut.with_id(self._make_cut_id(cut, turn))
+                        assert audio_path == turn['value'], (
+                            f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got "
+                            f"the following from tar {audio_path=}.\nBad inputs in: {jsonl_path=} {tar_path=}"
+                        )
                     cuts.append(cut)
                 if self._should_skip(data):
                     continue  # Skip only after tar has been iterated, otherwise there will be data mismatch
@@ -837,6 +919,8 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter:
         return cut.truncate(offset=turn["offset"], duration=turn["duration"]).with_id(self._make_cut_id(cut, turn))
 
     def _iter_tar(self):
+        # See NeMoMultimodalConversationJsonlAdapter._iter_tar for GetBatch-mode rationale.
+        use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
         paths = list(zip(self.manifest_filepath, self.tarred_audio_filepaths))
         rng = self._get_rng()
         if self.shuffle_shards:
@@ -845,7 +929,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter:
             jsonl = load_jsonl(jsonl_path)
             if self.slice_length is not None:
                 jsonl = list(jsonl)
-            tar = iter(TarIterator(tar_path))
+            tar = None if use_ais_get_batch else iter(TarIterator(tar_path))
             slice_offset = (
                 rng.randint(0, len(jsonl) - self.slice_length)
                 if self.slice_length is not None and self.slice_length < len(jsonl)
@@ -857,13 +941,25 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter:
                 audio_turns = [t for t in conversations if t["type"] == "audio"]
                 cuts = []
                 for turn in audio_turns:
-                    recording, audio_path = next(tar)
-                    audio_path = str(audio_path)
-                    cut = recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
-                    cut = cut.with_id(self._make_cut_id(cut, turn))
-                    assert (
-                        audio_path == turn['value']
-                    ), f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got the following from tar {audio_path=}"
+                    if use_ais_get_batch:
+                        cut = _make_url_cut(
+                            tar_path=str(tar_path),
+                            audio_filename=turn['value'],
+                            duration=turn.get('duration'),
+                            offset=turn.get('offset', 0.0),
+                            sampling_rate=turn.get('sampling_rate', 16000),
+                        )
+                        cut = cut.with_id(self._make_cut_id(cut, turn))
+                    else:
+                        recording, audio_path = next(tar)
+                        audio_path = str(audio_path)
+                        cut = recording.to_cut().truncate(
+                            offset=turn.get("offset", 0.0), duration=turn.get("duration")
+                        )
+                        cut = cut.with_id(self._make_cut_id(cut, turn))
+                        assert (
+                            audio_path == turn['value']
+                        ), f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got the following from tar {audio_path=}"
                     turn["duration"] = cut.duration
                     turn["offset"] = cut.start
                     cuts.append(cut)

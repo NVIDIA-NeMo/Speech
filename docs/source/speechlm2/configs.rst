@@ -114,6 +114,7 @@ MoE as the LLM backbone, with Expert Parallelism across 8 GPUs:
       pretrained_llm: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
       pretrained_asr: "nvidia/canary-1b-flash"
       pretrained_weights: True
+      encoder_chunk_size_seconds: 30.0
 
       freeze_params:
         - "^llm\\..+$"
@@ -158,6 +159,75 @@ Note the differences from the SALM configuration:
 * ``ep_size`` controls Expert Parallelism on the FSDP data-parallel axis — dense layers are sharded via FSDP2, while MoE layers use EP for expert routing on the same GPUs.
 * LoRA config uses ``dim``/``alpha`` keys (Automodel native) instead of ``r``/``lora_alpha`` (HF PEFT).
 * No ``embed_tokens`` freeze pattern — embeddings stay inside the LLM.
+* ``encoder_chunk_size_seconds`` controls long-audio chunking for the speech encoder.
+  Audio rows longer than this value are split on the time axis, encoded as a chunk
+  batch, and concatenated back into one embedding sequence before the LLM forward.
+  Set it to ``null`` to disable chunking.
+
+SALMAutomodel-Specific Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The SALMAutomodel config exposes a few extra knobs that pass through to NeMo
+Automodel. All are optional — defaults preserve standard behavior.
+
+**MoE training:**
+
+.. code-block:: yaml
+
+    model:
+      # MoE auxiliary load-balancing loss coefficient. > 0 to enable.
+      # Gradients are injected during backward; reported CE loss is unchanged.
+      aux_loss_coeff: 0.0
+
+      # When true, unfreezes Gate.weight so the router can adapt to new data.
+      # Default false keeps pretrained routing frozen.
+      train_gate: false
+
+      # Per-step expert balance / utilization metrics.
+      moe_metrics:
+        enabled: true
+        mode: brief                  # "brief" or "detailed"
+        detailed_every_steps: null   # null = every step when mode=detailed
+        top_k_experts: 5             # top/bottom utilization experts to report
+
+When ``aux_loss_coeff > 0``, SALMAutomodel sets ``MoEAuxLossAutoScaler.main_loss_backward_scale``
+to the DP group size at ``on_fit_start`` so FSDP's gradient averaging cancels out and the
+net aux-loss gradient scale stays at 1.
+
+**torch.compile:**
+
+.. code-block:: yaml
+
+    model:
+      compile:
+        enabled: false
+        mode: default          # "default" | "reduce-overhead" | "max-autotune"
+        fullgraph: false
+        dynamic: true          # Recommended for variable-length audio
+        backend: null          # null = inductor
+        dynamo_cache_size_limit: 256
+
+**Backend dispatch (attention / linear / norm / MoE kernels):**
+
+.. code-block:: yaml
+
+    model:
+      automodel_backend:
+        attn: te                  # "te" | "sdpa" | "flex"
+        linear: te                # "torch" | "te"
+        rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
+        rope_fusion: true
+        experts: torch_mm         # "torch" | "te" | "gmm" | "torch_mm"
+        dispatcher: deepep        # "torch" | "deepep" | "hybridep" | "uccl_ep"
+        dispatcher_num_sms: 20
+
+      # Pin SDPA kernel when automodel_backend.attn=sdpa.
+      # E.g. ["flash_attention"] forces FA2 and errors if unavailable.
+      sdpa_method: null
+
+Defaults come from Automodel's ``BackendConfig`` and auto-select TransformerEngine /
+DeepEP when available; override here to pin a specific backend (for example,
+``attn: sdpa`` to bypass TE).
 
 DuplexS2SModel Configuration
 -----------------------------
@@ -328,6 +398,9 @@ Model Parameters
 
 - **pretrained_llm**: Path to the pretrained HuggingFace LLM
 - **pretrained_asr**: Name of the pretrained NeMo ASR model used for perception
+- **encoder_chunk_size_seconds**: Speech-encoder chunk size in seconds for long audio inputs
+  (supported by both ``SALM`` and ``SALMAutomodel``). Leave as ``null`` to encode each audio
+  row directly
 - **pretrained_audio_codec**: Path to the pretrained audio codec model (for speech generation)
 - **init_from_checkpoint**: Path to a training checkpoint to initialize model weights from (see :ref:`fine-tuning-from-checkpoint` below)
 - **freeze_params**: Regex patterns of parameters to freeze during training

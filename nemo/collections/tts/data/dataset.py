@@ -15,7 +15,6 @@
 import json
 import math
 import os
-import pickle
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -133,7 +132,7 @@ class TTSDataset(Dataset):
             min_duration (Optional[float]): Min duration of audio clips in seconds. All samples lower than this will be
                 pruned prior to training. Note: Requires "duration" to be set in the manifest file. It does not load
                 audio to compute duration. Defaults to None which does not prune.
-            ignore_file (Optional[Union[str, Path]]): The location of a pickle-saved list of audio paths
+            ignore_file (Optional[Union[str, Path]]): The location of a json-saved list of audio paths
                 that will be pruned prior to training. Defaults to None which does not prune.
             trim (bool): Whether to apply `librosa.effects.trim` to trim leading and trailing silence from an audio
                 signal. Defaults to False.
@@ -343,8 +342,8 @@ class TTSDataset(Dataset):
     def filter_files(data, ignore_file, min_duration, max_duration, total_duration):
         if ignore_file:
             logging.info(f"Using {ignore_file} to prune dataset.")
-            with open(Path(ignore_file).expanduser(), "rb") as f:
-                wavs_to_ignore = set(pickle.load(f))
+            with open(Path(ignore_file).expanduser(), "r") as f:
+                wavs_to_ignore = set(json.load(f))
 
         filtered_data: List[Dict] = []
         pruned_duration = 0 if total_duration is not None else None
@@ -941,7 +940,7 @@ class VocoderDataset(Dataset):
             min_duration (Optional[float]): Min duration of audio clips in seconds. All samples lower than this will be
                 pruned prior to training. Note: Requires "duration" to be set in the manifest file. It does not load
                 audio to compute duration. Defaults to None which does not prune.
-            ignore_file (Optional[Union[str, Path]]): The location of a pickle-saved list of audio paths
+            ignore_file (Optional[Union[str, Path]]): The location of a json-saved list of audio paths
                 that will be pruned prior to training. Defaults to None which does not prune.
             trim (bool): Whether to apply librosa.effects.trim to the audio file. Defaults to False.
             load_precomputed_mel (bool): Whether to load precomputed mel (useful for fine-tuning).
@@ -1092,7 +1091,7 @@ class FastPitchSSLDataset(Dataset):
             min_duration (Optional[float]): Min duration of audio clips in seconds. All samples lower than this will be
                 pruned prior to training. Note: Requires "duration" to be set in the manifest file. It does not load
                 audio to compute duration. Defaults to None which does not prune.
-            ignore_file (Optional[Union[str, Path]]): The location of a pickle-saved list of audio paths
+            ignore_file (Optional[Union[str, Path]]): The location of a json-saved list of audio paths
                 that will be pruned prior to training. Defaults to None which does not prune.
             trim (bool): Whether to apply `librosa.effects.trim` to trim leading and trailing silence from an audio
                 signal. Defaults to False.

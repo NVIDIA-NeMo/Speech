@@ -116,11 +116,33 @@ supports FSDP2, TP, PP, CP, EP (MoE), and HSDP.
         cp_size: 1
         ep_size: 8          # Expert parallelism for MoE models
 
+        # Activation checkpointing — two independent knobs:
+        activation_checkpointing_llm: false         # LLM transformer blocks
+        activation_checkpointing_perception: false  # speech encoder layers
+
 The model's ``configure_model()`` receives the device mesh and passes it to
 Automodel's ``from_pretrained`` for memory-efficient loading (each GPU only
 loads its own shard).
 
 The speech encoder / perception module currently only supports FSDP2 (controlled via ``dp_size``).
+
+Activation Checkpointing
+""""""""""""""""""""""""
+
+``AutomodelParallelStrategy`` exposes two independent activation-checkpointing knobs:
+
+* ``activation_checkpointing_llm`` — single switch covering both the non-EP FSDP2
+  path (forces ``FSDP2Config.activation_checkpointing=True``) and the EP/MoE
+  parallelizer path (passed through as a separate runtime arg). Use this for
+  MoE LLMs whether ``ep_size`` is 1 or larger.
+* ``activation_checkpointing_perception`` — wraps each transformer layer in
+  ``perception.encoder.layers`` (and the Conformer ``pre_encode`` front-end when
+  it isn't a bare ``nn.Linear``) with ``checkpoint_wrapper`` *before* FSDP2
+  sharding. Implemented in ``AudioPerceptionModule.set_activation_checkpointing``.
+
+Both default to ``false``. Toggle them independently to trade compute for
+memory at either end of the model. They are SALMAutomodel-specific knobs (the
+HF Transformers SALM path uses HuggingFace's own gradient-checkpointing API).
 
 .. note::
    Expert Parallelism (EP) reuses the FSDP2 data-parallel axis (``dp_size``).

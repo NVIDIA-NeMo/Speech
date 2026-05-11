@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import os
 from itertools import groupby
 from typing import Iterable, Union
 
@@ -19,6 +20,7 @@ import numpy as np
 import torch
 import torch.utils.data
 from lhotse import CutSet, fastcopy
+from lhotse.dataset import AudioSamples
 from torch.nn import CrossEntropyLoss
 from torch.nn.utils.rnn import pad_sequence
 
@@ -69,13 +71,23 @@ class SALMDataset(torch.utils.data.Dataset):
     def __init__(self, tokenizer: AutoTokenizer) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
+        # Setting USE_AIS_GET_BATCH=true makes the loader issue a single AIStore GetBatch
+        # call per minibatch, paired with URL-backed cuts produced by the multimodal
+        # conversation adapters (NeMoMultimodalConversation{Jsonl,ShareGPTJsonl}Adapter).
+        self.load_audio = AudioSamples(
+            fault_tolerant=True,
+            use_batch_loader=os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true",
+            mono_downmix=True,
+        )
 
     def __getitem__(self, conversations: CutSet) -> dict | None:
         # Note: the function call below may filter out some or all conversations due to audio loading issues.
         # If all conversations are filtered out, we'll return None, and expect users to wrap this dataset
         # in ``nemo.collections.common.data.fallback.FallbackDataset`` to use the previous mini-batch instead.
         try:
-            audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(conversations)
+            audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(
+                conversations, self.load_audio
+            )
         except Exception as e:
             logging.warning(f"Error collating conversations: {e}")
             return None

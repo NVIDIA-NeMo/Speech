@@ -34,6 +34,8 @@ def setup_distributed(
     dp_replicate_size: int | None = None,
     distributed_config=None,
     moe_config=None,
+    activation_checkpointing_llm: bool = False,
+    activation_checkpointing_perception: bool = False,
     backend: str = "nccl",
 ) -> AutomodelParallelStrategy:
     """Initialize torch.distributed, set CUDA device, and create a device mesh.
@@ -59,6 +61,8 @@ def setup_distributed(
         dp_replicate_size=dp_replicate_size,
         distributed_config=distributed_config,
         moe_config=moe_config,
+        activation_checkpointing_llm=activation_checkpointing_llm,
+        activation_checkpointing_perception=activation_checkpointing_perception,
     )
     strategy.create_device_mesh()
     return strategy
@@ -70,7 +74,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
 
     This is a drop-in replacement for ``ModelParallelStrategy`` that delegates
     device mesh creation to
-    ``nemo_automodel.components.distributed.device_mesh.create_device_mesh``.
+    ``nemo_automodel.components.distributed.mesh_utils.create_device_mesh``.
 
     The resulting device mesh has dimensions ``(pp, dp_replicate, dp_shard, cp, tp)``
     with flattened submeshes ``dp``, ``dp_shard_cp``, and ``dp_cp``.
@@ -90,6 +94,14 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         distributed_config: An ``FSDP2Config`` (or ``MegatronFSDPConfig``/``DDPConfig``)
             from nemo_automodel. If None, a default ``FSDP2Config()`` is created.
         moe_config: An ``MoEParallelizerConfig`` from nemo_automodel. Optional.
+        activation_checkpointing_llm: Enable activation checkpointing for LLM
+            transformer blocks. When True, this single knob covers both paths:
+            FSDP2 AC (by forcing ``FSDP2Config.activation_checkpointing=True``)
+            and the EP/MoE parallelizer AC (``MoEParallelizerConfig`` has no
+            such field; the EP parallelizer reads it as a separate runtime arg).
+        activation_checkpointing_perception: Enable activation checkpointing
+            for the perception encoder's transformer layers (applied with
+            ``checkpoint_wrapper`` before FSDP2 sharding).
         save_distributed_checkpoint: If True, each rank saves its shard of weights
             and optimizer states. If False, full state is assembled on rank 0.
         process_group_backend: Distributed backend (e.g. ``"nccl"``).
@@ -106,6 +118,8 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         ep_size: int = 1,
         distributed_config=None,
         moe_config=None,
+        activation_checkpointing_llm: bool = False,
+        activation_checkpointing_perception: bool = False,
         save_distributed_checkpoint: bool = True,
         process_group_backend: Optional[str] = None,
         timeout: Optional[timedelta] = default_pg_timeout,
@@ -127,6 +141,8 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         self._ep_size = ep_size
         self._distributed_config = distributed_config
         self._moe_config = moe_config
+        self._activation_checkpointing_llm = activation_checkpointing_llm
+        self._activation_checkpointing_perception = activation_checkpointing_perception
         self._moe_mesh = None
 
     @property
@@ -144,6 +160,19 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         """The nemo_automodel MoE configuration."""
         return self._moe_config
 
+    @property
+    def activation_checkpointing_llm(self) -> bool:
+        """Whether activation checkpointing is enabled for the LLM.
+
+        Covers both FSDP2 AC and EP/MoE AC paths.
+        """
+        return self._activation_checkpointing_llm
+
+    @property
+    def activation_checkpointing_perception(self) -> bool:
+        """Whether activation checkpointing is enabled for the perception encoder."""
+        return self._activation_checkpointing_perception
+
     def create_device_mesh(self):
         """Create the device mesh from the configured parallelism sizes.
 
@@ -156,7 +185,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
             Tuple of ``(device_mesh, moe_mesh)``.
         """
         from nemo_automodel.components.distributed.config import FSDP2Config
-        from nemo_automodel.components.distributed.device_mesh import create_device_mesh
+        from nemo_automodel.components.distributed.mesh_utils import create_device_mesh
 
         if self._distributed_config is None:
             self._distributed_config = FSDP2Config()

@@ -42,6 +42,26 @@ class TestAutomodelParallelStrategy:
         assert strategy._distributed_config is None
         assert strategy._moe_config is None
         assert strategy._moe_mesh is None
+        assert strategy.activation_checkpointing_llm is False
+        assert strategy.activation_checkpointing_perception is False
+
+    def test_accepts_activation_checkpointing_flags(self):
+        strategy = AutomodelParallelStrategy(
+            activation_checkpointing_llm=True,
+            activation_checkpointing_perception=True,
+        )
+        assert strategy.activation_checkpointing_llm is True
+        assert strategy.activation_checkpointing_perception is True
+
+    def test_activation_checkpointing_flags_are_independent(self):
+        """Each AC flag can be set without the other."""
+        llm_only = AutomodelParallelStrategy(activation_checkpointing_llm=True)
+        assert llm_only.activation_checkpointing_llm is True
+        assert llm_only.activation_checkpointing_perception is False
+
+        perception_only = AutomodelParallelStrategy(activation_checkpointing_perception=True)
+        assert perception_only.activation_checkpointing_llm is False
+        assert perception_only.activation_checkpointing_perception is True
 
     def test_custom_parallelism_sizes(self):
         strategy = AutomodelParallelStrategy(
@@ -241,6 +261,26 @@ class TestResolveTrainerCfg:
         )
         resolved = resolve_trainer_cfg(trainer_cfg)
         assert resolved["strategy"] == "ddp"
+
+    def test_automodel_strategy_with_ac_flags_from_yaml(self):
+        """Both AC flags can be set via YAML and survive Hydra instantiation."""
+        trainer_cfg = DictConfig(
+            {
+                "devices": 1,
+                "accelerator": "cpu",
+                "strategy": {
+                    "_target_": "nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy",
+                    "ep_size": 4,
+                    "activation_checkpointing_llm": True,
+                    "activation_checkpointing_perception": True,
+                },
+            }
+        )
+        resolved = resolve_trainer_cfg(trainer_cfg)
+        strategy = resolved["strategy"]
+        assert isinstance(strategy, AutomodelParallelStrategy)
+        assert strategy.activation_checkpointing_llm is True
+        assert strategy.activation_checkpointing_perception is True
 
     def test_automodel_strategy_without_configs(self):
         """AutomodelParallelStrategy can be specified without distributed_config/moe_config."""

@@ -49,7 +49,7 @@ except (ImportError, ModuleNotFoundError):
     PYNINI_AVAILABLE = False
 
 from nemo.collections.tts.models import MagpieTTSModel
-from nemo.collections.tts.modules.magpietts_modules import add_eos_token
+from nemo.collections.tts.modules.magpietts_modules import add_eos_token, pad_audio_codes
 
 
 class MagpieTTSModelOfflinePODataGen(MagpieTTSModel):
@@ -906,69 +906,76 @@ class MagpieTTSModelOnlinePO(MagpieTTSModel):
         codebook_targets, _ = add_eos_token(
             codes=predicted_codes, codes_len=predicted_codes_lens, eos_id=self.audio_eos_id
         )
+        codebook_targets = pad_audio_codes(codebook_targets, self.frame_stacking_factor).long()
 
         total_loss = None
         total_kl = None
-        for codebook_idx in range(self.num_audio_codebooks):
-            policy_codebook_loss_mask = policy_model_outputs['loss_mask'][:, codebook_idx, :]
-            reference_codebook_loss_mask = (
-                reference_model_output['loss_mask'][:, codebook_idx, :] if not self.reference_free else None
-            )
-            si = codebook_idx * self.num_all_tokens_per_codebook
-            ei = si + self.num_all_tokens_per_codebook
-
-            codebook_logits = policy_model_outputs[logits_key][:, :, si:ei]  # B, T, C
-            codebook_labels = codebook_targets[:, codebook_idx, :]
-
-            per_token_codebook_log_probs = self._get_per_token_logps(
-                codebook_logits, codebook_labels, policy_codebook_loss_mask
-            )
-            per_token_loss = -(
-                torch.exp(per_token_codebook_log_probs - per_token_codebook_log_probs.detach())
-                * advantages.unsqueeze(1)
-            )
-            group_validities = generated_codes_and_metrics['group_validities']  # B * n_generations_per_item
-            per_token_loss = per_token_loss * group_validities.unsqueeze(1)  # B, T
-
-            if not self.reference_free:
-                with torch.no_grad():
-                    ref_codebook_logits = reference_model_output[logits_key][:, :, si:ei]
-                    per_token_ref_codebook_log_probs = self._get_per_token_logps(
-                        ref_codebook_logits, codebook_labels, reference_codebook_loss_mask
-                    )
-                    # https://github.com/huggingface/trl/blob/ffcb9f4aee725a2bd072d0387afe68a4b1c7967c/trl/trainer/grpo_trainer.py#L703
-                per_token_codebook_kl = (
-                    torch.exp(per_token_ref_codebook_log_probs - per_token_codebook_log_probs)
-                    - (per_token_ref_codebook_log_probs - per_token_codebook_log_probs)
-                    - 1
+        for fs_idx in range(self.frame_stacking_factor):
+            for codebook_idx in range(self.num_audio_codebooks):
+                policy_codebook_loss_mask = policy_model_outputs['loss_mask'][
+                    :, codebook_idx, fs_idx :: self.frame_stacking_factor
+                ]
+                reference_codebook_loss_mask = (
+                    reference_model_output['loss_mask'][:, codebook_idx, fs_idx :: self.frame_stacking_factor]
+                    if not self.reference_free
+                    else None
                 )
-                per_token_loss = per_token_loss + self.cfg.grpo_beta * per_token_codebook_kl
-                codebook_kl_loss_mean = (
-                    (per_token_codebook_kl * policy_codebook_loss_mask).sum(dim=1)
-                    / policy_codebook_loss_mask.sum(dim=1)
-                ).mean()
-            else:
-                codebook_kl_loss_mean = torch.tensor(0.0, device=self.device)
+                si = (codebook_idx + self.num_audio_codebooks * fs_idx) * self.num_all_tokens_per_codebook
+                ei = si + self.num_all_tokens_per_codebook
 
-            if self.loss_type == "grpo":
-                codebook_loss = (
-                    (per_token_loss * policy_codebook_loss_mask).sum(dim=1) / policy_codebook_loss_mask.sum(dim=1)
-                ).mean()
-            elif self.loss_type == "dr_grpo":
-                # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py
-                total_tokens = per_token_loss.shape[0] * self.max_decoder_steps
-                codebook_loss = (per_token_loss * policy_codebook_loss_mask).sum() / total_tokens
-            else:
-                raise ValueError(f"Unknown loss function: {self.loss_type}")
+                codebook_logits = policy_model_outputs[logits_key][:, :, si:ei]  # B, T, C
+                codebook_labels = codebook_targets[:, codebook_idx, fs_idx :: self.frame_stacking_factor]
 
-            if total_loss is None:
-                total_loss = codebook_loss
-                total_kl = codebook_kl_loss_mean
-            else:
-                total_loss += codebook_loss
-                total_kl += codebook_kl_loss_mean
+                per_token_codebook_log_probs = self._get_per_token_logps(
+                    codebook_logits, codebook_labels, policy_codebook_loss_mask
+                )
+                per_token_loss = -(
+                    torch.exp(per_token_codebook_log_probs - per_token_codebook_log_probs.detach())
+                    * advantages.unsqueeze(1)
+                )
+                group_validities = generated_codes_and_metrics['group_validities']  # B * n_generations_per_item
+                per_token_loss = per_token_loss * group_validities.unsqueeze(1)  # B, T
 
-        total_loss /= self.num_audio_codebooks
+                if not self.reference_free:
+                    with torch.no_grad():
+                        ref_codebook_logits = reference_model_output[logits_key][:, :, si:ei]
+                        per_token_ref_codebook_log_probs = self._get_per_token_logps(
+                            ref_codebook_logits, codebook_labels, reference_codebook_loss_mask
+                        )
+                        # https://github.com/huggingface/trl/blob/ffcb9f4aee725a2bd072d0387afe68a4b1c7967c/trl/trainer/grpo_trainer.py#L703
+                    per_token_codebook_kl = (
+                        torch.exp(per_token_ref_codebook_log_probs - per_token_codebook_log_probs)
+                        - (per_token_ref_codebook_log_probs - per_token_codebook_log_probs)
+                        - 1
+                    )
+                    per_token_loss = per_token_loss + self.cfg.grpo_beta * per_token_codebook_kl
+                    codebook_kl_loss_mean = (
+                        (per_token_codebook_kl * policy_codebook_loss_mask).sum(dim=1)
+                        / policy_codebook_loss_mask.sum(dim=1)
+                    ).mean()
+                else:
+                    codebook_kl_loss_mean = torch.tensor(0.0, device=self.device)
+
+                if self.loss_type == "grpo":
+                    codebook_loss = (
+                        (per_token_loss * policy_codebook_loss_mask).sum(dim=1) / policy_codebook_loss_mask.sum(dim=1)
+                    ).mean()
+                elif self.loss_type == "dr_grpo":
+                    # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py
+                    total_tokens = per_token_loss.shape[0] * self.max_decoder_steps
+                    codebook_loss = (per_token_loss * policy_codebook_loss_mask).sum() / total_tokens
+                else:
+                    raise ValueError(f"Unknown loss function: {self.loss_type}")
+
+                if total_loss is None:
+                    total_loss = codebook_loss
+                    total_kl = codebook_kl_loss_mean
+                else:
+                    total_loss += codebook_loss
+                    total_kl += codebook_kl_loss_mean
+
+        total_loss /= self.num_audio_codebooks * self.frame_stacking_factor
+        total_kl /= self.num_audio_codebooks * self.frame_stacking_factor
 
         return {
             'mean_reward': generated_codes_and_metrics['mean_reward'],

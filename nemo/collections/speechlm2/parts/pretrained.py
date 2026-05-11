@@ -148,6 +148,8 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
 
     If user config specifies encoder parameters, they will override the pretrained model's config.
     """
+    from nemo.collections.speechlm2.modules.perception import MultiLayerProjectionConnector, QformerConnector
+
     if pretrained_weights:
         # Save user-specified encoder config before loading pretrained model
         user_encoder_config = {}
@@ -160,14 +162,27 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
             model.cfg.perception.preprocessor = asr.cfg.preprocessor
             model.cfg.perception.encoder = asr.cfg.encoder
             if model.llm is not None:
-                model.cfg.perception.output_dim = model.llm.config.hidden_size
+                hidden_size = model.llm.config.hidden_size
+                model.cfg.perception.output_dim = hidden_size
+                # Connectors like MultiLayerProjectionConnector carry their own
+                # output projection via ``modality_adapter.output_dim``; keep it
+                # in sync with the LLM so the inner Linear matches.
+                adapter_cfg = model.cfg.perception.get('modality_adapter', None)
+                if adapter_cfg is not None and 'output_dim' in adapter_cfg:
+                    adapter_cfg.output_dim = hidden_size
             # Override with user-specified encoder parameters, e.g. initializiing a non-causal encoder for causal setup.
             if user_encoder_config:
                 for key, value in user_encoder_config.items():
                     if value is not None:  # Only override if user explicitly set a value
                         model.cfg.perception.encoder[key] = value
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
-        model.perception.load_state_dict(asr.state_dict(), strict=False)
+        asr_sd = asr.state_dict()
+        # When a multilayer/Qformer connector is used, the encoder lives at
+        # ``encoder_multilayer.encoder.*`` rather than ``encoder.*``; remap ASR
+        # state-dict keys so pretrained encoder weights actually load.
+        if isinstance(model.perception.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
+            asr_sd = {('encoder_multilayer.' + k if k.startswith('encoder.') else k): v for k, v in asr_sd.items()}
+        model.perception.load_state_dict(asr_sd, strict=False)
     else:
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
 

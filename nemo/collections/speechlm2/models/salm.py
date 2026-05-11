@@ -38,6 +38,7 @@ from transformers import GenerationConfig
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
+from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
@@ -157,6 +158,7 @@ class SALM(LightningModule, HFHubMixin):
         Performs additional processing on the mini-batch collected from dataloader.
         Notably:
         * Convert source audio to speech representations.
+        * Optionally chunk long source audio for the encoder and recombine the encoded chunks.
         * Convert target audio to target audio tokens.
         * Convert target text to embeddings.
         * Combine the input audio and target text embeddings.
@@ -166,10 +168,13 @@ class SALM(LightningModule, HFHubMixin):
         # Source audio encoding.
         # Input audio: (B, T_samples)
         # Audio embeddings: (B, T, H)
-        audio_embs, audio_emb_lens = self.perception(
-            input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
+        audio_embs = encode_audio_with_optional_chunking(
+            self.perception,
+            batch["audios"],
+            batch["audio_lens"],
+            chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+            sampling_rate=self.sampling_rate,
         )
-        audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self.embed_tokens(input_ids_to_embed)
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
@@ -399,10 +404,13 @@ class SALM(LightningModule, HFHubMixin):
             # Prepare token embeddings and audio embeddings.
             tokens_to_embed = tokens.where(tokens != self.audio_locator_tag_id, 0)
             token_embeds = self.embed_tokens(tokens_to_embed)
-            # TODO: temporary workaround to perform batch_size=1 inference for audio encoder
-            #   due to accuracy issues at bs>1
-            audio_embeds, audio_embed_lens = self.perception(audios, audio_lens)
-            audio_embeds = [audio_embeds[i, :elen] for i, elen in enumerate(audio_embed_lens)]
+            audio_embeds = encode_audio_with_optional_chunking(
+                self.perception,
+                audios,
+                audio_lens,
+                chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+                sampling_rate=self.sampling_rate,
+            )
             # Insert audio embeddings into relevant positions in text embeddings.
             input_embeds, _, attention_mask = replace_placeholders_and_build_targets(
                 input_ids=tokens,

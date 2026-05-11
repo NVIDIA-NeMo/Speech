@@ -1452,6 +1452,15 @@ class StatelessTimer(Timer):
         """_check_time_remaining"""
         super()._check_time_remaining(trainer)
         if trainer.should_stop:
+            # PTL's TrainingEpochLoop.advance() calls the on_train_batch_end hooks (which is where
+            # Timer._check_time_remaining fires) BEFORE batch_progress.increment_completed(). The
+            # current batch's optim step has already advanced global_step, so saving here would
+            # capture batch_progress.current.completed lagging one behind optim_progress. On
+            # resume, reset_on_restart rewinds batch_progress to .completed, PTL replays the
+            # in-flight batch, and its optim step runs a second time — double-counting one
+            # global_step per wall-time resume. Flush the in-flight batch first to keep the
+            # saved state self-consistent.
+            _flush_in_flight_batch_progress(trainer)
             checkpoint_callback: Optional[NeMoModelCheckpoint] = trainer.checkpoint_callback
             if checkpoint_callback:
                 monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
@@ -1460,6 +1469,22 @@ class StatelessTimer(Timer):
             from lightning.pytorch.utilities.exceptions import _TunerExitException
 
             raise _TunerExitException()
+
+
+def _flush_in_flight_batch_progress(trainer: lightning.pytorch.Trainer) -> None:
+    """Bring batch_progress.current.completed up to .ready if a batch is in flight.
+
+    Meant to be called from an ``on_train_batch_end`` hook before a checkpoint save,
+    where PTL has not yet incremented ``batch_progress.current.completed`` but the
+    batch's optim step has already advanced ``global_step``. See
+    :meth:`StatelessTimer._check_time_remaining` for the off-by-one it avoids.
+    """
+    try:
+        batch_progress = trainer.fit_loop.epoch_loop.batch_progress
+    except AttributeError:
+        return
+    if batch_progress.current.ready > batch_progress.current.completed:
+        batch_progress.increment_completed()
 
 
 def configure_no_restart_validation_training_loop(trainer: lightning.pytorch.Trainer) -> None:

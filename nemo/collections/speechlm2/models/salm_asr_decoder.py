@@ -63,8 +63,10 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
         self.cfg = DictConfig(cfg)
         self.audio_locator_tag = self.cfg.audio_locator_tag
 
-        self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
-        self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
+        self.tokenizer = AutoTokenizer(tokenizer_src, use_fast=True)
+        if self.audio_locator_tag not in self.tokenizer.tokenizer.get_vocab():
+            self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
         self.llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights)
         if not hasattr(self.llm, "model") and hasattr(self.llm, "backbone"):
             type(self.llm).model = property(lambda self: self.backbone)

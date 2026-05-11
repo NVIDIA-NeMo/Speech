@@ -209,6 +209,39 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     (output_dir / "generation_config.json").write_text(json.dumps(gen_cfg, indent=2) + "\n")
 
 
+def save_tokenizer_llm_config(output_dir: str, model, save_tokenizer=True, save_llm_config=True) -> None:
+    """Save tokenizer and LLM config alongside the checkpoint."""
+    from nemo.utils import logging
+
+    output_dir = Path(output_dir)
+
+    tokenizer = getattr(model, "tokenizer", None)
+    if save_tokenizer and tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
+        tok_dir = output_dir / "tokenizer"
+        tok_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            tokenizer.save_pretrained(str(tok_dir))
+            logging.info(f"Saved tokenizer to {tok_dir}")
+        except Exception as e:
+            raise Exception(f"Failed to save LLM config in {tok_dir}") from e
+
+    llm = getattr(model, "llm", None)
+    if save_llm_config and llm is not None and hasattr(llm, "config"):
+        llm_dir = output_dir / "llm"
+        llm_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            llm.config.save_pretrained(str(llm_dir))
+            gen_cfg = getattr(llm, "generation_config", None)
+            if gen_cfg is not None:
+                try:
+                    gen_cfg.save_pretrained(str(llm_dir))
+                except Exception:  # generation_config is optional
+                    pass
+            logging.info(f"Saved LLM config to {llm_dir}")
+        except Exception as e:
+            raise Exception(f"Failed to save LLM config in {llm_dir}") from e
+
+
 def _try_prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     """Run vLLM prep; on ``ValueError``, warn and keep the HF-only output.
 
@@ -309,6 +342,7 @@ def main(cfg: HfExportConfig) -> None:
         consolidated = consolidate_state_dict(model)
         if dist.get_rank() == 0:
             save_hf_checkpoint(model, consolidated, cfg)
+            save_tokenizer_llm_config(cfg.output_dir, model)
             _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 
         dist.barrier()
@@ -320,6 +354,7 @@ def main(cfg: HfExportConfig) -> None:
         model = model.to(getattr(torch, cfg.dtype))
         model_cfg["pretrained_weights"] = False
         model.save_pretrained(cfg.output_dir)
+        save_tokenizer_llm_config(cfg.output_dir, model)
         _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 
 

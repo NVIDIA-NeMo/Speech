@@ -45,24 +45,17 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
-        # Global_rank and local_rank is set by LightningModule in Lightning 1.2.0
-        self.world_size = 1
-        if trainer is not None:
-            self.world_size = trainer.world_size
-
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
-        self.encoder = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.encoder)
-        self.mask_estimator = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mask_estimator)
-        self.mask_processor = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mask_processor)
-        self.decoder = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.decoder)
+        self.encoder = self.from_config_dict(self._cfg.encoder)
+        self.mask_estimator = self.from_config_dict(self._cfg.mask_estimator)
+        self.mask_processor = self.from_config_dict(self._cfg.mask_processor)
+        self.decoder = self.from_config_dict(self._cfg.decoder)
 
         if 'mixture_consistency' in self._cfg:
             logging.debug('Using mixture consistency')
-            self.mixture_consistency = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mixture_consistency)
+            self.mixture_consistency = self.from_config_dict(self._cfg.mixture_consistency)
         else:
             logging.debug('Mixture consistency not used')
             self.mixture_consistency = None
@@ -70,13 +63,10 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         # Setup augmentation
         if hasattr(self.cfg, 'channel_augment') and self.cfg.channel_augment is not None:
             logging.debug('Using channel augmentation')
-            self.channel_augmentation = EncMaskDecAudioToAudioModel.from_config_dict(self.cfg.channel_augment)
+            self.channel_augmentation = self.from_config_dict(self.cfg.channel_augment)
         else:
             logging.debug('Channel augmentation not used')
             self.channel_augmentation = None
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
@@ -133,56 +123,16 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         processed = self.match_batch_length(input=processed, batch_length=batch_length)
         return processed, processed_length
 
-    # PTL-specific methods
-    def training_step(self, batch, batch_idx):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
-
+    def _compute_train_loss(self, input_signal, target_signal, input_length):
         # Apply channel augmentation
         if self.training and self.channel_augmentation is not None:
             input_signal = self.channel_augmentation(input=input_signal)
 
-        # Process input
         processed_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
-
-        # Calculate the loss
-        loss = self.loss(estimate=processed_signal, target=target_signal, input_length=input_length)
-
-        # Logs
-        self.log('train_loss', loss)
-        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
-
-        # Return loss
-        return loss
+        return self.loss(estimate=processed_signal, target=target_signal, input_length=input_length)
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Process input
         processed_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
@@ -222,7 +172,6 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = self.from_config_dict(self._cfg.encoder)
@@ -236,9 +185,6 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
 
         # Term added to the denominator to improve numerical stability
         self.eps = self._cfg.get('eps', 1e-8)
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
         logging.debug('Initialized %s', self.__class__.__name__)
         logging.debug('\tnormalize_input: %s', self.normalize_input)
@@ -272,10 +218,7 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
         batch_length = input_signal.size(-1)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
+            input_signal, norm_scale = self._normalize(input_signal)
 
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
@@ -287,63 +230,23 @@ class PredictiveAudioToAudioModel(AudioToAudioModel):
         output, output_length = self.decoder(input=estimated, input_length=estimated_length)
 
         if self.normalize_input:
-            # rescale to the original scale
-            output = output * norm_scale
+            output = self._denormalize(output, norm_scale)
 
         # Trim or pad the estimated signal to match input length
         output = self.match_batch_length(input=output, batch_length=batch_length)
         return output, output_length
 
-    # PTL-specific methods
-    def training_step(self, batch, batch_idx):
+    def _compute_train_loss(self, input_signal, target_signal, input_length):
+        output_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
+        return self.loss(estimate=output_signal, target=target_signal, input_length=input_length)
 
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+    def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Estimate the signal
         output_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
 
         # Calculate the loss
-        loss = self.loss(estimate=output_signal, target=target_signal, input_length=input_length)
-
-        # Logs
-        self.log('train_loss', loss)
-        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
-
-        return loss
-
-    def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
-
-        # Estimate the signal
-        output_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
-
-        # Prepare output
         loss = self.loss(estimate=output_signal, target=target_signal, input_length=input_length)
 
         # Update metrics
@@ -372,7 +275,6 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = self.from_config_dict(self._cfg.encoder)
@@ -406,9 +308,6 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
 
         # Term added to the denominator to improve numerical stability
         self.eps = self._cfg.get('eps', 1e-8)
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
         logging.debug('Initialized %s', self.__class__.__name__)
         logging.debug('\tnormalize_input: %s', self.normalize_input)
@@ -450,10 +349,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
         batch_length = input_signal.size(-1)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
+            input_signal, norm_scale = self._normalize(input_signal)
 
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
@@ -467,8 +363,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
         output, output_length = self.decoder(input=generated, input_length=generated_length)
 
         if self.normalize_input:
-            # rescale to the original scale
-            output = output * norm_scale
+            output = self._denormalize(output, norm_scale)
 
         # Trim or pad the estimated signal to match input length
         output = self.match_batch_length(input=output, batch_length=batch_length)
@@ -493,11 +388,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
         batch_size = target_signal.size(0)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
-            # scale the target signal
+            input_signal, norm_scale = self._normalize(input_signal)
             target_signal = target_signal / (norm_scale + self.eps)
 
         # Apply encoder to both target and the input
@@ -535,48 +426,11 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
 
         return loss
 
-    # PTL-specific methods
-    def training_step(self, batch, batch_idx):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
-
-        # Calculate the loss
-        loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
-
-        # Logs
-        self.log('train_loss', loss)
-        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
-
-        return loss
+    def _compute_train_loss(self, input_signal, target_signal, input_length):
+        return self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate loss
         loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
@@ -634,7 +488,6 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = self.from_config_dict(self._cfg.encoder)
@@ -676,9 +529,6 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
 
         # Regularization
         self.eps = self._cfg.get('eps', 1e-8)
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
         logging.debug('Initialized              %s', self.__class__.__name__)
         logging.debug('\tdoing SSL-pretraining: %s', (self.ssl_pretrain_masking is not None))
@@ -765,10 +615,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         batch_length = input_signal.size(-1)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
+            input_signal, norm_scale = self._normalize(input_signal)
 
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
@@ -793,8 +640,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         output, output_length = self.decoder(input=generated, input_length=generated_length)
 
         if self.normalize_input:
-            # rescale to the original scale
-            output = output * norm_scale
+            output = self._denormalize(output, norm_scale)
 
         # Trim or pad the estimated signal to match input length
         output = self.match_batch_length(input=output, batch_length=batch_length)
@@ -815,11 +661,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         batch_size = target_signal.size(0)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
-            # scale the target signal
+            input_signal, norm_scale = self._normalize(input_signal)
             target_signal = target_signal / (norm_scale + self.eps)
 
         # Apply encoder to both target and the input
@@ -857,47 +699,27 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
 
         return self.loss(estimate=estimate, target=loss_target, input_length=input_enc_len)
 
-    # PTL-specific methods
-    def training_step(self, batch, batch_idx):
+    def _parse_batch(self, batch):
+        """Override to allow missing target_signal for SSL pretraining."""
         if isinstance(batch, dict):
-            # lhotse batches are dictionaries
             input_signal = batch['input_signal']
             input_length = batch['input_length']
             target_signal = batch.get('target_signal', input_signal.clone())
         else:
             input_signal, input_length, target_signal, _ = batch
 
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, "B T -> B 1 T")
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, "B T -> B 1 T")
-
-        # Calculate the loss
-        loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
-
-        # Logs
-        self.log('train_loss', loss)
-        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
-
-        return loss
-
-    def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch.get('target_signal', input_signal.clone())
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
         if input_signal.ndim == 2:
             input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
         if target_signal.ndim == 2:
             target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        return input_signal, target_signal, input_length
+
+    def _compute_train_loss(self, input_signal, target_signal, input_length):
+        return self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+
+    def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate loss
         loss = self._step(
@@ -961,7 +783,6 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
 
         # Setup processing modules
         self.encoder = self.from_config_dict(self._cfg.encoder)
@@ -1016,9 +837,6 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         # Term added to the denominator to improve numerical stability
         self.eps = self._cfg.get('eps', 1e-8)
 
-        # Setup optional optimization flags
-        self.setup_optimization_flags()
-
         logging.debug('Initialized %s', self.__class__.__name__)
         logging.debug('\testimator_output:    %s', self.estimator_output)
         logging.debug('\tnormalize_input:     %s', self.normalize_input)
@@ -1067,10 +885,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         batch_length = input_signal.size(-1)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
+            input_signal, norm_scale = self._normalize(input_signal)
 
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
@@ -1084,8 +899,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         output, output_length = self.decoder(input=generated, input_length=generated_length)
 
         if self.normalize_input:
-            # rescale to the original scale
-            output = output * norm_scale
+            output = self._denormalize(output, norm_scale)
 
         # Trim or pad the estimated signal to match input length
         output = self.match_batch_length(input=output, batch_length=batch_length)
@@ -1100,8 +914,6 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         },
         output_types={
             "loss": NeuralType(None, LossType()),
-            "loss_encoded": NeuralType(None, LossType()),
-            "loss_time": NeuralType(None, LossType()),
         },
     )
     def _step(self, target_signal, input_signal, input_length=None):
@@ -1111,11 +923,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         batch_size = target_signal.size(0)
 
         if self.normalize_input:
-            # max for each example in the batch
-            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
-            # scale input signal
-            input_signal = input_signal / (norm_scale + self.eps)
-            # scale the target signal
+            input_signal, norm_scale = self._normalize(input_signal)
             target_signal = target_signal / (norm_scale + self.eps)
 
         # Apply encoder to both target and the input
@@ -1164,7 +972,6 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
             if self.loss is not None:
                 # Single loss in the encoded domain
                 loss = self.loss(estimate=estimate, target=target_enc, input_length=estimate_len)
-                loss_encoded = loss_time = None
             else:
                 # Weighted loss between encoded and time domain
                 loss = 0.0
@@ -1173,10 +980,10 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
                 if self.loss_encoded is not None:
                     # Loss between the estimate and the target in the encoded domain
                     loss_encoded = self.loss_encoded(estimate=estimate, target=target_enc, input_length=estimate_len)
+                    if self.training:
+                        self.log('train_loss_encoded', loss_encoded)
                     # Weighting
                     loss += self.loss_encoded_weight * loss_encoded
-                else:
-                    loss_encoded = None
 
                 # Loss in the time domain
                 if self.loss_time is not None:
@@ -1193,68 +1000,23 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
                     loss_time = self.loss_time(
                         estimate=estimate_signal, target=target_signal, input_length=input_length
                     )
+                    if self.training:
+                        self.log('train_loss_time', loss_time)
                     # Weighting
                     loss += self.loss_time_weight * loss_time
-                else:
-                    loss_time = None
         else:
             raise NotImplementedError(f'Output type {self.estimator_output} is not implemented')
 
-        return loss, loss_encoded, loss_time
-
-    # PTL-specific methods
-    def training_step(self, batch, batch_idx):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
-
-        # Calculate the loss
-        loss, loss_encoded, loss_time = self._step(
-            target_signal=target_signal, input_signal=input_signal, input_length=input_length
-        )
-
-        # Logs
-        self.log('train_loss', loss)
-        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
-
-        if loss_encoded is not None:
-            self.log('train_loss_encoded', loss_encoded)
-
-        if loss_time is not None:
-            self.log('train_loss_time', loss_time)
-
         return loss
 
+    def _compute_train_loss(self, input_signal, target_signal, input_length):
+        return self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-
-        if isinstance(batch, dict):
-            # lhotse batches are dictionaries
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Calculate loss
-        loss, *_ = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+        loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
 
         # Update metrics
         update_metrics = False

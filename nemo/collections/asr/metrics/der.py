@@ -12,13 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from itertools import permutations
 from typing import IO, Any, Dict, Iterable, List, Optional, Tuple
-
-import editdistance
-import numpy as np
 from lhotse import SupervisionSegment
-from scipy.optimize import linear_sum_assignment as scipy_linear_sum_assignment
 
 from nemo.collections.asr.metrics.md_eval import (
     EPSILON,
@@ -47,9 +42,6 @@ __all__ = [
     'score_labels',
     'evaluate_der',
     'score_labels_from_rttm_labels',
-    'calculate_session_cpWER',
-    'calculate_session_cpWER_bruteforce',
-    'concat_perm_word_error_rate',
     # Lhotse-backed annotation/segment/timeline helpers.
     'make_diar_segment',
     'make_diar_annotation',
@@ -123,6 +115,7 @@ def make_diar_segment(
 def make_diar_annotation(
     labels: Iterable[str],
     uniq_name: str = "",
+    audio_end: Optional[float] = None,
 ) -> List[SupervisionSegment]:
     """Build a diarization annotation from ``"start end speaker"`` label strings.
 
@@ -130,13 +123,16 @@ def make_diar_annotation(
     helper.
 
     Args:
-        labels: Iterable of label strings, each formatted as
+        labels (Iterable[str]): Iterable of label strings, each formatted as
             ``"start end speaker"``.
-        uniq_name: Recording / file identifier (used as the recording id of
-            each emitted supervision).
+        uniq_name (str): Recording / file identifier (used as the recording id
+            of each emitted supervision).
+        audio_end (Optional[float]): If provided, segment end times are capped
+            at this value (typically ``offset + duration`` from the manifest).
+            Segments that fall entirely past ``audio_end`` are dropped.
 
     Returns:
-        List of ``SupervisionSegment`` objects, one per label line.
+        List[SupervisionSegment]: Supervision segments, one per valid label line.
     """
     recording_id = uniq_name or _DIAR_RECORDING_ID_PLACEHOLDER
     segments: List[SupervisionSegment] = []
@@ -144,11 +140,16 @@ def make_diar_annotation(
         parts = label.strip().split()
         if len(parts) < 3:
             continue
-        start, end, speaker = parts[0], parts[1], parts[2]
+        start, end = float(parts[0]), float(parts[1])
+        speaker = parts[2]
+        if audio_end is not None:
+            end = min(end, audio_end)
+            if end <= start:
+                continue
         segments.append(
             make_diar_segment(
-                start=float(start),
-                end=float(end),
+                start=start,
+                end=end,
                 speaker=speaker,
                 recording_id=recording_id,
                 segment_id=f"{recording_id}-{idx}",
@@ -237,14 +238,19 @@ def write_supervisions_to_rttm(
         first = next(iter(annotation), None)
         recording_id = getattr(first, "recording_id", "") if first is not None else ""
 
-    for start, end, speaker in _iter_annotation_segments(annotation):
+    # RTTM lines must be sorted by onset time to match the standard format.
+    segments = sorted(
+        _iter_annotation_segments(annotation),
+        key=lambda x: (x[0], x[1], x[2]),
+    )
+
+    # Write RTTM lines in sorted order
+    for start, end, speaker in segments:
         duration = end - start
         if duration <= 0:
             continue
         file_handle.write(
-            "SPEAKER {rid} {chnl} {start:.3f} {dur:.3f} <NA> <NA> {spk} <NA> <NA>\n".format(
-                rid=recording_id, chnl=channel, start=start, dur=duration, spk=speaker
-            )
+            f"SPEAKER {recording_id} {channel} {start:.3f} {duration:.3f} <NA> <NA> {speaker} <NA> <NA>\n"
         )
 
 
@@ -430,6 +436,69 @@ def _default_uem_from_ref_sys(
     return uem_data
 
 
+def _clamp_uem_to_manifest(
+    uem_data: Dict[str, Dict[str, List[Dict[str, float]]]],
+    audio_rttm_map: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, List[Dict[str, float]]]]:
+    """Clamp each per-file UEM segment to the manifest-declared audio extent.
+
+    The default auto-UEM (:func:`_default_uem_from_ref_sys`) spans the union of
+    reference and system extents. When the hypothesis overshoots the actual
+    audio duration (e.g., the last predicted segment ends past the audio's
+    final sample), the auto-UEM extends past the audio end and any such
+    overshoot is silently counted as false alarm. Historically NeMo's DER
+    pipeline clipped scoring to the manifest duration, which is also what
+    NIST-style external scorers (e.g., meeteval) do when their UEM is set
+    from the manifest. This helper restores that behaviour by clamping each
+    UEM segment to ``[offset, offset + duration]`` when those fields are
+    available in the manifest.
+
+    Args:
+        uem_data: UEM data dict
+            ``{file_id: {chnl: [{"TBEG": ..., "TEND": ...}, ...]}}``.
+        audio_rttm_map: Manifest map keyed by ``file_id``; per-file entries
+            may carry ``offset`` and ``duration`` fields (seconds).
+
+    Returns:
+        The same dict, mutated in place. Entries whose manifest does not
+        carry both ``offset`` and ``duration`` are left untouched. Segments
+        that fall entirely outside ``[offset, offset + duration]`` are
+        dropped, and a ``(file_id, chnl)`` whose segments all get dropped
+        is removed.
+    """
+    if not uem_data or not audio_rttm_map:
+        return uem_data
+    for file_id in list(uem_data.keys()):
+        manifest_entry = audio_rttm_map.get(file_id)
+        if not manifest_entry:
+            continue
+        offset = manifest_entry.get('offset', None)
+        duration = manifest_entry.get('duration', None)
+        if offset is None or duration is None:
+            continue
+        try:
+            audio_tbeg = float(offset)
+            audio_tend = audio_tbeg + float(duration)
+        except (TypeError, ValueError):
+            continue
+        if audio_tend <= audio_tbeg:
+            continue
+        for chnl in list(uem_data[file_id].keys()):
+            clamped: List[Dict[str, float]] = []
+            for seg in uem_data[file_id][chnl]:
+                new_tbeg = max(float(seg["TBEG"]), audio_tbeg)
+                new_tend = min(float(seg["TEND"]), audio_tend)
+                if new_tend > new_tbeg + EPSILON:
+                    clamped.append({"TBEG": new_tbeg, "TEND": new_tend})
+            if clamped:
+                uem_data[file_id][chnl] = clamped
+            else:
+                del uem_data[file_id][chnl]
+        if not uem_data[file_id]:
+            del uem_data[file_id]
+    return uem_data
+
+
 def score_labels(
     AUDIO_RTTM_MAP,
     all_reference: list,
@@ -520,6 +589,12 @@ def score_labels(
     uem_data = _merge_uem_dicts(uem_dicts) if uem_dicts else None
     if uem_data is None:
         uem_data = _default_uem_from_ref_sys(ref_data, sys_data)
+        # When the manifest declares an audio extent, clamp the auto-derived UEM to
+        # ``[offset, offset + duration]`` so hypothesis overshoots past the actual
+        # audio end don't inflate false alarm. Matches the historical NeMo pipeline
+        # and the manifest-based UEM convention used by external scorers (e.g.
+        # meeteval).
+        uem_data = _clamp_uem_to_manifest(uem_data, AUDIO_RTTM_MAP)
 
     all_scores, cum = evaluate(
         ref_data,
@@ -694,173 +769,3 @@ def score_labels_from_rttm_labels(
     )
 
     return metric, mapping_dict, itemized_errors
-
-
-def calculate_session_cpWER_bruteforce(spk_hypothesis: List[str], spk_reference: List[str]) -> Tuple[float, str, str]:
-    """
-    Calculate cpWER with brute-force permutation search. Matches MeetEval's cpWER algorithm:
-    each (ref_speaker, hyp_speaker) pair is scored independently via edit distance, then
-    cpWER = sum(errors) / sum(ref_word_counts).
-
-    Args:
-        spk_hypothesis (list):
-            List containing the hypothesis transcript for each speaker.
-
-            Example:
-            >>> spk_hypothesis = ["hey how are you we that's nice", "i'm good yes hi is your sister"]
-
-        spk_reference (list):
-            List containing the reference transcript for each speaker.
-
-            Example:
-            >>> spk_reference = ["hi how are you well that's nice", "i'm good yeah how is your sister"]
-
-    Returns:
-        cpWER (float):
-            cpWER value for the given session.
-        min_perm_hyp_trans (str):
-            Hypothesis transcript containing the permutation that minimizes WER. Words are separated by spaces.
-        ref_trans (str):
-            Reference transcript in an arbitrary permutation. Words are separated by spaces.
-    """
-    num_hyp = len(spk_hypothesis)
-    num_ref = len(spk_reference)
-    num_speakers_padded = max(num_hyp, num_ref)
-
-    ref_word_lists = [
-        spk_reference[ref_idx].split() if ref_idx < num_ref else [] for ref_idx in range(num_speakers_padded)
-    ]
-    hyp_word_lists = [
-        spk_hypothesis[hyp_idx].split() if hyp_idx < num_hyp else [] for hyp_idx in range(num_speakers_padded)
-    ]
-
-    best_total_errors = float('inf')
-    best_hyp_trans = ""
-    total_ref_length = sum(len(word_list) for word_list in ref_word_lists)
-
-    for perm in permutations(range(num_speakers_padded)):
-        total_errors = 0
-        hyp_texts = []
-        for ref_idx, hyp_idx in enumerate(perm):
-            total_errors += editdistance.eval(ref_word_lists[ref_idx], hyp_word_lists[hyp_idx])
-            hyp_texts.append(spk_hypothesis[hyp_idx] if hyp_idx < num_hyp else "")
-        if total_errors < best_total_errors:
-            best_total_errors = total_errors
-            best_hyp_trans = " ".join(hyp_texts)
-
-    cpWER = best_total_errors / total_ref_length if total_ref_length > 0 else float('inf')
-    ref_trans = " ".join(spk_reference)
-    return cpWER, best_hyp_trans, ref_trans
-
-
-def calculate_session_cpWER(spk_hypothesis: List[str], spk_reference: List[str]) -> Tuple[float, str, str]:
-    """
-    Calculate a session-level concatenated minimum-permutation word error rate (cpWER) value,
-    matching MeetEval's cpWER algorithm (https://github.com/fgnt/meeteval).
-
-    Algorithm (identical to MeetEval):
-        1. Build a square cost matrix of size max(num_hyp, num_ref) using raw edit distance
-           counts between every (ref_speaker, hyp_speaker) pair. Missing speakers are padded
-           with empty word lists.
-        2. Use the Hungarian algorithm (scipy.optimize.linear_sum_assignment) to find the
-           speaker assignment that minimizes total edit distance.
-        3. Compute per-pair edit distance independently for the optimal assignment.
-        4. cpWER = sum(errors_per_pair) / sum(ref_word_counts_per_pair).
-
-    Args:
-        spk_hypothesis (list):
-            List containing the hypothesis transcript for each speaker.
-
-            Example:
-            >>> spk_hypothesis = ["hey how are you we that's nice", "i'm good yes hi is your sister"]
-
-        spk_reference (list):
-            List containing the reference transcript for each speaker.
-
-            Example:
-            >>> spk_reference = ["hi how are you well that's nice", "i'm good yeah how is your sister"]
-
-    Returns:
-        cpWER (float):
-            cpWER value for the given session.
-        min_perm_hyp_trans (str):
-            Hypothesis transcript containing the permutation that minimizes WER. Words are separated by spaces.
-        ref_trans (str):
-            Reference transcript in an arbitrary permutation. Words are separated by spaces.
-    """
-    num_hyp = len(spk_hypothesis)
-    num_ref = len(spk_reference)
-
-    if num_hyp == 0 and num_ref == 0:
-        return 0.0, "", ""
-
-    num_speakers_padded = max(num_hyp, num_ref)
-
-    ref_word_lists = [
-        spk_reference[ref_idx].split() if ref_idx < num_ref else [] for ref_idx in range(num_speakers_padded)
-    ]
-    hyp_word_lists = [
-        spk_hypothesis[hyp_idx].split() if hyp_idx < num_hyp else [] for hyp_idx in range(num_speakers_padded)
-    ]
-
-    cost_matrix = np.zeros((num_speakers_padded, num_speakers_padded), dtype=np.float64)
-    for ref_idx in range(num_speakers_padded):
-        for hyp_idx in range(num_speakers_padded):
-            cost_matrix[ref_idx, hyp_idx] = editdistance.eval(ref_word_lists[ref_idx], hyp_word_lists[hyp_idx])
-
-    row_ind, col_ind = scipy_linear_sum_assignment(cost_matrix)
-
-    total_errors = 0
-    total_ref_length = 0
-    hyp_texts = []
-    for ref_idx, hyp_idx in zip(row_ind, col_ind):
-        total_errors += int(cost_matrix[ref_idx, hyp_idx])
-        total_ref_length += len(ref_word_lists[ref_idx])
-        hyp_texts.append(spk_hypothesis[hyp_idx] if hyp_idx < num_hyp else "")
-
-    cpWER = total_errors / total_ref_length if total_ref_length > 0 else float('inf')
-
-    min_perm_hyp_trans = " ".join(hyp_texts)
-    ref_trans = " ".join(spk_reference)
-
-    return cpWER, min_perm_hyp_trans, ref_trans
-
-
-def concat_perm_word_error_rate(
-    spk_hypotheses: List[List[str]], spk_references: List[List[str]]
-) -> Tuple[List[float], List[str], List[str]]:
-    """
-    Launcher function for `calculate_session_cpWER`. Calculate session-level cpWER and average cpWER.
-    For detailed information about cpWER, see docstrings of `calculate_session_cpWER` function.
-
-    As opposed to `cpWER`, `WER` is the regular WER value where the hypothesis transcript contains
-    words in temporal order regardless of the speakers. `WER` value can be different from cpWER value,
-    depending on the speaker diarization results.
-
-    Args:
-        spk_hypotheses (list):
-            List containing the lists of speaker-separated hypothesis transcripts.
-        spk_references (list):
-            List containing the lists of speaker-separated reference transcripts.
-
-    Returns:
-        cpWER (float):
-            List containing cpWER values for each session
-        min_perm_hyp_trans (list):
-            List containing transcripts that lead to the minimum WER in string format
-        ref_trans (list):
-            List containing concatenated reference transcripts
-    """
-    if len(spk_hypotheses) != len(spk_references):
-        raise ValueError(
-            "In concatenated-minimum permutation word error rate calculation, "
-            "hypotheses and reference lists must have the same number of elements. But got arguments:"
-            f"{len(spk_hypotheses)} and {len(spk_references)} correspondingly"
-        )
-    cpWER_values, hyps_spk, refs_spk = [], [], []
-    for spk_hypothesis, spk_reference in zip(spk_hypotheses, spk_references):
-        cpWER, min_hypothesis, concat_reference = calculate_session_cpWER(spk_hypothesis, spk_reference)
-        cpWER_values.append(cpWER)
-        hyps_spk.append(min_hypothesis)
-        refs_spk.append(concat_reference)
-    return cpWER_values, hyps_spk, refs_spk

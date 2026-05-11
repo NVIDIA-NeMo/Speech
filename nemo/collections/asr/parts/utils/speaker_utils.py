@@ -311,7 +311,7 @@ def merge_stamps(lines):
     return overlap_stamps
 
 
-def labels_to_supervisions(labels, uniq_name=''):
+def labels_to_supervisions(labels, uniq_name='', audio_end=None):
     """Convert ``"start end speaker"`` label strings to a diarization annotation.
 
     Returns a ``list`` of :class:`lhotse.SupervisionSegment`, which is the
@@ -320,15 +320,17 @@ def labels_to_supervisions(labels, uniq_name=''):
     and other DER helpers.
 
     Args:
-        labels: Iterable of label strings, each formatted as
+        labels (Iterable[str]): Iterable of label strings, each formatted as
             ``"start end speaker"``.
-        uniq_name: Recording / file identifier (used as the recording id of
-            each emitted supervision).
+        uniq_name (str): Recording / file identifier (used as the recording id
+            of each emitted supervision).
+        audio_end (Optional[float]): If provided, segment end times are capped
+            at this value. Segments past this boundary are dropped.
 
     Returns:
-        List of :class:`lhotse.SupervisionSegment` objects, one per label.
+        List[SupervisionSegment]: Supervision segments, one per valid label.
     """
-    return make_diar_annotation(labels, uniq_name=uniq_name)
+    return make_diar_annotation(labels, uniq_name=uniq_name, audio_end=audio_end)
 
 
 def labels_to_rttmfile(labels, uniq_id, out_rttm_dir):
@@ -1407,10 +1409,11 @@ def timestamps_to_supervisions(
         entry of the form ``(uniq_id, list_of_SupervisionSegment)``.
     """
     offset, dur = float(audio_rttm_values.get('offset', None)), float(audio_rttm_values.get('duration', None))
+    audio_end = offset + dur
     hyp_labels = generate_diarization_output_lines(
         speaker_timestamps=speaker_timestamps, model_spk_num=len(speaker_timestamps)
     )
-    hypothesis = labels_to_supervisions(hyp_labels, uniq_name=uniq_id)
+    hypothesis = labels_to_supervisions(hyp_labels, uniq_name=uniq_id, audio_end=audio_end)
     if out_rttm_dir is not None and os.path.exists(out_rttm_dir):
         with open(f'{out_rttm_dir}/{uniq_id}.rttm', 'w') as f:
             write_supervisions_to_rttm(hypothesis, f, recording_id=uniq_id)

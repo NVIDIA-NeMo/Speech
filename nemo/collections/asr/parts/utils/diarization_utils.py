@@ -24,11 +24,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from nemo.collections.asr.metrics.der import (
-    calculate_session_cpWER,
-    concat_perm_word_error_rate,
-    score_labels_from_rttm_labels,
-)
+from nemo.collections.asr.metrics.cpwer import calculate_session_cpWER, concat_perm_word_error_rate
+from nemo.collections.asr.metrics.der import score_labels_from_rttm_labels
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ClusteringDiarizer
 from nemo.collections.asr.parts.utils.speaker_utils import (

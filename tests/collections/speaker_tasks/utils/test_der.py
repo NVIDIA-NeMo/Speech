@@ -14,7 +14,8 @@
 
 """
 Tests for DER calculation in nemo.collections.asr.metrics.der and
-nemo.collections.asr.metrics.md_eval.
+nemo.collections.asr.metrics.md_eval. cpWER coverage lives in
+test_cpwer.py for nemo.collections.asr.metrics.cpwer.
 
 All expected values are pre-verified against an external annotation
 library (3.x, the historical NeMo dependency that exposed
@@ -189,260 +190,207 @@ class TestMdEvalBasic:
     """
 
     @pytest.mark.unit
-    def test_perfect_match(self):
-        """Two speakers, perfect hypothesis → DER = 0."""
-        r = _score_raw([(0, 5, "A"), (5, 10, "B")], [(0, 5, "A"), (5, 10, "B")])
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 10.0)
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, expected",
+        [
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {"DER": 0.0, "scored": 10.0},
+                id="perfect_match",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [],
+                {"DER": 1.0, "CER": 0.0, "FA": 0.0, "MISS": 1.0, "scored": 10.0},
+                id="complete_miss",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "B"), (5, 10, "A")],
+                {"DER": 0.0, "scored": 10.0},
+                id="speaker_swap_optimal_mapping",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 5, "A")],
+                {"DER": 0.5, "MISS": 0.5, "scored": 10.0},
+                id="partial_miss",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 10, "B")],
+                {"DER": 0.0},
+                id="single_speaker_confusion",
+            ),
+            pytest.param(
+                [(0, 3, "A"), (7, 10, "B")],
+                [(0, 3, "A"), (7, 10, "B")],
+                {"DER": 0.0, "scored": 6.0},
+                id="gap_perfect",
+            ),
+            pytest.param(
+                [(0, 3, "A"), (7, 10, "B")],
+                [(0, 3, "A"), (4, 6, "X"), (7, 10, "B")],
+                {"DER": 1 / 3, "FA": 1 / 3, "scored": 6.0},
+                id="false_alarm_in_gap",
+            ),
+            pytest.param(
+                [(0, 5, "A")],
+                [(0, 10, "A")],
+                {"DER": 0.0, "scored": 5.0},
+                id="false_alarm_extend_no_uem",
+            ),
+        ],
+    )
+    def test_basic_no_uem(self, ref_segs, hyp_segs, expected):
+        r = _score_raw(ref_segs, hyp_segs)
+        for key, val in expected.items():
+            assert_der(r[key], val)
 
     @pytest.mark.unit
-    def test_complete_miss(self):
-        """Empty hypothesis → everything is missed."""
-        r = _score_raw([(0, 5, "A"), (5, 10, "B")], [])
-        assert_der(r["DER"], 1.0)
-        assert_der(r["MISS"], 1.0)
-        assert_der(r["CER"], 0.0)
-        assert_der(r["FA"], 0.0)
-        assert_der(r["scored"], 10.0)
-
-    @pytest.mark.unit
-    def test_speaker_swap_optimal_mapping(self):
-        """Swapped speaker labels → optimal mapping gives DER = 0."""
-        r = _score_raw([(0, 5, "A"), (5, 10, "B")], [(0, 5, "B"), (5, 10, "A")])
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 10.0)
-
-    @pytest.mark.unit
-    def test_partial_miss(self):
-        """Hypothesis covers first half only → 50% miss."""
-        r = _score_raw([(0, 10, "A")], [(0, 5, "A")])
-        assert_der(r["DER"], 0.5)
-        assert_der(r["MISS"], 0.5)
-        assert_der(r["scored"], 10.0)
-
-    @pytest.mark.unit
-    def test_false_alarm_extend_with_uem(self):
-        """Hypothesis extends beyond reference; explicit UEM covers full range.
-
-        With UEM [0, 10]: ref covers [0, 5], hyp covers [0, 10].
-        Scored = 5.0 (only ref speech), FA = 5.0 → DER = 1.0.
-        """
-        r = _score_raw([(0, 5, "A")], [(0, 10, "A")], uem_segs=[[0, 10]])
-        assert_der(r["DER"], 1.0)
-        assert_der(r["FA"], 1.0)
-        assert_der(r["scored"], 5.0)
-
-    @pytest.mark.unit
-    def test_false_alarm_extend_no_uem(self):
-        """Without explicit UEM, md-eval derives UEM from reference extent only.
-
-        Hypothesis beyond ref boundary is not scored → DER = 0.
-        """
-        r = _score_raw([(0, 5, "A")], [(0, 10, "A")])
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 5.0)
-
-    @pytest.mark.unit
-    def test_single_speaker_confusion(self):
-        """Single ref speaker A, hyp speaker B → optimal mapping A↔B gives DER = 0."""
-        r = _score_raw([(0, 10, "A")], [(0, 10, "B")])
-        assert_der(r["DER"], 0.0)
-
-    @pytest.mark.unit
-    def test_gap_perfect(self):
-        """Silence between speakers; perfect hypothesis."""
-        r = _score_raw([(0, 3, "A"), (7, 10, "B")], [(0, 3, "A"), (7, 10, "B")])
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 6.0)
-
-    @pytest.mark.unit
-    def test_false_alarm_in_gap(self):
-        """Spurious speaker in a silence gap → false alarm."""
-        r = _score_raw(
-            [(0, 3, "A"), (7, 10, "B")],
-            [(0, 3, "A"), (4, 6, "X"), (7, 10, "B")],
-        )
-        assert_der(r["DER"], 1 / 3)
-        assert_der(r["FA"], 1 / 3)
-        assert_der(r["scored"], 6.0)
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, uem_segs, expected",
+        [
+            pytest.param(
+                [(0, 5, "A")],
+                [(0, 10, "A")],
+                [[0, 10]],
+                {"DER": 1.0, "FA": 1.0, "scored": 5.0},
+                id="false_alarm_extend_with_uem",
+            ),
+        ],
+    )
+    def test_basic_with_uem(self, ref_segs, hyp_segs, uem_segs, expected):
+        r = _score_raw(ref_segs, hyp_segs, uem_segs=uem_segs)
+        for key, val in expected.items():
+            assert_der(r[key], val)
 
 
 class TestMdEvalCollar:
     """Verify collar (no-score zone) handling."""
 
     @pytest.mark.unit
-    def test_collar_perfect(self):
-        """Perfect hypothesis with collar → DER = 0, scored shrinks by collar."""
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 9.0)
-
-    @pytest.mark.unit
-    def test_collar_absorbs_offset(self):
-        """Hypothesis boundary offset (0.2s) inside collar (0.25s) → DER = 0."""
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5.2, "A"), (5.2, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 9.0)
-
-    @pytest.mark.unit
-    def test_collar_boundary_error_within(self):
-        """Gap of 1.0s centred on boundary; collar of 0.25s covers 0.5s total.
-
-        ref: A=[0,5], B=[5,10]; hyp: A=[0,4.5], B=[5.5,10]; collar=0.25.
-        No-score zone: [4.75, 5.25]. Miss from [4.5, 4.75] = 0.25s.
-        Miss from [5.25, 5.5] = 0.25s. Total miss = 0.5s. Scored = 9.0.
-        DER = 0.5/9.0 ≈ 0.0556.
-        """
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 4.5, "A"), (5.5, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(r["DER"], 0.5 / 9.0)
-        assert_der(r["MISS"], 0.5 / 9.0)
-
-    @pytest.mark.unit
-    def test_collar_boundary_error_exceeds(self):
-        """Larger gap at boundary exceeding collar.
-
-        ref: A=[0,5], B=[5,10]; hyp: A=[0,4], B=[6,10]; collar=0.25.
-        No-score zone: [4.75, 5.25]. Miss outside collar: [4, 4.75]=0.75 + [5.25, 6]=0.75 = 1.5s.
-        Scored = 9.0. DER = 1.5/9.0 ≈ 0.1667.
-        """
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 4, "A"), (6, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(r["DER"], 1.5 / 9.0)
-        assert_der(r["MISS"], 1.5 / 9.0)
-
-    @pytest.mark.unit
-    def test_collar_3spk_perfect(self):
-        """Three speakers with large collar (0.5s) → scored = 7.0."""
-        r = _score_raw(
-            [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
-            [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
-            collar=0.5,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 7.0)
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, collar, expected",
+        [
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 10, "B")],
+                0.25,
+                {"DER": 0.0, "scored": 9.0},
+                id="collar_perfect",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5.2, "A"), (5.2, 10, "B")],
+                0.25,
+                {"DER": 0.0, "scored": 9.0},
+                id="collar_absorbs_offset",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 4.5, "A"), (5.5, 10, "B")],
+                0.25,
+                {"DER": 0.5 / 9.0, "MISS": 0.5 / 9.0},
+                id="collar_boundary_error_within",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 4, "A"), (6, 10, "B")],
+                0.25,
+                {"DER": 1.5 / 9.0, "MISS": 1.5 / 9.0},
+                id="collar_boundary_error_exceeds",
+            ),
+            pytest.param(
+                [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
+                [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
+                0.5,
+                {"DER": 0.0, "scored": 7.0},
+                id="collar_3spk_perfect",
+            ),
+        ],
+    )
+    def test_collar(self, ref_segs, hyp_segs, collar, expected):
+        r = _score_raw(ref_segs, hyp_segs, collar=collar)
+        for key, val in expected.items():
+            assert_der(r[key], val)
 
 
 class TestMdEvalOverlap:
     """Verify overlap handling with skip_overlap / ignore_overlap."""
 
     @pytest.mark.unit
-    def test_overlap_perfect_skip(self):
-        """Overlapping ref [5,7]: skip_overlap=True → scored = 8."""
-        r = _score_raw(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 7, "A"), (5, 10, "B")],
-            ignore_overlap=True,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 8.0)
-
-    @pytest.mark.unit
-    def test_overlap_perfect_noskip(self):
-        """Overlapping ref [5,7]: skip_overlap=False → scored = 12 (each speaker scored)."""
-        r = _score_raw(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 7, "A"), (5, 10, "B")],
-            ignore_overlap=False,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 12.0)
-
-    @pytest.mark.unit
-    def test_overlap_miss_one_speaker_skip(self):
-        """Overlap region [5,7]: hyp only has A (missed B).
-
-        skip_overlap=True → overlap excluded. Scored = 8.
-        In non-overlap region [7,10]: B is present in ref, A covers it → confusion = 3.0.
-        DER = 3/8 = 0.375.
-        """
-        r = _score_raw(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 10, "A")],
-            ignore_overlap=True,
-        )
-        assert_der(r["DER"], 0.375)
-        assert_der(r["CER"], 0.375)
-        assert_der(r["scored"], 8.0)
-
-    @pytest.mark.unit
-    def test_overlap_miss_one_speaker_noskip(self):
-        """Overlap region [5,7]: hyp only has A (missed B).
-
-        skip_overlap=False → overlap included. Scored = 12.
-        Missed B in [5,7] = 2. Confusion B↔A in [7,10] = 3. Total = 5.
-        DER = 5/12 ≈ 0.4167.
-        """
-        r = _score_raw(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 10, "A")],
-            ignore_overlap=False,
-        )
-        assert_der(r["DER"], 5 / 12)
-        assert_der(r["CER"], 3 / 12)
-        assert_der(r["MISS"], 2 / 12)
-        assert_der(r["scored"], 12.0)
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, ignore_overlap, expected",
+        [
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 7, "A"), (5, 10, "B")],
+                True,
+                {"DER": 0.0, "scored": 8.0},
+                id="overlap_perfect_skip",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 7, "A"), (5, 10, "B")],
+                False,
+                {"DER": 0.0, "scored": 12.0},
+                id="overlap_perfect_noskip",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 10, "A")],
+                True,
+                {"DER": 0.375, "CER": 0.375, "scored": 8.0},
+                id="overlap_miss_one_speaker_skip",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 10, "A")],
+                False,
+                {"DER": 5 / 12, "CER": 3 / 12, "MISS": 2 / 12, "scored": 12.0},
+                id="overlap_miss_one_speaker_noskip",
+            ),
+        ],
+    )
+    def test_overlap(self, ref_segs, hyp_segs, ignore_overlap, expected):
+        r = _score_raw(ref_segs, hyp_segs, ignore_overlap=ignore_overlap)
+        for key, val in expected.items():
+            assert_der(r[key], val)
 
 
 class TestMdEvalSpeakerCount:
     """Verify speaker count mismatch scenarios."""
 
     @pytest.mark.unit
-    def test_three_speakers_boundary_shift(self):
-        """Boundary shift between B and C: confusion in [6,7].
-
-        ref: A=[0,3], B=[3,7], C=[7,10]; hyp: A=[0,3], B=[3,6], C=[6,10].
-        C is mapped to B in [6,7] → confusion = 1.0. Scored = 10. DER = 0.1.
-        """
-        r = _score_raw(
-            [(0, 3, "A"), (3, 7, "B"), (7, 10, "C")],
-            [(0, 3, "A"), (3, 6, "B"), (6, 10, "C")],
-        )
-        assert_der(r["DER"], 0.1)
-        assert_der(r["CER"], 0.1)
-        assert_der(r["scored"], 10.0)
-
-    @pytest.mark.unit
-    def test_extra_hyp_speaker(self):
-        """Hypothesis has extra speaker C; ref only has A, B.
-
-        ref: A=[0,5], B=[5,10]; hyp: A=[0,5], B=[5,8], C=[8,10].
-        C covers ref B region → confusion = 2.0. DER = 0.2.
-        """
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-        )
-        assert_der(r["DER"], 0.2)
-        assert_der(r["CER"], 0.2)
-
-    @pytest.mark.unit
-    def test_missing_hyp_speaker(self):
-        """Hypothesis missing speaker C; ref has A, B, C.
-
-        ref: A=[0,5], B=[5,8], C=[8,10]; hyp: A=[0,5], B=[5,10].
-        B covers ref C region → confusion = 2.0. DER = 0.2.
-        """
-        r = _score_raw(
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-            [(0, 5, "A"), (5, 10, "B")],
-        )
-        assert_der(r["DER"], 0.2)
-        assert_der(r["CER"], 0.2)
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, expected",
+        [
+            pytest.param(
+                [(0, 3, "A"), (3, 7, "B"), (7, 10, "C")],
+                [(0, 3, "A"), (3, 6, "B"), (6, 10, "C")],
+                {"DER": 0.1, "CER": 0.1, "scored": 10.0},
+                id="three_speakers_boundary_shift",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                {"DER": 0.2, "CER": 0.2},
+                id="extra_hyp_speaker",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {"DER": 0.2, "CER": 0.2},
+                id="missing_hyp_speaker",
+            ),
+        ],
+    )
+    def test_speaker_count(self, ref_segs, hyp_segs, expected):
+        r = _score_raw(ref_segs, hyp_segs)
+        for key, val in expected.items():
+            assert_der(r[key], val)
 
 
 class TestMdEvalUEM:
@@ -548,120 +496,107 @@ class TestScoreLabelsFromRttmLabels:
         assert_der(scores["confusion"], 0.0)
 
     @pytest.mark.unit
-    def test_complete_miss(self):
-        _, _, (DER, _, _, MISS) = _score(
-            [(0, 5, "A"), (5, 10, "B")],
-            [],
-        )
-        assert_der(DER, 1.0)
-        assert_der(MISS, 1.0)
-
-    @pytest.mark.unit
-    def test_speaker_swap(self):
-        _, _, (DER, _, _, _) = _score(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "B"), (5, 10, "A")],
-        )
-        assert_der(DER, 0.0)
-
-    @pytest.mark.unit
-    def test_partial_miss(self):
-        _, _, (DER, _, _, MISS) = _score([(0, 10, "A")], [(0, 5, "A")])
-        assert_der(DER, 0.5)
-        assert_der(MISS, 0.5)
-
-    @pytest.mark.unit
-    def test_collar(self):
-        _, _, (DER, _, _, _) = _score(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(DER, 0.0)
-
-    @pytest.mark.unit
-    def test_collar_offset(self):
-        _, _, (DER, _, _, _) = _score(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5.2, "A"), (5.2, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(DER, 0.0)
-
-    @pytest.mark.unit
-    def test_overlap_skip(self):
-        _, _, (DER, _, _, _) = _score(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 7, "A"), (5, 10, "B")],
-            ignore_overlap=True,
-        )
-        assert_der(DER, 0.0)
-
-    @pytest.mark.unit
-    def test_overlap_miss_skip(self):
-        _, _, (DER, CER, _, _) = _score(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 10, "A")],
-            ignore_overlap=True,
-        )
-        assert_der(DER, 0.375)
-        assert_der(CER, 0.375)
-
-    @pytest.mark.unit
-    def test_overlap_miss_noskip(self):
-        _, _, (DER, CER, _, MISS) = _score(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 10, "A")],
-            ignore_overlap=False,
-        )
-        assert_der(DER, 5 / 12)
-        assert_der(CER, 3 / 12)
-        assert_der(MISS, 2 / 12)
-
-    @pytest.mark.unit
-    def test_three_speakers(self):
-        _, _, (DER, _, _, _) = _score(
-            [(0, 3, "A"), (3, 7, "B"), (7, 10, "C")],
-            [(0, 3, "A"), (3, 6, "B"), (6, 10, "C")],
-        )
-        assert_der(DER, 0.1)
-
-    @pytest.mark.unit
-    def test_extra_hyp_speaker(self):
-        _, _, (DER, CER, _, _) = _score(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-        )
-        assert_der(DER, 0.2)
-        assert_der(CER, 0.2)
-
-    @pytest.mark.unit
-    def test_missing_hyp_speaker(self):
-        _, _, (DER, CER, _, _) = _score(
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-            [(0, 5, "A"), (5, 10, "B")],
-        )
-        assert_der(DER, 0.2)
-        assert_der(CER, 0.2)
-
-    @pytest.mark.unit
-    def test_false_alarm_in_gap(self):
-        _, _, (DER, _, FA, _) = _score(
-            [(0, 3, "A"), (7, 10, "B")],
-            [(0, 3, "A"), (4, 6, "X"), (7, 10, "B")],
-        )
-        assert_der(DER, 1 / 3)
-        assert_der(FA, 1 / 3)
-
-    @pytest.mark.unit
-    def test_uem_restrict(self):
-        _, _, (DER, CER, _, _) = _score(
-            [(0, 10, "A")],
-            [(0, 5, "A"), (5, 10, "B")],
-            uem_segs=[[2, 8]],
-        )
-        assert_der(DER, 0.5)
-        assert_der(CER, 0.5)
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, kwargs, checks",
+        [
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [],
+                {},
+                {"DER": 1.0, "MISS": 1.0},
+                id="complete_miss",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "B"), (5, 10, "A")],
+                {},
+                {"DER": 0.0},
+                id="speaker_swap",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 5, "A")],
+                {},
+                {"DER": 0.5, "MISS": 0.5},
+                id="partial_miss",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {"collar": 0.25},
+                {"DER": 0.0},
+                id="collar",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5.2, "A"), (5.2, 10, "B")],
+                {"collar": 0.25},
+                {"DER": 0.0},
+                id="collar_offset",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 7, "A"), (5, 10, "B")],
+                {"ignore_overlap": True},
+                {"DER": 0.0},
+                id="overlap_skip",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 10, "A")],
+                {"ignore_overlap": True},
+                {"DER": 0.375, "CER": 0.375},
+                id="overlap_miss_skip",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 10, "A")],
+                {"ignore_overlap": False},
+                {"DER": 5 / 12, "CER": 3 / 12, "MISS": 2 / 12},
+                id="overlap_miss_noskip",
+            ),
+            pytest.param(
+                [(0, 3, "A"), (3, 7, "B"), (7, 10, "C")],
+                [(0, 3, "A"), (3, 6, "B"), (6, 10, "C")],
+                {},
+                {"DER": 0.1},
+                id="three_speakers",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                {},
+                {"DER": 0.2, "CER": 0.2},
+                id="extra_hyp_speaker",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {},
+                {"DER": 0.2, "CER": 0.2},
+                id="missing_hyp_speaker",
+            ),
+            pytest.param(
+                [(0, 3, "A"), (7, 10, "B")],
+                [(0, 3, "A"), (4, 6, "X"), (7, 10, "B")],
+                {},
+                {"DER": 1 / 3, "FA": 1 / 3},
+                id="false_alarm_in_gap",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {"uem_segs": [[2, 8]]},
+                {"DER": 0.5, "CER": 0.5},
+                id="uem_restrict",
+            ),
+        ],
+    )
+    def test_der_values(self, ref_segs, hyp_segs, kwargs, checks):
+        _, _, (DER, CER, FA, MISS) = _score(ref_segs, hyp_segs, **kwargs)
+        name_to_val = {"DER": DER, "CER": CER, "FA": FA, "MISS": MISS}
+        for key, val in checks.items():
+            assert_der(name_to_val[key], val)
 
     @pytest.mark.unit
     def test_length_mismatch_returns_none(self):
@@ -749,194 +684,155 @@ class TestExternalEngineVerifiedValues:
     """
 
     @pytest.mark.unit
-    def test_external_perfect(self):
-        """External engine: DER=0.0, total=10.0."""
-        r = _score_raw([(0, 5, "A"), (5, 10, "B")], [(0, 5, "A"), (5, 10, "B")])
-        assert_der(r["DER"], 0.0)
-
-    @pytest.mark.unit
-    def test_external_complete_miss(self):
-        """External engine: DER=1.0, MISS=1.0, total=10.0."""
-        r = _score_raw([(0, 5, "A"), (5, 10, "B")], [])
-        assert_der(r["DER"], 1.0)
-        assert_der(r["MISS"], 1.0)
-
-    @pytest.mark.unit
-    def test_external_swap(self):
-        """External engine: DER=0.0 (optimal mapping), total=10.0."""
-        r = _score_raw([(0, 5, "A"), (5, 10, "B")], [(0, 5, "B"), (5, 10, "A")])
-        assert_der(r["DER"], 0.0)
-
-    @pytest.mark.unit
-    def test_external_partial_miss(self):
-        """External engine: DER=0.5, MISS=0.5, total=10.0."""
-        r = _score_raw([(0, 10, "A")], [(0, 5, "A")])
-        assert_der(r["DER"], 0.5)
-
-    @pytest.mark.unit
-    def test_external_collar_perfect(self):
-        """External engine: DER=0.0, total=9.0 (collar removes 1s)."""
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 9.0)
-
-    @pytest.mark.unit
-    def test_external_collar_offset(self):
-        """External engine: DER=0.0, total=9.0. 0.2s offset within 0.25s collar."""
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5.2, "A"), (5.2, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(r["DER"], 0.0)
-
-    @pytest.mark.unit
-    def test_external_overlap_skip_perfect(self):
-        """External engine: DER=0.0, total=8.0. Overlap [5,7] excluded."""
-        r = _score_raw(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 7, "A"), (5, 10, "B")],
-            ignore_overlap=True,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 8.0)
-
-    @pytest.mark.unit
-    def test_external_overlap_noskip_perfect(self):
-        """External engine: DER=0.0, total=12.0. Overlap scored for both speakers."""
-        r = _score_raw(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 7, "A"), (5, 10, "B")],
-            ignore_overlap=False,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 12.0)
-
-    @pytest.mark.unit
-    def test_external_overlap_miss_skip(self):
-        """External engine: DER=0.375, CER=0.375, total=8.0."""
-        r = _score_raw(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 10, "A")],
-            ignore_overlap=True,
-        )
-        assert_der(r["DER"], 0.375)
-        assert_der(r["CER"], 0.375)
-
-    @pytest.mark.unit
-    def test_external_overlap_miss_noskip(self):
-        """External engine: DER=5/12≈0.4167, CER=3/12=0.25, MISS=2/12≈0.1667, total=12.0."""
-        r = _score_raw(
-            [(0, 7, "A"), (5, 10, "B")],
-            [(0, 10, "A")],
-            ignore_overlap=False,
-        )
-        assert_der(r["DER"], 5 / 12)
-        assert_der(r["CER"], 3 / 12)
-        assert_der(r["MISS"], 2 / 12)
-        assert_der(r["scored"], 12.0)
-
-    @pytest.mark.unit
-    def test_external_3spk_boundary(self):
-        """External engine: DER=0.1, CER=0.1, total=10.0."""
-        r = _score_raw(
-            [(0, 3, "A"), (3, 7, "B"), (7, 10, "C")],
-            [(0, 3, "A"), (3, 6, "B"), (6, 10, "C")],
-        )
-        assert_der(r["DER"], 0.1)
-        assert_der(r["CER"], 0.1)
-
-    @pytest.mark.unit
-    def test_external_extra_hyp(self):
-        """External engine: DER=0.2, CER=0.2, total=10.0."""
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-        )
-        assert_der(r["DER"], 0.2)
-        assert_der(r["CER"], 0.2)
-
-    @pytest.mark.unit
-    def test_external_missing_hyp(self):
-        """External engine: DER=0.2, CER=0.2, total=10.0."""
-        r = _score_raw(
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-            [(0, 5, "A"), (5, 10, "B")],
-        )
-        assert_der(r["DER"], 0.2)
-        assert_der(r["CER"], 0.2)
-
-    @pytest.mark.unit
-    def test_external_gap(self):
-        """External engine: DER=0.0, total=6.0."""
-        r = _score_raw([(0, 3, "A"), (7, 10, "B")], [(0, 3, "A"), (7, 10, "B")])
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 6.0)
-
-    @pytest.mark.unit
-    def test_external_false_alarm_in_gap(self):
-        """External engine: DER=1/3, FA=1/3, total=6.0."""
-        r = _score_raw(
-            [(0, 3, "A"), (7, 10, "B")],
-            [(0, 3, "A"), (4, 6, "X"), (7, 10, "B")],
-        )
-        assert_der(r["DER"], 1 / 3)
-        assert_der(r["FA"], 1 / 3)
-
-    @pytest.mark.unit
-    def test_external_uem(self):
-        """External engine: DER=0.5, CER=0.5, total=6.0."""
-        r = _score_raw(
-            [(0, 10, "A")],
-            [(0, 5, "A"), (5, 10, "B")],
-            uem_segs=[[2, 8]],
-        )
-        assert_der(r["DER"], 0.5)
-        assert_der(r["CER"], 0.5)
-        assert_der(r["scored"], 6.0)
-
-    @pytest.mark.unit
-    def test_external_collar_3spk(self):
-        """External engine: DER=0.0, total=7.0."""
-        r = _score_raw(
-            [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
-            [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
-            collar=0.5,
-        )
-        assert_der(r["DER"], 0.0)
-        assert_der(r["scored"], 7.0)
-
-    @pytest.mark.unit
-    def test_external_collar_boundary_error(self):
-        """External engine: DER=0.5/9≈0.0556, MISS=0.5/9."""
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 4.5, "A"), (5.5, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(r["DER"], 0.5 / 9.0)
-        assert_der(r["MISS"], 0.5 / 9.0)
-
-    @pytest.mark.unit
-    def test_external_collar_boundary_error_large(self):
-        """External engine: DER=1.5/9≈0.1667, MISS=1.5/9."""
-        r = _score_raw(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 4, "A"), (6, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(r["DER"], 1.5 / 9.0)
-        assert_der(r["MISS"], 1.5 / 9.0)
-
-    @pytest.mark.unit
-    def test_external_single_speaker_confusion(self):
-        """External engine: DER=0.0 (optimal mapping maps B→A)."""
-        r = _score_raw([(0, 10, "A")], [(0, 10, "B")])
-        assert_der(r["DER"], 0.0)
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, collar, ignore_overlap, uem_segs, expected",
+        [
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 10, "B")],
+                0.0, False, None,
+                {"DER": 0.0},
+                id="external_perfect",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [],
+                0.0, False, None,
+                {"DER": 1.0, "MISS": 1.0},
+                id="external_complete_miss",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "B"), (5, 10, "A")],
+                0.0, False, None,
+                {"DER": 0.0},
+                id="external_swap",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 5, "A")],
+                0.0, False, None,
+                {"DER": 0.5},
+                id="external_partial_miss",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 10, "B")],
+                0.25, False, None,
+                {"DER": 0.0, "scored": 9.0},
+                id="external_collar_perfect",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5.2, "A"), (5.2, 10, "B")],
+                0.25, False, None,
+                {"DER": 0.0},
+                id="external_collar_offset",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 7, "A"), (5, 10, "B")],
+                0.0, True, None,
+                {"DER": 0.0, "scored": 8.0},
+                id="external_overlap_skip_perfect",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 7, "A"), (5, 10, "B")],
+                0.0, False, None,
+                {"DER": 0.0, "scored": 12.0},
+                id="external_overlap_noskip_perfect",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 10, "A")],
+                0.0, True, None,
+                {"DER": 0.375, "CER": 0.375},
+                id="external_overlap_miss_skip",
+            ),
+            pytest.param(
+                [(0, 7, "A"), (5, 10, "B")],
+                [(0, 10, "A")],
+                0.0, False, None,
+                {"DER": 5 / 12, "CER": 3 / 12, "MISS": 2 / 12, "scored": 12.0},
+                id="external_overlap_miss_noskip",
+            ),
+            pytest.param(
+                [(0, 3, "A"), (3, 7, "B"), (7, 10, "C")],
+                [(0, 3, "A"), (3, 6, "B"), (6, 10, "C")],
+                0.0, False, None,
+                {"DER": 0.1, "CER": 0.1},
+                id="external_3spk_boundary",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                0.0, False, None,
+                {"DER": 0.2, "CER": 0.2},
+                id="external_extra_hyp",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                [(0, 5, "A"), (5, 10, "B")],
+                0.0, False, None,
+                {"DER": 0.2, "CER": 0.2},
+                id="external_missing_hyp",
+            ),
+            pytest.param(
+                [(0, 3, "A"), (7, 10, "B")],
+                [(0, 3, "A"), (7, 10, "B")],
+                0.0, False, None,
+                {"DER": 0.0, "scored": 6.0},
+                id="external_gap",
+            ),
+            pytest.param(
+                [(0, 3, "A"), (7, 10, "B")],
+                [(0, 3, "A"), (4, 6, "X"), (7, 10, "B")],
+                0.0, False, None,
+                {"DER": 1 / 3, "FA": 1 / 3},
+                id="external_false_alarm_in_gap",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 5, "A"), (5, 10, "B")],
+                0.0, False, [[2, 8]],
+                {"DER": 0.5, "CER": 0.5, "scored": 6.0},
+                id="external_uem",
+            ),
+            pytest.param(
+                [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
+                [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
+                0.5, False, None,
+                {"DER": 0.0, "scored": 7.0},
+                id="external_collar_3spk",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 4.5, "A"), (5.5, 10, "B")],
+                0.25, False, None,
+                {"DER": 0.5 / 9.0, "MISS": 0.5 / 9.0},
+                id="external_collar_boundary_error",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 4, "A"), (6, 10, "B")],
+                0.25, False, None,
+                {"DER": 1.5 / 9.0, "MISS": 1.5 / 9.0},
+                id="external_collar_boundary_error_large",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 10, "B")],
+                0.0, False, None,
+                {"DER": 0.0},
+                id="external_single_speaker_confusion",
+            ),
+        ],
+    )
+    def test_external_values(self, ref_segs, hyp_segs, collar, ignore_overlap, uem_segs, expected):
+        r = _score_raw(ref_segs, hyp_segs, collar=collar, ignore_overlap=ignore_overlap, uem_segs=uem_segs)
+        for key, val in expected.items():
+            assert_der(r[key], val)
 
     @pytest.mark.unit
     def test_external_multi_file(self):
@@ -985,49 +881,40 @@ class TestNoUemAutoUnion:
     _HYP_PP = [(0.340, 2.800, "spk0"), (3.220, 5.190, "spk1")]
 
     @pytest.mark.unit
-    def test_raw_binarization_matches_external_lib(self):
-        """Raw binarization output: DER must match the external-lib value 0.065110.
-
-        Hand calculation:
-            ref total          = 2.471 + 1.983 = 4.454
-            miss               = 0.099 + 0.038 = 0.137
-            false alarm        = 0.110 + 0.043 = 0.153
-            DER                = (0.137 + 0.153) / 4.454 = 0.065110
-        """
-        r = _score(self._REF, self._HYP_RAW, collar=0.0, ignore_overlap=False)
+    @pytest.mark.parametrize(
+        "hyp_attr, expected_der, expected_fa_num, expected_fa_den, expected_miss_num, expected_miss_den",
+        [
+            pytest.param(
+                "_HYP_RAW", 0.065110, 0.153, 4.454, 0.137, 4.454,
+                id="raw_binarization_matches_external_lib",
+            ),
+            pytest.param(
+                "_HYP_PP", 0.038168, 0.073, 4.454, 0.097, 4.454,
+                id="post_processed_matches_external_lib",
+            ),
+        ],
+    )
+    def test_score_matches_external_lib(self, hyp_attr, expected_der, expected_fa_num, expected_fa_den, expected_miss_num, expected_miss_den):
+        hyp = getattr(self, hyp_attr)
+        r = _score(self._REF, hyp, collar=0.0, ignore_overlap=False)
         DER, _CER, FA, MISS = r[2]
-        assert_der(DER, 0.065110, tol=1e-5)
-        assert_der(FA, 0.153 / 4.454, tol=1e-5)
-        assert_der(MISS, 0.137 / 4.454, tol=1e-5)
+        assert_der(DER, expected_der, tol=1e-5)
+        assert_der(FA, expected_fa_num / expected_fa_den, tol=1e-5)
+        assert_der(MISS, expected_miss_num / expected_miss_den, tol=1e-5)
 
     @pytest.mark.unit
-    def test_post_processed_matches_external_lib(self):
-        """Post-processed VAD output: DER must match the external-lib value 0.038168.
-
-        Hand calculation:
-            ref total          = 4.454
-            miss               = 0.041 + 0.056 = 0.097
-            false alarm        = 0.030 + 0.043 = 0.073
-            DER                = (0.097 + 0.073) / 4.454 = 0.038168
-        """
-        r = _score(self._REF, self._HYP_PP, collar=0.0, ignore_overlap=False)
-        DER, _CER, FA, MISS = r[2]
-        assert_der(DER, 0.038168, tol=1e-5)
-        assert_der(FA, 0.073 / 4.454, tol=1e-5)
-        assert_der(MISS, 0.097 / 4.454, tol=1e-5)
-
-    @pytest.mark.unit
-    def test_score_labels_lhotse_path_matches_external_lib_raw(self):
-        """The lhotse-backed ``score_labels`` entry point must give the same answer."""
-        r = _score_lhotse(self._REF, self._HYP_RAW, collar=0.0, ignore_overlap=False)
+    @pytest.mark.parametrize(
+        "hyp_attr, expected_der",
+        [
+            pytest.param("_HYP_RAW", 0.065110, id="lhotse_raw"),
+            pytest.param("_HYP_PP", 0.038168, id="lhotse_post"),
+        ],
+    )
+    def test_score_labels_lhotse_path_matches_external_lib(self, hyp_attr, expected_der):
+        hyp = getattr(self, hyp_attr)
+        r = _score_lhotse(self._REF, hyp, collar=0.0, ignore_overlap=False)
         DER, _CER, _FA, _MISS = r[2]
-        assert_der(DER, 0.065110, tol=1e-5)
-
-    @pytest.mark.unit
-    def test_score_labels_lhotse_path_matches_external_lib_post(self):
-        r = _score_lhotse(self._REF, self._HYP_PP, collar=0.0, ignore_overlap=False)
-        DER, _CER, _FA, _MISS = r[2]
-        assert_der(DER, 0.038168, tol=1e-5)
+        assert_der(DER, expected_der, tol=1e-5)
 
     @pytest.mark.unit
     def test_low_level_evaluate_keeps_nist_semantics(self):
@@ -1046,8 +933,6 @@ class TestNoUemAutoUnion:
     @pytest.mark.unit
     def test_explicit_uem_overrides_auto_union(self):
         """An explicit UEM must always take precedence over the auto-derived one."""
-        # Use a UEM that exactly equals the reference extent — should reproduce
-        # the strict NIST numbers even through the high-level wrapper.
         r = _score(
             self._REF,
             self._HYP_RAW,
@@ -1059,34 +944,18 @@ class TestNoUemAutoUnion:
         assert_der(DER, 0.055456, tol=1e-5)
 
     @pytest.mark.unit
-    def test_collar_is_nist_half_width_raw(self):
-        """``collar=X`` in NeMo means ±X seconds (NIST half-width).
-
-        The historical NeMo public contract is: ``score_labels(collar=X)`` punches
-        a ``±X`` second no-score zone around every reference boundary (NIST
-        ``md-eval-22.pl`` semantics). External annotation libraries that define
-        ``collar`` as the *total* width of the no-score zone agree with NeMo
-        when called with ``2 * X``.
-
-        For the tutorial sample, NeMo at ``collar=0.05`` (== ext.lib at
-        ``collar=0.10``) produces RAW DER = 0.026093. Pinning down the
-        historical value ensures we don't silently shift NeMo's published
-        numbers when refactoring the collar plumbing.
-        """
-        r = _score(self._REF, self._HYP_RAW, collar=0.05, ignore_overlap=False)
+    @pytest.mark.parametrize(
+        "collar, hyp_attr, expected_der",
+        [
+            pytest.param(0.05, "_HYP_RAW", 0.026093, id="collar_nist_half_width_raw"),
+            pytest.param(0.05, "_HYP_PP", 0.001410, id="collar_nist_half_width_post"),
+        ],
+    )
+    def test_collar_is_nist_half_width(self, collar, hyp_attr, expected_der):
+        hyp = getattr(self, hyp_attr)
+        r = _score(self._REF, hyp, collar=collar, ignore_overlap=False)
         DER, _CER, _FA, _MISS = r[2]
-        assert_der(DER, 0.026093, tol=1e-5)
-
-    @pytest.mark.unit
-    def test_collar_is_nist_half_width_post(self):
-        """Post-processed counterpart of :meth:`test_collar_is_nist_half_width_raw`.
-
-        NeMo at ``collar=0.05`` (== ext.lib at ``collar=0.10``) produces
-        POST DER = 0.001410.
-        """
-        r = _score(self._REF, self._HYP_PP, collar=0.05, ignore_overlap=False)
-        DER, _CER, _FA, _MISS = r[2]
-        assert_der(DER, 0.001410, tol=1e-5)
+        assert_der(DER, expected_der, tol=1e-5)
 
     @pytest.mark.unit
     def test_collar_2x_equivalence_to_external_lib(self):
@@ -1100,11 +969,9 @@ class TestNoUemAutoUnion:
         natively). Equivalently, NeMo at ``collar=0.025`` must match the
         external lib at ``collar=0.05``.
         """
-        # NeMo collar=0.025  <==>  ext.lib collar=0.05  (RAW=0.043638)
         r = _score(self._REF, self._HYP_RAW, collar=0.025, ignore_overlap=False)
         DER, _CER, _FA, _MISS = r[2]
         assert_der(DER, 0.043638, tol=1e-5)
-        # NeMo collar=0.025  <==>  ext.lib collar=0.05  (POST=0.016077)
         r = _score(self._REF, self._HYP_PP, collar=0.025, ignore_overlap=False)
         DER, _CER, _FA, _MISS = r[2]
         assert_der(DER, 0.016077, tol=1e-5)
@@ -1130,8 +997,6 @@ class TestNoUemAutoUnion:
         sys_data = _merge_rttm_dicts([_labels_to_rttm_data("file1", _labels(*self._HYP_RAW))])
         uem = _default_uem_from_ref_sys(ref_data, sys_data)
         assert "file1" in uem
-        # The ref ends at 5.147, sys ends at 5.190 — auto-union picks 5.190.
-        # The ref starts at 0.299, sys starts at 0.400 — auto-union picks 0.299.
         seg = uem["file1"]["1"][0]
         assert abs(seg["TBEG"] - 0.299) < 1e-9
         assert abs(seg["TEND"] - 5.190) < 1e-9
@@ -1150,22 +1015,23 @@ class TestLhotseShimHelpers:
     """
 
     @pytest.mark.unit
-    def test_make_diar_segment_basic(self):
-        seg = make_diar_segment(1.5, 4.0, "spk0", recording_id="rec1")
+    @pytest.mark.parametrize(
+        "start, end, spk, rec_id, expected_duration, expected_end",
+        [
+            pytest.param(1.5, 4.0, "spk0", "rec1", 2.5, 4.0, id="basic"),
+            pytest.param(5.0, 5.0, "A", None, 0.0, 5.0, id="zero_duration"),
+            pytest.param(5.0, 4.0, "A", None, 0.0, 5.0, id="inverted_clamped"),
+        ],
+    )
+    def test_make_diar_segment(self, start, end, spk, rec_id, expected_duration, expected_end):
+        kwargs = {"recording_id": rec_id} if rec_id is not None else {}
+        seg = make_diar_segment(start, end, spk, **kwargs)
         assert isinstance(seg, SupervisionSegment)
-        assert seg.start == 1.5
-        assert seg.duration == 2.5
-        assert seg.end == 4.0
-        assert seg.speaker == "spk0"
-        assert seg.recording_id == "rec1"
-
-    @pytest.mark.unit
-    def test_make_diar_segment_zero_duration_clamped(self):
-        """Inverted/zero spans clamp to 0 duration (no negative durations)."""
-        seg = make_diar_segment(5.0, 5.0, "A")
-        assert seg.duration == 0.0
-        seg2 = make_diar_segment(5.0, 4.0, "A")
-        assert seg2.duration == 0.0
+        assert seg.start == start
+        assert seg.duration == expected_duration
+        assert seg.speaker == spk
+        if rec_id is not None:
+            assert seg.recording_id == rec_id
 
     @pytest.mark.unit
     def test_make_diar_segment_auto_id(self):
@@ -1211,10 +1077,28 @@ class TestLhotseShimHelpers:
         assert make_uem_timeline([], uniq_id="r") == []
 
     @pytest.mark.unit
-    def test_unique_speakers_preserves_first_seen_order(self):
-        ann = make_diar_annotation(["0 1 B", "1 2 A", "2 3 B", "3 4 C", "4 5 A"], uniq_name="r")
-        # First-seen order: B, A, C
-        assert unique_speakers(ann) == ["B", "A", "C"]
+    @pytest.mark.parametrize(
+        "labels, expected",
+        [
+            pytest.param(
+                ["0 1 B", "1 2 A", "2 3 B", "3 4 C", "4 5 A"],
+                ["B", "A", "C"],
+                id="preserves_first_seen_order",
+            ),
+            pytest.param(
+                [],
+                [],
+                id="empty",
+            ),
+        ],
+    )
+    def test_unique_speakers(self, labels, expected):
+        if labels:
+            ann = make_diar_annotation(labels, uniq_name="r")
+        else:
+            ann = []
+        result = unique_speakers(ann)
+        assert result == expected
 
     @pytest.mark.unit
     def test_unique_speakers_on_supervision_set(self):
@@ -1223,17 +1107,12 @@ class TestLhotseShimHelpers:
         assert sorted(unique_speakers(ss)) == ["A", "B"]
 
     @pytest.mark.unit
-    def test_unique_speakers_on_empty(self):
-        assert unique_speakers([]) == []
-
-    @pytest.mark.unit
     def test_write_supervisions_to_rttm_format(self):
         ann = make_diar_annotation(["0.0 1.5 A", "1.5 3.0 B"], uniq_name="rec1")
         buf = io.StringIO()
         write_supervisions_to_rttm(ann, buf)
         lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
         assert len(lines) == 2
-        # Each line follows: SPEAKER <rid> <chnl> <start> <dur> <NA> <NA> <spk> <NA> <NA>
         for ln in lines:
             parts = ln.split()
             assert parts[0] == "SPEAKER"
@@ -1241,7 +1120,6 @@ class TestLhotseShimHelpers:
             assert parts[2] == "1"
             assert parts[5] == "<NA>" and parts[6] == "<NA>"
             assert parts[8] == "<NA>" and parts[9] == "<NA>"
-        # Verify start/dur/speaker on the first line
         p0 = lines[0].split()
         assert float(p0[3]) == pytest.approx(0.0)
         assert float(p0[4]) == pytest.approx(1.5)
@@ -1278,7 +1156,6 @@ class TestLhotseShimHelpers:
         confirming we follow the same format conventions.
         """
         ann = make_diar_annotation(["0.0 2.5 alice", "2.5 5.0 bob", "5.0 7.25 alice"], uniq_name="conv1")
-        # Write to a temp file (lhotse only reads from path objects).
         import tempfile
 
         with tempfile.NamedTemporaryFile("w", suffix=".rttm", delete=False) as fh:
@@ -1409,98 +1286,86 @@ class TestLhotseAnnotation:
         assert_der(MISS, 0.0)
 
     @pytest.mark.unit
-    def test_complete_miss(self):
-        _, _, (DER, _, _, MISS) = _score_lhotse([(0, 5, "A"), (5, 10, "B")], [])
-        assert_der(DER, 1.0)
-        assert_der(MISS, 1.0)
-
-    @pytest.mark.unit
-    def test_speaker_swap_optimal_mapping(self):
-        _, _, (DER, _, _, _) = _score_lhotse(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "B"), (5, 10, "A")],
-        )
-        assert_der(DER, 0.0)
-
-    @pytest.mark.unit
-    def test_partial_miss(self):
-        _, _, (DER, _, _, MISS) = _score_lhotse([(0, 10, "A")], [(0, 5, "A")])
-        assert_der(DER, 0.5)
-        assert_der(MISS, 0.5)
-
-    @pytest.mark.unit
-    def test_partial_false_alarm(self):
-        """Hyp extends past ref (FA region) — scored only when UEM covers it.
-
-        With an explicit UEM covering [0, 10], the [5, 10] hyp region becomes
-        a false alarm: FA = 5 / scored(5) = 1.0, DER = 1.0.
-        Without a UEM, md-eval restricts evaluation to the reference extent
-        [0, 5] and the extra hyp is not scored — so this test makes the UEM
-        explicit to keep the FA assertion meaningful.
-        """
-        _, _, (DER, _, FA, _) = _score_lhotse(
-            [(0, 5, "A")],
-            [(0, 5, "A"), (5, 10, "A")],
-            uem_segs=[[0, 10]],
-        )
-        assert_der(DER, 1.0)
-        assert_der(FA, 1.0)
-
-    @pytest.mark.unit
-    def test_confusion(self):
-        _, _, (DER, CER, _, _) = _score_lhotse(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 10, "A")],
-        )
-        assert_der(DER, 0.5)
-        assert_der(CER, 0.5)
-
-    @pytest.mark.unit
-    def test_collar_eliminates_boundary_error(self):
-        _, _, (DER, _, _, _) = _score_lhotse(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 4.9, "A"), (5.1, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(DER, 0.0)
-
-    @pytest.mark.unit
-    def test_collar_partial(self):
-        _, _, (DER, _, _, MISS) = _score_lhotse(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 4, "A"), (6, 10, "B")],
-            collar=0.25,
-        )
-        assert_der(DER, 1.5 / 9.0)
-        assert_der(MISS, 1.5 / 9.0)
-
-    @pytest.mark.unit
-    def test_uem_restricts(self):
-        _, _, (DER, CER, _, _) = _score_lhotse(
-            [(0, 10, "A")],
-            [(0, 5, "A"), (5, 10, "B")],
-            uem_segs=[[2, 8]],
-        )
-        assert_der(DER, 0.5)
-        assert_der(CER, 0.5)
-
-    @pytest.mark.unit
-    def test_extra_hyp_speaker(self):
-        _, _, (DER, CER, _, _) = _score_lhotse(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-        )
-        assert_der(DER, 0.2)
-        assert_der(CER, 0.2)
-
-    @pytest.mark.unit
-    def test_missing_hyp_speaker(self):
-        _, _, (DER, CER, _, _) = _score_lhotse(
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-            [(0, 5, "A"), (5, 10, "B")],
-        )
-        assert_der(DER, 0.2)
-        assert_der(CER, 0.2)
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, kwargs, checks",
+        [
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [],
+                {},
+                {"DER": 1.0, "MISS": 1.0},
+                id="complete_miss",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "B"), (5, 10, "A")],
+                {},
+                {"DER": 0.0},
+                id="speaker_swap_optimal_mapping",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 5, "A")],
+                {},
+                {"DER": 0.5, "MISS": 0.5},
+                id="partial_miss",
+            ),
+            pytest.param(
+                [(0, 5, "A")],
+                [(0, 5, "A"), (5, 10, "A")],
+                {"uem_segs": [[0, 10]]},
+                {"DER": 1.0, "FA": 1.0},
+                id="partial_false_alarm",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 10, "A")],
+                {},
+                {"DER": 0.5, "CER": 0.5},
+                id="confusion",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 4.9, "A"), (5.1, 10, "B")],
+                {"collar": 0.25},
+                {"DER": 0.0},
+                id="collar_eliminates_boundary_error",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 4, "A"), (6, 10, "B")],
+                {"collar": 0.25},
+                {"DER": 1.5 / 9.0, "MISS": 1.5 / 9.0},
+                id="collar_partial",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {"uem_segs": [[2, 8]]},
+                {"DER": 0.5, "CER": 0.5},
+                id="uem_restricts",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                {},
+                {"DER": 0.2, "CER": 0.2},
+                id="extra_hyp_speaker",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {},
+                {"DER": 0.2, "CER": 0.2},
+                id="missing_hyp_speaker",
+            ),
+        ],
+    )
+    def test_der_values(self, ref_segs, hyp_segs, kwargs, checks):
+        _, _, (DER, CER, FA, MISS) = _score_lhotse(ref_segs, hyp_segs, **kwargs)
+        name_to_val = {"DER": DER, "CER": CER, "FA": FA, "MISS": MISS}
+        for key, val in checks.items():
+            assert_der(name_to_val[key], val)
 
     @pytest.mark.unit
     def test_ignore_overlap(self):
@@ -1552,8 +1417,6 @@ class TestLhotseAnnotation:
         )
         assert result is not None
         metric, _, (DER, _, _, _) = result
-        # f1: perfect (0/5). f2: B confused with A across [4,8] → 4/8.
-        # Combined: confusion=4 / scored=13 = 4/13.
         assert_der(DER, 4.0 / 13.0)
         assert len(metric.results_) == 2
 
@@ -1573,63 +1436,122 @@ class TestLhotseStringEquivalence:
         return string_path[2], lhotse_path[2]  # itemized errors
 
     @pytest.mark.unit
-    def test_perfect(self):
-        string_path, lhotse_path = self._both([(0, 5, "A"), (5, 10, "B")], [(0, 5, "A"), (5, 10, "B")])
+    @pytest.mark.parametrize(
+        "ref_segs, hyp_segs, kwargs",
+        [
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {},
+                id="perfect",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [],
+                {},
+                id="complete_miss",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "B"), (5, 10, "A")],
+                {},
+                id="speaker_swap",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 4.9, "A"), (5.1, 10, "B")],
+                {"collar": 0.25},
+                id="collar",
+            ),
+            pytest.param(
+                [(0, 10, "A")],
+                [(0, 5, "A"), (5, 10, "B")],
+                {"uem_segs": [[2, 8]]},
+                id="uem",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (3, 7, "B")],
+                [(0, 4, "A"), (3, 7, "B")],
+                {"ignore_overlap": True},
+                id="ignore_overlap",
+            ),
+            pytest.param(
+                [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
+                [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
+                {"collar": 0.5},
+                id="three_speakers",
+            ),
+            pytest.param(
+                [(0, 5, "A"), (5, 10, "B")],
+                [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
+                {},
+                id="extra_hyp_speaker",
+            ),
+        ],
+    )
+    def test_equivalence(self, ref_segs, hyp_segs, kwargs):
+        string_path, lhotse_path = self._both(ref_segs, hyp_segs, **kwargs)
         assert string_path == pytest.approx(lhotse_path)
 
-    @pytest.mark.unit
-    def test_complete_miss(self):
-        string_path, lhotse_path = self._both([(0, 5, "A"), (5, 10, "B")], [])
-        assert string_path == pytest.approx(lhotse_path)
+
+# ─── Tests: audio_end clipping ────────────────────────────────────────────
+
+
+class TestAudioEndClipping:
+    """Verify that the ``audio_end`` clipping mechanism prevents hypothesis
+    segments from overshooting the manifest-declared audio duration.
+
+    Mirrors the real-world scenario where the diarization model's last
+    prediction frame extends past the audio boundary (e.g., DH_EVAL_0019:
+    manifest duration=80.1785 s but the final hypothesis segment ends at
+    80.23 s).
+    """
 
     @pytest.mark.unit
-    def test_speaker_swap(self):
-        string_path, lhotse_path = self._both(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "B"), (5, 10, "A")],
+    @pytest.mark.parametrize(
+        "labels, audio_end, expected_count, expected_last_end",
+        [
+            (["0.0 50.0 A", "75.280 80.230 B", "85.0 90.0 C"], 80.1785, 2, 80.1785),
+            (["0.0 10.0 A", "10.0 20.5 B"], 20.0, 2, 20.0),
+            (["0.0 5.0 A", "20.0 25.0 B"], 20.0, 1, 5.0),
+            (["0.0 100.0 A"], None, 1, 100.0),
+        ],
+        ids=["overshoot+drop", "trim_last", "drop_past_boundary", "no_clip"],
+    )
+    def test_make_diar_annotation_audio_end(self, labels, audio_end, expected_count, expected_last_end):
+        """Segments past audio_end are trimmed or dropped; None disables clipping."""
+        ann = make_diar_annotation(labels, uniq_name="sess1", audio_end=audio_end)
+        assert len(ann) == expected_count
+        last = ann[-1]
+        actual_end = last.start + last.duration
+        assert abs(actual_end - expected_last_end) < 1e-9
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "manifest, expect_zero_fa",
+        [
+            ({"offset": 0, "duration": 80.0}, True),
+            ({}, False),
+        ],
+        ids=["with_manifest_clamp", "no_manifest_counts_fa"],
+    )
+    def test_score_labels_manifest_uem_clamp(self, manifest, expect_zero_fa):
+        """Manifest duration clamps the auto-UEM; without it, overshoot is FA."""
+        file_id = "DH_EVAL_0019"
+        ref_ann = make_diar_annotation(_labels((0, 80, "A")), uniq_name=file_id)
+        hyp_ann = make_diar_annotation(_labels((0, 80.5, "A")), uniq_name=file_id)
+        audio_rttm_map = {file_id: manifest}
+        result = score_labels(
+            audio_rttm_map,
+            [(file_id, ref_ann)],
+            [(file_id, hyp_ann)],
+            collar=0.0,
+            ignore_overlap=False,
+            verbose=False,
         )
-        assert string_path == pytest.approx(lhotse_path)
-
-    @pytest.mark.unit
-    def test_collar(self):
-        string_path, lhotse_path = self._both(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 4.9, "A"), (5.1, 10, "B")],
-            collar=0.25,
-        )
-        assert string_path == pytest.approx(lhotse_path)
-
-    @pytest.mark.unit
-    def test_uem(self):
-        string_path, lhotse_path = self._both(
-            [(0, 10, "A")],
-            [(0, 5, "A"), (5, 10, "B")],
-            uem_segs=[[2, 8]],
-        )
-        assert string_path == pytest.approx(lhotse_path)
-
-    @pytest.mark.unit
-    def test_ignore_overlap(self):
-        string_path, lhotse_path = self._both(
-            [(0, 5, "A"), (3, 7, "B")],
-            [(0, 4, "A"), (3, 7, "B")],
-            ignore_overlap=True,
-        )
-        assert string_path == pytest.approx(lhotse_path)
-
-    @pytest.mark.unit
-    def test_three_speakers(self):
-        string_path, lhotse_path = self._both(
-            [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
-            [(0, 4, "A"), (4, 7, "B"), (7, 10, "C")],
-            collar=0.5,
-        )
-        assert string_path == pytest.approx(lhotse_path)
-
-    @pytest.mark.unit
-    def test_extra_hyp_speaker(self):
-        string_path, lhotse_path = self._both(
-            [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 8, "B"), (8, 10, "C")],
-        )
-        assert string_path == pytest.approx(lhotse_path)
+        assert result is not None
+        _, _, (DER, CER, FA, MISS) = result
+        if expect_zero_fa:
+            assert_der(FA, 0.0)
+        else:
+            assert FA > 0.0, "Without manifest duration, overshoot should be counted as FA"

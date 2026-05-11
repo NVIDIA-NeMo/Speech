@@ -21,7 +21,19 @@
 #  These functions are used by locale-specific tokenizers (e.g., HindiCharsTokenizer uses
 #  get_grapheme_character_set("hi-IN")). If someone later creates PortugueseCharsTokenizer or
 #  KoreanCharsTokenizer, they'd hit this.
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP", "hi-IN", "ar-MSA", "pt-BR", "ko-KR"]
+SUPPORTED_LOCALES = [
+    "en-US",
+    "de-DE",
+    "es-ES",
+    "it-IT",
+    "fr-FR",
+    "vi-VN",
+    "ja-JP",
+    "hi-IN",
+    "ar-MSA",
+    "pt-BR",
+    "ko-KR",
+]
 
 # Derived from LJSpeech and "/" additionally
 DEFAULT_PUNCTUATION = (

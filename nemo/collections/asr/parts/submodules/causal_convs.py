@@ -62,7 +62,8 @@ class CausalConv2D(nn.Conv2d):
         )
 
     def forward(
-        self, x,
+        self,
+        x,
     ):
         x = F.pad(x, pad=(self._left_padding, self._right_padding, self._left_padding, self._right_padding))
         x = super().forward(x)

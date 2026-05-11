@@ -237,5 +237,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(
-        args.filelist, args.manifest, args.id, args.out, args.split, args.create_segments, args.min_spkrs_count,
+        args.filelist,
+        args.manifest,
+        args.id,
+        args.out,
+        args.split,
+        args.create_segments,
+        args.min_spkrs_count,
     )

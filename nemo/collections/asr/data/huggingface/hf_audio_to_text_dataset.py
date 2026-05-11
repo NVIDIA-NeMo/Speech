@@ -23,7 +23,11 @@ from nemo.collections.asr.data.huggingface.hf_audio_to_text import (
 
 
 def get_hf_audio_to_text_bpe_dataset(
-    config: DictConfig, global_rank: int, world_size: int, tokenizer, augmentor=None,
+    config: DictConfig,
+    global_rank: int,
+    world_size: int,
+    tokenizer,
+    augmentor=None,
 ):
     if "streaming" in config and config["streaming"]:
         dataset = HFIterableAudioToBPEDataset(
@@ -72,7 +76,10 @@ def get_hf_audio_to_text_bpe_dataset(
 
 
 def get_hf_audio_to_text_char_dataset(
-    config: DictConfig, global_rank: int, world_size: int, augmentor=None,
+    config: DictConfig,
+    global_rank: int,
+    world_size: int,
+    augmentor=None,
 ):
     if "streaming" in config and config["streaming"]:
         dataset = HFIterableAudioToCharDataset(

@@ -132,7 +132,6 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             )
         else:
             encoder_emb, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
-
         encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
 
         # b, c, t -> b, t, c
